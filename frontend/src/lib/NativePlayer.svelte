@@ -3,7 +3,10 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { time, type MediaChoice } from './playback';
+  import SegmentSkip from './SegmentSkip.svelte';
   type View = {
+    file_id: string;
+    generation: string;
     media_id: string;
     title: string;
     position: number;
@@ -90,6 +93,15 @@
         ? 'Music plays through MPV.'
         : 'Video plays in its MPV window.'} · {view.status}
     </p>
+    {#if view.file_id && view.generation && !view.music}<SegmentSkip
+        mediaId={view.media_id}
+        fileId={view.file_id}
+        generation={view.generation}
+        position={view.position}
+        paused={view.paused}
+        {busy}
+        seek={(at) => command('seek', at)}
+      />{/if}
     <div class="controls">
       <button
         class="primary"

@@ -35,6 +35,8 @@ export type Options = {
   capabilities: ReturnType<typeof capabilities>;
 };
 export type Playback = {
+  file_id?: string;
+  generation?: string;
   live?: boolean;
   id: string;
   url: string;

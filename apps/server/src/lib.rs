@@ -12,6 +12,7 @@ pub mod playback;
 mod playlists;
 mod realtime;
 pub mod security;
+pub mod segments;
 pub mod user_media;
 pub use jellyfin::discovery::run as run_discovery;
 pub use online::downloads::run as run_downloads;
@@ -132,6 +133,7 @@ pub fn router(state: AppState) -> Router {
         .merge(jellyfin::router())
         .merge(online::router())
         .merge(managers::router())
+        .merge(segments::router())
         .route("/api/v1/{*path}", axum::routing::any(not_found))
         .route("/api/v1/health", get(health))
         .route(

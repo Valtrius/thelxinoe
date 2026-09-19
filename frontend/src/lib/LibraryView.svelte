@@ -12,6 +12,7 @@
   import EpisodeMapping from './EpisodeMapping.svelte';
   import MediaActions from './MediaActions.svelte';
   import MediaOperations from './MediaOperations.svelte';
+  import SegmentEditor from './SegmentEditor.svelte';
   import Requests from './Requests.svelte';
   import { untrack } from 'svelte';
   import type { MediaChoice } from './playback';
@@ -296,7 +297,14 @@
                     : undefined,
               })}>Play {file.edition || 'media'}</button
           >{/if}
-      </div>{/each}
+      </div>
+      {#if admin && file.present && ['movie', 'episode'].includes(selected.kind)}<SegmentEditor
+          episode={selected.kind === 'episode'}
+          mediaId={selected.id}
+          fileId={file.id}
+          duration={Number(file.probe.format?.duration ?? 0)}
+        />{/if}
+    {/each}
     {#if admin && details}<MetadataEditor
         id={selected.id}
         kind={selected.kind}

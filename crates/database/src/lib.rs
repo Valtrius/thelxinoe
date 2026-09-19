@@ -58,6 +58,7 @@ impl Database {
             include_str!("../migrations/020.sql"),
             include_str!("../migrations/021.sql"),
             include_str!("../migrations/022.sql"),
+            include_str!("../migrations/023.sql"),
         ];
         if version > migrations.len() as i64 {
             anyhow::bail!("Database is newer than this server; use the matching release");

@@ -28,6 +28,8 @@ pub struct Choice {
 }
 #[derive(Clone, Default, Serialize)]
 pub struct View {
+    pub file_id: String,
+    pub generation: String,
     pub media_id: String,
     pub mode: String,
     pub title: String,
@@ -440,7 +442,7 @@ async fn run(
                     }
                     if let Some(entry) = prepared.get(&current) {
                         let mut state = view.lock().await;
-                        *state = View { media_id: choices[current].id.clone(), mode: entry.data["mode"].as_str().unwrap_or_default().into(), title: choices[current].title.clone(), position: entry.position, duration: entry.data["duration"].as_f64().unwrap_or(0.0), paused, status: if !loaded { "starting" } else if paused { "paused" } else { "playing" }.into(), music, index: current, count: choices.len(), error: None, video_ready };
+                        *state = View { file_id: entry.data["file_id"].as_str().unwrap_or_default().into(), generation: entry.data["generation"].as_str().unwrap_or_default().into(), media_id: choices[current].id.clone(), mode: entry.data["mode"].as_str().unwrap_or_default().into(), title: choices[current].title.clone(), position: entry.position, duration: entry.data["duration"].as_f64().unwrap_or(0.0), paused, status: if !loaded { "starting" } else if paused { "paused" } else { "playing" }.into(), music, index: current, count: choices.len(), error: None, video_ready };
                         let _ = app.emit("mpv-state", state.clone());
                     }
                 }

@@ -418,6 +418,15 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
         );
     }
     if method == "GET" {
+        if parts.len() == 2 && parts[0] == "MediaSegments" {
+            let media = canonical(parts[1]);
+            let segments = crate::segments::for_jellyfin(&state, &p, &media).await?;
+            let types = query.get("includesegmenttypes");
+            let items=segments.into_iter().filter(|s|types.is_none_or(|types|types.split(',').any(|t|t.eq_ignore_ascii_case(&s.kind))))
+                .map(|s|json!({"Id":s.id,"ItemId":media,"Type":s.kind,"StartTicks":catalog::ticks(s.start),"EndTicks":catalog::ticks(s.end)})).collect::<Vec<_>>();
+            let total = items.len();
+            return Ok(axum::Json(catalog::result(items, total, 0)).into_response());
+        }
         // The catalog does not yet contain independent person/genre entities.
         // Clients query these alongside media search even for empty libraries.
         if ["/persons", "/genres", "/musicgenres"].contains(&lower.as_str()) {

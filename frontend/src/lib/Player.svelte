@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, tick, untrack } from 'svelte';
   import Hls from 'hls.js';
+  import SegmentSkip from './SegmentSkip.svelte';
   import { api } from './api';
   import {
     capabilities,
@@ -310,6 +311,15 @@
           onload={selectSubtitle}
         />{/each}
     </video>
+    {#if active.file_id && active.generation}<SegmentSkip
+        mediaId={choice.id}
+        fileId={active.file_id}
+        generation={active.generation}
+        {position}
+        {paused}
+        {busy}
+        {seek}
+      />{/if}
     <div class="controls">
       <label
         >Volume<input

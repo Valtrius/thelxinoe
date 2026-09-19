@@ -3,6 +3,7 @@
   import LibraryView from './lib/LibraryView.svelte';
   import MetadataSettings from './lib/MetadataSettings.svelte';
   import PlaybackSettings from './lib/PlaybackSettings.svelte';
+  import SegmentSettings from './lib/SegmentSettings.svelte';
   import Player from './lib/Player.svelte';
   import MusicPlayer from './lib/MusicPlayer.svelte';
   import MpvSettings from './lib/MpvSettings.svelte';
@@ -424,6 +425,7 @@
           }}
         />
         <PlaybackSettings />
+        <SegmentSettings admin={user.role === 'admin'} />
         <QuickConnect username={user.username} />
         {#if desktop}<MpvSettings />{/if}
         {#if desktop}<section class="panel">
