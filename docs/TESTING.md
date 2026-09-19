@@ -62,8 +62,22 @@ The offline helpers use an existing master key, never display credentials, and r
 docker compose stop server
 cargo run -p thelxinoe-desktop --example import-youtwitch -- .local/docker/server
 # After placing the Thelxinoe TMDB token in the ignored local input file:
-cargo run -p thelxinoe-desktop --example import-tmdb -- .local/docker/server .local/tmdb-token
+cargo run -p thelxinoe-desktop --example import-tmdb -- .local/docker/server .local/tmdb-token .local/musicbrainz-contact
 docker compose up -d --wait
 ```
 
 Alternatively, an administrator can save metadata settings through the application. A configured token is never returned by the API. No real token or provider-contact address is committed.
+
+## Live metadata validation
+
+This opt-in test uses those private input files against real providers. It creates separate test accounts, provider matches and named volumes, leaving the regular catalog fixtures independent.
+
+```powershell
+$env:THELXINOE_TEST_HTTP_PORT = '18585'
+$env:THELXINOE_TEST_HTTPS_PORT = '19443'
+$env:THELXINOE_TEST_SUBNET = '172.31.251.0/24'
+docker compose -p thelxinoe-live -f compose.test.yaml up -d --wait
+node scripts/test-live-metadata.mjs
+```
+
+It checks real movie/show searches and matches, collection membership, explicit episode mapping, MusicBrainz artist/album matching, downloaded TMDB/CAA images, and refresh preserving a manual correction. Evidence contains public titles and booleans, never credentials.
