@@ -28,7 +28,10 @@ describe('server transport', () => {
       'fetch',
       vi.fn().mockImplementation(async () => ({
         ok: true,
-        json: async () => ({ ticket: `ticket${++sequence}` }),
+        json: async () => ({
+          ticket: `ticket${++sequence}`,
+          cursor: sequence === 1 ? 100 : 2000,
+        }),
       })),
     );
     class Socket {
@@ -49,18 +52,19 @@ describe('server transport', () => {
     const receive = vi.fn();
     const events = new Events(receive);
     await events.connect();
+    expect(Socket.all[0].url).toContain('since=100');
     Socket.all[0].onopen?.();
     Socket.all[0].onmessage?.({
-      data: JSON.stringify({ id: 7, kind: 'catalog.changed', payload: {} }),
+      data: JSON.stringify({ id: 107, kind: 'catalog.changed', payload: {} }),
     });
     Socket.all[0].onmessage?.({
-      data: JSON.stringify({ id: 6, kind: 'catalog.changed', payload: {} }),
+      data: JSON.stringify({ id: 106, kind: 'catalog.changed', payload: {} }),
     });
     expect(receive).toHaveBeenCalledTimes(1);
     Socket.all[0].close();
     await vi.advanceTimersByTimeAsync(500);
     expect(Socket.all).toHaveLength(2);
-    expect(Socket.all[1].url).toContain('since=7');
+    expect(Socket.all[1].url).toContain('since=107');
     expect(Socket.all[1].url).toContain('ticket=ticket2');
     events.close();
     await vi.advanceTimersByTimeAsync(30000);

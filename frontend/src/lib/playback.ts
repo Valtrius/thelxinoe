@@ -6,6 +6,7 @@ export type MediaChoice = {
   id: string;
   title: string;
   fileId?: string;
+  restore?: boolean;
   queue?: { id: string; title: string }[];
 };
 export type Preferences = {

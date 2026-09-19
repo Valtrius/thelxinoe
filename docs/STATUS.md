@@ -10,7 +10,8 @@ Updated 2026-09-19. This is a runnable development milestone, not a completed v1
 | 3 — Local catalog    | Implemented and tested       | Typed roots, FFprobe/tags, opaque identities, editions, specials, multi-episode files, watchers/reconciliation, progress events and browsing. Replacement, rename, duplicate-copy, removal and failed-scan behavior covered by tests.                             |
 | 4 — Metadata         | Verified with live providers | TMDB movie/show matching, collections, explicit episode mapping, MusicBrainz artist/album matching, TMDB/CAA artwork and preserved manual corrections pass against real providers through HTTPS.                                                                  |
 | 5 — Local playback   | Implemented and tested       | Direct HTTP ranges; HLS remux/conversion and seeks decoded in Chromium through HTTPS; audio/subtitle preferences and selection; scoped grants; independent users, edition resume, replacement/restart recovery; sample-continuous FLAC sequencing and ReplayGain. |
-| 6–20                 | Not implemented              | MPV, additional user media state, Jellyfin compatibility, online providers, acquisition services, managed Docker lifecycle, retention, segments, backups, signed updates, PWA and release hardening remain open.                                                  |
+| 6 — Windows MPV      | Implemented and tested       | Managed/custom installation, config/plugins, native video and headless music, acknowledged IPC, server progress, page reload recovery, HLS seeks, continuous FLAC PCM and ReplayGain. Windows bundle and native runtime tests pass.                               |
+| 7–20                 | Not implemented              | Additional user media state, Jellyfin compatibility, online providers, acquisition services, managed Docker lifecycle, retention, segments, backups, signed updates, PWA and release hardening remain open.                                                       |
 
 ## Provider configuration
 
@@ -29,7 +30,9 @@ Google, Twitch and Kick application settings were found in YouTwitch's Windows C
 - Windows installer: `target/release/bundle/nsis/Thelxinoe_0.1.0_x64-setup.exe`.
 - Screenshots: `.local/library.png`, `.local/desktop-library.png`, `.local/proxy-settings.png`.
 - Live metadata evidence: `.local/live-metadata-result.json`, `.local/live-metadata.png`; isolated `thelxinoe-live` Compose deployment on HTTPS port 19443, using test accounts and generated files.
-- Playback evidence: `.local/playback-result.json`, `.local/playback-direct.png`; isolated `thelxinoe-playback` deployment on HTTPS port 20443. Native MPV playback is the next phase.
+- Playback evidence: `.local/playback-result.json`, `.local/playback-direct.png`; isolated `thelxinoe-playback` deployment on HTTPS port 20443.
+- Native playback evidence: `.local/native-playback-result.json`, `.local/desktop-native-player.png`, `.local/mpv-gapless.wav`. The recorded pair contains 288,000 samples at 48 kHz with a continuous boundary and the expected -6.02 dB ReplayGain.
+- Desktop testing also found and fixed an event replay refresh storm and SQLite writer contention. Fresh event connections start at an issued cursor; reconnects retain their delivered cursor. Database work is bounded, fresh authentication reads avoid writes, and a live connection preserves SQLite WAL state. Rust contention and HTTPS replay tests pass.
 - Android TV API 34 AVD `Thelxinoe_TV` created under `.local/android-avd`; Wholphin 1.0.8 installed and launched to its Add Server screen. **No Wholphin compatibility claim:** the Jellyfin adapter and playback are not implemented yet.
 
 See [testing instructions](TESTING.md) for commands. Secrets, media, emulator images and test accounts are excluded from Git.

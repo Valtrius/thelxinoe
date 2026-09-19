@@ -9,6 +9,9 @@ use std::{
 #[derive(Clone)]
 pub struct Database {
     path: Arc<PathBuf>,
+    slots: Arc<tokio::sync::Semaphore>,
+    // Keep WAL/SHM alive between calls rather than repeatedly closing the last connection.
+    _anchor: Arc<std::sync::Mutex<Option<Connection>>>,
 }
 
 impl Database {
@@ -18,6 +21,8 @@ impl Database {
         }
         let db = Self {
             path: Arc::new(path.as_ref().to_owned()),
+            slots: Arc::new(tokio::sync::Semaphore::new(16)),
+            _anchor: Arc::new(std::sync::Mutex::new(None)),
         };
         let mut conn = db.connect()?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -47,6 +52,7 @@ impl Database {
             )?;
         }
         tx.commit()?;
+        *db._anchor.lock().expect("new database anchor") = Some(conn);
         Ok(db)
     }
     pub fn connect(&self) -> Result<Connection> {
@@ -61,7 +67,12 @@ impl Database {
         F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
     {
         let db = self.clone();
-        tokio::task::spawn_blocking(move || f(&mut db.connect()?)).await?
+        let permit = self.slots.clone().acquire_owned().await?;
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            f(&mut db.connect()?)
+        })
+        .await?
     }
     pub async fn backup(&self, destination: PathBuf) -> Result<()> {
         self.call(move |conn| {

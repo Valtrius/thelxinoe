@@ -12,6 +12,8 @@ pub struct Capabilities {
     pub video: Vec<String>,
     pub audio: Vec<String>,
     pub hls: bool,
+    #[serde(default)]
+    pub native_tracks: bool,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Options {
@@ -241,7 +243,7 @@ pub fn plan(source: &Source, options: &Options) -> Result<&'static str> {
         && video_ok
         && audio_ok
         && container
-        && options.audio.is_none_or(|a| Some(a) == first_audio)
+        && (caps.native_tracks || options.audio.is_none_or(|a| Some(a) == first_audio))
     {
         return Ok("direct");
     }

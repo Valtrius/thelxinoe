@@ -67,6 +67,7 @@ export class Events {
   private timer?: ReturnType<typeof setTimeout>;
   private closed = false;
   private cursor = 0;
+  private initialized = false;
   private retry = 500;
   constructor(
     private receive: (event: ServerEvent) => void,
@@ -76,8 +77,15 @@ export class Events {
     if (this.closed) return;
     let ticket: string;
     try {
-      ticket = (await api<{ ticket: string }>('/auth/event-ticket', 'POST'))
-        .ticket;
+      const issued = await api<{ ticket: string; cursor?: number }>(
+        '/auth/event-ticket',
+        'POST',
+      );
+      ticket = issued.ticket;
+      if (!this.initialized) {
+        this.cursor = issued.cursor ?? 0;
+        this.initialized = true;
+      }
     } catch {
       if (!this.closed)
         this.timer = setTimeout(() => void this.connect(), 15000);

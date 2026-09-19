@@ -1,0 +1,477 @@
+use super::{backend::Backend, ipc::Ipc, tools::ToolStore};
+use anyhow::{Context, Result, ensure};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::{
+    collections::BTreeMap,
+    process::Stdio,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use tauri::{AppHandle, Emitter};
+use tauri_plugin_notification::NotificationExt;
+use tokio::{
+    net::windows::named_pipe::ClientOptions,
+    process::Command,
+    sync::{Mutex, mpsc, oneshot},
+    task::JoinHandle,
+};
+
+#[derive(Clone, Deserialize)]
+pub struct Choice {
+    pub id: String,
+    pub title: String,
+    #[serde(rename = "fileId")]
+    pub file_id: Option<String>,
+}
+#[derive(Clone, Default, Serialize)]
+pub struct View {
+    pub media_id: String,
+    pub mode: String,
+    pub title: String,
+    pub position: f64,
+    pub duration: f64,
+    pub paused: bool,
+    pub status: String,
+    pub music: bool,
+    pub index: usize,
+    pub count: usize,
+    pub error: Option<String>,
+    pub video_ready: bool,
+}
+pub enum Control {
+    Pause,
+    Seek(f64),
+    Volume(f64),
+    Next,
+    Stop,
+}
+struct Run {
+    commands: mpsc::Sender<Control>,
+    task: JoinHandle<()>,
+    view: Arc<Mutex<View>>,
+}
+#[derive(Default)]
+pub struct Player {
+    operation: Mutex<()>,
+    run: Mutex<Option<Run>>,
+}
+impl Player {
+    pub async fn view(&self) -> View {
+        let run = self.run.lock().await;
+        if let Some(run) = run.as_ref() {
+            run.view.lock().await.clone()
+        } else {
+            View {
+                status: "stopped".into(),
+                ..View::default()
+            }
+        }
+    }
+    pub async fn stop(&self) {
+        let _operation = self.operation.lock().await;
+        self.stop_inner().await;
+    }
+    async fn stop_inner(&self) {
+        if let Some(run) = self.run.lock().await.take() {
+            let _ = run.commands.send(Control::Stop).await;
+            let mut task = run.task;
+            if tokio::time::timeout(Duration::from_secs(10), &mut task)
+                .await
+                .is_err()
+            {
+                task.abort();
+            }
+        }
+    }
+    pub async fn control(&self, command: Control) -> Result<()> {
+        let run = self.run.lock().await;
+        run.as_ref()
+            .context("MPV is not playing")?
+            .commands
+            .send(command)
+            .await
+            .map_err(|_| anyhow::anyhow!("MPV has stopped"))
+    }
+    pub async fn play(
+        &self,
+        app: AppHandle,
+        store: ToolStore,
+        choices: Vec<Choice>,
+        music: bool,
+    ) -> Result<View> {
+        ensure!(
+            !choices.is_empty() && choices.len() <= 500,
+            "Choose between one and 500 media items"
+        );
+        ensure!(
+            choices
+                .iter()
+                .all(|c| c.id.len() <= 100 && c.title.len() <= 1000),
+            "Invalid media queue"
+        );
+        let _operation = self.operation.lock().await;
+        self.stop_inner().await;
+        let selection = store.selection()?;
+        ensure!(
+            !selection.path.is_empty(),
+            "Install or select MPV in Windows player settings"
+        );
+        let backend = Backend::new(&app)?;
+        let (commands, rx) = mpsc::channel(32);
+        let view = Arc::new(Mutex::new(View {
+            media_id: choices[0].id.clone(),
+            title: choices[0].title.clone(),
+            status: "starting".into(),
+            music,
+            count: choices.len(),
+            ..View::default()
+        }));
+        let state = view.clone();
+        let (ready, started) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            if let Err(error) = run(
+                &app,
+                backend,
+                store,
+                selection.path,
+                choices,
+                music,
+                state.clone(),
+                rx,
+                ready,
+            )
+            .await
+            {
+                let mut state = state.lock().await;
+                state.status = "failed".into();
+                state.error = Some(error.to_string());
+                let _ = app.emit("mpv-state", state.clone());
+            }
+        });
+        *self.run.lock().await = Some(Run {
+            commands,
+            task,
+            view,
+        });
+        started.await.context("MPV failed before connecting")??;
+        Ok(self.view().await)
+    }
+}
+struct Prepared {
+    playlist_id: i64,
+    id: String,
+    url: String,
+    data: Value,
+    position: f64,
+    sequence: i64,
+    finished: bool,
+}
+async fn prepare(backend: &Backend, choice: &Choice, first: bool) -> Result<Prepared> {
+    let preferences = backend.call("/playback/preferences", "GET", None).await?;
+    let data=backend.call("/playback","POST",Some(json!({"media_id":choice.id,"file_id":choice.file_id,"position":if first {Value::Null}else{json!(0)},"options":{"quality":preferences["quality"],"audio":null,"subtitle":null,"capabilities":{"containers":["mp4","m4v","m4a","mkv","avi","mov","webm","ts","m2ts","mpg","mpeg","flac","mp3","ogg","opus","wav","wma","aac","aiff","alac"],"video":["h264","hevc","vp8","vp9","av1","mpeg4","mpeg2video","mpeg1video","wmv3","vc1","prores","mjpeg"],"audio":["aac","mp3","flac","vorbis","opus","ac3","eac3","dts","truehd","alac","pcm_s16le","pcm_s24le","pcm_s32le","pcm_f32le","wmav2"],"hls":true,"native_tracks":true}}}))).await?;
+    Ok(Prepared {
+        playlist_id: -1,
+        id: data["id"]
+            .as_str()
+            .context("Playback session is missing")?
+            .into(),
+        url: format!(
+            "{}{}",
+            backend.origin,
+            data["url"].as_str().context("Playback URL is missing")?
+        ),
+        position: data["position"].as_f64().unwrap_or(0.0),
+        data,
+        sequence: 0,
+        finished: false,
+    })
+}
+async fn load(ipc: &mut Ipc, entry: &mut Prepared, title: &str, mode: &str) -> Result<()> {
+    let data = &entry.data;
+    let mut options = json!({"start":(entry.position-data["timeline_start"].as_f64().unwrap_or(0.0)).max(0.0).to_string(),"force-media-title":title,"replaygain":data["replay_gain"].as_str().filter(|s|*s!="off").unwrap_or("no"),"replaygain-preamp":"0","replaygain-clip":"no"});
+    options["sub-delay"] = json!((-data["timeline_start"].as_f64().unwrap_or(0.0)).to_string());
+    if data["mode"] == "direct" {
+        if let Some(audio) = data["options"]["audio"].as_i64() {
+            let tracks = data["tracks"]
+                .as_array()
+                .context("Media tracks are missing")?;
+            if let Some(index) = tracks
+                .iter()
+                .filter(|t| t["kind"] == "audio")
+                .position(|t| t["index"].as_i64() == Some(audio))
+            {
+                options["aid"] = json!((index + 1).to_string());
+            }
+        }
+        if let Some(sub) = data["selected_subtitle"].as_str() {
+            if sub == "off" {
+                options["sid"] = json!("no");
+            } else if let Some(index) = data["tracks"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|t| t["kind"] == "subtitle" && t["index"].is_number())
+                .position(|t| t["id"].as_str() == Some(sub))
+            {
+                options["sid"] = json!((index + 1).to_string());
+            }
+        }
+    }
+    ipc.call(json!(["loadfile", entry.url, mode, -1, options]))
+        .await?;
+    let playlist = ipc.call(json!(["get_property", "playlist"])).await?;
+    entry.playlist_id = playlist
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|item| item["filename"].as_str() == Some(&entry.url))
+        .and_then(|item| item["id"].as_i64())
+        .context("MPV playlist entry is missing")?;
+    Ok(())
+}
+async fn report(backend: &Backend, entry: &mut Prepared, state: &str) -> Result<()> {
+    if entry.finished {
+        return Ok(());
+    }
+    backend
+        .call(
+            &format!("/playback/{}/progress", entry.id),
+            "POST",
+            Some(json!({"sequence":entry.sequence,"position":entry.position,"state":state})),
+        )
+        .await?;
+    entry.sequence += 1;
+    if state == "stopped" {
+        entry.finished = true;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run(
+    app: &AppHandle,
+    backend: Backend,
+    store: ToolStore,
+    executable: String,
+    choices: Vec<Choice>,
+    music: bool,
+    view: Arc<Mutex<View>>,
+    mut commands: mpsc::Receiver<Control>,
+    ready: oneshot::Sender<Result<()>>,
+) -> Result<()> {
+    let pipe = format!(r"\\.\pipe\thelxinoe-{}", uuid::Uuid::new_v4());
+    let mut child = Command::new(executable)
+        .arg(format!("--config-dir={}", store.configuration().display()))
+        .args([
+            "--config=yes",
+            "--idle=yes",
+            "--keep-open=no",
+            "--save-position-on-quit=no",
+            "--write-filename-in-watch-later-config=no",
+            "--save-watch-history=no",
+            "--ytdl=no",
+            "--gapless-audio=yes",
+            "--prefetch-playlist=yes",
+            "--replaygain-clip=no",
+            "--msg-level=all=no",
+        ])
+        .arg(format!("--input-ipc-server={pipe}"))
+        .args(if music {
+            vec!["--vid=no", "--audio-display=no", "--force-window=no"]
+        } else {
+            vec!["--force-window=immediate"]
+        })
+        .env("MPV_HOME", store.configuration())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(0x08000000)
+        .kill_on_drop(true)
+        .spawn()
+        .context("Launch MPV")?;
+    let connected = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            match ClientOptions::new().open(&pipe) {
+                Ok(client) => return Ok::<_, anyhow::Error>(client),
+                Err(_) => {
+                    ensure!(
+                        child.try_wait()?.is_none(),
+                        "MPV exited before opening its control connection"
+                    );
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        }
+    })
+    .await?;
+    let client = match connected {
+        Ok(client) => client,
+        Err(error) => {
+            let _ = ready.send(Err(error));
+            return Ok(());
+        }
+    };
+    let (mut ipc, mut events) = Ipc::new(client);
+    for (index, property) in ["time-pos", "pause", "video-out-params"].iter().enumerate() {
+        ipc.call(json!(["observe_property", index, property]))
+            .await?;
+    }
+    let mut prepared = BTreeMap::new();
+    let mut next = 0;
+    let mut current = 0;
+    let mut paused = false;
+    let mut loaded = false;
+    let mut video_ready = false;
+    let mut started = false;
+    let work = async {
+        for _ in 0..if music { choices.len().min(2) } else { 1 } {
+            let mut entry = prepare(&backend, &choices[next], next == 0).await?;
+            load(&mut ipc, &mut entry, &choices[next].title, "append").await?;
+            prepared.insert(next, entry);
+            next += 1;
+        }
+        // Prepare both entries before audio starts, even for very short tracks.
+        ipc.call(json!(["playlist-play-index", 0])).await?;
+        let _ = ready.send(Ok(()));
+        let mut tick = tokio::time::interval(Duration::from_millis(500));
+        let mut last_report = Instant::now();
+        loop {
+            tokio::select! {
+                command = commands.recv() => match command {
+                    Some(Control::Pause) => { ipc.call(json!(["cycle", "pause"])).await?; }
+                    Some(Control::Seek(position)) => {
+                        let entry = prepared.get_mut(&current).context("No active media")?;
+                        let position = position.min((entry.data["duration"].as_f64().unwrap_or(0.0) - 0.1).max(0.0));
+                        if entry.data["mode"] == "direct" {
+                            ipc.call(json!(["seek", position, "absolute+exact"])).await?;
+                        } else {
+                            // HLS windows are bounded. Ask the server to rebuild at
+                            // the desired point rather than seeking a missing segment.
+                            let result = backend.call(&format!("/playback/{}/seek", entry.id), "POST", Some(json!({"position":position}))).await?;
+                            entry.url = format!("{}{}", backend.origin, result["url"].as_str().context("Seek URL is missing")?);
+                            entry.data["timeline_start"] = result["timeline_start"].clone();
+                            entry.position = position;
+                            loaded = false;
+                            load(&mut ipc, entry, &choices[current].title, "replace").await?;
+                            ipc.call(json!(["set_property", "pause", paused])).await?;
+                            // Replacing the MPV playlist also removed the prefetched
+                            // entry; append it again without creating another session.
+                            if let Some(entry) = prepared.get_mut(&(current + 1)) {
+                                load(&mut ipc, entry, &choices[current + 1].title, "append-play").await?;
+                            }
+                        }
+                    }
+                    Some(Control::Volume(volume)) => { ipc.call(json!(["set_property", "volume", volume])).await?; }
+                    Some(Control::Next) if current + 1 < choices.len() => { ipc.call(json!(["playlist-next", "force"])).await?; }
+                    Some(Control::Next | Control::Stop) | None => { break; }
+                },
+                message = events.recv() => {
+                    let Some(message) = message else { anyhow::bail!("MPV control connection closed"); };
+                    match message["event"].as_str() {
+                        Some("start-file") => {
+                            if let Some((index, _)) = prepared.iter().find(|(_, e)| Some(e.playlist_id) == message["playlist_entry_id"].as_i64()) {
+                                current = *index;
+                                loaded = false;
+                                video_ready = false;
+                                started = true;
+                            }
+                        }
+                        Some("property-change") => match message["name"].as_str() {
+                            Some("time-pos") if loaded => {
+                                if let Some(position) = message["data"].as_f64()
+                                    && let Some(entry) = prepared.get_mut(&current)
+                                    && !entry.finished
+                                { entry.position = (position + entry.data["timeline_start"].as_f64().unwrap_or(0.0)).max(0.0); }
+                            }
+                            Some("pause") => { paused = message["data"].as_bool().unwrap_or(false); }
+                            Some("video-out-params") => { video_ready = message["data"]["w"].as_u64().unwrap_or(0) > 0; }
+                            _ => {}
+                        },
+                        Some("file-loaded") => {
+                            loaded = true;
+                            if let Some(entry) = prepared.get_mut(&current) {
+                                report(&backend, entry, if paused { "paused" } else { "playing" }).await?;
+                                if let Some(sub) = entry.data["selected_subtitle"].as_str().filter(|s| s.starts_with("sidecar-") || (entry.data["mode"] != "direct" && *s != "off"))
+                                    && let Some(url) = entry.data["subtitles"].as_array().into_iter().flatten().find(|s| s["id"].as_str() == Some(sub)).and_then(|s| s["url"].as_str())
+                                { ipc.call(json!(["sub-add", format!("{}{url}", backend.origin), "select"])).await?; }
+                            }
+                            let _ = app.notification().builder().title("Now playing").body(&choices[current].title).show();
+                            if music && next < choices.len() && next <= current + 1 {
+                                let mut entry = prepare(&backend, &choices[next], false).await?;
+                                load(&mut ipc, &mut entry, &choices[next].title, "append-play").await?;
+                                prepared.insert(next, entry);
+                                next += 1;
+                            }
+                        }
+                        Some("end-file") => {
+                            let index = prepared.iter().find(|(_, e)| Some(e.playlist_id) == message["playlist_entry_id"].as_i64()).map(|(i, _)| *i);
+                            if let Some(index) = index {
+                                let entry = prepared.get_mut(&index).unwrap();
+                                if message["reason"] == "error" { anyhow::bail!("MPV could not decode or retrieve this media"); }
+                                if message["reason"] == "eof" { entry.position = entry.data["duration"].as_f64().unwrap_or(entry.position); }
+                                report(&backend, entry, "stopped").await?;
+                                if index == current { loaded = false; }
+                                if index + 1 >= choices.len() { break; }
+                            }
+                        }
+                        Some("shutdown") => { break; }
+                        _ => {}
+                    }
+                },
+                _ = tick.tick() => {
+                    if child.try_wait()?.is_some() { break; }
+                    // MPV can keep the same output format across a reload, so its
+                    // property observer need not emit another dimensions change.
+                    if loaded && !music && !video_ready {
+                        video_ready = ipc.call(json!(["get_property", "video-out-params"])).await.ok()
+                            .and_then(|v| v["w"].as_u64()).unwrap_or(0) > 0;
+                    }
+                    if last_report.elapsed() >= Duration::from_secs(5) {
+                        for (index, entry) in &mut prepared {
+                            if entry.finished { continue; }
+                            if *index == current && loaded { report(&backend, entry, if paused { "paused" } else { "playing" }).await?; }
+                            else { backend.call(&format!("/playback/{}/keepalive", entry.id), "POST", None).await?; }
+                        }
+                        last_report = Instant::now();
+                    }
+                    if let Some(entry) = prepared.get(&current) {
+                        let mut state = view.lock().await;
+                        *state = View { media_id: choices[current].id.clone(), mode: entry.data["mode"].as_str().unwrap_or_default().into(), title: choices[current].title.clone(), position: entry.position, duration: entry.data["duration"].as_f64().unwrap_or(0.0), paused, status: if !loaded { "starting" } else if paused { "paused" } else { "playing" }.into(), music, index: current, count: choices.len(), error: None, video_ready };
+                        let _ = app.emit("mpv-state", state.clone());
+                    }
+                }
+            }
+        }
+        Ok::<_, anyhow::Error>(())
+    }.await;
+    // Preserve the last observed position before MPV unload resets its properties.
+    // A normal quit flushes output devices (including PCM) before process teardown.
+    let _ = tokio::time::timeout(Duration::from_secs(1), ipc.call(json!(["quit"]))).await;
+    let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
+    let _ = child.kill().await;
+    for (index, entry) in &mut prepared {
+        if entry.finished {
+            continue;
+        }
+        if *index == current && started {
+            let _ = report(&backend, entry, "stopped").await;
+        } else {
+            let _ = backend
+                .call(&format!("/playback/{}", entry.id), "DELETE", None)
+                .await;
+        }
+    }
+    let mut state = view.lock().await;
+    if let Some(entry) = prepared.get(&current) {
+        state.media_id = choices[current].id.clone();
+        state.title = choices[current].title.clone();
+        state.index = current;
+        state.position = entry.position;
+        state.duration = entry.data["duration"].as_f64().unwrap_or(0.0);
+    }
+    state.status = "stopped".into();
+    state.paused = true;
+    let _ = app.emit("mpv-state", state.clone());
+    work
+}

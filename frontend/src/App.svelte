@@ -5,6 +5,9 @@
   import PlaybackSettings from './lib/PlaybackSettings.svelte';
   import Player from './lib/Player.svelte';
   import MusicPlayer from './lib/MusicPlayer.svelte';
+  import MpvSettings from './lib/MpvSettings.svelte';
+  import NativePlayer from './lib/NativePlayer.svelte';
+  import { invoke } from '@tauri-apps/api/core';
   import type { MediaChoice } from './lib/playback';
   let playing = $state<MediaChoice | null>(null);
   import {
@@ -69,6 +72,8 @@
     { name: 'Kick', icon: Radio },
   ];
   let events: Events | undefined;
+  let settingsTimer: ReturnType<typeof setTimeout> | undefined,
+    settingsLoading = false;
   let catalogRevision = $state(0);
   let scans = $state<Record<string, { completed: number; total: number }>>({});
   let serverAddress = $state('');
@@ -95,7 +100,24 @@
           user = null;
         }
       }
-      if (user) startEvents();
+      if (user) {
+        startEvents();
+        if (desktop) {
+          const state = await invoke<{
+            media_id: string;
+            title: string;
+            music: boolean;
+            status: string;
+          }>('mpv_state');
+          if (state.media_id && !['stopped', 'failed'].includes(state.status))
+            playing = {
+              id: state.media_id,
+              title: state.title,
+              kind: state.music ? 'track' : 'movie',
+              restore: true,
+            };
+        }
+      }
     } catch (e) {
       error = String(e);
     } finally {
@@ -119,7 +141,10 @@
           };
           scans[scan.root_id] = scan;
         }
-        if (section === 'Settings') void loadSettings();
+        if (section === 'Settings' && event.kind === 'jobs.changed') {
+          clearTimeout(settingsTimer);
+          settingsTimer = setTimeout(() => void loadSettings(), 250);
+        }
       },
       (value) => (connected = value),
     );
@@ -149,20 +174,26 @@
     });
   }
   async function loadSettings() {
-    await act(async () => {
-      const result = await api<{ items: Session[]; current: string }>(
-        '/auth/sessions',
-      );
-      sessions = result.items;
-      currentSession = result.current;
-      if (user?.role === 'admin') {
-        users = (await api<{ items: User[] }>('/users')).items;
-        jobs = (await api<{ items: Job[] }>('/admin/jobs')).items;
-        health = await api('/admin/health');
-        timezone = (await api<{ timezone: string }>('/admin/settings'))
-          .timezone;
-      }
-    });
+    if (settingsLoading) return;
+    settingsLoading = true;
+    try {
+      await act(async () => {
+        const result = await api<{ items: Session[]; current: string }>(
+          '/auth/sessions',
+        );
+        sessions = result.items;
+        currentSession = result.current;
+        if (user?.role === 'admin') {
+          users = (await api<{ items: User[] }>('/users')).items;
+          jobs = (await api<{ items: Job[] }>('/admin/jobs')).items;
+          health = await api('/admin/health');
+          timezone = (await api<{ timezone: string }>('/admin/settings'))
+            .timezone;
+        }
+      });
+    } finally {
+      settingsLoading = false;
+    }
   }
   async function navigate(name: string) {
     section = name;
@@ -183,7 +214,10 @@
   }
   onMount(() => {
     void boot();
-    return () => events?.close();
+    return () => {
+      events?.close();
+      clearTimeout(settingsTimer);
+    };
   });
 </script>
 
@@ -313,7 +347,10 @@
         >
       </header>
       {#if error}<p class="error" role="alert">{error}</p>{/if}
-      {#if playing && playing.kind === 'track'}<MusicPlayer
+      {#if playing && desktop}<NativePlayer
+          choice={playing}
+          closed={() => (playing = null)}
+        />{:else if playing && playing.kind === 'track'}<MusicPlayer
           choice={playing}
           closed={() => (playing = null)}
         />{:else if playing}<Player
@@ -322,6 +359,30 @@
         />{/if}
       {#if section === 'Settings'}
         <PlaybackSettings />
+        {#if desktop}<MpvSettings />{/if}
+        {#if desktop}<section class="panel">
+            <h2>Server connection</h2>
+            <form
+              class="inline-form"
+              onsubmit={(e) => {
+                e.preventDefault();
+                void act(async () => {
+                  await changeServer(serverAddress);
+                  playing = null;
+                  events?.close();
+                  user = null;
+                  await boot();
+                });
+              }}
+            >
+              <label
+                >Server address<input
+                  bind:value={serverAddress}
+                  required
+                /></label
+              ><button class="secondary" disabled={busy}>Change server</button>
+            </form>
+          </section>{/if}
         <section class="panel">
           <h2>Your devices</h2>
           <p class="muted">

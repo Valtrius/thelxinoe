@@ -202,15 +202,32 @@ pub async fn resolve(db: &Database, raw: &str, transport: &str) -> Result<Option
     let hash = digest(raw);
     let transport = transport.to_owned();
     db.call(move |c| {
-        let principal = c.query_row("SELECT u.id,u.username,u.role,u.timezone,s.id,s.transport FROM sessions s JOIN users u ON u.id=s.user_id WHERE token_hash=?1 AND transport=?2 AND expires_at>?3", params![hash,transport,now()], |r| Ok(Principal { user: user_row(r)?, session_id: r.get(4)?, transport: r.get(5)? })).optional()?;
-        if let Some(p) = &principal { c.execute("UPDATE sessions SET last_seen=?1 WHERE id=?2 AND last_seen<?3", params![now(),p.session_id,now()-60])?; }
-        Ok(principal)
+        let result = c.query_row("SELECT u.id,u.username,u.role,u.timezone,s.id,s.transport,s.last_seen FROM sessions s JOIN users u ON u.id=s.user_id WHERE token_hash=?1 AND transport=?2 AND expires_at>?3", params![hash,transport,now()], |r| Ok((Principal { user: user_row(r)?, session_id: r.get(4)?, transport: r.get(5)? },r.get::<_,i64>(6)?))).optional()?;
+        if let Some((p,last_seen)) = &result && *last_seen<now()-60 { c.execute("UPDATE sessions SET last_seen=?1 WHERE id=?2 AND last_seen<?3", params![now(),p.session_id,now()-60])?; }
+        Ok(result.map(|(p,_)|p))
     }).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn recent_session_authentication_does_not_wait_for_an_unrelated_writer() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let db = Database::open(temp.path().join("auth.db"))?;
+        db.call(|db|{db.execute("INSERT INTO users(id,username,password_hash,role,created_at) VALUES ('user','reader','unused','user',?1)",[now()])?;Ok(())}).await?;
+        let token = issue_session(&db, "user".into(), "device".into(), "test".into()).await?;
+        let mut writer = db.connect()?;
+        let _transaction =
+            writer.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let principal = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            resolve(&db, &token, "device"),
+        )
+        .await??;
+        assert_eq!(principal.unwrap().user.id, "user");
+        Ok(())
+    }
     #[test]
     fn secret_is_persistent_authenticated_and_bound_to_scope() -> Result<()> {
         let dir = tempfile::tempdir()?;

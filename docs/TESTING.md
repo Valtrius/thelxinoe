@@ -56,6 +56,18 @@ node scripts/test-desktop.mjs
 
 This controls the real bundled Svelte page inside WebView2. It tests device login, persistence in Windows Credential Manager, absence of credentials in browser storage, catalog browsing, server restart/reconnect, and revocation. It restores the desktop server address to `http://127.0.0.1:8484`. Close the test app afterward; remote debugging is enabled only by these environment variables. The script restarts only the isolated test server.
 
+## Windows MPV playback
+
+Start the isolated playback Compose deployment and generate its catalog using the local playback instructions above. Launch the bundled Windows application with the same WebView2 debug settings used by the desktop test, then run:
+
+```powershell
+node scripts/test-native-playback.mjs
+```
+
+The test uses the playback fixture server on port 18686. It installs the official Windows x64 MPV build if needed, verifies its upstream SHA-256 digest, exercises native video output, pause, seek, desktop page reload, server resume, and HLS conversion. It temporarily selects MPV's PCM output for the two FLAC fixtures, then checks the sample count and amplitude across the track boundary. Configuration, playback preferences and the server address are restored afterward. Results are written under `.local`.
+
+MPV configuration and Lua plugins live in Thelxinoe's application data directory. The application supports a managed installation or a supplied MPV executable, without depending on YouTwitch's tool directory. Playback URLs travel over a random named pipe; account credentials and media URLs are absent from MPV process arguments. Closing the desktop stops its player and reports the last position to the server.
+
 ## Android TV preparation
 
 Android Studio's SDK is at `$env:LOCALAPPDATA\Android\Sdk`. The installed image is `system-images;android-34;android-tv;x86`. The project AVD uses Windows Hypervisor Platform and a software GPU. The other existing AVD was left intact.

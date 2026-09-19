@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod mpv;
 use serde_json::Value;
 use tauri::Manager;
 
@@ -15,7 +16,7 @@ fn server_url(app: tauri::AppHandle) -> Result<String, String> {
     Ok(std::fs::read_to_string(config_path(&app)?).unwrap_or("http://127.0.0.1:8484".into()))
 }
 #[tauri::command]
-fn change_server(app: tauri::AppHandle, value: String) -> Result<String, String> {
+async fn change_server(app: tauri::AppHandle, value: String) -> Result<String, String> {
     let url = url::Url::parse(&value).map_err(|e| e.to_string())?;
     if !matches!(url.scheme(), "http" | "https")
         || url.host_str().is_none()
@@ -27,6 +28,8 @@ fn change_server(app: tauri::AppHandle, value: String) -> Result<String, String>
     {
         return Err("Enter an HTTP(S) origin without a path or credentials".into());
     }
+    #[cfg(windows)]
+    app.state::<mpv::DesktopPlayback>().player.stop().await;
     match credential()?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => {}
         Err(e) => return Err(e.to_string()),
@@ -42,6 +45,10 @@ async fn backend_request(
     method: String,
     mut body: Option<Value>,
 ) -> Result<Value, String> {
+    #[cfg(windows)]
+    if path == "/auth/logout" && method == "POST" {
+        app.state::<mpv::DesktopPlayback>().player.stop().await;
+    }
     if !path.starts_with('/') || path.starts_with("//") || path.contains("..") || path.contains('#')
     {
         return Err("Invalid API path".into());
@@ -102,10 +109,31 @@ async fn backend_request(
 }
 fn main() {
     tauri::Builder::default()
+        .manage(mpv::DesktopPlayback::default())
+        .plugin(tauri_plugin_notification::init())
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let app = window.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    #[cfg(windows)]
+                    app.state::<mpv::DesktopPlayback>().player.stop().await;
+                    app.exit(0);
+                });
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             server_url,
             change_server,
-            backend_request
+            backend_request,
+            mpv::mpv_settings,
+            mpv::mpv_install,
+            mpv::mpv_custom,
+            mpv::mpv_configuration,
+            mpv::mpv_plugin,
+            mpv::mpv_play,
+            mpv::mpv_state,
+            mpv::mpv_command
         ])
         .run(tauri::generate_context!())
         .expect("Failed to run Thelxinoe");
