@@ -2,11 +2,14 @@ mod accounts;
 pub mod config;
 pub mod error;
 mod grants;
+mod history;
 pub mod library;
 pub mod metadata;
 pub mod playback;
+mod playlists;
 mod realtime;
 pub mod security;
+pub mod user_media;
 
 use crate::{config::Config, error::Result};
 use axum::{
@@ -116,6 +119,36 @@ pub fn router(state: AppState) -> Router {
             get(accounts::users).post(accounts::create_user),
         )
         .route("/api/v1/events", get(realtime::events))
+        .route("/api/v1/me/home", get(user_media::home))
+        .route(
+            "/api/v1/me/preferences",
+            axum::routing::put(user_media::preferences),
+        )
+        .route(
+            "/api/v1/me/queue/{client}",
+            get(user_media::queue_get).put(user_media::queue_put),
+        )
+        .route("/api/v1/me/history", get(history::mine))
+        .route("/api/v1/admin/history", get(history::admin))
+        .route("/api/v1/admin/audit", get(history::audit))
+        .route(
+            "/api/v1/catalog/{id}/state",
+            get(user_media::get).put(user_media::set),
+        )
+        .route(
+            "/api/v1/playlists",
+            get(playlists::list).post(playlists::create),
+        )
+        .route(
+            "/api/v1/playlists/{id}",
+            get(playlists::detail)
+                .put(playlists::update)
+                .delete(playlists::remove),
+        )
+        .route(
+            "/api/v1/playlists/{id}/favorite",
+            axum::routing::put(playlists::favorite),
+        )
         .route(
             "/api/v1/catalog/roots",
             get(library::roots).post(library::add_root),

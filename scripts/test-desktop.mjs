@@ -40,7 +40,11 @@ try {
     session: { ...sessionStorage },
   }));
   expect(stored.cookie).not.toContain('thelxinoe_session');
-  expect(Object.keys(stored.local)).toHaveLength(0);
+  const clientId = stored.local['thelxinoe-client-id'];
+  if (clientId) expect(clientId).toMatch(/^[0-9a-f-]{36}$/);
+  expect(
+    Object.keys(stored.local).filter((key) => key !== 'thelxinoe-client-id'),
+  ).toHaveLength(0);
   expect(Object.keys(stored.session)).toHaveLength(0);
   await page.reload();
   await expect(

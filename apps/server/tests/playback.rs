@@ -111,6 +111,7 @@ async fn replacement_and_restart_keep_resume_but_invalidate_old_playback_generat
         &state,
         &principal,
         Create {
+            queue: None,
             media_id: media_id.clone(),
             file_id: None,
             position: None,
@@ -168,6 +169,7 @@ async fn replacement_and_restart_keep_resume_but_invalidate_old_playback_generat
         &state,
         &principal,
         Create {
+            queue: None,
             media_id: media_id.clone(),
             file_id: Some(file_id),
             position: None,

@@ -84,6 +84,7 @@ pub async fn media_info(
 }
 #[derive(Deserialize)]
 pub struct Create {
+    pub queue: Option<crate::user_media::QueueContext>,
     pub media_id: String,
     pub file_id: Option<String>,
     pub position: Option<f64>,
@@ -98,6 +99,27 @@ pub async fn create(
     create_for(&state, &p, input).await.map(Json)
 }
 pub async fn create_for(state: &AppState, p: &Principal, mut input: Create) -> Result<Value> {
+    if let Some(queue) = &input.queue {
+        if !crate::user_media::valid_client(&queue.client_id) || queue.index >= 500 {
+            return Err(ApiError::bad("Invalid queue context"));
+        }
+        let user = p.clone();
+        let queue = queue.clone();
+        let media = input.media_id.clone();
+        let matches = state
+            .db
+            .call(move |db| {
+                let saved = crate::user_media::queue_value(db, &user, &queue.client_id)?;
+                Ok(saved["revision"].as_i64() == Some(queue.revision)
+                    && saved["items"][queue.index].as_str() == Some(&media))
+            })
+            .await?;
+        if !matches {
+            return Err(ApiError::conflict(
+                "The music queue changed; reload it before playing",
+            ));
+        }
+    }
     let source = source(state, &input.media_id, input.file_id.as_deref()).await?;
     source
         .validate()
@@ -148,7 +170,7 @@ pub async fn create_for(state: &AppState, p: &Principal, mut input: Create) -> R
         let saved=tx.query_row("SELECT position FROM edition_progress WHERE user_id=?1 AND media_id=?2 AND edition=?3",params![user,src.media_id,src.edition],|r|r.get::<_,f64>(0)).optional()?.unwrap_or(0.0);
         let position=input.position.unwrap_or(if saved>=duration*0.9 {0.0} else {saved}).clamp(0.0,duration);
         if !position.is_finite() {anyhow::bail!("Invalid playback position");}
-        tx.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,media_id,file_id,generation,edition,state,mode,options,duration,position,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,'ready',?8,?9,?10,?11,?12,?12)",params![key,user,auth,src.media_id,src.id,src.generation,src.edition,mode,serde_json::to_string(&options)?,duration,position,now()])?;tx.commit()?;Ok(position)
+        tx.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,media_id,file_id,generation,edition,state,mode,options,duration,position,created_at,updated_at,client_id,queue_revision,queue_index) VALUES (?1,?2,?3,?4,?5,?6,?7,'ready',?8,?9,?10,?11,?12,?12,?13,?14,?15)",params![key,user,auth,src.media_id,src.id,src.generation,src.edition,mode,serde_json::to_string(&options)?,duration,position,now(),input.queue.as_ref().map(|q|&q.client_id),input.queue.as_ref().map(|q|q.revision),input.queue.as_ref().map(|q|q.index as i64)])?;tx.commit()?;Ok(position)
     }).await?;
     let grant = grants::issue(state, p, &format!("playback:{sid}"), 120).await?;
     let mut timeline_start = 0.0;
@@ -378,7 +400,8 @@ pub async fn report(state: &AppState, p: &Principal, id: &str, input: Progress) 
         let position=input.position.min(duration);
         tx.execute("UPDATE playback_sessions SET position=?1,sequence=?2,state=?3,updated_at=?4 WHERE id=?5",params![position,input.sequence,input.state,now(),key])?;
         tx.execute("INSERT INTO edition_progress VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(user_id,media_id,edition) DO UPDATE SET position=excluded.position,duration=excluded.duration,updated_at=excluded.updated_at",params![user,media,edition,position,duration,now()])?;
-        tx.execute("INSERT INTO media_state VALUES (?1,?2,?3,?4) ON CONFLICT(user_id,media_id) DO UPDATE SET watched=MAX(watched,excluded.watched),updated_at=excluded.updated_at",params![user,media,position>=duration*0.9,now()])?;
+        tx.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES (?1,?2,?3,?4) ON CONFLICT(user_id,media_id) DO UPDATE SET watched=MAX(watched,excluded.watched),updated_at=excluded.updated_at",params![user,media,position>=duration*0.9,now()])?;
+        crate::history::record(&tx,&key,position,&input.state)?;
         let resource=format!("playback:{key}");
         if stopped {tx.execute("DELETE FROM playback_grants WHERE resource=?1",[resource])?;} else {tx.execute("UPDATE playback_grants SET expires_at=?1 WHERE resource=?2 AND expires_at>?3",params![now()+120,resource,now()])?;}
         tx.commit()?;Ok(Some(true))
@@ -472,11 +495,12 @@ async fn fail(state: &AppState, id: &str) -> anyhow::Result<()> {
 }
 pub async fn maintain(state: AppState) -> anyhow::Result<()> {
     // Process state cannot survive a server restart, but resume records do.
-    state.db.call(|db|{db.execute("UPDATE playback_sessions SET state='stopped' WHERE state IN ('ready','playing','paused')",[])?;Ok(())}).await?;
+    state.db.call(|db|{db.execute("UPDATE playback_sessions SET state='stopped' WHERE state IN ('ready','playing','paused')",[])?;crate::history::finish_stale(db)?;Ok(())}).await?;
     loop {
         tokio::time::sleep(Duration::from_secs(10)).await;
         let active=state.db.call(|db| {
             db.execute("UPDATE playback_sessions SET state='stopped' WHERE state IN ('ready','playing','paused') AND updated_at<=?1",[now()-120])?;
+            crate::history::finish_stale(db)?;
             Ok(db.prepare("SELECT p.id FROM playback_sessions p JOIN sessions s ON s.id=p.auth_session_id WHERE p.state IN ('ready','playing','paused') AND s.expires_at>?1")?.query_map([now()],|r|r.get::<_,String>(0))?.collect::<std::result::Result<Vec<_>,_>>()?)
         }).await?;
         for id in state.playback.maintain(&active).await? {

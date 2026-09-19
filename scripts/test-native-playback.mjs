@@ -210,6 +210,19 @@ try {
   console.log(
     'Native MPV gapless queue has a continuous PCM seam and -6.02 dB ReplayGain, with per-track server progress.',
   );
+  const client = await page.evaluate(() =>
+    localStorage.getItem('thelxinoe-client-id'),
+  );
+  const savedQueue = await api(`/me/queue/${client}`);
+  expect(savedQueue.current_index).toBe(1);
+  expect(savedQueue.completed).toBe(true);
+  await page.reload();
+  await expect(
+    page.getByRole('region', { name: 'Saved music queue', exact: true }),
+  ).toBeVisible();
+  console.log(
+    'Desktop music queue restores from server state after page reload.',
+  );
   writeFileSync(
     '.local/native-playback-result.json',
     JSON.stringify(
@@ -219,6 +232,8 @@ try {
         native_video: true,
         seek: true,
         server_progress: true,
+        persistent_client_queue: true,
+        hls_seek: true,
         gapless_samples: samples,
         replay_gain_db: -6.0206,
       },

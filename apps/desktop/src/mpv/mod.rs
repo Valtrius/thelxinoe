@@ -111,7 +111,18 @@ pub async fn mpv_play(
     let mut choices = queue
         .filter(|q| music && !q.is_empty())
         .unwrap_or_else(|| vec![choice.clone()]);
-    let index = choices.iter().position(|c| c.id == choice.id).unwrap_or(0);
+    let index = choices
+        .iter()
+        .position(|c| {
+            if let Some(queue) = &choice.queue_context {
+                c.queue_context
+                    .as_ref()
+                    .is_some_and(|q| q["index"] == queue["index"])
+            } else {
+                c.id == choice.id
+            }
+        })
+        .unwrap_or(0);
     choices = choices.into_iter().skip(index).collect();
     choices[0] = choice;
     state

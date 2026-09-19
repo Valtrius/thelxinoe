@@ -23,6 +23,8 @@ pub struct Choice {
     pub title: String,
     #[serde(rename = "fileId")]
     pub file_id: Option<String>,
+    pub position: Option<f64>,
+    pub queue_context: Option<Value>,
 }
 #[derive(Clone, Default, Serialize)]
 pub struct View {
@@ -169,7 +171,7 @@ struct Prepared {
 }
 async fn prepare(backend: &Backend, choice: &Choice, first: bool) -> Result<Prepared> {
     let preferences = backend.call("/playback/preferences", "GET", None).await?;
-    let data=backend.call("/playback","POST",Some(json!({"media_id":choice.id,"file_id":choice.file_id,"position":if first {Value::Null}else{json!(0)},"options":{"quality":preferences["quality"],"audio":null,"subtitle":null,"capabilities":{"containers":["mp4","m4v","m4a","mkv","avi","mov","webm","ts","m2ts","mpg","mpeg","flac","mp3","ogg","opus","wav","wma","aac","aiff","alac"],"video":["h264","hevc","vp8","vp9","av1","mpeg4","mpeg2video","mpeg1video","wmv3","vc1","prores","mjpeg"],"audio":["aac","mp3","flac","vorbis","opus","ac3","eac3","dts","truehd","alac","pcm_s16le","pcm_s24le","pcm_s32le","pcm_f32le","wmav2"],"hls":true,"native_tracks":true}}}))).await?;
+    let data=backend.call("/playback","POST",Some(json!({"media_id":choice.id,"file_id":choice.file_id,"position":if first {json!(choice.position)}else{json!(0)},"queue":choice.queue_context,"options":{"quality":preferences["quality"],"audio":null,"subtitle":null,"capabilities":{"containers":["mp4","m4v","m4a","mkv","avi","mov","webm","ts","m2ts","mpg","mpeg","flac","mp3","ogg","opus","wav","wma","aac","aiff","alac"],"video":["h264","hevc","vp8","vp9","av1","mpeg4","mpeg2video","mpeg1video","wmv3","vc1","prores","mjpeg"],"audio":["aac","mp3","flac","vorbis","opus","ac3","eac3","dts","truehd","alac","pcm_s16le","pcm_s24le","pcm_s32le","pcm_f32le","wmav2"],"hls":true,"native_tracks":true}}}))).await?;
     Ok(Prepared {
         playlist_id: -1,
         id: data["id"]

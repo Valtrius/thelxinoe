@@ -3,6 +3,7 @@
   import { GaplessQueue, StreamingRequired, type MusicState } from './gapless';
   import { time, type MediaChoice } from './playback';
   import Player from './Player.svelte';
+  import { choiceIndex } from './media-state';
   let { choice, closed } = $props<{
     choice: MediaChoice;
     closed: () => void;
@@ -26,10 +27,7 @@
     error = '';
     streaming = false;
     const choices = selected.queue ?? [selected];
-    const index = Math.max(
-      0,
-      choices.findIndex((c) => c.id === selected.id),
-    );
+    const index = choiceIndex(choices, selected);
     queue = new GaplessQueue(
       [
         { ...choices[index], ...selected, queue: undefined },
@@ -65,8 +63,7 @@
   });
   function nextStream() {
     const choices: MediaChoice[] = choice.queue ?? [choice];
-    const next =
-      choices[choices.findIndex((c) => c.id === streamChoice?.id) + 1];
+    const next = choices[choiceIndex(choices, streamChoice!) + 1];
     if (next) streamChoice = next;
   }
 </script>

@@ -7,7 +7,10 @@ export type MediaChoice = {
   title: string;
   fileId?: string;
   restore?: boolean;
-  queue?: { id: string; title: string }[];
+  position?: number;
+  queueIndex?: number;
+  queue_context?: { client_id: string; revision: number; index: number };
+  queue?: MediaChoice[];
 };
 export type Preferences = {
   quality: string;
@@ -110,7 +113,8 @@ export function prepare(
     media_id: choice.id,
     file_id: choice.fileId,
     options,
-    position,
+    position: position ?? choice.position,
+    queue: choice.queue_context,
   });
 }
 export function replayGain(probe: Probe, mode: string): number {

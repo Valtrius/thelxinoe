@@ -51,6 +51,7 @@ jobs:
           THELXINOE_TEST_HTTPS_PORT: 20443
           THELXINOE_TEST_SUBNET: 172.31.252.0/24
       - run: node scripts/test-playback.mjs && node scripts/test-playback-tracks.mjs
+      - run: node scripts/test-user-media.mjs
       - if: always()
         run: docker compose -p thelxinoe-playback -f compose.test.yaml down
   desktop:

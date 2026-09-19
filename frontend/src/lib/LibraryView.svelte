@@ -10,6 +10,7 @@
   import { api, serverUrl } from './api';
   import MetadataEditor from './MetadataEditor.svelte';
   import EpisodeMapping from './EpisodeMapping.svelte';
+  import MediaActions from './MediaActions.svelte';
   import { untrack } from 'svelte';
   import type { MediaChoice } from './playback';
   let {
@@ -18,12 +19,16 @@
     revision = 0,
     scans = {},
     play,
+    userId,
+    focusId,
   } = $props<{
     domain: string;
     admin: boolean;
     revision?: number;
     scans?: Record<string, { completed: number; total: number }>;
     play: (choice: MediaChoice) => void;
+    userId: string;
+    focusId?: string;
   }>();
   type Item = {
     id: string;
@@ -121,6 +126,16 @@
   });
   $effect(() => {
     if (revision > 0) untrack(() => void load());
+  });
+  $effect(() => {
+    const id = focusId;
+    if (id)
+      untrack(
+        () =>
+          void api<Item>(`/catalog/${id}`)
+            .then((item) => open(item))
+            .catch((e) => (error = String(e))),
+      );
   });
   async function open(item: Item) {
     if (['movie', 'episode', 'track'].includes(item.kind)) {
@@ -243,6 +258,7 @@
       <button class="secondary" onclick={() => (selected = null)}>Close</button>
     </div>
     {#if selected.overview}<p class="muted">{selected.overview}</p>{/if}
+    <MediaActions id={selected.id} kind={selected.kind} {userId} />
     {#if details?.local_trailers?.length}<p class="muted">
         {details.local_trailers.length} local trailer(s) indexed.
       </p>{/if}
@@ -299,7 +315,10 @@
               ? ' · Unavailable'
               : ''}</small
           ></button
-        >{#if admin && !['movie', 'episode', 'track'].includes(item.kind)}<button
+        >{#if !['movie', 'episode', 'track'].includes(item.kind)}<button
+            class="metadata-button"
+            onclick={() => select(item)}>Details</button
+          >{/if}{#if admin && !['movie', 'episode', 'track'].includes(item.kind)}<button
             class="metadata-button"
             onclick={() => select(item)}>Edit metadata</button
           >{/if}

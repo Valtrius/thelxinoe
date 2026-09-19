@@ -56,6 +56,18 @@ node scripts/test-desktop.mjs
 
 This controls the real bundled Svelte page inside WebView2. It tests device login, persistence in Windows Credential Manager, absence of credentials in browser storage, catalog browsing, server restart/reconnect, and revocation. It restores the desktop server address to `http://127.0.0.1:8484`. Close the test app afterward; remote debugging is enabled only by these environment variables. The script restarts only the isolated test server.
 
+## User media state
+
+With the isolated playback deployment running:
+
+```powershell
+node scripts/test-user-media.mjs
+```
+
+This exercises separate users' Favorites and Watch Later, owner-controlled shared playlists, independent playlist favorites, actual playlist playback, queue restoration after reload, separate browser-client queues, display timezone and history permissions through HTTPS. Rust integration tests additionally cover stale revisions, late progress from an earlier queued track, seeks not inflating viewing time, the correct edition in Continue Watching, and history surviving device revocation.
+
+Playback time is accumulated from observed position advances bounded by elapsed reporting time. Each report can add at most 30 seconds; large seek jumps are excluded. Timestamps are stored in UTC. History displays the user's selected timezone; its date filters explicitly use UTC.
+
 ## Windows MPV playback
 
 Start the isolated playback Compose deployment and generate its catalog using the local playback instructions above. Launch the bundled Windows application with the same WebView2 debug settings used by the desktop test, then run:

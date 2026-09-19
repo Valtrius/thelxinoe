@@ -7,9 +7,16 @@
   import MusicPlayer from './lib/MusicPlayer.svelte';
   import MpvSettings from './lib/MpvSettings.svelte';
   import NativePlayer from './lib/NativePlayer.svelte';
+  import PersonalHome from './lib/PersonalHome.svelte';
+  import Playlists from './lib/Playlists.svelte';
+  import History from './lib/History.svelte';
+  import UserPreferences from './lib/UserPreferences.svelte';
+  import { persistQueue, type Card } from './lib/media-state';
   import { invoke } from '@tauri-apps/api/core';
   import type { MediaChoice } from './lib/playback';
   let playing = $state<MediaChoice | null>(null);
+  let mediaRevision = $state(0),
+    focusId = $state<string | undefined>(undefined);
   import {
     House,
     Film,
@@ -67,6 +74,8 @@
     { name: 'Movies', icon: Film },
     { name: 'Shows', icon: Tv },
     { name: 'Music', icon: Music },
+    { name: 'Playlists', icon: Music },
+    { name: 'History', icon: Library },
     { name: 'YouTube', icon: Play },
     { name: 'Twitch', icon: Radio },
     { name: 'Kick', icon: Radio },
@@ -128,6 +137,15 @@
     events?.close();
     events = new Events(
       (event) => {
+        if (
+          [
+            'media-state.changed',
+            'playback.changed',
+            'playlists.changed',
+            'catalog.changed',
+          ].includes(event.kind)
+        )
+          mediaRevision++;
         if (event.kind === 'catalog.changed') {
           catalogRevision++;
           const root = (event.payload as { root_id?: string }).root_id;
@@ -196,9 +214,24 @@
     }
   }
   async function navigate(name: string) {
+    focusId = undefined;
     section = name;
     error = '';
     if (name === 'Settings') await loadSettings();
+  }
+  function openMedia(item: Card) {
+    section =
+      item.kind === 'movie'
+        ? 'Movies'
+        : ['show', 'season', 'episode'].includes(item.kind)
+          ? 'Shows'
+          : 'Music';
+    focusId = item.id;
+  }
+  async function playMedia(choice: MediaChoice) {
+    await act(async () => {
+      playing = await persistQueue(choice);
+    });
   }
   async function createUser() {
     await act(async () => {
@@ -358,6 +391,12 @@
           closed={() => (playing = null)}
         />{/if}
       {#if section === 'Settings'}
+        <UserPreferences
+          {user}
+          changed={(zone) => {
+            if (user) user = { ...user, timezone: zone };
+          }}
+        />
         <PlaybackSettings />
         {#if desktop}<MpvSettings />{/if}
         {#if desktop}<section class="panel">
@@ -489,6 +528,7 @@
               ><button class="primary" disabled={busy}>Add user</button>
             </form>
           </section>
+          <History {user} audit />
           <section class="panel">
             <div class="section-heading">
               <h2>Background jobs</h2>
@@ -509,6 +549,11 @@
           </section>
         {/if}
       {:else if section === 'Home'}
+        <PersonalHome
+          revision={mediaRevision}
+          open={openMedia}
+          play={(choice) => void playMedia(choice)}
+        />
         <section class="welcome">
           <div>
             <p class="eyebrow">MAKE YOURSELF AT HOME</p>
@@ -544,8 +589,16 @@
           admin={user.role === 'admin'}
           revision={catalogRevision}
           {scans}
-          play={(choice) => (playing = choice)}
+          userId={user.id}
+          {focusId}
+          play={(choice) => void playMedia(choice)}
         />
+      {:else if section === 'Playlists'}<Playlists
+          userId={user.id}
+          revision={mediaRevision}
+          play={(choice) => void playMedia(choice)}
+        />
+      {:else if section === 'History'}<History {user} />
       {:else}
         <section class="empty">
           <Library size={42} />
