@@ -5187,6 +5187,7 @@ dependencies = [
  "axum",
  "fs2",
  "reqwest",
+ "serde",
  "serde_json",
  "thelxinoe-core",
  "tokio",

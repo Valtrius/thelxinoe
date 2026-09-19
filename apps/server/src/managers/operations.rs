@@ -436,3 +436,9 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<
     let rows=state.db.call(|db|Ok(db.prepare("SELECT o.id,o.media_id,m.title,o.action,o.state,o.created_at,o.error,json_array_length(o.targets) FROM media_operations o JOIN media m ON m.id=o.media_id ORDER BY o.created_at DESC LIMIT 200")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"media_id":r.get::<_,String>(1)?,"title":r.get::<_,String>(2)?,"action":r.get::<_,String>(3)?,"state":r.get::<_,String>(4)?,"created_at":r.get::<_,i64>(5)?,"error":r.get::<_,Option<String>>(6)?,"files":r.get::<_,i64>(7)?})))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
     Ok(Json(json!({"items":rows})))
 }
+
+pub(super) async fn ensure_idle(state: &AppState, key: &str) -> Result<()> {
+    let s = service(state, key).await?;
+    let c = Connection::open(state, &s).await?;
+    manager_idle(&c).await
+}

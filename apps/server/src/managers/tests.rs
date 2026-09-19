@@ -532,3 +532,72 @@ async fn support_services_are_admin_only_redacted_and_expose_only_allowed_comman
     assert!(!String::from_utf8_lossy(&stored).contains("private-test-secret"));
     task.abort();
 }
+
+#[tokio::test]
+async fn provisioning_is_admin_only_durable_and_never_puts_credentials_in_jobs() {
+    let (_temp, state, alice) = fixture().await;
+    state
+        .db
+        .call(|db| {
+            db.execute("UPDATE users SET role='admin' WHERE id='bob'", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let token =
+        thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
+            .await
+            .unwrap();
+    let admin = format!("thelxinoe_session={token}");
+    let input =
+        json!({"kind":"radarr","host_port":37878,"native_url":"https://radarr.example.test"});
+    assert_eq!(
+        call(
+            &state,
+            "/api/v1/admin/stack/install",
+            "POST",
+            input.clone(),
+            &alice
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            &state,
+            "/api/v1/admin/stack/install",
+            "POST",
+            json!({"kind":"arbitrary/image","host_port":37878}),
+            &admin
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let result = call(
+        &state,
+        "/api/v1/admin/stack/install",
+        "POST",
+        input.clone(),
+        &admin,
+    )
+    .await;
+    assert_eq!(result.0, StatusCode::OK);
+    assert_eq!(
+        call(&state, "/api/v1/admin/stack/install", "POST", input, &admin)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    let (key,encrypted,payload)=state.db.call(|db|Ok(db.query_row("SELECT p.id,p.credential,j.payload FROM stack_provisions p JOIN jobs j ON json_extract(j.payload,'$.id')=p.id",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Vec<u8>>(1)?,r.get::<_,String>(2)?)))?)).await.unwrap();
+    let plain = state
+        .secrets
+        .decrypt(&format!("provision:{key}"), &encrypted)
+        .unwrap();
+    let plain = String::from_utf8(plain).unwrap();
+    assert!(!payload.contains(&plain));
+    assert!(!result.2.to_string().contains(&plain));
+    let payload: Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(payload, json!({"id":key}));
+}

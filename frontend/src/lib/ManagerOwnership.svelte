@@ -46,7 +46,7 @@
     Refresh ownership after a manager import or configuration change. Unresolved
     and ambiguous files cannot be deleted.
   </p>
-  <button disabled={busy} onclick={() => void refresh()}
+  <button class="secondary" disabled={busy} onclick={() => void refresh()}
     >Reconcile file ownership</button
   >
   {#if message}<p role="status">{message}</p>{/if}

@@ -1,33 +1,43 @@
 //! Read-only Docker evidence. Never forwards arbitrary engine paths or configuration.
 use axum::{Json, Router, extract::Path, http::StatusCode, routing::get};
 use serde_json::{Value, json};
-type Result<T> = std::result::Result<T, (StatusCode, &'static str)>;
+pub(crate) type Result<T> = std::result::Result<T, (StatusCode, &'static str)>;
 pub fn router() -> Router {
     Router::new()
         .route("/docker/containers", get(list))
         .route("/docker/containers/{id}", get(inspect))
 }
-fn unavailable() -> (StatusCode, &'static str) {
+pub(crate) fn unavailable() -> (StatusCode, &'static str) {
     (
         StatusCode::SERVICE_UNAVAILABLE,
         "Docker inspection unavailable",
     )
 }
-async fn engine(path: &str) -> Result<Value> {
+pub(crate) async fn engine(path: &str) -> Result<Value> {
+    request(reqwest::Method::GET, path, None).await
+}
+pub(crate) async fn request(
+    method: reqwest::Method,
+    path: &str,
+    body: Option<Value>,
+) -> Result<Value> {
     let client = reqwest::Client::builder()
         .unix_socket("/var/run/docker.sock")
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(180))
         .build()
         .map_err(|_| unavailable())?;
-    let mut response = client
-        .get(format!("http://docker{path}"))
-        .send()
-        .await
-        .map_err(|_| unavailable())?;
+    let mut request = client.request(method, format!("http://docker{path}"));
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    let mut response = request.send().await.map_err(|_| unavailable())?;
     if response.status() == StatusCode::NOT_FOUND {
         return Err((StatusCode::NOT_FOUND, "Container no longer exists"));
+    }
+    if response.status() == StatusCode::NOT_MODIFIED {
+        return Ok(Value::Null);
     }
     if !response.status().is_success() {
         return Err(unavailable());
@@ -39,7 +49,32 @@ async fn engine(path: &str) -> Result<Value> {
         }
         bytes.extend(chunk);
     }
-    serde_json::from_slice(&bytes).map_err(|_| unavailable())
+    if bytes.is_empty() {
+        return Ok(Value::Null);
+    }
+    serde_json::from_slice::<Value>(&bytes)
+        .and_then(|value| {
+            if value.get("error").is_some() {
+                Err(<serde_json::Error as serde::de::Error>::custom(
+                    "Docker operation failed",
+                ))
+            } else {
+                Ok(value)
+            }
+        })
+        .or_else(|_| {
+            // Image pull returns newline-delimited progress objects. Never return registry bodies.
+            for line in bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
+                let entry: Value = serde_json::from_slice(line)?;
+                if entry.get("error").is_some() {
+                    return Err(<serde_json::Error as serde::de::Error>::custom(
+                        "Image pull failed",
+                    ));
+                }
+            }
+            Ok(json!({"complete":true}))
+        })
+        .map_err(|_| unavailable())
 }
 async fn list() -> Result<Json<Value>> {
     let data = engine("/containers/json?all=true").await?;

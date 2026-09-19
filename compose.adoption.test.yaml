@@ -1,0 +1,42 @@
+name: thelxinoe-adoption
+services:
+  controller:
+    image: thelxinoe-controller:0.1.0
+    network_mode: none
+    volumes:
+      - runtime:/run/thelxinoe
+      - deployment:/var/lib/thelxinoe/deployment
+      - /var/run/docker.sock:/var/run/docker.sock
+    read_only: true
+    cap_drop: [ALL]
+    labels: {app.thelxinoe.component: controller}
+  server:
+    image: thelxinoe-server:0.1.0
+    ports: ["127.0.0.1:19191:8484"]
+    environment:
+      THELXINOE_PUBLIC_URL: https://localhost:25443
+      THELXINOE_TRUSTED_PROXIES: 172.31.245.0/24
+    volumes:
+      - ./.local/adoption/server:/var/lib/thelxinoe
+      - ./.local/adoption/cache:/var/cache/thelxinoe
+      - ./.local/adoption/data:/data
+      - runtime:/run/thelxinoe:ro
+    networks: [test]
+    depends_on:
+      controller: {condition: service_healthy}
+    labels: {app.thelxinoe.component: server}
+  proxy:
+    image: caddy:2
+    ports: ["127.0.0.1:25443:9443"]
+    volumes: ["./tests/Caddyfile:/etc/caddy/Caddyfile:ro"]
+    networks: [test]
+    depends_on:
+      server: {condition: service_healthy}
+networks:
+  test:
+    ipam:
+      config: [{subnet: 172.31.245.0/24}]
+volumes:
+  runtime:
+  deployment:
+

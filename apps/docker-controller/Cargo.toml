@@ -11,3 +11,5 @@ serde_json.workspace = true
 thelxinoe-core.workspace = true
 fs2 = "0.4"
 reqwest.workspace = true
+
+serde.workspace = true

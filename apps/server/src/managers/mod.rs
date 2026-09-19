@@ -3,7 +3,9 @@ mod bindings;
 mod controls;
 mod operations;
 mod requests;
+mod stack;
 mod support;
+pub(crate) use stack::provision;
 #[cfg(test)]
 mod tests;
 use crate::{
@@ -49,6 +51,7 @@ pub(crate) fn router() -> Router<AppState> {
         .merge(controls::router())
         .merge(operations::router())
         .merge(support::router())
+        .merge(stack::router())
         .route("/api/v1/admin/managers/containers", get(containers))
         .route("/api/v1/admin/managers", get(list).post(register))
         .route("/api/v1/admin/managers/{id}/options", get(options))
@@ -370,6 +373,13 @@ async fn register(
     Json(input): Json<Register>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
+    register_with_actor(state, input, p.user.id).await
+}
+async fn register_with_actor(
+    state: AppState,
+    input: Register,
+    actor_id: String,
+) -> Result<Json<Value>> {
     if !matches!(input.kind.as_str(), "radarr" | "sonarr" | "lidarr")
         || input.name.trim().is_empty()
         || input.name.len() > 100
@@ -418,7 +428,7 @@ async fn register(
     let credential = state
         .secrets
         .encrypt(&format!("manager:{key}"), input.api_key.as_bytes())?;
-    state.db.call(move|db|{let tx=db.transaction()?;tx.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,mappings,version,checked_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(id) DO UPDATE SET name=excluded.name,kind=excluded.kind,port=excluded.port,generation=excluded.generation,credential=excluded.credential,mappings=excluded.mappings,version=excluded.version,checked_at=excluded.checked_at,error=NULL",params![key,input.name.trim(),input.kind,input.container_id,input.port,id(),credential,serde_json::to_string(&mappings)?,version,now()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'manager.register',?2,?3)",params![p.user.id,key,now()])?;tx.commit()?;Ok(())}).await?;
+    state.db.call(move|db|{let tx=db.transaction()?;tx.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,mappings,version,checked_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(id) DO UPDATE SET name=excluded.name,kind=excluded.kind,port=excluded.port,generation=excluded.generation,credential=excluded.credential,mappings=excluded.mappings,version=excluded.version,checked_at=excluded.checked_at,error=NULL",params![key,input.name.trim(),input.kind,input.container_id,input.port,id(),credential,serde_json::to_string(&mappings)?,version,now()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'manager.register',?2,?3)",params![actor_id,key,now()])?;tx.commit()?;Ok(())}).await?;
     Ok(Json(json!({"id":returned})))
 }
 async fn options(
@@ -429,7 +439,14 @@ async fn options(
     security::require(&state, &headers, Capability::ManageServer).await?;
     let s = service(&state, &id).await?;
     let c = Connection::open(&state, &s).await?;
-    let roots = c.get("rootfolder").await?;
+    let mut roots = c.get("rootfolder").await?;
+    if installed_here(&state, &s.id).await? {
+        let path = canonical_root(&s.kind);
+        let rows = roots.as_array_mut().ok_or_else(unavailable)?;
+        if !rows.iter().any(|r| r["path"] == path) {
+            rows.push(json!({"id":0,"path":path}));
+        }
+    }
     let profiles = c.get("qualityprofile").await?;
     let metadata = if s.kind == "lidarr" {
         c.get("metadataprofile").await?
@@ -482,10 +499,6 @@ async fn defaults(
             .mappings
             .iter()
             .any(|m| suffix(&input.root_folder, &m.manager).is_some())
-        || !c.get("rootfolder").await?.as_array().is_some_and(|a| {
-            a.iter()
-                .any(|r| r["path"].as_str() == Some(&input.root_folder))
-        })
         || !c.get("qualityprofile").await?.as_array().is_some_and(|a| {
             a.iter()
                 .any(|r| r["id"].as_i64() == Some(input.quality_profile))
@@ -503,6 +516,41 @@ async fn defaults(
             .is_some_and(|a| a.iter().any(|r| r["id"].as_i64() == input.metadata_profile))
     {
         return Err(ApiError::bad("Choose an existing metadata profile"));
+    }
+    if !c
+        .get("rootfolder")
+        .await?
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|r| r["path"] == input.root_folder)
+    {
+        if !installed_here(&state, &s.id).await? || input.root_folder != canonical_root(&s.kind) {
+            return Err(ApiError::bad("Choose an existing manager root folder"));
+        }
+        let folder = match s.kind.as_str() {
+            "radarr" => "movies",
+            "sonarr" => "shows",
+            _ => "music",
+        };
+        let parent = tokio::fs::canonicalize(&state.config.media)
+            .await
+            .map_err(|_| ApiError::conflict("Media storage is unavailable"))?;
+        let path = parent.join(folder);
+        if tokio::fs::symlink_metadata(&path)
+            .await
+            .is_ok_and(|m| m.file_type().is_symlink())
+        {
+            return Err(ApiError::conflict(
+                "Canonical media roots cannot be symbolic links",
+            ));
+        }
+        tokio::fs::create_dir_all(&path).await.map_err(|_| {
+            ApiError::conflict(
+                "The server needs permission to create the canonical library directory",
+            )
+        })?;
+        c.call(reqwest::Method::POST,"rootfolder",&[],Some(json!({"path":input.root_folder,"name":"Thelxinoe music","defaultQualityProfileId":input.quality_profile,"defaultMetadataProfileId":input.metadata_profile,"defaultMonitorOption":"none","defaultTags":[]}))).await?;
     }
     state.db.call(move|db|{let tx=db.transaction()?;tx.execute("UPDATE manager_services SET defaults=?1,generation=?3 WHERE id=?2",params![serde_json::to_string(&input)?,id,thelxinoe_core::id()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'manager.defaults',?2,?3)",params![p.user.id,id,now()])?;tx.commit()?;Ok(())}).await?;
     Ok(Json(json!({"saved":true})))
@@ -538,4 +586,16 @@ async fn test(
         })
         .await?;
     Ok(Json(json!({"healthy":true,"version":result?})))
+}
+
+fn canonical_root(kind: &str) -> &'static str {
+    match kind {
+        "radarr" => "/data/movies",
+        "sonarr" => "/data/shows",
+        _ => "/data/music",
+    }
+}
+async fn installed_here(state: &AppState, key: &str) -> Result<bool> {
+    let key = key.to_owned();
+    Ok(state.db.call(move|db|Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE service_id=?1 AND origin='installed')",[key],|r|r.get::<_,bool>(0))?)).await?)
 }

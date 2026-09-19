@@ -180,17 +180,19 @@
     >
     <button class="primary" disabled={busy}>Connect manager</button>
   </form>
-  <button disabled={busy} onclick={() => void act(load)}
+  <button class="secondary" disabled={busy} onclick={() => void act(load)}
     >Refresh containers</button
   >
   {#each services as service (service.id)}<article class="panel">
       <h3>{service.name}</h3>
       <p>{service.kind} {service.version}</p>
       {#if service.error}<p role="status">{service.error}</p>{/if}<button
+        class="secondary"
         disabled={busy}
         onclick={() => void act(() => edit(service))}
         >Defaults for {service.name}</button
       ><button
+        class="secondary"
         disabled={busy}
         onclick={() =>
           void act(async () => {
@@ -213,7 +215,7 @@
       <label
         >Acquisition root folder<select bind:value={root} required
           >{#each options.roots as r (r.id)}<option value={r.path}
-              >{r.path}</option
+              >{r.path}{r.id === 0 ? ' (create)' : ''}</option
             >{/each}</select
         ></label
       >

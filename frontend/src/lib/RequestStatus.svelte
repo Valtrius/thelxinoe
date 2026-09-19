@@ -44,7 +44,7 @@
   }
 </script>
 
-<button disabled={busy} onclick={() => void act(refresh)}
+<button class="secondary" disabled={busy} onclick={() => void act(refresh)}
   >Check availability</button
 >
 {#if message}<p role="status">{message}</p>{/if}
@@ -59,6 +59,7 @@
     </p>{/each}
   {#if admin}
     <button
+      class="secondary"
       disabled={busy}
       onclick={() =>
         void act(async () => {
@@ -82,6 +83,7 @@
       >
     {/if}
     <button
+      class="secondary"
       disabled={busy}
       onclick={() =>
         void act(async () => {
@@ -109,6 +111,7 @@
         {reason}
       </p>{/each}
     <button
+      class="secondary"
       disabled={busy ||
         release.approved === false ||
         !!release.rejections?.length}

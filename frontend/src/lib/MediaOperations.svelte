@@ -31,6 +31,7 @@
 <section class="panel">
   <h3>Manage media</h3>
   <button
+    class="secondary"
     disabled={busy}
     onclick={() =>
       void act(async () => {
@@ -39,6 +40,7 @@
       })}>Keep media</button
   >
   <button
+    class="secondary"
     disabled={busy}
     onclick={() =>
       void act(async () => {
@@ -46,13 +48,20 @@
         message = 'Keep protection removed.';
       })}>Remove Keep</button
   >
-  <button disabled={busy} onclick={() => void act(() => prepare('monitor'))}
-    >Monitor files</button
+  <button
+    class="secondary"
+    disabled={busy}
+    onclick={() => void act(() => prepare('monitor'))}>Monitor files</button
   >
-  <button disabled={busy} onclick={() => void act(() => prepare('unmonitor'))}
-    >Unmonitor files</button
+  <button
+    class="secondary"
+    disabled={busy}
+    onclick={() => void act(() => prepare('unmonitor'))}>Unmonitor files</button
   >
-  <button disabled={busy} onclick={() => void act(() => prepare('delete'))}
+  <button
+    class="secondary"
+    disabled={busy}
+    onclick={() => void act(() => prepare('delete'))}
     >Prepare file deletion</button
   >
   {#if pending}<p>
@@ -60,6 +69,7 @@
       checked again before this runs.
     </p>
     <button
+      class="secondary"
       disabled={busy}
       onclick={() =>
         void act(async () => {
@@ -71,7 +81,9 @@
           changed();
         })}>Confirm {pending.action}</button
     >
-    <button disabled={busy} onclick={() => (pending = null)}>Cancel</button>
+    <button class="secondary" disabled={busy} onclick={() => (pending = null)}
+      >Cancel</button
+    >
   {/if}
   {#if message}<p role="status">{message}</p>{/if}
 </section>

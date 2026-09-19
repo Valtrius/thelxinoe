@@ -37,7 +37,7 @@ services:
     volumes:
       - ${THELXINOE_STATE_ROOT:-./.local/docker}/server:/var/lib/thelxinoe
       - ${THELXINOE_STATE_ROOT:-./.local/docker}/cache:/var/cache/thelxinoe
-      - ${THELXINOE_DATA_ROOT:-./.local/media}:/data:ro
+      - ${THELXINOE_DATA_ROOT:-./.local/media}:/data
       - ${THELXINOE_BACKUP_ROOT:-./.local/backups}:/backups
       - controller-runtime:/run/thelxinoe:ro
     read_only: true

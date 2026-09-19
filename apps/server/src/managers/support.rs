@@ -6,20 +6,20 @@ pub(super) fn router() -> Router<AppState> {
         .route("/api/v1/admin/support/{id}", get(inspect).post(action))
 }
 #[derive(Deserialize, Serialize)]
-struct Credentials {
+pub(super) struct Credentials {
     #[serde(default)]
-    username: String,
-    secret: String,
+    pub(super) username: String,
+    pub(super) secret: String,
 }
-struct Support {
+pub(super) struct Support {
     id: String,
     kind: String,
     container: String,
     port: u16,
     mappings: Vec<Mapping>,
-    credentials: Credentials,
+    pub(super) credentials: Credentials,
 }
-async fn load(state: &AppState, key: &str) -> Result<Support> {
+pub(super) async fn load(state: &AppState, key: &str) -> Result<Support> {
     let key = key.to_owned();
     let row=state.db.call(move|db|Ok(db.query_row("SELECT id,kind,container_id,port,mappings,credential FROM support_services WHERE id=?1",[key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,u16>(3)?,r.get::<_,String>(4)?,r.get::<_,Vec<u8>>(5)?))).optional()?)).await?.ok_or_else(ApiError::not_found)?;
     let credentials = serde_json::from_slice(
@@ -96,7 +96,7 @@ async fn version(c: &Connection<'_>, credentials: &Credentials) -> Result<String
         .map(str::to_owned)
         .ok_or_else(unavailable)
 }
-fn native_url(value: &str) -> bool {
+pub(super) fn native_url(value: &str) -> bool {
     value.is_empty()
         || url::Url::parse(value).is_ok_and(|u| {
             matches!(u.scheme(), "http" | "https")
@@ -123,6 +123,13 @@ async fn register(
     Json(input): Json<Register>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
+    register_with_actor(state, input, p.user.id).await
+}
+async fn register_with_actor(
+    state: AppState,
+    input: Register,
+    actor_id: String,
+) -> Result<Json<Value>> {
     if !matches!(input.kind.as_str(), "bazarr" | "prowlarr" | "nzbget")
         || input.name.trim().is_empty()
         || input.name.len() > 100
@@ -170,7 +177,7 @@ async fn register(
         &format!("support:{key}"),
         &serde_json::to_vec(&input.credentials).map_err(|_| unavailable())?,
     )?;
-    state.db.call(move|db|{let tx=db.transaction()?;tx.execute("INSERT INTO support_services(id,name,kind,container_id,port,generation,credential,mappings,native_url,version,checked_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(container_id) DO UPDATE SET name=excluded.name,kind=excluded.kind,port=excluded.port,generation=excluded.generation,credential=excluded.credential,mappings=excluded.mappings,native_url=excluded.native_url,version=excluded.version,checked_at=excluded.checked_at,error=NULL",params![key,input.name.trim(),input.kind,input.container_id,input.port,id(),secret,serde_json::to_string(&mappings)?,input.native_url,version,now()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'support.register',?2,?3)",params![p.user.id,key,now()])?;tx.commit()?;Ok(())}).await?;
+    state.db.call(move|db|{let tx=db.transaction()?;tx.execute("INSERT INTO support_services(id,name,kind,container_id,port,generation,credential,mappings,native_url,version,checked_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(container_id) DO UPDATE SET name=excluded.name,kind=excluded.kind,port=excluded.port,generation=excluded.generation,credential=excluded.credential,mappings=excluded.mappings,native_url=excluded.native_url,version=excluded.version,checked_at=excluded.checked_at,error=NULL",params![key,input.name.trim(),input.kind,input.container_id,input.port,id(),secret,serde_json::to_string(&mappings)?,input.native_url,version,now()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'support.register',?2,?3)",params![actor_id,key,now()])?;tx.commit()?;Ok(())}).await?;
     Ok(Json(json!({"id":returned})))
 }
 async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
@@ -416,4 +423,202 @@ async fn action(
         })
         .await?;
     Ok(Json(json!({"accepted":true})))
+}
+
+pub(super) async fn provision(state: AppState, actor: String, input: Value) -> Result<Json<Value>> {
+    register_with_actor(
+        state,
+        serde_json::from_value(input)
+            .map_err(|_| ApiError::bad("Invalid managed service configuration"))?,
+        actor,
+    )
+    .await
+}
+
+/// Wire only installations created by this controller. Provider choices remain explicit.
+pub(super) async fn wire_managed(state: &AppState) -> Result<()> {
+    let _guard = state.managers.guard.lock().await;
+    let rows=state.db.call(|db|Ok(db.prepare("SELECT kind,service_id FROM stack_provisions WHERE origin='installed' AND service_id IS NOT NULL AND state IN ('complete','connecting','blocked')")?.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
+    let mut managers = Vec::new();
+    let mut nzb = None;
+    let mut prowlarr = None;
+    let mut bazarr = None;
+    for (kind, key) in rows {
+        match kind.as_str() {
+            "radarr" | "sonarr" | "lidarr" => managers.push(service(state, &key).await?),
+            "nzbget" => nzb = Some(load(state, &key).await?),
+            "prowlarr" => prowlarr = Some(load(state, &key).await?),
+            "bazarr" => bazarr = Some(load(state, &key).await?),
+            _ => {}
+        }
+    }
+    if let Some(ref download) = nzb {
+        let c = connect(state, download).await?;
+        let mut config = rpc(&c, &download.credentials, "loadconfig", json!([])).await?;
+        let rows = config.as_array_mut().ok_or_else(unavailable)?;
+        let mut changed = false;
+        for (name, value) in [
+            ("Category1.Name", "movies"),
+            ("Category2.Name", "tv"),
+            ("Category3.Name", "music"),
+        ] {
+            if let Some(item) = rows.iter_mut().find(|r| r["Name"] == name) {
+                if item["Value"] != value {
+                    item["Value"] = json!(value);
+                    changed = true;
+                }
+            } else {
+                rows.push(json!({"Name":name,"Value":value}));
+                changed = true;
+            }
+        }
+        if changed {
+            rpc(&c, &download.credentials, "saveconfig", json!([config])).await?;
+            rpc(&c, &download.credentials, "reload", json!([])).await?;
+            for attempt in 0..30 {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                if version(&c, &download.credentials).await.is_ok() {
+                    break;
+                }
+                if attempt == 29 {
+                    return Err(ApiError::conflict(
+                        "Downloader is still restarting; retry service wiring",
+                    ));
+                }
+            }
+        }
+    }
+    for manager in &managers {
+        let c = Connection::open(state, manager).await?;
+        if let Some(ref download) = nzb {
+            let name = "Thelxinoe NZBGet";
+            let existing = c.get("downloadclient").await?;
+            let saved = existing
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|r| r["name"] == name)
+                .cloned();
+            let mut client = if let Some(saved) = saved {
+                saved
+            } else {
+                let schema = c.get("downloadclient/schema").await?;
+                let mut item = schema
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|r| r["implementation"] == "Nzbget")
+                    .cloned()
+                    .ok_or_else(unavailable)?;
+                item.as_object_mut().unwrap().remove("id");
+                item["name"] = json!(name);
+                item["enable"] = json!(true);
+                item["priority"] = json!(1);
+                item
+            };
+            let category = match manager.kind.as_str() {
+                "radarr" => "movies",
+                "sonarr" => "tv",
+                _ => "music",
+            };
+            let values = json!({"host":"thelxinoe-nzbget","port":6789,"useSsl":false,"username":download.credentials.username,"password":download.credentials.secret,"movieCategory":category,"tvCategory":category,"musicCategory":category,"category":category});
+            for field in client["fields"].as_array_mut().ok_or_else(unavailable)? {
+                if let Some(value) = field["name"].as_str().and_then(|name| values.get(name)) {
+                    field["value"] = value.clone();
+                }
+            }
+            let (method, path) = if let Some(id) = client["id"].as_i64() {
+                (reqwest::Method::PUT, format!("downloadclient/{id}"))
+            } else {
+                (reqwest::Method::POST, "downloadclient".into())
+            };
+            c.call(method, &path, &[], Some(client)).await?;
+        }
+        if let Some(ref service) = prowlarr {
+            let p = connect(state, service).await?;
+            let name = format!("Thelxinoe {}", manager.kind);
+            let existing = p.get("applications").await?;
+            let saved = existing
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|r| r["name"] == name)
+                .cloned();
+            let mut app = if let Some(saved) = saved {
+                saved
+            } else {
+                let schema = p.get("applications/schema").await?;
+                let mut item = schema
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|r| {
+                        r["implementation"]
+                            .as_str()
+                            .is_some_and(|i| i.eq_ignore_ascii_case(&manager.kind))
+                    })
+                    .cloned()
+                    .ok_or_else(unavailable)?;
+                item.as_object_mut().unwrap().remove("id");
+                item["name"] = json!(name);
+                item["syncLevel"] = json!("fullSync");
+                item
+            };
+            let values = json!({"prowlarrUrl":"http://thelxinoe-prowlarr:9696","baseUrl":format!("http://thelxinoe-{}:{}",manager.kind,manager.port),"apiKey":c.key});
+            for field in app["fields"].as_array_mut().ok_or_else(unavailable)? {
+                if let Some(value) = field["name"].as_str().and_then(|name| values.get(name)) {
+                    field["value"] = value.clone();
+                }
+            }
+            let (method, path) = if let Some(id) = app["id"].as_i64() {
+                (reqwest::Method::PUT, format!("applications/{id}"))
+            } else {
+                (reqwest::Method::POST, "applications".into())
+            };
+            p.call(method, &path, &[], Some(app)).await?;
+        }
+    }
+    if let Some(ref b) = bazarr {
+        let c = connect(state, b).await?;
+        let mut settings = Vec::new();
+        for manager in managers.iter().filter(|s| s.kind != "lidarr") {
+            let manager_connection = Connection::open(state, manager).await?;
+            for (key, value) in [
+                (
+                    format!("settings-general-use_{}", manager.kind),
+                    "true".into(),
+                ),
+                (
+                    format!("settings-{}-ip", manager.kind),
+                    format!("thelxinoe-{}", manager.kind),
+                ),
+                (
+                    format!("settings-{}-port", manager.kind),
+                    manager.port.to_string(),
+                ),
+                (
+                    format!("settings-{}-apikey", manager.kind),
+                    manager_connection.key,
+                ),
+                (format!("settings-{}-ssl", manager.kind), "false".into()),
+            ] {
+                settings.push((key, value));
+            }
+        }
+        if !settings.is_empty() {
+            let response = state
+                .managers
+                .http
+                .post(format!("{}/api/system/settings", c.base))
+                .header("X-API-KEY", &c.key)
+                .form(&settings)
+                .send()
+                .await
+                .map_err(|_| unavailable())?;
+            if !response.status().is_success() {
+                return Err(ApiError::conflict("Bazarr rejected the service wiring"));
+            }
+        }
+    }
+    Ok(())
 }

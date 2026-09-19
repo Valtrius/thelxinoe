@@ -61,7 +61,7 @@ impl AppState {
         if !config.state.join("secrets/master.key").exists()
             && db
                 .call(|c| {
-                    Ok(c.query_row("SELECT (SELECT COUNT(*) FROM secrets)+(SELECT COUNT(*) FROM manager_services)+(SELECT COUNT(*) FROM support_services)+(SELECT COUNT(*) FROM online_accounts WHERE credential IS NOT NULL)", [], |r| r.get::<_, i64>(0))?)
+                    Ok(c.query_row("SELECT (SELECT COUNT(*) FROM secrets)+(SELECT COUNT(*) FROM manager_services)+(SELECT COUNT(*) FROM support_services)+(SELECT COUNT(*) FROM stack_provisions)+(SELECT COUNT(*) FROM online_accounts WHERE credential IS NOT NULL)", [], |r| r.get::<_, i64>(0))?)
                 })
                 .await?
                 > 0
@@ -283,6 +283,12 @@ pub async fn run_jobs(state: AppState) -> anyhow::Result<()> {
         if let Some(job) = queue.claim().await? {
             match job.kind.as_str() {
                 "checkpoint" => queue.checkpoint(&job).await?,
+                "stack.install" => {
+                    let result = managers::provision(&state, &job).await;
+                    queue
+                        .finish(&job, result.err().map(|e| e.to_string()))
+                        .await?;
+                }
                 "manager.request" => {
                     let result = managers::acquire(&state, &job).await;
                     queue
