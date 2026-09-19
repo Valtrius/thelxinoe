@@ -225,7 +225,7 @@ async fn current_source(state: &AppState, session: &Session) -> Result<Source> {
 }
 #[derive(Deserialize)]
 pub struct Grant {
-    grant: String,
+    pub(crate) grant: String,
 }
 async fn from_grant(state: &AppState, id: &str, grant: &str) -> Result<(Principal, Session)> {
     let p = grants::resolve(state, grant, &format!("playback:{id}"), false)

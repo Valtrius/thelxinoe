@@ -13,6 +13,7 @@ services:
     environment:
       THELXINOE_PUBLIC_URL: https://localhost:${THELXINOE_TEST_HTTPS_PORT:-9443}
       THELXINOE_TRUSTED_PROXIES: ${THELXINOE_TEST_SUBNET:-172.31.250.0/24}
+      RUST_LOG: ${THELXINOE_TEST_LOG:-thelxinoe=info}
     depends_on:
       controller:
         condition: service_healthy

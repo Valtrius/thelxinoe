@@ -185,7 +185,15 @@ pub async fn reconcile(state: AppState) -> anyhow::Result<()> {
     use notify::Watcher;
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        if event.is_ok() {
+        if event.is_ok_and(|event| {
+            matches!(
+                event.kind,
+                notify::EventKind::Create(_)
+                    | notify::EventKind::Modify(_)
+                    | notify::EventKind::Remove(_)
+                    | notify::EventKind::Any
+            )
+        }) {
             let _ = tx.try_send(());
         }
     })?;

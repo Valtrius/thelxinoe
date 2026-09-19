@@ -146,7 +146,16 @@ pub async fn login(
     Json(c): Json<Credentials>,
 ) -> Result<Response> {
     let context = security::request_context(&state.config, &headers, peer)?;
-    let address = context.address.to_string();
+    let user = check_credentials(&state, context.address, &c.username, &c.password).await?;
+    respond_session(&state, user, &c, context.secure).await
+}
+pub(crate) async fn check_credentials(
+    state: &AppState,
+    address: std::net::IpAddr,
+    username: &str,
+    password: &str,
+) -> Result<String> {
+    let address = address.to_string();
     let allowed=state.db.call(move |db|{
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute("DELETE FROM login_attempts WHERE window_start<?1",[now()-900])?;
@@ -160,7 +169,7 @@ pub async fn login(
             "Too many login attempts. Try again in 15 minutes.".into(),
         ));
     }
-    if c.password.len() > 256 || c.username.len() > 64 {
+    if password.len() > 256 || username.len() > 64 {
         return Err(ApiError::unauthorized());
     }
     let _slot = state
@@ -168,7 +177,7 @@ pub async fn login(
         .acquire()
         .await
         .map_err(anyhow::Error::from)?;
-    let username = c.username.clone();
+    let username = username.to_owned();
     let record = state
         .db
         .call(move |db| {
@@ -185,11 +194,11 @@ pub async fn login(
         .as_ref()
         .map(|r| r.1.clone())
         .unwrap_or_else(|| state.dummy_hash.as_ref().clone());
-    let valid = verify_password(c.password.clone(), hash).await?;
+    let valid = verify_password(password.to_owned(), hash).await?;
     if !valid || record.is_none() {
         return Err(ApiError::unauthorized());
     }
-    respond_session(&state, record.unwrap().0, &c, context.secure).await
+    Ok(record.unwrap().0)
 }
 pub async fn me(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     Ok(Json(

@@ -3,6 +3,7 @@ pub mod config;
 pub mod error;
 mod grants;
 mod history;
+mod jellyfin;
 pub mod library;
 pub mod metadata;
 pub mod playback;
@@ -28,6 +29,7 @@ use tower_http::services::{ServeDir, ServeFile};
 
 #[derive(Clone)]
 pub struct AppState {
+    pub server_id: Arc<String>,
     pub db: Database,
     pub secrets: SecretStore,
     pub config: Arc<Config>,
@@ -42,6 +44,10 @@ impl AppState {
         std::fs::create_dir_all(&config.state)?;
         std::fs::create_dir_all(&config.cache)?;
         let db = Database::open(config.state.join("thelxinoe.sqlite3"))?;
+        let server_id=db.call(|db|{
+            db.execute("INSERT INTO settings(key,value) VALUES ('server_id',?1) ON CONFLICT(key) DO NOTHING",[thelxinoe_core::id()])?;
+            Ok(db.query_row("SELECT value FROM settings WHERE key='server_id'",[],|r|r.get::<_,String>(0))?)
+        }).await?;
         if !config.state.join("secrets/master.key").exists()
             && db
                 .call(|c| {
@@ -70,6 +76,7 @@ impl AppState {
             file.sync_all()?;
         }
         Ok(Self {
+            server_id: Arc::new(server_id),
             playback: Arc::new(thelxinoe_playback::Pipelines::open(&config.cache).await?),
             subtitle_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             db,
@@ -102,6 +109,7 @@ impl AppState {
 }
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .merge(jellyfin::router())
         .route("/api/v1/{*path}", axum::routing::any(not_found))
         .route("/api/v1/health", get(health))
         .route(
@@ -112,6 +120,14 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/logout", post(accounts::logout))
         .route("/api/v1/auth/me", get(accounts::me))
         .route("/api/v1/auth/event-ticket", post(grants::event_ticket))
+        .route(
+            "/api/v1/auth/quick-connect/inspect",
+            post(jellyfin::quick_connect::inspect),
+        )
+        .route(
+            "/api/v1/auth/quick-connect/approve",
+            post(jellyfin::quick_connect::approve),
+        )
         .route("/api/v1/auth/sessions", get(accounts::sessions))
         .route("/api/v1/auth/sessions/{id}", delete(accounts::revoke))
         .route(

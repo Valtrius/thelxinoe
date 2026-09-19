@@ -1,8 +1,8 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, copyFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 const root = '.local/fixtures/playback';
-for (const kind of ['movies', 'music'])
+for (const kind of ['movies', 'shows', 'music'])
   mkdirSync(`${root}/${kind}`, { recursive: true });
 function ffmpeg(args) {
   const result = spawnSync(
@@ -109,6 +109,11 @@ for (const number of [1, 2])
     'REPLAYGAIN_TRACK_PEAK=0.5',
     resolve(root, 'music', `${number}.flac`),
   ]);
+for (const episode of ['S01E01', 'S01E02', 'S00E01'])
+  copyFileSync(
+    resolve(root, 'movies', 'Direct (2020).mp4'),
+    resolve(root, 'shows', `Fixture Show.${episode}.mp4`),
+  );
 console.log(
   'Generated direct, remux, transcode, edition, subtitle and gapless music fixtures.',
 );

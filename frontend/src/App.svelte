@@ -11,6 +11,7 @@
   import Playlists from './lib/Playlists.svelte';
   import History from './lib/History.svelte';
   import UserPreferences from './lib/UserPreferences.svelte';
+  import QuickConnect from './lib/QuickConnect.svelte';
   import { persistQueue, type Card } from './lib/media-state';
   import { invoke } from '@tauri-apps/api/core';
   import type { MediaChoice } from './lib/playback';
@@ -398,6 +399,7 @@
           }}
         />
         <PlaybackSettings />
+        <QuickConnect username={user.username} />
         {#if desktop}<MpvSettings />{/if}
         {#if desktop}<section class="panel">
             <h2>Server connection</h2>

@@ -77,6 +77,10 @@ pub async fn set(
 }
 pub async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
+    home_for(&state, &p).await.map(Json)
+}
+pub(crate) async fn home_for(state: &AppState, principal: &Principal) -> Result<Value> {
+    let p = principal.clone();
     let result = state.db.call(move |db| {
         let favorites = db.prepare("SELECT c.id,c.kind,c.title,c.available FROM media_cards c JOIN media_state s ON s.media_id=c.id WHERE s.user_id=?1 AND s.favorite=1 ORDER BY s.updated_at DESC,c.title LIMIT 100")?.query_map([&p.user.id],card)?.collect::<std::result::Result<Vec<_>,_>>()?;
         let later = db.prepare("SELECT c.id,c.kind,c.title,c.available FROM media_cards c JOIN media_state s ON s.media_id=c.id WHERE s.user_id=?1 AND s.watch_later=1 ORDER BY s.updated_at DESC,c.title LIMIT 100")?.query_map([&p.user.id],card)?.collect::<std::result::Result<Vec<_>,_>>()?;
@@ -84,7 +88,7 @@ pub async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<J
         let next = db.prepare("WITH ordered AS (SELECT e.id,s.parent_id AS show_id,ROW_NUMBER() OVER(PARTITION BY s.parent_id ORDER BY s.sort_number,e.sort_number,e.id) AS ord FROM media e JOIN media s ON s.id=e.parent_id WHERE e.kind='episode' AND s.kind='season' AND s.sort_number>0), anchor AS (SELECT o.show_id,MAX(o.ord) AS ord FROM ordered o JOIN media_state u ON u.media_id=o.id WHERE u.user_id=?1 AND u.watched=1 GROUP BY o.show_id), candidates AS (SELECT o.id,o.show_id,ROW_NUMBER() OVER(PARTITION BY o.show_id ORDER BY o.ord) AS rn FROM ordered o LEFT JOIN anchor a ON a.show_id=o.show_id LEFT JOIN media_state u ON u.media_id=o.id AND u.user_id=?1 LEFT JOIN media_state show_state ON show_state.media_id=o.show_id AND show_state.user_id=?1 JOIN media_cards c ON c.id=o.id WHERE c.available=1 AND COALESCE(u.watched,0)=0 AND o.ord>COALESCE(a.ord,0) AND (a.ord IS NOT NULL OR COALESCE(show_state.favorite,0)=1 OR COALESCE(show_state.watch_later,0)=1)) SELECT c.id,c.kind,c.title,c.available,sh.title FROM candidates n JOIN media_cards c ON c.id=n.id JOIN media_cards sh ON sh.id=n.show_id WHERE n.rn=1 ORDER BY sh.title LIMIT 50")?.query_map([&p.user.id],|r|{let mut c=card(r)?;c["show_title"]=json!(r.get::<_,String>(4)?);Ok(c)})?.collect::<std::result::Result<Vec<_>,_>>()?;
         Ok(json!({"favorites":favorites,"watch_later":later,"continue_watching":resume,"next_up":next}))
     }).await?;
-    Ok(Json(result))
+    Ok(result)
 }
 #[derive(Clone, Deserialize, Serialize)]
 pub struct QueueContext {
