@@ -1,9 +1,13 @@
 #[cfg(unix)]
+mod contract;
+#[cfg(unix)]
 mod docker;
 #[cfg(unix)]
 mod policy;
 #[cfg(unix)]
 mod stack;
+#[cfg(unix)]
+mod state_copy;
 #[cfg(unix)]
 mod store;
 #[cfg(unix)]
@@ -11,6 +15,19 @@ mod templates;
 #[cfg(unix)]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if let Some(command) = std::env::args().nth(1) {
+        return match command.as_str() {
+            "adapter-contract" => {
+                contract::run(&std::env::args().nth(2).unwrap_or_default(), true).await
+            }
+            "adapter-health" => {
+                contract::run(&std::env::args().nth(2).unwrap_or_default(), false).await
+            }
+            "snapshot-copy" => state_copy::run(false),
+            "snapshot-restore" => state_copy::run(true),
+            _ => anyhow::bail!("Unknown worker command"),
+        };
+    }
     use std::os::unix::fs::{FileTypeExt, PermissionsExt};
     let directory = std::path::PathBuf::from(
         std::env::var("THELXINOE_RUNTIME").unwrap_or("/run/thelxinoe".into()),
@@ -35,6 +52,7 @@ async fn main() -> anyhow::Result<()> {
         None
     };
     let socket = directory.join("controller.sock");
+    stack::retain_worker_image().await?;
     if socket.exists() {
         if !std::fs::symlink_metadata(&socket)?.file_type().is_socket() {
             anyhow::bail!("Refusing to replace a non-socket path");

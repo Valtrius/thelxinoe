@@ -14,7 +14,7 @@ The controller stores the accepted first-party image identities, original inspec
 
 This directory contains private configuration and must remain administrator-only. It requires a Linux filesystem with atomic rename and symlink support. Docker Desktop test fixtures use a named Linux volume; a Windows shared directory is unsuitable for the generation pointer. The generated Compose uses the Docker host's resolved mount paths and external media network. Preserve those paths, the runtime volume and the media network when recovering. Development rebuilds of the bootstrap images do not advance the accepted release generation.
 
-Managed-service updates and first-party release handoff are subsequent roadmap phases; release discovery alone does not install a candidate.
+Managed-service updates require [isolated compatibility checks and recovery snapshots](SERVICE-UPDATES.md). First-party release handoff is a subsequent roadmap phase.
 
 ## Verified fixtures
 

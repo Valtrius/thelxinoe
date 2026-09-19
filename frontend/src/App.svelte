@@ -20,6 +20,7 @@
   import ManagerOwnership from './lib/ManagerOwnership.svelte';
   import SupportServices from './lib/SupportServices.svelte';
   import ManagedStack from './lib/ManagedStack.svelte';
+  import ServiceUpdates from './lib/ServiceUpdates.svelte';
   import Requests from './lib/Requests.svelte';
   import { persistQueue, type Card } from './lib/media-state';
   import { invoke } from '@tauri-apps/api/core';
@@ -482,6 +483,7 @@
           <ManagerSettings />
           <ManagerOwnership />
           <ManagedStack />
+          <ServiceUpdates />
           <SupportServices />
           <section class="panel">
             <h2><ShieldCheck size={20} /> Server</h2>

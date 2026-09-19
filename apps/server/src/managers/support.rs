@@ -37,6 +37,39 @@ pub(super) async fn load(state: &AppState, key: &str) -> Result<Support> {
         credentials,
     })
 }
+pub(super) async fn ensure_idle(state: &AppState, key: &str) -> Result<()> {
+    let s = load(state, key).await?;
+    let c = connect(state, &s).await?;
+    let idle = match s.kind.as_str() {
+        "nzbget" => {
+            let status = rpc(&c, &s.credentials, "status", json!([])).await?;
+            status["DownloadRate"].as_u64() == Some(0)
+                && status["PostJobCount"].as_u64() == Some(0)
+                && rpc(&c, &s.credentials, "listgroups", json!([0]))
+                    .await?
+                    .as_array()
+                    .is_some_and(Vec::is_empty)
+        }
+        "prowlarr" => c.get("command").await?.as_array().is_some_and(|commands| {
+            commands.iter().all(|v| {
+                matches!(
+                    v["status"].as_str(),
+                    Some("completed" | "failed" | "aborted" | "cancelled")
+                )
+            })
+        }),
+        "bazarr" => c.get("system/tasks").await?["data"]
+            .as_array()
+            .is_some_and(|tasks| tasks.iter().all(|v| v["job_running"] == false)),
+        _ => false,
+    };
+    if !idle {
+        return Err(ApiError::conflict(
+            "Service is busy or its idle state is unknown",
+        ));
+    }
+    Ok(())
+}
 async fn connect<'a>(state: &'a AppState, s: &Support) -> Result<Connection<'a>> {
     let (base, mappings) = evidence_for(state, &s.container, s.port, s.kind != "prowlarr").await?;
     if mappings != s.mappings {

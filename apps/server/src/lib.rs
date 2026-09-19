@@ -16,6 +16,9 @@ pub mod user_media;
 pub use jellyfin::discovery::run as run_discovery;
 pub use online::downloads::run as run_downloads;
 pub use online::run as run_online;
+pub async fn run_service_updates(state: AppState) -> anyhow::Result<()> {
+    managers::run_updates(state).await
+}
 
 use crate::{config::Config, error::Result};
 use axum::{
@@ -288,6 +291,14 @@ pub async fn run_jobs(state: AppState) -> anyhow::Result<()> {
                     queue
                         .finish(&job, result.err().map(|e| e.to_string()))
                         .await?;
+                }
+                "service.update" => {
+                    let result = managers::update_service(&state, &job).await;
+                    if !matches!(result, Ok(false)) {
+                        queue
+                            .finish(&job, result.err().map(|e| e.to_string()))
+                            .await?;
+                    }
                 }
                 "manager.request" => {
                     let result = managers::acquire(&state, &job).await;

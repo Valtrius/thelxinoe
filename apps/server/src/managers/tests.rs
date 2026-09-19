@@ -600,4 +600,62 @@ async fn provisioning_is_admin_only_durable_and_never_puts_credentials_in_jobs()
     assert!(!result.2.to_string().contains(&plain));
     let payload: Value = serde_json::from_str(&payload).unwrap();
     assert_eq!(payload, json!({"id":key}));
+    let policy = json!({"policy":"automatic","window_start":22,"window_end":3});
+    assert_eq!(
+        call(
+            &state,
+            "/api/v1/admin/service-updates/policy/default",
+            "POST",
+            policy.clone(),
+            &alice
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            &state,
+            "/api/v1/admin/service-updates/policy/default",
+            "POST",
+            policy,
+            &admin
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &state,
+            "/api/v1/admin/service-updates/policy/default",
+            "POST",
+            json!({"policy":"inherit","window_start":0,"window_end":0}),
+            &admin
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let provision = key.clone();
+    state.db.call(move|db|{db.execute("UPDATE stack_provisions SET state='complete',service_id='fixture-integration' WHERE id=?1",[provision])?;Ok(())}).await.unwrap();
+    let mut attempts = tokio::task::JoinSet::new();
+    for _ in 0..8 {
+        let state = state.clone();
+        let admin = admin.clone();
+        let path = format!("/api/v1/admin/service-updates/preflight/{key}");
+        attempts.spawn(async move { call(&state, &path, "POST", json!({}), &admin).await.0 });
+    }
+    let mut accepted = 0;
+    while let Some(result) = attempts.join_next().await {
+        let status = result.unwrap();
+        assert!(status == StatusCode::OK || status == StatusCode::CONFLICT);
+        if status == StatusCode::OK {
+            accepted += 1;
+        }
+    }
+    assert_eq!(
+        accepted, 1,
+        "Concurrent requests must enqueue exactly one update"
+    );
 }

@@ -12,6 +12,14 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
+#[path = "updates.rs"]
+mod updates;
+pub async fn retain_worker_image() -> anyhow::Result<()> {
+    updates::current_image()
+        .await
+        .map(|_| ())
+        .map_err(|(_, message)| anyhow::anyhow!(message))
+}
 #[derive(Clone)]
 struct Runtime(Arc<tokio::sync::Mutex<()>>);
 #[derive(Clone, Serialize, Deserialize)]
@@ -22,6 +30,8 @@ struct Managed {
     name: String,
     image: String,
     phase: String,
+    #[serde(default)]
+    active_update: Option<String>,
     spec: Value,
     expected: Value,
     #[serde(default)]
@@ -279,6 +289,10 @@ pub fn router() -> Router {
         )
         .route("/stack", get(list))
         .route("/stack/install", post(install))
+        .route("/stack/updates", get(updates::list))
+        .route("/stack/{id}/preflight", post(updates::preflight))
+        .route("/stack/updates/{id}/activate", post(updates::activate))
+        .route("/stack/updates/{id}/recover", post(updates::recover))
         .route("/stack/releases", get(releases))
         .route("/stack/adopt", post(adopt))
         .route("/stack/{id}/action", post(action))
@@ -388,6 +402,7 @@ async fn install(
         name: name.clone(),
         image,
         phase: "creating".into(),
+        active_update: None,
         spec: spec.clone(),
         expected: Value::Null,
         error: None,
@@ -473,6 +488,7 @@ async fn adopt(State(runtime): State<Runtime>, Json(input): Json<Adopt>) -> Resu
         name: name.clone(),
         image: format!("{}@{}", t.repository, t.digest),
         phase: "adopting".into(),
+        active_update: None,
         spec: spec.clone(),
         expected: Value::Null,
         error: None,
@@ -651,6 +667,9 @@ fn subset(expected: &Value, actual: &Value) -> bool {
     }
 }
 async fn reconcile(d: &Deployment, s: &mut Managed) -> Result<Json<Value>> {
+    if s.phase == "updating" {
+        return Err(conflict("Use update recovery for an interrupted update"));
+    }
     let raw = engine(&format!("/containers/{}/json", s.name)).await?;
     if raw["Config"]["Labels"]["app.thelxinoe.deployment"] != d.id
         || raw["Config"]["Labels"]["app.thelxinoe.managed-id"] != s.id

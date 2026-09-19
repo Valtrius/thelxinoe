@@ -5,7 +5,9 @@ mod operations;
 mod requests;
 mod stack;
 mod support;
+mod updates;
 pub(crate) use stack::provision;
+pub(crate) use updates::{run as run_updates, run_job as update_service};
 #[cfg(test)]
 mod tests;
 use crate::{
@@ -52,6 +54,7 @@ pub(crate) fn router() -> Router<AppState> {
         .merge(operations::router())
         .merge(support::router())
         .merge(stack::router())
+        .merge(updates::router())
         .route("/api/v1/admin/managers/containers", get(containers))
         .route("/api/v1/admin/managers", get(list).post(register))
         .route("/api/v1/admin/managers/{id}/options", get(options))

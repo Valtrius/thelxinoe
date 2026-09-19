@@ -160,15 +160,51 @@ pub fn validate_adoption(
         }
         match mount["Destination"].as_str() {
             Some("/data") if t.media && mount["Source"] == media_source => {}
-            Some("/config") => {}
+            Some("/config")
+                if mount["Source"]
+                    .as_str()
+                    .is_some_and(|source| appdata_isolated(source, media_source)) => {}
             _ => return Err("Media mount does not match the canonical server media tree"),
         }
     }
     Ok(())
 }
+pub fn appdata_isolated(source: &str, media: &str) -> bool {
+    use std::path::Path;
+    let source = Path::new(source);
+    let media = Path::new(media);
+    source.is_absolute()
+        && source.components().count() > 2
+        && !source.starts_with(media)
+        && !media.starts_with(source)
+        && ![
+            "/etc",
+            "/proc",
+            "/sys",
+            "/dev",
+            "/boot",
+            "/bin",
+            "/sbin",
+            "/usr",
+            "/run/docker",
+            "/run/containerd",
+            "/var/run",
+            "/var/lib/docker",
+        ]
+        .iter()
+        .any(|root| source.starts_with(root))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn appdata_restore_cannot_target_system_or_media_roots() {
+        assert!(!appdata_isolated("/", "/media"));
+        assert!(!appdata_isolated("/etc/service", "/media"));
+        assert!(!appdata_isolated("/media/appdata", "/media"));
+        assert!(!appdata_isolated("/srv", "/srv/media"));
+        assert!(appdata_isolated("/srv/appdata/radarr", "/srv/media"));
+    }
     #[test]
     fn foreign_orchestrator_ownership_is_always_rejected() {
         for prefix in [
