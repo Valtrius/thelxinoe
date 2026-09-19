@@ -220,13 +220,22 @@ async fn start(State(state): State<AppState>, headers: HeaderMap) -> Result<Json
 }
 async fn clear(state: &AppState, headers: &HeaderMap, delete: bool) -> Result<Json<Value>> {
     let p = security::principal(state, headers).await?;
-    state.db.call(move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let stopped=state.db.call(move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute("UPDATE online_accounts SET credential=NULL,status='disconnected',expires_at=0,generation=?1,updated_at=?2 WHERE user_id=?3 AND provider='twitch'",params![id(),now(),p.user.id])?;
         tx.execute("DELETE FROM twitch_attempts WHERE user_id=?1",[&p.user.id])?;tx.execute("DELETE FROM twitch_sync WHERE user_id=?1",[&p.user.id])?;
+        let stopped=if delete {
+            let ids=tx.prepare("SELECT id FROM playback_sessions WHERE user_id=?1 AND live_media_id LIKE 'twitch:%' AND state IN ('ready','playing','paused')")?.query_map([&p.user.id],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            for key in &ids {tx.execute("UPDATE playback_sessions SET state='stopped' WHERE id=?1",[key])?;tx.execute("DELETE FROM playback_grants WHERE resource=?1",[format!("playback:{key}")])?;}
+            tx.execute("DELETE FROM live_history WHERE user_id=?1 AND media_id LIKE 'twitch:%'",[&p.user.id])?;
+            ids
+        }else{vec![]};
         if delete {tx.execute("DELETE FROM twitch_streams WHERE user_id=?1",[&p.user.id])?;tx.execute("DELETE FROM online_accounts WHERE user_id=?1 AND provider='twitch'",[&p.user.id])?;}
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,?2,'twitch',?3)",params![p.user.id,if delete{"online.delete_data"}else{"online.disconnect"},now()])?;
-        tx.commit()?;Ok(())
+        tx.commit()?;Ok(stopped)
     }).await?;
+    for key in stopped {
+        state.playback.stop(&key).await;
+    }
     Ok(Json(json!({"disconnected":true})))
 }
 async fn disconnect(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {

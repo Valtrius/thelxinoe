@@ -3,6 +3,7 @@
   import { api } from './api';
   import OnlineTools from './OnlineTools.svelte';
   import TwitchSettings from './TwitchSettings.svelte';
+  import KickSettings from './KickSettings.svelte';
   type Configuration = {
     google_configured: boolean;
     redirect_uri: string | null;
@@ -125,4 +126,5 @@
   {#if message}<p role="status">{message}</p>{/if}
 </section>
 <TwitchSettings />
+<KickSettings />
 <OnlineTools />

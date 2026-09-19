@@ -48,6 +48,8 @@ impl Database {
             include_str!("../migrations/010.sql"),
             include_str!("../migrations/011.sql"),
             include_str!("../migrations/012.sql"),
+            include_str!("../migrations/013.sql"),
+            include_str!("../migrations/014.sql"),
         ];
         if version > migrations.len() as i64 {
             anyhow::bail!("Database is newer than this server; use the matching release");
@@ -125,6 +127,9 @@ mod tests {
             INSERT INTO playback_sessions(id,user_id,auth_session_id,generation,edition,state,mode,options,duration,created_at,updated_at,youtube_video_id) VALUES ('yp','u','s','g','public','paused','direct','{}',100,1,1,'abcdefghijk');")?;
         let tx = db.transaction()?;
         tx.execute_batch(include_str!("../migrations/010.sql"))?;
+        tx.execute_batch(include_str!("../migrations/011.sql"))?;
+        tx.execute_batch(include_str!("../migrations/012.sql"))?;
+        tx.execute_batch(include_str!("../migrations/013.sql"))?;
         tx.commit()?;
         assert_eq!(
             db.query_row(

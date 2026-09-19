@@ -1,6 +1,6 @@
 # Online providers
 
-YouTube account linking, subscription synchronization, feed browsing, watchlists, public streaming and downloads, live playback, private history, pins and watched flags are implemented and validated with real providers. Twitch account linking and followed-live synchronization are implemented; Twitch playback and Kick remain in progress.
+YouTube account linking, subscription synchronization, feed browsing, watchlists, public streaming and downloads, live playback, private history, pins and watched flags are implemented and validated with real providers. Twitch account linking, followed-live synchronization, Kick tracked channels and public live playback are also implemented.
 
 ## Google configuration
 
@@ -56,6 +56,20 @@ Configure a public Twitch client ID in Settings, or import the existing YouTwitc
 
 The server enforces provider polling intervals, slows down on request, expires attempts, and checks the initiating session and account generation before accepting tokens. Public-client refresh tokens are replaced before the next API request. Token validation runs on startup and at least hourly during successful synchronization. Revoked tokens require reconnection; temporary failures back off. Followed-live pages are bounded, scheduled fairly, and published after a complete snapshot; provider reset headers delay exhausted requests. Disconnect preserves cached channels. Delete Twitch data removes them.
 
-The live HTTPS device flow accepted the imported application, completed real user consent, and synchronized 27 live followed channels without errors. Fixtures cover token refresh, two-session code isolation, revoked sessions, late responses after disconnect, pagination, private feeds, administrator permissions and rate-limit delays. Playback is the next phase 10 slice.
+The live HTTPS device flow accepted the imported application, completed real user consent, and synchronized 27 live followed channels without errors. Fixtures cover token refresh, two-session code isolation, revoked sessions, late responses after disconnect, pagination, private feeds, administrator permissions and rate-limit delays. Public live playback passed through HTTPS in Chromium and through MPV in the rebuilt Windows application.
 
 Protocol references: [Twitch device flow](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/#device-code-grant-flow), [token validation](https://dev.twitch.tv/docs/authentication/validate-tokens/).
+
+## Twitch and Kick public playback
+
+The Linux x86-64 server image includes Streamlink 8.6.1 in an isolated Python environment, with every dependency pinned and checked against its published SHA-256 digest. Updating the server image updates this bundle. Streamlink receives only the public channel URL, runs with a cleared environment and temporary configuration directories, and has a 45-second timeout and bounded output. It receives no viewer tokens or browser cookies. The server validates the extracted HTTPS CDN address and keeps it in memory; clients receive the ordinary scoped HLS playback URL.
+
+Each live session has its own bounded software H.264/AAC pipeline. Auto or a bitrate preference is supported; Original and online track selection are unavailable. Seeking and VOD watched/resume inference are disabled for live streams. Twitch and Kick have separate private history filters and administrator statistics. Restricted, offline or extractor-incompatible channels return an explicit playback error; no account entitlement is borrowed. Streamlink resolves the initial source, while FFmpeg reads the resulting public HLS stream; provider advertisement/discontinuity behavior is not guaranteed by the short playback validation.
+
+## Kick tracked channels
+
+Each user can track up to 100 channel names or public Kick channel URLs. Optional administrator-configured application credentials enrich these with live status, titles, category and viewer counts; public playback can still be attempted without metadata credentials. Tokens use the application client-credentials flow and stay in server memory. Only selected public metadata fields are retained; stream keys and publishing URLs are never returned to clients.
+
+Metadata work takes one channel per fair scheduler turn, backs off on failures and persists shared rate-limit delays. Disconnect pauses synchronization and preserves tracked channels. Removing a channel stops that user's corresponding active sessions. Delete Kick data also removes that user's Kick history and tracked channels. Late replies cannot restore a removed/re-added channel generation.
+
+Real validation passed the imported Kick application credentials, public metadata, and live playback in Chromium and Windows MPV. Evidence: `.local/twitch-live-result.json`, `.local/twitch-playback-result.json`, `.local/twitch-native-result.json`, `.local/kick-metadata-result.json`, `.local/kick-playback-result.json`, `.local/kick-native-result.json`.

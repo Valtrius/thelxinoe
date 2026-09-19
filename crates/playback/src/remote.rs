@@ -17,9 +17,13 @@ impl RemoteSource {
                     && parsed.username().is_empty()
                     && parsed.password().is_none()
                     && parsed.port().is_none_or(|p| p == 443)
-                    && parsed
-                        .host_str()
-                        .is_some_and(|h| h == "googlevideo.com" || h.ends_with(".googlevideo.com")),
+                    && parsed.host_str().is_some_and(|h| [
+                        "googlevideo.com",
+                        "ttvnw.net",
+                        "live-video.net"
+                    ]
+                    .iter()
+                    .any(|domain| h == *domain || h.ends_with(&format!(".{domain}")))),
                 "Unsupported public media address"
             );
         }

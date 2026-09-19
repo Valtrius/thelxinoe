@@ -44,6 +44,7 @@ pub(crate) fn record(
 pub(crate) fn finish_stale(db: &rusqlite::Connection) -> anyhow::Result<()> {
     db.execute("UPDATE playback_history SET ended_at=updated_at,state='stopped' WHERE ended_at IS NULL AND NOT EXISTS(SELECT 1 FROM playback_sessions p JOIN sessions s ON s.id=p.auth_session_id WHERE p.id=playback_id AND p.state IN ('playing','paused') AND s.expires_at>?1 AND p.updated_at>?2)",params![now(),now()-120])?;
     db.execute("UPDATE youtube_history SET state='stopped' WHERE state IN ('playing','paused') AND NOT EXISTS(SELECT 1 FROM playback_sessions p JOIN sessions s ON s.id=p.auth_session_id WHERE p.id=playback_id AND p.state IN ('playing','paused') AND s.expires_at>?1 AND p.updated_at>?2)",params![now(),now()-120])?;
+    db.execute("UPDATE live_history SET state='stopped' WHERE state IN ('playing','paused') AND NOT EXISTS(SELECT 1 FROM playback_sessions p JOIN sessions s ON s.id=p.auth_session_id WHERE p.id=playback_id AND p.state IN ('playing','paused') AND s.expires_at>?1 AND p.updated_at>?2)",params![now(),now()-120])?;
     Ok(())
 }
 #[derive(Deserialize, Default)]
@@ -89,6 +90,12 @@ async fn history(
         }
         "youtube" => {
             "(SELECT rowid AS id,playback_id,user_id,'youtube:'||video_id AS media_id,'youtube' AS kind,title,'public' AS edition,device_name,started_at,updated_at,CASE WHEN state='stopped' THEN updated_at ELSE NULL END AS ended_at,position,duration,played_seconds,state FROM youtube_history)"
+        }
+        "twitch" => {
+            "(SELECT rowid AS id,playback_id,user_id,media_id,'twitch' AS kind,title,'live' AS edition,device_name,started_at,updated_at,CASE WHEN state='stopped' THEN updated_at ELSE NULL END AS ended_at,position,0 AS duration,played_seconds,state FROM live_history WHERE media_id LIKE 'twitch:%')"
+        }
+        "kick" => {
+            "(SELECT rowid AS id,playback_id,user_id,media_id,'kick' AS kind,title,'live' AS edition,device_name,started_at,updated_at,CASE WHEN state='stopped' THEN updated_at ELSE NULL END AS ended_at,position,0 AS duration,played_seconds,state FROM live_history WHERE media_id LIKE 'kick:%')"
         }
         _ => return Err(ApiError::bad("Unknown history domain")),
     };

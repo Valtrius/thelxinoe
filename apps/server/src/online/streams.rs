@@ -1,4 +1,4 @@
-use super::{downloads, extract};
+use super::{downloads, extract, live};
 use crate::{
     AppState,
     error::{ApiError, Result},
@@ -31,8 +31,16 @@ async fn prepare(state: &AppState, video: &str) -> Result<Prepared> {
             return Ok(value.clone());
         }
     }
-    let metadata = extract::metadata(state, video).await?;
-    let prepared = select(&metadata)?;
+    let prepared = if live::domain(video) {
+        Prepared {
+            source: live::extract(state, video).await?,
+            duration: 0.0,
+            expires: now() + 60,
+        }
+    } else {
+        let metadata = extract::metadata(state, video).await?;
+        select(&metadata)?
+    };
     let mut cached = state.online.streams.prepared.lock().await;
     if cached.len() >= 64 {
         cached.clear();
@@ -105,7 +113,11 @@ fn select(metadata: &Value) -> Result<Prepared> {
     })
 }
 pub(crate) async fn info(state: &AppState, p: &Principal, video: &str) -> Result<Value> {
-    downloads::authorize(state, p, video).await?;
+    if live::domain(video) {
+        live::authorize(state, p, video).await?;
+    } else {
+        downloads::authorize(state, p, video).await?;
+    }
     let prepared = prepare(state, video).await?;
     let owner = p.user.id.clone();
     let id = video.to_owned();
@@ -133,7 +145,11 @@ pub(crate) async fn create(
     options: Options,
     position: Option<f64>,
 ) -> Result<Value> {
-    downloads::authorize(state, p, video).await?;
+    if live::domain(video) {
+        live::authorize(state, p, video).await?;
+    } else {
+        downloads::authorize(state, p, video).await?;
+    }
     if !options.capabilities.hls
         || !options.capabilities.video.iter().any(|v| v == "h264")
         || !options.capabilities.audio.iter().any(|v| v == "aac")
@@ -155,6 +171,11 @@ pub(crate) async fn create(
     if position.is_some_and(|v| !v.is_finite() || v < 0.0) {
         return Err(ApiError::bad("Invalid stream position"));
     }
+    let live_title = if live::domain(video) {
+        Some(live::authorize(state, p, video).await?.1)
+    } else {
+        None
+    };
     let prepared = prepare(state, video).await?;
     let sid = thelxinoe_core::id();
     let key = sid.clone();
@@ -166,6 +187,12 @@ pub(crate) async fn create(
     let live = prepared.source.live;
     let start=state.db.call(move |db| {
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if let Some(title)=live_title {
+            anyhow::ensure!(tx.query_row("SELECT EXISTS(SELECT 1 FROM twitch_streams WHERE user_id=?1 AND 'twitch:'||channel_id=?2 AND active=1) OR EXISTS(SELECT 1 FROM kick_channels WHERE user_id=?1 AND 'kick:'||slug=?2)",params![owner,video],|r|r.get::<_,bool>(0))?,"Channel was removed before playback");
+            tx.execute("INSERT INTO live_media VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET title=excluded.title",params![video,title])?;
+            tx.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,generation,edition,state,mode,options,duration,position,created_at,updated_at,live_media_id,streaming) VALUES (?1,?2,?3,?1,'live','ready','transcode',?4,0,0,?5,?5,?6,1)",params![key,owner,auth,serde_json::to_string(&input)?,now(),video])?;
+            tx.commit()?;return Ok(0.0)
+        }
         anyhow::ensure!(tx.query_row("SELECT EXISTS(SELECT 1 FROM youtube_videos WHERE user_id=?1 AND video_id=?2)",params![owner,video],|r|r.get::<_,bool>(0))?,"Video was removed before playback");
         let saved=tx.query_row("SELECT position FROM youtube_state WHERE user_id=?1 AND video_id=?2",params![owner,video],|r|r.get::<_,f64>(0)).optional()?.unwrap_or(0.0);
         let start=if live {0.0}else {position.unwrap_or(if saved>=duration*0.9 {0.0}else{saved}).clamp(0.0,(duration-0.1).max(0.0))};
@@ -205,7 +232,7 @@ pub(crate) async fn create(
         }
     };
     let key = sid.clone();
-    let valid=state.db.call(move |db|Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM playback_sessions p JOIN sessions s ON s.id=p.auth_session_id JOIN youtube_videos v ON v.user_id=p.user_id AND v.video_id=p.youtube_video_id WHERE p.id=?1 AND p.state='ready' AND s.expires_at>?2)",params![key,now()],|r|r.get::<_,bool>(0))?)).await?;
+    let valid=state.db.call(move |db|Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM playback_sessions p JOIN sessions s ON s.id=p.auth_session_id WHERE p.id=?1 AND p.state='ready' AND s.expires_at>?2 AND (EXISTS(SELECT 1 FROM youtube_videos v WHERE v.user_id=p.user_id AND v.video_id=p.youtube_video_id) OR EXISTS(SELECT 1 FROM twitch_streams t WHERE t.user_id=p.user_id AND 'twitch:'||t.channel_id=p.live_media_id AND t.active=1) OR EXISTS(SELECT 1 FROM kick_channels k WHERE k.user_id=p.user_id AND 'kick:'||k.slug=p.live_media_id)))",params![key,now()],|r|r.get::<_,bool>(0))?)).await?;
     if !valid {
         state.playback.stop(&sid).await;
         state.online.streams.sessions.lock().await.remove(&sid);

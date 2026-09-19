@@ -114,6 +114,8 @@
         >Media<select bind:value={domain} onchange={() => void load()}
           ><option value="library">Local library</option><option value="youtube"
             >YouTube</option
+          ><option value="twitch">Twitch</option><option value="kick"
+            >Kick</option
           ></select
         ></label
       >

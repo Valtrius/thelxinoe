@@ -2,6 +2,8 @@
   import { onMount } from 'svelte';
   import { api, desktop } from './api';
   import { invoke } from '@tauri-apps/api/core';
+  import type { MediaChoice } from './playback';
+  let { play } = $props<{ play: (choice: MediaChoice) => void }>();
   type Account = {
     configured: boolean;
     account: { status: string; display_name: string };
@@ -162,6 +164,16 @@
   {#each streams as stream (stream.id)}
     <article class="panel">
       <h3>{stream.display_name}</h3>
+      <button
+        class="primary"
+        aria-label={`Play ${stream.display_name}`}
+        onclick={() =>
+          play({
+            id: `twitch:${stream.id}`,
+            title: stream.title,
+            kind: 'video',
+          })}>Play live</button
+      >
       <p>{stream.title}</p>
       <p class="muted">
         {stream.category} · {stream.viewers.toLocaleString()} viewers

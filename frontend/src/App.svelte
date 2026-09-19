@@ -15,6 +15,7 @@
   import OnlineSettings from './lib/OnlineSettings.svelte';
   import YouTube from './lib/YouTube.svelte';
   import Twitch from './lib/Twitch.svelte';
+  import Kick from './lib/Kick.svelte';
   import { persistQueue, type Card } from './lib/media-state';
   import { invoke } from '@tauri-apps/api/core';
   import type { MediaChoice } from './lib/playback';
@@ -618,7 +619,12 @@
           play={(choice) => void playMedia(choice)}
         />
       {:else if section === 'History'}<History {user} />
-      {:else if section === 'Twitch'}<Twitch />
+      {:else if section === 'Kick'}<Kick
+          play={(choice) => void playMedia(choice)}
+        />
+      {:else if section === 'Twitch'}<Twitch
+          play={(choice) => void playMedia(choice)}
+        />
       {:else if section === 'YouTube'}<YouTube
           revision={mediaRevision}
           play={(choice) => void playMedia(choice)}

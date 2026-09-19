@@ -1,6 +1,8 @@
 pub(crate) mod downloads;
 mod extract;
 mod feed;
+pub(crate) mod kick;
+pub(crate) mod live;
 pub(crate) mod oauth;
 mod process;
 mod quota;
@@ -24,7 +26,11 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 pub async fn run(state: AppState) -> anyhow::Result<()> {
-    tokio::try_join!(sync::run(state.clone()), twitch::run(state))?;
+    tokio::try_join!(
+        sync::run(state.clone()),
+        twitch::run(state.clone()),
+        kick::run(state)
+    )?;
     Ok(())
 }
 use thelxinoe_core::{Capability, now};
@@ -39,6 +45,7 @@ pub struct Runtime {
     extraction: tokio::sync::Semaphore,
     pub(crate) streams: streams::Runtime,
     twitch: twitch::Runtime,
+    kick: kick::Runtime,
 }
 impl Runtime {
     pub fn new() -> anyhow::Result<Self> {
@@ -56,12 +63,14 @@ impl Runtime {
             extraction: tokio::sync::Semaphore::new(2),
             streams: streams::Runtime::default(),
             twitch: twitch::Runtime::default(),
+            kick: kick::Runtime::default(),
         })
     }
 }
 pub fn router() -> Router<AppState> {
     Router::new()
         .merge(twitch::router())
+        .merge(kick::router())
         .route("/api/v1/admin/online", get(configuration).put(configure))
         .route(
             "/api/v1/admin/online/tools",

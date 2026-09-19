@@ -168,3 +168,22 @@ node scripts/test-live-metadata.mjs
 ```
 
 It checks real movie/show searches and matches, collection membership, explicit episode mapping, MusicBrainz artist/album matching, downloaded TMDB/CAA images, and refresh preserving a manual correction. Evidence contains public titles and booleans, never credentials.
+
+## Twitch and Kick live validation
+
+After connecting Twitch on the isolated HTTPS online deployment:
+
+```powershell
+node scripts/test-twitch-playback.mjs
+node scripts/test-kick-playback.mjs starladder
+```
+
+The Twitch script selects a followed live channel. The Kick script temporarily tracks the named channel, waits for live metadata, and removes its temporary interest afterward. Choose a currently live public channel; availability changes. Both verify decoded browser frames, pause, hidden VOD seeking, and server history through HTTPS. Native validation uses the production Windows bundle and checks MPV video readiness, pause controls and history. Live test accounts, selected channels and results remain in `.local`.
+
+A read-only helper can list public live Kick channels using the existing YouTwitch application configuration. It prints channel names only:
+
+```powershell
+cargo run -p thelxinoe-desktop --example check-kick
+```
+
+Linux fixture tests cover device-code/session binding, encrypted tokens, refresh, revoked/late replies, pagination, user isolation, rate limits, tracked-channel generations and live-session cleanup. They run without real account credentials.
