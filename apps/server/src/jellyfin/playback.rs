@@ -11,7 +11,7 @@ use axum::{
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 use thelxinoe_core::Principal;
-use thelxinoe_playback::{Capabilities, Options, Source, Track};
+use thelxinoe_playback::{Options, Source, Track};
 
 fn track_index(track: &Track) -> i64 {
     track.index.unwrap_or_else(|| {
@@ -33,7 +33,8 @@ pub async fn source_dto(source: &Source) -> Result<Value> {
             .and_then(|(a, b)| Some(a.parse::<f64>().ok()? / b.parse::<f64>().ok()?))
             .filter(|v| v.is_finite())
             .unwrap_or(0.0);
-        streams.push(json!({"Type":"Video","Index":stream["index"],"Codec":stream["codec_name"],"Width":stream["width"],"Height":stream["height"],"BitDepth":stream["bits_per_raw_sample"].as_str().and_then(|v|v.parse::<u32>().ok()),"VideoRange":"SDR","VideoRangeType":"SDR","RealFrameRate":rate,"AverageFrameRate":rate,"IsDefault":true,"IsExternal":false,"IsInterlaced":false,"IsForced":false,"IsHearingImpaired":false,"IsTextSubtitleStream":false,"SupportsExternalStream":false}));
+        let range = super::profile::video_range(stream);
+        streams.push(json!({"Type":"Video","Index":stream["index"],"Codec":stream["codec_name"],"Profile":stream["profile"],"Level":stream["level"],"Width":stream["width"],"Height":stream["height"],"BitDepth":stream["bits_per_raw_sample"].as_str().and_then(|v|v.parse::<u32>().ok()),"VideoRange":if range=="SDR"{"SDR"}else{"HDR"},"VideoRangeType":range,"RealFrameRate":rate,"AverageFrameRate":rate,"IsDefault":true,"IsExternal":false,"IsInterlaced":!["progressive","unknown",""].contains(&stream["field_order"].as_str().unwrap_or("")),"IsForced":false,"IsHearingImpaired":false,"IsTextSubtitleStream":false,"SupportsExternalStream":false}));
     }
     let mut indexes = std::collections::HashSet::new();
     for track in &tracks {
@@ -46,7 +47,7 @@ pub async fn source_dto(source: &Source) -> Result<Value> {
         let probe = source.probe["streams"]
             .as_array()
             .and_then(|v| v.iter().find(|s| s["index"].as_i64() == track.index));
-        let mut item = json!({"Type":if track.kind=="audio"{"Audio"}else{"Subtitle"},"Index":index,"Codec":track.codec,"Language":track.language,"DisplayTitle":if track.title.is_empty(){&track.language}else{&track.title},"Title":track.title,"IsDefault":track.default,"IsForced":false,"IsInterlaced":false,"IsHearingImpaired":false,"IsExternal":track.path.is_some(),"SupportsExternalStream":track.kind=="subtitle" && track.supported,"IsTextSubtitleStream":track.kind=="subtitle" && track.supported});
+        let mut item = json!({"Type":if track.kind=="audio"{"Audio"}else{"Subtitle"},"Index":index,"Codec":track.codec,"Language":track.language,"DisplayTitle":if track.title.is_empty(){&track.language}else{&track.title},"Title":track.title,"IsDefault":track.default,"IsForced":track.forced,"IsInterlaced":false,"IsHearingImpaired":false,"IsExternal":track.path.is_some(),"SupportsExternalStream":track.kind=="subtitle" && track.supported,"IsTextSubtitleStream":track.kind=="subtitle" && track.supported});
         if track.kind == "audio" {
             item["Channels"] = probe.map(|v| v["channels"].clone()).unwrap_or(json!(2));
             item["SampleRate"] = json!(
@@ -60,7 +61,13 @@ pub async fn source_dto(source: &Source) -> Result<Value> {
     let bitrate = source.probe["format"]["bit_rate"]
         .as_str()
         .and_then(|v| v.parse::<i64>().ok())
-        .unwrap_or(0);
+        .unwrap_or_else(|| {
+            if source.duration() > 0.0 {
+                (source.size as f64 * 8.0 / source.duration()) as i64
+            } else {
+                0
+            }
+        });
     Ok(
         json!({"Id":source.id,"Name":if source.edition.is_empty(){"Original"}else{&source.edition},"Protocol":"File","Type":"Default","IsRemote":false,"Container":source.path.extension().and_then(|v|v.to_str()).unwrap_or(""),"Size":source.size,"RunTimeTicks":ticks(source.duration()),"Bitrate":bitrate,"ETag":source.generation,"ReadAtNativeFramerate":false,"IgnoreDts":false,"IgnoreIndex":false,"GenPtsInput":false,"IsInfiniteStream":false,"RequiresLooping":false,"SupportsProbing":false,"TranscodingSubProtocol":"hls","HasSegments":false,"RequiresOpening":false,"RequiresClosing":false,"SupportsDirectPlay":true,"SupportsDirectStream":true,"SupportsTranscoding":true,"MediaStreams":streams,"MediaAttachments":[],"Formats":[],"DefaultAudioStreamIndex":tracks.iter().find(|t|t.kind=="audio" && t.default).or_else(||tracks.iter().find(|t|t.kind=="audio")).and_then(|t|t.index),"DefaultSubtitleStreamIndex":-1}),
     )
@@ -73,11 +80,6 @@ pub async fn sources(state: &AppState, media: &str) -> Result<Vec<Value>> {
         result.push(source_dto(&core::source(state, media, Some(&file)).await?).await?);
     }
     Ok(result)
-}
-fn csv_matches(value: &Value, wanted: &str) -> bool {
-    value
-        .as_str()
-        .is_none_or(|v| v.is_empty() || v.split(',').any(|s| s.trim().eq_ignore_ascii_case(wanted)))
 }
 pub async fn info(
     state: &AppState,
@@ -107,10 +109,30 @@ pub async fn info(
     };
     let audio = field("AudioStreamIndex")
         .and_then(|v| v.as_i64())
-        .filter(|v| *v >= 0);
+        .filter(|v| *v >= 0)
+        .or_else(|| dto["DefaultAudioStreamIndex"].as_i64());
     let sub = field("SubtitleStreamIndex").and_then(|v| v.as_i64());
     let subtitle = match sub {
-        Some(-1) => Some("off".into()),
+        Some(-3) => {
+            let language = tracks
+                .iter()
+                .find(|t| t.kind == "audio" && t.index == audio)
+                .map(|t| t.language.as_str())
+                .unwrap_or("und");
+            Some(
+                tracks
+                    .iter()
+                    .find(|t| {
+                        t.kind == "subtitle"
+                            && t.forced
+                            && t.supported
+                            && (t.language == language || t.language == "und")
+                    })
+                    .map(|t| t.id.clone())
+                    .unwrap_or_else(|| "off".into()),
+            )
+        }
+        Some(-2..=-1) => Some("off".into()),
         Some(index) => Some(
             tracks
                 .iter()
@@ -121,52 +143,41 @@ pub async fn info(
         ),
         None => None,
     };
-    let codec_audio = tracks
-        .iter()
-        .find(|t| t.kind == "audio" && audio.is_none_or(|i| Some(i) == t.index))
-        .map(|t| t.codec.as_str())
-        .unwrap_or("");
-    let video = source.video_codec().unwrap_or_default();
-    let container = dto["Container"].as_str().unwrap_or_default();
-    let profile = &input["DeviceProfile"];
-    let direct = field("EnableDirectPlay").as_ref() != Some(&json!(false))
-        && profile["DirectPlayProfiles"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|item| {
-                csv_matches(&item["Container"], container)
-                    && csv_matches(&item["VideoCodec"], video)
-                    && csv_matches(&item["AudioCodec"], codec_audio)
-            });
-    let hls = profile["TranscodingProfiles"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .any(|v| {
-            v["Protocol"]
-                .as_str()
-                .is_some_and(|s| s.eq_ignore_ascii_case("hls"))
-        });
-    let mut caps = Capabilities {
-        containers: if direct {
-            vec![container.to_owned()]
-        } else {
-            Vec::new()
-        },
-        video: vec![video.to_owned()],
-        audio: vec![codec_audio.into()],
-        hls,
-        native_tracks: true,
-    };
-    if field("EnableDirectStream").as_ref() == Some(&json!(false)) {
-        caps.video.clear();
-        caps.audio.clear();
+    let mut profile = input["DeviceProfile"].clone();
+    let video = source.video_codec().is_some();
+    if let Some(max) = field("MaxAudioChannels")
+        .and_then(|v| v.as_u64())
+        .filter(|n| *n > 0)
+    {
+        if !profile.is_object() {
+            profile = json!({});
+        }
+        if !profile["CodecProfiles"].is_array() {
+            profile["CodecProfiles"] = json!([]);
+        }
+        profile["CodecProfiles"].as_array_mut().unwrap().push(json!({"Type":if video{"VideoAudio"}else{"Audio"},"Conditions":[{"Property":"AudioChannels","Condition":"LessThanEqual","Value":max.to_string(),"IsRequired":true}]}));
     }
-    let max = field("MaxStreamingBitrate").and_then(|v| v.as_i64());
+    let negotiate = |rate| {
+        super::profile::negotiate(
+            &source,
+            audio,
+            &profile,
+            field("EnableDirectPlay").as_ref() != Some(&json!(false)),
+            field("EnableDirectStream").as_ref() != Some(&json!(false)),
+            rate,
+        )
+    };
+    let max = [
+        field("MaxStreamingBitrate").and_then(|v| v.as_i64()),
+        profile["MaxStreamingBitrate"].as_i64(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|v| *v > 0)
+    .min();
     let quality = if max.is_some_and(|v| v > 0 && v < dto["Bitrate"].as_i64().unwrap_or(0)) {
         let max = max.unwrap();
-        if max < 2_192_000 {
+        if max < if video { 2_192_000 } else { 192_000 } {
             return Err(ApiError::bad(
                 "This client bitrate limit is below the supported conversion quality",
             ));
@@ -183,14 +194,39 @@ pub async fn info(
     } else {
         "auto"
     };
-    let options = Options {
+    let mut options = Options {
         quality: quality.into(),
         audio,
         subtitle,
-        capabilities: caps,
+        capabilities: negotiate(thelxinoe_playback::bitrate(quality)?.unwrap_or(8_000_000)),
     };
     let planned =
         thelxinoe_playback::plan(&source, &options).map_err(|e| ApiError::bad(e.to_string()))?;
+    if planned == "transcode"
+        && let Some(max) = max.filter(|n| *n < 8_192_000)
+    {
+        options.quality = if !video && max >= 192_000 {
+            "2mbps"
+        } else if max >= 4_192_000 {
+            "4mbps"
+        } else if max >= 2_192_000 {
+            "2mbps"
+        } else {
+            return Err(ApiError::bad(
+                "This client bitrate limit is below the supported conversion quality",
+            ));
+        }
+        .into();
+        options.capabilities = negotiate(thelxinoe_playback::bitrate(&options.quality)?.unwrap());
+    }
+    if planned == "transcode"
+        && source.video_codec().is_some()
+        && options.capabilities.conversion.is_none()
+    {
+        return Err(ApiError::bad(
+            "The client does not support the available H.264/AAC conversion",
+        ));
+    }
     if planned == "transcode" && field("EnableTranscoding").as_ref() == Some(&json!(false)) {
         return Err(ApiError::bad("The client disabled the required conversion"));
     }
@@ -220,8 +256,11 @@ pub async fn info(
         })
         .await?;
     dto["SupportsDirectPlay"] = json!(playback["mode"] == "direct");
-    dto["SupportsDirectStream"] = json!(playback["mode"] == "remux");
-    dto["SupportsTranscoding"] = json!(playback["mode"] == "transcode");
+    // HLS selects one audio stream on the server, including when codecs are
+    // copied. Clients must use their server-controlled track selection path.
+    // DirectStream describes a progressive stream with local track selection.
+    dto["SupportsDirectStream"] = json!(false);
+    dto["SupportsTranscoding"] = json!(playback["mode"] != "direct");
     dto["DirectStreamUrl"] = playback["url"].clone();
     // The video backend preserves ETag as the stream URL's tag parameter.
     // Use that field for a scoped grant when it omits the device login header.
@@ -242,6 +281,15 @@ pub async fn info(
             .unwrap_or(-1)
     );
     if let Some(streams) = dto["MediaStreams"].as_array_mut() {
+        // Use the client's advertised external text format. First-party web
+        // playback continues to receive WebVTT.
+        let subrip = profile["SubtitleProfiles"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|p| {
+                p["Method"] == "External" && matches!(p["Format"].as_str(), Some("srt" | "subrip"))
+            });
         for stream in streams {
             if stream["Type"] == "Subtitle"
                 && stream["IsTextSubtitleStream"] == true
@@ -252,22 +300,28 @@ pub async fn info(
                     .as_array()
                     .and_then(|a| a.iter().find(|s| s["id"] == track.id))
             {
-                stream["DeliveryUrl"] = sub["url"].clone();
+                stream["DeliveryUrl"] = if subrip {
+                    json!(format!("{}&format=srt", sub["url"].as_str().unwrap()))
+                } else {
+                    sub["url"].clone()
+                };
                 stream["DeliveryMethod"] = json!("External");
                 stream["IsExternal"] = json!(true);
-                stream["Codec"] = json!("webvtt");
+                stream["Codec"] = json!(if subrip { "srt" } else { "webvtt" });
             }
         }
     }
     Ok(json!({"MediaSources":[dto],"PlaySessionId":id}))
 }
 pub async fn report(state: &AppState, p: &Principal, input: Value, stopped: bool) -> Result<()> {
-    let id = canonical(
-        input["PlaySessionId"]
-            .as_str()
-            .ok_or_else(|| ApiError::bad("Missing play session"))?,
-    );
     let media = canonical(input["ItemId"].as_str().unwrap_or_default());
+    let id = if let Some(id) = input["PlaySessionId"].as_str().filter(|s| !s.is_empty()) {
+        canonical(id)
+    } else {
+        super::audio::session(state, p, &media)
+            .await?
+            .ok_or_else(|| ApiError::bad("Missing play session"))?
+    };
     let key = id.clone();
     let user = p.user.id.clone();
     let auth = p.session_id.clone();
@@ -300,6 +354,37 @@ pub async fn report(state: &AppState, p: &Principal, input: Value, stopped: bool
     .await?;
     Ok(())
 }
+pub async fn stop_encoding(state: &AppState, p: &Principal, query: &Query) -> Result<()> {
+    let id = canonical(
+        query
+            .get("playsessionid")
+            .ok_or_else(|| ApiError::bad("Missing play session"))?,
+    );
+    let key = id.clone();
+    let user = p.user.id.clone();
+    let auth = p.session_id.clone();
+    let device = query.get("deviceid").cloned();
+    let media=state.db.call(move|db|Ok(db.query_row("SELECT s.media_id FROM playback_sessions s JOIN compat_playbacks c ON c.playback_id=s.id JOIN compat_devices d ON d.session_id=s.auth_session_id WHERE s.id=?1 AND s.user_id=?2 AND s.auth_session_id=?3 AND (?4 IS NULL OR d.device_id=?4)",params![key,user,auth,device],|r|r.get::<_,String>(0)).optional()?)).await?.ok_or_else(ApiError::not_found)?;
+    report(state, p, json!({"ItemId":media,"PlaySessionId":id}), true).await
+}
+pub async fn stream_tag(
+    state: &AppState,
+    tag: &str,
+    media: &str,
+    query: &Query,
+) -> Result<Option<(Principal, String)>> {
+    let hash = thelxinoe_auth::digest(tag);
+    let media = canonical(media);
+    let file = query.get("mediasourceid").map(|s| canonical(s));
+    let explicit = query.get("playsessionid").map(|s| canonical(s));
+    let id=state.db.call(move|db|Ok(db.query_row("SELECT s.id FROM playback_grants g JOIN playback_sessions s ON g.resource='playback:'||s.id JOIN compat_playbacks c ON c.playback_id=s.id WHERE g.token_hash=?1 AND s.media_id=?2 AND s.mode='direct' AND (?3 IS NULL OR s.file_id=?3) AND (?4 IS NULL OR s.id=?4)",params![hash,media,file,explicit],|r|r.get::<_,String>(0)).optional()?)).await?;
+    let Some(id) = id else { return Ok(None) };
+    Ok(
+        crate::grants::resolve(state, tag, &format!("playback:{id}"), false)
+            .await?
+            .map(|p| (p, id)),
+    )
+}
 pub async fn stream(
     state: AppState,
     p: &Principal,
@@ -315,7 +400,8 @@ pub async fn stream(
     let uid = p.user.id.clone();
     let auth = p.session_id.clone();
     let media = media.to_owned();
-    let valid=state.db.call(move|db|Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM playback_sessions WHERE id=?1 AND user_id=?2 AND auth_session_id=?3 AND media_id=?4 AND mode='direct')",params![key,uid,auth,media],|r|r.get::<_,bool>(0))?)).await?;
+    let file = q.get("mediasourceid").map(|s| canonical(s));
+    let valid=state.db.call(move|db|Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM playback_sessions WHERE id=?1 AND user_id=?2 AND auth_session_id=?3 AND media_id=?4 AND mode='direct' AND (?5 IS NULL OR file_id=?5))",params![key,uid,auth,media,file],|r|r.get::<_,bool>(0))?)).await?;
     if !valid {
         return Err(ApiError::not_found());
     }

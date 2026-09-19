@@ -1,7 +1,7 @@
 import { chromium, expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 const code = readFileSync('.local/tv-ui.xml', 'utf8').match(
-  /text="(\d{3}) (\d{3})"/,
+  /text="(\d{3}) ?(\d{3})"/,
 );
 if (!code)
   throw new Error(

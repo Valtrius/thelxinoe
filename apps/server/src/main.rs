@@ -23,13 +23,14 @@ async fn main() -> Result<()> {
     let worker = tokio::spawn(run_jobs(state.clone()));
     let scanner = tokio::spawn(thelxinoe_server::library::reconcile(state.clone()));
     let playback = tokio::spawn(thelxinoe_server::playback::maintain(state.clone()));
+    let discovery = tokio::spawn(thelxinoe_server::run_discovery(state.clone()));
     let listener = tokio::net::TcpListener::bind(bind).await?;
     let server = axum::serve(
         listener,
         router(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown());
-    tokio::select! {result=server=>result?,result=worker=>{result??;},result=scanner=>{result??;},result=playback=>{result??;}}
+    tokio::select! {result=server=>result?,result=worker=>{result??;},result=scanner=>{result??;},result=playback=>{result??;},result=discovery=>{result??;}}
     Ok(())
 }
 async fn shutdown() {

@@ -1,6 +1,6 @@
 //! A complete VOD timeline for clients that seek by requesting HLS segments.
 //! Segments are generated on demand and may be evicted and regenerated.
-use crate::{Options, Source, bitrate};
+use crate::{Options, Source, conversion_args};
 use anyhow::{Context, Result, bail};
 use std::{
     collections::HashMap,
@@ -22,6 +22,7 @@ struct Run {
     options: Options,
     mode: String,
     boundaries: Vec<f64>,
+    video_start: f64,
     gate: Mutex<()>,
     canceled: watch::Sender<bool>,
 }
@@ -52,7 +53,7 @@ impl VodCache {
         if !duration.is_finite() || !(0.0..=86400.0).contains(&duration) || duration == 0.0 {
             bail!("Seekable conversion requires a duration of at most 24 hours");
         }
-        let boundaries = if mode == "remux" && source.video_codec().is_some() {
+        let (boundaries, video_start) = if mode == "remux" && source.video_codec().is_some() {
             let _slot = self
                 .slots
                 .clone()
@@ -60,11 +61,14 @@ impl VodCache {
                 .context("All conversion slots are busy")?;
             keyframes(source).await?
         } else {
-            (0..(duration / 6.0).ceil() as usize)
-                .map(|i| i as f64 * 6.0)
-                .filter(|time| *time == 0.0 || *time < duration - 0.25)
-                .chain(std::iter::once(duration))
-                .collect()
+            (
+                (0..(duration / 6.0).ceil() as usize)
+                    .map(|i| i as f64 * 6.0)
+                    .filter(|time| *time == 0.0 || *time < duration - 0.25)
+                    .chain(std::iter::once(duration))
+                    .collect(),
+                0.0,
+            )
         };
         self.stop(id).await;
         let mut runs = self.runs.lock().await;
@@ -107,6 +111,7 @@ impl VodCache {
                 options: options.clone(),
                 mode: mode.into(),
                 boundaries,
+                video_start,
                 gate: Mutex::new(()),
                 canceled: watch::channel(false).0,
             }),
@@ -162,21 +167,25 @@ impl VodCache {
         let duration = run.boundaries[index + 1] - start;
         let remux_video = run.mode == "remux" && run.source.video_codec().is_some();
         let mut command = Command::new("ffmpeg");
-        command
-            .args([
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-nostdin",
-                "-y",
-                "-ss",
-                &start.to_string(),
-                "-i",
-            ])
-            .arg(&run.source.path);
+        command.args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-y",
+            "-fflags",
+            "+genpts",
+        ]);
+        // Some AVI indexes skip the first GOP even for an explicit -ss 0.
+        if start > 0.0 {
+            command.args(["-ss", &start.to_string()]);
+        }
+        command.arg("-i").arg(&run.source.path);
         if remux_video {
             command.arg("-copyts");
-        } else {
+        } else if index + 2 < run.boundaries.len() {
+            // The final fragment runs to EOF: container duration can omit the
+            // last delayed frame or audio packet. Work remains time/size bounded.
             command.args(["-t", &duration.to_string()]);
         }
         if run.source.video_codec().is_some() {
@@ -229,31 +238,7 @@ impl VodCache {
         } else if run.mode == "remux" {
             command.args(["-c:a", "copy"]);
         } else {
-            let rate = bitrate(&run.options.quality)?.unwrap_or(8_000_000);
-            command.args([
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-threads",
-                "2",
-                "-pix_fmt",
-                "yuv420p",
-                "-vf",
-                "scale=w='min(1920,iw)':h=-2",
-                "-b:v",
-                &rate.to_string(),
-                "-maxrate",
-                &rate.to_string(),
-                "-bufsize",
-                &(rate * 2).to_string(),
-                "-c:a",
-                "aac",
-                "-b:a",
-                "192k",
-                "-ac",
-                "2",
-            ]);
+            command.args(conversion_args(&run.options)?);
         }
         if !remux_video {
             command
@@ -383,12 +368,14 @@ async fn trim(directory: &Path, current: &Path) -> Result<()> {
     }
     Ok(())
 }
-async fn keyframes(source: &Source) -> Result<Vec<f64>> {
+async fn keyframes(source: &Source) -> Result<(Vec<f64>, f64)> {
     let mut command = Command::new("ffprobe");
     command
         .args([
             "-v",
             "error",
+            "-fflags",
+            "+genpts",
             "-skip_frame",
             "nokey",
             "-select_streams",
@@ -426,6 +413,11 @@ async fn keyframes(source: &Source) -> Result<Vec<f64>> {
         bail!("Keyframe indexing failed");
     }
     let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let video_start = value["frames"][0]["best_effort_timestamp_time"]
+        .as_str()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .context("Missing first video timestamp")?;
     let origin = source.probe["format"]["start_time"]
         .as_str()
         .and_then(|s| s.parse::<f64>().ok())
@@ -451,7 +443,7 @@ async fn keyframes(source: &Source) -> Result<Vec<f64>> {
             "Keyframes are too far apart for seekable remux; select a lower quality to convert video"
         );
     }
-    Ok(result)
+    Ok((result, video_start))
 }
 
 async fn clean_work(directory: &Path) -> Result<()> {
@@ -489,10 +481,16 @@ async fn monitor_work(directory: &Path) -> anyhow::Error {
     }
 }
 async fn select_part(run: &Run, start: f64, duration: f64) -> Result<PathBuf> {
+    let last = start + duration >= run.source.duration() - 0.001;
     let origin = run.source.probe["format"]["start_time"]
         .as_str()
         .and_then(|s| s.parse::<f64>().ok())
         .unwrap_or(0.0);
+    let expected = if start == 0.0 {
+        run.video_start
+    } else {
+        start + origin
+    };
     let start = start + origin;
     let csv = tokio::fs::read_to_string(run.directory.join("work.csv")).await?;
     for (index, line) in csv.lines().enumerate() {
@@ -551,7 +549,8 @@ async fn select_part(run: &Run, start: f64, duration: f64) -> Result<PathBuf> {
                 .and_then(|s| s.parse::<f64>().ok())
                 .context("Missing remux timestamp")?;
         }
-        if (begin - start).abs() < 0.05 && end >= start + duration - 0.1 {
+        // The CSV end describes video; the final audio packet can end later.
+        if (begin - expected).abs() < 0.01 && (last || end >= start + duration - 0.1) {
             return Ok(path);
         }
     }

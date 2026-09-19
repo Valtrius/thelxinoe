@@ -92,7 +92,19 @@ Start-Process -FilePath "$env:ANDROID_HOME\emulator\emulator.exe" -ArgumentList 
 & "$env:ANDROID_HOME\platform-tools\adb.exe" -s emulator-5580 shell monkey -p com.github.damontecres.wholphin -c android.intent.category.LEANBACK_LAUNCHER 1
 ```
 
-ADB serial: `emulator-5580`. The emulator reaches host services through `10.0.2.2`. The test server will be `http://10.0.2.2:18484` when the Jellyfin adapter exists. Wholphin's ARMv7 APK works on this image's translation layer; its x86_64 APK does not match the image ABI.
+ADB serial: `emulator-5580`. The emulator reaches the compatibility server at `http://10.0.2.2:18787`. Wholphin's ARMv7 APK works on this image's translation layer; its x86_64 APK does not match the image ABI.
+
+```powershell
+node scripts/tv-fixtures.mjs
+$env:THELXINOE_TEST_HTTP_PORT = '18787'
+$env:THELXINOE_TEST_HTTPS_PORT = '21443'
+$env:THELXINOE_TEST_SUBNET = '172.31.253.0/24'
+$env:THELXINOE_TEST_LOG = 'thelxinoe=info,thelxinoe_server::jellyfin=debug'
+docker compose -p thelxinoe-compat -f compose.test.yaml up -d --wait
+node scripts/test-jellyfin.mjs --tv
+```
+
+Generate the standard playback fixtures first. TV fixtures add 90-second timestamped remux/transcode sources, timed subtitle cues, and an HDR conversion source. Recreating fixture files changes their generation and invalidates existing playback sessions. See [the client matrix](JELLYFIN.md) for actual TV checks, as the protocol script alone cannot establish client compatibility.
 
 Wholphin 1.0.8 ARMv7 APK SHA-256: `7a7a031104f42a8314e3deed4febb670b515687ac500026f59a997dae772d950`. Source: [official Wholphin releases](https://github.com/damontecres/Wholphin/releases).
 

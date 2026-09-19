@@ -28,9 +28,12 @@ services:
         condition: service_healthy
     ports:
       - ${THELXINOE_LISTEN:-127.0.0.1}:8484:8484
+      - ${THELXINOE_LISTEN:-127.0.0.1}:7359:7359/udp
     environment:
       THELXINOE_PUBLIC_URL: ${THELXINOE_PUBLIC_URL:-}
       THELXINOE_TRUSTED_PROXIES: ${THELXINOE_TRUSTED_PROXIES:-}
+      THELXINOE_DISCOVERY: ${THELXINOE_DISCOVERY:-true}
+      THELXINOE_DISCOVERY_URL: ${THELXINOE_DISCOVERY_URL:-}
     volumes:
       - ${THELXINOE_STATE_ROOT:-./.local/docker}/server:/var/lib/thelxinoe
       - ${THELXINOE_STATE_ROOT:-./.local/docker}/cache:/var/cache/thelxinoe

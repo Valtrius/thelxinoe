@@ -15,25 +15,26 @@ pub async fn initiate(
     device: Device,
     address: std::net::IpAddr,
 ) -> Result<Value> {
-    let secret = thelxinoe_auth::token();
-    let hash = thelxinoe_auth::digest(&secret);
-    let code = format!(
-        "{:06}",
-        u32::from_str_radix(&secret[..6], 16).unwrap() % 1_000_000
-    );
-    let code_hash = thelxinoe_auth::digest(&code);
     let scope = format!("quick-connect:{address}");
     let device2 = device.clone();
-    let date=state.db.call(move|db|{
+    let (secret,code,date)=state.db.call(move|db|{
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute("DELETE FROM quick_connect WHERE expires_at<=?1",[now()])?;
         tx.execute("INSERT INTO login_attempts(address,count,window_start) VALUES (?1,1,?2) ON CONFLICT(address) DO UPDATE SET count=CASE WHEN window_start<?2-300 THEN 1 ELSE count+1 END,window_start=CASE WHEN window_start<?2-300 THEN ?2 ELSE window_start END",params![scope,now()])?;
         let count:i64=tx.query_row("SELECT count FROM login_attempts WHERE address=?1",[scope],|r|r.get(0))?;
         let total:i64=tx.query_row("SELECT COUNT(*) FROM quick_connect",[],|r|r.get(0))?;
         if count>10 || total>=1000 {tx.commit()?;return Ok(None);}
-        tx.execute("INSERT INTO quick_connect(secret_hash,code_hash,device_id,device_name,client,version,expires_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",params![hash,code_hash,device2.id,device2.name,device2.client,device2.version,now()+300])?;
-        let date:String=tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ','now')",[],|r|r.get(0))?;
-        tx.commit()?;Ok(Some(date))
+        for _ in 0..16 {
+            let secret=thelxinoe_auth::token();
+            let hash=thelxinoe_auth::digest(&secret);
+            let code=format!("{:06}",u32::from_str_radix(&secret[..6],16).unwrap()%1_000_000);
+            let code_hash=thelxinoe_auth::digest(&code);
+            if tx.execute("INSERT INTO quick_connect(secret_hash,code_hash,device_id,device_name,client,version,expires_at) VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(code_hash) DO NOTHING",params![hash,code_hash,device2.id,device2.name,device2.client,device2.version,now()+300])?==1 {
+                let date:String=tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ','now')",[],|r|r.get(0))?;
+                tx.commit()?;return Ok(Some((secret,code,date)));
+            }
+        }
+        tx.commit()?;Ok(None)
     }).await?.ok_or_else(||ApiError::bad("Too many Quick Connect requests; wait five minutes"))?;
     Ok(
         json!({"Authenticated":false,"Secret":secret,"Code":code,"DeviceId":device.id,"DeviceName":device.name,"AppName":device.client,"AppVersion":device.version,"DateAdded":date}),

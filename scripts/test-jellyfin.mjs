@@ -2,6 +2,26 @@ import { request } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
+import dgram from 'node:dgram';
+const discovery = dgram.createSocket('udp4');
+try {
+  const discovered = await new Promise((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error('LAN discovery timed out')),
+      3000,
+    );
+    discovery.once('message', (data) => {
+      clearTimeout(timeout);
+      resolve(JSON.parse(data));
+    });
+    discovery.send('who is JellyfinServer?', 18787, '127.0.0.1');
+  });
+  assert.equal(discovered.Address, 'http://127.0.0.1:18787');
+  assert.ok(discovered.Id);
+  assert.match(discovered.Name, /^Thelxinoe /);
+} finally {
+  discovery.close();
+}
 const api = await request.newContext({
   baseURL: 'https://localhost:21443',
   ignoreHTTPSErrors: true,
@@ -65,6 +85,15 @@ let r = await compat.post('/Users/AuthenticateByName', {
 assert.equal(r.status(), 200);
 const login = await r.json();
 const headers = { 'X-Emby-Token': login.AccessToken };
+const otherLogin = await compat.post('/Users/AuthenticateByName', {
+  headers: {
+    Authorization:
+      'MediaBrowser Client="Protocol validation", Device="Second test", DeviceId="thelxinoe-compat-other", Version="1"',
+  },
+  data: { Username: credentials.username, Pw: credentials.password },
+});
+assert.equal(otherLogin.status(), 200);
+const otherHeaders = { 'X-Emby-Token': (await otherLogin.json()).AccessToken };
 r = await compat.get('/UserViews', { headers });
 assert.equal(r.status(), 200);
 const views = await r.json();
@@ -75,6 +104,54 @@ r = await compat.get('/Items?IncludeItemTypes=Movie&Recursive=true', {
 assert.equal(r.status(), 200);
 const movies = await r.json();
 assert.ok(movies.Items.some((i) => i.Name === 'Direct'));
+r = await compat.get('/Items?IncludeItemTypes=Audio', { headers });
+const tracks = (await r.json()).Items;
+assert.ok(tracks.length >= 2);
+assert.ok(tracks.every((t) => t.IndexNumber < 10000));
+const playlists = (await call('/playlists')).items;
+if (!playlists.some((p) => p.name === 'TV validation mix')) {
+  await call('/playlists', 'POST', {
+    name: 'TV validation mix',
+    items: [tracks[0].Id, tracks[1].Id, tracks[0].Id],
+  });
+}
+const musicPath = `/Audio/${tracks[0].Id}/universal?Container=mp3&Container=flac`;
+r = await compat.get(musicPath, {
+  headers: { ...headers, Range: 'bytes=0-63' },
+});
+assert.equal(r.status(), 206);
+assert.equal((await r.body()).subarray(0, 4).toString(), 'fLaC');
+assert.equal((await compat.get(musicPath)).status(), 401);
+assert.equal(
+  (
+    await compat.post('/Sessions/Playing/Progress', {
+      headers: otherHeaders,
+      data: { ItemId: tracks[0].Id, PositionTicks: 10_000_000 },
+    })
+  ).status(),
+  400,
+  'Another device cannot infer the current audio session',
+);
+for (const [suffix, position] of [
+  ['', 0],
+  ['/Progress', 10_000_000],
+  ['/Stopped', 20_000_000],
+]) {
+  r = await compat.post(`/Sessions/Playing${suffix}`, {
+    headers,
+    data: { ItemId: tracks[0].Id, PositionTicks: position, IsPaused: false },
+  });
+  assert.equal(r.status(), 204, 'Implicit audio playback progress');
+}
+r = await compat.post('/Sessions/Playing/Progress', {
+  headers,
+  data: { ItemId: movies.Items[0].Id, PositionTicks: 1 },
+});
+assert.equal(
+  r.status(),
+  400,
+  'Video progress still requires an explicit play session',
+);
 r = await compat.get('/Items?SearchTerm=Direct&IncludeItemTypes=Movie', {
   headers,
 });
@@ -86,6 +163,7 @@ assert.equal(r.status(), 401);
 const direct = movies.Items.find((i) => i.Name === 'Direct');
 await call(`/catalog/${direct.Id}/state`, 'PUT', { watched: false });
 const profile = {
+  SubtitleProfiles: [{ Format: 'srt', Method: 'External' }],
   DirectPlayProfiles: [
     { Type: 'Video', Container: 'mp4', VideoCodec: 'h264', AudioCodec: 'aac' },
   ],
@@ -113,10 +191,42 @@ assert.equal(r.status(), 200);
 const playback = await r.json();
 const source = playback.MediaSources[0];
 assert.equal(source.SupportsDirectPlay, true);
+const subtitle = source.MediaStreams.find((s) => s.Type === 'Subtitle');
+assert.equal(subtitle.Codec, 'srt');
+for (const format of ['srt', 'vtt']) {
+  const url = new URL(subtitle.DeliveryUrl, 'http://127.0.0.1:18787');
+  url.searchParams.set('format', format);
+  r = await compat.get(url.toString());
+  assert.equal(r.status(), 200);
+  const body = await r.text();
+  assert.ok(body.includes('-->'));
+  assert.equal(body.startsWith('WEBVTT'), format === 'vtt');
+}
 const streamPath = `/Videos/${direct.Id}/stream?Static=true&MediaSourceId=${source.Id}&PlaySessionId=${playback.PlaySessionId}&tag=${source.ETag}`;
 r = await compat.get(streamPath, { headers: { Range: 'bytes=0-63' } });
 assert.equal(r.status(), 206);
 assert.equal((await r.body()).length, 64);
+const tvUrl = `/Videos/${direct.Id}/stream.mp4?Static=true&MediaSourceId=${source.Id}&tag=${source.ETag}`;
+assert.equal(
+  (await compat.get(tvUrl, { headers: { Range: 'bytes=0-63' } })).status(),
+  206,
+);
+assert.equal(
+  (
+    await compat.get(
+      tvUrl.replace(source.Id, movies.Items.find((i) => i.Id !== direct.Id).Id),
+    )
+  ).status(),
+  401,
+);
+assert.equal(
+  (
+    await compat.get(
+      `${tvUrl}&PlaySessionId=00000000-0000-0000-0000-000000000000`,
+    )
+  ).status(),
+  401,
+);
 r = await compat.get(
   `/Videos/${direct.Id}/stream?PlaySessionId=${playback.PlaySessionId}`,
 );
@@ -147,23 +257,60 @@ assert.equal((await r.json()).UserData.Played, true);
 r = await compat.get(streamPath);
 assert.equal(r.status(), 401);
 await call(`/catalog/${direct.Id}/state`, 'PUT', { watched: false });
-for (const mode of ['remux', 'transcode']) {
-  const item = movies.Items.find((i) => i.Name === 'Remux');
+for (const mode of [
+  'remux',
+  'transcode',
+  ...(process.argv.includes('--tv') ? ['limited', 'hdr'] : []),
+]) {
+  const item = movies.Items.find(
+    (i) => i.Name === (mode === 'hdr' ? 'TV HDR' : 'Remux'),
+  );
+  assert.ok(item, 'Generate playback and TV fixtures first');
+  const deviceProfile = structuredClone(profile);
+  if (mode === 'limited')
+    deviceProfile.CodecProfiles = [
+      {
+        Type: 'Video',
+        Codec: 'h264',
+        Conditions: [
+          {
+            Property: 'Width',
+            Condition: 'LessThanEqual',
+            Value: '160',
+            IsRequired: true,
+          },
+          {
+            Property: 'Height',
+            Condition: 'LessThanEqual',
+            Value: '90',
+            IsRequired: true,
+          },
+          {
+            Property: 'VideoFramerate',
+            Condition: 'LessThanEqual',
+            Value: '12',
+            IsRequired: true,
+          },
+        ],
+      },
+    ];
   r = await compat.post(`/Items/${item.Id}/PlaybackInfo`, {
     headers,
     data: {
-      DeviceProfile: profile,
+      DeviceProfile: deviceProfile,
       EnableDirectPlay: false,
       EnableDirectStream: mode === 'remux',
       EnableTranscoding: true,
-      SubtitleStreamIndex: -1,
+      SubtitleStreamIndex: -2,
+      ...(mode === 'limited' ? { MaxStreamingBitrate: 2_500_000 } : {}),
     },
   });
   assert.equal(r.status(), 200, `${mode} playback info`);
   const session = await r.json();
   const converted = session.MediaSources[0];
   assert.equal(converted.SupportsDirectPlay, false);
-  assert.equal(converted.SupportsTranscoding, mode === 'transcode');
+  assert.equal(converted.SupportsTranscoding, true);
+  assert.equal(converted.SupportsDirectStream, false);
   const playlistUrl = new URL(
     converted.TranscodingUrl,
     'http://127.0.0.1:18787',
@@ -190,6 +337,18 @@ for (const mode of ['remux', 'transcode']) {
       ),
     );
     assert.ok(probe.streams.some((s) => s.codec_name === 'h264'));
+    if (mode === 'limited') {
+      const video = probe.streams.find((s) => s.codec_type === 'video');
+      assert.equal(video.width, 160);
+      assert.equal(video.height, 90);
+      assert.equal(video.r_frame_rate, '12/1');
+    }
+    if (mode === 'hdr') {
+      const video = probe.streams.find((s) => s.codec_type === 'video');
+      assert.equal(video.color_transfer, 'bt709');
+      assert.equal(video.color_primaries, 'bt709');
+      assert.equal(video.pix_fmt, 'yuv420p');
+    }
     execFileSync(
       'ffmpeg',
       [
@@ -209,18 +368,48 @@ for (const mode of ['remux', 'transcode']) {
       { windowsHide: true },
     );
   }
-  r = await compat.post('/Sessions/Playing/Stopped', {
-    headers,
-    data: {
-      ItemId: item.Id,
-      PlaySessionId: session.PlaySessionId,
-      PositionTicks: 0,
-    },
-  });
+  const cancelPath = `/Videos/ActiveEncodings?PlaySessionId=${session.PlaySessionId}`;
+  assert.equal(
+    (await compat.delete(cancelPath, { headers: otherHeaders })).status(),
+    404,
+  );
+  assert.equal(
+    (await compat.delete(`${cancelPath}&DeviceId=wrong`, { headers })).status(),
+    404,
+  );
+  r =
+    mode === 'remux'
+      ? await compat.delete(`${cancelPath}&DeviceId=thelxinoe-compat-test`, {
+          headers,
+        })
+      : await compat.post('/Sessions/Playing/Stopped', {
+          headers,
+          data: {
+            ItemId: item.Id,
+            PlaySessionId: session.PlaySessionId,
+            PositionTicks: 0,
+          },
+        });
   assert.equal(r.status(), 204);
   r = await compat.get(playlistUrl.toString());
   assert.equal(r.status(), 401);
 }
+assert.equal(
+  (
+    await compat.get(musicPath, {
+      headers: { ...otherHeaders, Range: 'bytes=0-63' },
+    })
+  ).status(),
+  206,
+);
+assert.equal(
+  (await compat.post('/Sessions/Logout', { headers: otherHeaders })).status(),
+  204,
+);
+assert.equal(
+  (await compat.get(musicPath, { headers: otherHeaders })).status(),
+  401,
+);
 const serverLogs = execFileSync(
   'docker',
   [

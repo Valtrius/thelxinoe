@@ -1,4 +1,4 @@
-use crate::{Options, Source, bitrate};
+use crate::{Options, Source, conversion_args};
 use anyhow::{Context, Result, bail};
 use std::{
     collections::HashMap,
@@ -108,33 +108,9 @@ impl Pipelines {
         if mode == "remux" {
             command.args(["-c", "copy"]);
         } else {
-            let rate = bitrate(&options.quality)?.unwrap_or(8_000_000).to_string();
-            command.args([
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-threads",
-                "2",
-                "-pix_fmt",
-                "yuv420p",
-                "-vf",
-                "scale=w='min(1920,iw)':h=-2",
-                "-b:v",
-                &rate,
-                "-maxrate",
-                &rate,
-                "-bufsize",
-                &format!("{}", rate.parse::<u32>()? * 2),
-                "-force_key_frames",
-                "expr:gte(t,n_forced*6)",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "192k",
-                "-ac",
-                "2",
-            ]);
+            command
+                .args(conversion_args(options)?)
+                .args(["-force_key_frames", "expr:gte(t,n_forced*6)"]);
         }
         command
             .args([

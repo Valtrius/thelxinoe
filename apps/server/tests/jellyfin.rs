@@ -75,6 +75,177 @@ async fn call(
     )
 }
 const DEVICE: &str = "MediaBrowser Client=\"Test%20client\", Device=\"Living room, TV\", DeviceId=\"tv-one\", Version=\"1\"";
+
+#[tokio::test]
+async fn catalog_paging_playlist_order_and_private_state_match_first_party() {
+    let (_temp, state, first_party) = fixture().await;
+    state.db.call(|db| {
+        db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('music','Music','music','/music')",[])?;
+        for (id,kind,parent) in [("artist","artist",None),("album","album",Some("artist")),("one","track",Some("album")),("two","track",Some("album"))] {
+            db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,created_at) VALUES (?1,'music',?2,?3,?1,?1,1)",rusqlite::params![id,kind,parent])?;
+        }
+        db.execute("INSERT INTO playlists(id,owner_id,name,created_at,updated_at) VALUES ('mix','alice','Shared mix',1,1)",[])?;
+        for (position,media) in ["two","one","two"].iter().enumerate() {
+            db.execute("INSERT INTO playlist_items VALUES ('mix',?1,?2)",rusqlite::params![position as i64,media])?;
+        }
+        Ok(())
+    }).await.unwrap();
+    let mut tokens = Vec::new();
+    for name in ["alice", "bob"] {
+        let (status, login) = call(
+            &state,
+            "/Users/AuthenticateByName",
+            "POST",
+            json!({"Username":name,"Pw":"a long test-only password"}),
+            &[("Authorization", DEVICE)],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        tokens.push(login["AccessToken"].as_str().unwrap().to_owned());
+    }
+    let alice = [("X-Emby-Token", tokens[0].as_str())];
+    let bob = [("X-Emby-Token", tokens[1].as_str())];
+    for query in [
+        "IsFolder=false&Limit=0",
+        "IncludeItemTypes=Audio&StartIndex=100",
+        "ArtistIds=artist&IsFolder=false&Limit=0",
+    ] {
+        let (status, page) = call(
+            &state,
+            &format!("/Items?{query}"),
+            "GET",
+            Value::Null,
+            &alice,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert_eq!(page["TotalRecordCount"], 2);
+        assert_eq!(page["Items"], json!([]));
+    }
+    for path in ["/Playlists/mix/Items", "/Items?ParentId=mix"] {
+        let (status, page) = call(&state, path, "GET", Value::Null, &bob).await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert_eq!(page["TotalRecordCount"], 3);
+        let rows = page["Items"].as_array().unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|v| v["Id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["two", "one", "two"]
+        );
+        assert_ne!(rows[0]["PlaylistItemId"], rows[2]["PlaylistItemId"]);
+    }
+    let (status, page) = call(
+        &state,
+        "/Playlists/mix/Items?StartIndex=2&Limit=1",
+        "GET",
+        Value::Null,
+        &bob,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["Items"].as_array().unwrap().len(), 1);
+    assert_eq!(page["Items"][0]["Id"], "two");
+    for id in ["mix", "one"] {
+        let (status, data) = call(
+            &state,
+            &format!("/UserFavoriteItems/{id}"),
+            "POST",
+            Value::Null,
+            &alice,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{data}");
+        assert_eq!(data["IsFavorite"], true);
+        let (_, other) = call(&state, &format!("/Items/{id}"), "GET", Value::Null, &bob).await;
+        assert_eq!(other["UserData"]["IsFavorite"], false);
+    }
+    let (status, data) = call(&state, "/UserPlayedItems/one", "POST", Value::Null, &alice).await;
+    assert_eq!(status, StatusCode::OK, "{data}");
+    assert_eq!(data["Played"], true);
+    for (headers, total) in [(&alice, 1), (&bob, 0)] {
+        let (status, page) = call(
+            &state,
+            "/Items?IncludeItemTypes=Playlist&Filters=IsFavorite&StartIndex=100",
+            "GET",
+            Value::Null,
+            headers,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page["TotalRecordCount"], total);
+        assert_eq!(page["Items"], json!([]));
+    }
+    state
+        .db
+        .call(|db| {
+            for index in 0..100 {
+                db.execute(
+                    "INSERT INTO compat_preferences VALUES ('alice','test',?1,'{}')",
+                    [index.to_string()],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        call(
+            &state,
+            "/DisplayPreferences/0?client=test",
+            "POST",
+            json!({"SortBy":"DateCreated"}),
+            &alice
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &state,
+            "/DisplayPreferences/new?client=test",
+            "POST",
+            json!({}),
+            &alice
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let (_, saved) = call(
+        &state,
+        "/api/v1/catalog/one/state",
+        "GET",
+        Value::Null,
+        &[("Authorization", &format!("Bearer {first_party}"))],
+    )
+    .await;
+    assert_eq!(saved["favorite"], true);
+    assert_eq!(saved["watched"], true);
+    assert_eq!(
+        call(
+            &state,
+            "/Users/bob/FavoriteItems/one",
+            "DELETE",
+            Value::Null,
+            &alice
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let (status, data) = call(
+        &state,
+        "/UserFavoriteItems/one",
+        "DELETE",
+        Value::Null,
+        &alice,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(data["IsFavorite"], false);
+}
 #[tokio::test]
 async fn compatibility_credentials_are_private_revocable_and_transport_scoped() {
     let (_temp, state, first_party) = fixture().await;

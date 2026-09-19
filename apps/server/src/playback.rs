@@ -435,11 +435,21 @@ pub async fn report(state: &AppState, p: &Principal, id: &str, input: Progress) 
     }
     Ok(json!({"accepted":updated}))
 }
+#[derive(Deserialize)]
+pub struct SubtitleQuery {
+    grant: String,
+    format: Option<String>,
+}
 pub async fn subtitle(
     State(state): State<AppState>,
     Path((id, track)): Path<(String, String)>,
-    Query(grant): Query<Grant>,
+    Query(grant): Query<SubtitleQuery>,
 ) -> Result<Response> {
+    let (format, content_type) = match grant.format.as_deref().unwrap_or("vtt") {
+        "vtt" => ("webvtt", "text/vtt; charset=utf-8"),
+        "srt" => ("srt", "application/x-subrip; charset=utf-8"),
+        _ => return Err(ApiError::bad("Unsupported subtitle format")),
+    };
     let (_, session) = from_grant(&state, &id, &grant.grant).await?;
     let source = current_source(&state, &session).await?;
     let track = source
@@ -461,7 +471,7 @@ pub async fn subtitle(
         command.args(["-map", &format!("0:{index}")]);
     }
     command
-        .args(["-f", "webvtt", "pipe:1"])
+        .args(["-f", format, "pipe:1"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -489,7 +499,7 @@ pub async fn subtitle(
     })
     .await
     .map_err(|_| ApiError::conflict("Subtitle conversion timed out"))??;
-    Ok(([(header::CONTENT_TYPE, "text/vtt; charset=utf-8")], output).into_response())
+    Ok(([(header::CONTENT_TYPE, content_type)], output).into_response())
 }
 async fn fail(state: &AppState, id: &str) -> anyhow::Result<()> {
     let id = id.to_owned();

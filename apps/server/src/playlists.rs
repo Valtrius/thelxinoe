@@ -156,8 +156,18 @@ pub async fn favorite(
     Json(input): Json<Favorite>,
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
+    favorite_for(&state, &p, &id, input.favorite)
+        .await
+        .map(Json)
+}
+pub(crate) async fn favorite_for(
+    state: &AppState,
+    p: &Principal,
+    id: &str,
+    favorite: bool,
+) -> Result<Value> {
     let user = p.user.id.clone();
-    let key = id.clone();
+    let key = id.to_owned();
     let found = state
         .db
         .call(move |db| {
@@ -169,7 +179,7 @@ pub async fn favorite(
             )? {
                 return Ok(false);
             }
-            if input.favorite {
+            if favorite {
                 tx.execute(
                     "INSERT OR IGNORE INTO playlist_favorites VALUES (?1,?2)",
                     params![user, key],
@@ -188,7 +198,11 @@ pub async fn favorite(
         return Err(ApiError::not_found());
     }
     state
-        .emit(Some(p.user.id), "playlists.changed", json!({"id":id}))
+        .emit(
+            Some(p.user.id.clone()),
+            "playlists.changed",
+            json!({"id":id}),
+        )
         .await?;
-    Ok(Json(json!({"favorite":input.favorite})))
+    Ok(json!({"favorite":favorite}))
 }

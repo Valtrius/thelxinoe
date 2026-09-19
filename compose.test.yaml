@@ -9,11 +9,14 @@ services:
     cap_drop: [ALL]
   server:
     image: thelxinoe-server:0.1.0
-    ports: ["127.0.0.1:${THELXINOE_TEST_HTTP_PORT:-18484}:8484"]
+    ports:
+      - "127.0.0.1:${THELXINOE_TEST_HTTP_PORT:-18484}:8484"
+      - "127.0.0.1:${THELXINOE_TEST_HTTP_PORT:-18484}:7359/udp"
     environment:
       THELXINOE_PUBLIC_URL: https://localhost:${THELXINOE_TEST_HTTPS_PORT:-9443}
       THELXINOE_TRUSTED_PROXIES: ${THELXINOE_TEST_SUBNET:-172.31.250.0/24}
       RUST_LOG: ${THELXINOE_TEST_LOG:-thelxinoe=info}
+      THELXINOE_DISCOVERY_URL: http://127.0.0.1:${THELXINOE_TEST_HTTP_PORT:-18484}
     depends_on:
       controller:
         condition: service_healthy

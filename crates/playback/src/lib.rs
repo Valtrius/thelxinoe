@@ -15,6 +15,111 @@ pub struct Capabilities {
     pub hls: bool,
     #[serde(default)]
     pub native_tracks: bool,
+    #[serde(default)]
+    pub conversion: Option<Conversion>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Conversion {
+    pub width: u32,
+    pub height: u32,
+    pub frame_rate: f64,
+    pub profile: String,
+    pub level: u32,
+    #[serde(default)]
+    pub tone_map: bool,
+    #[serde(default)]
+    pub deinterlace: bool,
+}
+pub(crate) fn conversion_args(options: &Options) -> Result<Vec<String>> {
+    let mut rate = bitrate(&options.quality)?.unwrap_or(8_000_000);
+    let mut filter = "scale=w='min(1920,iw)':h=-2".to_owned();
+    let mut extra = Vec::new();
+    if let Some(c) = &options.capabilities.conversion {
+        if !(2..=1920).contains(&c.width)
+            || c.width % 2 != 0
+            || !(2..=1080).contains(&c.height)
+            || c.height % 2 != 0
+            || !c.frame_rate.is_finite()
+            || !(1.0..=60.0).contains(&c.frame_rate)
+            || !["baseline", "main", "high"].contains(&c.profile.as_str())
+            || ![30, 31, 41].contains(&c.level)
+        {
+            bail!("Invalid conversion limits");
+        }
+        rate = rate.min(match c.level {
+            30 => 10_000_000,
+            31 => 14_000_000,
+            _ => 20_000_000,
+        });
+        filter = format!(
+            "{}{}scale={}:{},setsar=1,fps={:.6}",
+            if c.deinterlace {
+                "yadif=mode=send_frame:parity=auto,"
+            } else {
+                ""
+            },
+            if c.tone_map {
+                "zscale=t=linear:npl=100,format=gbrpf32le,tonemap=tonemap=hable:desat=0,zscale=p=bt709:t=bt709:m=bt709:r=limited,format=yuv420p,"
+            } else {
+                ""
+            },
+            c.width,
+            c.height,
+            c.frame_rate
+        );
+        extra = vec![
+            "-profile:v".into(),
+            c.profile.clone(),
+            "-level:v".into(),
+            format!("{}.{}", c.level / 10, c.level % 10),
+            "-refs".into(),
+            "1".into(),
+        ];
+        if c.tone_map {
+            extra.extend(
+                [
+                    "-color_primaries",
+                    "bt709",
+                    "-color_trc",
+                    "bt709",
+                    "-colorspace",
+                    "bt709",
+                ]
+                .map(str::to_owned),
+            );
+        }
+    }
+    let mut args = [
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-threads",
+        "2",
+        "-pix_fmt",
+        "yuv420p",
+        "-vf",
+        &filter,
+        "-b:v",
+        &rate.to_string(),
+        "-maxrate",
+        &rate.to_string(),
+        "-bufsize",
+        &(rate * 2).to_string(),
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-ac",
+        "2",
+        "-ar",
+        "48000",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    args.extend(extra);
+    Ok(args)
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Options {
@@ -68,6 +173,8 @@ pub struct Track {
     pub language: String,
     pub title: String,
     pub default: bool,
+    #[serde(default)]
+    pub forced: bool,
     pub supported: bool,
     #[serde(skip)]
     pub path: Option<PathBuf>,
@@ -130,6 +237,7 @@ impl Source {
                 language: stream["tags"]["language"].as_str().unwrap_or("und").into(),
                 title: stream["tags"]["title"].as_str().unwrap_or("").into(),
                 default: stream["disposition"]["default"].as_i64() == Some(1),
+                forced: stream["disposition"]["forced"].as_i64() == Some(1),
                 path: None,
             });
         }
@@ -167,6 +275,19 @@ impl Source {
         }
         sidecars.sort_by(|a, b| a.0.cmp(&b.0));
         for (path, language, codec) in sidecars {
+            let flags = language.split('.').collect::<Vec<_>>();
+            let forced = flags.iter().any(|s| s.eq_ignore_ascii_case("forced"));
+            let default = flags.iter().any(|s| s.eq_ignore_ascii_case("default"));
+            let language = flags
+                .iter()
+                .find(|s| {
+                    !["forced", "default", "sdh", "cc", "hi"]
+                        .iter()
+                        .any(|flag| s.eq_ignore_ascii_case(flag))
+                })
+                .copied()
+                .unwrap_or("und")
+                .to_owned();
             let identity = path
                 .file_name()
                 .unwrap_or_default()
@@ -186,7 +307,8 @@ impl Source {
                     .unwrap_or_default()
                     .to_string_lossy()
                     .into(),
-                default: false,
+                default,
+                forced,
                 supported: true,
                 path: Some(path),
             });
@@ -234,6 +356,16 @@ pub fn plan(source: &Source, options: &Options) -> Result<&'static str> {
         .unwrap_or("")
         .to_lowercase();
     let container = caps.containers.contains(&extension);
+    // AVI has no presentation timestamps. With reordered video frames its
+    // generated keyframe times are not reliable enough for stream-copy seeks.
+    let remux_timestamps = extension != "avi"
+        || video.is_none()
+        || source.probe["streams"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|s| s["codec_type"] == "video")
+            .is_some_and(|s| s["has_b_frames"] == 0);
     let first_audio = source.probe["streams"]
         .as_array()
         .into_iter()
@@ -253,6 +385,7 @@ pub fn plan(source: &Source, options: &Options) -> Result<&'static str> {
     }
     if options.quality == "original"
         && (!video_ok
+            || !remux_timestamps
             || !audio_ok
             || !video.is_none_or(|v| v == "h264")
             || !audio_codec.is_none_or(|v| ["aac", "mp3"].contains(&v)))
@@ -262,6 +395,7 @@ pub fn plan(source: &Source, options: &Options) -> Result<&'static str> {
     Ok(
         if rate.is_none()
             && video_ok
+            && remux_timestamps
             && audio_ok
             && video.is_none_or(|v| v == "h264")
             && audio_codec.is_none_or(|v| ["aac", "mp3"].contains(&v))

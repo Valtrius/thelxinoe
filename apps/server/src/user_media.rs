@@ -24,16 +24,21 @@ pub async fn get(
     Path(media): Path<String>,
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
+    get_for(&state, &p, &media).await.map(Json)
+}
+pub(crate) async fn get_for(state: &AppState, p: &Principal, media: &str) -> Result<Value> {
+    let p = p.clone();
+    let media = media.to_owned();
     let result = state.db.call(move |db| {
         Ok(db.query_row("SELECT COALESCE(s.favorite,0),COALESCE(s.watch_later,0),COALESCE(s.watched,0) FROM media m LEFT JOIN media_state s ON s.media_id=m.id AND s.user_id=?1 WHERE m.id=?2",params![p.user.id,media],|r|Ok(json!({"favorite":r.get::<_,bool>(0)?,"watch_later":r.get::<_,bool>(1)?,"watched":r.get::<_,bool>(2)?}))).optional()?)
     }).await?;
-    Ok(Json(result.ok_or_else(ApiError::not_found)?))
+    result.ok_or_else(ApiError::not_found)
 }
 #[derive(Deserialize)]
 pub struct Change {
-    favorite: Option<bool>,
-    watch_later: Option<bool>,
-    watched: Option<bool>,
+    pub(crate) favorite: Option<bool>,
+    pub(crate) watch_later: Option<bool>,
+    pub(crate) watched: Option<bool>,
 }
 pub async fn set(
     State(state): State<AppState>,
@@ -42,8 +47,16 @@ pub async fn set(
     Json(input): Json<Change>,
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
+    set_for(&state, &p, &media, input).await.map(Json)
+}
+pub(crate) async fn set_for(
+    state: &AppState,
+    p: &Principal,
+    media: &str,
+    input: Change,
+) -> Result<Value> {
     let user = p.user.id.clone();
-    let mid = media.clone();
+    let mid = media.to_owned();
     let result = state.db.call(move |db| {
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let kind:Option<String> = tx.query_row("SELECT kind FROM media WHERE id=?1",[&mid],|r|r.get(0)).optional()?;
@@ -73,7 +86,7 @@ pub async fn set(
             json!({"media_id":media}),
         )
         .await?;
-    get(State(state), headers, Path(media)).await
+    get_for(state, p, media).await
 }
 pub async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;

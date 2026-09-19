@@ -1,6 +1,9 @@
+mod audio;
 mod auth;
 mod catalog;
+pub(crate) mod discovery;
 mod playback;
+mod profile;
 pub(crate) mod quick_connect;
 use crate::{
     AppState,
@@ -31,6 +34,8 @@ pub fn router() -> Router<AppState> {
         "/Users/{*path}",
         "/UserViews",
         "/UserItems/{*path}",
+        "/UserFavoriteItems/{*path}",
+        "/UserPlayedItems/{*path}",
         "/Items",
         "/Items/{*path}",
         "/Shows/{*path}",
@@ -38,6 +43,7 @@ pub fn router() -> Router<AppState> {
         "/Artists/{*path}",
         "/Genres",
         "/MusicGenres",
+        "/Persons",
         "/Sessions",
         "/Sessions/{*path}",
         "/Audio/{*path}",
@@ -89,6 +95,10 @@ fn safe_route(path: &str) -> String {
         "Me",
         "UserViews",
         "UserItems",
+        "UserFavoriteItems",
+        "UserPlayedItems",
+        "FavoriteItems",
+        "PlayedItems",
         "Items",
         "Latest",
         "Resume",
@@ -103,6 +113,7 @@ fn safe_route(path: &str) -> String {
         "AlbumArtists",
         "Genres",
         "MusicGenres",
+        "Persons",
         "Sessions",
         "Playing",
         "Progress",
@@ -113,6 +124,7 @@ fn safe_route(path: &str) -> String {
         "Audio",
         "Videos",
         "stream",
+        "universal",
         "stream.mp4",
         "stream.mkv",
         "PlaybackInfo",
@@ -171,12 +183,18 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
                 "ids",
                 "filters",
                 "sortby",
+                "sortorder",
                 "genreids",
                 "genres",
                 "artistids",
+                "albumartistids",
+                "container",
                 "studioids",
                 "persontypes",
                 "excludelocationtypes",
+                "includesegmenttypes",
+                "playablemediatypes",
+                "supportedcommands",
             ]
             .contains(&key.as_str())
             {
@@ -246,13 +264,13 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
         && ["Videos", "Audio"].contains(&parts[0])
         && parts[2].starts_with("stream")
         && (method == "GET" || method == "HEAD");
-    let grant_principal = if let Some(tag) = query.get("tag").filter(|s| s.len() == 64) {
+    let grant_principal = if let Some(tag) = query.get("tag").filter(|s| s.len() == 64).cloned() {
         if image_request {
-            crate::grants::resolve(&state, tag, "artwork", false).await?
+            crate::grants::resolve(&state, &tag, "artwork", false).await?
         } else if stream_request {
-            if let Some(id) = query.get("playsessionid") {
-                crate::grants::resolve(&state, tag, &format!("playback:{}", canonical(id)), false)
-                    .await?
+            if let Some((p, id)) = playback::stream_tag(&state, &tag, parts[1], &query).await? {
+                query.insert("playsessionid".into(), id);
+                Some(p)
             } else {
                 None
             }
@@ -279,6 +297,33 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
     }
     if method == "GET" && lower == "/system/info" {
         return Ok(axum::Json(public_info()).into_response());
+    }
+    if method == "POST" || method == "DELETE" {
+        let action = match parts.as_slice() {
+            ["UserFavoriteItems", id] | ["Users", _, "FavoriteItems", id] => Some((*id, true)),
+            ["UserPlayedItems", id] | ["Users", _, "PlayedItems", id] => Some((*id, false)),
+            _ => None,
+        };
+        if let Some((id, favorite)) = action {
+            let id = canonical(id);
+            if favorite && catalog::is_playlist(&state, &id).await? {
+                crate::playlists::favorite_for(&state, &p, &id, method == "POST").await?;
+            } else {
+                crate::user_media::set_for(
+                    &state,
+                    &p,
+                    &id,
+                    crate::user_media::Change {
+                        favorite: favorite.then_some(method == "POST"),
+                        watched: (!favorite).then_some(method == "POST"),
+                        watch_later: None,
+                    },
+                )
+                .await?;
+            }
+            let item = catalog::browse(&state, &p, &Query::new(), Some(&id)).await?;
+            return Ok(axum::Json(item["UserData"].clone()).into_response());
+        }
     }
     if method == "POST" && lower == "/sessions/logout" {
         state
@@ -326,6 +371,18 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
         .await?;
         return Ok(StatusCode::NO_CONTENT.into_response());
     }
+    if method == "DELETE" && lower == "/videos/activeencodings" {
+        playback::stop_encoding(&state, &p, &query).await?;
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    }
+    if parts.len() == 3
+        && parts[0] == "Audio"
+        && parts[2] == "universal"
+        && (method == "GET" || method == "HEAD")
+    {
+        let media = canonical(parts[1]);
+        return audio::stream(state, &p, &media, query, request).await;
+    }
     if parts.len() == 3
         && ["Videos", "Audio"].contains(&parts[0])
         && parts[2].starts_with("stream")
@@ -361,6 +418,17 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
         );
     }
     if method == "GET" {
+        // The catalog does not yet contain independent person/genre entities.
+        // Clients query these alongside media search even for empty libraries.
+        if ["/persons", "/genres", "/musicgenres"].contains(&lower.as_str()) {
+            return Ok(axum::Json(catalog::result(Vec::new(), 0, 0)).into_response());
+        }
+        if parts.len() == 3 && parts[0] == "Playlists" && parts[2] == "Items" {
+            return Ok(
+                axum::Json(catalog::playlist_items(&state, &p, parts[1], &query).await?)
+                    .into_response(),
+            );
+        }
         if parts.len() == 3 && parts[0] == "Items" && parts[2] == "Intros" {
             catalog::browse(&state, &p, &Query::new(), Some(parts[1])).await?;
             return Ok(axum::Json(catalog::result(Vec::new(), 0, 0)).into_response());

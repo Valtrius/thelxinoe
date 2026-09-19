@@ -102,7 +102,31 @@ async fn vod_can_seek_to_an_unprepared_segment_and_regenerate_evicted_segments()
             shifted.to_str().unwrap(),
         ],
     );
-    for media in [media, shifted] {
+    let avi = temp.path().join("clock.avi");
+    run(
+        "ffmpeg",
+        &[
+            "-v",
+            "error",
+            "-y",
+            "-i",
+            media.to_str().unwrap(),
+            "-c:v",
+            "libx264",
+            "-bf",
+            "0",
+            "-g",
+            "60",
+            "-keyint_min",
+            "60",
+            "-sc_threshold",
+            "0",
+            "-c:a",
+            "aac",
+            avi.to_str().unwrap(),
+        ],
+    );
+    for media in [media, shifted, avi] {
         check_timeline(temp.path(), &media).await;
     }
 }

@@ -114,6 +114,10 @@ fn row(r: &rusqlite::Row<'_>, server: &str) -> rusqlite::Result<Value> {
             value["ArtistItems"] = json!([{"Id":parent,"Name":r.get::<_,Option<String>>(16)?}]);
         }
         "track" => {
+            if let Some(number) = r.get::<_, Option<i64>>(5)? {
+                value["IndexNumber"] = json!(number % 10000);
+                value["ParentIndexNumber"] = json!(number / 10000);
+            }
             value["AlbumId"] = json!(parent);
             value["Album"] = json!(r.get::<_, Option<String>>(16)?);
             value["Artists"] = json!([r.get::<_, Option<String>>(18)?]);
@@ -130,6 +134,23 @@ pub async fn browse(
     query: &Query,
     id: Option<&str>,
 ) -> Result<Value> {
+    if let Some(id) = id {
+        if is_playlist(state, id).await? {
+            return playlists(state, p, Some(id), query).await;
+        }
+    } else if let Some(parent) = query.get("parentid")
+        && is_playlist(state, parent).await?
+    {
+        return playlist_items(state, p, parent, query).await;
+    }
+    browse_media(state, p, query, id).await
+}
+async fn browse_media(
+    state: &AppState,
+    p: &Principal,
+    query: &Query,
+    id: Option<&str>,
+) -> Result<Value> {
     let q = query.clone();
     let uid = p.user.id.clone();
     let server = state.server_id.to_string();
@@ -139,7 +160,7 @@ pub async fn browse(
         || q.get("includeitemtypes")
             .is_some_and(|s| s.eq_ignore_ascii_case("Playlist"))
     {
-        return playlists(state, p, id.as_deref()).await;
+        return playlists(state, p, id.as_deref(), query).await;
     }
     if let Some(id) = id.as_deref() {
         let roots = views(state).await?;
@@ -159,7 +180,7 @@ pub async fn browse(
         .get("limit")
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(100)
-        .clamp(1, 500);
+        .min(500);
     let single = id.is_some();
     let (mut items,total)=state.db.call(move|db| {
         let mut args:Vec<rusqlite::types::Value>=vec![uid.into()];
@@ -176,17 +197,32 @@ pub async fn browse(
             let types=types.to_ascii_lowercase().split(',').map(kind).map(str::to_owned).collect::<Vec<_>>();
             conditions.push(format!("m.kind IN (SELECT value FROM json_each({}))",bind(json!(types).to_string())));
         }
+        if let Some(types)=q.get("excludeitemtypes") {
+            let types=types.to_ascii_lowercase().split(',').map(kind).map(str::to_owned).collect::<Vec<_>>();
+            conditions.push(format!("m.kind NOT IN (SELECT value FROM json_each({}))",bind(json!(types).to_string())));
+        }
+        if let Some(folder)=q.get("isfolder") {conditions.push(format!("m.kind {} IN ('movie','episode','track')",if folder.eq_ignore_ascii_case("true"){ "NOT" } else { "" }));}
+        if let Some(artists)=q.get("artistids").or(q.get("albumartistids")) {
+            let arg=bind(json!(artists.split(',').map(canonical).collect::<Vec<_>>()).to_string());
+            conditions.push(format!("(m.parent_id IN (SELECT value FROM json_each({arg})) OR p.parent_id IN (SELECT value FROM json_each({arg})))"));
+        }
+        if let Some(season)=q.get("season").and_then(|v|v.parse::<i64>().ok()) {conditions.push(format!("p.kind='season' AND p.sort_number={season}"));}
         if let Some(search)=q.get("searchterm") {conditions.push(format!("instr(lower(c.title),lower({}))>0",bind(search.clone())));}
         if let Some(ids)=q.get("ids") {conditions.push(format!("m.id IN (SELECT value FROM json_each({}))",bind(json!(ids.split(',').map(canonical).collect::<Vec<_>>()).to_string())));}
         for (key,column) in [("isfavorite","favorite"),("isplayed","watched")] {
             if let Some(value)=q.get(key) { conditions.push(format!("COALESCE(u.{column},0)={}",i32::from(value.eq_ignore_ascii_case("true")))); }
         }
         if let Some(filters)=q.get("filters") {for filter in filters.to_ascii_lowercase().split(','){match filter{"isfavorite"=>conditions.push("COALESCE(u.favorite,0)=1".into()),"isplayed"=>conditions.push("COALESCE(u.watched,0)=1".into()),"isunplayed"=>conditions.push("COALESCE(u.watched,0)=0".into()),"isresumable"=>conditions.push("ep.position>0 AND ep.position<ep.duration*0.9 AND m.kind IN ('movie','episode')".into()),_=>{}}}}
-        let sort=match q.get("sortby").map(|s|s.to_ascii_lowercase()).as_deref(){Some("datecreated")=>"m.created_at",Some("dateplayed")=>"ep.updated_at",Some("random")=>"random()",Some("premieredate")|Some("productionyear")=>"m.year",Some("indexnumber")|Some("parentindexnumber,indexnumber")=>"m.sort_number",_=>"c.title COLLATE NOCASE"};
-        let direction=if q.get("sortorder").is_some_and(|s|s.eq_ignore_ascii_case("Descending")){"DESC"}else{"ASC"};
-        let sql=format!("{SELECT} {} ORDER BY {sort} {direction},m.id LIMIT {limit} OFFSET {start}",if conditions.is_empty(){String::new()}else{format!("WHERE {}",conditions.join(" AND "))});
-        let rows=db.prepare(&sql)?.query_map(rusqlite::params_from_iter(args),|r|Ok((row(r,&server)?,r.get::<_,i64>(21)? as usize)))?.collect::<std::result::Result<Vec<_>,_>>()?;
-        let total=rows.first().map_or(0,|v|v.1);
+        let directions=q.get("sortorder").map(String::as_str).unwrap_or("Ascending").split(',').collect::<Vec<_>>();
+        let sort=q.get("sortby").map(String::as_str).unwrap_or("SortName").split(',').take(8).enumerate().map(|(index,key)| {
+            let column=match key.to_ascii_lowercase().as_str(){"datecreated"=>"m.created_at","dateplayed"=>"ep.updated_at","random"=>"random()","premieredate"|"productionyear"=>"m.year","indexnumber"=>"m.sort_number","parentindexnumber"=>"CASE WHEN m.kind='track' THEN m.sort_number/10000 ELSE p.sort_number END","communityrating"=>"json_extract(m.metadata,'$.vote_average')",_=>"c.title COLLATE NOCASE"};
+            let direction=if directions.get(index).or(directions.first()).is_some_and(|s|s.eq_ignore_ascii_case("Descending")){"DESC"}else{"ASC"};
+            format!("{column} {direction}")
+        }).collect::<Vec<_>>().join(",");
+        let filter=if conditions.is_empty(){String::new()}else{format!("WHERE {}",conditions.join(" AND "))};
+        let sql=format!("{SELECT} {filter} ORDER BY {sort},m.id LIMIT {limit} OFFSET {start}");
+        let rows=db.prepare(&sql)?.query_map(rusqlite::params_from_iter(&args),|r|Ok((row(r,&server)?,r.get::<_,i64>(21)? as usize)))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let total=if let Some(row)=rows.first(){row.1}else{db.query_row(&format!("SELECT COUNT(*) FROM ({SELECT} {filter})"),rusqlite::params_from_iter(&args),|r|r.get::<_,i64>(0))? as usize};
         Ok((rows.into_iter().map(|v|v.0).collect::<Vec<_>>(),total))
     }).await?;
     if items
@@ -207,17 +243,127 @@ pub async fn browse(
     }
 }
 
-pub async fn playlists(state: &AppState, p: &Principal, id: Option<&str>) -> Result<Value> {
+pub async fn is_playlist(state: &AppState, id: &str) -> Result<bool> {
+    let id = canonical(id);
+    Ok(state
+        .db
+        .call(move |db| {
+            Ok(db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM playlists WHERE id=?1)",
+                [id],
+                |r| r.get(0),
+            )?)
+        })
+        .await?)
+}
+pub async fn playlist_items(
+    state: &AppState,
+    p: &Principal,
+    id: &str,
+    query: &Query,
+) -> Result<Value> {
+    let id = canonical(id);
+    let (revision, tracks) = state
+        .db
+        .call(move |db| {
+            let revision = db
+                .query_row("SELECT revision FROM playlists WHERE id=?1", [&id], |r| {
+                    r.get::<_, i64>(0)
+                })
+                .optional()?;
+            let Some(revision) = revision else {
+                return Ok(None);
+            };
+            let tracks = db
+                .prepare(
+                    "SELECT media_id FROM playlist_items WHERE playlist_id=?1 ORDER BY position",
+                )?
+                .query_map([id], |r| r.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(Some((revision, tracks)))
+        })
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    let start = query
+        .get("startindex")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0);
+    let limit = query
+        .get("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(100)
+        .min(500);
+    let page = tracks
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(limit)
+        .collect::<Vec<_>>();
+    let q = Query::from([
+        (
+            "ids".into(),
+            page.iter()
+                .map(|(_, id)| id.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
+        ),
+        ("limit".into(), "500".into()),
+    ]);
+    let catalog = browse_media(state, p, &q, None).await?;
+    let items = page
+        .into_iter()
+        .filter_map(|(position, id)| {
+            let mut item = catalog["Items"]
+                .as_array()?
+                .iter()
+                .find(|i| i["Id"] == *id)?
+                .clone();
+            item["PlaylistItemId"] = json!(format!("{revision}:{position}"));
+            Some(item)
+        })
+        .collect();
+    Ok(result(items, tracks.len(), start))
+}
+pub async fn playlists(
+    state: &AppState,
+    p: &Principal,
+    id: Option<&str>,
+    q: &Query,
+) -> Result<Value> {
     let user = p.user.id.clone();
     let id = id.map(canonical);
     let single = id.is_some();
     let server = state.server_id.to_string();
-    let items=state.db.call(move|db|Ok(db.prepare("SELECT p.id,p.name,p.description,EXISTS(SELECT 1 FROM playlist_favorites f WHERE f.playlist_id=p.id AND f.user_id=?1),(SELECT COUNT(*) FROM playlist_items i WHERE i.playlist_id=p.id) FROM playlists p WHERE ?2 IS NULL OR p.id=?2 ORDER BY p.name LIMIT 500")?.query_map(params![user,id],|r|Ok(json!({"Id":r.get::<_,String>(0)?,"Name":r.get::<_,String>(1)?,"Overview":r.get::<_,String>(2)?,"Type":"Playlist","MediaType":"Audio","IsFolder":true,"ServerId":server,"ChildCount":r.get::<_,i64>(4)?,"ImageTags":{},"UserData":{"IsFavorite":r.get::<_,bool>(3)?,"Played":false,"PlaybackPositionTicks":0}})))?.collect::<std::result::Result<Vec<_>,_>>()?)).await?;
+    let favorite = q
+        .get("isfavorite")
+        .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+        || q.get("filters")
+            .is_some_and(|v| v.split(',').any(|f| f.eq_ignore_ascii_case("IsFavorite")));
+    let start = if single {
+        0
+    } else {
+        q.get("startindex")
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0)
+    };
+    let limit = if single {
+        1
+    } else {
+        q.get("limit")
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(100)
+            .min(500)
+    };
+    let (items,total)=state.db.call(move|db|{
+        let filter="(?2 IS NULL OR p.id=?2) AND (?3=0 OR EXISTS(SELECT 1 FROM playlist_favorites f WHERE f.playlist_id=p.id AND f.user_id=?1))";
+        let total=db.query_row(&format!("SELECT COUNT(*) FROM playlists p WHERE {filter}"),params![user,id,favorite],|r|r.get::<_,i64>(0).map(|v|v as usize))?;
+        let items=db.prepare(&format!("SELECT p.id,p.name,p.description,EXISTS(SELECT 1 FROM playlist_favorites f WHERE f.playlist_id=p.id AND f.user_id=?1),(SELECT COUNT(*) FROM playlist_items i WHERE i.playlist_id=p.id) FROM playlists p WHERE {filter} ORDER BY p.name,p.id LIMIT ?4 OFFSET ?5"))?.query_map(params![user,id,favorite,limit,start],|r|Ok(json!({"Id":r.get::<_,String>(0)?,"Name":r.get::<_,String>(1)?,"Overview":r.get::<_,String>(2)?,"Type":"Playlist","MediaType":"Audio","IsFolder":true,"ServerId":server,"ChildCount":r.get::<_,i64>(4)?,"ImageTags":{},"UserData":{"Key":r.get::<_,String>(0)?,"ItemId":r.get::<_,String>(0)?,"IsFavorite":r.get::<_,bool>(3)?,"PlayCount":0,"Played":false,"PlaybackPositionTicks":0}})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        Ok((items,total))
+    }).await?;
     if single {
         items.into_iter().next().ok_or_else(ApiError::not_found)
     } else {
-        let total = items.len();
-        Ok(result(items, total, 0))
+        Ok(result(items, total, start as usize))
     }
 }
 
@@ -261,8 +407,11 @@ pub async fn display_preferences(
     if id.len() > 128 || client.len() > 128 {
         return Err(ApiError::bad("Invalid display preference identifier"));
     }
-    Ok(state.db.call(move|db|{
-        if let Some(value)=body {let count:i64=db.query_row("SELECT COUNT(*) FROM compat_preferences WHERE user_id=?1",[&uid],|r|r.get(0))?;if count>=100 {anyhow::bail!("Too many display preferences");}db.execute("INSERT INTO compat_preferences VALUES (?1,?2,?3,?4) ON CONFLICT(user_id,client,preference_id) DO UPDATE SET value=excluded.value",params![uid,client,id,value.to_string()])?;}
-        Ok(db.query_row("SELECT value FROM compat_preferences WHERE user_id=?1 AND client=?2 AND preference_id=?3",params![uid,client,id],|r|r.get::<_,String>(0)).optional()?.and_then(|v|serde_json::from_str(&v).ok()).unwrap_or_else(||json!({"Id":id,"Client":client,"SortBy":"SortName","SortOrder":"Ascending","RememberIndexing":false,"PrimaryImageHeight":250,"PrimaryImageWidth":250,"CustomPrefs":{},"ScrollDirection":"Horizontal","ShowBackdrop":true,"RememberSorting":false,"ShowSidebar":false})))
-    }).await?)
+    state.db.call(move|db|{
+        if let Some(value)=body {
+            let inserted=db.execute("INSERT INTO compat_preferences SELECT ?1,?2,?3,?4 WHERE EXISTS(SELECT 1 FROM compat_preferences WHERE user_id=?1 AND client=?2 AND preference_id=?3) OR (SELECT COUNT(*) FROM compat_preferences WHERE user_id=?1)<100 ON CONFLICT(user_id,client,preference_id) DO UPDATE SET value=excluded.value",params![uid,client,id,value.to_string()])?;
+            if inserted==0 {return Ok(None);}
+        }
+        Ok(Some(db.query_row("SELECT value FROM compat_preferences WHERE user_id=?1 AND client=?2 AND preference_id=?3",params![uid,client,id],|r|r.get::<_,String>(0)).optional()?.and_then(|v|serde_json::from_str(&v).ok()).unwrap_or_else(||json!({"Id":id,"Client":client,"SortBy":"SortName","SortOrder":"Ascending","RememberIndexing":false,"PrimaryImageHeight":250,"PrimaryImageWidth":250,"CustomPrefs":{},"ScrollDirection":"Horizontal","ShowBackdrop":true,"RememberSorting":false,"ShowSidebar":false}))))
+    }).await?.ok_or_else(||ApiError::conflict("Too many display preferences"))
 }
