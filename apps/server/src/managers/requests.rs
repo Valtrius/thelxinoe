@@ -211,6 +211,7 @@ pub(crate) async fn acquire(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Invalid acquisition job"))?
         .to_owned();
+    let _lease = state.media_operations.write().await;
     let _guard = state.managers.guard.lock().await;
     if let Err(error) = perform(state, &key).await {
         let message = error.2;
@@ -340,6 +341,7 @@ async fn perform(state: &AppState, key: &str) -> Result<()> {
         update(state, key, "requested", Some(manager)).await?;
         return Ok(());
     }
+    super::retention::reacquire(state, &s, &c, &row.2, manager).await?;
     update(state, key, "searching", Some(manager)).await?;
     let command = match s.kind.as_str() {
         "radarr" => json!({"name":"MoviesSearch","movieIds":[manager]}),

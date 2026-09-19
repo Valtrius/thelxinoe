@@ -55,6 +55,7 @@ pub(crate) async fn set_for(
     media: &str,
     input: Change,
 ) -> Result<Value> {
+    let _lease = state.media_operations.read().await;
     let user = p.user.id.clone();
     let mid = media.to_owned();
     let result = state.db.call(move |db| {

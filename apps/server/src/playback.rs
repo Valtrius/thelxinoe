@@ -481,6 +481,7 @@ pub async fn progress(
     report(&state, &p, &id, input).await.map(Json)
 }
 pub async fn report(state: &AppState, p: &Principal, id: &str, input: Progress) -> Result<Value> {
+    let _lease = state.media_operations.read().await;
     if input.sequence < 0
         || !input.position.is_finite()
         || input.position < 0.0

@@ -19,6 +19,9 @@ pub use online::run as run_online;
 pub async fn run_service_updates(state: AppState) -> anyhow::Result<()> {
     managers::run_updates(state).await
 }
+pub async fn run_retention(state: AppState) -> anyhow::Result<()> {
+    managers::run_retention(state).await
+}
 
 use crate::{config::Config, error::Result};
 use axum::{

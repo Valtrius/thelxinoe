@@ -21,6 +21,7 @@
   import SupportServices from './lib/SupportServices.svelte';
   import ManagedStack from './lib/ManagedStack.svelte';
   import ServiceUpdates from './lib/ServiceUpdates.svelte';
+  import RetentionSettings from './lib/RetentionSettings.svelte';
   import Requests from './lib/Requests.svelte';
   import { persistQueue, type Card } from './lib/media-state';
   import { invoke } from '@tauri-apps/api/core';
@@ -484,6 +485,7 @@
           <ManagerOwnership />
           <ManagedStack />
           <ServiceUpdates />
+          <RetentionSettings />
           <SupportServices />
           <section class="panel">
             <h2><ShieldCheck size={20} /> Server</h2>

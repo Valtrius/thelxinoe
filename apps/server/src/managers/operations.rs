@@ -8,7 +8,7 @@ pub(super) fn router() -> Router<AppState> {
         .route("/api/v1/admin/media/{id}/keep", axum::routing::put(keep))
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
-struct Target {
+pub(super) struct Target {
     id: String,
     generation: String,
     path: String,
@@ -17,7 +17,7 @@ struct Target {
     modified: String,
     fingerprint: String,
     ownership: String,
-    claims: Vec<bindings::Claim>,
+    pub(super) claims: Vec<bindings::Claim>,
 }
 async fn targets(state: &AppState, media: &str) -> Result<Vec<Target>> {
     let media = media.to_owned();
@@ -49,13 +49,21 @@ async fn prepare(
     }
     let _lease = state.media_operations.write().await;
     let _manager = state.managers.guard.lock().await;
-    bindings::reconcile(&state).await?;
-    let captured = targets(&state, &input.media_id).await?;
+    prepare_locked(&state, Some(p.user.id), input.media_id, input.action).await
+}
+pub(super) async fn prepare_locked(
+    state: &AppState,
+    actor: Option<String>,
+    media_id: String,
+    action: String,
+) -> Result<Json<Value>> {
+    bindings::reconcile(state).await?;
+    let captured = targets(state, &media_id).await?;
     if captured.is_empty() {
         return Err(ApiError::conflict("No current files belong to this target"));
     }
-    validate_ownership(&captured, &input.action)?;
-    complete_manager_scope(&state, &captured).await?;
+    validate_ownership(&captured, &action)?;
+    complete_manager_scope(state, &captured).await?;
     let key = id();
     let returned = key.clone();
     let count = captured.len();
@@ -66,9 +74,9 @@ async fn prepare(
                 "INSERT INTO media_operations VALUES (?1,?2,?3,?4,'pending',?5,?6,?6,NULL)",
                 params![
                     key,
-                    p.user.id,
-                    input.media_id,
-                    input.action,
+                    actor,
+                    media_id,
+                    action,
                     serde_json::to_string(&captured)?,
                     now()
                 ],
@@ -236,7 +244,14 @@ async fn manager_idle(c: &Connection<'_>) -> Result<()> {
     }
     Ok(())
 }
-async fn mutate(state: &AppState, media: &str, action: &str, files: &[Target]) -> Result<()> {
+async fn mutate(
+    state: &AppState,
+    media: &str,
+    action: &str,
+    files: &[Target],
+    operation: &str,
+    automatic: bool,
+) -> Result<()> {
     validate_ownership(files, action)?;
     complete_manager_scope(state, files).await?;
     protected_or_active(state, media, files).await?;
@@ -252,6 +267,7 @@ async fn mutate(state: &AppState, media: &str, action: &str, files: &[Target]) -
         }
     }
     for file in files {
+        super::retention::revalidate_operation(state, operation, automatic).await?;
         protected_or_active(state, media, files).await?;
         physical(file).await?;
         if let Some(claim) = file.claims.first() {
@@ -276,6 +292,29 @@ async fn mutate(state: &AppState, media: &str, action: &str, files: &[Target]) -
             if s.kind == "sonarr" {
                 if claim.members.is_empty() {
                     return Err(ApiError::conflict("Exact manager episodes are unresolved"));
+                }
+                let series = c.get(&format!("series/{}", claim.entity_id)).await?;
+                let episodes = c
+                    .call(
+                        reqwest::Method::GET,
+                        "episode",
+                        &[("seriesId", claim.entity_id.to_string())],
+                        None,
+                    )
+                    .await?;
+                let current_members = episodes
+                    .as_array()
+                    .ok_or_else(unavailable)?
+                    .iter()
+                    .filter(|e| e["episodeFileId"].as_i64() == Some(claim.manager_file_id))
+                    .filter_map(|e| e["id"].as_i64())
+                    .collect::<std::collections::BTreeSet<_>>();
+                if requests::external(&s.kind, &series).as_deref() != Some(&claim.external_id)
+                    || current_members != claim.members.iter().copied().collect()
+                {
+                    return Err(ApiError::conflict(
+                        "Manager episode ownership changed before deletion",
+                    ));
                 }
                 c.call(
                     reqwest::Method::PUT,
@@ -309,7 +348,7 @@ async fn mutate(state: &AppState, media: &str, action: &str, files: &[Target]) -
                 .await?;
             }
         } else if action == "delete" {
-            // Only an explicit administrator command can reach this direct-delete path.
+            // Retention additionally requires the root's automatic-deletion opt-in.
             tokio::fs::remove_file(&file.path)
                 .await
                 .map_err(|_| ApiError::conflict("Could not remove the confirmed-unmanaged file"))?;
@@ -340,6 +379,14 @@ async fn execute(
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
     let _lease = state.media_operations.write().await;
     let _manager = state.managers.guard.lock().await;
+    execute_locked(&state, key, Some(p.user.id), false).await
+}
+pub(super) async fn execute_locked(
+    state: &AppState,
+    key: String,
+    actor: Option<String>,
+    automatic: bool,
+) -> Result<Json<Value>> {
     let k = key.clone();
     let (media, action, status, saved) = state
         .db
@@ -367,14 +414,15 @@ async fn execute(
         ));
     }
     let captured: Vec<Target> = serde_json::from_str(&saved).map_err(|_| unavailable())?;
-    bindings::reconcile(&state).await?;
-    let current = targets(&state, &media).await?;
+    bindings::reconcile(state).await?;
+    let current = targets(state, &media).await?;
     if current != captured {
         return Err(ApiError::conflict(
             "File set, generation or ownership changed; prepare a new operation",
         ));
     }
-    protected_or_active(&state, &media, &current).await?;
+    protected_or_active(state, &media, &current).await?;
+    super::retention::revalidate_operation(state, &key, automatic).await?;
     for file in &current {
         physical(file).await?;
     }
@@ -390,7 +438,11 @@ async fn execute(
         })
         .await?;
     // Once executing is durable, interruption never automatically repeats a destructive call.
-    let result = mutate(&state, &media, &action, &current).await;
+    let result = async {
+        super::retention::exclude(state, &key, &current).await?;
+        mutate(state, &media, &action, &current, &key, automatic).await
+    }
+    .await;
     let error = result.as_ref().err().map(|e| e.2.clone());
     let status = if result.is_ok() {
         "complete"
@@ -406,8 +458,20 @@ async fn execute(
                 params![status, error, now(), key],
             )?;
             tx.execute(
+                "UPDATE retention_candidates SET state=?1,error=?2 WHERE operation_id=?3",
+                params![
+                    if status == "complete" {
+                        "complete"
+                    } else {
+                        "blocked"
+                    },
+                    error,
+                    key
+                ],
+            )?;
+            tx.execute(
                 "INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,?2,?3,?4)",
-                params![p.user.id, format!("media.{action}.{status}"), media, now()],
+                params![actor, format!("media.{action}.{status}"), media, now()],
             )?;
             tx.commit()?;
             Ok(())
