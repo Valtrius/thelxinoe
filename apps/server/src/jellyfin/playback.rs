@@ -194,7 +194,7 @@ pub async fn info(
     if planned == "transcode" && field("EnableTranscoding").as_ref() == Some(&json!(false)) {
         return Err(ApiError::bad("The client disabled the required conversion"));
     }
-    let playback = core::create_for(
+    let playback = core::create_with_delivery(
         state,
         p,
         core::Create {
@@ -204,6 +204,7 @@ pub async fn info(
             position: Some(0.0),
             options,
         },
+        true,
     )
     .await?;
     let id = playback["id"].as_str().unwrap().to_owned();

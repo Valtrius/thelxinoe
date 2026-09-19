@@ -1,4 +1,5 @@
 mod pipeline;
+mod vod;
 pub use pipeline::Pipelines;
 
 use anyhow::{Result, bail};

@@ -147,6 +147,80 @@ assert.equal((await r.json()).UserData.Played, true);
 r = await compat.get(streamPath);
 assert.equal(r.status(), 401);
 await call(`/catalog/${direct.Id}/state`, 'PUT', { watched: false });
+for (const mode of ['remux', 'transcode']) {
+  const item = movies.Items.find((i) => i.Name === 'Remux');
+  r = await compat.post(`/Items/${item.Id}/PlaybackInfo`, {
+    headers,
+    data: {
+      DeviceProfile: profile,
+      EnableDirectPlay: false,
+      EnableDirectStream: mode === 'remux',
+      EnableTranscoding: true,
+      SubtitleStreamIndex: -1,
+    },
+  });
+  assert.equal(r.status(), 200, `${mode} playback info`);
+  const session = await r.json();
+  const converted = session.MediaSources[0];
+  assert.equal(converted.SupportsDirectPlay, false);
+  assert.equal(converted.SupportsTranscoding, mode === 'transcode');
+  const playlistUrl = new URL(
+    converted.TranscodingUrl,
+    'http://127.0.0.1:18787',
+  );
+  r = await compat.get(playlistUrl.toString());
+  assert.equal(r.status(), 200);
+  const playlist = await r.text();
+  assert.ok(playlist.includes('#EXT-X-PLAYLIST-TYPE:VOD'));
+  assert.ok(playlist.includes('#EXT-X-ENDLIST'));
+  const segments = playlist.split('\n').filter((s) => s.startsWith('segment-'));
+  assert.ok(segments.length >= 2);
+  // A TV seek may request the end before the beginning. Every segment must
+  // remain addressable and independently decodable in either direction.
+  for (const index of [segments.length - 1, 0]) {
+    r = await compat.get(new URL(segments[index], playlistUrl).toString());
+    assert.equal(r.status(), 200, `${mode} segment ${index}`);
+    const path = `.local/jellyfin-${mode}-${index}.ts`;
+    writeFileSync(path, await r.body());
+    const probe = JSON.parse(
+      execFileSync(
+        'ffprobe',
+        ['-v', 'error', '-show_streams', '-of', 'json', path],
+        { encoding: 'utf8', windowsHide: true },
+      ),
+    );
+    assert.ok(probe.streams.some((s) => s.codec_name === 'h264'));
+    execFileSync(
+      'ffmpeg',
+      [
+        '-v',
+        'error',
+        '-xerror',
+        '-i',
+        path,
+        '-fps_mode',
+        'passthrough',
+        '-enc_time_base',
+        '1:90000',
+        '-f',
+        'null',
+        '-',
+      ],
+      { windowsHide: true },
+    );
+  }
+  r = await compat.post('/Sessions/Playing/Stopped', {
+    headers,
+    data: {
+      ItemId: item.Id,
+      PlaySessionId: session.PlaySessionId,
+      PositionTicks: 0,
+    },
+  });
+  assert.equal(r.status(), 204);
+  r = await compat.get(playlistUrl.toString());
+  assert.equal(r.status(), 401);
+}
 const serverLogs = execFileSync(
   'docker',
   [
@@ -174,6 +248,7 @@ writeFileSync(
       grantedDirectPlaybackAndProgress: true,
       revokedStreamRejected: true,
       queryCredentialsAbsentFromLogs: true,
+      seekableRemuxAndTranscode: true,
     },
     null,
     2,

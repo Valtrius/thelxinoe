@@ -98,7 +98,15 @@ pub async fn create(
     let p = security::principal(&state, &headers).await?;
     create_for(&state, &p, input).await.map(Json)
 }
-pub async fn create_for(state: &AppState, p: &Principal, mut input: Create) -> Result<Value> {
+pub async fn create_for(state: &AppState, p: &Principal, input: Create) -> Result<Value> {
+    create_with_delivery(state, p, input, false).await
+}
+pub(crate) async fn create_with_delivery(
+    state: &AppState,
+    p: &Principal,
+    mut input: Create,
+    vod: bool,
+) -> Result<Value> {
     if let Some(queue) = &input.queue {
         if !crate::user_media::valid_client(&queue.client_id) || queue.index >= 500 {
             return Err(ApiError::bad("Invalid queue context"));
@@ -177,11 +185,18 @@ pub async fn create_for(state: &AppState, p: &Principal, mut input: Create) -> R
     let url = if mode == "direct" {
         format!("/api/v1/playback/{sid}/stream?grant={grant}")
     } else {
-        match state
-            .playback
-            .start(&sid, &source, &input.options, mode, position)
-            .await
-        {
+        let prepared = if vod {
+            state
+                .playback
+                .start_vod(&sid, &source, &input.options, mode)
+                .await
+        } else {
+            state
+                .playback
+                .start(&sid, &source, &input.options, mode, position)
+                .await
+        };
+        match prepared {
             Ok((revision, offset)) => {
                 timeline_start = offset;
                 format!("/api/v1/playback/{sid}/hls/{revision}/index.m3u8?grant={grant}")
@@ -264,7 +279,7 @@ pub async fn hls(
     let path = state
         .playback
         .file(&id, &revision, &name)
-        .await
+        .await?
         .ok_or_else(ApiError::not_found)?;
     if name == "index.m3u8" {
         let playlist = tokio::fs::read_to_string(path)

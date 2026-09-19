@@ -36,4 +36,8 @@ The local test server uses Docker project `thelxinoe-compat`, HTTP port 18787, H
 
 Rust integration tests cover device revocation, cross-user rejection, credential conflicts, and the Quick Connect approval and single-use boundaries. All previous server integration tests still pass.
 
-Phase 8 remains open until the remaining client checks and required capabilities pass. In particular, converted playback currently uses the first-party rolling HLS pipeline. Unmodified TV clients require a complete seekable VOD timeline, which is the next playback work item.
+Converted compatibility playback exposes a complete HLS VOD timeline. Segments are generated on demand, so a client can seek forward before earlier segments have been prepared, or seek backward after eviction. Remuxed video uses indexed keyframe intervals; transcoding uses six-second intervals. Work shares the four conversion slots with first-party playback, is canceled when playback stops, and has duration, time, free-space, and cache-size limits.
+
+The Docker protocol test requests the final segment before the first for both remux and transcode, decodes the results, and verifies stopped sessions lose access. Rust tests compare every decoded video frame across all segments against a timestamped fixture, including a source with a nonzero timestamp origin, and check audio-only seeking and regeneration after eviction. Real TV converted-playback checks remain pending.
+
+Phase 8 remains open until the remaining client checks and required capabilities pass.

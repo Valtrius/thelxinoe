@@ -4,14 +4,16 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     process::Stdio,
+    sync::Arc,
     time::Duration,
 };
 use tokio::{
     process::{Child, Command},
-    sync::Mutex,
+    sync::{Mutex, OwnedSemaphorePermit, Semaphore},
 };
 
 struct Running {
+    _slot: OwnedSemaphorePermit,
     child: Child,
     directory: PathBuf,
     revision: String,
@@ -19,6 +21,8 @@ struct Running {
 pub struct Pipelines {
     root: PathBuf,
     running: Mutex<HashMap<String, Running>>,
+    slots: Arc<Semaphore>,
+    vod: crate::vod::VodCache,
 }
 impl Pipelines {
     pub async fn open(cache: &Path) -> Result<Self> {
@@ -28,9 +32,13 @@ impl Pipelines {
             tokio::fs::remove_dir_all(&root).await?;
         }
         tokio::fs::create_dir_all(&root).await?;
+        let slots = Arc::new(Semaphore::new(4));
+        let vod = crate::vod::VodCache::open(&root, slots.clone()).await?;
         Ok(Self {
             root,
             running: Mutex::new(HashMap::new()),
+            slots,
+            vod,
         })
     }
     pub async fn start(
@@ -57,6 +65,11 @@ impl Pipelines {
                 "All four conversion slots are busy; try direct playback or wait for a session to finish"
             );
         }
+        let slot = self
+            .slots
+            .clone()
+            .try_acquire_owned()
+            .context("All four conversion slots are busy")?;
         if fs2::available_space(&self.root)? < 1024 * 1024 * 1024 {
             bail!("Conversion requires at least 1 GB of free cache space");
         }
@@ -153,6 +166,7 @@ impl Pipelines {
         running.insert(
             id.to_owned(),
             Running {
+                _slot: slot,
                 child,
                 directory: directory.clone(),
                 revision: revision.clone(),
@@ -180,23 +194,37 @@ impl Pipelines {
         self.stop(id).await;
         bail!("FFmpeg could not prepare playback within 20 seconds")
     }
-    pub async fn file(&self, id: &str, revision: &str, name: &str) -> Option<PathBuf> {
+    pub async fn start_vod(
+        &self,
+        id: &str,
+        source: &Source,
+        options: &Options,
+        mode: &str,
+    ) -> Result<(String, f64)> {
+        Ok((self.vod.start(id, source, options, mode).await?, 0.0))
+    }
+    pub async fn file(&self, id: &str, revision: &str, name: &str) -> Result<Option<PathBuf>> {
         let valid = name == "index.m3u8"
             || (name.starts_with("segment-")
                 && name.ends_with(".ts")
                 && name.len() == 17
                 && name[8..14].bytes().all(|v| v.is_ascii_digit()));
         if !valid {
-            return None;
+            return Ok(None);
         }
-        self.running
+        if let Some(path) = self.vod.file(id, revision, name).await? {
+            return Ok(Some(path));
+        }
+        Ok(self
+            .running
             .lock()
             .await
             .get(id)
             .filter(|run| run.revision == revision)
-            .map(|run| run.directory.join(name))
+            .map(|run| run.directory.join(name)))
     }
     pub async fn stop(&self, id: &str) {
+        self.vod.stop(id).await;
         if let Some(mut run) = self.running.lock().await.remove(id) {
             let _ = run.child.kill().await;
             let _ = tokio::fs::remove_dir_all(run.directory).await;
@@ -233,6 +261,12 @@ impl Pipelines {
                 let _ = tokio::fs::remove_dir_all(run.directory).await;
             }
         }
+        drop(runs);
+        stop.extend(
+            self.vod
+                .maintain(active, (2u64 * 1024 * 1024 * 1024).saturating_sub(total))
+                .await?,
+        );
         Ok(stop)
     }
 }
