@@ -1,0 +1,49 @@
+name: thelxinoe
+services:
+  controller:
+    image: ${THELXINOE_CONTROLLER_IMAGE:-thelxinoe-controller:0.1.0}
+    build:
+      context: .
+      target: controller
+    restart: unless-stopped
+    network_mode: none
+    volumes:
+      - controller-runtime:/run/thelxinoe
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${THELXINOE_STATE_ROOT:-./.local/docker}/deployment:/var/lib/thelxinoe/deployment
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    labels:
+      app.thelxinoe.component: controller
+  server:
+    image: ${THELXINOE_SERVER_IMAGE:-thelxinoe-server:0.1.0}
+    build:
+      context: .
+      target: server
+    restart: unless-stopped
+    depends_on:
+      controller:
+        condition: service_healthy
+    ports:
+      - ${THELXINOE_LISTEN:-127.0.0.1}:8484:8484
+    environment:
+      THELXINOE_PUBLIC_URL: ${THELXINOE_PUBLIC_URL:-}
+      THELXINOE_TRUSTED_PROXIES: ${THELXINOE_TRUSTED_PROXIES:-}
+    volumes:
+      - ${THELXINOE_STATE_ROOT:-./.local/docker}/server:/var/lib/thelxinoe
+      - ${THELXINOE_STATE_ROOT:-./.local/docker}/cache:/var/cache/thelxinoe
+      - ${THELXINOE_DATA_ROOT:-./.local/media}:/data:ro
+      - ${THELXINOE_BACKUP_ROOT:-./.local/backups}:/backups
+      - controller-runtime:/run/thelxinoe:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    labels:
+      app.thelxinoe.component: server
+volumes:
+  controller-runtime:

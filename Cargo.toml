@@ -1,0 +1,32 @@
+[workspace]
+members = ["apps/server", "apps/docker-controller", "apps/desktop", "crates/core", "crates/database", "crates/auth", "crates/jobs", "crates/catalog"]
+default-members = ["apps/server", "apps/docker-controller", "crates/core", "crates/database", "crates/auth", "crates/jobs", "crates/catalog"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+license = "UNLICENSED"
+
+[workspace.dependencies]
+anyhow = "1"
+axum = { version = "0.8.9", features = ["ws", "macros"] }
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+rusqlite = { version = "0.40", features = ["bundled", "backup"] }
+reqwest = { version = "0.13", features = ["json", "query", "form", "stream"] }
+thelxinoe-core = { path = "crates/core" }
+thelxinoe-database = { path = "crates/database" }
+thelxinoe-auth = { path = "crates/auth" }
+thelxinoe-jobs = { path = "crates/jobs" }
+thelxinoe-catalog = { path = "crates/catalog" }
+
+[profile.release]
+lto = "thin"
+strip = true

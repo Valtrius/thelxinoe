@@ -1,0 +1,36 @@
+{
+  "name": "thelxinoe",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "frontend"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace frontend",
+    "build": "npm run version:check && npm run build --workspace frontend",
+    "check": "npm run check --workspace frontend",
+    "test": "npm run test --workspace frontend",
+    "test:e2e": "playwright test",
+    "lint": "eslint frontend scripts tests --max-warnings=0",
+    "format": "prettier --write frontend scripts tests package.json .github README.md docs",
+    "format:check": "prettier --check frontend scripts tests package.json .github README.md docs",
+    "version:sync": "node scripts/version.mjs --write",
+    "version:check": "node scripts/version.mjs",
+    "desktop": "node scripts/desktop.mjs --dev",
+    "desktop:build": "node scripts/desktop.mjs",
+    "server": "cargo run -p thelxinoe-server",
+    "validate": "npm run format:check && npm run lint && npm run check && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.58.2",
+    "@tauri-apps/cli": "^2.11.4",
+    "eslint": "^10.8.0",
+    "eslint-plugin-svelte": "^3.22.0",
+    "globals": "^17.8.0",
+    "prettier": "^3.9.6",
+    "prettier-plugin-svelte": "^4.1.1",
+    "typescript-eslint": "^8.65.0"
+  }
+}

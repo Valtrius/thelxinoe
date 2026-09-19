@@ -1,0 +1,112 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+use serde_json::Value;
+use tauri::Manager;
+
+fn credential() -> Result<keyring::Entry, String> {
+    keyring::Entry::new("app.thelxinoe.desktop", "server-session").map_err(|e| e.to_string())
+}
+fn config_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("server-url"))
+}
+#[tauri::command]
+fn server_url(app: tauri::AppHandle) -> Result<String, String> {
+    Ok(std::fs::read_to_string(config_path(&app)?).unwrap_or("http://127.0.0.1:8484".into()))
+}
+#[tauri::command]
+fn change_server(app: tauri::AppHandle, value: String) -> Result<String, String> {
+    let url = url::Url::parse(&value).map_err(|e| e.to_string())?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err("Enter an HTTP(S) origin without a path or credentials".into());
+    }
+    match credential()?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => {}
+        Err(e) => return Err(e.to_string()),
+    }
+    let origin = url.origin().ascii_serialization();
+    std::fs::write(config_path(&app)?, &origin).map_err(|e| e.to_string())?;
+    Ok(origin)
+}
+#[tauri::command]
+async fn backend_request(
+    app: tauri::AppHandle,
+    path: String,
+    method: String,
+    mut body: Option<Value>,
+) -> Result<Value, String> {
+    if !path.starts_with('/') || path.starts_with("//") || path.contains("..") || path.contains('#')
+    {
+        return Err("Invalid API path".into());
+    }
+    let base = server_url(app)?;
+    let auth = matches!(path.as_str(), "/auth/login" | "/setup") && method == "POST";
+    if auth && let Some(value) = body.as_mut() {
+        value["transport"] = Value::String("device".into());
+        value["device_name"] = Value::String("Windows desktop".into());
+    }
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut request = client
+        .request(
+            method
+                .parse::<reqwest::Method>()
+                .map_err(|e| e.to_string())?,
+            format!("{base}/api/v1{path}"),
+        )
+        .header("X-Thelxinoe-Client", "1");
+    match credential()?.get_password() {
+        Ok(token) => request = request.bearer_auth(token),
+        Err(keyring::Error::NoEntry) => {}
+        Err(e) => return Err(e.to_string()),
+    }
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|_| "Cannot connect to the configured server".to_string())?;
+    let status = response.status().as_u16();
+    let mut value: Value = response
+        .json()
+        .await
+        .map_err(|_| "Server returned an invalid response".to_string())?;
+    if auth && status == 200 {
+        if let Some(token) = value["token"].as_str() {
+            credential()?
+                .set_password(token)
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(object) = value.as_object_mut() {
+            object.remove("token");
+        }
+    }
+    if path == "/auth/logout" && status == 200 {
+        match credential()?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Ok(serde_json::json!({"status":status,"body":value}))
+}
+fn main() {
+    tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![
+            server_url,
+            change_server,
+            backend_request
+        ])
+        .run(tauri::generate_context!())
+        .expect("Failed to run Thelxinoe");
+}

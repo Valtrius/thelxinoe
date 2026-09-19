@@ -1,0 +1,21 @@
+[package]
+name = "thelxinoe-desktop"
+version.workspace = true
+edition.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2.6", features = [] }
+
+[dependencies]
+tauri = { version = "2.11", features = [] }
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+url = "2"
+keyring = "4.1"
+
+[dev-dependencies]
+thelxinoe-auth.workspace = true
+thelxinoe-database.workspace = true
+anyhow.workspace = true

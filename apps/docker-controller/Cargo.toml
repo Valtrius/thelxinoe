@@ -1,0 +1,12 @@
+[package]
+name = "thelxinoe-docker-controller"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+thelxinoe-core.workspace = true
+fs2 = "0.4"

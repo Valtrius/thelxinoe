@@ -1,0 +1,69 @@
+# Local verification
+
+```powershell
+npm run validate
+npm run desktop:build
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test
+```
+
+On Linux, omit `--workspace` from Clippy to exclude the Windows desktop shell. Catalog tests require FFprobe. Generated fixtures require FFmpeg. CI installs those prerequisites explicitly.
+
+## Browser and reverse proxy
+
+```powershell
+node scripts/fixtures.mjs
+docker compose build
+docker compose -f compose.test.yaml up -d --wait
+$env:THELXINOE_PROXY_TEST = '1'
+$env:THELXINOE_TEST_URL = 'https://localhost:9443'
+npm run test:e2e
+```
+
+The proxy project runs first and creates its test administrator on a fresh database. The catalog project indexes generated video, multi-episode TV, music tags and a local trailer. Checks cover secure cookies, Origin rejection, event replay, device revocation, stable identities and manual corrections. Only the test browser ignores the local Caddy certificate's trust error.
+
+For the first-run page on an untouched main deployment, clear those two environment variables and run `npm run test:e2e`.
+
+## Windows desktop
+
+With the test deployment initialized:
+
+```powershell
+$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9223'
+$env:WEBVIEW2_USER_DATA_FOLDER = "$PWD\.local\desktop-test-webview"
+Start-Process -FilePath "$PWD\target\release\thelxinoe-desktop.exe" -WindowStyle Hidden
+node scripts/test-desktop.mjs
+```
+
+This controls the real bundled Svelte page inside WebView2. It tests device login, persistence in Windows Credential Manager, absence of credentials in browser storage, catalog browsing, server restart/reconnect, and revocation. It restores the desktop server address to `http://127.0.0.1:8484`. Close the test app afterward; remote debugging is enabled only by these environment variables. The script restarts only the isolated test server.
+
+## Android TV preparation
+
+Android Studio's SDK is at `$env:LOCALAPPDATA\Android\Sdk`. The installed image is `system-images;android-34;android-tv;x86`. The project AVD uses Windows Hypervisor Platform and a software GPU. The other existing AVD was left intact.
+
+```powershell
+$env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
+$env:ANDROID_AVD_HOME = "$PWD\.local\android-avd"
+Start-Process -FilePath "$env:ANDROID_HOME\emulator\emulator.exe" -ArgumentList '-avd Thelxinoe_TV -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -port 5580' -WindowStyle Hidden
+& "$env:ANDROID_HOME\platform-tools\adb.exe" -s emulator-5580 shell getprop sys.boot_completed
+& "$env:ANDROID_HOME\platform-tools\adb.exe" -s emulator-5580 shell monkey -p com.github.damontecres.wholphin -c android.intent.category.LEANBACK_LAUNCHER 1
+```
+
+ADB serial: `emulator-5580`. The emulator reaches host services through `10.0.2.2`. The test server will be `http://10.0.2.2:18484` when the Jellyfin adapter exists. Wholphin's ARMv7 APK works on this image's translation layer; its x86_64 APK does not match the image ABI.
+
+Wholphin 1.0.8 ARMv7 APK SHA-256: `7a7a031104f42a8314e3deed4febb670b515687ac500026f59a997dae772d950`. Source: [official Wholphin releases](https://github.com/damontecres/Wholphin/releases).
+
+## Private provider import
+
+The offline helpers use an existing master key, never display credentials, and require the destination server to be stopped. For the main Windows Docker bind mount:
+
+```powershell
+docker compose stop server
+cargo run -p thelxinoe-desktop --example import-youtwitch -- .local/docker/server
+# After placing the Thelxinoe TMDB token in the ignored local input file:
+cargo run -p thelxinoe-desktop --example import-tmdb -- .local/docker/server .local/tmdb-token
+docker compose up -d --wait
+```
+
+Alternatively, an administrator can save metadata settings through the application. A configured token is never returned by the API. No real token or provider-contact address is committed.

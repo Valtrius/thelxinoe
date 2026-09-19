@@ -1,0 +1,259 @@
+mod accounts;
+pub mod config;
+pub mod error;
+mod grants;
+pub mod library;
+pub mod metadata;
+mod realtime;
+pub mod security;
+
+use crate::{config::Config, error::Result};
+use axum::{
+    Json, Router,
+    extract::{DefaultBodyLimit, State},
+    http::{HeaderMap, StatusCode},
+    middleware,
+    routing::{delete, get, post},
+};
+use serde_json::json;
+use std::sync::Arc;
+use thelxinoe_auth::SecretStore;
+use thelxinoe_database::Database;
+use thelxinoe_jobs::Queue;
+use tower_http::services::{ServeDir, ServeFile};
+
+#[derive(Clone)]
+pub struct AppState {
+    pub db: Database,
+    pub secrets: SecretStore,
+    pub config: Arc<Config>,
+    pub events: tokio::sync::broadcast::Sender<()>,
+    pub password_slots: Arc<tokio::sync::Semaphore>,
+    pub dummy_hash: Arc<String>,
+}
+impl AppState {
+    pub async fn open(config: Config) -> anyhow::Result<Self> {
+        std::fs::create_dir_all(&config.state)?;
+        std::fs::create_dir_all(&config.cache)?;
+        let db = Database::open(config.state.join("thelxinoe.sqlite3"))?;
+        if !config.state.join("secrets/master.key").exists()
+            && db
+                .call(|c| {
+                    Ok(c.query_row("SELECT COUNT(*) FROM secrets", [], |r| r.get::<_, i64>(0))?)
+                })
+                .await?
+                > 0
+        {
+            anyhow::bail!(
+                "The credential master key is missing. Restore the original key before starting the server."
+            );
+        }
+        let secrets = SecretStore::open(&config.state.join("secrets"))?;
+        let setup_path = config.state.join("secrets/setup-token");
+        if !setup_path.exists() {
+            use std::io::Write;
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(setup_path)?;
+            file.write_all(thelxinoe_auth::token().as_bytes())?;
+            file.sync_all()?;
+        }
+        Ok(Self {
+            db,
+            secrets,
+            config: Arc::new(config),
+            events: tokio::sync::broadcast::channel(128).0,
+            password_slots: Arc::new(tokio::sync::Semaphore::new(4)),
+            dummy_hash: Arc::new(thelxinoe_auth::password_hash(thelxinoe_auth::token()).await?),
+        })
+    }
+    pub async fn emit(
+        &self,
+        user_id: Option<String>,
+        kind: &str,
+        payload: serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let kind = kind.to_owned();
+        self.db
+            .call(move |c| {
+                c.execute(
+                    "INSERT INTO events(user_id,kind,payload,created_at) VALUES (?1,?2,?3,?4)",
+                    rusqlite::params![user_id, kind, payload.to_string(), thelxinoe_core::now()],
+                )?;
+                Ok(())
+            })
+            .await?;
+        let _ = self.events.send(());
+        Ok(())
+    }
+}
+pub fn router(state: AppState) -> Router {
+    Router::new()
+        .route("/api/v1/{*path}", axum::routing::any(not_found))
+        .route("/api/v1/health", get(health))
+        .route(
+            "/api/v1/setup",
+            get(accounts::setup_status).post(accounts::setup),
+        )
+        .route("/api/v1/auth/login", post(accounts::login))
+        .route("/api/v1/auth/logout", post(accounts::logout))
+        .route("/api/v1/auth/me", get(accounts::me))
+        .route("/api/v1/auth/event-ticket", post(grants::event_ticket))
+        .route("/api/v1/auth/sessions", get(accounts::sessions))
+        .route("/api/v1/auth/sessions/{id}", delete(accounts::revoke))
+        .route(
+            "/api/v1/users",
+            get(accounts::users).post(accounts::create_user),
+        )
+        .route("/api/v1/events", get(realtime::events))
+        .route(
+            "/api/v1/catalog/roots",
+            get(library::roots).post(library::add_root),
+        )
+        .route("/api/v1/catalog/roots/{id}/scan", post(library::scan))
+        .route("/api/v1/catalog", get(library::browse))
+        .route("/api/v1/catalog/collections", get(metadata::collections))
+        .route(
+            "/api/v1/catalog/{id}/provider-episodes",
+            get(metadata::provider_episodes),
+        )
+        .route(
+            "/api/v1/catalog/{id}/episode-mapping",
+            axum::routing::put(metadata::map_episode),
+        )
+        .route("/api/v1/metadata/search", get(metadata::search))
+        .route(
+            "/api/v1/admin/metadata",
+            get(metadata::configuration).put(metadata::configure),
+        )
+        .route("/api/v1/catalog/{id}/match", post(metadata::match_item))
+        .route("/api/v1/catalog/{id}/refresh", post(metadata::refresh))
+        .route("/api/v1/catalog/{id}/artwork", get(metadata::artwork))
+        .route("/api/v1/catalog/{id}", get(library::detail))
+        .route(
+            "/api/v1/catalog/{id}/overrides",
+            axum::routing::put(library::overrides),
+        )
+        .route(
+            "/api/v1/admin/jobs",
+            get(realtime::jobs).post(realtime::enqueue),
+        )
+        .route(
+            "/api/v1/admin/settings",
+            get(accounts::settings).put(accounts::save_settings),
+        )
+        .route("/api/v1/admin/health", get(admin_health))
+        .fallback_service(
+            ServeDir::new(&state.config.web)
+                .not_found_service(ServeFile::new(state.config.web.join("index.html"))),
+        )
+        .layer(DefaultBodyLimit::max(64 * 1024))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            security::guard,
+        ))
+        .with_state(state)
+}
+async fn health() -> Json<serde_json::Value> {
+    Json(
+        json!({"status":"ok","version":thelxinoe_core::VERSION,"api_version":thelxinoe_core::API_VERSION}),
+    )
+}
+async fn admin_health(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>> {
+    security::require(&state, &headers, thelxinoe_core::Capability::ManageServer).await?;
+    #[cfg(unix)]
+    let controller = reqwest::Client::builder()
+        .unix_socket(state.config.controller_socket.clone())
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .map_err(anyhow::Error::from)?
+        .get("http://localhost/health")
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false);
+    #[cfg(not(unix))]
+    let controller = false;
+    let free = fs2::available_space(&state.config.cache).map_err(anyhow::Error::from)?;
+    Ok(Json(
+        json!({"version":thelxinoe_core::VERSION,"database":"ok","controller":controller,"cache_free_bytes":free}),
+    ))
+}
+pub async fn run_jobs(state: AppState) -> anyhow::Result<()> {
+    let queue = Queue(state.db.clone());
+    queue.recover().await?;
+    loop {
+        if let Some(job) = queue.claim().await? {
+            match job.kind.as_str() {
+                "checkpoint" => queue.checkpoint(&job).await?,
+                "metadata.match" | "metadata.refresh" => {
+                    let result = metadata::run(&state, &job.payload).await;
+                    queue
+                        .finish(&job, result.err().map(|e| e.to_string()))
+                        .await?;
+                }
+                "library.scan" => {
+                    let roots = thelxinoe_catalog::roots(&state.db).await?;
+                    if let Some(root) = roots
+                        .into_iter()
+                        .find(|r| Some(r.id.as_str()) == job.payload["root_id"].as_str())
+                    {
+                        state
+                            .emit(None, "catalog.scan.started", json!({"root_id":root.id}))
+                            .await?;
+                        let result = thelxinoe_catalog::scan_with_progress(&state.db, root.clone(), |completed, total| {
+                            let state = state.clone();
+                            let root_id = root.id.clone();
+                            async move { state.emit(None, "catalog.scan.progress", json!({"root_id":root_id,"completed":completed,"total":total})).await.map(|_| ()) }
+                        }).await;
+                        let error = result.err().map(|e| e.to_string());
+                        if let Some(error) = error.clone() {
+                            state
+                                .db
+                                .call(move |db| {
+                                    db.execute(
+                                        "UPDATE library_roots SET scan_error=?1 WHERE id=?2",
+                                        rusqlite::params![error, root.id],
+                                    )?;
+                                    Ok(())
+                                })
+                                .await?;
+                        }
+                        queue.finish(&job, error).await?;
+                        state
+                            .emit(
+                                None,
+                                "catalog.changed",
+                                json!({"root_id":job.payload["root_id"]}),
+                            )
+                            .await?;
+                    } else {
+                        queue
+                            .finish(&job, Some("Library no longer exists".into()))
+                            .await?;
+                    }
+                }
+                _ => queue.finish(&job, Some("Unknown job type".into())).await?,
+            }
+            state
+                .emit(None, "jobs.changed", json!({"id":job.id}))
+                .await?;
+        } else {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    }
+}
+pub async fn not_found() -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({"error":{"code":"not_found","message":"Unknown API endpoint"}})),
+    )
+}

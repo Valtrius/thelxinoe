@@ -1,0 +1,7 @@
+{
+    admin off
+}
+https://localhost:9443 {
+    tls internal
+    reverse_proxy server:8484
+}

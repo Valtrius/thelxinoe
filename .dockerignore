@@ -1,0 +1,8 @@
+.git
+.serena
+.local
+target
+node_modules
+**/node_modules
+frontend/dist
+.env
