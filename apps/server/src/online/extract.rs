@@ -36,17 +36,36 @@ pub async fn inspect(
     if !owned {
         return Err(ApiError::not_found());
     }
+    let metadata = match metadata(&state, &id).await {
+        Ok(value) => value,
+        Err(error)
+            if error.1 == "extractor_authentication_required"
+                || error.1 == "extraction_failed"
+                || error.1 == "unavailable" =>
+        {
+            return Ok(Json(json!({"state":error.1})));
+        }
+        Err(error) => return Err(error),
+    };
+    Ok(Json(
+        json!({"state":"available","duration":metadata["duration"],"live":metadata["is_live"].as_bool().unwrap_or(false),"format_count":metadata["formats"].as_array().map_or(0,Vec::len)}),
+    ))
+}
+pub(super) async fn metadata(state: &AppState, id: &str) -> Result<Value> {
+    if !sync::identifier(id, 11) {
+        return Err(ApiError::bad("Invalid YouTube video"));
+    }
     let _slot = state
         .online
         .extraction
         .try_acquire()
         .map_err(|_| ApiError::conflict("Both extraction slots are busy; try again shortly"))?;
-    let bundle = tools::selection(&state)
+    let bundle = tools::selection(state)
         .await?
         .ok_or_else(|| ApiError::conflict("An administrator must install online playback tools"))?;
     tools::verify(&bundle.yt_dlp).await?;
     tools::verify(&bundle.deno).await?;
-    let args = arguments(&bundle, &id);
+    let args = arguments(&bundle, id);
     let output = process::run(
         &bundle.yt_dlp.path,
         &args,
@@ -56,19 +75,17 @@ pub async fn inspect(
     .await
     .map_err(|_| ApiError::conflict("Public extraction failed or timed out; try again later"))?;
     if !output.success {
-        return Ok(Json(json!({"state":failure(&output.stderr)})));
+        let code = failure(&output.stderr);
+        return Err(ApiError(axum::http::StatusCode::CONFLICT,code,match code {"extractor_authentication_required"=>"Extractor authentication required; this video cannot be played with public access", "unavailable"=>"This video is unavailable with public access",_=>"Public extraction failed; try again later"}.into()));
     }
     let metadata: Value = serde_json::from_slice(&output.stdout)
         .map_err(|_| ApiError::conflict("The extractor returned invalid metadata"))?;
-    if metadata["id"].as_str() != Some(&id) {
+    if metadata["id"].as_str() != Some(id) {
         return Err(ApiError::conflict(
             "The extractor returned a different video",
         ));
     }
-    // Signed media addresses and upstream headers stay on the server.
-    Ok(Json(
-        json!({"state":"available","duration":metadata["duration"],"live":metadata["is_live"].as_bool().unwrap_or(false),"format_count":metadata["formats"].as_array().map_or(0,Vec::len)}),
-    ))
+    Ok(metadata)
 }
 pub(super) fn arguments(bundle: &tools::Bundle, id: &str) -> Vec<OsString> {
     let mut args: Vec<OsString> = [

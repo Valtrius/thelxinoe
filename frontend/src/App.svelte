@@ -394,7 +394,9 @@
       {#if error}<p class="error" role="alert">{error}</p>{/if}
       {#if playing && desktop}<NativePlayer
           choice={playing}
-          closed={() => (playing = null)}
+          closed={(closedChoice) => {
+            if (playing === closedChoice) playing = null;
+          }}
         />{:else if playing && playing.kind === 'track'}<MusicPlayer
           choice={playing}
           closed={() => (playing = null)}

@@ -1,4 +1,6 @@
 mod pipeline;
+mod remote;
+pub use remote::RemoteSource;
 mod vod;
 pub use pipeline::Pipelines;
 

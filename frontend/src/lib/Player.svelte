@@ -166,7 +166,7 @@
     audioElement = undefined;
   }
   async function seek(at: number) {
-    if (!active || busy) return;
+    if (!active || active.live || busy) return;
     busy = true;
     error = '';
     try {
@@ -229,13 +229,13 @@
   function update() {
     if (active && !busy)
       position = Math.min(
-        active.duration,
+        active.live ? Number.POSITIVE_INFINITY : active.duration,
         player.currentTime + active.timeline_start,
       );
   }
   async function end() {
     if (active) {
-      position = active.duration;
+      if (!active.live) position = active.duration;
       await report('stopped');
       paused = true;
       ended?.();
@@ -247,7 +247,7 @@
     void stop();
   });
   async function toggle() {
-    if (active && position >= active.duration - 0.1) {
+    if (active && !active.live && position >= active.duration - 0.1) {
       busy = true;
       try {
         await stop();
@@ -324,19 +324,23 @@
       >
       <button class="primary" disabled={busy} onclick={() => void toggle()}
         >{paused ? 'Play' : 'Pause'}</button
-      ><span>{time(position)} / {time(active.duration)}</span><label
-        class="seek"
-        >Position<input
-          aria-label="Playback position"
-          type="range"
-          min="0"
-          max={active.duration}
-          step="0.1"
-          value={position}
-          disabled={busy}
-          onchange={(e) => void seek(Number(e.currentTarget.value))}
-        /></label
-      ><button class="secondary" onclick={() => void player.requestFullscreen()}
+      ><span
+        >{active.live
+          ? 'Live'
+          : `${time(position)} / ${time(active.duration)}`}</span
+      >{#if !active.live}<label class="seek"
+          >Position<input
+            aria-label="Playback position"
+            type="range"
+            min="0"
+            max={active.duration}
+            step="0.1"
+            value={position}
+            disabled={busy}
+            onchange={(e) => void seek(Number(e.currentTarget.value))}
+          /></label
+        >{/if}
+      <button class="secondary" onclick={() => void player.requestFullscreen()}
         >Fullscreen</button
       >
     </div>

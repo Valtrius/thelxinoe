@@ -35,6 +35,7 @@ export type Options = {
   capabilities: ReturnType<typeof capabilities>;
 };
 export type Playback = {
+  live?: boolean;
   id: string;
   url: string;
   mode: string;

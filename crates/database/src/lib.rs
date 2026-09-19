@@ -45,6 +45,8 @@ impl Database {
             include_str!("../migrations/007.sql"),
             include_str!("../migrations/008.sql"),
             include_str!("../migrations/009.sql"),
+            include_str!("../migrations/010.sql"),
+            include_str!("../migrations/011.sql"),
         ];
         if version > migrations.len() as i64 {
             anyhow::bail!("Database is newer than this server; use the matching release");
@@ -118,6 +120,19 @@ mod tests {
         let tx = db.transaction()?;
         tx.execute_batch(include_str!("../migrations/009.sql"))?;
         tx.commit()?;
+        db.execute_batch("INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) VALUES ('abcdefghijk','g','ready','{}',1,1);
+            INSERT INTO playback_sessions(id,user_id,auth_session_id,generation,edition,state,mode,options,duration,created_at,updated_at,youtube_video_id) VALUES ('yp','u','s','g','public','paused','direct','{}',100,1,1,'abcdefghijk');")?;
+        let tx = db.transaction()?;
+        tx.execute_batch(include_str!("../migrations/010.sql"))?;
+        tx.commit()?;
+        assert_eq!(
+            db.query_row(
+                "SELECT streaming FROM playback_sessions WHERE id='yp'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?,
+            0
+        );
         assert_eq!(
             db.query_row(
                 "SELECT sequence FROM compat_playbacks WHERE playback_id='p'",

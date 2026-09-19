@@ -344,6 +344,7 @@ async fn run(
                     Some(Control::Pause) => { ipc.call(json!(["cycle", "pause"])).await?; }
                     Some(Control::Seek(position)) => {
                         let entry = prepared.get_mut(&current).context("No active media")?;
+                        if entry.data["live"]==true {continue;}
                         let position = position.min((entry.data["duration"].as_f64().unwrap_or(0.0) - 0.1).max(0.0));
                         if entry.data["mode"] == "direct" {
                             ipc.call(json!(["seek", position, "absolute+exact"])).await?;
@@ -411,7 +412,7 @@ async fn run(
                             if let Some(index) = index {
                                 let entry = prepared.get_mut(&index).unwrap();
                                 if message["reason"] == "error" { anyhow::bail!("MPV could not decode or retrieve this media"); }
-                                if message["reason"] == "eof" { entry.position = entry.data["duration"].as_f64().unwrap_or(entry.position); }
+                                if message["reason"] == "eof" && entry.data["live"]!=true { entry.position = entry.data["duration"].as_f64().unwrap_or(entry.position); }
                                 report(&backend, entry, "stopped").await?;
                                 if index == current { loaded = false; }
                                 if index + 1 >= choices.len() { break; }

@@ -1,4 +1,4 @@
-use crate::{Options, Source, conversion_args};
+use crate::{Options, RemoteSource, Source, conversion_args};
 use anyhow::{Context, Result, bail};
 use std::{
     collections::HashMap,
@@ -17,6 +17,10 @@ struct Running {
     child: Child,
     directory: PathBuf,
     revision: String,
+}
+enum Input<'a> {
+    Local(&'a Source),
+    Remote(&'a RemoteSource),
 }
 pub struct Pipelines {
     root: PathBuf,
@@ -55,6 +59,37 @@ impl Pipelines {
         } else {
             start
         };
+        self.start_input(id, Input::Local(source), options, mode, timeline_start)
+            .await
+    }
+    pub async fn start_remote(
+        &self,
+        id: &str,
+        source: &RemoteSource,
+        options: &Options,
+        start: f64,
+    ) -> Result<(String, f64)> {
+        source.validate()?;
+        if !start.is_finite() || start < 0.0 {
+            bail!("Invalid stream position");
+        }
+        self.start_input(
+            id,
+            Input::Remote(source),
+            options,
+            "transcode",
+            if source.live { 0.0 } else { start },
+        )
+        .await
+    }
+    async fn start_input(
+        &self,
+        id: &str,
+        input: Input<'_>,
+        options: &Options,
+        mode: &str,
+        timeline_start: f64,
+    ) -> Result<(String, f64)> {
         let mut running = self.running.lock().await;
         if let Some(mut old) = running.remove(id) {
             let _ = old.child.kill().await;
@@ -77,34 +112,60 @@ impl Pipelines {
         let directory = self.root.join(&revision);
         tokio::fs::create_dir(&directory).await?;
         let mut command = Command::new("ffmpeg");
-        command
-            .args([
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-nostdin",
-                "-y",
-                "-readrate",
-                "1",
-                "-ss",
-                &timeline_start.to_string(),
-                "-seek_timestamp",
-                "1",
-                "-i",
-            ])
-            .arg(&source.path);
-        if source.video_codec().is_some() {
-            command.args(["-map", "0:v:0"]);
-        }
-        command
-            .args(["-map"])
-            .arg(
+        if let Input::Remote(source) = &input {
+            // FFREPORT may otherwise write signed upstream addresses to disk.
+            command.env_remove("FFREPORT");
+            command.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y"]);
+            for address in std::iter::once(&source.video).chain(source.audio.iter()) {
+                command.args([
+                    "-protocol_whitelist",
+                    "https,tls,tcp,crypto",
+                    "-rw_timeout",
+                    "15000000",
+                ]);
+                if !source.live {
+                    command.args(["-readrate", "1", "-ss", &timeline_start.to_string()]);
+                }
+                command.args(["-i", address]);
+            }
+            command.args([
+                "-map",
+                "0:v:0",
+                "-map",
+                if source.audio.is_some() {
+                    "1:a:0"
+                } else {
+                    "0:a:0?"
+                },
+            ]);
+        } else if let Input::Local(source) = &input {
+            command
+                .args([
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-nostdin",
+                    "-y",
+                    "-readrate",
+                    "1",
+                    "-ss",
+                    &timeline_start.to_string(),
+                    "-seek_timestamp",
+                    "1",
+                    "-i",
+                ])
+                .arg(&source.path);
+            if source.video_codec().is_some() {
+                command.args(["-map", "0:v:0"]);
+            }
+            command.args(["-map"]).arg(
                 options
                     .audio
                     .map(|n| format!("0:{n}"))
                     .unwrap_or_else(|| "0:a:0?".into()),
-            )
-            .args(["-sn", "-dn", "-map_metadata", "-1"]);
+            );
+        }
+        command.args(["-sn", "-dn", "-map_metadata", "-1"]);
         if mode == "remux" {
             command.args(["-c", "copy"]);
         } else {

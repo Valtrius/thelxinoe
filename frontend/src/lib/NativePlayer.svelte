@@ -18,7 +18,7 @@
   };
   let { choice, closed } = $props<{
     choice: MediaChoice;
-    closed: () => void;
+    closed: (choice: MediaChoice) => void;
   }>();
   let view = $state<View | null>(null),
     error = $state(''),
@@ -74,8 +74,9 @@
     <button
       class="secondary"
       onclick={async () => {
+        const closing = choice;
         await command('stop');
-        closed();
+        closed(closing);
       }}>Close player</button
     >
   </div>
@@ -98,17 +99,22 @@
       >{#if view.music}<button
           class="secondary"
           onclick={() => void command('next')}>Next track</button
-        >{/if}<span>{time(view.position)} / {time(view.duration)}</span><label
-        >Position<input
-          aria-label="Native playback position"
-          type="range"
-          min="0"
-          max={view.duration}
-          step="0.1"
-          value={view.position}
-          onchange={(e) => void command('seek', Number(e.currentTarget.value))}
-        /></label
-      ><label
+        >{/if}<span
+        >{view.duration === 0
+          ? 'Live'
+          : `${time(view.position)} / ${time(view.duration)}`}</span
+      >{#if view.duration > 0}<label
+          >Position<input
+            aria-label="Native playback position"
+            type="range"
+            min="0"
+            max={view.duration}
+            step="0.1"
+            value={view.position}
+            onchange={(e) =>
+              void command('seek', Number(e.currentTarget.value))}
+          /></label
+        >{/if}<label
         >Volume<input
           aria-label="Native playback volume"
           type="range"

@@ -52,7 +52,7 @@ async fn enabled(state: &AppState) -> anyhow::Result<bool> {
         .call(|db| {
             Ok(db
                 .query_row(
-                    "SELECT value='true' FROM settings WHERE key='online.youtube.downloads'",
+                    "SELECT value='true' FROM settings WHERE key='youtube_downloads'",
                     [],
                     |r| r.get(0),
                 )
@@ -71,7 +71,7 @@ pub async fn configure(
     Json(input): Json<Configuration>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
-    state.db.call(move |db| {let tx=db.transaction()?; tx.execute("INSERT INTO settings VALUES ('online.youtube.downloads',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[input.enabled.to_string()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'online.downloads.configure',?2,?3)",params![p.user.id,input.enabled.to_string(),now()])?;tx.commit()?;Ok(())}).await?;
+    state.db.call(move |db| {let tx=db.transaction()?; tx.execute("INSERT INTO settings VALUES ('youtube_downloads',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[input.enabled.to_string()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'online.downloads.configure',?2,?3)",params![p.user.id,input.enabled.to_string(),now()])?;tx.commit()?;Ok(())}).await?;
     Ok(Json(json!({"enabled":input.enabled})))
 }
 pub async fn status(
@@ -104,6 +104,7 @@ pub async fn request(
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let interest=tx.query_row("SELECT EXISTS(SELECT 1 FROM youtube_state WHERE user_id=?1 AND video_id=?2 AND (watchlist=1 OR pinned=1))",params![p.user.id,video],|r|r.get::<_,bool>(0))?;
         if !interest { return Ok(false); }
+        tx.execute("INSERT INTO youtube_media(video_id) VALUES (?1) ON CONFLICT DO NOTHING",[&video])?;
         // A retained interest is required before acquiring shared physical media.
         tx.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) VALUES (?1,?2,'queued',?3,?4,?4) ON CONFLICT(video_id) DO UPDATE SET generation=excluded.generation,state='queued',tools=excluded.tools,error=NULL,updated_at=excluded.updated_at WHERE youtube_downloads.state IN ('failed','unavailable','extractor_authentication_required')",params![video,thelxinoe_core::id(),serde_json::to_string(&bundle)?,now()])?;
         tx.commit()?;Ok(true)
@@ -153,7 +154,7 @@ pub(crate) fn record(
             0.0
         }
     });
-    tx.execute("INSERT INTO youtube_state(user_id,video_id,watched,position,added_at,updated_at) SELECT ?1,?2,?3,?4,?5,?5 WHERE EXISTS(SELECT 1 FROM youtube_videos WHERE user_id=?1 AND video_id=?2) ON CONFLICT(user_id,video_id) DO UPDATE SET watched=MAX(watched,excluded.watched),position=excluded.position,updated_at=excluded.updated_at",params![user,video,position>=duration*0.9,position,now()])?;
+    tx.execute("INSERT INTO youtube_state(user_id,video_id,watched,position,added_at,updated_at) SELECT ?1,?2,?3,?4,?5,?5 WHERE EXISTS(SELECT 1 FROM youtube_videos WHERE user_id=?1 AND video_id=?2) ON CONFLICT(user_id,video_id) DO UPDATE SET watched=MAX(watched,excluded.watched),position=excluded.position,updated_at=excluded.updated_at",params![user,video,duration>0.0&&position>=duration*0.9,if duration>0.0 {position}else{0.0},now()])?;
     tx.execute("INSERT INTO youtube_history(playback_id,user_id,video_id,title,device_name,started_at,updated_at,position,duration,played_seconds,state) SELECT p.id,p.user_id,p.youtube_video_id,v.title,s.name,?2,?2,?3,p.duration,?4,?5 FROM playback_sessions p JOIN sessions s ON s.id=p.auth_session_id JOIN youtube_videos v ON v.user_id=p.user_id AND v.video_id=p.youtube_video_id WHERE p.id=?1 ON CONFLICT(playback_id) DO UPDATE SET updated_at=excluded.updated_at,position=excluded.position,played_seconds=played_seconds+?4,state=excluded.state",params![playback,now(),position,seconds,status])?;
     Ok(())
 }

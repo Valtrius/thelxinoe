@@ -4,6 +4,73 @@ use axum::http::StatusCode;
 const VIDEO: &str = "abcdefghijk";
 
 #[tokio::test]
+async fn both_admin_configuration_routes_control_the_same_download_policy() {
+    let (_temp, state, cookie) = fixture().await;
+    state
+        .db
+        .call(|db| {
+            db.execute("UPDATE users SET role='admin' WHERE id='alice'", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        call(
+            &state,
+            "/api/v1/admin/online/downloads",
+            "GET",
+            json!({}),
+            &cookie
+        )
+        .await
+        .2["enabled"],
+        false
+    );
+    assert_eq!(
+        call(
+            &state,
+            "/api/v1/admin/online/downloads",
+            "PUT",
+            json!({"enabled":true}),
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&state, "/api/v1/admin/online", "GET", json!({}), &cookie)
+            .await
+            .2["youtube_downloads"],
+        true
+    );
+    assert_eq!(
+        call(
+            &state,
+            "/api/v1/admin/online",
+            "PUT",
+            json!({"youtube_downloads":false,"youtube_daily_quota":10000}),
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &state,
+            "/api/v1/admin/online/downloads",
+            "GET",
+            json!({}),
+            &cookie
+        )
+        .await
+        .2["enabled"],
+        false
+    );
+}
+
+#[tokio::test]
 async fn public_file_sharing_keeps_progress_private_and_retention_fenced() {
     let (_temp, state, alice) = fixture().await;
     let generation = thelxinoe_core::id();
@@ -21,6 +88,7 @@ async fn public_file_sharing_keeps_progress_private_and_retention_fenced() {
     let metadata = std::fs::metadata(&path).unwrap();
     let generation_copy = generation.clone();
     state.db.call(move|db| {
+        db.execute("INSERT INTO youtube_media(video_id) VALUES (?1)",[VIDEO])?;
         db.execute("INSERT INTO youtube_videos(user_id,video_id,title,privacy) VALUES ('alice',?1,'Public fixture','public')",[VIDEO])?;
         db.execute("INSERT INTO youtube_state(user_id,video_id,watchlist,added_at,updated_at) VALUES ('alice',?1,1,1,1)",[VIDEO])?;
         db.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,path,size,modified,probe,requested_at,updated_at,unprotected_at) VALUES (?1,?2,'ready','{}',?3,?4,?5,?6,1,1,1)",params![VIDEO,generation_copy,path.to_string_lossy(),metadata.len() as i64,metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos().to_string(),json!({"format":{"duration":"100"},"streams":[{"index":0,"codec_type":"video","codec_name":"h264"}]}).to_string()])?;

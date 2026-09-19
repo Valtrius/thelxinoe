@@ -215,7 +215,8 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
                 ],
             )
             .await?;
-            let rows = items(&data)?
+            let subscriptions = items(&data)?;
+            let rows = subscriptions
                 .iter()
                 .filter_map(|v| {
                     Some((
@@ -224,6 +225,11 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
                     ))
                 })
                 .collect::<Vec<_>>();
+            if rows.len() != subscriptions.len() {
+                return Err(ApiError::conflict(
+                    "YouTube returned an incomplete subscription page; existing subscriptions were preserved",
+                ));
+            }
             let page = next_page(&data, &turn.cursor.page)?;
             turn.cursor.pages += 1;
             if turn.cursor.pages > 200 {

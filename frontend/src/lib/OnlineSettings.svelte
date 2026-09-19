@@ -12,7 +12,7 @@
   let config = $state<Configuration | null>(null),
     clientId = $state(''),
     clientSecret = $state(''),
-    downloads = $state(true),
+    downloads = $state(false),
     budget = $state(10000),
     busy = $state(false),
     message = $state('');

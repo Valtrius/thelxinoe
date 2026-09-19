@@ -39,6 +39,7 @@
   let result = $state<Result | null>(null),
     people = $state<User[]>([]),
     all = $state(false),
+    domain = $state('library'),
     person = $state(''),
     since = $state(''),
     until = $state(''),
@@ -59,6 +60,7 @@
     error = '';
     try {
       const query = new SvelteURLSearchParams();
+      if (!mode) query.set('domain', domain);
       if (more && result?.next_before)
         query.set('before', String(result.next_before));
       if (since)
@@ -108,6 +110,13 @@
         void load();
       }}
     >
+      <label
+        >Media<select bind:value={domain} onchange={() => void load()}
+          ><option value="library">Local library</option><option value="youtube"
+            >YouTube</option
+          ></select
+        ></label
+      >
       {#if user.role === 'admin'}<label
           >History scope<select
             aria-label="History scope"

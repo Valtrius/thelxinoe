@@ -10,7 +10,6 @@
   let tools = $state<Tools | null>(null),
     error = $state(''),
     busy = $state(false);
-  let downloads = $state(false);
   let timer: ReturnType<typeof setTimeout> | undefined,
     disposed = false;
   const installing = $derived(
@@ -19,8 +18,6 @@
   async function load() {
     try {
       tools = await api<Tools>('/admin/online/tools');
-      downloads = (await api<{ enabled: boolean }>('/admin/online/downloads'))
-        .enabled;
       error = '';
     } catch (e) {
       error = String(e);
@@ -52,20 +49,6 @@
 
 <section class="panel">
   <h2>Server video tools</h2>
-  <label
-    ><input
-      type="checkbox"
-      bind:checked={downloads}
-      onchange={async () => {
-        try {
-          await api('/admin/online/downloads', 'PUT', { enabled: downloads });
-        } catch (e) {
-          error = String(e);
-          await load();
-        }
-      }}
-    />Allow YouTube downloads</label
-  >
   <p class="muted">
     Saved or pinned public videos can be downloaded for playback. Files are
     shared; personal progress stays private. Files with no remaining interest

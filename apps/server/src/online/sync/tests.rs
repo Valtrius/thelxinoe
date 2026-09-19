@@ -52,6 +52,7 @@ pub(crate) async fn stub(
         slots: tokio::sync::Semaphore::new(4),
         refresh: tokio::sync::Mutex::new(()),
         extraction: tokio::sync::Semaphore::new(2),
+        streams: crate::online::streams::Runtime::default(),
     });
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() })
 }

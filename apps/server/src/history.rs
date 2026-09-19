@@ -43,6 +43,7 @@ pub(crate) fn record(
 }
 pub(crate) fn finish_stale(db: &rusqlite::Connection) -> anyhow::Result<()> {
     db.execute("UPDATE playback_history SET ended_at=updated_at,state='stopped' WHERE ended_at IS NULL AND NOT EXISTS(SELECT 1 FROM playback_sessions p JOIN sessions s ON s.id=p.auth_session_id WHERE p.id=playback_id AND p.state IN ('playing','paused') AND s.expires_at>?1 AND p.updated_at>?2)",params![now(),now()-120])?;
+    db.execute("UPDATE youtube_history SET state='stopped' WHERE state IN ('playing','paused') AND NOT EXISTS(SELECT 1 FROM playback_sessions p JOIN sessions s ON s.id=p.auth_session_id WHERE p.id=playback_id AND p.state IN ('playing','paused') AND s.expires_at>?1 AND p.updated_at>?2)",params![now(),now()-120])?;
     Ok(())
 }
 #[derive(Deserialize, Default)]
@@ -51,6 +52,7 @@ pub struct Filter {
     since: Option<i64>,
     until: Option<i64>,
     user: Option<String>,
+    domain: Option<String>,
 }
 pub async fn mine(
     State(state): State<AppState>,
@@ -81,10 +83,19 @@ async fn history(
     if filter.since.zip(filter.until).is_some_and(|(s, u)| s > u) {
         return Err(ApiError::bad("The start date must precede the end date"));
     }
+    let source = match filter.domain.as_deref().unwrap_or("library") {
+        "library" => {
+            "(SELECT h.*,c.kind,c.title FROM playback_history h JOIN media_cards c ON c.id=h.media_id)"
+        }
+        "youtube" => {
+            "(SELECT rowid AS id,playback_id,user_id,'youtube:'||video_id AS media_id,'youtube' AS kind,title,'public' AS edition,device_name,started_at,updated_at,CASE WHEN state='stopped' THEN updated_at ELSE NULL END AS ended_at,position,duration,played_seconds,state FROM youtube_history)"
+        }
+        _ => return Err(ApiError::bad("Unknown history domain")),
+    };
     Ok(state.db.call(move|db|{
-        let items=db.prepare("SELECT h.id,c.id,c.kind,c.title,h.edition,u.id,u.username,h.device_name,h.started_at,h.updated_at,h.ended_at,h.position,h.duration,h.played_seconds,h.state FROM playback_history h JOIN media_cards c ON c.id=h.media_id JOIN users u ON u.id=h.user_id WHERE (?1 IS NULL OR h.user_id=?1) AND (?2 IS NULL OR h.started_at>=?2) AND (?3 IS NULL OR h.started_at<?3) AND (?4 IS NULL OR h.id<?4) ORDER BY h.id DESC LIMIT 100")?.query_map(params![user,filter.since,filter.until,filter.before],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"media_id":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"title":r.get::<_,String>(3)?,"edition":r.get::<_,String>(4)?,"user_id":r.get::<_,String>(5)?,"username":r.get::<_,String>(6)?,"device":r.get::<_,String>(7)?,"started_at":r.get::<_,i64>(8)?,"updated_at":r.get::<_,i64>(9)?,"ended_at":r.get::<_,Option<i64>>(10)?,"position":r.get::<_,f64>(11)?,"duration":r.get::<_,f64>(12)?,"played_seconds":r.get::<_,f64>(13)?,"state":r.get::<_,String>(14)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
-        let stats=db.query_row("SELECT COUNT(*),COALESCE(SUM(played_seconds),0),COUNT(DISTINCT media_id),COUNT(DISTINCT user_id) FROM playback_history WHERE (?1 IS NULL OR user_id=?1) AND (?2 IS NULL OR started_at>=?2) AND (?3 IS NULL OR started_at<?3)",params![user,filter.since,filter.until],|r|Ok(json!({"plays":r.get::<_,i64>(0)?,"played_seconds":r.get::<_,f64>(1)?,"media_count":r.get::<_,i64>(2)?,"user_count":r.get::<_,i64>(3)?})))?;
-        let users=if admin{db.prepare("SELECT u.id,u.username,COUNT(*),SUM(h.played_seconds) FROM playback_history h JOIN users u ON u.id=h.user_id WHERE (?1 IS NULL OR h.user_id=?1) AND (?2 IS NULL OR h.started_at>=?2) AND (?3 IS NULL OR h.started_at<?3) GROUP BY u.id ORDER BY SUM(h.played_seconds) DESC")?.query_map(params![user,filter.since,filter.until],|r|Ok(json!({"id":r.get::<_,String>(0)?,"username":r.get::<_,String>(1)?,"plays":r.get::<_,i64>(2)?,"played_seconds":r.get::<_,f64>(3)?})))?.collect::<std::result::Result<Vec<_>,_>>()?}else{vec![]};
+        let items=db.prepare(&format!("SELECT h.id,h.media_id,h.kind,h.title,h.edition,u.id,u.username,h.device_name,h.started_at,h.updated_at,h.ended_at,h.position,h.duration,h.played_seconds,h.state FROM {source} h JOIN users u ON u.id=h.user_id WHERE (?1 IS NULL OR h.user_id=?1) AND (?2 IS NULL OR h.started_at>=?2) AND (?3 IS NULL OR h.started_at<?3) AND (?4 IS NULL OR h.id<?4) ORDER BY h.id DESC LIMIT 100"))?.query_map(params![user,filter.since,filter.until,filter.before],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"media_id":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"title":r.get::<_,String>(3)?,"edition":r.get::<_,String>(4)?,"user_id":r.get::<_,String>(5)?,"username":r.get::<_,String>(6)?,"device":r.get::<_,String>(7)?,"started_at":r.get::<_,i64>(8)?,"updated_at":r.get::<_,i64>(9)?,"ended_at":r.get::<_,Option<i64>>(10)?,"position":r.get::<_,f64>(11)?,"duration":r.get::<_,f64>(12)?,"played_seconds":r.get::<_,f64>(13)?,"state":r.get::<_,String>(14)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let stats=db.query_row(&format!("SELECT COUNT(*),COALESCE(SUM(played_seconds),0),COUNT(DISTINCT media_id),COUNT(DISTINCT user_id) FROM {source} WHERE (?1 IS NULL OR user_id=?1) AND (?2 IS NULL OR started_at>=?2) AND (?3 IS NULL OR started_at<?3)"),params![user,filter.since,filter.until],|r|Ok(json!({"plays":r.get::<_,i64>(0)?,"played_seconds":r.get::<_,f64>(1)?,"media_count":r.get::<_,i64>(2)?,"user_count":r.get::<_,i64>(3)?})))?;
+        let users=if admin{db.prepare(&format!("SELECT u.id,u.username,COUNT(*),SUM(h.played_seconds) FROM {source} h JOIN users u ON u.id=h.user_id WHERE (?1 IS NULL OR h.user_id=?1) AND (?2 IS NULL OR h.started_at>=?2) AND (?3 IS NULL OR h.started_at<?3) GROUP BY u.id ORDER BY SUM(h.played_seconds) DESC"))?.query_map(params![user,filter.since,filter.until],|r|Ok(json!({"id":r.get::<_,String>(0)?,"username":r.get::<_,String>(1)?,"plays":r.get::<_,i64>(2)?,"played_seconds":r.get::<_,f64>(3)?})))?.collect::<std::result::Result<Vec<_>,_>>()?}else{vec![]};
         Ok(json!({"items":items,"stats":stats,"users":users,"next_before":items.last().map(|i|i["id"].clone()).filter(|_|items.len()==100)}))
     }).await?)
 }

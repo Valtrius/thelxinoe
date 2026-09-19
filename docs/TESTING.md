@@ -130,6 +130,17 @@ The read-only helper below checks whether the existing YouTwitch Google applicat
 cargo run -p thelxinoe-desktop --example check-google-callback -- https://localhost:22443/api/v1/online/youtube/callback
 ```
 
+## Public YouTube playback validation
+
+After linking a real account on the isolated online deployment and installing the managed tools:
+
+```powershell
+node scripts/test-youtube-playback.mjs
+node scripts/test-youtube-stream.mjs
+```
+
+The first test uses a retained public fixture and verifies decoded browser frames, seeking and server resume through HTTPS. The second selects a public VOD from the linked feed and verifies immediate streaming without downloading. These scripts do not replace application credentials. Live checks use a currently live public feed item; they verify decoded frames, absence of VOD seeking, and unchanged watched state. Native checks exercise the rebuilt Windows application through its MPV IPC and verify rapid VOD-to-live transitions, pause controls and server history. Private account-specific fixtures and sanitized results stay under `.local`.
+
 ## Private provider import
 
 The offline helpers use an existing master key, never display credentials, and require the destination server to be stopped. For the main Windows Docker bind mount:

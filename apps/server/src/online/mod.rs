@@ -4,6 +4,7 @@ mod feed;
 pub(crate) mod oauth;
 mod process;
 mod quota;
+pub(crate) mod streams;
 mod sync;
 pub(crate) mod tools;
 mod youtube;
@@ -32,6 +33,7 @@ pub struct Runtime {
     slots: tokio::sync::Semaphore,
     refresh: tokio::sync::Mutex<()>,
     extraction: tokio::sync::Semaphore,
+    pub(crate) streams: streams::Runtime,
 }
 impl Runtime {
     pub fn new() -> anyhow::Result<Self> {
@@ -47,6 +49,7 @@ impl Runtime {
             slots: tokio::sync::Semaphore::new(4),
             refresh: tokio::sync::Mutex::new(()),
             extraction: tokio::sync::Semaphore::new(2),
+            streams: streams::Runtime::default(),
         })
     }
 }
@@ -156,7 +159,7 @@ async fn configuration(State(state): State<AppState>, headers: HeaderMap) -> Res
                     |r| r.get::<_, String>(0),
                 )
                 .optional()?
-                .is_none_or(|v| v == "true");
+                .is_some_and(|v| v == "true");
             let budget = db
                 .query_row(
                     "SELECT value FROM settings WHERE key='youtube_daily_quota'",

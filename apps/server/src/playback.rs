@@ -67,7 +67,16 @@ pub async fn media_info(
     let p = security::principal(&state, &headers).await?;
     if let Some(video) = media.strip_prefix("youtube:") {
         crate::online::downloads::authorize(&state, &p, video).await?;
-        let source = crate::online::downloads::source(&state, video).await?;
+        let source = match crate::online::downloads::source(&state, video).await {
+            Ok(value) => value,
+            Err(error) if error.0 == axum::http::StatusCode::CONFLICT => {
+                let mut info = crate::online::streams::info(&state, &p, video).await?;
+                info["preferences"] = serde_json::to_value(user_preferences(&state, &p).await?)
+                    .map_err(anyhow::Error::from)?;
+                return Ok(Json(info));
+            }
+            Err(error) => return Err(error),
+        };
         let video = video.to_owned();
         let owner = p.user.id.clone();
         let (position,watched)=state.db.call(move |db| Ok(db.query_row("SELECT position,watched FROM youtube_state WHERE user_id=?1 AND video_id=?2",params![owner,video],|r|Ok((r.get::<_,f64>(0)?,r.get::<_,bool>(1)?))).optional()?.unwrap_or((0.0,false)))).await?;
@@ -146,7 +155,20 @@ pub(crate) async fn create_with_delivery(
                 "Online media is not part of the local library",
             ));
         }
-        crate::online::downloads::source(state, video).await?
+        match crate::online::downloads::source(state, video).await {
+            Ok(value) => value,
+            Err(error) if error.0 == axum::http::StatusCode::CONFLICT => {
+                return crate::online::streams::create(
+                    state,
+                    p,
+                    video,
+                    input.options,
+                    input.position,
+                )
+                .await;
+            }
+            Err(error) => return Err(error),
+        }
     } else {
         source(state, &input.media_id, input.file_id.as_deref()).await?
     };
@@ -245,11 +267,12 @@ struct Session {
     mode: String,
     options: Options,
     duration: f64,
+    streaming: bool,
 }
 async fn session(state: &AppState, p: &Principal, id: &str) -> Result<Session> {
     let id = id.to_owned();
     let p = p.clone();
-    state.db.call(move|db|Ok(db.query_row("SELECT COALESCE(media_id,'youtube:'||youtube_video_id),COALESCE(file_id,youtube_video_id),generation,mode,options,duration FROM playback_sessions WHERE id=?1 AND user_id=?2 AND auth_session_id=?3 AND state IN ('ready','playing','paused') AND updated_at>?4",params![id,p.user.id,p.session_id,now()-120],|r|Ok(Session {media:r.get(0)?,file:r.get(1)?,generation:r.get(2)?,mode:r.get(3)?,options:serde_json::from_str(&r.get::<_,String>(4)?).unwrap(),duration:r.get(5)?})).optional()?)).await?.ok_or_else(ApiError::not_found)
+    state.db.call(move|db|Ok(db.query_row("SELECT COALESCE(media_id,'youtube:'||youtube_video_id),COALESCE(file_id,youtube_video_id),generation,mode,options,duration,streaming FROM playback_sessions WHERE id=?1 AND user_id=?2 AND auth_session_id=?3 AND state IN ('ready','playing','paused') AND updated_at>?4",params![id,p.user.id,p.session_id,now()-120],|r|Ok(Session {media:r.get(0)?,file:r.get(1)?,generation:r.get(2)?,mode:r.get(3)?,options:serde_json::from_str(&r.get::<_,String>(4)?).unwrap(),duration:r.get(5)?,streaming:r.get(6)?})).optional()?)).await?.ok_or_else(ApiError::not_found)
 }
 async fn current_source(state: &AppState, session: &Session) -> Result<Source> {
     let src = if let Some(video) = session.media.strip_prefix("youtube:") {
@@ -285,6 +308,9 @@ pub async fn stream(
     request: Request,
 ) -> Result<Response> {
     let (_, session) = from_grant(&state, &id, &grant.grant).await?;
+    if session.streaming {
+        return Err(ApiError::not_found());
+    }
     let src = current_source(&state, &session).await?;
     let mut response = tower_http::services::ServeFile::new(&src.path)
         .oneshot(request)
@@ -304,7 +330,11 @@ pub async fn hls(
     request: Request,
 ) -> Result<Response> {
     let (_, session) = from_grant(&state, &id, &grant.grant).await?;
-    current_source(&state, &session).await?;
+    if session.streaming {
+        crate::online::streams::validate(&state, &id).await?;
+    } else {
+        current_source(&state, &session).await?;
+    }
     let path = state
         .playback
         .file(&id, &revision, &name)
@@ -389,12 +419,18 @@ pub async fn seek(
     if !input.position.is_finite() || input.position < 0.0 || input.position >= session.duration {
         return Err(ApiError::bad("Seek outside media duration"));
     }
-    let src = current_source(&state, &session).await?;
     let grant = grants::issue(&state, &p, &format!("playback:{id}"), 120).await?;
     let mut timeline_start = 0.0;
-    let url = if session.mode == "direct" {
+    let url = if session.streaming {
+        let (revision, offset) =
+            crate::online::streams::seek(&state, &id, &session.options, input.position).await?;
+        timeline_start = offset;
+        format!("/api/v1/playback/{id}/hls/{revision}/index.m3u8?grant={grant}")
+    } else if session.mode == "direct" {
+        current_source(&state, &session).await?;
         format!("/api/v1/playback/{id}/stream?grant={grant}")
     } else {
+        let src = current_source(&state, &session).await?;
         let (revision, offset) = state
             .playback
             .start(&id, &src, &session.options, &session.mode, input.position)
@@ -441,7 +477,7 @@ pub async fn report(state: &AppState, p: &Principal, id: &str, input: Progress) 
         let row=tx.query_row("SELECT COALESCE(media_id,'youtube:'||youtube_video_id),edition,duration,sequence,state FROM playback_sessions WHERE id=?1 AND user_id=?2 AND auth_session_id=?3",params![key,user,auth],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,f64>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?))).optional()?;
         let Some((media,edition,duration,sequence,status))=row else {return Ok(None);};
         if input.sequence<=sequence || ["stopped","failed"].contains(&status.as_str()) {return Ok(Some(false));}
-        let position=input.position.min(duration);
+        let position=if duration==0.0 {input.position}else{input.position.min(duration)};
         tx.execute("UPDATE playback_sessions SET position=?1,sequence=?2,state=?3,updated_at=?4 WHERE id=?5",params![position,input.sequence,input.state,now(),key])?;
         if let Some(video)=media.strip_prefix("youtube:") {
             crate::online::downloads::record(&tx,&key,&user,video,position,duration,&input.state)?;
@@ -564,5 +600,6 @@ pub async fn maintain(state: AppState) -> anyhow::Result<()> {
         for id in state.playback.maintain(&active).await? {
             fail(&state, &id).await?;
         }
+        crate::online::streams::maintain(&state, &active).await;
     }
 }

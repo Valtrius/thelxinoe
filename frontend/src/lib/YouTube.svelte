@@ -1,7 +1,15 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { Bookmark, Check, Pin, RefreshCw, Link, Play } from '@lucide/svelte';
+  import {
+    Bookmark,
+    Check,
+    Pin,
+    RefreshCw,
+    Link,
+    Play,
+    Download,
+  } from '@lucide/svelte';
   import { api, desktop, serverUrl } from './api';
   import type { MediaChoice } from './playback';
   let { revision = 0, play } = $props<{
@@ -16,7 +24,7 @@
         download: { state: string } | null;
       }>(`/online/youtube/videos/${video.id}/download`);
       if (current.download?.state === 'ready') {
-        play({ id: `youtube:${video.id}`, title: video.title });
+        notice = 'This video is already downloaded.';
         return;
       }
       if (!current.enabled) {
@@ -438,10 +446,17 @@
           <button
             class="secondary"
             aria-label={`Play ${video.title}`}
-            onclick={() => prepare(video)}
-            ><Play size={17} />{downloadStates[video.id] === 'queued'
-              ? 'Check download'
-              : 'Play'}</button
+            onclick={() =>
+              play({ id: `youtube:${video.id}`, title: video.title })}
+            ><Play size={17} />Play</button
+          >
+          <button
+            class="secondary"
+            aria-label={`Download ${video.title}`}
+            disabled={['queued', 'downloading', 'ready'].includes(
+              downloadStates[video.id],
+            )}
+            onclick={() => prepare(video)}><Download size={17} /></button
           >
           <button
             class="secondary"
