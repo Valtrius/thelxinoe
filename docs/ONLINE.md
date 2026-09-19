@@ -1,0 +1,35 @@
+# Online providers
+
+YouTube account linking, subscription synchronization, feed browsing, watchlists, pins and watched flags are implemented. Phase 9 remains in progress: server extraction, online playback, shared downloads, online viewing history and physical download retention are not implemented yet. Twitch and Kick remain future phases.
+
+## Google configuration
+
+An administrator configures one Google OAuth **Web application** for the installation. Regular users connect their own Google/YouTube account; they do not create a Google developer project.
+
+1. Set `THELXINOE_PUBLIC_URL` to the server's public HTTPS origin and configure its trusted reverse proxy. HTTP localhost is accepted for development.
+2. In Google Cloud, enable **YouTube Data API v3**, configure the OAuth consent screen, and create a **Web application** OAuth client. Add test users while the application remains in testing.
+3. Copy the exact **Authorized redirect URI** displayed in Thelxinoe Settings into Google's client configuration. Its path is `/api/v1/online/youtube/callback`.
+4. Save the client ID and client secret in Settings → YouTube application. Replacing this configuration removes existing viewer credentials and requires those users to reconnect.
+5. Each person opens YouTube → Connect YouTube and grants read access. The Windows application opens the configured server in the normal browser; the person signs in to Thelxinoe there before linking Google.
+
+See Google's [web server OAuth documentation](https://developers.google.com/identity/protocols/oauth2/web-server). A client previously used by an installed desktop application needs its callback support checked; importing an ID and secret alone does not establish server compatibility.
+
+## Credential boundaries
+
+The application secret, viewer access/refresh tokens and short-lived PKCE verifiers are encrypted in server storage. Tokens are bound to the Thelxinoe user, and never returned to the frontend. Account linking uses a ten-minute, single-use attempt tied to its original active web session, a random browser cookie, PKCE S256 and the configured callback. The callback cookie is HttpOnly/Secure/SameSite=Lax and restricted to the callback path. Normal login cookies stay SameSite=Strict.
+
+Refresh requests are serialized and reread credentials before exchanging them. Account generations prevent delayed OAuth, refresh or sync responses from restoring a disconnected/deleted connection. Provider rejection requires reconnection; temporary failures back off without erasing the connection. Provider error bodies, OAuth codes, tokens and authorization URLs are not logged by the server.
+
+Disconnect removes this server's viewer credentials and pending authorization attempts. Saved videos and personal state remain. Delete YouTube data also removes the user's cached feed, subscriptions, watchlist, pins and watched flags. Application configuration remains administrator-owned. Neither action changes YouTwitch's credentials or local data.
+
+## Synchronization and limits
+
+The server reserves Data API quota before each request, including failed requests. Its shared daily ledger uses midnight in `America/Los_Angeles`; the default local budget is 10,000 units and the administrator can adjust it. A provider quota error blocks further Data API calls for that day. Ordinary provider failures use increasing retry delays up to one hour.
+
+The persistent scheduler advances one bounded page per user on each turn, ordered by the least recent turn. A crash leaves a ninety-second lease and resumes the stored cursor after that lease expires. Subscription snapshots only remove old subscriptions after all pages complete. Initial subscription snapshots support up to 10,000 channels; each list request contains at most fifty items. Feed backfill is bounded to three upload pages per channel and stops after reaching ninety-day-old uploads. Completed cycles normally repeat after thirty minutes; manual requests have a five-minute cooldown.
+
+Viewer-visible video metadata stays per user. Live, upcoming and replay states come from YouTube's video metadata. Live/upcoming videos and retained items are refreshed in later cycles. Videos shorter than three minutes remain unclassified until a public Shorts endpoint check succeeds; duration alone never classifies a regular video as a Short. At most fifty classifications run per cycle, with unknown results retried after a day. Unknown Shorts classifications remain visible when Shorts are hidden.
+
+Watchlist additions create a durable placeholder immediately and resolve details on the same fair queue. Each user can retain up to 1,000 watchlist/pinned videos. Feed pages contain fifty items. Artwork is proxied for public videos after checking the requesting user's visibility; a scoped, expiring grant supports desktop image requests. No viewer credentials are attached to public thumbnail or Shorts requests.
+
+Google OAuth covers the Data API only. Future extraction/playback must remain public-only under the v1 project contract; these tokens must never be passed to yt-dlp.

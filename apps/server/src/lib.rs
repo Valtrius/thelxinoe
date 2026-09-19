@@ -6,12 +6,14 @@ mod history;
 mod jellyfin;
 pub mod library;
 pub mod metadata;
+mod online;
 pub mod playback;
 mod playlists;
 mod realtime;
 pub mod security;
 pub mod user_media;
 pub use jellyfin::discovery::run as run_discovery;
+pub use online::run as run_online;
 
 use crate::{config::Config, error::Result};
 use axum::{
@@ -40,6 +42,7 @@ pub struct AppState {
     pub playback: Arc<thelxinoe_playback::Pipelines>,
     pub subtitle_slots: Arc<tokio::sync::Semaphore>,
     pub compatibility_audio: Arc<tokio::sync::Mutex<()>>,
+    pub online: Arc<online::Runtime>,
 }
 impl AppState {
     pub async fn open(config: Config) -> anyhow::Result<Self> {
@@ -87,6 +90,7 @@ impl AppState {
             events: tokio::sync::broadcast::channel(128).0,
             password_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             compatibility_audio: Arc::new(tokio::sync::Mutex::new(())),
+            online: Arc::new(online::Runtime::new()?),
             dummy_hash: Arc::new(thelxinoe_auth::password_hash(thelxinoe_auth::token()).await?),
         })
     }
@@ -113,6 +117,7 @@ impl AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(jellyfin::router())
+        .merge(online::router())
         .route("/api/v1/{*path}", axum::routing::any(not_found))
         .route("/api/v1/health", get(health))
         .route(

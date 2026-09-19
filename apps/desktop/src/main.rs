@@ -2,6 +2,33 @@
 mod mpv;
 use serde_json::Value;
 use tauri::Manager;
+use tauri_plugin_opener::OpenerExt;
+
+#[tauri::command]
+async fn open_youtube_linking(app: tauri::AppHandle) -> Result<(), String> {
+    let response =
+        backend_request(app.clone(), "/online/youtube".into(), "GET".into(), None).await?;
+    if response["status"] != 200 {
+        return Err("Sign in to Thelxinoe first".into());
+    }
+    let value = response["body"]["linking_url"]
+        .as_str()
+        .ok_or("Configure the server's public URL before linking YouTube")?;
+    let url = url::Url::parse(value).map_err(|_| "Invalid server linking URL")?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query() != Some("section=YouTube")
+        || url.fragment().is_some()
+    {
+        return Err("Invalid server linking URL".into());
+    }
+    app.opener()
+        .open_url(url.as_str(), None::<&str>)
+        .map_err(|_| "Could not open your browser".into())
+}
 
 fn credential() -> Result<keyring::Entry, String> {
     keyring::Entry::new("app.thelxinoe.desktop", "server-session").map_err(|e| e.to_string())
@@ -111,6 +138,7 @@ fn main() {
     tauri::Builder::default()
         .manage(mpv::DesktopPlayback::default())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_opener::init())
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
@@ -126,6 +154,7 @@ fn main() {
             server_url,
             change_server,
             backend_request,
+            open_youtube_linking,
             mpv::mpv_settings,
             mpv::mpv_install,
             mpv::mpv_custom,

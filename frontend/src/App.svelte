@@ -12,6 +12,8 @@
   import History from './lib/History.svelte';
   import UserPreferences from './lib/UserPreferences.svelte';
   import QuickConnect from './lib/QuickConnect.svelte';
+  import OnlineSettings from './lib/OnlineSettings.svelte';
+  import YouTube from './lib/YouTube.svelte';
   import { persistQueue, type Card } from './lib/media-state';
   import { invoke } from '@tauri-apps/api/core';
   import type { MediaChoice } from './lib/playback';
@@ -56,7 +58,12 @@
   let username = $state(''),
     password = $state(''),
     setupToken = $state(''),
-    section = $state('Home');
+    section = $state(
+      new URLSearchParams(location.search).has('youtube_link') ||
+        new URLSearchParams(location.search).get('section') === 'YouTube'
+        ? 'YouTube'
+        : 'Home',
+    );
   let sessions = $state<Session[]>([]),
     users = $state<User[]>([]),
     jobs = $state<Job[]>([]),
@@ -144,6 +151,9 @@
             'playback.changed',
             'playlists.changed',
             'catalog.changed',
+            'youtube.changed',
+            'online.account.changed',
+            'online.configuration.changed',
           ].includes(event.kind)
         )
           mediaRevision++;
@@ -455,6 +465,7 @@
         </section>
         {#if user.role === 'admin'}
           <MetadataSettings />
+          <OnlineSettings />
           <section class="panel">
             <h2><ShieldCheck size={20} /> Server</h2>
             <div class="stats">
@@ -601,6 +612,7 @@
           play={(choice) => void playMedia(choice)}
         />
       {:else if section === 'History'}<History {user} />
+      {:else if section === 'YouTube'}<YouTube revision={mediaRevision} />
       {:else}
         <section class="empty">
           <Library size={42} />

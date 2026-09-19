@@ -43,6 +43,10 @@ Publish the server behind your own HTTPS reverse proxy. Set `THELXINOE_PUBLIC_UR
 
 The controller is intentionally unavailable outside its Unix socket. Do not publish the Docker daemon or mount it into the server.
 
+## YouTube
+
+Administrators configure a Google Web application in Settings, then each person connects their own YouTube account. The server owns OAuth, refresh, subscription/feed synchronization and the shared quota budget. Watchlists, pins and watched flags are private to each user. See [provider setup and current limits](docs/ONLINE.md). Server extraction, online playback and downloads remain in progress.
+
 ## TV clients
 
 Wholphin and Jellyfin Android TV can connect to the server's HTTP(S) address using a Thelxinoe account or Quick Connect approved from web Settings. The adapter exposes the local Movies, Shows and Music catalog. See [tested client versions and limitations](docs/JELLYFIN.md).

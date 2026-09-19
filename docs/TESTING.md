@@ -108,6 +108,28 @@ Generate the standard playback fixtures first. TV fixtures add 90-second timesta
 
 Wholphin 1.0.8 ARMv7 APK SHA-256: `7a7a031104f42a8314e3deed4febb670b515687ac500026f59a997dae772d950`. Source: [official Wholphin releases](https://github.com/damontecres/Wholphin/releases).
 
+## YouTube account and feed validation
+
+Use a dedicated fixture deployment; this test replaces its Google application configuration with fictional credentials and clears the fixture account's YouTube data. It refuses to proceed if that account is connected. Do not run it after linking a real account for live validation.
+
+```powershell
+$env:THELXINOE_TEST_HTTP_PORT = '18888'
+$env:THELXINOE_TEST_HTTPS_PORT = '22443'
+$env:THELXINOE_TEST_SUBNET = '172.31.254.0/24'
+docker compose -p thelxinoe-online -f compose.test.yaml up -d --wait
+node scripts/test-youtube.mjs
+```
+
+The script exercises the real browser UI and backend through Caddy HTTPS. It serves a fictional Google authorization page in the browser to check the cross-site callback: its Lax cookie is present, the Strict login cookie is absent, and normal authenticated browsing resumes afterward. It verifies PKCE, replay rejection, admin-only settings, concurrent immediate watchlist placeholders, private pins/watched state, and disconnect preserving saved videos. Evidence: `.local/youtube-result.json`, `.local/youtube-watchlist.png`, `.local/youtube-settings.png`.
+
+Rust tests use a bounded local provider stub to check successful code exchange, encrypted storage, concurrent refresh, provider revocation, fair shared quota reservations, two-user subscription paging, persisted restart recovery, metadata isolation, and late responses after disconnect/deletion. No production endpoint override is exposed for these stubs.
+
+The read-only helper below checks whether the existing YouTwitch Google application reaches an interactive authorization page for the proposed callback. It never prints credentials, changes YouTwitch or signs in. Reaching sign-in does not prove that consent or the token exchange will succeed; those require the account owner.
+
+```powershell
+cargo run -p thelxinoe-desktop --example check-google-callback -- https://localhost:22443/api/v1/online/youtube/callback
+```
+
 ## Private provider import
 
 The offline helpers use an existing master key, never display credentials, and require the destination server to be stopped. For the main Windows Docker bind mount:
