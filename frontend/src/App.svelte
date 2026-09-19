@@ -18,6 +18,7 @@
   import Kick from './lib/Kick.svelte';
   import ManagerSettings from './lib/ManagerSettings.svelte';
   import ManagerOwnership from './lib/ManagerOwnership.svelte';
+  import SupportServices from './lib/SupportServices.svelte';
   import Requests from './lib/Requests.svelte';
   import { persistQueue, type Card } from './lib/media-state';
   import { invoke } from '@tauri-apps/api/core';
@@ -479,6 +480,7 @@
           <OnlineSettings />
           <ManagerSettings />
           <ManagerOwnership />
+          <SupportServices />
           <section class="panel">
             <h2><ShieldCheck size={20} /> Server</h2>
             <div class="stats">

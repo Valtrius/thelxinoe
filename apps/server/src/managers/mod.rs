@@ -3,6 +3,7 @@ mod bindings;
 mod controls;
 mod operations;
 mod requests;
+mod support;
 #[cfg(test)]
 mod tests;
 use crate::{
@@ -47,6 +48,7 @@ pub(crate) fn router() -> Router<AppState> {
         .merge(bindings::router())
         .merge(controls::router())
         .merge(operations::router())
+        .merge(support::router())
         .route("/api/v1/admin/managers/containers", get(containers))
         .route("/api/v1/admin/managers", get(list).post(register))
         .route("/api/v1/admin/managers/{id}/options", get(options))
@@ -196,6 +198,14 @@ fn mappings(server: &Value, manager: &Value, media: &str) -> Result<Vec<Mapping>
     Ok(output)
 }
 async fn evidence(state: &AppState, container: &str, port: u16) -> Result<(String, Vec<Mapping>)> {
+    evidence_for(state, container, port, true).await
+}
+async fn evidence_for(
+    state: &AppState,
+    container: &str,
+    port: u16,
+    needs_media: bool,
+) -> Result<(String, Vec<Mapping>)> {
     if !(12..=64).contains(&container.len())
         || !container.bytes().all(|b| b.is_ascii_hexdigit())
         || port == 0
@@ -243,7 +253,11 @@ async fn evidence(state: &AppState, container: &str, port: u16) -> Result<(Strin
         })?;
     Ok((
         format!("http://{address}:{port}"),
-        mappings(&server, &manager, &state.config.media.to_string_lossy())?,
+        if needs_media {
+            mappings(&server, &manager, &state.config.media.to_string_lossy())?
+        } else {
+            Vec::new()
+        },
     ))
 }
 #[derive(Clone)]
@@ -290,7 +304,11 @@ impl Connection<'_> {
         })
     }
     fn version(&self) -> u8 {
-        if self.kind == "lidarr" { 1 } else { 3 }
+        if matches!(self.kind.as_str(), "lidarr" | "prowlarr") {
+            1
+        } else {
+            3
+        }
     }
     async fn call(
         &self,
@@ -305,7 +323,11 @@ impl Connection<'_> {
             .http
             .request(
                 method,
-                format!("{}/api/v{}/{path}", self.base, self.version()),
+                if self.kind == "bazarr" {
+                    format!("{}/api/{path}", self.base)
+                } else {
+                    format!("{}/api/v{}/{path}", self.base, self.version())
+                },
             )
             .header("X-Api-Key", &self.key)
             .query(query);

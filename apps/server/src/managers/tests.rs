@@ -420,3 +420,115 @@ async fn deletion_rechecks_keep_and_file_replacement_and_never_retries_completed
         StatusCode::CONFLICT
     );
 }
+
+#[tokio::test]
+async fn support_services_are_admin_only_redacted_and_expose_only_allowed_commands() {
+    let (_temp, mut state, alice) = fixture().await;
+    Arc::get_mut(&mut state.config).unwrap().media = "/data".into();
+    state
+        .db
+        .call(|db| {
+            db.execute("UPDATE users SET role='admin' WHERE id='bob'", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let token =
+        thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
+            .await
+            .unwrap();
+    let admin = format!("thelxinoe_session={token}");
+    let commands = Arc::new(AtomicUsize::new(0));
+    let count = commands.clone();
+    let stub=Router::new().route("/jsonrpc",post(move|headers:HeaderMap,Json(body):Json<Value>|{let count=count.clone();async move{
+        assert!(headers["authorization"].to_str().unwrap().starts_with("Basic "));
+        let result=match body["method"].as_str().unwrap(){
+            "version"=>json!("26.3"),"status"=>json!({"DownloadPaused":true,"DownloadRate":0,"DownloadLimit":0}),
+            "history"=>{assert_eq!(body["params"],json!([true]));json!([{"NZBID":8,"Name":"Completed fixture","Status":"SUCCESS/HIDDEN"}])},
+            "listgroups"=>json!([{"NZBID":7,"NZBName":"Fixture","Status":"PAUSED","URL":"https://provider.invalid/?apikey=private-indexer-secret","Parameters":[{"Name":"password","Value":"private-download-secret"}]}]),
+            "pausedownload"=>{count.fetch_add(1,Ordering::SeqCst);json!(true)},
+            _=>panic!("Unexpected RPC method")};Json(json!({"result":result,"id":1}))
+    }}));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let task = tokio::spawn(async move { axum::serve(listener, stub).await.unwrap() });
+    let container = "b".repeat(64);
+    let inspection = json!({"id":container,"running":true,"mounts":[{"source":"/physical","destination":"/data","writable":true}],"networks":[{"id":"network","address":"127.0.0.1"}]});
+    state
+        .managers
+        .docker
+        .lock()
+        .unwrap()
+        .insert("containers/self".into(), inspection.clone());
+    state
+        .managers
+        .docker
+        .lock()
+        .unwrap()
+        .insert(format!("containers/{container}"), inspection);
+    let input = json!({"name":"Fixture downloader","kind":"nzbget","container_id":container,"port":port,"credentials":{"username":"fixture","secret":"private-test-secret"},"native_url":"http://localhost:6789"});
+    assert_eq!(
+        call(
+            &state,
+            "/api/v1/admin/support",
+            "POST",
+            input.clone(),
+            &alice
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let response = call(&state, "/api/v1/admin/support", "POST", input, &admin).await;
+    assert_eq!(response.0, StatusCode::OK, "{}", response.2);
+    let key = response.2["id"].as_str().unwrap();
+    let path = format!("/api/v1/admin/support/{key}");
+    assert_eq!(
+        call(&state, &path, "GET", Value::Null, &alice).await.0,
+        StatusCode::FORBIDDEN
+    );
+    let view = call(&state, &path, "GET", Value::Null, &admin).await;
+    assert_eq!(view.0, StatusCode::OK);
+    assert!(!view.2.to_string().contains("private"));
+    assert_eq!(view.2["queue"][0]["id"], 7);
+    assert_eq!(view.2["history"][0]["title"], "Completed fixture");
+    assert_eq!(
+        call(&state, &path, "POST", json!({"action":"shutdown"}), &admin)
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        call(
+            &state,
+            &path,
+            "POST",
+            json!({"action":"remove","item_id":99}),
+            &admin
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(commands.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        call(&state, &path, "POST", json!({"action":"pause_all"}), &admin)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(commands.load(Ordering::SeqCst), 1);
+    let stored = state
+        .db
+        .call(|db| {
+            Ok(
+                db.query_row("SELECT credential FROM support_services", [], |r| {
+                    r.get::<_, Vec<u8>>(0)
+                })?,
+            )
+        })
+        .await
+        .unwrap();
+    assert!(!String::from_utf8_lossy(&stored).contains("private-test-secret"));
+    task.abort();
+}

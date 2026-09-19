@@ -78,32 +78,48 @@ async fn status(
             .is_some_and(|n| n > 0 && stats[file].as_u64().unwrap_or(0) >= n)
     };
     Ok(Json(
-        json!({"available":available,"monitored":item["monitored"],"downloads":downloads}),
+        json!({"available":available,"monitored":item["monitored"],"downloads":downloads,"seasons":item["seasons"].as_array().into_iter().flatten().filter_map(|s|s["seasonNumber"].as_i64()).collect::<Vec<_>>()}),
     ))
 }
-async fn candidates(c: &Connection<'_>, item: &Value) -> Result<Value> {
-    c.call(
-        reqwest::Method::GET,
-        "release",
-        &[(field(&c.kind), item["id"].to_string())],
-        None,
-    )
-    .await
+#[derive(Default, Deserialize)]
+struct ReleaseTarget {
+    season_number: Option<i64>,
+}
+async fn candidates(c: &Connection<'_>, item: &Value, target: &ReleaseTarget) -> Result<Value> {
+    let mut query = vec![(field(&c.kind), item["id"].to_string())];
+    if c.kind == "sonarr" {
+        let season = target
+            .season_number
+            .ok_or_else(|| ApiError::bad("Select a Sonarr season before searching releases"))?;
+        if !item["seasons"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|s| s["seasonNumber"].as_i64() == Some(season))
+        {
+            return Err(ApiError::conflict("Season no longer exists in Sonarr"));
+        }
+        query.push(("seasonNumber", season.to_string()));
+    }
+    c.call(reqwest::Method::GET, "release", &query, None).await
 }
 async fn releases(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(key): Path<String>,
+    axum::extract::Query(selection): axum::extract::Query<ReleaseTarget>,
 ) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
     let (s, item, _) = target(&state, key).await?;
     let c = Connection::open(&state, &s).await?;
-    let rows = candidates(&c, &item).await?;
+    let rows = candidates(&c, &item, &selection).await?;
     let rows=rows.as_array().ok_or_else(unavailable)?.iter().take(500).map(|r|json!({"guid":r["guid"],"indexer_id":r["indexerId"],"title":r["title"],"size":r["size"],"quality":r["quality"],"score":r["customFormatScore"],"rejections":r["rejections"],"approved":r["approved"],"protocol":r["protocol"]})).collect::<Vec<_>>();
     Ok(Json(json!({"items":rows})))
 }
 #[derive(Deserialize)]
 struct Grab {
+    #[serde(flatten)]
+    target: ReleaseTarget,
     guid: String,
     indexer_id: i64,
 }
@@ -120,7 +136,7 @@ async fn grab(
     let _guard = state.managers.guard.lock().await;
     let (s, item, _) = target(&state, key.clone()).await?;
     let c = Connection::open(&state, &s).await?;
-    let rows = candidates(&c, &item).await?;
+    let rows = candidates(&c, &item, &input.target).await?;
     let release = rows
         .as_array()
         .ok_or_else(unavailable)?
@@ -171,4 +187,70 @@ async fn monitor(
     .await?;
     state.db.call(move|db|{db.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'request.monitor',?2,?3)",params![p.user.id,key,now()])?;Ok(())}).await?;
     Ok(Json(json!({"saved":true})))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn sonarr_release_search_requires_an_existing_manager_season() {
+        let (_temp, state, _) = crate::online::oauth::tests::fixture().await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/api/v3/release",
+                    get(
+                        |axum::extract::Query(query): axum::extract::Query<
+                            std::collections::HashMap<String, String>,
+                        >| async move {
+                            assert_eq!(query.get("seriesId").unwrap(), "7");
+                            assert_eq!(query.get("seasonNumber").unwrap(), "3");
+                            Json(json!([{ "guid": "season-three" }]))
+                        },
+                    ),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        let connection = Connection {
+            state: &state,
+            base: format!("http://{address}"),
+            key: "fixture".into(),
+            kind: "sonarr".into(),
+        };
+        let series = json!({"id":7,"seasons":[{"seasonNumber":0},{"seasonNumber":3}]});
+        assert!(
+            candidates(&connection, &series, &ReleaseTarget::default())
+                .await
+                .is_err()
+        );
+        assert!(
+            candidates(
+                &connection,
+                &series,
+                &ReleaseTarget {
+                    season_number: Some(2)
+                }
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            candidates(
+                &connection,
+                &series,
+                &ReleaseTarget {
+                    season_number: Some(3)
+                }
+            )
+            .await
+            .unwrap()[0]["guid"],
+            "season-three"
+        );
+        task.abort();
+    }
 }

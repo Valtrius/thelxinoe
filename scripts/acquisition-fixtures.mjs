@@ -8,6 +8,7 @@ for (const [name, port] of [
   ['radarr', 7878],
   ['sonarr', 8989],
   ['lidarr', 8686],
+  ['prowlarr', 9696],
 ]) {
   mkdirSync(`${root}/${name}`, { recursive: true });
   const config = `${root}/${name}/config.xml`;
@@ -18,4 +19,34 @@ for (const [name, port] of [
       { flag: 'wx' },
     );
 }
+for (const name of ['bazarr', 'nzbget', 'news'])
+  mkdirSync(`${root}/${name}`, { recursive: true });
+const nzbConfig = `${root}/nzbget/nzbget.conf`;
+if (!existsSync(nzbConfig))
+  writeFileSync(
+    nzbConfig,
+    [
+      'MainDir=/data/downloads',
+      'DestDir=/data/downloads/completed',
+      'InterDir=/data/downloads/intermediate',
+      'NzbDir=/config/nzb',
+      'QueueDir=/config/queue',
+      'TempDir=/config/tmp',
+      'ScriptDir=/config/scripts',
+      'LogFile=/config/nzbget.log',
+      'ControlIP=0.0.0.0',
+      'ControlPort=6789',
+      'ControlUsername=fixture',
+      `ControlPassword=${randomBytes(24).toString('hex')}`,
+      'Server1.Active=yes',
+      'Server1.Name=Generated fixtures',
+      'Server1.Host=nserv',
+      'Server1.Port=6791',
+      'Server1.Connections=2',
+      'Server1.Encryption=no',
+      'Unpack=no',
+      '',
+    ].join('\n'),
+    { flag: 'wx' },
+  );
 console.log('Prepared isolated acquisition directories and private API keys.');

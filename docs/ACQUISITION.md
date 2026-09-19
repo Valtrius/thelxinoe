@@ -31,8 +31,29 @@ Real adapter validation used Radarr 6.4.4.10685, Sonarr 4.0.20.3014 and Lidarr 3
 
 Sanitized results are `.local/acquisition-result.json`, `.local/manager-files-result.json` and `.local/manager-tv-music-result.json`. Rust tests cover permission checks, encrypted credential redaction, duplicate requests, interrupted search, changed mounts, sticky ownership, Keep, content replacement with unchanged size/timestamp, and replay prevention.
 
-## Remaining validation and scope
+## Supporting services and download validation
 
-This milestone does not claim a real indexer-to-download-client acquisition. Release search/grab still needs controlled indexer/download fixtures and the subsequent NZBGet integration. Acquisition is available in the Requests section and through Search and request in Movies, Shows and Music. Automatic retention, import-list exclusion management, managed Docker installation/update ownership, and recovery/backup are later roadmap work. The controller currently exposes read-only inspection only.
+Settings also registers local Bazarr, Prowlarr and NZBGet containers. Their encrypted credentials never reach ordinary users. Prowlarr health/indexer tests and enable/disable controls, Bazarr wanted subtitles and acquisition, and NZBGet queue/history, pause/resume/remove and speed controls are available with native UI links. Completed downloads retained in NZBGet duplicate history remain visible after manager import cleanup.
+
+The private Newznab and NNTP fixtures publish generated black video, silent audio and a generated subtitle. Thelxinoe release search/grab passed through Prowlarr 2.6.5.5623 to NZBGet 26.3, then automatic Radarr movie, Sonarr episode and complete Lidarr album imports. Sonarr release search explicitly selects a manager season; a regression test prevents falling back to unrelated RSS results. Bazarr 1.6.1 extracted the embedded English subtitle and removed the movie from its wanted list. No commercial subtitle or indexer account is required for these tests.
+
+After the preceding manager tests, run:
+
+```powershell
+node scripts/generate-acquisition-news.mjs
+node scripts/configure-acquisition-downloads.mjs
+node scripts/test-support-services.mjs
+node scripts/configure-bazarr-fixture.mjs
+# Run the download test once to acquire files before the subtitle fixture exists.
+node scripts/test-acquisition-downloads.mjs --downloads-only
+node scripts/embed-bazarr-fixture.mjs
+node scripts/test-acquisition-downloads.mjs
+```
+
+The test-only native ports are 26767 (Bazarr), 29696 (Prowlarr) and 26789 (NZBGet). The indexer and NNTP server have no host ports. Sanitized evidence is in `.local/support-services-result.json` and `.local/acquisition-downloads-result.json`. The support browser script exercises registration, health, queue and rate controls. Linux/Windows manager regression tests cover admin-only access, secret redaction, forbidden RPC commands and stale queue selections.
+
+## Remaining scope
+
+Acquisition is available in the Requests section and through Search and request in Movies, Shows and Music. Automatic retention, import-list exclusion management, managed Docker installation/update ownership, and recovery/backup are later roadmap work. The controller currently exposes read-only inspection only.
 
 The operation lease coordinates this server's work. Arbitrary programs writing directly into media roots remain outside its control, as described in the architecture. Manager activity checks are conservative: any active command or download queue blocks destructive work for that manager.

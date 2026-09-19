@@ -95,7 +95,7 @@ async fn search(
     };
     let term = input.term.trim().to_owned();
     let kind = s.kind.clone();
-    let local=state.db.call(move|db|Ok(db.prepare("SELECT id,title,year FROM media_cards WHERE kind=?1 AND instr(lower(title),lower(?2))>0 ORDER BY title LIMIT 50")?.query_map(params![domain,term],|r|Ok(json!({"id":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"year":r.get::<_,Option<i64>>(2)?})))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
+    let local=state.db.call(move|db|Ok(db.prepare("SELECT id,title,year,(WITH RECURSIVE children(id) AS (SELECT card.id UNION ALL SELECT m.id FROM media m JOIN children c ON m.parent_id=c.id) SELECT EXISTS(SELECT 1 FROM children JOIN media_sources s ON s.media_id=children.id JOIN media_files f ON f.id=s.file_id WHERE f.present=1)) FROM media_cards card WHERE kind=?1 AND instr(lower(title),lower(?2))>0 ORDER BY title LIMIT 50")?.query_map(params![domain,term],|r|Ok(json!({"id":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"year":r.get::<_,Option<i64>>(2)?,"available":r.get::<_,bool>(3)?})))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
     let rows=remote.as_array().ok_or_else(unavailable)?.iter().take(50).filter_map(|r|{
         let external=external(&kind,r)?;let title=r["title"].as_str()?;
         Some(json!({"external_id":external,"title":title,"year":r["year"],"overview":r["overview"].as_str().unwrap_or("").chars().take(1000).collect::<String>(),"artist":r["artist"]["artistName"]}))

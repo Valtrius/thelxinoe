@@ -37,7 +37,9 @@
     selected = $state(''),
     term = $state(''),
     items = $state<Item[]>([]),
-    local = $state<{ id: string; title: string; year: number | null }[]>([]),
+    local = $state<
+      { id: string; title: string; year: number | null; available: boolean }[]
+    >([]),
     requests = $state<Request[]>([]),
     error = $state(''),
     notice = $state(''),
@@ -147,7 +149,12 @@
 </section>
 {#if local.length}<section class="panel">
     <h3>In your library</h3>
-    {#each local as item (item.id)}<p>{item.title} {item.year ?? ''}</p>{/each}
+    {#each local as item (item.id)}<p>
+        {item.title}
+        {item.year ?? ''} · {item.available
+          ? 'Available'
+          : 'Not currently available'}
+      </p>{/each}
   </section>{/if}
 <section aria-label="Acquisition search results">
   {#each items as item (item.external_id)}<article class="panel">
@@ -157,6 +164,7 @@
       <button
         disabled={busy || !services.find((s) => s.id === selected)?.ready}
         aria-label={`Request ${item.title}`}
+        class="secondary"
         onclick={() => void act(() => request(item))}>Request</button
       >
     </article>{/each}

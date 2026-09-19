@@ -53,6 +53,44 @@ services:
       - ./.local/acquisition/lidarr:/config
       - ./.local/acquisition/data:/data
     networks: [test]
+  nserv:
+    image: lscr.io/linuxserver/nzbget@sha256:3b92679543623c8710fec557de7dd525d55bb5dfc8c59526f054123eaae0f995
+    entrypoint: ["/app/nzbget/nzbget"]
+    command: ["--nserv", "-d", "/fixtures", "-v", "0"]
+    user: "10001:10001"
+    volumes: ["./.local/acquisition/news:/fixtures:ro"]
+    networks: [test]
+  indexer:
+    image: python:3.11-slim-bookworm@sha256:a36c24f9cbdf4fd0f52d67f0823eeac19c2028c637cecc392d97f980d4fec56b
+    command: ["python", "/app/indexer.py"]
+    user: "10001:10001"
+    volumes:
+      - ./tests/acquisition/indexer.py:/app/indexer.py:ro
+      - ./.local/acquisition/news:/fixtures:ro
+    networks: [test]
+  bazarr:
+    image: lscr.io/linuxserver/bazarr@sha256:d24bd0048c759a468970989e9df11a6b96a7628d556d00f923e60a35ba59237b
+    environment: {PUID: "10001", PGID: "10001", TZ: UTC}
+    ports: ["127.0.0.1:26767:6767"]
+    volumes:
+      - ./.local/acquisition/bazarr:/config
+      - ./.local/acquisition/data:/data
+    networks: [test]
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr@sha256:c96b56d94d116a9f4de94bc23d3381689492e6c3cfb7435320e8d982e406f99a
+    environment: {PUID: "10001", PGID: "10001", TZ: UTC}
+    ports: ["127.0.0.1:29696:9696"]
+    volumes:
+      - ./.local/acquisition/prowlarr:/config
+    networks: [test]
+  nzbget:
+    image: lscr.io/linuxserver/nzbget@sha256:3b92679543623c8710fec557de7dd525d55bb5dfc8c59526f054123eaae0f995
+    environment: {PUID: "10001", PGID: "10001", TZ: UTC}
+    ports: ["127.0.0.1:26789:6789"]
+    volumes:
+      - ./.local/acquisition/nzbget:/config
+      - ./.local/acquisition/data:/data
+    networks: [test]
 networks:
   test:
     ipam:
