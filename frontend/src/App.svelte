@@ -154,6 +154,7 @@
             'youtube.changed',
             'online.account.changed',
             'online.configuration.changed',
+            'online.download.changed',
           ].includes(event.kind)
         )
           mediaRevision++;
@@ -612,7 +613,10 @@
           play={(choice) => void playMedia(choice)}
         />
       {:else if section === 'History'}<History {user} />
-      {:else if section === 'YouTube'}<YouTube revision={mediaRevision} />
+      {:else if section === 'YouTube'}<YouTube
+          revision={mediaRevision}
+          play={(choice) => void playMedia(choice)}
+        />
       {:else}
         <section class="empty">
           <Library size={42} />

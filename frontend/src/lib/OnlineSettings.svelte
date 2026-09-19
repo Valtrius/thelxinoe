@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from './api';
+  import OnlineTools from './OnlineTools.svelte';
   type Configuration = {
     google_configured: boolean;
     redirect_uri: string | null;
@@ -122,3 +123,4 @@
     </p>{/if}
   {#if message}<p role="status">{message}</p>{/if}
 </section>
+<OnlineTools />

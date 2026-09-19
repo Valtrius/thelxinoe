@@ -1,7 +1,11 @@
+pub(crate) mod downloads;
+mod extract;
 mod feed;
 pub(crate) mod oauth;
+mod process;
 mod quota;
 mod sync;
+pub(crate) mod tools;
 mod youtube;
 use crate::{
     AppState,
@@ -27,6 +31,7 @@ pub struct Runtime {
     api: String,
     slots: tokio::sync::Semaphore,
     refresh: tokio::sync::Mutex<()>,
+    extraction: tokio::sync::Semaphore,
 }
 impl Runtime {
     pub fn new() -> anyhow::Result<Self> {
@@ -41,18 +46,35 @@ impl Runtime {
             api: "https://www.googleapis.com/youtube/v3".into(),
             slots: tokio::sync::Semaphore::new(4),
             refresh: tokio::sync::Mutex::new(()),
+            extraction: tokio::sync::Semaphore::new(2),
         })
     }
 }
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/admin/online", get(configuration).put(configure))
+        .route(
+            "/api/v1/admin/online/tools",
+            get(tools::status).post(tools::request_install),
+        )
         .route("/api/v1/online/youtube", get(account).delete(disconnect))
         .route("/api/v1/online/youtube/connect", post(oauth::start))
         .route("/api/v1/online/youtube/callback", get(oauth::callback))
         .route("/api/v1/online/youtube/sync", post(sync::request))
         .route("/api/v1/online/youtube/feed", get(feed::list))
         .route("/api/v1/online/youtube/watchlist", post(feed::add))
+        .route(
+            "/api/v1/admin/online/downloads",
+            get(downloads::settings).put(downloads::configure),
+        )
+        .route(
+            "/api/v1/online/youtube/videos/{id}/download",
+            get(downloads::status).post(downloads::request),
+        )
+        .route(
+            "/api/v1/online/youtube/videos/{id}/extract",
+            post(extract::inspect),
+        )
         .route(
             "/api/v1/online/youtube/videos/{id}",
             axum::routing::put(feed::edit),

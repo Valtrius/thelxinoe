@@ -52,6 +52,10 @@ pub async fn list(
         let sql=format!("SELECT v.video_id,v.title,v.channel_title,v.published_at,v.duration,v.broadcast,v.available,v.is_short,v.metadata_at,COALESCE(s.watchlist,0),COALESCE(s.pinned,0),COALESCE(s.watched,0),COALESCE(s.position,0),v.privacy {from} ORDER BY CASE WHEN ?2=1 THEN s.added_at ELSE v.published_at END DESC,v.video_id LIMIT 50 OFFSET ?8");
         let rows=db.prepare(&sql)?.query_map(params![owner,filter.watchlist,filter.pinned,filter.hide_shorts,filter.unwatched,filter.search,filter.channel,filter.offset],|r|Ok(json!({"id":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"channel":r.get::<_,String>(2)?,"published_at":r.get::<_,i64>(3)?,"duration":r.get::<_,Option<i64>>(4)?,"broadcast":r.get::<_,String>(5)?,"available":r.get::<_,bool>(6)?,"is_short":r.get::<_,Option<bool>>(7)?,"pending":r.get::<_,i64>(8)?==0,"watchlist":r.get::<_,bool>(9)?,"pinned":r.get::<_,bool>(10)?,"watched":r.get::<_,bool>(11)?,"position":r.get::<_,f64>(12)?,"privacy":r.get::<_,String>(13)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let sync=db.query_row("SELECT next_run,last_complete,error,cursor FROM youtube_sync WHERE user_id=?1",[owner],|r|Ok(json!({"next_run":r.get::<_,i64>(0)?,"last_complete":r.get::<_,Option<i64>>(1)?,"error":r.get::<_,Option<String>>(2)?,"in_progress":r.get::<_,String>(3)?!="{}"}))).optional()?;
+        let rows=rows.into_iter().map(|mut row| {
+            let status=db.query_row("SELECT state FROM youtube_downloads WHERE video_id=?1",[row["id"].as_str().unwrap()],|r|r.get::<_,String>(0)).optional()?;
+            row["download"]=json!(status);Ok(row)
+        }).collect::<anyhow::Result<Vec<_>>>()?;
         Ok((rows,total,sync))
     }).await?;
     let grant = grants::issue(&state, &p, "youtube-artwork", 300).await?;
@@ -177,7 +181,9 @@ pub async fn delete_data(State(state): State<AppState>, headers: HeaderMap) -> R
     state.db.call(move|db|{
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         for table in ["oauth_attempts","online_accounts"]{tx.execute(&format!("DELETE FROM {table} WHERE user_id=?1 AND provider='youtube'"),[&user])?;}
-        for table in ["youtube_sync","youtube_subscriptions","youtube_videos"]{tx.execute(&format!("DELETE FROM {table} WHERE user_id=?1"),[&user])?;}
+        tx.execute("UPDATE playback_sessions SET state='stopped',updated_at=?2 WHERE user_id=?1 AND youtube_video_id IS NOT NULL",params![user,now()])?;
+        tx.execute("DELETE FROM playback_grants WHERE resource IN (SELECT 'playback:'||id FROM playback_sessions WHERE user_id=?1 AND youtube_video_id IS NOT NULL)",[&user])?;
+        for table in ["youtube_sync","youtube_subscriptions","youtube_videos","youtube_history"]{tx.execute(&format!("DELETE FROM {table} WHERE user_id=?1"),[&user])?;}
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'online.delete-data','youtube',?2)",params![user,now()])?;
         tx.commit()?;Ok(())
     }).await?;

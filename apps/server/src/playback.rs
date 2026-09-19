@@ -65,6 +65,16 @@ pub async fn media_info(
     Path(media): Path<String>,
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
+    if let Some(video) = media.strip_prefix("youtube:") {
+        crate::online::downloads::authorize(&state, &p, video).await?;
+        let source = crate::online::downloads::source(&state, video).await?;
+        let video = video.to_owned();
+        let owner = p.user.id.clone();
+        let (position,watched)=state.db.call(move |db| Ok(db.query_row("SELECT position,watched FROM youtube_state WHERE user_id=?1 AND video_id=?2",params![owner,video],|r|Ok((r.get::<_,f64>(0)?,r.get::<_,bool>(1)?))).optional()?.unwrap_or((0.0,false)))).await?;
+        return Ok(Json(
+            json!({"sources":[{"id":source.id,"edition":source.edition,"duration":source.duration(),"video":source.video_codec().is_some(),"tracks":source.tracks().await?,"probe":source.probe,"size":source.size}],"progress":[{"edition":"public","position":position,"duration":source.duration()}],"watched":watched,"preferences":user_preferences(&state,&p).await?}),
+        ));
+    }
     let user = p.user.id.clone();
     let mid = media.clone();
     let (files,progress,watched)=state.db.call(move|db| {
@@ -128,7 +138,18 @@ pub(crate) async fn create_with_delivery(
             ));
         }
     }
-    let source = source(state, &input.media_id, input.file_id.as_deref()).await?;
+    let online_video = input.media_id.strip_prefix("youtube:").map(str::to_owned);
+    let source = if let Some(video) = &online_video {
+        crate::online::downloads::authorize(state, p, video).await?;
+        if input.queue.is_some() || vod {
+            return Err(ApiError::bad(
+                "Online media is not part of the local library",
+            ));
+        }
+        crate::online::downloads::source(state, video).await?
+    } else {
+        source(state, &input.media_id, input.file_id.as_deref()).await?
+    };
     source
         .validate()
         .await
@@ -175,10 +196,14 @@ pub(crate) async fn create_with_delivery(
     let options = input.options.clone();
     let position=state.db.call(move|db| {
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let saved=tx.query_row("SELECT position FROM edition_progress WHERE user_id=?1 AND media_id=?2 AND edition=?3",params![user,src.media_id,src.edition],|r|r.get::<_,f64>(0)).optional()?.unwrap_or(0.0);
+        let saved=if let Some(video)=&online_video {tx.query_row("SELECT position FROM youtube_state WHERE user_id=?1 AND video_id=?2",params![user,video],|r|r.get::<_,f64>(0)).optional()?.unwrap_or(0.0)} else {tx.query_row("SELECT position FROM edition_progress WHERE user_id=?1 AND media_id=?2 AND edition=?3",params![user,src.media_id,src.edition],|r|r.get::<_,f64>(0)).optional()?.unwrap_or(0.0)};
         let position=input.position.unwrap_or(if saved>=duration*0.9 {0.0} else {saved}).clamp(0.0,duration);
         if !position.is_finite() {anyhow::bail!("Invalid playback position");}
-        tx.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,media_id,file_id,generation,edition,state,mode,options,duration,position,created_at,updated_at,client_id,queue_revision,queue_index) VALUES (?1,?2,?3,?4,?5,?6,?7,'ready',?8,?9,?10,?11,?12,?12,?13,?14,?15)",params![key,user,auth,src.media_id,src.id,src.generation,src.edition,mode,serde_json::to_string(&options)?,duration,position,now(),input.queue.as_ref().map(|q|&q.client_id),input.queue.as_ref().map(|q|q.revision),input.queue.as_ref().map(|q|q.index as i64)])?;tx.commit()?;Ok(position)
+        if let Some(video)=&online_video {
+            let available=tx.query_row("SELECT EXISTS(SELECT 1 FROM youtube_downloads d JOIN youtube_videos v ON v.video_id=d.video_id WHERE d.video_id=?1 AND d.generation=?2 AND d.state='ready' AND v.user_id=?3)",params![video,src.generation,user],|r|r.get::<_,bool>(0))?;
+            anyhow::ensure!(available,"Online media changed before playback");
+        }
+        tx.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,media_id,file_id,generation,edition,state,mode,options,duration,position,created_at,updated_at,client_id,queue_revision,queue_index,youtube_video_id) VALUES (?1,?2,?3,?4,?5,?6,?7,'ready',?8,?9,?10,?11,?12,?12,?13,?14,?15,?16)",params![key,user,auth,online_video.is_none().then_some(&src.media_id),online_video.is_none().then_some(&src.id),src.generation,src.edition,mode,serde_json::to_string(&options)?,duration,position,now(),input.queue.as_ref().map(|q|&q.client_id),input.queue.as_ref().map(|q|q.revision),input.queue.as_ref().map(|q|q.index as i64),online_video])?;tx.commit()?;Ok(position)
     }).await?;
     let grant = grants::issue(state, p, &format!("playback:{sid}"), 120).await?;
     let mut timeline_start = 0.0;
@@ -224,10 +249,14 @@ struct Session {
 async fn session(state: &AppState, p: &Principal, id: &str) -> Result<Session> {
     let id = id.to_owned();
     let p = p.clone();
-    state.db.call(move|db|Ok(db.query_row("SELECT media_id,file_id,generation,mode,options,duration FROM playback_sessions WHERE id=?1 AND user_id=?2 AND auth_session_id=?3 AND state IN ('ready','playing','paused') AND updated_at>?4",params![id,p.user.id,p.session_id,now()-120],|r|Ok(Session {media:r.get(0)?,file:r.get(1)?,generation:r.get(2)?,mode:r.get(3)?,options:serde_json::from_str(&r.get::<_,String>(4)?).unwrap(),duration:r.get(5)?})).optional()?)).await?.ok_or_else(ApiError::not_found)
+    state.db.call(move|db|Ok(db.query_row("SELECT COALESCE(media_id,'youtube:'||youtube_video_id),COALESCE(file_id,youtube_video_id),generation,mode,options,duration FROM playback_sessions WHERE id=?1 AND user_id=?2 AND auth_session_id=?3 AND state IN ('ready','playing','paused') AND updated_at>?4",params![id,p.user.id,p.session_id,now()-120],|r|Ok(Session {media:r.get(0)?,file:r.get(1)?,generation:r.get(2)?,mode:r.get(3)?,options:serde_json::from_str(&r.get::<_,String>(4)?).unwrap(),duration:r.get(5)?})).optional()?)).await?.ok_or_else(ApiError::not_found)
 }
 async fn current_source(state: &AppState, session: &Session) -> Result<Source> {
-    let src = source(state, &session.media, Some(&session.file)).await?;
+    let src = if let Some(video) = session.media.strip_prefix("youtube:") {
+        crate::online::downloads::source(state, video).await?
+    } else {
+        source(state, &session.media, Some(&session.file)).await?
+    };
     if src.generation != session.generation {
         return Err(ApiError::conflict(
             "Media was replaced; start a new playback session",
@@ -409,14 +438,18 @@ pub async fn report(state: &AppState, p: &Principal, id: &str, input: Progress) 
     let event_state = input.state.clone();
     let updated=state.db.call(move|db| {
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let row=tx.query_row("SELECT media_id,edition,duration,sequence,state FROM playback_sessions WHERE id=?1 AND user_id=?2 AND auth_session_id=?3",params![key,user,auth],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,f64>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?))).optional()?;
+        let row=tx.query_row("SELECT COALESCE(media_id,'youtube:'||youtube_video_id),edition,duration,sequence,state FROM playback_sessions WHERE id=?1 AND user_id=?2 AND auth_session_id=?3",params![key,user,auth],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,f64>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?))).optional()?;
         let Some((media,edition,duration,sequence,status))=row else {return Ok(None);};
         if input.sequence<=sequence || ["stopped","failed"].contains(&status.as_str()) {return Ok(Some(false));}
         let position=input.position.min(duration);
         tx.execute("UPDATE playback_sessions SET position=?1,sequence=?2,state=?3,updated_at=?4 WHERE id=?5",params![position,input.sequence,input.state,now(),key])?;
+        if let Some(video)=media.strip_prefix("youtube:") {
+            crate::online::downloads::record(&tx,&key,&user,video,position,duration,&input.state)?;
+        } else {
         tx.execute("INSERT INTO edition_progress VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(user_id,media_id,edition) DO UPDATE SET position=excluded.position,duration=excluded.duration,updated_at=excluded.updated_at",params![user,media,edition,position,duration,now()])?;
         tx.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES (?1,?2,?3,?4) ON CONFLICT(user_id,media_id) DO UPDATE SET watched=MAX(watched,excluded.watched),updated_at=excluded.updated_at",params![user,media,position>=duration*0.9,now()])?;
         crate::history::record(&tx,&key,position,&input.state)?;
+        }
         let resource=format!("playback:{key}");
         if stopped {tx.execute("DELETE FROM playback_grants WHERE resource=?1",[resource])?;} else {tx.execute("UPDATE playback_grants SET expires_at=?1 WHERE resource=?2 AND expires_at>?3",params![now()+120,resource,now()])?;}
         tx.commit()?;Ok(Some(true))

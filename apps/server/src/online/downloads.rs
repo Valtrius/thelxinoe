@@ -1,0 +1,384 @@
+use super::{extract, process, sync, tools};
+use crate::{
+    AppState,
+    error::{ApiError, Result},
+    security,
+};
+use anyhow::{Context, ensure};
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::HeaderMap,
+};
+use rusqlite::{OptionalExtension, params};
+use serde_json::{Value, json};
+use std::{
+    path::PathBuf,
+    time::{Duration, UNIX_EPOCH},
+};
+use thelxinoe_core::{Capability, Principal, now};
+use thelxinoe_playback::Source;
+#[cfg(test)]
+mod tests;
+
+pub(crate) async fn authorize(state: &AppState, p: &Principal, video: &str) -> Result<()> {
+    if p.transport == "jellyfin" || !sync::identifier(video, 11) {
+        return Err(ApiError::not_found());
+    }
+    let user = p.user.id.clone();
+    let video = video.to_owned();
+    let allowed = state
+        .db
+        .call(move |db| {
+            Ok(db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM youtube_videos WHERE user_id=?1 AND video_id=?2)",
+                params![user, video],
+                |r| r.get::<_, bool>(0),
+            )?)
+        })
+        .await?;
+    if !allowed {
+        return Err(ApiError::not_found());
+    }
+    Ok(())
+}
+pub async fn settings(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
+    security::require(&state, &headers, Capability::ManageServer).await?;
+    Ok(Json(json!({"enabled":enabled(&state).await?})))
+}
+async fn enabled(state: &AppState) -> anyhow::Result<bool> {
+    state
+        .db
+        .call(|db| {
+            Ok(db
+                .query_row(
+                    "SELECT value='true' FROM settings WHERE key='online.youtube.downloads'",
+                    [],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .unwrap_or(false))
+        })
+        .await
+}
+#[derive(serde::Deserialize)]
+pub struct Configuration {
+    enabled: bool,
+}
+pub async fn configure(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<Configuration>,
+) -> Result<Json<Value>> {
+    let p = security::require(&state, &headers, Capability::ManageServer).await?;
+    state.db.call(move |db| {let tx=db.transaction()?; tx.execute("INSERT INTO settings VALUES ('online.youtube.downloads',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[input.enabled.to_string()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'online.downloads.configure',?2,?3)",params![p.user.id,input.enabled.to_string(),now()])?;tx.commit()?;Ok(())}).await?;
+    Ok(Json(json!({"enabled":input.enabled})))
+}
+pub async fn status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(video): Path<String>,
+) -> Result<Json<Value>> {
+    let p = security::principal(&state, &headers).await?;
+    authorize(&state, &p, &video).await?;
+    let enabled = enabled(&state).await?;
+    let download=state.db.call(move |db| Ok(db.query_row("SELECT state,size,error FROM youtube_downloads WHERE video_id=?1",[video],|r|Ok(json!({"state":r.get::<_,String>(0)?,"size":r.get::<_,Option<i64>>(1)?,"error":r.get::<_,Option<String>>(2)?}))).optional()?)).await?;
+    Ok(Json(json!({"enabled":enabled,"download":download})))
+}
+pub async fn request(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(video): Path<String>,
+) -> Result<Json<Value>> {
+    let p = security::principal(&state, &headers).await?;
+    authorize(&state, &p, &video).await?;
+    if !enabled(&state).await? {
+        return Err(ApiError::conflict(
+            "YouTube downloads are disabled by the administrator",
+        ));
+    }
+    let bundle = tools::selection(&state)
+        .await?
+        .ok_or_else(|| ApiError::conflict("Install online playback tools first"))?;
+    let result=state.db.call(move |db| {
+        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let interest=tx.query_row("SELECT EXISTS(SELECT 1 FROM youtube_state WHERE user_id=?1 AND video_id=?2 AND (watchlist=1 OR pinned=1))",params![p.user.id,video],|r|r.get::<_,bool>(0))?;
+        if !interest { return Ok(false); }
+        // A retained interest is required before acquiring shared physical media.
+        tx.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) VALUES (?1,?2,'queued',?3,?4,?4) ON CONFLICT(video_id) DO UPDATE SET generation=excluded.generation,state='queued',tools=excluded.tools,error=NULL,updated_at=excluded.updated_at WHERE youtube_downloads.state IN ('failed','unavailable','extractor_authentication_required')",params![video,thelxinoe_core::id(),serde_json::to_string(&bundle)?,now()])?;
+        tx.commit()?;Ok(true)
+    }).await?;
+    if !result {
+        return Err(ApiError::conflict(
+            "Add this video to your watchlist or pin it before downloading",
+        ));
+    }
+    Ok(Json(json!({"queued":true})))
+}
+
+pub(crate) async fn source(state: &AppState, video: &str) -> Result<Source> {
+    let video = video.to_owned();
+    let root = state.config.cache.join("youtube");
+    state.db.call(move |db| Ok(db.query_row("SELECT generation,path,size,modified,probe FROM youtube_downloads WHERE video_id=?1 AND state='ready'",[&video],|r|Ok(Source {id:video.clone(),media_id:format!("youtube:{video}"),generation:r.get(0)?,edition:"public".into(),path:PathBuf::from(r.get::<_,String>(1)?),root,size:r.get::<_,i64>(2)? as u64,modified:r.get(3)?,probe:serde_json::from_str(&r.get::<_,String>(4)?).unwrap_or_default()})).optional()?)).await?.ok_or_else(||ApiError::conflict("The public download is not ready"))
+}
+
+pub(crate) fn record(
+    tx: &rusqlite::Transaction<'_>,
+    playback: &str,
+    user: &str,
+    video: &str,
+    position: f64,
+    duration: f64,
+    status: &str,
+) -> anyhow::Result<()> {
+    let previous = tx
+        .query_row(
+            "SELECT position,updated_at,state FROM youtube_history WHERE playback_id=?1",
+            [playback],
+            |r| {
+                Ok((
+                    r.get::<_, f64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let seconds = previous.map_or(0.0, |(old, time, state)| {
+        let elapsed = (now() - time).clamp(0, 30) as f64;
+        let advanced = position - old;
+        if state == "playing" && advanced >= 0.0 && advanced <= elapsed * 2.0 + 2.0 {
+            advanced.min(elapsed)
+        } else {
+            0.0
+        }
+    });
+    tx.execute("INSERT INTO youtube_state(user_id,video_id,watched,position,added_at,updated_at) SELECT ?1,?2,?3,?4,?5,?5 WHERE EXISTS(SELECT 1 FROM youtube_videos WHERE user_id=?1 AND video_id=?2) ON CONFLICT(user_id,video_id) DO UPDATE SET watched=MAX(watched,excluded.watched),position=excluded.position,updated_at=excluded.updated_at",params![user,video,position>=duration*0.9,position,now()])?;
+    tx.execute("INSERT INTO youtube_history(playback_id,user_id,video_id,title,device_name,started_at,updated_at,position,duration,played_seconds,state) SELECT p.id,p.user_id,p.youtube_video_id,v.title,s.name,?2,?2,?3,p.duration,?4,?5 FROM playback_sessions p JOIN sessions s ON s.id=p.auth_session_id JOIN youtube_videos v ON v.user_id=p.user_id AND v.video_id=p.youtube_video_id WHERE p.id=?1 ON CONFLICT(playback_id) DO UPDATE SET updated_at=excluded.updated_at,position=excluded.position,played_seconds=played_seconds+?4,state=excluded.state",params![playback,now(),position,seconds,status])?;
+    Ok(())
+}
+
+pub async fn run(state: AppState) -> anyhow::Result<()> {
+    // The exclusive server state lock means a prior downloading owner is gone.
+    state
+        .db
+        .call(|db| {
+            db.execute(
+                "UPDATE youtube_downloads SET state='queued' WHERE state='downloading'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await?;
+    loop {
+        if cleanup(&state).await.is_err() {
+            tracing::warn!("Online download cleanup could not complete; it will retry");
+        }
+        if enabled(&state).await? {
+            let job=state.db.call(|db| {
+                let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                let row=tx.query_row("SELECT video_id,generation,tools FROM youtube_downloads d WHERE state='queued' AND EXISTS(SELECT 1 FROM youtube_state s WHERE s.video_id=d.video_id AND (s.watchlist=1 OR s.pinned=1)) ORDER BY updated_at LIMIT 1",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional()?;
+                if let Some((video,_,_))=&row {tx.execute("UPDATE youtube_downloads SET state='downloading',updated_at=?2 WHERE video_id=?1",params![video,now()])?;}
+                tx.commit()?;Ok(row)
+            }).await?;
+            if let Some((video, generation, bundle)) = job {
+                let outcome = download(&state, &video, &generation, &bundle).await;
+                let status = outcome.unwrap_or("failed");
+                if status != "ready" {
+                    // No playback can reference a generation until it is ready.
+                    let path = state
+                        .config
+                        .cache
+                        .join("youtube")
+                        .join(&video)
+                        .join(&generation);
+                    if let Ok(root) = state.config.cache.join("youtube").canonicalize() {
+                        let expected = root.join(&video).join(&generation);
+                        if path.canonicalize().ok().as_ref() == Some(&expected) {
+                            let _ = tokio::fs::remove_dir_all(&expected).await;
+                        }
+                    }
+                }
+                state.db.call(move |db| {db.execute("UPDATE youtube_downloads SET state=?3,error=CASE WHEN ?3='ready' THEN NULL ELSE ?3 END,updated_at=?4 WHERE video_id=?1 AND generation=?2",params![video,generation,status,now()])?;Ok(())}).await?;
+                state
+                    .emit(None, "online.download.changed", json!({}))
+                    .await?;
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+async fn cleanup(state: &AppState) -> anyhow::Result<()> {
+    let root = state.config.cache.join("youtube");
+    if !root.exists() {
+        return Ok(());
+    }
+    let root = root.canonicalize()?;
+    state.db.call(move |db| {
+        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let protection="EXISTS(SELECT 1 FROM youtube_state s WHERE s.video_id=youtube_downloads.video_id AND (s.watchlist=1 OR s.pinned=1)) OR EXISTS(SELECT 1 FROM playback_sessions p WHERE p.youtube_video_id=youtube_downloads.video_id AND p.state IN ('ready','playing','paused') AND p.updated_at>".to_owned()+&(now()-120).to_string()+")";
+        tx.execute(&format!("UPDATE youtube_downloads SET unprotected_at=NULL WHERE {protection}"),[])?;
+        tx.execute(&format!("UPDATE youtube_downloads SET unprotected_at=?1 WHERE unprotected_at IS NULL AND NOT ({protection}) AND state!='downloading'"),[now()])?;
+        let candidate=tx.query_row(&format!("SELECT video_id,generation,path,size,modified FROM youtube_downloads WHERE unprotected_at<?1 AND state!='downloading' AND NOT ({protection}) ORDER BY unprotected_at LIMIT 1"),[now()-86400],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,Option<i64>>(3)?,r.get::<_,Option<String>>(4)?))).optional()?;
+        if let Some((video,generation,file,size,modified))=candidate {
+            ensure!(sync::identifier(&video,11)&&uuid::Uuid::parse_str(&generation).is_ok(),"Invalid download identity");
+            let path=root.join(&video).join(&generation);
+            if path.exists() {
+                ensure!(path.canonicalize()?==path,"Download cleanup path changed");
+                if let Some(file)=file {
+                    let file=PathBuf::from(file);
+                    let expected=path.join("media.mp4");
+                    ensure!(file.canonicalize()?==expected,"Downloaded file path changed before cleanup");
+                    let metadata=std::fs::metadata(&expected)?;
+                    ensure!(size==Some(metadata.len() as i64)&&modified==Some(metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos().to_string()),"Downloaded file generation changed before cleanup");
+                }
+                // The write transaction fences new interests/playback until the
+                // captured generation is removed. Only owned cache files enter here.
+                std::fs::remove_dir_all(path)?;
+            }
+            tx.execute("DELETE FROM playback_sessions WHERE youtube_video_id=?1",[&video])?;
+            tx.execute("DELETE FROM youtube_downloads WHERE video_id=?1 AND generation=?2",params![video,generation])?;
+        }
+        tx.commit()?;Ok(())
+    }).await
+}
+
+fn system_tool(name: &str) -> anyhow::Result<PathBuf> {
+    let file = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_owned()
+    };
+    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|p| p.join(&file))
+        .find(|p| p.is_file())
+        .context("Required FFmpeg tools are unavailable")?
+        .canonicalize()
+        .map_err(Into::into)
+}
+async fn download(
+    state: &AppState,
+    video: &str,
+    generation: &str,
+    bundle: &str,
+) -> anyhow::Result<&'static str> {
+    let bundle: tools::Bundle = serde_json::from_str(bundle)?;
+    tools::verify(&bundle.yt_dlp).await?;
+    tools::verify(&bundle.deno).await?;
+    let retained = state
+        .db
+        .call(|db| {
+            Ok(db.query_row(
+                "SELECT COALESCE(SUM(size),0) FROM youtube_downloads WHERE state='ready'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )?)
+        })
+        .await?;
+    ensure!(
+        retained < 48 * 1024 * 1024 * 1024,
+        "Public download cache reached its 50 GiB limit"
+    );
+    let directory = state
+        .config
+        .cache
+        .join("youtube")
+        .join(video)
+        .join(generation);
+    tokio::fs::create_dir_all(&directory).await?;
+    let directory = directory.canonicalize()?;
+    ensure!(
+        fs2::available_space(&directory)? > 3 * 1024 * 1024 * 1024,
+        "Insufficient download space"
+    );
+    let target = directory.join("media.mp4");
+    let mut args = extract::arguments(&bundle, video);
+    args.truncate(args.len() - 4); // replace metadata output flags and canonical URL
+    args.extend(
+        [
+            "--no-progress",
+            "--no-warnings",
+            "--no-simulate",
+            "--max-filesize",
+            "2G",
+            "--match-filter",
+            "!is_live & duration <= 21600",
+            "-f",
+            "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[ext=mp4]",
+            "--merge-output-format",
+            "mp4",
+            "--ffmpeg-location",
+        ]
+        .map(Into::into),
+    );
+    args.push(system_tool("ffmpeg")?.into_os_string());
+    args.push("-o".into());
+    args.push(target.clone().into_os_string());
+    args.extend([
+        "--".into(),
+        format!("https://www.youtube.com/watch?v={video}").into(),
+    ]);
+    let execution = process::run(
+        &bundle.yt_dlp.path,
+        &args,
+        Duration::from_secs(1800),
+        1024 * 1024,
+    );
+    tokio::pin!(execution);
+    let mut interval = tokio::time::interval(Duration::from_secs(2));
+    let output = loop {
+        tokio::select! {
+            result=&mut execution => break result?,
+            _=interval.tick()=> {
+                let video=video.to_owned();
+                let interested=state.db.call(move |db| Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM youtube_state WHERE video_id=?1 AND (watchlist=1 OR pinned=1))",[video],|r|r.get::<_,bool>(0))?)).await?;
+                ensure!(interested&&enabled(state).await?,"Download cancelled after its interest or permission changed");
+                ensure!(fs2::available_space(&directory)?>1024*1024*1024,"Download stopped to preserve free space");
+                let mut entries=tokio::fs::read_dir(&directory).await?;let mut bytes=0u64;
+                while let Some(entry)=entries.next_entry().await? {let meta=entry.metadata().await?;ensure!(meta.is_file(),"Unexpected download output");bytes=bytes.saturating_add(meta.len());}
+                ensure!(bytes<=6*1024*1024*1024,"Download temporary files exceed limit");
+            }
+        }
+    };
+    if !output.success {
+        return Ok(match extract::failure(&output.stderr) {
+            "extraction_failed" => "failed",
+            state => state,
+        });
+    }
+    let metadata = tokio::fs::metadata(&target).await?;
+    ensure!(
+        metadata.len() <= 2 * 1024 * 1024 * 1024,
+        "Download exceeds size limit"
+    );
+    let probe = process::run(
+        &system_tool("ffprobe")?,
+        &[
+            "-v".into(),
+            "error".into(),
+            "-show_format".into(),
+            "-show_streams".into(),
+            "-of".into(),
+            "json".into(),
+            target.clone().into_os_string(),
+        ],
+        Duration::from_secs(30),
+        1024 * 1024,
+    )
+    .await?;
+    ensure!(probe.success, "Downloaded media probe failed");
+    let value: Value = serde_json::from_slice(&probe.stdout)?;
+    let duration = value["format"]["duration"]
+        .as_str()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    ensure!(
+        duration.is_finite() && duration > 0.0,
+        "Download has no playable duration"
+    );
+    let video = video.to_owned();
+    let generation = generation.to_owned();
+    state.db.call(move |db| {db.execute("UPDATE youtube_downloads SET path=?3,size=?4,modified=?5,probe=?6 WHERE video_id=?1 AND generation=?2 AND state='downloading'",params![video,generation,target.to_string_lossy(),metadata.len() as i64,metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos().to_string(),serde_json::to_string(&value)?])?;Ok(())}).await?;
+    Ok("ready")
+}

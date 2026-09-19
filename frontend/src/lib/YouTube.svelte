@@ -3,7 +3,42 @@
   import { invoke } from '@tauri-apps/api/core';
   import { Bookmark, Check, Pin, RefreshCw, Link, Play } from '@lucide/svelte';
   import { api, desktop, serverUrl } from './api';
-  let { revision = 0 } = $props<{ revision?: number }>();
+  import type { MediaChoice } from './playback';
+  let { revision = 0, play } = $props<{
+    revision?: number;
+    play: (choice: MediaChoice) => void;
+  }>();
+  let downloadStates = $state<Record<string, string>>({});
+  async function prepare(video: Video) {
+    try {
+      const current = await api<{
+        enabled: boolean;
+        download: { state: string } | null;
+      }>(`/online/youtube/videos/${video.id}/download`);
+      if (current.download?.state === 'ready') {
+        play({ id: `youtube:${video.id}`, title: video.title });
+        return;
+      }
+      if (!current.enabled) {
+        notice = 'YouTube downloads are disabled by the administrator.';
+        return;
+      }
+      if (!video.watchlist && !video.pinned) {
+        notice = 'Save or pin this video before downloading it.';
+        return;
+      }
+      if (current.download?.state === 'extractor_authentication_required') {
+        notice =
+          'This video requires extractor authentication. Public-only playback cannot access it.';
+        return;
+      }
+      await api(`/online/youtube/videos/${video.id}/download`, 'POST');
+      downloadStates[video.id] = 'queued';
+      notice = 'Download queued. Choose Play when it is ready.';
+    } catch (e) {
+      error = String(e);
+    }
+  }
   type Account = {
     account: { status: string; display_name: string };
     configured: boolean;
@@ -26,6 +61,7 @@
     watched: boolean;
     position: number;
     artwork_url?: string;
+    download?: string;
   };
   type Feed = {
     items: Video[];
@@ -72,6 +108,8 @@
       if (current !== request) return;
       account = a;
       feed = f;
+      for (const video of f.items)
+        downloadStates[video.id] = video.download ?? '';
       additions = additions.filter((a) => !a.id);
     } catch (e) {
       if (current === request) error = String(e);
@@ -380,7 +418,31 @@
             This video is unavailable to your connected account.
           </p>{/if}
         {#if video.is_short === true}<span class="badge">Short</span>{/if}
+        {#if ['queued', 'downloading'].includes(downloadStates[video.id])}<p
+            class="muted"
+          >
+            Downloading for playback…
+          </p>
+        {:else if downloadStates[video.id] === 'extractor_authentication_required'}<p
+            class="muted"
+          >
+            Extractor authentication required. This video cannot be played with
+            public access.
+          </p>
+        {:else if ['failed', 'unavailable'].includes(downloadStates[video.id])}<p
+            class="muted"
+          >
+            The public download could not complete. You can retry.
+          </p>{/if}
         <div class="actions">
+          <button
+            class="secondary"
+            aria-label={`Play ${video.title}`}
+            onclick={() => prepare(video)}
+            ><Play size={17} />{downloadStates[video.id] === 'queued'
+              ? 'Check download'
+              : 'Play'}</button
+          >
           <button
             class="secondary"
             title={video.watchlist

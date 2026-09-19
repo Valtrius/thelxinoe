@@ -1,6 +1,6 @@
 # Online providers
 
-YouTube account linking, subscription synchronization, feed browsing, watchlists, pins and watched flags are implemented. Phase 9 remains in progress: server extraction, online playback, shared downloads, online viewing history and physical download retention are not implemented yet. Twitch and Kick remain future phases.
+YouTube account linking, subscription synchronization, feed browsing, watchlists, managed public downloads, downloaded-video playback, pins and watched flags are implemented. Phase 9 remains in progress: immediate streaming, live playback and online history/statistics views remain open. Twitch and Kick remain future phases.
 
 ## Google configuration
 
@@ -32,4 +32,18 @@ Viewer-visible video metadata stays per user. Live, upcoming and replay states c
 
 Watchlist additions create a durable placeholder immediately and resolve details on the same fair queue. Each user can retain up to 1,000 watchlist/pinned videos. Feed pages contain fifty items. Artwork is proxied for public videos after checking the requesting user's visibility; a scoped, expiring grant supports desktop image requests. No viewer credentials are attached to public thumbnail or Shorts requests.
 
-Google OAuth covers the Data API only. Future extraction/playback must remain public-only under the v1 project contract; these tokens must never be passed to yt-dlp.
+Google OAuth covers the Data API only. Extraction receives no Google tokens, cookies or browser profiles.
+
+## Public extraction and downloads
+
+An administrator installs the official yt-dlp and Deno releases from Settings. Downloads are checked against GitHub's published SHA-256 asset digests. Each installation has separate executable paths; jobs pin the selected versions, and each executable is checked before use. Installation selects the new bundle only after both tools pass startup checks.
+
+The administrator separately enables YouTube downloads (disabled by default). Save or pin a video, then choose Play to queue its download. Once ready, Play opens the ordinary browser or MPV player. Downloads share physical media while each user keeps separate resume, watched state and history records. Online media never enters Movies, Shows, Music or the Jellyfin catalog.
+
+Extraction runs with a cleared environment, temporary home/config/cache directories, ignored yt-dlp configuration and plugins, no browser cookies, and no remote JavaScript component downloads. Deno is an explicitly selected, verified runtime. Process groups on Linux and job objects on Windows terminate descendants on cancellation. Metadata extraction has two slots, a two-minute timeout and bounded output. Downloads have one separate worker, a thirty-minute timeout, disk monitoring, and cancellation when downloads are disabled or no user retains the video.
+
+The current download path supports completed videos up to six hours, 1080p and 2 GiB, with a 50 GiB retained-cache limit. Temporary merge files are monitored separately. Protected files are not evicted to make room. Live videos require the streaming work still in progress. Content needing sign-in, membership or age verification reports `extractor_authentication_required`; the app does not borrow Data API credentials to bypass that limitation.
+
+A shared download becomes eligible for cleanup only after one day without any user's watchlist/pin interest or active playback. Cleanup rechecks the exact generation and protections under the database write lock and removes only its canonical cache directory. Deleting one user's YouTube data stops their online sessions and removes their progress/history; another user's interests continue protecting the physical file. The broader media-operation coordinator remains a later roadmap phase.
+
+Real validation on the isolated HTTPS server passed Google consent using the imported YouTwitch application credentials, a complete 6,350-video initial sync, public artwork, official tool installation, public extraction, and downloaded-video decoding/seek/resume in Chromium. The rebuilt Windows application also passed MPV playback, seek and server resume for the public download. Automatic OAuth refresh after real token expiry remains to be observed.

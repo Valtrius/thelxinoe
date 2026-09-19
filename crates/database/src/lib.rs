@@ -44,6 +44,7 @@ impl Database {
             include_str!("../migrations/006.sql"),
             include_str!("../migrations/007.sql"),
             include_str!("../migrations/008.sql"),
+            include_str!("../migrations/009.sql"),
         ];
         if version > migrations.len() as i64 {
             anyhow::bail!("Database is newer than this server; use the matching release");
@@ -90,6 +91,56 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn online_migration_preserves_local_sessions_and_compatibility_references() -> Result<()> {
+        let mut db = Connection::open_in_memory()?;
+        db.pragma_update(None, "foreign_keys", "ON")?;
+        for migration in [
+            include_str!("../migrations/001.sql"),
+            include_str!("../migrations/002.sql"),
+            include_str!("../migrations/003.sql"),
+            include_str!("../migrations/004.sql"),
+            include_str!("../migrations/005.sql"),
+            include_str!("../migrations/006.sql"),
+            include_str!("../migrations/007.sql"),
+            include_str!("../migrations/008.sql"),
+        ] {
+            db.execute_batch(migration)?;
+        }
+        db.execute_batch("INSERT INTO users VALUES ('u','u','unused','user','UTC',1);
+            INSERT INTO sessions VALUES ('s','u','hash','jellyfin','TV',1,9999999999,1);
+            INSERT INTO library_roots(id,name,kind,path) VALUES ('r','r','movies','/media');
+            INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES ('m','r','movie','key','Movie',1);
+            INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES ('f','r','/media/movie.mp4','g',10,'1','f','{}',1);
+            INSERT INTO playback_sessions(id,user_id,auth_session_id,media_id,file_id,generation,edition,state,mode,options,duration,created_at,updated_at) VALUES ('p','u','s','m','f','g','','playing','direct','{}',100,1,1);
+            INSERT INTO compat_playbacks VALUES ('p',7);
+            INSERT INTO compat_audio_playbacks VALUES ('s','m','p');")?;
+        let tx = db.transaction()?;
+        tx.execute_batch(include_str!("../migrations/009.sql"))?;
+        tx.commit()?;
+        assert_eq!(
+            db.query_row(
+                "SELECT sequence FROM compat_playbacks WHERE playback_id='p'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?,
+            7
+        );
+        assert_eq!(
+            db.query_row("SELECT playback_id FROM compat_audio_playbacks", [], |r| {
+                r.get::<_, String>(0)
+            })?,
+            "p"
+        );
+        assert!(!db.prepare("PRAGMA foreign_key_check")?.exists([])?);
+        db.execute("DELETE FROM sessions WHERE id='s'", [])?;
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM compat_playbacks", [], |r| r
+                .get::<_, i64>(0))?,
+            0
+        );
+        Ok(())
+    }
     #[tokio::test]
     async fn migration_and_online_backup_are_restart_safe() -> Result<()> {
         let temp = tempfile::tempdir()?;

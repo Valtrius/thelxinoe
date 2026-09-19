@@ -51,6 +51,7 @@ pub(crate) async fn stub(
         api: format!("http://{address}"),
         slots: tokio::sync::Semaphore::new(4),
         refresh: tokio::sync::Mutex::new(()),
+        extraction: tokio::sync::Semaphore::new(2),
     });
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() })
 }

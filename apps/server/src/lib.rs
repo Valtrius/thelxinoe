@@ -13,6 +13,7 @@ mod realtime;
 pub mod security;
 pub mod user_media;
 pub use jellyfin::discovery::run as run_discovery;
+pub use online::downloads::run as run_downloads;
 pub use online::run as run_online;
 
 use crate::{config::Config, error::Result};
@@ -275,6 +276,12 @@ pub async fn run_jobs(state: AppState) -> anyhow::Result<()> {
         if let Some(job) = queue.claim().await? {
             match job.kind.as_str() {
                 "checkpoint" => queue.checkpoint(&job).await?,
+                "online.tools.install" => {
+                    let result = online::tools::install(&state, &job).await;
+                    queue
+                        .finish(&job, result.err().map(|e| e.to_string()))
+                        .await?;
+                }
                 "metadata.match" | "metadata.refresh" => {
                     let result = metadata::run(&state, &job.payload).await;
                     queue
