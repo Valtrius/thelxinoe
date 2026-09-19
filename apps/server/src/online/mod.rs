@@ -7,6 +7,7 @@ mod quota;
 pub(crate) mod streams;
 mod sync;
 pub(crate) mod tools;
+mod twitch;
 mod youtube;
 use crate::{
     AppState,
@@ -22,7 +23,10 @@ use axum::{
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-pub use sync::run;
+pub async fn run(state: AppState) -> anyhow::Result<()> {
+    tokio::try_join!(sync::run(state.clone()), twitch::run(state))?;
+    Ok(())
+}
 use thelxinoe_core::{Capability, now};
 
 pub struct Runtime {
@@ -34,6 +38,7 @@ pub struct Runtime {
     refresh: tokio::sync::Mutex<()>,
     extraction: tokio::sync::Semaphore,
     pub(crate) streams: streams::Runtime,
+    twitch: twitch::Runtime,
 }
 impl Runtime {
     pub fn new() -> anyhow::Result<Self> {
@@ -50,11 +55,13 @@ impl Runtime {
             refresh: tokio::sync::Mutex::new(()),
             extraction: tokio::sync::Semaphore::new(2),
             streams: streams::Runtime::default(),
+            twitch: twitch::Runtime::default(),
         })
     }
 }
 pub fn router() -> Router<AppState> {
     Router::new()
+        .merge(twitch::router())
         .route("/api/v1/admin/online", get(configuration).put(configure))
         .route(
             "/api/v1/admin/online/tools",

@@ -5,6 +5,13 @@ use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
 
 #[tauri::command]
+fn open_twitch_activation(app: tauri::AppHandle) -> Result<(), String> {
+    app.opener()
+        .open_url("https://www.twitch.tv/activate", None::<&str>)
+        .map_err(|_| "Could not open your browser".into())
+}
+
+#[tauri::command]
 async fn open_youtube_linking(app: tauri::AppHandle) -> Result<(), String> {
     let response =
         backend_request(app.clone(), "/online/youtube".into(), "GET".into(), None).await?;
@@ -155,6 +162,7 @@ fn main() {
             change_server,
             backend_request,
             open_youtube_linking,
+            open_twitch_activation,
             mpv::mpv_settings,
             mpv::mpv_install,
             mpv::mpv_custom,

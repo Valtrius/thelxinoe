@@ -1,6 +1,6 @@
 # Online providers
 
-YouTube account linking, subscription synchronization, feed browsing, watchlists, public streaming and downloads, live playback, private history, pins and watched flags are implemented and validated with real providers. Twitch and Kick remain future phases.
+YouTube account linking, subscription synchronization, feed browsing, watchlists, public streaming and downloads, live playback, private history, pins and watched flags are implemented and validated with real providers. Twitch account linking and followed-live synchronization are implemented; Twitch playback and Kick remain in progress.
 
 ## Google configuration
 
@@ -49,3 +49,13 @@ The current download path supports completed videos up to six hours, 1080p and 2
 A shared download becomes eligible for cleanup only after one day without any user's watchlist/pin interest or active playback. Cleanup rechecks the exact generation and protections under the database write lock and removes only its canonical cache directory. Deleting one user's YouTube data stops their online sessions and removes their progress/history; another user's interests continue protecting the physical file. The broader media-operation coordinator remains a later roadmap phase.
 
 Real validation on the isolated HTTPS server passed Google consent using the imported YouTwitch application credentials, a complete 6,350-video initial sync, public artwork, official tool installation, public extraction, and downloaded-video decoding/seek/resume in Chromium. The rebuilt Windows application also passed MPV playback, seek and server resume for the public download. Automatic OAuth refresh after real token expiry also passed. Immediate VOD streaming, seeking and resume passed through HTTPS and MPV; live playback decoded frames in both clients. A rapid VOD-to-live transition test found and fixed a stale player-close callback. History offers a YouTube filter with private user records and capability-gated administrator statistics.
+
+## Twitch connection and followed-live feed
+
+Configure a public Twitch client ID in Settings, or import the existing YouTwitch application configuration while the destination server is stopped. Each user chooses Connect Twitch and completes the displayed device code at Twitch's activation page. The code is visible only in the initiating Thelxinoe session. Device secrets and viewer credentials are encrypted; no viewer credential is supplied to media extraction.
+
+The server enforces provider polling intervals, slows down on request, expires attempts, and checks the initiating session and account generation before accepting tokens. Public-client refresh tokens are replaced before the next API request. Token validation runs on startup and at least hourly during successful synchronization. Revoked tokens require reconnection; temporary failures back off. Followed-live pages are bounded, scheduled fairly, and published after a complete snapshot; provider reset headers delay exhausted requests. Disconnect preserves cached channels. Delete Twitch data removes them.
+
+The live HTTPS device flow accepted the imported application, completed real user consent, and synchronized 27 live followed channels without errors. Fixtures cover token refresh, two-session code isolation, revoked sessions, late responses after disconnect, pagination, private feeds, administrator permissions and rate-limit delays. Playback is the next phase 10 slice.
+
+Protocol references: [Twitch device flow](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/#device-code-grant-flow), [token validation](https://dev.twitch.tv/docs/authentication/validate-tokens/).

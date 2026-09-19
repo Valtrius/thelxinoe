@@ -14,6 +14,7 @@
   import QuickConnect from './lib/QuickConnect.svelte';
   import OnlineSettings from './lib/OnlineSettings.svelte';
   import YouTube from './lib/YouTube.svelte';
+  import Twitch from './lib/Twitch.svelte';
   import { persistQueue, type Card } from './lib/media-state';
   import { invoke } from '@tauri-apps/api/core';
   import type { MediaChoice } from './lib/playback';
@@ -62,7 +63,9 @@
       new URLSearchParams(location.search).has('youtube_link') ||
         new URLSearchParams(location.search).get('section') === 'YouTube'
         ? 'YouTube'
-        : 'Home',
+        : new URLSearchParams(location.search).get('section') === 'Twitch'
+          ? 'Twitch'
+          : 'Home',
     );
   let sessions = $state<Session[]>([]),
     users = $state<User[]>([]),
@@ -615,6 +618,7 @@
           play={(choice) => void playMedia(choice)}
         />
       {:else if section === 'History'}<History {user} />
+      {:else if section === 'Twitch'}<Twitch />
       {:else if section === 'YouTube'}<YouTube
           revision={mediaRevision}
           play={(choice) => void playMedia(choice)}
