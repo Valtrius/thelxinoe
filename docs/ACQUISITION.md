@@ -1,0 +1,38 @@
+# Acquisition development milestone
+
+Administrators can connect local Docker Radarr, Sonarr and Lidarr containers in Settings, choose existing root folders and profiles, and enable automatic approval for individual users. Requests search the manager and local catalog. Ordinary requests await approval; administrators and users with automatic approval enqueue durable add/search work. A search interrupted after submission requires review instead of an automatic repeat.
+
+Manager API keys are encrypted. The private Docker controller returns limited network/mount evidence and never returns container environment variables or commands. The server resolves the internal address from a shared Docker network and requires a writable manager mount backed by the same host media tree. Changed mount mappings block use until the administrator reconnects the service. Docker Desktop Windows host paths and Linux host paths are supported as mount evidence.
+
+Request status can inspect availability and downloads. Administrators can change monitoring, inspect manager release scores/rejections, and explicitly grab an approved release. Request again returns a previously submitted request to approval or queues it according to the user's policy.
+
+## File operations
+
+Ownership reconciliation stores manager entity/file IDs, exact episode/track IDs and mapped paths for each concrete file generation. An unavailable manager retains its historical evidence and makes ownership unresolved. Multiple claims are ambiguous. Both states block destructive operations.
+
+The media detail panel offers Keep protection and reviewed monitor/unmonitor/delete operations. Preparation captures the complete file set, generations, fingerprints and manager claims. Execution holds a server media-operation lease shared with scanning and playback creation, rechecks active playback and Keep, hashes the physical files, refreshes ownership, and checks manager commands/download activity. A file shared with logical media outside the selection blocks the command. Movie/album monitoring cannot silently widen a partial selection to other files.
+
+Managed deletion uses the owning manager's file API and unmonitors the exact unit. Sonarr actions use its recorded episode IDs, never the episode number in a filename. A failed manager call never falls back to filesystem deletion. Explicit administrator deletion of confirmed-unmanaged files uses the filesystem. Interrupted or partially executed commands remain uncertain and are not automatically replayed. Completion requires the files to be absent and catalog reconciliation to finish.
+
+## Isolated validation
+
+The fixture deployment uses ports 23443 (Thelxinoe HTTPS), 27878 (Radarr), 28989 (Sonarr) and 28686 (Lidarr). State and generated media are confined to `.local/acquisition`. Never point these scripts at a real media library.
+
+```powershell
+node scripts/acquisition-fixtures.mjs
+docker compose -f compose.acquisition.test.yaml up -d --wait
+node scripts/test-acquisition.mjs
+node scripts/import-acquisition-fixtures.mjs
+node scripts/test-manager-files.mjs
+node scripts/test-manager-tv-music.mjs
+```
+
+Real adapter validation used Radarr 6.4.4.10685, Sonarr 4.0.20.3014 and Lidarr 3.1.0.4875, pinned by image digest. The browser test registers services, selects defaults and submits approved requests through HTTPS. Fresh-artist Lidarr acquisition was also exercised with Blue Train. Generated video/audio files are manually imported through the real manager APIs, then bound and deleted through Thelxinoe. The Sonarr fixture deliberately maps a filename containing S01E01 to Sonarr episode 2: deletion unmonitored episode 2 and preserved episode 1.
+
+Sanitized results are `.local/acquisition-result.json`, `.local/manager-files-result.json` and `.local/manager-tv-music-result.json`. Rust tests cover permission checks, encrypted credential redaction, duplicate requests, interrupted search, changed mounts, sticky ownership, Keep, content replacement with unchanged size/timestamp, and replay prevention.
+
+## Remaining validation and scope
+
+This milestone does not claim a real indexer-to-download-client acquisition. Release search/grab still needs controlled indexer/download fixtures and the subsequent NZBGet integration. Acquisition is available in the Requests section and through Search and request in Movies, Shows and Music. Automatic retention, import-list exclusion management, managed Docker installation/update ownership, and recovery/backup are later roadmap work. The controller currently exposes read-only inspection only.
+
+The operation lease coordinates this server's work. Arbitrary programs writing directly into media roots remain outside its control, as described in the architecture. Manager activity checks are conservative: any active command or download queue blocks destructive work for that manager.

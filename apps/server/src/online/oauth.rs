@@ -23,7 +23,7 @@ use thelxinoe_core::now;
 pub(super) const SCOPE: &str = "https://www.googleapis.com/auth/youtube.readonly";
 const COOKIE: &str = "thelxinoe_youtube_oauth";
 #[cfg(test)]
-pub(super) mod tests;
+pub(crate) mod tests;
 type Client = BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>;
 pub(super) fn client(state: &AppState, google: Google, redirect: String) -> Result<Client> {
     Ok(BasicClient::new(ClientId::new(google.client_id))

@@ -1,0 +1,61 @@
+name: thelxinoe-acquisition
+services:
+  controller:
+    image: thelxinoe-controller:0.1.0
+    network_mode: none
+    volumes:
+      - runtime:/run/thelxinoe
+      - /var/run/docker.sock:/var/run/docker.sock
+    read_only: true
+    cap_drop: [ALL]
+  server:
+    image: thelxinoe-server:0.1.0
+    ports: ["127.0.0.1:18989:8484"]
+    environment:
+      THELXINOE_PUBLIC_URL: https://localhost:23443
+      THELXINOE_TRUSTED_PROXIES: 172.31.249.0/24
+    volumes:
+      - ./.local/acquisition/server:/var/lib/thelxinoe
+      - ./.local/acquisition/cache:/var/cache/thelxinoe
+      - ./.local/acquisition/data:/data
+      - runtime:/run/thelxinoe:ro
+    networks: [test]
+    depends_on:
+      controller: {condition: service_healthy}
+  proxy:
+    image: caddy:2
+    ports: ["127.0.0.1:23443:9443"]
+    volumes: ["./tests/Caddyfile:/etc/caddy/Caddyfile:ro"]
+    networks: [test]
+    depends_on:
+      server: {condition: service_healthy}
+  radarr:
+    image: lscr.io/linuxserver/radarr@sha256:c960f2b52ec6542dbe6707c5a21e696a7c74fd8b17997454f4d10a55dacee133
+    environment: {PUID: "10001", PGID: "10001", TZ: UTC}
+    ports: ["127.0.0.1:27878:7878"]
+    volumes:
+      - ./.local/acquisition/radarr:/config
+      - ./.local/acquisition/data:/data
+    networks: [test]
+  sonarr:
+    image: lscr.io/linuxserver/sonarr@sha256:a5c1a5fecbef946927ab90ad68df319ac5fe644057e5fc18cd993f01ac07b2b2
+    environment: {PUID: "10001", PGID: "10001", TZ: UTC}
+    ports: ["127.0.0.1:28989:8989"]
+    volumes:
+      - ./.local/acquisition/sonarr:/config
+      - ./.local/acquisition/data:/data
+    networks: [test]
+  lidarr:
+    image: lscr.io/linuxserver/lidarr@sha256:8ab0fd370b604ae034d9a9c261a9d8d873bece33d9736852e7ce4f3566e4a35d
+    environment: {PUID: "10001", PGID: "10001", TZ: UTC}
+    ports: ["127.0.0.1:28686:8686"]
+    volumes:
+      - ./.local/acquisition/lidarr:/config
+      - ./.local/acquisition/data:/data
+    networks: [test]
+networks:
+  test:
+    ipam:
+      config: [{subnet: 172.31.249.0/24}]
+volumes:
+  runtime:

@@ -16,6 +16,9 @@
   import YouTube from './lib/YouTube.svelte';
   import Twitch from './lib/Twitch.svelte';
   import Kick from './lib/Kick.svelte';
+  import ManagerSettings from './lib/ManagerSettings.svelte';
+  import ManagerOwnership from './lib/ManagerOwnership.svelte';
+  import Requests from './lib/Requests.svelte';
   import { persistQueue, type Card } from './lib/media-state';
   import { invoke } from '@tauri-apps/api/core';
   import type { MediaChoice } from './lib/playback';
@@ -88,6 +91,7 @@
     { name: 'Music', icon: Music },
     { name: 'Playlists', icon: Music },
     { name: 'History', icon: Library },
+    { name: 'Requests', icon: Library },
     { name: 'YouTube', icon: Play },
     { name: 'Twitch', icon: Radio },
     { name: 'Kick', icon: Radio },
@@ -473,6 +477,8 @@
         {#if user.role === 'admin'}
           <MetadataSettings />
           <OnlineSettings />
+          <ManagerSettings />
+          <ManagerOwnership />
           <section class="panel">
             <h2><ShieldCheck size={20} /> Server</h2>
             <div class="stats">
@@ -618,6 +624,7 @@
           revision={mediaRevision}
           play={(choice) => void playMedia(choice)}
         />
+      {:else if section === 'Requests'}<Requests {user} />
       {:else if section === 'History'}<History {user} />
       {:else if section === 'Kick'}<Kick
           play={(choice) => void playMedia(choice)}

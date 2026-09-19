@@ -132,6 +132,7 @@ pub(crate) async fn create_with_delivery(
     mut input: Create,
     vod: bool,
 ) -> Result<Value> {
+    let _lease = state.media_operations.read().await;
     if let Some(queue) = &input.queue {
         if !crate::user_media::valid_client(&queue.client_id) || queue.index >= 500 {
             return Err(ApiError::bad("Invalid queue context"));

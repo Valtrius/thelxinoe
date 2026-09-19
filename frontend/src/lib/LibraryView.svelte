@@ -11,6 +11,8 @@
   import MetadataEditor from './MetadataEditor.svelte';
   import EpisodeMapping from './EpisodeMapping.svelte';
   import MediaActions from './MediaActions.svelte';
+  import MediaOperations from './MediaOperations.svelte';
+  import Requests from './Requests.svelte';
   import { untrack } from 'svelte';
   import type { MediaChoice } from './playback';
   let {
@@ -71,6 +73,7 @@
       local_trailers?: { file_id: string }[];
     } | null>(null);
   let generation = 0;
+  let acquisition = $state(false);
   async function load() {
     const request = ++generation;
     busy = true;
@@ -191,10 +194,17 @@
         }}><ArrowLeft size={15} />{breadcrumbs.at(-1)?.title}</button
       >{:else}<p class="muted">Your collection, in one place.</p>{/if}
   </div>
+  <button class="secondary" onclick={() => (acquisition = !acquisition)}
+    >{acquisition ? 'Hide requests' : 'Search and request'}</button
+  >
   {#if admin}<button class="secondary" onclick={() => (showAdd = !showAdd)}
       ><Folder size={16} /> Add folder</button
     >{/if}
 </div>
+{#if acquisition}{#key domain}<Requests
+      user={{ id: userId, role: admin ? 'admin' : 'user' }}
+      {domain}
+    />{/key}{/if}
 {#if error}<p class="error" role="alert">{error}</p>{/if}
 {#if domain === 'Movies' && collections.length}
   <label class="collection-filter"
@@ -259,6 +269,10 @@
     </div>
     {#if selected.overview}<p class="muted">{selected.overview}</p>{/if}
     <MediaActions id={selected.id} kind={selected.kind} {userId} />
+    {#if admin}<MediaOperations
+        id={selected.id}
+        changed={() => void load()}
+      />{/if}
     {#if details?.local_trailers?.length}<p class="muted">
         {details.local_trailers.length} local trailer(s) indexed.
       </p>{/if}

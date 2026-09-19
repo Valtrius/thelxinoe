@@ -5,6 +5,7 @@ mod grants;
 mod history;
 mod jellyfin;
 pub mod library;
+mod managers;
 pub mod metadata;
 mod online;
 pub mod playback;
@@ -44,12 +45,15 @@ pub struct AppState {
     pub subtitle_slots: Arc<tokio::sync::Semaphore>,
     pub compatibility_audio: Arc<tokio::sync::Mutex<()>>,
     pub online: Arc<online::Runtime>,
+    pub(crate) managers: Arc<managers::Runtime>,
+    pub(crate) media_operations: Arc<tokio::sync::RwLock<()>>,
 }
 impl AppState {
     pub async fn open(config: Config) -> anyhow::Result<Self> {
         std::fs::create_dir_all(&config.state)?;
         std::fs::create_dir_all(&config.cache)?;
         let db = Database::open(config.state.join("thelxinoe.sqlite3"))?;
+        db.call(|db| {db.execute("UPDATE media_operations SET state='uncertain',error='Server stopped during execution; reconcile before preparing another operation' WHERE state='executing'",[])?;Ok(())}).await?;
         let server_id=db.call(|db|{
             db.execute("INSERT INTO settings(key,value) VALUES ('server_id',?1) ON CONFLICT(key) DO NOTHING",[thelxinoe_core::id()])?;
             Ok(db.query_row("SELECT value FROM settings WHERE key='server_id'",[],|r|r.get::<_,String>(0))?)
@@ -57,7 +61,7 @@ impl AppState {
         if !config.state.join("secrets/master.key").exists()
             && db
                 .call(|c| {
-                    Ok(c.query_row("SELECT COUNT(*) FROM secrets", [], |r| r.get::<_, i64>(0))?)
+                    Ok(c.query_row("SELECT (SELECT COUNT(*) FROM secrets)+(SELECT COUNT(*) FROM manager_services)+(SELECT COUNT(*) FROM online_accounts WHERE credential IS NOT NULL)", [], |r| r.get::<_, i64>(0))?)
                 })
                 .await?
                 > 0
@@ -92,6 +96,8 @@ impl AppState {
             password_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             compatibility_audio: Arc::new(tokio::sync::Mutex::new(())),
             online: Arc::new(online::Runtime::new()?),
+            managers: Arc::new(managers::Runtime::new()?),
+            media_operations: Arc::new(tokio::sync::RwLock::new(())),
             dummy_hash: Arc::new(thelxinoe_auth::password_hash(thelxinoe_auth::token()).await?),
         })
     }
@@ -119,6 +125,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(jellyfin::router())
         .merge(online::router())
+        .merge(managers::router())
         .route("/api/v1/{*path}", axum::routing::any(not_found))
         .route("/api/v1/health", get(health))
         .route(
@@ -276,6 +283,12 @@ pub async fn run_jobs(state: AppState) -> anyhow::Result<()> {
         if let Some(job) = queue.claim().await? {
             match job.kind.as_str() {
                 "checkpoint" => queue.checkpoint(&job).await?,
+                "manager.request" => {
+                    let result = managers::acquire(&state, &job).await;
+                    queue
+                        .finish(&job, result.err().map(|e| e.to_string()))
+                        .await?;
+                }
                 "online.tools.install" => {
                     let result = online::tools::install(&state, &job).await;
                     queue
@@ -289,6 +302,7 @@ pub async fn run_jobs(state: AppState) -> anyhow::Result<()> {
                         .await?;
                 }
                 "library.scan" => {
+                    let _lease = state.media_operations.read().await;
                     let roots = thelxinoe_catalog::roots(&state.db).await?;
                     if let Some(root) = roots
                         .into_iter()

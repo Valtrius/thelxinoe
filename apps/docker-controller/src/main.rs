@@ -1,4 +1,6 @@
 #[cfg(unix)]
+mod docker;
+#[cfg(unix)]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     use std::os::unix::fs::{FileTypeExt, PermissionsExt};
@@ -21,7 +23,7 @@ async fn main() -> anyhow::Result<()> {
     }
     let listener = tokio::net::UnixListener::bind(&socket)?;
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o660))?;
-    let app = axum::Router::new().route(
+    let app = axum::Router::new().merge(docker::router()).route(
         "/health",
         axum::routing::get(|| async {
             axum::Json(
