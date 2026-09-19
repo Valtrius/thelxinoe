@@ -11,16 +11,19 @@
   import MetadataEditor from './MetadataEditor.svelte';
   import EpisodeMapping from './EpisodeMapping.svelte';
   import { untrack } from 'svelte';
+  import type { MediaChoice } from './playback';
   let {
     domain,
     admin,
     revision = 0,
     scans = {},
+    play,
   } = $props<{
     domain: string;
     admin: boolean;
     revision?: number;
     scans?: Record<string, { completed: number; total: number }>;
+    play: (choice: MediaChoice) => void;
   }>();
   type Item = {
     id: string;
@@ -57,6 +60,7 @@
       files: {
         id: string;
         edition: string;
+        present: boolean;
         probe: { format?: { duration?: string } };
       }[];
       local_trailers?: { file_id: string }[];
@@ -248,6 +252,20 @@
             ? `${Math.round(Number(file.probe.format.duration) / 60)} minutes`
             : 'Duration unknown'}</span
         >
+        {#if file.present}<button
+            class="primary"
+            onclick={() =>
+              play({
+                id: selected!.id,
+                title: selected!.title,
+                fileId: file.id,
+                kind: selected!.kind,
+                queue:
+                  selected!.kind === 'track'
+                    ? items.filter((i) => i.kind === 'track' && i.available)
+                    : undefined,
+              })}>Play {file.edition || 'media'}</button
+          >{/if}
       </div>{/each}
     {#if admin && details}<MetadataEditor
         id={selected.id}

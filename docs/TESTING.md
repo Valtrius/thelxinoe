@@ -25,7 +25,25 @@ The proxy project runs first and creates its test administrator on a fresh datab
 
 For the first-run page on an untouched main deployment, clear those two environment variables and run `npm run test:e2e`.
 
-## Windows desktop
+## Browser playback
+
+Use the separate playback fixture deployment after building the server image:
+
+```powershell
+node scripts/playback-fixtures.mjs
+$env:THELXINOE_TEST_HTTP_PORT = '18686'
+$env:THELXINOE_TEST_HTTPS_PORT = '20443'
+$env:THELXINOE_TEST_SUBNET = '172.31.252.0/24'
+docker compose -p thelxinoe-playback -f compose.test.yaml up -d --wait
+node scripts/test-playback.mjs
+node scripts/test-playback-tracks.mjs
+```
+
+The first script checks real Chromium decoding of direct, remux and converted streams, seeks, range/HEAD/416 behavior, sidecar subtitles, grant revocation, two users, out-of-order reports, 90% watched inference and edition resume. It captures the application's actual Web Audio scheduling, then renders the buffers across their join to measure sample continuity and ReplayGain. The second verifies saved language preferences, embedded subtitles and the selected audio's actual 880 Hz signal. A Rust integration test replaces a real generated media file, rescans and reopens the database to verify logical resume and rejection of the old file generation.
+
+Browser gapless delivery uses up to two decoded FLAC/PCM tracks (64 MiB encoded and 128 MiB decoded per track, up to ten minutes each). Other formats and explicit conversion preferences use streaming playback with ReplayGain. Conversion uses four bounded FFmpeg slots, a rolling HLS window, a 2 GiB cache ceiling and idle cleanup; direct streams do not consume conversion slots. Playback grants expire after two minutes without an authenticated heartbeat and remain tied to their parent login session. Tests currently exercise Chromium; the final browser matrix belongs to release hardening.
+
+## Windows desktop runtime
 
 With the test deployment initialized:
 

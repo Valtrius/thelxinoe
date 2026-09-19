@@ -4994,6 +4994,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "thelxinoe-playback"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "fs2",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "thelxinoe-server"
 version = "0.1.0"
 dependencies = [
@@ -5015,6 +5028,7 @@ dependencies = [
  "thelxinoe-core",
  "thelxinoe-database",
  "thelxinoe-jobs",
+ "thelxinoe-playback",
  "tokio",
  "tower",
  "tower-http",

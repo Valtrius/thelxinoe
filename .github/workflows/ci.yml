@@ -44,6 +44,15 @@ jobs:
           THELXINOE_TEST_URL: https://localhost:9443
       - if: always()
         run: docker compose -f compose.test.yaml down
+      - run: node scripts/playback-fixtures.mjs
+      - run: docker compose -p thelxinoe-playback -f compose.test.yaml up -d --wait
+        env:
+          THELXINOE_TEST_HTTP_PORT: 18686
+          THELXINOE_TEST_HTTPS_PORT: 20443
+          THELXINOE_TEST_SUBNET: 172.31.252.0/24
+      - run: node scripts/test-playback.mjs && node scripts/test-playback-tracks.mjs
+      - if: always()
+        run: docker compose -p thelxinoe-playback -f compose.test.yaml down
   desktop:
     runs-on: windows-latest
     steps:

@@ -1,6 +1,6 @@
 [workspace]
-members = ["apps/server", "apps/docker-controller", "apps/desktop", "crates/core", "crates/database", "crates/auth", "crates/jobs", "crates/catalog"]
-default-members = ["apps/server", "apps/docker-controller", "crates/core", "crates/database", "crates/auth", "crates/jobs", "crates/catalog"]
+members = ["apps/server", "apps/docker-controller", "apps/desktop", "crates/core", "crates/database", "crates/auth", "crates/jobs", "crates/catalog", "crates/playback"]
+default-members = ["apps/server", "apps/docker-controller", "crates/core", "crates/database", "crates/auth", "crates/jobs", "crates/catalog", "crates/playback"]
 resolver = "2"
 
 [workspace.package]
@@ -26,6 +26,7 @@ thelxinoe-database = { path = "crates/database" }
 thelxinoe-auth = { path = "crates/auth" }
 thelxinoe-jobs = { path = "crates/jobs" }
 thelxinoe-catalog = { path = "crates/catalog" }
+thelxinoe-playback = { path = "crates/playback" }
 
 [profile.release]
 lto = "thin"

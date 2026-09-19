@@ -15,6 +15,7 @@ thelxinoe-database.workspace = true
 thelxinoe-auth.workspace = true
 thelxinoe-jobs.workspace = true
 thelxinoe-catalog.workspace = true
+thelxinoe-playback.workspace = true
 notify = "8"
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -25,6 +26,7 @@ chrono-tz = "0.10"
 futures-util = "0.3"
 url = "2"
 fs2 = "0.4"
+tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]
 tempfile = "3"

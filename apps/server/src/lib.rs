@@ -4,6 +4,7 @@ pub mod error;
 mod grants;
 pub mod library;
 pub mod metadata;
+pub mod playback;
 mod realtime;
 pub mod security;
 
@@ -30,6 +31,8 @@ pub struct AppState {
     pub events: tokio::sync::broadcast::Sender<()>,
     pub password_slots: Arc<tokio::sync::Semaphore>,
     pub dummy_hash: Arc<String>,
+    pub playback: Arc<thelxinoe_playback::Pipelines>,
+    pub subtitle_slots: Arc<tokio::sync::Semaphore>,
 }
 impl AppState {
     pub async fn open(config: Config) -> anyhow::Result<Self> {
@@ -64,6 +67,8 @@ impl AppState {
             file.sync_all()?;
         }
         Ok(Self {
+            playback: Arc::new(thelxinoe_playback::Pipelines::open(&config.cache).await?),
+            subtitle_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             db,
             secrets,
             config: Arc::new(config),
@@ -135,6 +140,25 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/catalog/{id}/refresh", post(metadata::refresh))
         .route("/api/v1/catalog/{id}/artwork", get(metadata::artwork))
         .route("/api/v1/catalog/{id}", get(library::detail))
+        .route("/api/v1/playback", post(playback::create))
+        .route("/api/v1/playback/{id}", delete(playback::cancel))
+        .route("/api/v1/playback/{id}/keepalive", post(playback::keepalive))
+        .route(
+            "/api/v1/playback/preferences",
+            get(playback::preferences).put(playback::save_preferences),
+        )
+        .route("/api/v1/playback/{id}/progress", post(playback::progress))
+        .route("/api/v1/playback/{id}/seek", post(playback::seek))
+        .route("/api/v1/playback/{id}/stream", get(playback::stream))
+        .route(
+            "/api/v1/playback/{id}/hls/{revision}/{name}",
+            get(playback::hls),
+        )
+        .route(
+            "/api/v1/playback/{id}/subtitles/{track}",
+            get(playback::subtitle),
+        )
+        .route("/api/v1/catalog/{id}/playback", get(playback::media_info))
         .route(
             "/api/v1/catalog/{id}/overrides",
             axum::routing::put(library::overrides),

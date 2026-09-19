@@ -2,6 +2,11 @@
   import { onMount } from 'svelte';
   import LibraryView from './lib/LibraryView.svelte';
   import MetadataSettings from './lib/MetadataSettings.svelte';
+  import PlaybackSettings from './lib/PlaybackSettings.svelte';
+  import Player from './lib/Player.svelte';
+  import MusicPlayer from './lib/MusicPlayer.svelte';
+  import type { MediaChoice } from './lib/playback';
+  let playing = $state<MediaChoice | null>(null);
   import {
     House,
     Film,
@@ -138,6 +143,7 @@
   async function logout() {
     await act(async () => {
       await api('/auth/logout', 'POST');
+      playing = null;
       user = null;
       events?.close();
     });
@@ -307,7 +313,15 @@
         >
       </header>
       {#if error}<p class="error" role="alert">{error}</p>{/if}
+      {#if playing && playing.kind === 'track'}<MusicPlayer
+          choice={playing}
+          closed={() => (playing = null)}
+        />{:else if playing}<Player
+          choice={playing}
+          closed={() => (playing = null)}
+        />{/if}
       {#if section === 'Settings'}
+        <PlaybackSettings />
         <section class="panel">
           <h2>Your devices</h2>
           <p class="muted">
@@ -469,6 +483,7 @@
           admin={user.role === 'admin'}
           revision={catalogRevision}
           {scans}
+          play={(choice) => (playing = choice)}
         />
       {:else}
         <section class="empty">
