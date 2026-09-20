@@ -16,6 +16,9 @@
   let expanded = $state<ToolId | null>(null);
   let configurationFile = $state('mpv.conf');
   let configurationRequest = $state(0);
+  let configurationEditor = $state<{
+    importConfiguration: () => Promise<void>;
+  }>();
   const snapshot = $derived($toolsState.snapshot);
 
   function install(tool: ToolId, packageId: string) {
@@ -39,6 +42,10 @@
     const editor = document.getElementById('mpv-configuration');
     editor?.scrollIntoView({ block: 'start', behavior: 'instant' });
     editor?.focus({ preventScroll: true });
+  }
+  async function importConfiguration() {
+    await configure();
+    await configurationEditor?.importConfiguration();
   }
   onMount(() => {
     if (!snapshot) void toolsState.refresh().catch(() => {});
@@ -77,6 +84,7 @@
           {tool}
           configurationSource={snapshot.mpv.source}
           onConfigure={configure}
+          onImportConfiguration={importConfiguration}
           onInstall={install}
         />
         {#if tool.id === 'mpv'}
@@ -106,6 +114,7 @@
                 {$toolsState.errors.configuration}
               </p>{/if}
             <MpvConfigEditor
+              bind:this={configurationEditor}
               preferences={snapshot.mpv}
               initialFile={configurationFile}
               request={configurationRequest}

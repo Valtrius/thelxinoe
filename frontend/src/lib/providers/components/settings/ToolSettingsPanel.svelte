@@ -24,11 +24,13 @@
     tool,
     configurationSource,
     onConfigure,
+    onImportConfiguration,
     onInstall,
   }: {
     tool: ToolView;
     configurationSource: MpvPreferences['source'];
     onConfigure: (file?: string) => void;
+    onImportConfiguration: () => void;
     onInstall: (tool: ToolId, packageId: string) => void;
   } = $props();
   let choosing = $state(false);
@@ -85,6 +87,12 @@
 <div class="grid gap-4">
   {#if plugin}
     {#if configurationSource !== 'managed'}
+      <p class="text-xs text-(--muted)">
+        MPV uses the plugins in its {configurationSource === 'native'
+          ? 'normal configuration'
+          : 'selected configuration folder'}. Manage a copy in Thelxinoe to
+        control plugins here. Your selected MPV executable stays the same.
+      </p>
       <Button
         variant="ghost"
         size="sm"
@@ -92,6 +100,22 @@
         onclick={() => onConfigure()}>Go to MPV configuration</Button
       >
     {/if}
+    {#if !active && !tool.importedPaths.length && configurationSource === 'managed'}
+      <p class="text-xs text-(--muted)">
+        No {toolNames[tool.id]} plugin is installed in this configuration yet. Download
+        a version below or import your existing MPV configuration. Both work with
+        your selected MPV executable.
+      </p>
+    {/if}
+    <Button
+      variant="secondary"
+      size="sm"
+      class="justify-self-start"
+      disabled={preferencesDisabled ||
+        Boolean($toolsState.pending.configuration)}
+      onclick={onImportConfiguration}
+      ><FolderOpen class="size-3.5" />Import existing MPV configuration...</Button
+    >
     <fieldset
       disabled={preferencesDisabled || configurationSource !== 'managed'}
       class="grid gap-3 disabled:opacity-45"
@@ -159,22 +183,31 @@
             )}>Edit plugin settings</Button
         >{/if}
       {#if !active && mode !== 'managed'}
-        <details>
-          <summary class="cursor-pointer text-xs"
-            >Download and use a managed version</summary
-          >
-          <div class="mt-3">
-            <ToolVersions
-              {tool}
-              managed
-              {disabled}
-              {preferencesDisabled}
-              {installing}
-              {operation}
-              {onInstall}
-            />
-          </div>
-        </details>
+        <div class="grid gap-3">
+          <h3 class="text-xs font-semibold">
+            Download and use a managed version
+          </h3>
+          <ToolVersions
+            {tool}
+            managed
+            {disabled}
+            {preferencesDisabled}
+            {installing}
+            {operation}
+            {onInstall}
+          />
+          {#if !tool.versions.length}
+            <Button
+              variant="secondary"
+              size="sm"
+              class="justify-self-start"
+              disabled={Boolean($toolsState.pending.updates)}
+              onclick={() => void toolsState.checkUpdates()}
+            >
+              Check for plugin versions
+            </Button>
+          {/if}
+        </div>
       {:else}
         <ToolVersions
           {tool}

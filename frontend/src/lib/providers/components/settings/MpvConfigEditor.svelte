@@ -224,7 +224,7 @@
       ),
     );
   }
-  async function importConfiguration() {
+  export async function importConfiguration() {
     try {
       const path = await open({
         directory: true,
