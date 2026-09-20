@@ -1,1 +1,100 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><rect x="1" y="1" width="126" height="126" fill="#121923" stroke="#bcecff" stroke-width="2"/><path d="M29 32h70v17H74v48H54V49H29Z" fill="#bcecff"/></svg>
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 512 512"
+  role="img"
+  aria-labelledby="title desc"
+>
+  <title id="title">Thelxinoe</title>
+  <desc id="desc">
+    Red, purple, green, and cyan ribbons form an X around a glowing play button
+    inside a square frame.
+  </desc>
+  <defs>
+    <linearGradient
+      id="bg"
+      x1="40"
+      y1="20"
+      x2="470"
+      y2="492"
+      gradientUnits="userSpaceOnUse"
+    >
+      <stop stop-color="#222a35" />
+      <stop offset="1" stop-color="#090b0f" />
+    </linearGradient>
+    <linearGradient
+      id="youtube"
+      x1="90"
+      y1="108"
+      x2="272"
+      y2="306"
+      gradientUnits="userSpaceOnUse"
+    >
+      <stop stop-color="#ff3b30" />
+      <stop offset="1" stop-color="#ff0000" />
+    </linearGradient>
+    <linearGradient
+      id="twitch"
+      x1="422"
+      y1="108"
+      x2="240"
+      y2="306"
+      gradientUnits="userSpaceOnUse"
+    >
+      <stop stop-color="#b87aff" />
+      <stop offset="1" stop-color="#9146ff" />
+    </linearGradient>
+    <linearGradient
+      id="kick"
+      x1="256"
+      y1="226"
+      x2="256"
+      y2="440"
+      gradientUnits="userSpaceOnUse"
+    >
+      <stop stop-color="#6dff31" />
+      <stop offset="1" stop-color="#53fc18" />
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="9" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+    <linearGradient
+      id="fourth"
+      x1="256"
+      y1="260"
+      x2="404"
+      y2="440"
+      gradientUnits="userSpaceOnUse"
+    >
+      <stop stop-color="#54dcff" />
+      <stop offset="1" stop-color="#16bfff" />
+    </linearGradient>
+  </defs>
+  <path fill="url(#bg)" d="M0 0h512v512H0z" />
+  <path
+    fill="none"
+    stroke="#fff"
+    stroke-opacity=".68"
+    stroke-width="4"
+    d="M20 20h472v472H20z"
+  />
+  <g transform="translate(0 -18)">
+    <path fill="url(#kick)" d="M224 226h64v68L160 440H90L224 286z" />
+    <path fill="url(#fourth)" d="M224 226h64v60L422 440h-70L224 294z" />
+    <path fill="url(#youtube)" d="M90 108h70l128 118v68h-64v-36z" />
+    <path fill="url(#twitch)" d="M422 108h-70L224 226v92z" />
+    <circle
+      cx="256"
+      cy="260"
+      r="78"
+      fill="#0b1017"
+      stroke="#fff"
+      stroke-opacity=".16"
+      stroke-width="4"
+    />
+    <path fill="#fff" filter="url(#glow)" d="m231 212 78 48-78 48z" />
+  </g>
+</svg>

@@ -426,13 +426,8 @@
     }
     .brand-mark,
     .brand-symbol {
-      display: grid;
-      place-items: center;
-      color: var(--accent);
-      font-size: 19px;
-      font-weight: 600;
-      border: 1px solid var(--line-strong);
-      background: var(--accent-soft);
+      display: block;
+      object-fit: contain;
     }
     .brand-mark {
       width: 42px;

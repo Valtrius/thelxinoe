@@ -444,7 +444,13 @@
 {#if desktop}<WindowTitlebar />{/if}
 {#if loading}
   <main class="auth-page">
-    <div class="brand-mark">T</div>
+    <img
+      class="brand-mark"
+      src="/icon.svg"
+      alt="Thelxinoe"
+      width="42"
+      height="42"
+    />
     <p>Connecting to your library…</p>
   </main>
 {:else if updateRequired}
@@ -469,7 +475,13 @@
 {:else if !user}
   <main class="auth-page">
     <div class="auth-card">
-      <div class="brand-mark">T</div>
+      <img
+        class="brand-mark"
+        src="/icon.svg"
+        alt="Thelxinoe"
+        width="42"
+        height="42"
+      />
       <h1>{setup ? 'Welcome to Thelxinoe' : 'Welcome back'}</h1>
       <p class="muted">
         {setup

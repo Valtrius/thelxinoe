@@ -60,9 +60,13 @@
         navigate('Home');
       }}
       aria-label="Thelxinoe home"
-      ><span class="brand-symbol">T</span><span class="brand-label"
-        >Thelxinoe</span
-      ></a
+      ><img
+        class="brand-symbol"
+        src="/icon.svg"
+        alt=""
+        width="30"
+        height="30"
+      /><span class="brand-label">Thelxinoe</span></a
     >
     <nav class="primary-navigation" aria-label="Main navigation">
       {#each library as item (item.name)}<SidebarButton
