@@ -112,7 +112,11 @@
     display: grid;
     gap: 1rem;
   }
-  .choices,
+  .choices {
+    display: grid;
+    justify-items: start;
+    gap: 1rem;
+  }
   .actions {
     display: flex;
     gap: 1rem;
@@ -120,6 +124,8 @@
   }
   .segment-choice {
     display: grid;
+    grid-template-columns: 4rem max-content;
+    align-items: center;
     gap: 0.5rem;
     font-size: 0.8rem;
   }
