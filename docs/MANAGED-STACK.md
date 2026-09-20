@@ -47,3 +47,7 @@ The controller owns Docker-level configuration such as image, mounts, networks, 
 Docker-level ownership is exclusive. Adoption means Thelxinoe becomes the only orchestrator that is allowed to recreate or mutate that container's Docker configuration. Containers still belonging to another Compose project or another detected orchestrator cannot be adopted until the administrator removes that competing ownership. For an adopted standalone container, Thelxinoe captures and validates the supported parts of its current spec, records the new desired spec under Thelxinoe ownership, and only then manages lifecycle/update operations. Drift detection reports outside mutations instead of silently accepting a second owner.
 
 Thelxinoe automatically wires mechanical relationships where APIs allow it, including Prowlarr to the media managers, NZBGet as download client, Bazarr to Sonarr/Radarr, categories, and canonical paths. Real administrator choices remain explicit.
+
+## Container names
+
+The bootstrap services are named `thelxinoe-server` and `thelxinoe-controller`. New and adopted managed services use `thelxinoe-radarr`, `thelxinoe-sonarr`, `thelxinoe-lidarr`, `thelxinoe-bazarr`, `thelxinoe-prowlarr` and `thelxinoe-nzbget`. If another deployment already owns the preferred name, the controller adds a short installation suffix. Adoption preserves the original configuration for recovery and recreates the accepted service under its Thelxinoe name. Existing prefixed installations retain their recorded names through updates and restore.

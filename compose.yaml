@@ -1,6 +1,7 @@
 name: thelxinoe
 services:
   controller:
+    container_name: thelxinoe-controller
     image: ${THELXINOE_CONTROLLER_IMAGE:-thelxinoe-controller:0.1.0}
     build:
       context: .
@@ -24,6 +25,7 @@ services:
     labels:
       app.thelxinoe.component: controller
   server:
+    container_name: thelxinoe-server
     image: ${THELXINOE_SERVER_IMAGE:-thelxinoe-server:0.1.0}
     build:
       context: .

@@ -79,6 +79,35 @@ fn service_path(key: &str) -> std::path::PathBuf {
         .join(key)
         .join("service.json")
 }
+fn choose_service_name(
+    kind: &str,
+    key: &str,
+    containers: &Value,
+    replacing: Option<&str>,
+) -> Result<String> {
+    let rows = containers.as_array().ok_or_else(unavailable)?;
+    let occupied = |name: &str| {
+        rows.iter().any(|row| {
+            replacing != row["Id"].as_str()
+                && row["Names"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .any(|n| n.trim_start_matches('/') == name)
+        })
+    };
+    let primary = format!("thelxinoe-{kind}");
+    if !occupied(&primary) {
+        return Ok(primary);
+    }
+    // Separate deployments can share a Docker daemon without taking each other's names.
+    let scoped = format!("{primary}-{}", &key[..8]);
+    if occupied(&scoped) {
+        return Err(conflict("Managed container name is already in use"));
+    }
+    Ok(scoped)
+}
 fn load(key: &str) -> Result<Managed> {
     id(key)?;
     persisted(store::read(&service_path(key)))
@@ -401,7 +430,12 @@ async fn install(
         None,
     )
     .await?;
-    let name = format!("thelxinoe-{}-{}", t.kind, &key[..8]);
+    let name = choose_service_name(
+        t.kind,
+        &key,
+        &engine("/containers/json?all=true").await?,
+        None,
+    )?;
     let mut mounts = vec![
         json!({"Type":"bind","Source":format!("{}/services/{key}/appdata",d.appdata_source),"Target":"/config"}),
     ];
@@ -474,17 +508,12 @@ async fn adopt(State(runtime): State<Runtime>, Json(input): Json<Adopt>) -> Resu
     if service_path(&key).exists() {
         return Err(conflict("Provisioning identity already exists"));
     }
-    let name = raw["Name"]
-        .as_str()
-        .ok_or_else(unavailable)?
-        .trim_start_matches('/')
-        .to_owned();
-    if !name
-        .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
-    {
-        return Err(bad("Unsupported container name"));
-    }
+    let name = choose_service_name(
+        t.kind,
+        &key,
+        &engine("/containers/json?all=true").await?,
+        Some(&input.container_id),
+    )?;
     let mut spec = raw["Config"].clone();
     spec["Image"] = json!(format!("{}@{}", t.repository, t.digest));
     spec.as_object_mut()
@@ -749,4 +778,29 @@ async fn reconcile(d: &Deployment, s: &mut Managed) -> Result<Json<Value>> {
     Ok(Json(
         json!({"accepted":true,"container_id":s.container,"running":raw["State"]["Running"]}),
     ))
+}
+
+#[cfg(test)]
+mod naming_tests {
+    use super::*;
+    #[test]
+    fn names_are_prefixed_without_claiming_another_deployments_container() {
+        let key = "01234567-89ab-cdef-0123-456789abcdef";
+        let occupied = json!([{"Id":"other","Names":["/thelxinoe-radarr"]}]);
+        assert_eq!(
+            choose_service_name("radarr", key, &json!([]), None).unwrap(),
+            "thelxinoe-radarr"
+        );
+        assert_eq!(
+            choose_service_name("radarr", key, &occupied, Some("other")).unwrap(),
+            "thelxinoe-radarr"
+        );
+        assert_eq!(
+            choose_service_name("radarr", key, &occupied, None).unwrap(),
+            "thelxinoe-radarr-01234567"
+        );
+        let collision =
+            json!([{"Id":"other","Names":["/thelxinoe-radarr", "/thelxinoe-radarr-01234567"]}]);
+        assert!(choose_service_name("radarr", key, &collision, None).is_err());
+    }
 }
