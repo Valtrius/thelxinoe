@@ -6,6 +6,25 @@ use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
 
 #[tauri::command]
+fn open_provider_url(app: tauri::AppHandle, value: String) -> Result<(), String> {
+    let url = url::Url::parse(&value).map_err(|_| "Invalid provider URL")?;
+    if url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+        || !matches!(
+            url.host_str(),
+            Some("www.youtube.com" | "www.twitch.tv" | "kick.com")
+        )
+    {
+        return Err("Invalid provider URL".into());
+    }
+    app.opener()
+        .open_url(url.as_str(), None::<&str>)
+        .map_err(|_| "Could not open your browser".into())
+}
+
+#[tauri::command]
 fn open_twitch_activation(app: tauri::AppHandle) -> Result<(), String> {
     app.opener()
         .open_url("https://www.twitch.tv/activate", None::<&str>)
@@ -165,6 +184,7 @@ fn main() {
             server_url,
             change_server,
             backend_request,
+            open_provider_url,
             open_youtube_linking,
             open_twitch_activation,
             updates::desktop_update_check,

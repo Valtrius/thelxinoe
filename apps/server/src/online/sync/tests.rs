@@ -257,6 +257,48 @@ async fn a_late_provider_reply_cannot_restore_deleted_data() {
     );
     server.abort();
 }
+#[tokio::test]
+async fn direct_url_playback_resolves_metadata_without_saving_a_watchlist_item() {
+    let (_temp, mut state, session) = fixture().await;
+    connect(&state, "alice").await;
+    state
+        .db
+        .call(|db| {
+            db.execute("UPDATE youtube_sync SET next_run=?1", [now() + 1800])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let server = stub(&mut state, axum::Router::new().route("/videos", get(|Query(query): Query<HashMap<String, String>>| async move {
+        assert_eq!(query["id"], VIDEO);
+        Json(json!({"items":[{"id":VIDEO,"snippet":{"channelId":CHANNEL,"title":"Direct URL title","channelTitle":"Channel","publishedAt":"2026-09-19T00:00:00Z","liveBroadcastContent":"none"},"contentDetails":{"duration":"PT20M"},"status":{"privacyStatus":"public"}}]}))
+    }))).await;
+    assert_eq!(
+        call(
+            &state,
+            "/api/v1/online/youtube/resolve",
+            "POST",
+            json!({"video_id":VIDEO}),
+            &session
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert!(tick(&state).await.unwrap());
+    let (title, private_rows, saved) = state.db.call(|db| {
+        Ok((
+            db.query_row("SELECT title FROM youtube_videos WHERE user_id='alice' AND video_id=?1 AND metadata_at>0", [VIDEO], |r| r.get::<_, String>(0))?,
+            db.query_row("SELECT COUNT(*) FROM youtube_videos WHERE user_id='bob'", [], |r| r.get::<_, u32>(0))?,
+            db.query_row("SELECT COUNT(*) FROM youtube_watchlist_items", [], |r| r.get::<_, u32>(0))?,
+        ))
+    }).await.unwrap();
+    assert_eq!(title, "Direct URL title");
+    assert_eq!(private_rows, 0);
+    assert_eq!(saved, 0);
+    server.abort();
+}
+
 #[test]
 fn untrusted_urls_and_durations_are_bounded() {
     assert_eq!(duration("P1DT2H3M4.5S"), Some(93785));

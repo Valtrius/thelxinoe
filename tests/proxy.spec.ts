@@ -18,6 +18,10 @@ test('HTTPS setup, secure login, event replay, CSRF rejection and device revocat
   await page
     .getByLabel('Password', { exact: true })
     .fill('test-only long passphrase');
+  if (setup)
+    await page
+      .getByLabel('Confirm password', { exact: true })
+      .fill('test-only long passphrase');
   await page
     .getByRole('button', {
       name: setup ? 'Create your server' : 'Sign in',

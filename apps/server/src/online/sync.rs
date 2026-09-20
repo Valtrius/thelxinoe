@@ -178,7 +178,7 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
     let user = turn.user.clone();
     // URL additions get metadata in a bounded batch on the same fair queue.
     let owner = user.clone();
-    let pending=state.db.call(move|db|Ok(db.prepare("SELECT v.video_id FROM youtube_videos v JOIN youtube_state s USING(user_id,video_id) WHERE v.user_id=?1 AND v.metadata_at=0 AND (s.watchlist=1 OR s.pinned=1) ORDER BY s.added_at,v.video_id LIMIT 50")?.query_map([owner],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
+    let pending=state.db.call(move|db|Ok(db.prepare("SELECT v.video_id FROM youtube_videos v LEFT JOIN youtube_state s USING(user_id,video_id) WHERE v.user_id=?1 AND v.metadata_at=0 ORDER BY s.added_at,v.video_id LIMIT 50")?.query_map([owner],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
     if !pending.is_empty() {
         let joined = pending.join(",");
         let data = youtube::get(
@@ -222,6 +222,11 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
                     Some((
                         channel_id(&v["snippet"]["resourceId"]["channelId"])?,
                         text(&v["snippet"]["title"], 300),
+                        super::public_image(
+                            v["snippet"]["thumbnails"]["medium"]["url"]
+                                .as_str()
+                                .or(v["snippet"]["thumbnails"]["default"]["url"].as_str()),
+                        ),
                     ))
                 })
                 .collect::<Vec<_>>();
@@ -245,7 +250,7 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
                 turn.cursor.after.clear();
             }
             save(state,turn,false,move|tx|{
-                for (channel,title) in rows {tx.execute("INSERT INTO youtube_subscriptions(user_id,channel_id,title,snapshot) VALUES (?1,?2,?3,?4) ON CONFLICT(user_id,channel_id) DO UPDATE SET title=excluded.title,snapshot=excluded.snapshot",params![user,channel,title,snapshot])?;}
+                for (channel,title,thumbnail) in rows {tx.execute("INSERT INTO youtube_subscriptions(user_id,channel_id,title,snapshot,thumbnail_url) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(user_id,channel_id) DO UPDATE SET title=excluded.title,snapshot=excluded.snapshot,thumbnail_url=excluded.thumbnail_url",params![user,channel,title,snapshot,thumbnail])?;}
                 if complete {
                     tx.execute("DELETE FROM youtube_subscriptions WHERE user_id=?1 AND snapshot<>?2",params![user,snapshot])?;
                     tx.execute("UPDATE youtube_subscriptions SET active=1 WHERE user_id=?1 AND snapshot=?2",params![user,snapshot])?;
@@ -477,5 +482,6 @@ pub(super) fn upsert_video(
         _ => "unknown",
     };
     tx.execute("INSERT INTO youtube_videos(user_id,video_id,channel_id,title,channel_title,published_at,duration,broadcast,privacy,metadata_at,is_short) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(user_id,video_id) DO UPDATE SET channel_id=excluded.channel_id,title=excluded.title,channel_title=excluded.channel_title,published_at=excluded.published_at,duration=excluded.duration,broadcast=excluded.broadcast,privacy=excluded.privacy,metadata_at=excluded.metadata_at,available=1,is_short=COALESCE(excluded.is_short,youtube_videos.is_short)",params![user,video_id,channel,text(&snippet["title"],500),text(&snippet["channelTitle"],300),timestamp(&snippet["publishedAt"]),duration,broadcast,privacy,now(),if broadcast!="none"||duration.is_some_and(|d|d>180){Some(false)}else{None}])?;
+    tx.execute("UPDATE youtube_videos SET scheduled_start=?1,actual_start=?2,actual_end=?3 WHERE user_id=?4 AND video_id=?5",params![video["liveStreamingDetails"]["scheduledStartTime"].as_str(),video["liveStreamingDetails"]["actualStartTime"].as_str(),video["liveStreamingDetails"]["actualEndTime"].as_str(),user,video_id])?;
     Ok(())
 }

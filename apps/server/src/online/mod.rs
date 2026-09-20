@@ -1,15 +1,18 @@
+mod browse;
 pub(crate) mod downloads;
 mod extract;
 mod feed;
 pub(crate) mod kick;
 pub(crate) mod live;
 pub(crate) mod oauth;
+mod presentation;
 mod process;
 mod quota;
 pub(crate) mod streams;
 mod sync;
 pub(crate) mod tools;
 mod twitch;
+mod watchlists;
 mod youtube;
 use crate::{
     AppState,
@@ -28,6 +31,7 @@ use serde_json::{Value, json};
 pub async fn run(state: AppState) -> anyhow::Result<()> {
     tokio::try_join!(
         sync::run(state.clone()),
+        downloads::run_watchlists(state.clone()),
         twitch::run(state.clone()),
         kick::run(state)
     )?;
@@ -44,6 +48,8 @@ pub(super) fn public_image(value: Option<&str>) -> Option<String> {
         && url.password().is_none()
         && url.host_str().is_some_and(|host| {
             host == "static-cdn.jtvnw.net"
+                || host == "yt3.ggpht.com"
+                || host == "yt3.googleusercontent.com"
                 || host == "kick.com"
                 || host.ends_with(".kick.com")
                 || host.ends_with(".kickcdn.com")
@@ -96,6 +102,39 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/online/youtube/callback", get(oauth::callback))
         .route("/api/v1/online/youtube/sync", post(sync::request))
         .route("/api/v1/online/youtube/feed", get(feed::list))
+        .route("/api/v1/online/youtube/browse", post(browse::list))
+        .route(
+            "/api/v1/online/{provider}/authorization",
+            axum::routing::delete(presentation::cancel),
+        )
+        .route(
+            "/api/v1/online/{provider}/sync",
+            post(presentation::refresh),
+        )
+        .route(
+            "/api/v1/online/youtube/resolve",
+            post(presentation::resolve),
+        )
+        .route(
+            "/api/v1/online/youtube/watchlists",
+            get(watchlists::list).post(watchlists::create),
+        )
+        .route(
+            "/api/v1/online/youtube/watchlists/{id}",
+            axum::routing::put(watchlists::update).delete(watchlists::delete),
+        )
+        .route(
+            "/api/v1/online/youtube/watchlists/{id}/items",
+            post(watchlists::add),
+        )
+        .route(
+            "/api/v1/online/youtube/watchlists/{id}/items/{video}",
+            axum::routing::delete(watchlists::remove),
+        )
+        .route(
+            "/api/v1/online/youtube/watchlists/{id}/order",
+            axum::routing::put(watchlists::reorder),
+        )
         .route("/api/v1/online/youtube/watchlist", post(feed::add))
         .route(
             "/api/v1/admin/online/downloads",
@@ -103,7 +142,9 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/api/v1/online/youtube/videos/{id}/download",
-            get(downloads::status).post(downloads::request),
+            get(downloads::status)
+                .post(downloads::request)
+                .delete(downloads::remove),
         )
         .route(
             "/api/v1/online/youtube/videos/{id}/extract",
@@ -262,9 +303,11 @@ async fn configure(
 }
 async fn account(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
+    let user = p.user.id.clone();
+    let sync=state.db.call(move|db|Ok(db.query_row("SELECT next_run,last_complete,error,cursor FROM youtube_sync WHERE user_id=?1",[user],|r|Ok(json!({"next_run":r.get::<_,i64>(0)?,"last_complete":r.get::<_,Option<i64>>(1)?,"error":r.get::<_,Option<String>>(2)?,"in_progress":r.get::<_,String>(3)?!="{}"}))).optional()?)).await?;
     let account=state.db.call(move|db|Ok(db.query_row("SELECT status,display_name,external_id,updated_at FROM online_accounts WHERE user_id=?1 AND provider='youtube'",[p.user.id],|r|Ok(json!({"status":r.get::<_,String>(0)?,"display_name":r.get::<_,String>(1)?,"external_id":r.get::<_,String>(2)?,"updated_at":r.get::<_,i64>(3)?}))).optional()?)).await?.unwrap_or(json!({"status":"disconnected","display_name":"","external_id":""}));
     Ok(Json(
-        json!({"account":account,"configured":google(&state).await.is_ok(),"linking_available":redirect_uri(&state).is_ok(),"linking_url":state.config.public_url.as_ref().map(|u|format!("{}/?section=YouTube",u.origin().ascii_serialization())),"quota":quota::status(&state).await?}),
+        json!({"account":account,"sync":sync,"downloads_enabled":downloads::enabled(&state).await?,"configured":google(&state).await.is_ok(),"linking_available":redirect_uri(&state).is_ok(),"linking_url":state.config.public_url.as_ref().map(|u|format!("{}/?section=YouTube",u.origin().ascii_serialization())),"quota":quota::status(&state).await?}),
     ))
 }
 async fn disconnect(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
@@ -306,3 +349,6 @@ async fn bounded_response(
     }
     Ok((status, headers, bytes))
 }
+
+#[cfg(test)]
+mod presentation_tests;

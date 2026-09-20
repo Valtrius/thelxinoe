@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-pub const SCHEMA_VERSION: u32 = 26;
+pub const SCHEMA_VERSION: u32 = 27;
 
 /// Inspect a quiesced database without applying migrations or creating missing files.
 pub fn verify_snapshot(path: &Path) -> Result<u32> {
@@ -85,6 +85,7 @@ impl Database {
             include_str!("../migrations/024.sql"),
             include_str!("../migrations/025.sql"),
             include_str!("../migrations/026.sql"),
+            include_str!("../migrations/027.sql"),
         ];
         if version > migrations.len() as i64 {
             anyhow::bail!("Database is newer than this server; use the matching release");
@@ -133,6 +134,60 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn named_watchlist_migration_preserves_existing_private_saved_videos() -> Result<()> {
+        let db = Connection::open_in_memory()?;
+        db.pragma_update(None, "foreign_keys", "ON")?;
+        for version in 1..=26 {
+            let path =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("migrations/{version:03}.sql"));
+            db.execute_batch(&std::fs::read_to_string(path)?)?;
+        }
+        for user in ["alice", "bob"] {
+            db.execute(
+                "INSERT INTO users VALUES(?1,?1,'unused','user','UTC',1)",
+                [user],
+            )?;
+            db.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES(?1,'abcdefghijk','Saved video')",[user])?;
+            db.execute("INSERT INTO youtube_state(user_id,video_id,watchlist,position,added_at,updated_at) VALUES(?1,'abcdefghijk',1,123,1,1)",[user])?;
+        }
+        db.execute_batch(include_str!("../migrations/027.sql"))?;
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM youtube_watchlist_items", [], |r| r
+                .get::<_, i64>(0))?,
+            2
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM youtube_watchlists WHERE is_default=1 AND name='Watch Later'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?,
+            2
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT position FROM youtube_state WHERE user_id='alice'",
+                [],
+                |r| r.get::<_, f64>(0)
+            )?,
+            123.0
+        );
+        db.execute("DELETE FROM users WHERE id='alice'", [])?;
+        assert_eq!(
+            db.query_row("SELECT user_id FROM youtube_watchlist_items", [], |r| {
+                r.get::<_, String>(0)
+            })?,
+            "bob"
+        );
+        assert!(db.query_row(
+            "SELECT watchlist FROM youtube_state WHERE user_id='bob'",
+            [],
+            |r| r.get::<_, bool>(0)
+        )?);
+        assert!(!db.prepare("PRAGMA foreign_key_check")?.exists([])?);
+        Ok(())
+    }
     #[test]
     fn online_migration_preserves_local_sessions_and_compatibility_references() -> Result<()> {
         let mut db = Connection::open_in_memory()?;

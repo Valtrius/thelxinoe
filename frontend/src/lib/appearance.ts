@@ -1,7 +1,9 @@
+import type { YoutubeCardShortcut } from './providers/types';
 import { get, writable } from 'svelte/store';
 import { api } from './api';
 export type Theme = 'light' | 'system' | 'dark';
 export type Appearance = {
+  youtube_card_shortcuts: YoutubeCardShortcut[];
   theme: Theme;
   sidebar_collapsed: boolean;
   card_columns: number;
@@ -9,6 +11,7 @@ export type Appearance = {
   thumbnail_fit: 'contain' | 'cover';
 };
 const defaults: Appearance = {
+  youtube_card_shortcuts: [],
   theme: 'system',
   sidebar_collapsed: false,
   card_columns: 6,

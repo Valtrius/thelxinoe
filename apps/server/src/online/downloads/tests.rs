@@ -4,6 +4,62 @@ use axum::http::StatusCode;
 const VIDEO: &str = "abcdefghijk";
 
 #[tokio::test]
+async fn auto_removal_keeps_other_lists_and_the_manual_undo_window() {
+    let (_temp, state, _) = fixture().await;
+    state.db.call(|db| {
+        db.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES('alice',?1,'Video')",[VIDEO])?;
+        for (id,auto_remove) in [(1,1),(2,0)] {
+            db.execute("INSERT INTO youtube_watchlists(id,user_id,name,auto_remove_watched,created_at,updated_at) VALUES(?1,'alice','Test',?2,1,1)",params![id,auto_remove])?;
+            db.execute("INSERT INTO youtube_watchlist_items VALUES('alice',?1,?2,0,1)",params![id,VIDEO])?;
+        }
+        db.execute("UPDATE youtube_state SET watched=1,updated_at=?1 WHERE user_id='alice'",[now()])?;
+        Ok(())
+    }).await.unwrap();
+    maintain_watchlists(&state).await.unwrap();
+    assert_eq!(
+        state
+            .db
+            .call(|db| Ok(db.query_row(
+                "SELECT COUNT(*) FROM youtube_watchlist_items",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?))
+            .await
+            .unwrap(),
+        2
+    );
+    state
+        .db
+        .call(|db| {
+            db.execute("UPDATE youtube_state SET updated_at=?1", [now() - 6])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    maintain_watchlists(&state).await.unwrap();
+    state
+        .db
+        .call(|db| {
+            assert_eq!(
+                db.query_row(
+                    "SELECT watchlist_id FROM youtube_watchlist_items",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                2
+            );
+            assert!(db.query_row(
+                "SELECT watchlist FROM youtube_state WHERE user_id='alice'",
+                [],
+                |r| r.get::<_, bool>(0)
+            )?);
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn both_admin_configuration_routes_control_the_same_download_policy() {
     let (_temp, state, cookie) = fixture().await;
     state

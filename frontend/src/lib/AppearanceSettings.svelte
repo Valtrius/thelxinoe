@@ -1,6 +1,5 @@
 <script lang="ts">
   import { appearance, appearanceError, updateAppearance } from './appearance';
-  import ExclusiveChoiceGroup from './ui/ExclusiveChoiceGroup.svelte';
 </script>
 
 <section class="panel" aria-label="Appearance preferences">
@@ -34,21 +33,6 @@
         >+</button
       >
     </div>
-  </div>
-  <div class="setting-row">
-    <div>
-      <strong>Video thumbnails</strong>
-      <p class="muted">Preserve the full image or fill the thumbnail.</p>
-    </div>
-    <ExclusiveChoiceGroup
-      choices={[
-        { value: 'contain', label: 'Fit' },
-        { value: 'cover', label: 'Fill' },
-      ]}
-      value={$appearance.thumbnail_fit}
-      ariaLabel="Video thumbnail fit"
-      onChange={(thumbnail_fit) => updateAppearance({ thumbnail_fit })}
-    />
   </div>
   <label class="check-row"
     ><input

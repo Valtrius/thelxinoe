@@ -124,6 +124,8 @@ pub async fn add(
         if !exists&&count>=1000{return Ok(false);}
         tx.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES (?1,?2,?2) ON CONFLICT DO NOTHING",params![user,video])?;
         tx.execute("INSERT INTO youtube_state(user_id,video_id,watchlist,added_at,updated_at) VALUES (?1,?2,1,?3,?3) ON CONFLICT(user_id,video_id) DO UPDATE SET watchlist=1,added_at=CASE WHEN watchlist=0 THEN excluded.added_at ELSE added_at END,updated_at=excluded.updated_at",params![user,video,now()])?;
+        let list=super::watchlists::default_list(&tx,&user)?;
+        tx.execute("INSERT INTO youtube_watchlist_items(user_id,watchlist_id,video_id,manual_position,added_at) VALUES(?1,?2,?3,?4,?5) ON CONFLICT DO NOTHING",params![user,list,video,-now(),now()])?;
         tx.execute("UPDATE youtube_sync SET next_run=MIN(next_run,?1) WHERE user_id=?2 AND failures=0",params![now(),user])?;
         tx.commit()?;Ok(true)
     }).await?;
@@ -160,6 +162,12 @@ pub async fn edit(
         }
         tx.execute("INSERT INTO youtube_state(user_id,video_id,added_at,updated_at) VALUES (?1,?2,?3,?3) ON CONFLICT DO NOTHING",params![user,video,now()])?;
         tx.execute("UPDATE youtube_state SET added_at=CASE WHEN ?1=1 AND watchlist=0 THEN ?4 ELSE added_at END,watchlist=COALESCE(?1,watchlist),pinned=COALESCE(?2,pinned),watched=COALESCE(?3,watched),updated_at=?4 WHERE user_id=?5 AND video_id=?6",params![input.watchlist,input.pinned,input.watched,now(),user,video])?;
+        if let Some(watchlist)=input.watchlist {
+            if watchlist {
+                let list=super::watchlists::default_list(&tx,&user)?;
+                tx.execute("INSERT INTO youtube_watchlist_items(user_id,watchlist_id,video_id,manual_position,added_at) VALUES(?1,?2,?3,?4,?5) ON CONFLICT DO NOTHING",params![user,list,video,-now(),now()])?;
+            } else { tx.execute("DELETE FROM youtube_watchlist_items WHERE user_id=?1 AND video_id=?2",params![user,video])?; }
+        }
         tx.commit()?;Ok(1)
     }).await?;
     if updated == 2 {
@@ -183,7 +191,7 @@ pub async fn delete_data(State(state): State<AppState>, headers: HeaderMap) -> R
         for table in ["oauth_attempts","online_accounts"]{tx.execute(&format!("DELETE FROM {table} WHERE user_id=?1 AND provider='youtube'"),[&user])?;}
         tx.execute("UPDATE playback_sessions SET state='stopped',updated_at=?2 WHERE user_id=?1 AND youtube_video_id IS NOT NULL",params![user,now()])?;
         tx.execute("DELETE FROM playback_grants WHERE resource IN (SELECT 'playback:'||id FROM playback_sessions WHERE user_id=?1 AND youtube_video_id IS NOT NULL)",[&user])?;
-        for table in ["youtube_sync","youtube_subscriptions","youtube_videos","youtube_history"]{tx.execute(&format!("DELETE FROM {table} WHERE user_id=?1"),[&user])?;}
+        for table in ["youtube_watchlists","youtube_sync","youtube_subscriptions","youtube_videos","youtube_history"]{tx.execute(&format!("DELETE FROM {table} WHERE user_id=?1"),[&user])?;}
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'online.delete-data','youtube',?2)",params![user,now()])?;
         tx.commit()?;Ok(())
     }).await?;
@@ -225,7 +233,7 @@ pub async fn artwork(
     let response = state
         .online
         .http
-        .get(format!("https://i.ytimg.com/vi/{video}/hqdefault.jpg"))
+        .get(format!("https://i.ytimg.com/vi/{video}/mqdefault.jpg"))
         .send()
         .await
         .map_err(|_| ApiError::not_found())?;

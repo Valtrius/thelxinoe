@@ -246,7 +246,7 @@ async fn delete_data(State(state): State<AppState>, headers: HeaderMap) -> Resul
 }
 async fn feed(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
-    let rows=state.db.call(move|db|Ok(db.prepare("SELECT channel_id,login,display_name,title,category,viewers,started_at,thumbnail_url FROM twitch_streams WHERE user_id=?1 AND active=1 ORDER BY viewers DESC,login LIMIT 1000")?.query_map([p.user.id],|r|Ok(json!({"id":r.get::<_,String>(0)?,"login":r.get::<_,String>(1)?,"display_name":r.get::<_,String>(2)?,"title":r.get::<_,String>(3)?,"category":r.get::<_,String>(4)?,"viewers":r.get::<_,i64>(5)?,"started_at":r.get::<_,String>(6)?,"thumbnail_url":r.get::<_,Option<String>>(7)?})))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
+    let rows=state.db.call(move|db|Ok(db.prepare("SELECT channel_id,login,display_name,title,category,viewers,started_at,thumbnail_url,profile_image_url FROM twitch_streams WHERE user_id=?1 AND active=1 ORDER BY viewers DESC,login LIMIT 1000")?.query_map([p.user.id],|r|Ok(json!({"id":r.get::<_,String>(0)?,"login":r.get::<_,String>(1)?,"display_name":r.get::<_,String>(2)?,"title":r.get::<_,String>(3)?,"category":r.get::<_,String>(4)?,"viewers":r.get::<_,i64>(5)?,"started_at":r.get::<_,String>(6)?,"thumbnail_url":r.get::<_,Option<String>>(7)?,"profile_image_url":r.get::<_,Option<String>>(8)?})))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
     Ok(Json(json!({"items":rows})))
 }
 struct Attempt {
@@ -482,13 +482,13 @@ async fn sync_step(state: &AppState, t: &Turn) -> Result<()> {
             ]),
     )
     .await?;
-    let reset = headers
+    let mut reset = headers
         .get("ratelimit-reset")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(now() + 60)
         .clamp(now() + 1, now() + 3600);
-    let limited = status == axum::http::StatusCode::TOO_MANY_REQUESTS
+    let mut limited = status == axum::http::StatusCode::TOO_MANY_REQUESTS
         || headers.get("ratelimit-remaining").is_some_and(|v| v == "0");
     if limited {
         let user = t.user.clone();
@@ -540,6 +540,50 @@ async fn sync_step(state: &AppState, t: &Turn) -> Result<()> {
             return Err(provider_error());
         }
     }
+    let mut profiles = std::collections::HashMap::<String, String>::new();
+    if !limited && !rows.is_empty() {
+        let ids = rows
+            .iter()
+            .filter_map(|r| r["user_id"].as_str().map(|id| ("id", id)))
+            .collect::<Vec<_>>();
+        if let Ok((profile_status, profile_headers, users)) = response(
+            state
+                .online
+                .http
+                .get(format!("{}/users", state.online.twitch.api))
+                .bearer_auth(&credential.access_token)
+                .header("Client-Id", &client)
+                .query(&ids),
+        )
+        .await
+        {
+            if profile_status == axum::http::StatusCode::TOO_MANY_REQUESTS
+                || profile_headers
+                    .get("ratelimit-remaining")
+                    .is_some_and(|v| v == "0")
+            {
+                limited = true;
+                reset = profile_headers
+                    .get("ratelimit-reset")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(now() + 60)
+                    .clamp(now() + 1, now() + 3600);
+            }
+            if profile_status.is_success()
+                && let Some(users) = users["data"].as_array()
+            {
+                for user in users.iter().take(100) {
+                    if let (Some(id), Some(image)) = (
+                        user["id"].as_str(),
+                        super::public_image(user["profile_image_url"].as_str()),
+                    ) {
+                        profiles.insert(id.to_owned(), image);
+                    }
+                }
+            }
+        }
+    }
     let user = t.user.clone();
     let generation = t.generation.clone();
     let snapshot = if t.snapshot.is_empty() {
@@ -550,7 +594,7 @@ async fn sync_step(state: &AppState, t: &Turn) -> Result<()> {
     state.db.call(move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let valid=tx.query_row("SELECT EXISTS(SELECT 1 FROM online_accounts WHERE user_id=?1 AND provider='twitch' AND generation=?2 AND status='connected')",params![user,generation],|r|r.get::<_,bool>(0))?;
         if !valid{return Ok(())}
-        for r in rows {tx.execute("INSERT INTO twitch_streams(user_id,channel_id,login,display_name,title,category,viewers,started_at,snapshot,thumbnail_url) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(user_id,channel_id) DO UPDATE SET login=excluded.login,display_name=excluded.display_name,title=excluded.title,category=excluded.category,viewers=excluded.viewers,started_at=excluded.started_at,snapshot=excluded.snapshot,thumbnail_url=excluded.thumbnail_url",params![user,r["user_id"].as_str(),r["user_login"].as_str(),r["user_name"].as_str(),r["title"].as_str(),r["game_name"].as_str(),r["viewer_count"].as_i64(),r["started_at"].as_str(),snapshot,super::public_image(r["thumbnail_url"].as_str()).map(|url|url.replace("{width}","640").replace("{height}","360"))])?;}
+        for r in rows {tx.execute("INSERT INTO twitch_streams(user_id,channel_id,login,display_name,title,category,viewers,started_at,snapshot,thumbnail_url,profile_image_url) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(user_id,channel_id) DO UPDATE SET login=excluded.login,display_name=excluded.display_name,title=excluded.title,category=excluded.category,viewers=excluded.viewers,started_at=excluded.started_at,snapshot=excluded.snapshot,thumbnail_url=excluded.thumbnail_url,profile_image_url=COALESCE(excluded.profile_image_url,twitch_streams.profile_image_url)",params![user,r["user_id"].as_str(),r["user_login"].as_str(),r["user_name"].as_str(),r["title"].as_str(),r["game_name"].as_str(),r["viewer_count"].as_i64(),r["started_at"].as_str(),snapshot,super::public_image(r["thumbnail_url"].as_str()).map(|url|url.replace("{width}","640").replace("{height}","360")),profiles.get(r["user_id"].as_str().unwrap_or(""))])?;}
         if next.is_empty(){
             tx.execute("DELETE FROM twitch_streams WHERE user_id=?1 AND snapshot<>?2",params![user,snapshot])?;
             tx.execute("UPDATE twitch_streams SET active=1 WHERE user_id=?1",[&user])?;

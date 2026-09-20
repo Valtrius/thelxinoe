@@ -2,7 +2,7 @@
 
 The web and Windows clients share the YouTwitch palette, square surfaces, typography, navigation components and layout motion. Shared Svelte components live in `frontend/src/lib/ui`; color tokens live in `frontend/src/app.css`.
 
-Light, System and Dark controls are in the Windows title bar and at the bottom of the web sidebar. Account preferences are stored by the server through `GET/PATCH /api/v1/me/appearance`: theme, sidebar expansion, card density, watched-video fading and thumbnail fit. Patches change only the supplied fields. The device caches the selected theme for the sign-in screen.
+Light, System and Dark controls are in the Windows title bar and at the bottom of the web sidebar. Account preferences are stored by the server through `GET/PATCH /api/v1/me/appearance`: theme, sidebar expansion, card density, watched-video fading and YouTube card shortcuts. Patches change only the supplied fields. The device caches the selected theme for the sign-in screen.
 
 Media grids use YouTwitch's 320-pixel logical cards, 12-pixel gaps, Ctrl+wheel density control, scroll anchoring and 200 ms layout transitions. Small screens reduce the column count. Reduced-motion preferences disable movement. Sidebar icons remain in fixed slots while labels and content animate. YouTube has date groups with sticky headers and a watchlist dock; pending additions appear immediately and the URL input clears before the request completes.
 
@@ -11,3 +11,18 @@ Movies and shows use posters, music uses square artwork, and online streams use 
 Settings has a separate navigation column. MPV and server connection settings appear only on Windows. Playback tools are server dependencies and have no web or desktop tool menu; the server queues verified installation when YouTube playback first needs them. Administrative settings appear only for administrators. Statistics uses actual playback history, including daily watch time and most-watched titles, with the same user/date scope as history.
 
 The desktop updater has an empty bootstrap configuration so ordinary builds start without a release channel. Download endpoints and artifact keys are supplied only after verification of the signed product release manifest.
+
+## Provider views
+
+`frontend/src/lib/providers/components` contains the actual YouTwitch YouTube, Twitch and Kick views, cards, toolbars, popovers and watchlist sidebar. Their controllers keep the source's search shortcuts, grouping, drag ordering, shortcut selection, optimistic additions and animations. `providers/api.ts` adapts those contracts to the authenticated server; its motion modules re-export the shared engine so sidebar and grid animations have one owner. Library and Settings form styles are scoped away from these components.
+
+The provider pages start with their own toolbar. Global notifications live in the main sidebar and dismiss on an outside click or Escape. Settings panels remain left aligned at a maximum width of 880 pixels. First administrator creation asks for matching passwords; ordinary sign-in has one password field.
+
+The necessary differences from YouTwitch are:
+
+- Web playback uses the browser player; Windows uses MPV. Extraction and download tools run on the server, so these pages have no local tool configuration. Signed-in browser-cookie playback and its shortcut are omitted because the server supports public extraction.
+- Account linking uses server application credentials and encrypted server token storage. Connection management is in **Settings → Online accounts**; application credentials are in the administrator's **Provider applications** page.
+- Downloading adds a personal retention pin. A shared download cannot be deleted or cancelled while another user retains it or while it is playing. Downloads and automatic watchlist downloads require the administrator's download setting.
+- Refresh requests retain server cooldowns and provider quota/backoff limits. YouTube backfill remains bounded to 150 uploads or 90 days per channel. Provider metadata refreshes asynchronously.
+
+Named watchlists, their settings and membership are private server data. Existing saved videos migrate into Watch Later. Aggregate membership continues to protect downloads from retention cleanup. Card shortcuts persist with account appearance preferences; search/filter and watchlist expansion preferences are scoped to the account and server in browser storage.

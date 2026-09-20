@@ -5,3 +5,5 @@
 Music metadata comes from [MusicBrainz](https://musicbrainz.org/doc/About/Data_License). Cover art comes from [Cover Art Archive](https://coverartarchive.org); rights remain with their respective owners.
 
 The theme tokens, navigation controls, window title bar and media layout motion are adapted from the sibling YouTwitch project. Shared behavior includes scroll anchoring, Ctrl+wheel card zoom, sidebar origin compensation and reduced-motion handling.
+
+The provider components and their feed/watchlist controllers in `frontend/src/lib/providers` are copied from YouTwitch. Their layout and interactions are retained; Thelxinoe supplies the server transport, account management and playback integration described in [Appearance](APPEARANCE.md).

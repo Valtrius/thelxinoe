@@ -1,7 +1,12 @@
 <script lang="ts">
   import { untrack } from 'svelte';
+  import { Bell } from '@lucide/svelte';
+  import SidebarButton from './ui/SidebarButton.svelte';
   import { api } from './api';
-  let { revision = 0 } = $props<{ revision?: number }>();
+  let { revision = 0, collapsed = false } = $props<{
+    revision?: number;
+    collapsed?: boolean;
+  }>();
   type Notice = {
     id: string;
     severity: string;
@@ -12,6 +17,15 @@
   let items = $state<Notice[]>([]),
     open = $state(false),
     error = $state('');
+  let container: HTMLDivElement;
+  let panel = $state<HTMLElement>();
+  $effect(() => {
+    if (open && panel) {
+      panel.style.left = `${Math.min(container.getBoundingClientRect().right + 8, innerWidth - 300)}px`;
+      panel.showPopover();
+    }
+  });
+
   const unread = $derived(items.filter((n) => !n.read_at).length);
   $effect(() => {
     void revision;
@@ -34,11 +48,37 @@
   }
 </script>
 
-<div class="notifications">
-  <button class="secondary" aria-expanded={open} onclick={() => (open = !open)}
-    >Notifications{unread ? ` (${unread})` : ''}</button
+<svelte:window
+  onpointerdown={(event) => {
+    if (
+      open &&
+      event.target instanceof Node &&
+      !container.contains(event.target)
+    )
+      open = false;
+  }}
+  onkeydown={(event) => {
+    if (open && event.key === 'Escape') {
+      open = false;
+      container.querySelector<HTMLButtonElement>('button')?.focus();
+    }
+  }}
+/>
+<div class="notifications" bind:this={container}>
+  <SidebarButton
+    label={unread ? `Notifications (${unread})` : 'Notifications'}
+    {collapsed}
+    aria-label={unread ? `Notifications (${unread})` : 'Notifications'}
+    aria-expanded={open}
+    onclick={() => (open = !open)}
+    ><Bell class="size-5 shrink-0" /></SidebarButton
   >
-  {#if open}<section class="panel notices" aria-label="Notifications">
+  {#if open}<section
+      bind:this={panel}
+      popover="manual"
+      class="panel notices"
+      aria-label="Notifications"
+    >
       <div class="section-heading">
         <h2>Notifications</h2>
         <button class="secondary" onclick={() => void mark('all')}
@@ -66,10 +106,11 @@
     position: relative;
   }
   .notices {
-    position: absolute;
-    right: 0;
-    top: 100%;
-    width: min(480px, 85vw);
+    position: fixed;
+    inset: auto;
+    bottom: 24px;
+    margin: 0;
+    width: min(480px, calc(100vw - 210px));
     max-height: 70vh;
     overflow: auto;
     z-index: 80;
@@ -91,5 +132,14 @@
   }
   small {
     color: var(--muted);
+  }
+  @media (max-width: 720px) {
+    .notices {
+      position: fixed;
+      left: 80px;
+      right: 8px;
+      bottom: 12px;
+      width: auto;
+    }
   }
 </style>

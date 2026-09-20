@@ -156,7 +156,7 @@ async fn add(
 async fn feed(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
     let (connected,items)=state.db.call(move|db|{let connected=db.query_row("SELECT status='connected' FROM online_accounts WHERE user_id=?1 AND provider='kick'",[&p.user.id],|r|r.get::<_,bool>(0)).optional()?.unwrap_or(false);
-        let items=db.prepare("SELECT slug,title,category,live,viewers,updated_at,next_run,error,thumbnail_url,started_at FROM kick_channels WHERE user_id=?1 ORDER BY COALESCE(live,0) DESC,viewers DESC,slug")?.query_map([p.user.id],|r|Ok(json!({"slug":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"category":r.get::<_,String>(2)?,"live":r.get::<_,Option<bool>>(3)?,"viewers":r.get::<_,i64>(4)?,"updated_at":r.get::<_,i64>(5)?,"next_run":r.get::<_,i64>(6)?,"error":r.get::<_,Option<String>>(7)?,"thumbnail_url":r.get::<_,Option<String>>(8)?,"started_at":r.get::<_,Option<String>>(9)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;Ok((connected,items))}).await?;
+        let items=db.prepare("SELECT slug,title,category,live,viewers,updated_at,next_run,error,thumbnail_url,started_at,display_name,profile_image_url,language,mature,tags FROM kick_channels WHERE user_id=?1 ORDER BY COALESCE(live,0) DESC,viewers DESC,slug")?.query_map([p.user.id],|r|Ok(json!({"slug":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"category":r.get::<_,String>(2)?,"live":r.get::<_,Option<bool>>(3)?,"viewers":r.get::<_,i64>(4)?,"updated_at":r.get::<_,i64>(5)?,"next_run":r.get::<_,i64>(6)?,"error":r.get::<_,Option<String>>(7)?,"thumbnail_url":r.get::<_,Option<String>>(8)?,"started_at":r.get::<_,Option<String>>(9)?,"display_name":r.get::<_,Option<String>>(10)?,"profile_image_url":r.get::<_,Option<String>>(11)?,"language":r.get::<_,Option<String>>(12)?,"mature":r.get::<_,bool>(13)?,"tags":serde_json::from_str::<Value>(&r.get::<_,String>(14)?).unwrap_or(json!([]))})))?.collect::<rusqlite::Result<Vec<_>>>()?;Ok((connected,items))}).await?;
     Ok(Json(
         json!({"connected":connected,"configured":client(&state).await.is_ok(),"items":items}),
     ))
@@ -323,11 +323,60 @@ async fn step(state: &AppState, t: &Turn) -> Result<()> {
         .as_str()
         .filter(|s| chrono::DateTime::parse_from_rfc3339(s).is_ok())
         .map(str::to_owned);
+    let mut display_name = None;
+    let mut profile = None;
+    let mut language = None;
+    let mut mature = false;
+    let mut tags = Vec::<String>::new();
+    if let Some(id) = row["broadcaster_user_id"].as_u64()
+        && let Ok(users) = presentation_metadata(state, "users", "id", id).await
+    {
+        if let Some(user) = users
+            .as_array()
+            .and_then(|rows| rows.iter().find(|r| r["user_id"].as_u64() == Some(id)))
+        {
+            display_name = user["name"]
+                .as_str()
+                .map(|s| s.chars().take(100).collect::<String>());
+            profile = super::public_image(user["profile_picture"].as_str());
+        }
+        if live
+            && let Ok(streams) =
+                presentation_metadata(state, "users/livestreams", "user_id", id).await
+            && let Some(stream) = streams.as_array().and_then(|rows| {
+                rows.iter().find(|r| {
+                    r["channel"]["slug"]
+                        .as_str()
+                        .is_some_and(|s| s.eq_ignore_ascii_case(&t.slug))
+                })
+            })
+        {
+            display_name = stream["broadcaster_user"]["username"]
+                .as_str()
+                .map(|s| s.chars().take(100).collect::<String>())
+                .or(display_name);
+            profile = super::public_image(stream["broadcaster_user"]["profile_picture"].as_str())
+                .or(profile);
+            language = stream["language_code"]
+                .as_str()
+                .map(|s| s.chars().take(20).collect::<String>());
+            mature = stream["has_mature_content"].as_bool().unwrap_or(false);
+            tags = stream["tags"]
+                .as_array()
+                .map(|rows| {
+                    rows.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.chars().take(100).collect::<String>()))
+                        .take(20)
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
+    }
     let user = t.user.clone();
     let slug = t.slug.clone();
     let generation = t.generation.clone();
     let account = t.account.clone();
-    state.db.call(move|db|{db.execute("UPDATE kick_channels SET title=?1,category=?2,live=?3,viewers=?4,updated_at=?5,next_run=?5+60,failures=0,error=NULL,thumbnail_url=?10,started_at=?11 WHERE user_id=?6 AND slug=?7 AND generation=?8 AND EXISTS(SELECT 1 FROM online_accounts a WHERE a.user_id=?6 AND a.provider='kick' AND a.status='connected' AND a.generation=?9)",params![title,category,live,viewers,now(),user,slug,generation,account,thumbnail,started_at])?;Ok(())}).await?;
+    state.db.call(move|db|{db.execute("UPDATE kick_channels SET title=?1,category=?2,live=?3,viewers=?4,updated_at=?5,next_run=?5+60,failures=0,error=NULL,thumbnail_url=?10,started_at=?11,display_name=COALESCE(?12,display_name),profile_image_url=COALESCE(?13,profile_image_url),language=?14,mature=?15,tags=?16 WHERE user_id=?6 AND slug=?7 AND generation=?8 AND EXISTS(SELECT 1 FROM online_accounts a WHERE a.user_id=?6 AND a.provider='kick' AND a.status='connected' AND a.generation=?9)",params![title,category,live,viewers,now(),user,slug,generation,account,thumbnail,started_at,display_name,profile,language,mature,serde_json::to_string(&tags)?])?;Ok(())}).await?;
     Ok(())
 }
 pub(super) async fn run(state: AppState) -> anyhow::Result<()> {
@@ -335,4 +384,35 @@ pub(super) async fn run(state: AppState) -> anyhow::Result<()> {
         tick(&state).await?;
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
+}
+
+async fn presentation_metadata(state: &AppState, path: &str, key: &str, id: u64) -> Result<Value> {
+    let access = token(state).await?;
+    let (status, headers, bytes) = super::bounded_response(
+        state
+            .online
+            .http
+            .get(format!("{}/{path}", state.online.kick.api))
+            .bearer_auth(access)
+            .query(&[(key, id.to_string())])
+            .send()
+            .await
+            .map_err(|_| failure())?,
+    )
+    .await
+    .map_err(|_| failure())?;
+    if status == axum::http::StatusCode::TOO_MANY_REQUESTS {
+        let delay = headers
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(60)
+            .clamp(1, 3600);
+        state.db.call(move|db|{db.execute("INSERT INTO settings VALUES ('kick.rate_limited_until',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[(now()+delay).to_string()])?;Ok(())}).await?;
+    }
+    if !status.is_success() {
+        return Err(failure());
+    }
+    let value: Value = serde_json::from_slice(&bytes).map_err(|_| failure())?;
+    Ok(value["data"].clone())
 }

@@ -10,6 +10,7 @@
   const personal = [
     ['account', 'Account', 'Profile and appearance'],
     ['playback', 'Playback', 'Quality, languages and skipping'],
+    ['online', 'Online accounts', 'Your connections and saved data'],
     ['devices', 'Devices', 'Sessions and Quick Connect'],
   ];
   const native = [
@@ -19,7 +20,7 @@
   const admin = [
     ['server', 'Server', 'Health and current activity'],
     ['library', 'Metadata', 'Matching and artwork providers'],
-    ['providers', 'Online accounts', 'YouTube, Twitch and Kick apps'],
+    ['providers', 'Provider applications', 'YouTube, Twitch and Kick apps'],
     ['services', 'Media services', 'Installation and integrations'],
     ['retention', 'Retention', 'Cleanup policies and protection'],
     ['backups', 'Backups', 'Encrypted archives and recovery'],
@@ -42,6 +43,6 @@
     {/each}
   </nav>
   <div class="settings-content" data-sidebar-resize-origin>
-    {@render children()}
+    <div class="settings-panels">{@render children()}</div>
   </div>
 </div>

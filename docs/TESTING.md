@@ -33,7 +33,7 @@ The proxy project runs first and creates its test administrator on a fresh datab
 
 Docker Desktop may not forward Windows file notifications into Linux bind mounts. On Windows, the catalog test allows the server's five-minute reconciliation fallback for file creation and removal; this portion can take up to eleven minutes. Native notification tests keep the shorter deadline.
 
-For the first-run page on an untouched main deployment, clear those two environment variables and run `npm run test:e2e`.
+For first-run checks, start `npm run dev:fresh` in a separate terminal. Set `THELXINOE_TEST_URL` to its displayed address, clear `THELXINOE_PROXY_TEST` and `THELXINOE_UI_TEST`, and run `npm run test:e2e`. The suite rejects mismatched passwords, creates a fixture administrator with matching passwords, and opens all three provider pages with no linked accounts or tracked channels.
 
 ### Appearance and media motion
 
@@ -44,7 +44,7 @@ $env:THELXINOE_UI_TEST = '1'
 npm run test:e2e
 ```
 
-The suite changes the test user's theme and density, samples intermediate sidebar animation frames, checks Ctrl+wheel sizing and mobile overflow, and uses real delayed HTTP requests to check concurrent optimistic watchlist additions. It expects the fixture administrator and at least one indexed movie. It adds two synthetic video IDs to that user's watchlist, so use a disposable test deployment. Screenshots are written under `.local/ui-validation`.
+The suite changes the test user's theme and density, samples intermediate sidebar animation frames, checks Ctrl+wheel sizing and mobile overflow, and uses real delayed HTTP requests to check concurrent optimistic watchlist additions and named-list selection. It also checks notification dismissal and the left-aligned Settings width. It expects the fixture administrator and at least one indexed movie. Provider checks supply synthetic account status and Twitch streams in the browser; watchlist changes use the real server. It adds two synthetic video IDs and a named list to that user's account, so use a disposable test deployment. Screenshots are written under `.local/ui-validation`.
 
 Native checks should use an isolated Tauri identifier and WebView profile. Verify that theme controls appear only in the title bar, MPV appears only in native Settings, light/dark selection persists through the native transport, and maximize/restore/close work. Test ordinary production configuration as well as release fixtures: the updater plugin needs its bootstrap configuration even when no release channel is set.
 

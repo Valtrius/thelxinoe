@@ -46,7 +46,7 @@ pub async fn settings(State(state): State<AppState>, headers: HeaderMap) -> Resu
     security::require(&state, &headers, Capability::ManageServer).await?;
     Ok(Json(json!({"enabled":enabled(&state).await?})))
 }
-async fn enabled(state: &AppState) -> anyhow::Result<bool> {
+pub(super) async fn enabled(state: &AppState) -> anyhow::Result<bool> {
     state
         .db
         .call(|db| {
@@ -60,6 +60,80 @@ async fn enabled(state: &AppState) -> anyhow::Result<bool> {
                 .unwrap_or(false))
         })
         .await
+}
+
+pub async fn remove(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(video): Path<String>,
+) -> Result<Json<Value>> {
+    let p = security::principal(&state, &headers).await?;
+    authorize(&state, &p, &video).await?;
+    let root = state.config.cache.join("youtube");
+    let user = p.user.id.clone();
+    let removed=state.db.call(move|db|{
+        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let protected=tx.query_row("SELECT EXISTS(SELECT 1 FROM youtube_state WHERE video_id=?1 AND user_id<>?2 AND (watchlist=1 OR pinned=1)) OR EXISTS(SELECT 1 FROM playback_sessions WHERE youtube_video_id=?1 AND state IN ('ready','playing','paused') AND updated_at>?3)",params![video,user,now()-120],|r|r.get::<_,bool>(0))?;
+        if protected {return Ok(false);}
+        let row=tx.query_row("SELECT generation,state FROM youtube_downloads WHERE video_id=?1",[&video],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?;
+        if let Some((generation,status))=row {
+            ensure!(uuid::Uuid::parse_str(&generation).is_ok(),"Invalid download generation");
+            // The worker owns a running process and removes its cancelled generation.
+            if status!="downloading" && root.exists() {
+                let root=root.canonicalize()?;
+                let path=root.join(&video).join(&generation);
+                if path.exists(){ensure!(path.canonicalize()?==path,"Download path changed");std::fs::remove_dir_all(path)?;}
+            }
+            tx.execute("DELETE FROM youtube_downloads WHERE video_id=?1",[&video])?;
+        }
+        tx.execute("INSERT INTO youtube_download_suppressed VALUES(?1) ON CONFLICT DO NOTHING",[video])?;
+        tx.commit()?;Ok(true)
+    }).await?;
+    if !removed {
+        return Err(ApiError::conflict(
+            "This shared download is retained by another user or is playing. Remove it after those uses finish.",
+        ));
+    }
+    state
+        .emit(None, "online.download.changed", json!({}))
+        .await?;
+    Ok(Json(json!({"deleted":true})))
+}
+
+pub(super) async fn run_watchlists(state: AppState) -> anyhow::Result<()> {
+    loop {
+        if maintain_watchlists(&state).await.is_err() {
+            tracing::warn!("Watchlist maintenance will retry");
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+async fn maintain_watchlists(state: &AppState) -> anyhow::Result<()> {
+    let users=state.db.call(|db|{
+        let users=db.prepare("SELECT DISTINCT i.user_id FROM youtube_watchlist_items i JOIN youtube_watchlists w ON w.id=i.watchlist_id JOIN youtube_state s ON s.user_id=i.user_id AND s.video_id=i.video_id WHERE w.auto_remove_watched=1 AND s.watched=1 AND s.updated_at<?1")?.query_map([now()-5],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        db.execute("DELETE FROM youtube_watchlist_items WHERE EXISTS(SELECT 1 FROM youtube_watchlists w JOIN youtube_state s ON s.user_id=w.user_id WHERE w.id=youtube_watchlist_items.watchlist_id AND w.auto_remove_watched=1 AND s.video_id=youtube_watchlist_items.video_id AND s.watched=1 AND s.updated_at<?1)",[now()-5])?;
+        Ok(users)
+    }).await?;
+    for user in users {
+        state.emit(Some(user), "youtube.changed", json!({})).await?;
+    }
+    if !enabled(state).await? {
+        return Ok(());
+    }
+    let candidate=state.db.call(|db|Ok(db.query_row("SELECT i.video_id FROM youtube_watchlist_items i JOIN youtube_watchlists w ON w.id=i.watchlist_id JOIN youtube_videos v ON v.user_id=i.user_id AND v.video_id=i.video_id WHERE w.auto_download=1 AND v.metadata_at>0 AND v.available=1 AND v.privacy='public' AND v.broadcast IN ('none','replay') AND NOT EXISTS(SELECT 1 FROM youtube_downloads d WHERE d.video_id=i.video_id) AND NOT EXISTS(SELECT 1 FROM youtube_download_suppressed b WHERE b.video_id=i.video_id) ORDER BY i.added_at LIMIT 1",[],|r|r.get::<_,String>(0)).optional()?)).await?;
+    if let Some(video) = candidate {
+        let Ok(bundle) = tools::ready(state).await else {
+            return Ok(());
+        };
+        state.db.call(move|db|{
+            let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            tx.execute("INSERT INTO youtube_media(video_id) VALUES(?1) ON CONFLICT DO NOTHING",[&video])?;
+            tx.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) SELECT ?1,?2,'queued',?3,?4,?4 WHERE EXISTS(SELECT 1 FROM youtube_watchlist_items i JOIN youtube_watchlists w ON w.id=i.watchlist_id WHERE i.video_id=?1 AND w.auto_download=1) AND NOT EXISTS(SELECT 1 FROM youtube_download_suppressed WHERE video_id=?1) ON CONFLICT DO NOTHING",params![video,thelxinoe_core::id(),serde_json::to_string(&bundle)?,now()])?;
+            tx.commit()?;Ok(())
+        }).await?;
+    }
+    Ok(())
 }
 #[derive(serde::Deserialize)]
 pub struct Configuration {
@@ -103,6 +177,7 @@ pub async fn request(
         let interest=tx.query_row("SELECT EXISTS(SELECT 1 FROM youtube_state WHERE user_id=?1 AND video_id=?2 AND (watchlist=1 OR pinned=1))",params![p.user.id,video],|r|r.get::<_,bool>(0))?;
         if !interest { return Ok(false); }
         tx.execute("INSERT INTO youtube_media(video_id) VALUES (?1) ON CONFLICT DO NOTHING",[&video])?;
+        tx.execute("DELETE FROM youtube_download_suppressed WHERE video_id=?1",[&video])?;
         // A retained interest is required before acquiring shared physical media.
         tx.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) VALUES (?1,?2,'queued',?3,?4,?4) ON CONFLICT(video_id) DO UPDATE SET generation=excluded.generation,state='queued',tools=excluded.tools,error=NULL,updated_at=excluded.updated_at WHERE youtube_downloads.state IN ('failed','unavailable','extractor_authentication_required')",params![video,thelxinoe_core::id(),serde_json::to_string(&bundle)?,now()])?;
         tx.commit()?;Ok(true)
@@ -181,6 +256,9 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
                 tx.commit()?;Ok(row)
             }).await?;
             if let Some((video, generation, bundle)) = job {
+                state
+                    .emit(None, "online.download.changed", json!({}))
+                    .await?;
                 let outcome = download(&state, &video, &generation, &bundle).await;
                 let status = outcome.unwrap_or("failed");
                 if status != "ready" {
@@ -331,7 +409,8 @@ async fn download(
             result=&mut execution => break result?,
             _=interval.tick()=> {
                 let video=video.to_owned();
-                let interested=state.db.call(move |db| Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM youtube_state WHERE video_id=?1 AND (watchlist=1 OR pinned=1))",[video],|r|r.get::<_,bool>(0))?)).await?;
+                let generation=generation.to_owned();
+                let interested=state.db.call(move |db| Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM youtube_state WHERE video_id=?1 AND (watchlist=1 OR pinned=1)) AND EXISTS(SELECT 1 FROM youtube_downloads WHERE video_id=?1 AND generation=?2 AND state='downloading')",params![video,generation],|r|r.get::<_,bool>(0))?)).await?;
                 ensure!(interested&&enabled(state).await?,"Download cancelled after its interest or permission changed");
                 ensure!(fs2::available_space(&directory)?>1024*1024*1024,"Download stopped to preserve free space");
                 let mut entries=tokio::fs::read_dir(&directory).await?;let mut bytes=0u64;
@@ -378,6 +457,6 @@ async fn download(
     );
     let video = video.to_owned();
     let generation = generation.to_owned();
-    state.db.call(move |db| {db.execute("UPDATE youtube_downloads SET path=?3,size=?4,modified=?5,probe=?6 WHERE video_id=?1 AND generation=?2 AND state='downloading'",params![video,generation,target.to_string_lossy(),metadata.len() as i64,metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos().to_string(),serde_json::to_string(&value)?])?;Ok(())}).await?;
+    state.db.call(move |db| {let changed=db.execute("UPDATE youtube_downloads SET path=?3,size=?4,modified=?5,probe=?6 WHERE video_id=?1 AND generation=?2 AND state='downloading'",params![video,generation,target.to_string_lossy(),metadata.len() as i64,metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos().to_string(),serde_json::to_string(&value)?])?;ensure!(changed==1,"Download was cancelled");Ok(())}).await?;
     Ok("ready")
 }

@@ -24,8 +24,11 @@
       getColumns: () => get(appearance).card_columns,
       setColumns: (card_columns) => updateAppearance({ card_columns }),
     });
-    node.addEventListener('wheel', wheel, { passive: false });
-    return { destroy: () => node.removeEventListener('wheel', wheel) };
+    const handle = (event: WheelEvent) => {
+      if (!providerPage) wheel(event);
+    };
+    node.addEventListener('wheel', handle, { passive: false });
+    return { destroy: () => node.removeEventListener('wheel', handle) };
   }
   let shell = $state<HTMLDivElement | null>(null);
   let main = $state<HTMLElement | null>(null);
@@ -50,7 +53,6 @@
   import MetadataSettings from './lib/MetadataSettings.svelte';
   import PlaybackSettings from './lib/PlaybackSettings.svelte';
   import SegmentSettings from './lib/SegmentSettings.svelte';
-  import NotificationCenter from './lib/NotificationCenter.svelte';
   import AdminOperations from './lib/AdminOperations.svelte';
   import BackupSettings from './lib/BackupSettings.svelte';
   import ProductUpdates from './lib/ProductUpdates.svelte';
@@ -65,10 +67,9 @@
   import History from './lib/History.svelte';
   import UserPreferences from './lib/UserPreferences.svelte';
   import QuickConnect from './lib/QuickConnect.svelte';
+  import OnlineAccounts from './lib/OnlineAccounts.svelte';
   import OnlineSettings from './lib/OnlineSettings.svelte';
-  import YouTube from './lib/YouTube.svelte';
-  import Twitch from './lib/Twitch.svelte';
-  import Kick from './lib/Kick.svelte';
+  import ProviderView from './lib/providers/ProviderView.svelte';
   import ManagerSettings from './lib/ManagerSettings.svelte';
   import ManagerOwnership from './lib/ManagerOwnership.svelte';
   import SupportServices from './lib/SupportServices.svelte';
@@ -117,6 +118,7 @@
     connected = $state(false);
   let username = $state(''),
     password = $state(''),
+    passwordConfirmation = $state(''),
     section = $state(
       new URLSearchParams(location.search).has('youtube_link') ||
         new URLSearchParams(location.search).get('section') === 'YouTube'
@@ -125,6 +127,9 @@
           ? 'Twitch'
           : 'Home',
     );
+  const providerPage = $derived(
+    ['YouTube', 'Twitch', 'Kick'].includes(section),
+  );
   let sessions = $state<Session[]>([]),
     users = $state<User[]>([]),
     jobs = $state<Job[]>([]),
@@ -262,6 +267,10 @@
     events.connect();
   }
   async function authenticate() {
+    if (setup && password !== passwordConfirmation) {
+      error = 'Passwords do not match.';
+      return;
+    }
     await act(async () => {
       user = (
         await api<{ user: User }>(setup ? '/setup' : '/auth/login', 'POST', {
@@ -270,6 +279,7 @@
         })
       ).user;
       password = '';
+      passwordConfirmation = '';
       setup = false;
       await loadAppearance(user.id);
       startEvents();
@@ -392,7 +402,6 @@
   <main class="auth-page">
     <div class="auth-card">
       <div class="brand-mark">T</div>
-      <p class="eyebrow">YOUR MEDIA. YOUR PLACE.</p>
       <h1>{setup ? 'Welcome to Thelxinoe' : 'Welcome back'}</h1>
       <p class="muted">
         {setup
@@ -435,7 +444,16 @@
             autocomplete={setup ? 'new-password' : 'current-password'}
           /></label
         >
-        {#if setup}<p class="hint">
+        {#if setup}<label
+            >Confirm password<input
+              bind:value={passwordConfirmation}
+              type="password"
+              required
+              minlength="12"
+              autocomplete="new-password"
+            /></label
+          >
+          <p class="hint">
             Use at least 12 characters. You can create other users after setup.
           </p>{/if}
         {#if error}<p role="alert" class="error">{error}</p>{/if}
@@ -447,7 +465,6 @@
               : 'Sign in'}</button
         >
       </form>
-      <p class="footnote">A shared library, a space of your own.</p>
     </div>
   </main>
 {:else}
@@ -456,6 +473,7 @@
       {section}
       {collapsed}
       {user}
+      {notificationRevision}
       navigate={(name) => void navigate(name)}
       toggle={() => void toggleSidebar()}
       logout={() => void logout()}
@@ -466,28 +484,27 @@
         onclick={() => (mobileNavOpen = false)}
       ></button>{/if}
     <main class="content" bind:this={main}>
-      <header class="page-header">
-        <div>
-          <p class="eyebrow" data-sidebar-resize="x-pos">
-            THELXINOE / {section.toUpperCase()}
-          </p>
-          <h1 data-sidebar-resize="x-pos">
-            {section === 'Home' ? `Good to see you, ${user.username}` : section}
-          </h1>
-        </div>
-        <NotificationCenter revision={notificationRevision} />
-        <span class="connection"
-          ><i class:online={connected}></i>{connected
-            ? 'Connected'
-            : 'Reconnecting'}</span
-        >
-      </header>
+      {#if !providerPage}<header class="page-header">
+          <div>
+            <h1 data-sidebar-resize="x-pos">
+              {section === 'Home'
+                ? `Good to see you, ${user.username}`
+                : section}
+            </h1>
+          </div>
+          <span class="connection"
+            ><i class:online={connected}></i>{connected
+              ? 'Connected'
+              : 'Reconnecting'}</span
+          >
+        </header>{/if}
       <div
         class="workspace-scroll"
+        class:provider-workspace={providerPage}
         class:settings-workspace={section === 'Settings'}
-        data-feed-scroll
-        data-sidebar-resize="xy"
-        data-sidebar-resize-origin
+        data-feed-scroll={providerPage ? undefined : true}
+        data-sidebar-resize={providerPage ? undefined : 'xy'}
+        data-sidebar-resize-origin={providerPage ? undefined : true}
         use:mediaMotion.connect
         use:zoomWheel
       >
@@ -517,6 +534,9 @@
                 }}
               />
               <AppearanceSettings />{/if}
+            {#if settingsSection === 'online'}<OnlineAccounts
+                navigate={(name) => void navigate(name)}
+              />{/if}
             {#if settingsSection === 'playback'}<PlaybackSettings />
               <SegmentSettings admin={user.role === 'admin'} />
             {/if}
@@ -738,15 +758,17 @@
             {user}
             statistics={section === 'Statistics'}
           />
-        {:else if section === 'Kick'}<Kick
-            play={(choice) => void playMedia(choice)}
-          />
-        {:else if section === 'Twitch'}<Twitch
-            play={(choice) => void playMedia(choice)}
-          />
-        {:else if section === 'YouTube'}<YouTube
+        {:else if providerPage}<ProviderView
+            platform={section.toLowerCase() as 'youtube' | 'twitch' | 'kick'}
+            userId={user.id}
             revision={mediaRevision}
-            play={(choice) => void playMedia(choice)}
+            {playing}
+            play={playMedia}
+            settings={(tab) => {
+              settingsSection =
+                tab === 'providers' && user?.role !== 'admin' ? 'online' : tab;
+              void navigate('Settings');
+            }}
           />
         {/if}
       </div>

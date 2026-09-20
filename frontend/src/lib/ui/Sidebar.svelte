@@ -15,9 +15,19 @@
   } from '@lucide/svelte';
   import SidebarButton from './SidebarButton.svelte';
   import PlatformIcon from './PlatformIcon.svelte';
+  import NotificationCenter from '../NotificationCenter.svelte';
   import ThemeControls from './ThemeControls.svelte';
   import { desktop, type User } from '../api';
-  let { section, collapsed, user, navigate, toggle, logout } = $props<{
+  let {
+    section,
+    collapsed,
+    user,
+    navigate,
+    toggle,
+    logout,
+    notificationRevision,
+  } = $props<{
+    notificationRevision: number;
     section: string;
     collapsed: boolean;
     user: User;
@@ -115,6 +125,7 @@
         onclick={() => navigate('Settings')}
         ><Settings class="size-5 shrink-0" /></SidebarButton
       >
+      <NotificationCenter revision={notificationRevision} {collapsed} />
       {#if !desktop}<div class="web-theme-controls"><ThemeControls /></div>{/if}
       <div class="sidebar-profile">
         <span class="avatar" title={user.username}

@@ -122,54 +122,185 @@ test('appearance persists, native menus stay hidden on web, and cards animate du
   expect(errors).toEqual([]);
 });
 
-test('YouTube keeps optimistic additions visible and clears input while requests are pending', async ({
+test('YouTube keeps concurrent optimistic additions visible and saves named lists', async ({
   page,
-  context,
 }) => {
+  await page.route('**/api/v1/online/youtube', (route) =>
+    route.fulfill({
+      json: {
+        configured: false,
+        downloads_enabled: false,
+        account: { status: 'connected', display_name: 'UI fixture' },
+      },
+    }),
+  );
+  await page.getByRole('button', { name: 'YouTube', exact: true }).click();
   await page
-    .getByRole('button', { name: 'YouTube', exact: true })
-    .first()
+    .getByRole('button', { name: 'Open watchlists', exact: true })
     .click();
-  const input = page.getByRole('textbox', { name: 'YouTube video URL' });
-  await expect(input).toBeVisible();
-  const cdp = await context.newCDPSession(page);
-  await cdp.send('Network.enable');
-  await cdp.send('Network.emulateNetworkConditions', {
-    offline: false,
-    latency: 800,
-    downloadThroughput: -1,
-    uploadThroughput: -1,
+  const input = page.getByRole('searchbox');
+  const ids = [
+    crypto.randomUUID().replaceAll('-', '').slice(0, 11),
+    crypto.randomUUID().replaceAll('-', '').slice(0, 11),
+  ];
+  const releases: (() => void)[] = [];
+  await page.route('**/online/youtube/watchlists/*/items', async (route) => {
+    await new Promise<void>((resolve) => releases.push(resolve));
+    await route.continue();
   });
-  await input.fill('https://youtu.be/UItest00001');
+  for (const id of ids) {
+    await input.fill(`https://youtu.be/${id}`);
+    await input.press('Control+Enter');
+    await expect(input).toHaveValue('');
+    await expect(
+      page.locator(`[data-watchlist-video-id="${id}"]`),
+    ).toBeVisible();
+  }
+  await expect.poll(() => releases.length).toBe(2);
+  releases.forEach((release) => release());
+  await expect
+    .poll(async () => {
+      const lists = await (
+        await page.request.get('/api/v1/online/youtube/watchlists')
+      ).json();
+      return lists
+        .find((list: { isDefault: boolean }) => list.isDefault)
+        .items.filter((item: { video: { videoId: string } }) =>
+          ids.includes(item.video.videoId),
+        ).length;
+    })
+    .toBe(2);
+  await page.unroute('**/online/youtube/watchlists/*/items');
   await page
-    .getByRole('button', { name: 'Add to watchlist', exact: true })
+    .locator('[data-youtube-watchlist-frame]')
+    .getByRole('button', { name: /^Watch Later/ })
     .click();
-  await expect(input).toHaveValue('');
+  const listName = `Reading ${ids[0]}`;
+  await page.getByPlaceholder('New watchlist').fill(listName);
+  await page
+    .getByRole('button', { name: 'Create watchlist', exact: true })
+    .click();
   await expect(
-    page.locator('.watchlist-pending').filter({ hasText: 'UItest00001' }),
-  ).toBeVisible();
-  await input.fill('https://youtu.be/UItest00002');
-  await page
-    .getByRole('button', { name: 'Add to watchlist', exact: true })
-    .click();
-  await expect(input).toHaveValue('');
+    page.getByRole('dialog', { name: 'Watchlists', exact: true }),
+  ).toHaveCount(0);
   await expect(
-    page.locator('.watchlist-pending').filter({ hasText: 'UItest00002' }),
+    page
+      .locator('[data-youtube-watchlist-frame]')
+      .getByRole('button', { name: new RegExp(`^${listName}`) }),
   ).toBeVisible();
-  await expect(page.locator('.watchlist-pending')).toHaveCount(0, {
-    timeout: 15000,
-  });
-  await cdp.send('Network.emulateNetworkConditions', {
-    offline: false,
-    latency: 0,
-    downloadThroughput: -1,
-    uploadThroughput: -1,
-  });
+  await page.getByRole('button', { name: 'Close watchlists' }).click();
+  await expect(
+    page.getByRole('button', { name: 'Open watchlists' }),
+  ).toBeVisible();
   await page.screenshot({ path: '.local/ui-validation/youtube-populated.png' });
-  await page.getByRole('button', { name: 'Hide watchlist' }).click();
-  await expect(
-    page.getByRole('button', { name: 'Show watchlist' }),
-  ).toBeVisible();
-  await page.getByRole('button', { name: 'Show watchlist' }).click();
-  await expect(input).toBeVisible();
+});
+
+test('notifications dismiss outside and Settings panels stay at the left', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const panels = page.locator('.settings-panels');
+  await expect(panels).toBeVisible();
+  const geometry = await panels.evaluate((element) => {
+    const rect = element.getBoundingClientRect(),
+      parent = element.parentElement!.getBoundingClientRect();
+    return { width: rect.width, left: rect.left - parent.left };
+  });
+  expect(geometry.width).toBeLessThanOrEqual(880);
+  expect(geometry.left).toBe(24);
+  const trigger = page.getByRole('button', { name: /^Notifications/ });
+  await trigger.click();
+  await expect(page.locator('.notices')).toBeVisible();
+  await page.getByRole('heading', { name: 'Settings', exact: true }).click();
+  await expect(page.locator('.notices')).toHaveCount(0);
+  await trigger.click();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.notices')).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
+
+test('provider Ctrl+wheel zoom has one owner and sidebar motion keeps cards visible', async ({
+  page,
+}) => {
+  await page.route('**/api/v1/online/twitch', (route) =>
+    route.fulfill({
+      json: {
+        configured: false,
+        account: { status: 'connected', display_name: 'UI fixture' },
+      },
+    }),
+  );
+  await page.route('**/api/v1/online/twitch/feed', (route) =>
+    route.fulfill({
+      json: {
+        items: Array.from({ length: 12 }, (_, i) => ({
+          id: `fixture-${i}`,
+          login: `fixture${i}`,
+          display_name: `Channel ${i}`,
+          title: 'A stream for layout testing',
+          category: 'Science & Technology',
+          viewers: 100 + i,
+          started_at: '2026-09-20T12:00:00Z',
+        })),
+      },
+    }),
+  );
+  await page.request.patch('/api/v1/me/appearance', {
+    headers: { 'X-Thelxinoe-Client': '1' },
+    data: { card_columns: 6, sidebar_collapsed: false },
+  });
+  await page.reload();
+  await page.getByRole('button', { name: 'Twitch', exact: true }).click();
+  const card = page.locator('[data-stream-id]').first();
+  await expect(card).toBeVisible();
+  const before = (await card.boundingBox())!;
+  await card.hover();
+  await page.keyboard.down('Control');
+  await page.mouse.wheel(0, -100);
+  await page.keyboard.up('Control');
+  await expect
+    .poll(
+      async () =>
+        (await (await page.request.get('/api/v1/me/appearance')).json())
+          .card_columns,
+    )
+    .toBe(5);
+  await expect
+    .poll(async () => (await card.boundingBox())!.width)
+    .toBeGreaterThan(before.width);
+  await page.waitForTimeout(250);
+  const samples = await page.evaluate(async () => {
+    const rect = () => {
+      const r = document
+        .querySelector('[data-stream-id]')!
+        .getBoundingClientRect();
+      return { x: r.x, width: r.width };
+    };
+    const samples = [rect()];
+    (
+      document.querySelector('[aria-label="Collapse sidebar"]') as HTMLElement
+    ).click();
+    const start = performance.now();
+    while (performance.now() - start < 350) {
+      await new Promise(requestAnimationFrame);
+      samples.push(rect());
+    }
+    return samples;
+  });
+  expect(samples.at(-1)!.x).toBeLessThan(samples[0].x);
+  expect(
+    samples.some((s) => s.x < samples[0].x - 1 && s.x > samples.at(-1)!.x + 1),
+  ).toBe(true);
+  expect(samples.every((s) => s.width > 0)).toBe(true);
+  await page.setViewportSize({ width: 480, height: 850 });
+  for (const name of ['YouTube', 'Twitch', 'Kick']) {
+    await page.getByRole('button', { name, exact: true }).click();
+    await expect(page.locator('.provider-surface')).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+  }
 });
