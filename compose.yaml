@@ -38,6 +38,7 @@ services:
       - ${THELXINOE_LISTEN:-127.0.0.1}:8484:8484
       - ${THELXINOE_LISTEN:-127.0.0.1}:7359:7359/udp
     environment:
+      THELXINOE_MEDIA: /media
       THELXINOE_PUBLIC_URL: ${THELXINOE_PUBLIC_URL:-}
       THELXINOE_TRUSTED_PROXIES: ${THELXINOE_TRUSTED_PROXIES:-}
       THELXINOE_DISCOVERY: ${THELXINOE_DISCOVERY:-true}
@@ -48,7 +49,7 @@ services:
     volumes:
       - ${THELXINOE_STATE_ROOT:-./.local/docker}/server:/var/lib/thelxinoe
       - ${THELXINOE_STATE_ROOT:-./.local/docker}/cache:/var/cache/thelxinoe
-      - ${THELXINOE_DATA_ROOT:-./.local/media}:/data
+      - ${THELXINOE_MEDIA_ROOT:-./.local/media}:/media
       - ${THELXINOE_BACKUP_ROOT:-./.local/backups}:/backups
       - controller-runtime:/run/thelxinoe:ro
       - ./releases/release.pub:/etc/thelxinoe/release.pub:ro

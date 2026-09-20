@@ -11,9 +11,9 @@ const movies = await (
 const movie = movies.find((m) => m.tmdbId === 603);
 if (!movie?.hasFile) throw Error('Movie has not imported');
 const path = movie.movieFile.path;
-if (!path.startsWith('/data/movies/'))
+if (!path.startsWith('/media/movies/'))
   throw Error('Unexpected fixture movie path');
-const local = resolve('.local/acquisition/data', path.slice(6));
+const local = resolve('.local/acquisition/data', path.slice(7));
 if (!local.startsWith(resolve('.local/acquisition/data') + sep))
   throw Error('Path outside fixture');
 writeFileSync(
@@ -36,7 +36,7 @@ execFileSync(
     '-i',
     path,
     '-i',
-    '/data/downloads/fixture.srt',
+    '/media/downloads/fixture.srt',
     '-map',
     '0',
     '-map',

@@ -37,11 +37,13 @@ try {
   for (const kind of ['shows', 'music']) {
     const roots = (await call('/catalog/roots')).items;
     const root =
-      roots.find((r) => r.path === `/data/${kind}`) ??
+      roots.find(
+        (r) => r.path === `/media/${kind === 'shows' ? 'tv' : kind}`,
+      ) ??
       (await call('/catalog/roots', 'POST', {
         kind,
         name: `Acquisition ${kind}`,
-        path: `/data/${kind}`,
+        path: `/media/${kind === 'shows' ? 'tv' : kind}`,
       }));
     const job = (await call(`/catalog/roots/${root.id}/scan`, 'POST')).job_id;
     await expect
@@ -54,8 +56,8 @@ try {
   }
   await call('/admin/managers/reconcile', 'POST');
   const bindings = (await call('/admin/managers/bindings')).items;
-  const tv = bindings.find((f) => f.path.startsWith('/data/shows/'));
-  const music = bindings.find((f) => f.path.startsWith('/data/music/'));
+  const tv = bindings.find((f) => f.path.startsWith('/media/tv/'));
+  const music = bindings.find((f) => f.path.startsWith('/media/music/'));
   expect(tv?.ownership).toBe('managed');
   expect(music?.ownership).toBe('managed');
   const episodes = await manager('sonarr', 28989, 3, 'episode?seriesId=1');

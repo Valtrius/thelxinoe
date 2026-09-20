@@ -1,12 +1,14 @@
 # Managed services
 
-Administrators can install Radarr, Sonarr, Lidarr, Bazarr, Prowlarr and NZBGet from Settings. The controller accepts only curated templates and immutable image identities. Appdata lives below its persistent deployment directory; created services share the server's physical `/data` mount. Advanced UI ports bind to host loopback. An optional administrator-supplied URL can point to a separately configured reverse proxy.
+Administrators can install Radarr, Sonarr, Lidarr, Bazarr, Prowlarr and NZBGet from Settings. The controller accepts only curated templates and immutable image identities. Appdata lives below its persistent deployment directory; created services use the server's single writable `/media` bind mount. Advanced UI ports bind to host loopback. An optional administrator-supplied URL can point to a separately configured reverse proxy.
 
 Installation records an encrypted credential and durable job before submitting Docker work. The controller journals container creation before issuing it. Interrupted or uncertain mutations require reconciliation; retries never silently accept configuration drift. Installed services connect to NZBGet, Prowlarr and Bazarr automatically. Choose acquisition profiles and canonical library folders in manager settings, then configure indexers, subtitle providers and a news server using the services' own advanced settings.
 
 Adoption starts with an existing API integration. It accepts compatible standalone containers using the tested image and supported mounts/runtime configuration on the server network. Compose, Swarm, Kubernetes, Podman Compose and Nomad ownership labels block adoption. The original stops and is retained during replacement; appdata and the integration ID remain unchanged. The original is retired only after the replacement API connection succeeds. Custom commands, privileged devices and unsupported network configuration are rejected.
 
 Managed configuration is fingerprinted separately from runtime addresses. External changes block lifecycle mutations. Reconciliation can complete an interrupted recorded operation, but cannot bless arbitrary new configuration.
+
+See [storage and external NAS services](STORAGE.md) for Compose examples, `/media/tv`, and permissions.
 
 ## Deployment recovery
 

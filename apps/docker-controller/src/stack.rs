@@ -294,15 +294,17 @@ async fn bootstrap() -> Result<Deployment> {
         server: server.clone(),
         controller: controller.clone(),
         network: network.clone(),
-        media_source: mount(&server, "/data")?["Source"]
-            .as_str()
-            .ok_or_else(unavailable)?
-            .into(),
+        media_source: policy::media_source(&server).map_err(conflict)?.into(),
         appdata_source: mount(&controller, "/var/lib/thelxinoe/deployment")?["Source"]
             .as_str()
             .ok_or_else(unavailable)?
             .into(),
     };
+    if !policy::media_disjoint(&d.appdata_source, &d.media_source) {
+        return Err(conflict(
+            "Deployment state must be outside every media mount",
+        ));
+    }
     let project = controller["Config"]["Labels"]["com.docker.compose.project"]
         .as_str()
         .unwrap_or("thelxinoe");
@@ -381,7 +383,7 @@ fn app_config(t: templates::Template, input: &Install, directory: &std::path::Pa
                 return Err(bad("Use the managed NZBGet account"));
             }
             format!(
-                "MainDir=/data/downloads\nDestDir=/data/downloads/completed\nInterDir=/data/downloads/intermediate\nNzbDir=/config/nzb\nQueueDir=/config/queue\nTempDir=/config/tmp\nScriptDir=/config/scripts\nLogFile=/config/nzbget.log\nControlIP=0.0.0.0\nControlPort=6789\nControlUsername=thelxinoe\nControlPassword={}\n",
+                "MainDir=/media/downloads\nDestDir=/media/downloads/completed\nInterDir=/media/downloads/intermediate\nNzbDir=/config/nzb\nQueueDir=/config/queue\nTempDir=/config/tmp\nScriptDir=/config/scripts\nLogFile=/config/nzbget.log\nControlIP=0.0.0.0\nControlPort=6789\nControlUsername=thelxinoe\nControlPassword={}\n",
                 input.secret
             )
         }
@@ -413,6 +415,23 @@ async fn install(
         return Err(bad("Choose a nonprivileged local port"));
     }
     let d = bootstrap().await?;
+    if t.media {
+        // Compose edits must not silently provision with a stale stored layout.
+        let server = engine(&format!(
+            "/containers/{}/json",
+            d.server["Name"]
+                .as_str()
+                .or(d.server["Id"].as_str())
+                .ok_or_else(unavailable)?
+                .trim_start_matches('/')
+        ))
+        .await?;
+        if policy::media_source(&server).map_err(conflict)? != d.media_source {
+            return Err(conflict(
+                "Server media mounts changed after deployment initialization; reconcile the deployment layout before installing managed services",
+            ));
+        }
+    }
     if services()?.iter().any(|s| s.kind == input.kind) {
         return Err(conflict("This service already has a managed installation"));
     }
@@ -440,7 +459,7 @@ async fn install(
         json!({"Type":"bind","Source":format!("{}/services/{key}/appdata",d.appdata_source),"Target":"/config"}),
     ];
     if t.media {
-        mounts.push(json!({"Type":"bind","Source":d.media_source,"Target":"/data"}));
+        mounts.push(json!({"Type":"bind","Source":d.media_source,"Target":"/media"}));
     }
     let port = format!("{}/tcp", t.port);
     let spec = json!({"Image":image,"Env":["PUID=10001","PGID=10001","TZ=UTC"],"Labels":{"app.thelxinoe.managed-id":key,"app.thelxinoe.deployment":d.id,"app.thelxinoe.kind":t.kind},"HostConfig":{"Mounts":mounts,"NetworkMode":d.network,"RestartPolicy":{"Name":"unless-stopped"},"PortBindings":{port:[{"HostIp":"127.0.0.1","HostPort":input.host_port.to_string()}]}},"NetworkingConfig":{"EndpointsConfig":{d.network.clone():{"Aliases":[format!("thelxinoe-{}",t.kind)]}}}});

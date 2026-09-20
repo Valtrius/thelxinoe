@@ -243,7 +243,7 @@ mod presentation_tests {
     async fn home_inherits_show_artwork_without_exposing_other_users_shelves() {
         let (_temp, state, alice) = fixture().await;
         state.db.call(|db| {
-            db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Shows','shows','/data/shows')",[])?;
+            db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Shows','shows','/media/shows')",[])?;
             for (id,kind,parent,metadata) in [("show","show",None,"{\"artwork_cached\":true}"),("season","season",Some("show"),"{}"),("episode","episode",Some("season"),"{}")] {
                 db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,metadata,created_at) VALUES (?1,'root',?2,?3,?1,?1,?4,1)",rusqlite::params![id,kind,parent,metadata])?;
             }

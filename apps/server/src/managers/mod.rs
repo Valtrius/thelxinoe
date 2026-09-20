@@ -119,12 +119,6 @@ async fn read(mut response: reqwest::Response) -> Result<Value> {
     serde_json::from_slice(&bytes)
         .map_err(|_| ApiError::conflict("Manager returned an invalid response"))
 }
-#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
-struct Mapping {
-    manager: String,
-    server: String,
-    source: String,
-}
 fn clean_path(value: &str) -> bool {
     value.starts_with('/')
         && !value.contains('\\')
@@ -152,63 +146,46 @@ fn suffix<'a>(path: &'a str, root: &str) -> Option<&'a str> {
         path.strip_prefix(root).filter(|v| v.starts_with('/'))
     }
 }
-fn mappings(server: &Value, manager: &Value, media: &str) -> Result<Vec<Mapping>> {
-    if !clean_path(media) {
-        return Err(ApiError::bad("Media mount must be an absolute Linux path"));
-    }
-    let mut output = Vec::new();
-    for a in server["mounts"].as_array().ok_or_else(unavailable)? {
-        let (Some(source), Some(destination)) = (a["source"].as_str(), a["destination"].as_str())
-        else {
-            continue;
-        };
-        let Some(source) = host_path(source) else {
-            continue;
-        };
-        if !clean_path(destination) || suffix(media, destination).is_none() {
-            continue;
-        }
-        let physical = format!(
-            "{}{}",
-            source.trim_end_matches('/'),
-            suffix(media, destination).unwrap()
-        );
-        for b in manager["mounts"].as_array().ok_or_else(unavailable)? {
-            let (Some(other), Some(target)) = (b["source"].as_str(), b["destination"].as_str())
-            else {
-                continue;
-            };
-            let Some(other) = host_path(other) else {
-                continue;
-            };
-            if !clean_path(target) || b["writable"] != true {
-                continue;
-            }
-            if let Some(tail) = suffix(&physical, &other) {
-                output.push(Mapping {
-                    manager: format!("{}{tail}", target.trim_end_matches('/')),
-                    server: media.trim_end_matches('/').into(),
-                    source: physical.clone(),
-                });
-            } else if let Some(tail) = suffix(&other, &physical) {
-                output.push(Mapping {
-                    manager: target.trim_end_matches('/').into(),
-                    server: format!("{}{tail}", media.trim_end_matches('/')),
-                    source: other,
-                });
-            }
-        }
-    }
-    output.sort_by(|a, b| a.manager.cmp(&b.manager));
-    output.dedup();
-    if output.is_empty() {
+fn media_source(container: &Value) -> Result<String> {
+    let mounts = container["mounts"].as_array().ok_or_else(unavailable)?;
+    if mounts.iter().any(|m| {
+        m["destination"]
+            .as_str()
+            .is_some_and(|p| suffix(p, "/media").is_some_and(|tail| !tail.is_empty()))
+    }) {
         return Err(ApiError::conflict(
-            "Manager has no writable media mount shared with this server",
+            "Mount one shared host directory at /media; child mounts such as /media/movies are not supported",
         ));
     }
-    Ok(output)
+    let roots = mounts
+        .iter()
+        .filter(|m| m["destination"] == "/media")
+        .collect::<Vec<_>>();
+    if roots.len() != 1 || roots[0]["kind"] != "bind" || roots[0]["writable"] != true {
+        return Err(ApiError::conflict(
+            "Every media service needs one writable bind mount at /media",
+        ));
+    }
+    roots[0]["source"]
+        .as_str()
+        .and_then(host_path)
+        .ok_or_else(unavailable)
 }
-async fn evidence(state: &AppState, container: &str, port: u16) -> Result<(String, Vec<Mapping>)> {
+fn shared_media_source(server: &Value, manager: &Value, media: &str) -> Result<String> {
+    if media != "/media" {
+        return Err(ApiError::conflict(
+            "Docker integrations require the server media root /media",
+        ));
+    }
+    let source = media_source(server)?;
+    if source != media_source(manager)? {
+        return Err(ApiError::conflict(
+            "Mount the same host media directory at /media in Thelxinoe and this service",
+        ));
+    }
+    Ok(source)
+}
+async fn evidence(state: &AppState, container: &str, port: u16) -> Result<(String, String)> {
     evidence_for(state, container, port, true).await
 }
 async fn evidence_for(
@@ -216,7 +193,7 @@ async fn evidence_for(
     container: &str,
     port: u16,
     needs_media: bool,
-) -> Result<(String, Vec<Mapping>)> {
+) -> Result<(String, String)> {
     if !(12..=64).contains(&container.len())
         || !container.bytes().all(|b| b.is_ascii_hexdigit())
         || port == 0
@@ -265,9 +242,9 @@ async fn evidence_for(
     Ok((
         format!("http://{address}:{port}"),
         if needs_media {
-            mappings(&server, &manager, &state.config.media.to_string_lossy())?
+            shared_media_source(&server, &manager, &state.config.media.to_string_lossy())?
         } else {
-            Vec::new()
+            String::new()
         },
     ))
 }
@@ -280,12 +257,12 @@ struct Service {
     port: u16,
     generation: String,
     credential: Vec<u8>,
-    mappings: Vec<Mapping>,
+    media_source: String,
     defaults: Value,
 }
 async fn service(state: &AppState, id: &str) -> Result<Service> {
     let id = id.to_owned();
-    state.db.call(move|db|Ok(db.query_row("SELECT id,name,kind,container_id,port,generation,credential,mappings,defaults FROM manager_services WHERE id=?1 AND enabled=1",[id],|r|Ok(Service{id:r.get(0)?,name:r.get(1)?,kind:r.get(2)?,container:r.get(3)?,port:r.get(4)?,generation:r.get(5)?,credential:r.get(6)?,mappings:serde_json::from_str(&r.get::<_,String>(7)?).unwrap_or_default(),defaults:serde_json::from_str(&r.get::<_,String>(8)?).unwrap_or(Value::Null)})).optional()?)).await?.ok_or_else(ApiError::not_found)
+    state.db.call(move|db|Ok(db.query_row("SELECT id,name,kind,container_id,port,generation,credential,media_source,defaults FROM manager_services WHERE id=?1 AND enabled=1",[id],|r|Ok(Service{id:r.get(0)?,name:r.get(1)?,kind:r.get(2)?,container:r.get(3)?,port:r.get(4)?,generation:r.get(5)?,credential:r.get(6)?,media_source:r.get(7)?,defaults:serde_json::from_str(&r.get::<_,String>(8)?).unwrap_or(Value::Null)})).optional()?)).await?.ok_or_else(ApiError::not_found)
 }
 struct Connection<'a> {
     state: &'a AppState,
@@ -295,10 +272,10 @@ struct Connection<'a> {
 }
 impl Connection<'_> {
     async fn open<'a>(state: &'a AppState, s: &Service) -> Result<Connection<'a>> {
-        let (base, mapping) = evidence(state, &s.container, s.port).await?;
-        if mapping != s.mappings {
+        let (base, source) = evidence(state, &s.container, s.port).await?;
+        if source != s.media_source {
             return Err(ApiError::conflict(
-                "Manager mount mappings changed; reconnect the service before continuing",
+                "Manager media mount changed; reconnect the service before continuing",
             ));
         }
         let key = String::from_utf8(
@@ -397,7 +374,7 @@ async fn register_with_actor(
         return Err(ApiError::bad("Enter a manager type, name and API key"));
     }
     let _guard = state.managers.guard.lock().await;
-    let (base, mappings) = evidence(&state, &input.container_id, input.port).await?;
+    let (base, media_source) = evidence(&state, &input.container_id, input.port).await?;
     let connection = Connection {
         state: &state,
         base,
@@ -413,6 +390,7 @@ async fn register_with_actor(
             "The selected container is not the requested manager",
         ));
     }
+    validate_roots(&input.kind, &connection.get("rootfolder").await?)?;
     let version = status["version"]
         .as_str()
         .filter(|v| v.len() < 100)
@@ -436,7 +414,7 @@ async fn register_with_actor(
     let credential = state
         .secrets
         .encrypt(&format!("manager:{key}"), input.api_key.as_bytes())?;
-    state.db.call(move|db|{let tx=db.transaction()?;tx.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,mappings,version,checked_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(id) DO UPDATE SET name=excluded.name,kind=excluded.kind,port=excluded.port,generation=excluded.generation,credential=excluded.credential,mappings=excluded.mappings,version=excluded.version,checked_at=excluded.checked_at,error=NULL",params![key,input.name.trim(),input.kind,input.container_id,input.port,id(),credential,serde_json::to_string(&mappings)?,version,now()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'manager.register',?2,?3)",params![actor_id,key,now()])?;tx.commit()?;Ok(())}).await?;
+    state.db.call(move|db|{let tx=db.transaction()?;tx.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(id) DO UPDATE SET name=excluded.name,kind=excluded.kind,port=excluded.port,generation=excluded.generation,credential=excluded.credential,media_source=excluded.media_source,version=excluded.version,checked_at=excluded.checked_at,error=NULL",params![key,input.name.trim(),input.kind,input.container_id,input.port,id(),credential,media_source,version,now()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'manager.register',?2,?3)",params![actor_id,key,now()])?;tx.commit()?;Ok(())}).await?;
     Ok(Json(json!({"id":returned})))
 }
 async fn options(
@@ -448,6 +426,7 @@ async fn options(
     let s = service(&state, &id).await?;
     let c = Connection::open(&state, &s).await?;
     let mut roots = c.get("rootfolder").await?;
+    validate_roots(&s.kind, &roots)?;
     if installed_here(&state, &s.id).await? {
         let path = canonical_root(&s.kind);
         let rows = roots.as_array_mut().ok_or_else(unavailable)?;
@@ -502,18 +481,14 @@ async fn defaults(
     let _guard = state.managers.guard.lock().await;
     let s = service(&state, &id).await?;
     let c = Connection::open(&state, &s).await?;
-    if !clean_path(&input.root_folder)
-        || !s
-            .mappings
-            .iter()
-            .any(|m| suffix(&input.root_folder, &m.manager).is_some())
+    if input.root_folder != canonical_root(&s.kind)
         || !c.get("qualityprofile").await?.as_array().is_some_and(|a| {
             a.iter()
                 .any(|r| r["id"].as_i64() == Some(input.quality_profile))
         })
     {
         return Err(ApiError::bad(
-            "Choose an existing mapped root folder and quality profile",
+            "Choose the canonical library folder and a valid quality profile",
         ));
     }
     if s.kind == "lidarr"
@@ -533,18 +508,16 @@ async fn defaults(
         .flatten()
         .any(|r| r["path"] == input.root_folder)
     {
-        if !installed_here(&state, &s.id).await? || input.root_folder != canonical_root(&s.kind) {
+        if !installed_here(&state, &s.id).await? {
             return Err(ApiError::bad("Choose an existing manager root folder"));
         }
-        let folder = match s.kind.as_str() {
-            "radarr" => "movies",
-            "sonarr" => "shows",
-            _ => "music",
-        };
         let parent = tokio::fs::canonicalize(&state.config.media)
             .await
             .map_err(|_| ApiError::conflict("Media storage is unavailable"))?;
-        let path = parent.join(folder);
+        let path = std::path::PathBuf::from(&input.root_folder);
+        if !path.starts_with(&parent) {
+            return Err(ApiError::conflict("Manager root is outside media storage"));
+        }
         if tokio::fs::symlink_metadata(&path)
             .await
             .is_ok_and(|m| m.file_type().is_symlink())
@@ -596,11 +569,25 @@ async fn test(
     Ok(Json(json!({"healthy":true,"version":result?})))
 }
 
+fn validate_roots(kind: &str, roots: &Value) -> Result<()> {
+    if roots
+        .as_array()
+        .ok_or_else(unavailable)?
+        .iter()
+        .any(|r| r["path"] != canonical_root(kind))
+    {
+        return Err(ApiError::conflict(format!(
+            "Configure this service's library root as {} and update existing library paths in its bulk editor",
+            canonical_root(kind)
+        )));
+    }
+    Ok(())
+}
 fn canonical_root(kind: &str) -> &'static str {
     match kind {
-        "radarr" => "/data/movies",
-        "sonarr" => "/data/shows",
-        _ => "/data/music",
+        "radarr" => "/media/movies",
+        "sonarr" => "/media/tv",
+        _ => "/media/music",
     }
 }
 async fn installed_here(state: &AppState, key: &str) -> Result<bool> {

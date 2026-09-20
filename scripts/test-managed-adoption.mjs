@@ -98,7 +98,7 @@ try {
     '--mount',
     `type=bind,source=${directory},target=/config`,
     '--mount',
-    `type=bind,source=${resolve('.local/adoption/data')},target=/data`,
+    `type=bind,source=${resolve('.local/adoption/data')},target=/media`,
     image,
   ]);
   await expect

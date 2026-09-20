@@ -18,7 +18,7 @@ services:
     volumes:
       - ./.local/segments/server:/var/lib/thelxinoe
       - ./.local/segments/cache:/var/cache/thelxinoe
-      - ./.local/segments/data:/data:ro
+      - ./.local/segments/data:/media:ro
       - runtime:/run/thelxinoe:ro
     networks: [test]
     depends_on:

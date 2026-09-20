@@ -53,9 +53,9 @@ async function rpc(method, params) {
   return data.result;
 }
 const settings = {
-  MainDir: '/data/downloads',
-  DestDir: '/data/downloads/completed',
-  InterDir: '/data/downloads/intermediate',
+  MainDir: '/media/downloads',
+  DestDir: '/media/downloads/completed',
+  InterDir: '/media/downloads/intermediate',
   NzbDir: '/config/nzb',
   QueueDir: '/config/queue',
   TempDir: '/config/tmp',

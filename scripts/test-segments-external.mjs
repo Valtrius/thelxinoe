@@ -92,11 +92,11 @@ try {
   });
   const roots = (await api('/catalog/roots')).items;
   const library =
-    roots.find((r) => r.path === '/data/external') ??
+    roots.find((r) => r.path === '/media/external') ??
     (await api('/catalog/roots', 'POST', {
       name: 'External timestamp fixture',
       kind: 'shows',
-      path: '/data/external',
+      path: '/media/external',
     }));
   await job((await api(`/catalog/roots/${library.id}/scan`, 'POST')).job_id);
   const show = (await api('/catalog?kind=show')).items.find(

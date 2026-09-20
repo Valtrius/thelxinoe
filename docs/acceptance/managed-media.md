@@ -57,7 +57,7 @@ Deliver:
 - adopt compatible existing container;
 - exclusive Docker-ownership checks for adoption, including blocking adoption while a container still belongs to another detected Compose/orchestrator project;
 - labels/stable managed-service IDs;
-- canonical `/data/...` mounts for created services;
+- canonical `/media/...` mounts for created services;
 - appdata under state root;
 - Docker configuration ownership and drift detection;
 - controller-owned persistent first-party deployment descriptor containing the accepted immutable server/controller digests, recreate specs, and controller generation outside server SQLite;

@@ -29,9 +29,9 @@ try {
     .getByRole('button', { name: 'Media services', exact: true })
     .click();
   for (const [kind, root] of [
-    ['radarr', '/data/movies'],
-    ['sonarr', '/data/shows'],
-    ['lidarr', '/data/music'],
+    ['radarr', '/media/movies'],
+    ['sonarr', '/media/tv'],
+    ['lidarr', '/media/music'],
   ]) {
     await page
       .getByRole('button', {
@@ -39,7 +39,7 @@ try {
         exact: true,
       })
       .click();
-    await page.getByLabel('Acquisition root folder').selectOption(root);
+    await expect(page.getByLabel('Acquisition root folder')).toHaveValue(root);
     await page
       .getByRole('button', { name: 'Save acquisition defaults', exact: true })
       .click();
@@ -100,7 +100,7 @@ try {
   writeFileSync(
     '.local/managed-ui-result.json',
     JSON.stringify({
-      canonical_roots: ['movies', 'shows', 'music'],
+      canonical_roots: ['movies', 'tv', 'music'],
       drift_blocked: true,
       restored: true,
     }),

@@ -80,7 +80,7 @@
   async function edit(s: Service) {
     selected = s;
     options = await api<Options>(`/admin/managers/${s.id}/options`);
-    root = s.defaults.root_folder ?? options.roots[0]?.path ?? '';
+    root = options.roots[0]?.path ?? '';
     profile = s.defaults.quality_profile ?? options.profiles[0]?.id ?? 0;
     metadata =
       s.defaults.metadata_profile ?? options.metadata_profiles[0]?.id ?? null;
@@ -107,7 +107,9 @@
   <h2>Acquisition managers</h2>
   <p>
     Connect local Radarr, Sonarr and Lidarr containers. The controller verifies
-    their network and shared media mounts. API keys are stored encrypted.
+    their network and the same writable host directory mounted at /media. Use
+    /media/movies in Radarr, /media/tv in Sonarr and /media/music in Lidarr.
+    Individual folder mounts are not supported. API keys are stored encrypted.
   </p>
   {#if message}<p role="status">{message}</p>{/if}
   <h3>Automatic request approval</h3>
@@ -210,13 +212,10 @@
       {#if !options.roots.length}<p>
           Add a root folder in the manager's own settings first.
         </p>{/if}
-      <label
-        >Acquisition root folder<select bind:value={root} required
-          >{#each options.roots as r (r.id)}<option value={r.path}
-              >{r.path}{r.id === 0 ? ' (create)' : ''}</option
-            >{/each}</select
-        ></label
-      >
+      <label>Acquisition root folder<input value={root} readonly /></label>
+      {#if options.roots[0]?.id === 0}<p>
+          This folder will be created when you save.
+        </p>{/if}
       <label
         >Acquisition quality profile<select bind:value={profile} required
           >{#each options.profiles as p (p.id)}<option value={p.id}

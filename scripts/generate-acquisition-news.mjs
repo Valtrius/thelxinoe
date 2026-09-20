@@ -75,7 +75,7 @@ for (const [title, duration] of [
     '-b:a',
     '8k',
     '-y',
-    `/data/downloads/${name}`,
+    `/media/downloads/${name}`,
   ]);
   publish(title, [name]);
 }
@@ -118,7 +118,7 @@ for (const track of tracks) {
     'flac',
     ...Object.entries(tags).flatMap(([k, v]) => ['-metadata', `${k}=${v}`]),
     '-y',
-    `/data/downloads/${name}`,
+    `/media/downloads/${name}`,
   ]);
   names.push(name);
 }

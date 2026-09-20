@@ -32,7 +32,7 @@ async fn fixture() -> (tempfile::TempDir, AppState) {
     .unwrap();
     state.db.call(|db|{
         for user in ["alice","bob","admin"]{db.execute("INSERT INTO users(id,username,password_hash,role,timezone,created_at) VALUES (?1,?1,'unused',?2,'UTC',?3)",params![user,if user=="admin"{"admin"}else{"user"},now()])?;}
-        db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Test','movies','/data/test')",[])?;
+        db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Test','movies','/media/test')",[])?;
         for (id,kind,parent,number) in [("movie","movie",None,0),("a","track",None,1),("b","track",None,2),("show","show",None,0),("season","season",Some("show"),1),("specials","season",Some("show"),0),("special","episode",Some("specials"),1),("e1","episode",Some("season"),1),("e2","episode",Some("season"),2)] {
             db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES (?1,'root',?2,?3,?1,?1,?4,?5)",params![id,kind,parent,number,now()])?;
             if ["movie","track","episode"].contains(&kind){

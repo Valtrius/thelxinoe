@@ -19,7 +19,7 @@ services:
     volumes:
       - ./.local/managed-v3/server:/var/lib/thelxinoe
       - ./.local/managed-v3/cache:/var/cache/thelxinoe
-      - ./.local/managed-v3/data:/data
+      - ./.local/managed-v3/data:/media
       - runtime:/run/thelxinoe:ro
     networks: [test]
     depends_on:

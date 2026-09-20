@@ -44,7 +44,7 @@ try {
       (await call('/catalog/roots', 'POST', {
         kind,
         name: `Playback ${kind}`,
-        path: `/data/playback/${kind}`,
+        path: `/media/playback/${kind}`,
       }));
     const job = (await call(`/catalog/roots/${root.id}/scan`, 'POST')).job_id;
     for (let i = 0; i < 120; i++) {

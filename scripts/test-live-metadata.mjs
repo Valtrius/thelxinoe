@@ -65,7 +65,7 @@ try {
       (await call('/catalog/roots', 'POST', {
         kind,
         name: `Live ${kind}`,
-        path: `/data/${kind}`,
+        path: `/media/${kind}`,
       }));
     await finished(
       (await call(`/catalog/roots/${root.id}/scan`, 'POST')).job_id,

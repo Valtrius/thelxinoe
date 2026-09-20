@@ -28,11 +28,11 @@ try {
   else await api('/auth/login', 'POST', credentials);
   const roots = (await api('/catalog/roots')).items;
   const root =
-    roots.find((r) => r.path === '/data/shows') ??
+    roots.find((r) => r.path === '/media/shows') ??
     (await api('/catalog/roots', 'POST', {
       name: 'Segment fixtures',
       kind: 'shows',
-      path: '/data/shows',
+      path: '/media/shows',
     }));
   const job = (await api(`/catalog/roots/${root.id}/scan`, 'POST')).job_id;
   await expect

@@ -2,7 +2,7 @@
 
 Administrators can connect local Docker Radarr, Sonarr and Lidarr containers in Settings, choose existing root folders and profiles, and enable automatic approval for individual users. Requests search the manager and local catalog. Ordinary requests await approval; administrators and users with automatic approval enqueue durable add/search work. A search interrupted after submission requires review instead of an automatic repeat.
 
-Manager API keys are encrypted. The private Docker controller returns limited network/mount evidence and never returns container environment variables or commands. The server resolves the internal address from a shared Docker network and requires a writable manager mount backed by the same host media tree. Changed mount mappings block use until the administrator reconnects the service. Docker Desktop Windows host paths and Linux host paths are supported as mount evidence.
+Manager API keys are encrypted. The private Docker controller returns limited network/mount evidence and never returns container environment variables or commands. The server resolves the internal address from a shared Docker network and requires one writable `/media` bind backed by exactly the same host directory in both containers. Child mounts are rejected. Radarr, Sonarr and Lidarr must use `/media/movies`, `/media/tv` and `/media/music` respectively. A changed mount source blocks use until the administrator reconnects the service. Docker Desktop Windows host paths and Linux host paths are supported as mount evidence.
 
 Request status can inspect availability and downloads. Administrators can change monitoring, inspect manager release scores/rejections, and explicitly grab an approved release. Request again returns a previously submitted request to approval or queues it according to the user's policy.
 
@@ -70,13 +70,13 @@ Admins can also run manual release searches and explicit grabs. Thelxinoe displa
 
 ## Manager binding and destructive actions
 
-Thelxinoe reconciles local file paths with Radarr, Sonarr, and Lidarr API file records. Managed containers share canonical mounts. Adopted containers use explicit path mappings.
+Thelxinoe reconciles local file paths with Radarr, Sonarr, and Lidarr API file records. Managed and external containers share the same canonical `/media` bind and library paths. File paths are used directly; there are no path mappings.
 
 A concrete file has one of four ownership states:
 
 - `managed`: a current reconciliation proves one owning manager instance and records its stable manager entity/file IDs;
 - `unmanaged`: a current successful reconciliation against every enabled relevant manager proves that none owns the file;
-- `unresolved`: ownership cannot currently be proven because a relevant manager is unavailable, path reconciliation is incomplete, or previous ownership evidence cannot yet be refreshed;
+- `unresolved`: ownership cannot currently be proven because a relevant manager is unavailable, a file path is outside the required library root, or previous ownership evidence cannot yet be refreshed;
 - `ambiguous`: more than one manager currently claims the file.
 
 Historical ownership is sticky evidence. A previously managed file does not become unmanaged merely because its manager is offline, its mount mapping breaks, or a reconciliation record expires. It becomes unresolved until ownership can be proved again.

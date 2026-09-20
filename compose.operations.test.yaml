@@ -20,7 +20,7 @@ services:
     volumes:
       - ./.local/operations-v4/server:/var/lib/thelxinoe
       - ./.local/operations-v4/cache:/var/cache/thelxinoe
-      - ./.local/operations-v4/data:/data
+      - ./.local/operations-v4/data:/media
       - runtime:/run/thelxinoe:ro
     networks: [test]
     depends_on:

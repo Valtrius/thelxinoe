@@ -133,7 +133,7 @@ try {
         try {
           return (
             await api('/admin/managers/' + integration + '/options')
-          ).roots.some((r) => r.path === '/data/movies');
+          ).roots.some((r) => r.path === '/media/movies');
         } catch {
           return false;
         }

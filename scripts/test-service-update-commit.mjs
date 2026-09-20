@@ -66,7 +66,7 @@ try {
   );
   expect(
     (await api('/admin/managers/' + integration + '/options')).roots.some(
-      (r) => r.path === '/data/movies',
+      (r) => r.path === '/media/movies',
     ),
   ).toBe(true);
   const page = await context.newPage();

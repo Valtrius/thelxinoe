@@ -46,7 +46,7 @@ for (const kind of ['movies', 'shows', 'music']) {
     (await call('/catalog/roots', 'POST', {
       kind,
       name: `Compatibility ${kind}`,
-      path: `/data/playback/${kind}`,
+      path: `/media/playback/${kind}`,
     }));
   const job = (await call(`/catalog/roots/${root.id}/scan`, 'POST')).job_id;
   for (let i = 0; i < 120; i++) {

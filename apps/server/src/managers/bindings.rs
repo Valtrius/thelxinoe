@@ -17,24 +17,7 @@ pub(super) struct Claim {
     pub members: Vec<i64>,
     pub server_path: String,
 }
-fn mapped(s: &Service, path: &str) -> Result<String> {
-    if !clean_path(path) {
-        return Err(unavailable());
-    }
-    let mut paths = s
-        .mappings
-        .iter()
-        .filter_map(|m| suffix(path, &m.manager).map(|tail| format!("{}{tail}", m.server)))
-        .collect::<Vec<_>>();
-    paths.sort();
-    paths.dedup();
-    if paths.len() != 1 {
-        return Err(ApiError::conflict(
-            "Manager file path cannot be mapped uniquely",
-        ));
-    }
-    Ok(paths.remove(0))
-}
+
 fn positive(row: &Value, field: &str) -> Result<i64> {
     row[field]
         .as_i64()
@@ -101,7 +84,12 @@ pub(super) async fn inventory(state: &AppState, s: &Service) -> Result<Vec<Claim
         for file in files.as_array().ok_or_else(unavailable)? {
             let manager_file_id = positive(file, "id")?;
             let path = file["path"].as_str().ok_or_else(unavailable)?;
-            let server_path = mapped(s, path)?;
+            if !clean_path(path) || suffix(path, canonical_root(&s.kind)).is_none() {
+                return Err(ApiError::conflict(
+                    "Manager files must use the canonical /media library path; update existing paths in the service's bulk editor",
+                ));
+            }
+            let server_path = path.to_owned();
             let field = if s.kind == "sonarr" {
                 "episodeFileId"
             } else {

@@ -169,11 +169,11 @@ try {
     );
   const roots = (await api('/catalog/roots')).items;
   const library =
-    roots.find((r) => r.path === '/data/remote') ||
+    roots.find((r) => r.path === '/media/remote') ||
     (await api('/catalog/roots', 'POST', {
       name: 'Remote fixture',
       kind: 'movies',
-      path: '/data/remote',
+      path: '/media/remote',
     }));
   await api(`/catalog/roots/${library.id}/scan`, 'POST');
   await expect

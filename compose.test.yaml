@@ -25,7 +25,7 @@ services:
     volumes:
       - state:/var/lib/thelxinoe
       - cache:/var/cache/thelxinoe
-      - ./.local/fixtures:/data:ro
+      - ./.local/fixtures:/media:ro
       - runtime:/run/thelxinoe:ro
     networks: [proxy]
   proxy:

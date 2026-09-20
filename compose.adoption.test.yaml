@@ -19,7 +19,7 @@ services:
     volumes:
       - ./.local/adoption/server:/var/lib/thelxinoe
       - ./.local/adoption/cache:/var/cache/thelxinoe
-      - ./.local/adoption/data:/data
+      - ./.local/adoption/data:/media
       - runtime:/run/thelxinoe:ro
     networks: [test]
     depends_on:

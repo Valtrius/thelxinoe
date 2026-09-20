@@ -50,11 +50,11 @@ try {
   writeFileSync(fixture, 'deliberately invalid test media');
   const roots = (await api('/catalog/roots')).items;
   const root =
-    roots.find((r) => r.path === '/data/broken') ??
+    roots.find((r) => r.path === '/media/broken') ??
     (await api('/catalog/roots', 'POST', {
       name: 'Failure fixture',
       kind: 'shows',
-      path: '/data/broken',
+      path: '/media/broken',
     }));
   await api(`/catalog/roots/${root.id}/scan`, 'POST');
   const button = page.getByRole('button', {

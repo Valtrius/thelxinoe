@@ -6,34 +6,54 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 #[test]
-fn mount_mapping_requires_the_same_physical_media_and_correct_path_boundaries() {
-    let server = json!({"mounts":[{"source":"/host/media","destination":"/data"}]});
-    let manager =
-        json!({"mounts":[{"source":"/host/media/movies","destination":"/movies","writable":true}]});
-    let result = mappings(&server, &manager, "/data").unwrap();
-    assert_eq!(result[0].server, "/data/movies");
-    assert_eq!(result[0].manager, "/movies");
-    assert!(mappings(&server,&json!({"mounts":[{"source":"/host/media-other","destination":"/data","writable":true}]}),"/data").is_err());
-    assert!(
-        mappings(
-            &server,
-            &json!({"mounts":[{"source":"/host/media","destination":"/data","writable":false}]}),
-            "/data"
-        )
-        .is_err()
-    );
-    assert!(mappings(&server, &manager, "/data/../private").is_err());
-    let desktop = json!({"mounts":[{"source":"C:\\Media","destination":"/data","writable":true}]});
+fn integrations_require_the_same_single_writable_media_bind() {
+    let server = json!({"mounts":[{"kind":"bind","source":"/nas/media","destination":"/media","writable":true}]});
     assert_eq!(
-        mappings(&desktop, &desktop, "/data").unwrap()[0].source,
+        shared_media_source(&server, &server, "/media").unwrap(),
+        "/nas/media"
+    );
+    for (field, value) in [
+        ("source", json!("/nas/other")),
+        ("destination", json!("/movies")),
+        ("kind", json!("volume")),
+        ("writable", json!(false)),
+    ] {
+        let mut manager = server.clone();
+        manager["mounts"][0][field] = value;
+        assert!(shared_media_source(&server, &manager, "/media").is_err());
+        assert!(shared_media_source(&manager, &server, "/media").is_err());
+    }
+    let mut nested = server.clone();
+    nested["mounts"].as_array_mut().unwrap().push(
+        json!({"kind":"bind","source":"/nas/other","destination":"/media/movies","writable":true}),
+    );
+    assert!(shared_media_source(&server, &nested, "/media").is_err());
+    assert!(shared_media_source(&nested, &server, "/media").is_err());
+    assert!(shared_media_source(&server, &server, "/other").is_err());
+    let desktop = json!({"mounts":[{"kind":"bind","source":"C:\\Media","destination":"/media","writable":true}]});
+    assert_eq!(
+        shared_media_source(&desktop, &desktop, "/media").unwrap(),
         "c:/media"
     );
+}
+#[test]
+fn managers_must_use_the_canonical_root_for_their_media_kind() {
+    for (kind, expected) in [
+        ("radarr", "/media/movies"),
+        ("sonarr", "/media/tv"),
+        ("lidarr", "/media/music"),
+    ] {
+        assert!(validate_roots(kind, &json!([])).is_ok());
+        assert!(validate_roots(kind, &json!([{"path":expected}])).is_ok());
+        assert!(validate_roots(kind, &json!([{"path":"/movies"}])).is_err());
+        assert!(validate_roots(kind, &json!([{"path":expected},{"path":"/media/other"}])).is_err());
+    }
 }
 
 #[tokio::test]
 async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_adds() {
     let (_temp, mut state, alice) = fixture().await;
-    Arc::get_mut(&mut state.config).unwrap().media = "/data".into();
+    Arc::get_mut(&mut state.config).unwrap().media = "/media".into();
     state
         .db
         .call(|db| {
@@ -63,12 +83,12 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
         )
         .route(
             "/api/v3/rootfolder",
-            get(|| async { Json(json!([{"id":1,"path":"/data/movies"}])) }),
+            get(|| async { Json(json!([{"id":1,"path":"/media/movies"}])) }),
         )
         .route(
             "/api/v3/moviefile",
             get(|| async {
-                Json(json!([{"id":91,"movieId":17,"path":"/data/movies/fixture.mkv"}]))
+                Json(json!([{"id":91,"movieId":17,"path":"/media/movies/fixture.mkv"}]))
             }),
         )
         .route(
@@ -90,7 +110,7 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
                 let count = add_count.clone();
                 async move {
                     count.fetch_add(1, Ordering::SeqCst);
-                    assert_eq!(body["rootFolderPath"], "/data/movies");
+                    assert_eq!(body["rootFolderPath"], "/media/movies");
                     assert_eq!(body["qualityProfileId"], 1);
                     assert_eq!(body["addOptions"]["searchForMovie"], false);
                     body["id"] = json!(17);
@@ -114,7 +134,7 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
     let port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(async move { axum::serve(listener, stub).await.unwrap() });
     let container = "a".repeat(64);
-    let inspection = json!({"id":container,"running":true,"mounts":[{"source":"/physical","destination":"/data","writable":true}],"networks":[{"id":"network","address":"127.0.0.1"}]});
+    let inspection = json!({"id":container,"running":true,"mounts":[{"kind":"bind","source":"/physical","destination":"/media","writable":true}],"networks":[{"id":"network","address":"127.0.0.1"}]});
     state
         .managers
         .docker
@@ -143,7 +163,7 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
     let registered = call(&state, "/api/v1/admin/managers", "POST", input, &bob).await;
     assert_eq!(registered.0, StatusCode::OK, "{}", registered.2);
     let service = registered.2["id"].as_str().unwrap();
-    let defaults=call(&state,&format!("/api/v1/admin/managers/{service}/defaults"),"PUT",json!({"root_folder":"/data/movies","quality_profile":1,"metadata_profile":null,"monitored":true}),&bob).await;
+    let defaults=call(&state,&format!("/api/v1/admin/managers/{service}/defaults"),"PUT",json!({"root_folder":"/media/movies","quality_profile":1,"metadata_profile":null,"monitored":true}),&bob).await;
     assert_eq!(defaults.0, StatusCode::OK, "{}", defaults.2);
     let listing = call(&state, "/api/v1/admin/managers", "GET", Value::Null, &bob).await;
     assert!(!listing.2.to_string().contains("secret-key"));
@@ -236,8 +256,8 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
     .await;
     assert_eq!(rows.2["items"][0]["state"], "uncertain");
     state.db.call(|db|{
-        db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('binding-root','Fixture','movies','/data/movies')",[])?;
-        db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES ('binding-file','binding-root','/data/movies/fixture.mkv','g',1,'1','hash','{}',1)",[])?;
+        db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('binding-root','Fixture','movies','/media/movies')",[])?;
+        db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES ('binding-file','binding-root','/media/movies/fixture.mkv','g',1,'1','hash','{}',1)",[])?;
         Ok(())
     }).await.unwrap();
     bindings::reconcile(&state).await.unwrap();
@@ -424,7 +444,7 @@ async fn deletion_rechecks_keep_and_file_replacement_and_never_retries_completed
 #[tokio::test]
 async fn support_services_are_admin_only_redacted_and_expose_only_allowed_commands() {
     let (_temp, mut state, alice) = fixture().await;
-    Arc::get_mut(&mut state.config).unwrap().media = "/data".into();
+    Arc::get_mut(&mut state.config).unwrap().media = "/media".into();
     state
         .db
         .call(|db| {
@@ -453,7 +473,7 @@ async fn support_services_are_admin_only_redacted_and_expose_only_allowed_comman
     let port = listener.local_addr().unwrap().port();
     let task = tokio::spawn(async move { axum::serve(listener, stub).await.unwrap() });
     let container = "b".repeat(64);
-    let inspection = json!({"id":container,"running":true,"mounts":[{"source":"/physical","destination":"/data","writable":true}],"networks":[{"id":"network","address":"127.0.0.1"}]});
+    let inspection = json!({"id":container,"running":true,"mounts":[{"kind":"bind","source":"/physical","destination":"/media","writable":true}],"networks":[{"id":"network","address":"127.0.0.1"}]});
     state
         .managers
         .docker

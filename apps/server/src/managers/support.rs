@@ -16,12 +16,12 @@ pub(super) struct Support {
     kind: String,
     container: String,
     port: u16,
-    mappings: Vec<Mapping>,
+    media_source: String,
     pub(super) credentials: Credentials,
 }
 pub(super) async fn load(state: &AppState, key: &str) -> Result<Support> {
     let key = key.to_owned();
-    let row=state.db.call(move|db|Ok(db.query_row("SELECT id,kind,container_id,port,mappings,credential FROM support_services WHERE id=?1",[key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,u16>(3)?,r.get::<_,String>(4)?,r.get::<_,Vec<u8>>(5)?))).optional()?)).await?.ok_or_else(ApiError::not_found)?;
+    let row=state.db.call(move|db|Ok(db.query_row("SELECT id,kind,container_id,port,media_source,credential FROM support_services WHERE id=?1",[key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,u16>(3)?,r.get::<_,String>(4)?,r.get::<_,Vec<u8>>(5)?))).optional()?)).await?.ok_or_else(ApiError::not_found)?;
     let credentials = serde_json::from_slice(
         &state
             .secrets
@@ -33,7 +33,7 @@ pub(super) async fn load(state: &AppState, key: &str) -> Result<Support> {
         kind: row.1,
         container: row.2,
         port: row.3,
-        mappings: serde_json::from_str(&row.4).map_err(|_| unavailable())?,
+        media_source: row.4,
         credentials,
     })
 }
@@ -71,8 +71,9 @@ pub(super) async fn ensure_idle(state: &AppState, key: &str) -> Result<()> {
     Ok(())
 }
 async fn connect<'a>(state: &'a AppState, s: &Support) -> Result<Connection<'a>> {
-    let (base, mappings) = evidence_for(state, &s.container, s.port, s.kind != "prowlarr").await?;
-    if mappings != s.mappings {
+    let (base, media_source) =
+        evidence_for(state, &s.container, s.port, s.kind != "prowlarr").await?;
+    if media_source != s.media_source {
         return Err(ApiError::conflict(
             "Service mounts changed; reconnect the service",
         ));
@@ -177,7 +178,7 @@ async fn register_with_actor(
         ));
     }
     let _guard = state.managers.guard.lock().await;
-    let (base, mappings) = evidence_for(
+    let (base, media_source) = evidence_for(
         &state,
         &input.container_id,
         input.port,
@@ -210,7 +211,7 @@ async fn register_with_actor(
         &format!("support:{key}"),
         &serde_json::to_vec(&input.credentials).map_err(|_| unavailable())?,
     )?;
-    state.db.call(move|db|{let tx=db.transaction()?;tx.execute("INSERT INTO support_services(id,name,kind,container_id,port,generation,credential,mappings,native_url,version,checked_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(container_id) DO UPDATE SET name=excluded.name,kind=excluded.kind,port=excluded.port,generation=excluded.generation,credential=excluded.credential,mappings=excluded.mappings,native_url=excluded.native_url,version=excluded.version,checked_at=excluded.checked_at,error=NULL",params![key,input.name.trim(),input.kind,input.container_id,input.port,id(),secret,serde_json::to_string(&mappings)?,input.native_url,version,now()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'support.register',?2,?3)",params![actor_id,key,now()])?;tx.commit()?;Ok(())}).await?;
+    state.db.call(move|db|{let tx=db.transaction()?;tx.execute("INSERT INTO support_services(id,name,kind,container_id,port,generation,credential,media_source,native_url,version,checked_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(container_id) DO UPDATE SET name=excluded.name,kind=excluded.kind,port=excluded.port,generation=excluded.generation,credential=excluded.credential,media_source=excluded.media_source,native_url=excluded.native_url,version=excluded.version,checked_at=excluded.checked_at,error=NULL",params![key,input.name.trim(),input.kind,input.container_id,input.port,id(),secret,media_source,input.native_url,version,now()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'support.register',?2,?3)",params![actor_id,key,now()])?;tx.commit()?;Ok(())}).await?;
     Ok(Json(json!({"id":returned})))
 }
 async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {

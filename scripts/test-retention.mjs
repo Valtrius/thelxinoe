@@ -41,7 +41,7 @@ try {
   original = settings.policies.find((p) => p.domain === 'movies');
   const user = settings.users.find((u) => u.username === 'admin');
   const roots = (await api('/catalog/roots')).items;
-  const root = roots.find((r) => r.path === '/data/movies');
+  const root = roots.find((r) => r.path === '/media/movies');
   expect(root).toBeTruthy();
   const job = (await api(`/catalog/roots/${root.id}/scan`, 'POST')).job_id;
   await expect
@@ -57,7 +57,7 @@ try {
   expect(movie, 'Import the generated Matrix fixture first').toBeTruthy();
   await api('/admin/managers/reconcile', 'POST');
   const files = (await api('/admin/managers/bindings')).items.filter((f) =>
-    f.path.startsWith('/data/movies/'),
+    f.path.startsWith('/media/movies/'),
   );
   expect(files).toHaveLength(1);
   expect(files[0].path).toContain('FIXTURE2');

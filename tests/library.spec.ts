@@ -28,7 +28,7 @@ test('movie, multi-episode and tagged music scan into browsable libraries with s
     if (!existing.some((root) => root.kind === kind)) {
       const response = await api.post('/api/v1/catalog/roots', {
         headers,
-        data: { name: `Fixture ${kind}`, kind, path: `/data/${kind}` },
+        data: { name: `Fixture ${kind}`, kind, path: `/media/${kind}` },
       });
       expect(response.status()).toBe(200);
     }

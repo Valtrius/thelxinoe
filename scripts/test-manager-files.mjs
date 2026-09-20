@@ -28,11 +28,11 @@ try {
   });
   const roots = (await call('/catalog/roots')).items;
   const root =
-    roots.find((r) => r.path === '/data/movies') ??
+    roots.find((r) => r.path === '/media/movies') ??
     (await call('/catalog/roots', 'POST', {
       kind: 'movies',
       name: 'Acquisition movies',
-      path: '/data/movies',
+      path: '/media/movies',
     }));
   const job = (await call(`/catalog/roots/${root.id}/scan`, 'POST')).job_id;
   await expect

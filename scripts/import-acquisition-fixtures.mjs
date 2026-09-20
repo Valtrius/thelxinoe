@@ -44,7 +44,7 @@ for (const name of [
   'The.Matrix.1999.1080p.WEB-DL.mkv',
   'Firefly.S01E01.1080p.WEB-DL.mkv',
 ])
-  ffmpeg([...video, `/data/downloads/${name}`]);
+  ffmpeg([...video, `/media/downloads/${name}`]);
 ffmpeg([
   '-f',
   'lavfi',
@@ -63,7 +63,7 @@ ffmpeg([
   '-metadata',
   'track=1',
   '-y',
-  '/data/downloads/01 Shine a Little Love.flac',
+  '/media/downloads/01 Shine a Little Love.flac',
 ]);
 for (const [kind, port, version] of [
   ['radarr', 27878, 3],
@@ -107,7 +107,7 @@ for (const [kind, port, version] of [
       (e) => e.seasonNumber === 1 && e.episodeNumber === 2,
     );
     item = {
-      path: '/data/downloads/Firefly.S01E01.1080p.WEB-DL.mkv',
+      path: '/media/downloads/Firefly.S01E01.1080p.WEB-DL.mkv',
       seriesId: series.id,
       episodeIds: [episode.id],
       quality: {
@@ -128,7 +128,7 @@ for (const [kind, port, version] of [
       (t) => String(t.trackNumber) === '1',
     );
     item = {
-      path: '/data/downloads/01 Shine a Little Love.flac',
+      path: '/media/downloads/01 Shine a Little Love.flac',
       artistId: album.artistId,
       albumId: album.id,
       albumReleaseId: album.releases.find((r) => r.monitored).id,

@@ -107,10 +107,10 @@ mod tests {
     use super::*;
     #[test]
     fn inspection_excludes_environment_commands_and_unrelated_labels() {
-        let raw = json!({"Id":"abc","Config":{"Env":["API_KEY=private-secret"],"Cmd":["private-command"],"Image":"image","Labels":{"secret":"private-label"}},"Mounts":[{"Source":"/media","Destination":"/data","RW":true,"Type":"bind"}],"NetworkSettings":{"Networks":{"test":{"NetworkID":"network","IPAddress":"172.18.0.2"}}}});
+        let raw = json!({"Id":"abc","Config":{"Env":["API_KEY=private-secret"],"Cmd":["private-command"],"Image":"image","Labels":{"secret":"private-label"}},"Mounts":[{"Source":"/media","Destination":"/media","RW":true,"Type":"bind"}],"NetworkSettings":{"Networks":{"test":{"NetworkID":"network","IPAddress":"172.18.0.2"}}}});
         let result = redact(&raw).unwrap();
         assert!(!result.to_string().contains("private"));
-        assert_eq!(result["mounts"][0]["destination"], "/data");
+        assert_eq!(result["mounts"][0]["destination"], "/media");
         assert_eq!(result["networks"][0]["address"], "172.18.0.2");
     }
 }

@@ -313,10 +313,10 @@ async fn check(d: &Deployment, u: &mut Update) -> Result<()> {
 }
 async fn candidate(d: &Deployment, u: &mut Update, config: &str) -> Result<()> {
     let data = path(&u.id).join("scratch-data");
-    for sub in ["movies", "shows", "music", "downloads"] {
+    for sub in ["movies", "tv", "music", "downloads"] {
         persisted(std::fs::create_dir_all(data.join(sub)).map_err(Into::into))?;
     }
-    let mut spec = json!({"Image":u.candidate,"Env":["PUID=10001","PGID=10001","TZ=UTC"],"Labels":{"app.thelxinoe.update":u.id,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":"none","CapDrop":["ALL"],"CapAdd":["CHOWN","DAC_OVERRIDE","FOWNER","SETUID","SETGID","KILL"],"SecurityOpt":["no-new-privileges:true"],"Memory":2147483648u64,"NanoCpus":2000000000u64,"PidsLimit":256,"Mounts":[{"Type":"bind","Source":config,"Target":"/config"},{"Type":"bind","Source":host_path(d,u,"scratch-data"),"Target":"/data"}]}});
+    let mut spec = json!({"Image":u.candidate,"Env":["PUID=10001","PGID=10001","TZ=UTC"],"Labels":{"app.thelxinoe.update":u.id,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":"none","CapDrop":["ALL"],"CapAdd":["CHOWN","DAC_OVERRIDE","FOWNER","SETUID","SETGID","KILL"],"SecurityOpt":["no-new-privileges:true"],"Memory":2147483648u64,"NanoCpus":2000000000u64,"PidsLimit":256,"Mounts":[{"Type":"bind","Source":config,"Target":"/config"},{"Type":"bind","Source":host_path(d,u,"scratch-data"),"Target":"/media"}]}});
     // Never inherit host ports, sockets, extra mounts, production networks or commands.
     spec["Healthcheck"] = json!({"Test":["NONE"]});
     spec["HostConfig"]["ExtraHosts"] = json!([
@@ -542,7 +542,7 @@ mod tests {
     #[tokio::test]
     async fn activation_boundary_rejects_automatic_rollback_before_any_docker_call() {
         let mut update:Update=serde_json::from_value(json!({"id":"test","service":"service","candidate":"candidate","stage":"runtime-failure","classification":"compatible","error":null,"old":{"id":"service","kind":"radarr","container":"old","name":"old","image":"old","phase":"active","spec":{},"expected":{}},"was_running":true,"snapshot_complete":true,"recovery_complete":true,"activation_crossed":true,"candidate_container":null,"replacement":"new"})).unwrap();
-        let deployment:Deployment=serde_json::from_value(json!({"id":"deployment","generation":1,"version":"test","server":{},"controller":{},"network":"test","media_source":"/data","appdata_source":"/state"})).unwrap();
+        let deployment:Deployment=serde_json::from_value(json!({"id":"deployment","generation":1,"version":"test","server":{},"controller":{},"network":"test","media_source":"/media","appdata_source":"/state"})).unwrap();
         assert_eq!(
             rollback(&deployment, &mut update).await.unwrap_err().0,
             StatusCode::CONFLICT

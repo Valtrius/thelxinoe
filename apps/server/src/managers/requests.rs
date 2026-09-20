@@ -245,6 +245,11 @@ async fn perform(state: &AppState, key: &str) -> Result<()> {
     }
     let defaults: Defaults = serde_json::from_value(s.defaults.clone())
         .map_err(|_| ApiError::bad("Acquisition defaults are missing"))?;
+    if defaults.root_folder != canonical_root(&s.kind) {
+        return Err(ApiError::conflict(
+            "Save acquisition defaults using the canonical /media library folder",
+        ));
+    }
     let c = Connection::open(state, &s).await?;
     let kind = endpoint(&s.kind);
     // Re-read provider metadata and manager ownership instead of accepting a client-supplied object.

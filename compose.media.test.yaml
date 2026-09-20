@@ -1,0 +1,48 @@
+name: thelxinoe-media-mount-test
+services:
+  controller:
+    image: thelxinoe-media-controller:local
+    network_mode: none
+    volumes:
+      - runtime:/run/thelxinoe
+      - deployment:/var/lib/thelxinoe/deployment
+      - /var/run/docker.sock:/var/run/docker.sock
+    read_only: true
+    cap_drop: [ALL]
+    labels: {app.thelxinoe.component: controller}
+  server:
+    image: thelxinoe-media-server:local
+    environment:
+      THELXINOE_PUBLIC_URL: https://localhost:31443
+      THELXINOE_TRUSTED_PROXIES: 172.31.235.0/24
+    volumes:
+      - ./.local/media-mount-test/server:/var/lib/thelxinoe
+      - ./.local/media-mount-test/cache:/var/cache/thelxinoe
+      - ./.local/media-mount-test/media:/media
+      - runtime:/run/thelxinoe:ro
+    networks: [media]
+    depends_on:
+      controller: {condition: service_healthy}
+    labels: {app.thelxinoe.component: server}
+  radarr:
+    image: lscr.io/linuxserver/radarr@sha256:c960f2b52ec6542dbe6707c5a21e696a7c74fd8b17997454f4d10a55dacee133
+    environment: [PUID=10001, PGID=10001, TZ=UTC]
+    volumes:
+      - ./.local/media-mount-test/radarr:/config
+      - ./.local/media-mount-test/media:/media
+    ports: ["127.0.0.1:37879:7878"]
+    networks: [media]
+  proxy:
+    image: caddy:2
+    ports: ["127.0.0.1:31443:9443"]
+    volumes: ["./tests/Caddyfile:/etc/caddy/Caddyfile:ro"]
+    networks: [media]
+    depends_on:
+      server: {condition: service_healthy}
+networks:
+  media:
+    ipam:
+      config: [{subnet: 172.31.235.0/24}]
+volumes:
+  runtime:
+  deployment:

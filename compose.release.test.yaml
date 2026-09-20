@@ -26,7 +26,7 @@ services:
     volumes:
       - ./.local/releases-v6/server:/var/lib/thelxinoe
       - ./.local/releases-v6/cache:/var/cache/thelxinoe
-      - ./.local/releases-v6/data:/data
+      - ./.local/releases-v6/data:/media
       - ./.local/releases/channel:/etc/thelxinoe/releases:ro
       - runtime:/run/thelxinoe:ro
     networks: [test]

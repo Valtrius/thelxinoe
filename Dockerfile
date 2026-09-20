@@ -27,7 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=rust /usr/local/bin/thelxinoe-server /usr/local/bin/
 COPY --from=streamlink /opt/streamlink /opt/streamlink
 COPY --from=web /src/frontend/dist /opt/thelxinoe/web
-ENV THELXINOE_BIND=0.0.0.0:8484 THELXINOE_STATE=/var/lib/thelxinoe THELXINOE_CACHE=/var/cache/thelxinoe THELXINOE_WEB=/opt/thelxinoe/web THELXINOE_MEDIA=/data
+ENV THELXINOE_BIND=0.0.0.0:8484 THELXINOE_STATE=/var/lib/thelxinoe THELXINOE_CACHE=/var/cache/thelxinoe THELXINOE_WEB=/opt/thelxinoe/web THELXINOE_MEDIA=/media
 USER 10001:10001
 EXPOSE 8484
 HEALTHCHECK --interval=15s --timeout=3s CMD curl -fsS http://127.0.0.1:8484/api/v1/health || exit 1

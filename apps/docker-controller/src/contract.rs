@@ -171,7 +171,7 @@ async fn dependency_contract(
             seen.fetch_add(1,Ordering::SeqCst);
             let result=match input["method"].as_str().unwrap_or("") {
                 "version"=>json!("26.0"),
-                "config"=>json!([{"Name":"MainDir","Value":"/data/downloads"},{"Name":"DestDir","Value":"/data/downloads/completed"},{"Name":"KeepHistory","Value":"30"},{"Name":"Category1.Name","Value":"movies"},{"Name":"Category2.Name","Value":"tv"},{"Name":"Category3.Name","Value":"music"}]),
+                "config"=>json!([{"Name":"MainDir","Value":"/media/downloads"},{"Name":"DestDir","Value":"/media/downloads/completed"},{"Name":"KeepHistory","Value":"30"},{"Name":"Category1.Name","Value":"movies"},{"Name":"Category2.Name","Value":"tv"},{"Name":"Category3.Name","Value":"music"}]),
                 _=>Value::Null,
             };
             axum::Json(json!({"version":"1.1","id":input["id"],"error":if result.is_null(){json!({"code":-32601,"message":"Unsupported fixture method"})}else{Value::Null},"result":result}))

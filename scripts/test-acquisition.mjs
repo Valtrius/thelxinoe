@@ -68,9 +68,13 @@ try {
     }
     const profiles = await manager('qualityprofile');
     const metadata = kind === 'lidarr' ? await manager('metadataprofile') : [];
-    if (!(await manager('rootfolder')).some((r) => r.path === `/data/${root}`))
+    if (
+      !(await manager('rootfolder')).some(
+        (r) => r.path === `/media/${root === 'shows' ? 'tv' : root}`,
+      )
+    )
       await manager('rootfolder', 'POST', {
-        path: `/data/${root}`,
+        path: `/media/${root === 'shows' ? 'tv' : root}`,
         name: 'Fixture music',
         defaultQualityProfileId: profiles[0].id,
         defaultMetadataProfileId: metadata[0]?.id,
@@ -112,9 +116,9 @@ try {
         exact: true,
       })
       .click();
-    await page
-      .getByLabel('Acquisition root folder')
-      .selectOption(`/data/${root}`);
+    await expect(page.getByLabel('Acquisition root folder')).toHaveValue(
+      `/media/${root === 'shows' ? 'tv' : root}`,
+    );
     await page
       .getByRole('button', { name: 'Save acquisition defaults', exact: true })
       .click();

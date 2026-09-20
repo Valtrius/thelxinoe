@@ -52,6 +52,47 @@ fn empty(value: &Value) -> bool {
 pub fn same_default(expected: &Value, actual: &Value) -> bool {
     expected == actual || (empty(expected) && empty(actual))
 }
+/// Docker paths are identical in every media service; no nested overrides.
+pub fn media_source(container: &Value) -> Result<&str, &'static str> {
+    let mounts = container["Mounts"]
+        .as_array()
+        .ok_or("Missing media mount evidence")?;
+    if mounts.iter().any(|m| {
+        m["Destination"]
+            .as_str()
+            .is_some_and(|p| p.starts_with("/media/"))
+    }) {
+        return Err("Mount one shared directory at /media; child media mounts are not supported");
+    }
+    let roots = mounts
+        .iter()
+        .filter(|m| m["Destination"] == "/media")
+        .collect::<Vec<_>>();
+    if roots.len() != 1 || roots[0]["Type"] != "bind" || roots[0]["RW"] != true {
+        return Err("Media services require one writable bind mount at /media");
+    }
+    roots[0]["Source"]
+        .as_str()
+        .filter(|s| host_path(s).is_some())
+        .ok_or("Invalid media mount source")
+}
+/// Trusted deployment volumes may live under Docker's state directory.
+/// This check only excludes media overlap; adoption uses the stricter policy.
+pub fn media_disjoint(state: &str, media: &str) -> bool {
+    let normalized = |path: &str| {
+        host_path(path).map(|p| {
+            if p.starts_with("/run/desktop/mnt/host") {
+                std::path::PathBuf::from(p.to_string_lossy().to_ascii_lowercase())
+            } else {
+                p
+            }
+        })
+    };
+    match (normalized(state), normalized(media)) {
+        (Some(state), Some(media)) => !state.starts_with(&media) && !media.starts_with(&state),
+        _ => false,
+    }
+}
 pub fn validate_adoption(
     container: &Value,
     image: &Value,
@@ -150,21 +191,24 @@ pub fn validate_adoption(
     let mounts = container["Mounts"]
         .as_array()
         .ok_or("Missing mount evidence")?;
-    let expected = if t.media { 2 } else { 1 };
-    if mounts.len() != expected {
-        return Err("Adoption supports only /config and the canonical /data media mount");
+    if mounts.len() != if t.media { 2 } else { 1 } {
+        return Err("Adoption supports only /config and the shared /media bind mount");
     }
     for mount in mounts {
         if mount["Type"] != "bind" || mount["RW"] != true {
             return Err("Adoption requires writable bind mounts");
         }
         match mount["Destination"].as_str() {
-            Some("/data") if t.media && mount["Source"] == media_source => {}
+            Some("/media") if t.media && mount["Source"] == media_source => {}
             Some("/config")
                 if mount["Source"]
                     .as_str()
                     .is_some_and(|source| appdata_isolated(source, media_source)) => {}
-            _ => return Err("Media mount does not match the canonical server media tree"),
+            _ => {
+                return Err(
+                    "Media mount must use the same host source and /media path as Thelxinoe",
+                );
+            }
         }
     }
     Ok(())
@@ -249,6 +293,30 @@ pub fn host_path(value: &str) -> Option<std::path::PathBuf> {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shared_media_mount_rejects_overrides_and_preserves_state_isolation() {
+        let container = serde_json::json!({"Mounts":[{"Type":"bind","Source":"/nas/media","Destination":"/media","RW":true}]});
+        assert_eq!(super::media_source(&container).unwrap(), "/nas/media");
+        for (field, value) in [
+            ("Destination", serde_json::json!("/movies")),
+            ("Type", serde_json::json!("volume")),
+            ("RW", serde_json::json!(false)),
+        ] {
+            let mut invalid = container.clone();
+            invalid["Mounts"][0][field] = value;
+            assert!(super::media_source(&invalid).is_err());
+        }
+        let mut invalid = container.clone();
+        invalid["Mounts"].as_array_mut().unwrap().push(serde_json::json!({"Type":"bind","Source":"/nas/films","Destination":"/media/movies","RW":true}));
+        assert!(super::media_source(&invalid).is_err());
+        assert!(super::media_disjoint(
+            "/var/lib/docker/volumes/deployment/_data",
+            "/nas/media"
+        ));
+        assert!(!super::media_disjoint("/nas/media/config", "/nas/media"));
+        assert!(!super::media_disjoint("/nas", "/nas/media"));
+    }
+
     use super::*;
     #[test]
     fn appdata_restore_cannot_target_system_or_media_roots() {
