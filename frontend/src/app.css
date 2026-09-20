@@ -502,7 +502,7 @@
     .sidebar-divider {
       height: 1px;
       background: var(--line);
-      margin: 10px 0;
+      margin: 0;
     }
     .sidebar-bottom {
       margin-top: auto;
@@ -846,6 +846,23 @@
       padding: 15px 18px;
       flex-shrink: 0;
     }
+    .settings-nav-heading {
+      margin: 0;
+      padding: 8px 18px;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      flex-shrink: 0;
+    }
+    .settings-nav-divider {
+      height: 1px;
+      margin: 10px 0;
+      border: 0;
+      background: var(--line);
+      flex-shrink: 0;
+    }
     .settings-nav-item > span {
       font-size: 11px;
       font-weight: 600;
@@ -1182,6 +1199,18 @@
     .settings-nav-item {
       white-space: nowrap;
       padding: 14px;
+    }
+    .settings-nav-heading {
+      display: flex;
+      align-items: center;
+      padding: 0 14px;
+      white-space: nowrap;
+    }
+    .settings-nav-divider {
+      width: 1px;
+      height: auto;
+      margin: 0 6px;
+      align-self: stretch;
     }
     .settings-content {
       min-height: 0;

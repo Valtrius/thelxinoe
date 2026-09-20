@@ -182,6 +182,8 @@
         settingsSection = saved.settingsSection;
       if (!desktop && ['mpv', 'connection'].includes(settingsSection))
         settingsSection = 'account';
+      if (!desktop && settingsSection === 'updates')
+        settingsSection = user.role === 'admin' ? 'server-updates' : 'account';
     } catch {
       /* Ignore an obsolete device preference. */
     }
@@ -616,14 +618,14 @@
                 navigate={(name) => void navigate(name)}
               />{/if}
             {#if settingsSection === 'playback'}<PlaybackSettings />
-              <SegmentSettings admin={user.role === 'admin'} />
+              <SegmentSettings />
             {/if}
             {#if settingsSection === 'devices'}<QuickConnect
                 username={user.username}
               />{/if}
             {#if desktop && settingsSection === 'mpv'}<MpvSettings />{/if}
-            {#if settingsSection === 'updates'}{#if desktop}<DesktopUpdates
-                />{/if}{#if user.role === 'admin'}<ProductUpdates />{/if}{/if}
+            {#if desktop && settingsSection === 'updates'}<DesktopUpdates
+              />{/if}
             {#if desktop && settingsSection === 'connection'}<section
                 class="panel"
               >
@@ -683,6 +685,8 @@
             {/if}
             {#if user.role === 'admin'}
               {#if settingsSection === 'server'}<AdminOperations />{/if}
+              {#if settingsSection === 'server-updates'}<ProductUpdates />{/if}
+              {#if settingsSection === 'analysis'}<SegmentSettings admin />{/if}
               {#if settingsSection === 'backups'}<BackupSettings />{/if}
               {#if settingsSection === 'library'}<MetadataSettings />{/if}
               {#if settingsSection === 'providers'}<OnlineSettings />{/if}

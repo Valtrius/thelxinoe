@@ -2,7 +2,7 @@
   import Switch from './providers/components/ui/Switch.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
-  let { admin } = $props<{ admin: boolean }>();
+  let { admin = false } = $props<{ admin?: boolean }>();
   const kinds = ['Intro', 'Recap', 'Credits', 'Preview'];
   let preferences = $state<Record<string, string>>({
     Intro: 'Ask',
@@ -17,13 +17,14 @@
     busy = $state(false),
     message = $state('');
   async function refresh() {
-    preferences = await api('/me/segments');
     if (admin) {
       const result = await api<{ config: typeof config; items: typeof items }>(
         '/admin/segments',
       );
       config = result.config;
       items = result.items;
+    } else {
+      preferences = await api('/me/segments');
     }
   }
   async function work(fn: () => Promise<unknown>) {
@@ -44,26 +45,27 @@
 </script>
 
 <section class="panel segment-settings">
-  <h2>Intro and credit skipping</h2>
-  <p>
-    Ask shows a skip button. Auto seeks past the segment while playing. Ignore
-    leaves it untouched. Jellyfin clients use their own skip preferences.
-  </p>
-  <div class="choices">
-    {#each kinds as kind (kind)}<label
-        >{kind}<select bind:value={preferences[kind]} disabled={busy}
-          ><option>Ask</option><option>Auto</option><option>Ignore</option
-          ></select
-        ></label
-      >{/each}
-  </div>
-  <button
-    class="primary"
-    disabled={busy}
-    onclick={() => work(() => api('/me/segments', 'PUT', preferences))}
-    >Save skip preferences</button
-  >
-  {#if admin}<h3>Episode analysis</h3>
+  {#if !admin}
+    <h2>Intro and credit skipping</h2>
+    <p>
+      Ask shows a skip button. Auto seeks past the segment while playing. Ignore
+      leaves it untouched. Jellyfin clients use their own skip preferences.
+    </p>
+    <div class="choices">
+      {#each kinds as kind (kind)}<label
+          >{kind}<select bind:value={preferences[kind]} disabled={busy}
+            ><option>Ask</option><option>Auto</option><option>Ignore</option
+            ></select
+          ></label
+        >{/each}
+    </div>
+    <button
+      class="primary"
+      disabled={busy}
+      onclick={() => work(() => api('/me/segments', 'PUT', preferences))}
+      >Save skip preferences</button
+    >
+  {:else}<h2>Episode analysis</h2>
     <Switch bind:checked={config.local} disabled={busy}
       >Detect recurring intro and credit audio locally</Switch
     >
