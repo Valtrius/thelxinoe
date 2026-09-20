@@ -30,6 +30,16 @@ The launcher builds the frontend and runs the server at http://127.0.0.1:18486. 
 
 The underlying `scripts/dev-fresh.ps1` can also be invoked by its full path from another working directory. Run `npm ci` once before first use.
 
+To reuse the existing online development profile with its saved provider credentials and account connections:
+
+```powershell
+npm run dev:online
+# Optional: start the existing image without rebuilding
+npm run dev:online -- -SkipBuild
+```
+
+This Windows launcher builds the server image (including the web UI), starts the `thelxinoe-online` Docker Compose project, and waits for it to become healthy at https://localhost:22443. Sign in with your existing Thelxinoe account. State persists in `.local/online/server`, including its database and encryption key; both must already exist. The containers keep running after the command exits. This serves the built UI without hot reload.
+
 ```sh
 docker compose up --build -d
 ```

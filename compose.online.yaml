@@ -1,0 +1,5 @@
+services:
+  server:
+    volumes:
+      - ./.local/online/server:/var/lib/thelxinoe
+      - ./.local/online/cache:/var/cache/thelxinoe
