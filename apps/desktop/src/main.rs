@@ -8,6 +8,7 @@ mod utils;
 use serde_json::Value;
 use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
+use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
 #[tauri::command]
 fn open_provider_url(app: tauri::AppHandle, value: String) -> Result<(), String> {
@@ -167,7 +168,13 @@ async fn backend_request(
     Ok(serde_json::json!({"status":status,"body":value}))
 }
 fn main() {
+    let window_state = StateFlags::POSITION | StateFlags::SIZE | StateFlags::MAXIMIZED;
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(window_state)
+                .build(),
+        )
         .manage(mpv::DesktopPlayback::default())
         .manage(updates::Runtime::default())
         .setup(|app| {
@@ -178,10 +185,13 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .on_window_event(|window, event| {
+        .on_window_event(move |window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let app = window.app_handle().clone();
+                if let Err(error) = app.save_window_state(window_state) {
+                    tracing::warn!(%error, "Could not save desktop window state");
+                }
                 tauri::async_runtime::spawn(async move {
                     #[cfg(windows)]
                     app.state::<mpv::DesktopPlayback>().player.stop().await;
