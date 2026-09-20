@@ -57,3 +57,34 @@ The test-only native ports are 26767 (Bazarr), 29696 (Prowlarr) and 26789 (NZBGe
 Acquisition is available in the Requests section and through Search and request in Movies, Shows and Music. Automatic retention, import-list exclusion management, managed Docker installation/update ownership, and recovery/backup are later roadmap work. The controller currently exposes read-only inspection only.
 
 The operation lease coordinates this server's work. Arbitrary programs writing directly into media roots remain outside its control, as described in the architecture. Manager activity checks are conservative: any active command or download queue blocks destructive work for that manager.
+
+## Requests and acquisition
+
+Domain search combines local results with acquisition results from Radarr, Sonarr, or Lidarr.
+
+Admins configure default acquisition settings per domain, including root folder, quality profile, monitoring rules, and language-related choices. Normal users request media using those defaults. Admins can override defaults on manual adds.
+
+Requests need admin approval by default. Admins can mark individual users as auto-approved.
+
+Admins can also run manual release searches and explicit grabs. Thelxinoe displays the manager's own release scores and rejection reasons rather than reproducing its ranking logic.
+
+## Manager binding and destructive actions
+
+Thelxinoe reconciles local file paths with Radarr, Sonarr, and Lidarr API file records. Managed containers share canonical mounts. Adopted containers use explicit path mappings.
+
+A concrete file has one of four ownership states:
+
+- `managed`: a current reconciliation proves one owning manager instance and records its stable manager entity/file IDs;
+- `unmanaged`: a current successful reconciliation against every enabled relevant manager proves that none owns the file;
+- `unresolved`: ownership cannot currently be proven because a relevant manager is unavailable, path reconciliation is incomplete, or previous ownership evidence cannot yet be refreshed;
+- `ambiguous`: more than one manager currently claims the file.
+
+Historical ownership is sticky evidence. A previously managed file does not become unmanaged merely because its manager is offline, its mount mapping breaks, or a reconciliation record expires. It becomes unresolved until ownership can be proved again.
+
+If one file matches multiple managers, Thelxinoe marks the binding ambiguous and blocks manager-routed destructive actions until the conflict is resolved.
+
+Before a destructive or monitoring action, Thelxinoe refreshes the ownership state when the last successful reconciliation is no longer current enough for that operation. Managed deletion and monitoring changes go through the owning manager API. Direct filesystem deletion is allowed only for confirmed-unmanaged files. Unresolved and ambiguous ownership blocks the action. A manager timeout, rejection, or API failure never causes a fallback to direct filesystem deletion.
+
+TV bindings retain the exact manager episode/file identities associated with each logical episode. Season-level actions translate the Thelxinoe logical season into the exact set of manager-owned episodes/files. Matching numeric season and episode coordinates alone is insufficient. If provider/order mapping is not one-to-one or cannot be proven, automated season-level monitoring/deletion is blocked until the mapping is corrected.
+
+Thelxinoe does not autonomously rename, move, or reorganize media.

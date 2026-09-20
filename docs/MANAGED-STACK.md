@@ -33,3 +33,17 @@ The installation proof creates all six services, validates their real API connec
 `compose.adoption.test.yaml` and `scripts/test-managed-adoption.mjs` use another isolated deployment on HTTPS port 25443. The test rejects foreign Compose ownership, adopts standalone Radarr, verifies a retained appdata sentinel and integration identity, and verifies retirement of the original. It intentionally refuses to recreate a previously used fixture. A blocked setup can be retried through the authenticated first-party retry action after correcting the cause.
 
 Sanitized local results: `.local/managed-install-result.json`, `.local/managed-wiring-result.json`, `.local/managed-ui-result.json`, `.local/adoption-result.json`. Unit tests cover privilege boundaries, encrypted job credentials, foreign ownership, configuration drift and atomic generation commits. Linux controller/server tests and Windows production installer builds are part of the validation gates.
+
+## Managed Docker stack
+
+V1 can install or adopt local Docker instances of Radarr, Sonarr, Lidarr, Bazarr, Prowlarr, and NZBGet. Remote API-only instances are deferred.
+
+Thelxinoe manages stable upstream releases only. Nightly, develop, beta, preview, and similar channels are permanently outside the managed-service model.
+
+Thelxinoe-created services use curated images and templates. Installed versions are stored by immutable image digest.
+
+The controller owns Docker-level configuration such as image, mounts, networks, ports, environment, restart policy, labels, and lifecycle. Each service owns its application-level configuration.
+
+Docker-level ownership is exclusive. Adoption means Thelxinoe becomes the only orchestrator that is allowed to recreate or mutate that container's Docker configuration. Containers still belonging to another Compose project or another detected orchestrator cannot be adopted until the administrator removes that competing ownership. For an adopted standalone container, Thelxinoe captures and validates the supported parts of its current spec, records the new desired spec under Thelxinoe ownership, and only then manages lifecycle/update operations. Drift detection reports outside mutations instead of silently accepting a second owner.
+
+Thelxinoe automatically wires mechanical relationships where APIs allow it, including Prowlarr to the media managers, NZBGet as download client, Bazarr to Sonarr/Radarr, categories, and canonical paths. Real administrator choices remain explicit.

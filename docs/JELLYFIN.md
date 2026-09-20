@@ -52,3 +52,11 @@ Jellyfin Android TV remux/subtitle and transcode evidence is in `.local/jellyfin
 Known limits: Wholphin can lose an already-active, single long subtitle cue after a seek, with either external WebVTT or SubRip; ordinary timed cues display after forward/back seeks and resume. Forced subtitle flags and forced-only selection are supported, but that selection mode has not been exercised in the TV UI. Universal audio conversion for clients that bypass playback-info is not yet supported. UDP discovery replies are tested on the host; the Android emulator's NAT does not provide a normal LAN broadcast path. Playlists are edited in the first-party application; compatibility clients can browse, play and favorite them. Person/genre entity indexes, theme media, administration, remote control and online-provider libraries are not exposed.
 
 Normal access-log credential redaction and diagnostic export are covered. The diagnostics fixture authenticates a compatibility device, exercises query-token transport, stores a credential-bearing error/audit target and verifies the exported allowlist excludes those values and all authentication tokens. A compatibility token cannot authorize the export. Normal LAN broadcast discovery remains a deployment acceptance check because the emulator has no normal LAN broadcast path. Supporting newer client versions requires repeating this matrix.
+
+## Jellyfin media-client compatibility
+
+Thelxinoe targets Jellyfin media-client compatibility for Movies, Shows, and Music. It does not aim to implement the whole Jellyfin server API.
+
+The compatibility layer includes server discovery and server info, authentication/device identity, Quick Connect, libraries/views, browsing/filter/search, images and metadata, Favorites and playlists where applicable, playback info and capability negotiation, direct/remux/transcode URLs, playback progress/stopped/watched state, and Media Segments.
+
+Wholphin is a required tested client. Full Jellyfin administration, plugin APIs, Live TV backend, task APIs, and unrelated server endpoints are outside the contract.

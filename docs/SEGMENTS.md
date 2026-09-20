@@ -19,3 +19,15 @@ Browser and Windows MPV controls share the skip policy. Auto seeks once per segm
 - Windows production bundle and live MPV Ask/Auto/Ignore checks pass, including file-generation identity. Run `node scripts/test-native-segments.mjs` against the launched test app. Evidence: `.local/native-segments-result.json`, `.local/native-segments.png`.
 
 Protocol references: [Jellyfin Media Segments controller](https://github.com/jellyfin/jellyfin/blob/master/Jellyfin.Api/Controllers/MediaSegmentsController.cs), [Chromaprint configuration](https://github.com/acoustid/chromaprint/blob/master/src/fingerprinter_configuration.h), [FFmpeg Chromaprint output](https://github.com/FFmpeg/FFmpeg/blob/master/libavformat/chromaprint.c), [TheIntroDB v3 API client](https://github.com/TheIntroDB/theintrodb-npm).
+
+## Media segments and skip behavior
+
+Thelxinoe stores provider-independent Intro, Recap, Credits, and Preview segments.
+
+Sources include local recurring-audio analysis and TheIntroDB-style external timestamps. Manual corrections override automatic sources.
+
+Each user selects Auto, Ask, or Ignore for each segment type. The default is Ask.
+
+Segment analysis runs as low-priority background work. New episodes are prioritized. Playback and library import never wait for analysis.
+
+The same segment records feed first-party clients and the Jellyfin-compatible API.

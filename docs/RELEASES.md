@@ -48,3 +48,23 @@ Recovery reads controller journals and retained files/images; it does not start 
 Use the generated deployment `compose.yaml` and `compose.override.yaml` together for recreation. The override pins accepted immutable images, even if a bootstrap file names an older version. The controller accepts new Compose container IDs only after comparing images, names, environment, commands, host access, mounts and networks, then records a new generation. Starting a stale controller cannot acquire the accepted writer role.
 
 Encrypted archives can restore an earlier accepted server/controller generation when its historical descriptor, retained images and managed-service layout are still available. The authenticated archive descriptor must match the controller's historical record. Restoring into a different host/layout requires restoring the deployment directory and original mount/network layout first; arbitrary archive-supplied Docker configurations are rejected.
+
+## Thelxinoe updates
+
+One monorepo release version covers server, controller, web, and Tauri artifacts.
+
+The release publishes a signed manifest containing product version, server image digest, controller image digest, desktop artifact hashes, API compatibility metadata, database migration metadata, and rollback-safety metadata.
+
+The server update policy is Automatic, Notify, or Manual, with Notify as default.
+
+The Docker controller applies the server release from the persistent first-party deployment descriptor. Controller replacement uses the fenced self-handoff protocol described in the runtime topology so the existing controller remains the only Docker writer until the successor path is proven healthy and the new generation is committed.
+
+Before an update, the running server creates a verified rollback bundle. SQLite is captured through its supported online backup mechanism or a quiesced database copy rather than by copying live WAL files. The controller records the old deployment descriptor and retains the previous images before stopping the old server.
+
+The controller owns an offline restore path that does not require the new server binary or the migrated database to start. Release migration metadata declares whether rollback can reuse the migrated state or requires restoration of the pre-update bundle. A forward-only database migration is therefore not automatically disqualifying, but Automatic installation is allowed only when the current controller understands and has successfully prepared a tested unattended recovery path for that release. If no unattended recovery path exists, the release can only be installed after explicit administrator action.
+
+During server validation, the successor server runs in a pre-activation mode with persistent scheduled jobs and external side-effect work disabled, no privileged Docker access, and no live integration egress. Its migration, local-state, and health checks complete before production activation. If validation fails before activation, the controller restores the old deployment descriptor, old images, and pre-update server state offline. The update is not considered committed until those checks and the controller handoff have completed.
+
+Automatic server updates wait for active playback, transcodes, downloads, and other affected work to finish.
+
+Tauri updates separately from the same product release. Client/server compatibility depends on the API contract, not exact version equality.

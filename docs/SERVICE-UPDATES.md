@@ -35,3 +35,32 @@ node scripts/test-service-update-commit.mjs
 Use the managed test fixture described in [managed stack setup](MANAGED-STACK.md). The rollback test consumes the recorded successful Radarr preflight; run the preflight test again before repeating it. A kind argument, such as `bazarr`, reruns only that service's check.
 
 Sanitized evidence is in `.local/service-preflights.json`, `.local/service-rollback-result.json`, `.local/service-update-result.json` and `.local/service-updates.png`. Unit tests cover concurrent submissions, administrator permissions, maintenance windows, snapshot entry restrictions and rejection of rollback after activation. The Windows installer, frontend checks and Linux controller/server tests are included in the build gates.
+
+## Managed-service updates
+
+Each service has Automatic, Notify, or Manual update policy, with a server default and per-service override.
+
+An update must use a stable upstream release and pass compatibility preflight.
+
+Every curated service defines a consistent appdata snapshot strategy. The strategy may use a service-supported backup/export, a filesystem snapshot with defined consistency guarantees, or a short quiesce/stop-and-copy operation. A recursive copy of a live database-bearing appdata directory is not considered a valid snapshot merely because the files can be read.
+
+Preflight flow:
+
+1. Resolve and pull the candidate immutable digest.
+2. Create a consistent disposable appdata snapshot using the service's snapshot strategy.
+3. Sanitize or override runtime wiring that would point at live peers, then start the candidate against the disposable snapshot on a dedicated preflight network.
+4. Give the candidate no production Docker networks, no Docker socket/controller access, no host-service access, and no arbitrary outbound egress. Mount media read-only when the contract needs media visibility. Publish no host ports.
+5. Provide only controlled disposable/stub dependencies needed by the adapter contract. The test runner can reach the candidate on the preflight network; the candidate cannot reach live media-stack instances or other production endpoints.
+6. Let candidate migrations run on the disposable snapshot.
+7. Run adapter contract and smoke tests.
+8. Classify the candidate as compatible, incompatible, or unable to verify. If required behavior cannot be tested without unsafe production access, classification is unable to verify rather than weakening isolation.
+
+Only compatible candidates can install automatically.
+
+Before live replacement, Thelxinoe waits for the service to be idle, takes another consistent recovery snapshot, and records the exact old image/spec. The old container is then stopped.
+
+The candidate first starts against the real appdata inside the same isolation boundary used for preflight. Migrations, startup, health checks, and the adapter contract run before the candidate receives production networks or normal access to peer services. If this isolated live-state validation fails, Thelxinoe stops the candidate, restores the recovery snapshot and prior image/spec, and restarts the old service. Because the candidate had not crossed the production activation boundary, this rollback does not need to undo API mutations in live peers.
+
+After isolated validation succeeds, Thelxinoe starts the accepted image with its production networks, mounts, and wiring and marks the update committed. Once a service has crossed that activation boundary and can perform normal external work, later failures are runtime failures rather than assumed side-effect-free update rollbacks. An explicit recovery restore may still be offered, but restoring appdata is not claimed to reverse changes already made to media, downloads, or peer services.
+
+Automatic updates wait for the affected service to be idle and can use an admin maintenance window.

@@ -73,3 +73,19 @@ Each user can track up to 100 channel names or public Kick channel URLs. Optiona
 Metadata work takes one channel per fair scheduler turn, backs off on failures and persists shared rate-limit delays. Disconnect pauses synchronization and preserves tracked channels. Removing a channel stops that user's corresponding active sessions. Delete Kick data also removes that user's Kick history and tracked channels. Late replies cannot restore a removed/re-added channel generation.
 
 Real validation passed the imported Kick application credentials, public metadata, and live playback in Chromium and Windows MPV. Evidence: `.local/twitch-live-result.json`, `.local/twitch-playback-result.json`, `.local/twitch-native-result.json`, `.local/kick-metadata-result.json`, `.local/kick-playback-result.json`, `.local/kick-native-result.json`.
+
+## Online media
+
+The server owns YouTube, Twitch, and Kick synchronization and playback tools.
+
+yt-dlp and Streamlink are server-managed packages that can update independently of the main server image. Running jobs pin the resolved tool version for their lifetime.
+
+The main YouTwitch user-facing behavior stays in v1: YouTube subscriptions/feed, Shorts filtering, live/replay handling, watchlists, downloads, resume and watched state, Twitch followed-live channels, per-user tracked Kick channels, history/statistics, and quota-aware synchronization.
+
+The server owns one shared YouTube Data API quota budget and schedules users fairly.
+
+Google/YouTube OAuth authenticates Data API operations such as subscriptions and account-backed synchronization. Those OAuth tokens are never passed to yt-dlp and do not imply that server-side extraction has the same account entitlement.
+
+V1 yt-dlp playback and download support is limited to media the server can extract without viewer cookies or another per-user extractor credential. Content that requires a logged-in account, membership, private-video entitlement, or similar viewer authentication may still appear through API metadata, but server playback/download reports it as requiring unsupported extractor authentication. Supporting such content later requires a separate per-user extractor credential/session design with explicit storage, refresh, revocation, and sharing rules.
+
+One physical YouTube download can serve multiple users. V1 shared downloads therefore come only from extraction that does not depend on one user's private entitlement. User watchlists, pins, watched state, and history stay separate.

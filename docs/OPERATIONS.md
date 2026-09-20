@@ -29,3 +29,29 @@ Archives include the full first-party descriptor, Compose pins and managed-servi
 `compose.operations.test.yaml` is an isolated HTTPS deployment. `node scripts/test-operations.mjs` exercises encrypted backup, wrong-password rejection, server-state restoration, Radarr appdata restoration and API reconnection. `node scripts/test-backup-interruption.mjs` terminates that test controller during snapshot and restore, then verifies restart and rollback of the incomplete restore. The scripts must only target their dedicated generated test deployment.
 
 Private results: `.local/operations-result.json`, `.local/backup-interruption-result.json`, `.local/operations.png`. Private test passphrases and archives are excluded from Git. Rust tests check notification isolation/deduplication, diagnostic redaction, user cleanup, archive corruption, traversal, links and duplicate entries. Browser notification and administration workflows are checked independently of the backup interruption tests.
+
+## Notifications, admin, and audit
+
+Notifications live on the server. Connected web/PWA/Tauri clients receive realtime notifications. Background Web Push while the browser is closed is deferred.
+
+The admin UI shows backend and storage health, managed services and updates, integration health, Prowlarr/indexer failures, playback/transcode sessions, download activity, pending retention, backup state, and recent application errors.
+
+Admins can inspect aggregate statistics and nominative per-user history/statistics.
+
+Important administrative and destructive operations go into an audit log. Playback activity itself stays in playback history, not the audit log.
+
+The server can export a redacted diagnostic bundle. It excludes secrets, tokens, media contents, cookies, and detailed user history unless a future explicit diagnostic mode says otherwise.
+
+## Backups
+
+V1 supports manual backup and restore of Thelxinoe state and managed-service appdata. Media files are outside backup scope.
+
+Backups write to a local or Compose-mounted filesystem destination. Off-host replication is external to Thelxinoe.
+
+The same consistency primitives used for update snapshots are used by manual backups. Thelxinoe SQLite uses its online backup/quiesce path. Each managed service uses the snapshot strategy defined by its curated adapter/template. A backup operation reports a component as failed rather than archive a knowingly inconsistent live database copy.
+
+The first-party deployment descriptor and the metadata needed to recreate the accepted server/controller generation are part of restorable server state. A restore can therefore recover both data and the image/spec generation compatible with that data.
+
+Pre-update snapshots are mandatory where rollback depends on service state, and the controller verifies that the required snapshot/rollback bundle exists before crossing an update activation boundary.
+
+Portable backups containing secret-restoration material require an administrator-supplied encryption passphrase.

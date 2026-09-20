@@ -2,6 +2,8 @@
 
 A self-hosted media server with a shared Svelte web and Windows Tauri application.
 
+See the [documentation index](docs/README.md) for product scope, architecture and operations.
+
 The planned v1 workflows are implemented and locally validated. See [implementation status](docs/STATUS.md) for evidence and supported limits, and the [release checklist](docs/RELEASE_CHECKLIST.md) before distributing a release. Public artifact hosting and hosted CI are not configured in this checkout.
 
 ## Development

@@ -11,3 +11,11 @@ Install the app from Chromium's install menu after opening the HTTPS site. Its m
 Auto video quality uses a 4 Mbps transcode default for public client addresses when the client supports HLS. LAN clients keep automatic direct-play/remux behavior. Explicit Original and bitrate choices take precedence. Music keeps its existing direct/gapless path. Correct proxy trust is necessary for address-based defaults; remote access through a private VPN is treated as LAN.
 
 `scripts/test-pwa-remote.mjs` exercises fresh setup on a 390-pixel Chromium mobile viewport, all main sections without document overflow, installability, offline reconnect, cookie/CSRF/API-version checks, HTTPS Range and HLS requests, and the trusted remote bitrate default. Earlier proxy fixtures additionally cover event replay/reconnect, device revocation and OAuth callbacks. See [TESTING.md](TESTING.md).
+
+## Reverse proxy and public URL
+
+The server can operate on a LAN without a public URL.
+
+When a public URL is configured, the server uses it for externally valid OAuth callbacks, invitations, and absolute links. Forwarded scheme, host, and client IP headers are trusted only from configured proxy addresses or networks.
+
+The web frontend and API should share one origin. CORS is enabled only for explicit origins that need browser cross-origin access.
