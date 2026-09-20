@@ -31,6 +31,8 @@ pub struct Conversion {
     pub tone_map: bool,
     #[serde(default)]
     pub deinterlace: bool,
+    #[serde(default)]
+    pub fit: bool,
 }
 pub(crate) fn conversion_args(options: &Options) -> Result<Vec<String>> {
     let mut rate = bitrate(&options.quality)?.unwrap_or(8_000_000);
@@ -69,6 +71,12 @@ pub(crate) fn conversion_args(options: &Options) -> Result<Vec<String>> {
             c.height,
             c.frame_rate
         );
+        if c.fit {
+            filter = format!(
+                "scale={}:{}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={}:{}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={:.6}",
+                c.width, c.height, c.width, c.height, c.frame_rate
+            );
+        }
         extra = vec![
             "-profile:v".into(),
             c.profile.clone(),

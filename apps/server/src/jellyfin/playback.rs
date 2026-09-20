@@ -81,6 +81,12 @@ pub async fn sources(state: &AppState, media: &str) -> Result<Vec<Value>> {
     }
     Ok(result)
 }
+pub async fn sources_for(state: &AppState, p: &Principal, media: &str) -> Result<Vec<Value>> {
+    if let Some(item) = super::online::resolve(state, p, media).await? {
+        return super::online::sources(state, p, &item).await;
+    }
+    sources(state, media).await
+}
 pub async fn info(
     state: &AppState,
     p: &Principal,
@@ -93,11 +99,24 @@ pub async fn info(
     {
         return Err(ApiError::forbidden());
     }
+    if let Some(item) = super::online::resolve(state, p, media).await? {
+        return super::online::playback_info(state, p, &item, query, input).await;
+    }
     let file = input["MediaSourceId"]
         .as_str()
         .or(query.get("mediasourceid").map(String::as_str))
         .map(canonical);
     let source = core::source(state, media, file.as_deref()).await?;
+    info_source(state, p, media, query, input, source).await
+}
+pub(super) async fn info_source(
+    state: &AppState,
+    p: &Principal,
+    media: &str,
+    query: &Query,
+    input: Value,
+    source: Source,
+) -> Result<Value> {
     let mut dto = source_dto(&source).await?;
     let tracks = source.tracks().await?;
     let field = |name: &str| {
@@ -314,7 +333,10 @@ pub async fn info(
     Ok(json!({"MediaSources":[dto],"PlaySessionId":id}))
 }
 pub async fn report(state: &AppState, p: &Principal, input: Value, stopped: bool) -> Result<()> {
-    let media = canonical(input["ItemId"].as_str().unwrap_or_default());
+    let mut media = canonical(input["ItemId"].as_str().unwrap_or_default());
+    if let Some(item) = super::online::resolve(state, p, &media).await? {
+        media = item.media();
+    }
     let id = if let Some(id) = input["PlaySessionId"].as_str().filter(|s| !s.is_empty()) {
         canonical(id)
     } else {
@@ -327,7 +349,7 @@ pub async fn report(state: &AppState, p: &Principal, input: Value, stopped: bool
     let auth = p.session_id.clone();
     let row=state.db.call(move|db|{
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let row=tx.query_row("SELECT c.sequence,s.position FROM compat_playbacks c JOIN playback_sessions s ON s.id=c.playback_id WHERE s.id=?1 AND s.media_id=?2 AND s.user_id=?3 AND s.auth_session_id=?4",params![key,media,user,auth],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,f64>(1)?))).optional()?;
+        let row=tx.query_row("SELECT c.sequence,s.position FROM compat_playbacks c JOIN playback_sessions s ON s.id=c.playback_id WHERE s.id=?1 AND COALESCE(s.media_id,'youtube:'||s.youtube_video_id,s.live_media_id)=?2 AND s.user_id=?3 AND s.auth_session_id=?4",params![key,media,user,auth],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,f64>(1)?))).optional()?;
         if row.is_some(){tx.execute("UPDATE compat_playbacks SET sequence=sequence+1 WHERE playback_id=?1",[key])?;}
         tx.commit()?;Ok(row)
     }).await?.ok_or_else(ApiError::not_found)?;

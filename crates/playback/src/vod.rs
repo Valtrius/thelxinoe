@@ -1,6 +1,6 @@
 //! A complete VOD timeline for clients that seek by requesting HLS segments.
 //! Segments are generated on demand and may be evicted and regenerated.
-use crate::{Options, Source, conversion_args};
+use crate::{Options, RemoteSource, Source, conversion_args};
 use anyhow::{Context, Result, bail};
 use std::{
     collections::HashMap,
@@ -19,12 +19,23 @@ struct Run {
     revision: String,
     directory: PathBuf,
     source: Source,
+    remote: Option<RemoteSource>,
     options: Options,
     mode: String,
     boundaries: Vec<f64>,
     video_start: f64,
-    gate: Mutex<()>,
+    gate: Mutex<Option<RemoteWork>>,
     canceled: watch::Sender<bool>,
+}
+struct RemoteWork {
+    first: usize,
+    end: usize,
+    task: tokio::task::JoinHandle<Result<()>>,
+}
+impl Drop for RemoteWork {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 pub struct VodCache {
     root: PathBuf,
@@ -48,11 +59,51 @@ impl VodCache {
         options: &Options,
         mode: &str,
     ) -> Result<String> {
-        source.validate().await?;
+        self.start_input(id, source, options, mode, None).await
+    }
+    pub async fn start_remote(
+        &self,
+        id: &str,
+        remote: &RemoteSource,
+        duration: f64,
+        options: &Options,
+    ) -> Result<String> {
+        remote.validate()?;
+        if remote.live {
+            bail!("A live stream has no VOD timeline");
+        }
+        let source = Source {
+            id: id.into(),
+            media_id: id.into(),
+            generation: id.into(),
+            edition: "public".into(),
+            path: PathBuf::new(),
+            root: PathBuf::new(),
+            size: 0,
+            modified: String::new(),
+            probe: serde_json::json!({"format":{"duration":duration.to_string()},"streams":[{"codec_type":"video","codec_name":"h264"},{"codec_type":"audio","codec_name":"aac"}]}),
+        };
+        self.start_input(id, &source, options, "transcode", Some(remote.clone()))
+            .await
+    }
+    async fn start_input(
+        &self,
+        id: &str,
+        source: &Source,
+        options: &Options,
+        mode: &str,
+        remote: Option<RemoteSource>,
+    ) -> Result<String> {
+        if remote.is_none() {
+            source.validate().await?;
+        }
         let duration = source.duration();
         if !duration.is_finite() || !(0.0..=86400.0).contains(&duration) || duration == 0.0 {
             bail!("Seekable conversion requires a duration of at most 24 hours");
         }
+        // Remote windows prepare adjacent segments over the same connection.
+        // Six-second segments also keep conversion overhead bounded on TVs.
+        let segment = 6.0;
         let (boundaries, video_start) = if mode == "remux" && source.video_codec().is_some() {
             let _slot = self
                 .slots
@@ -62,8 +113,8 @@ impl VodCache {
             keyframes(source).await?
         } else {
             (
-                (0..(duration / 6.0).ceil() as usize)
-                    .map(|i| i as f64 * 6.0)
+                (0..(duration / segment).ceil() as usize)
+                    .map(|i| i as f64 * segment)
                     .filter(|time| *time == 0.0 || *time < duration - 0.25)
                     .chain(std::iter::once(duration))
                     .collect(),
@@ -108,11 +159,12 @@ impl VodCache {
                 revision: revision.clone(),
                 directory,
                 source: source.clone(),
+                remote,
                 options: options.clone(),
                 mode: mode.into(),
                 boundaries,
                 video_start,
-                gate: Mutex::new(()),
+                gate: Mutex::new(None),
                 canceled: watch::channel(false).0,
             }),
         );
@@ -143,7 +195,7 @@ impl VodCache {
         if index + 1 >= run.boundaries.len() {
             return Ok(None);
         }
-        let _gate = tokio::time::timeout(Duration::from_secs(45), run.gate.lock())
+        let mut gate = tokio::time::timeout(Duration::from_secs(45), run.gate.lock())
             .await
             .context("Segment preparation is busy")?;
         if *run.canceled.borrow() {
@@ -152,6 +204,12 @@ impl VodCache {
         let path = run.directory.join(name);
         if tokio::fs::try_exists(&path).await? {
             return Ok(Some(path));
+        }
+        if run.remote.is_some() {
+            return self
+                .remote_file(&run, index, path, &mut gate)
+                .await
+                .map(Some);
         }
         run.source.validate().await?;
         if fs2::available_space(&run.directory)? < 512 * 1024 * 1024 {
@@ -304,9 +362,153 @@ impl VodCache {
         let run = self.runs.lock().await.remove(id);
         if let Some(run) = run {
             run.canceled.send_replace(true);
-            let _gate = run.gate.lock().await;
+            let mut gate = run.gate.lock().await;
+            if let Some(mut work) = gate.take() {
+                work.task.abort();
+                let _ = (&mut work.task).await;
+            }
             let _ = tokio::fs::remove_dir_all(&run.directory).await;
         }
+    }
+    async fn remote_file(
+        &self,
+        run: &Run,
+        index: usize,
+        path: PathBuf,
+        work: &mut Option<RemoteWork>,
+    ) -> Result<PathBuf> {
+        if work
+            .as_ref()
+            .is_some_and(|w| index < w.first || index >= w.end)
+        {
+            let mut old = work.take().unwrap();
+            old.task.abort();
+            let _ = (&mut old.task).await;
+        }
+        if work.is_none() {
+            let remote = run.remote.as_ref().unwrap();
+            remote.validate()?;
+            if fs2::available_space(&run.directory)? < 512 * 1024 * 1024 {
+                bail!("Insufficient conversion cache space");
+            }
+            let slot = self
+                .slots
+                .clone()
+                .try_acquire_owned()
+                .context("All conversion slots are busy")?;
+            // At most 48 seconds of media per connection. Publish each segment
+            // atomically as soon as it is ready, while preparing the next ones.
+            let end = (index + 8).min(run.boundaries.len() - 1);
+            let start = run.boundaries[index];
+            let duration = run.boundaries[end] - start;
+            let mut command = Command::new("ffmpeg");
+            command.env_clear();
+            for name in ["PATH", "SystemRoot", "WINDIR"] {
+                if let Some(value) = std::env::var_os(name) {
+                    command.env(name, value);
+                }
+            }
+            command.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y"]);
+            for address in std::iter::once(&remote.video).chain(remote.audio.iter()) {
+                command.args([
+                    "-protocol_whitelist",
+                    "https,tls,tcp,crypto",
+                    "-rw_timeout",
+                    "15000000",
+                ]);
+                if start > 0.0 {
+                    command.args(["-ss", &start.to_string()]);
+                }
+                command.args(["-i", address]);
+            }
+            command.args([
+                "-t",
+                &duration.to_string(),
+                "-map",
+                "0:v:0",
+                "-map",
+                if remote.audio.is_some() {
+                    "1:a:0"
+                } else {
+                    "0:a:0?"
+                },
+                "-sn",
+                "-dn",
+                "-map_metadata",
+                "-1",
+            ]);
+            command.args(conversion_args(&run.options)?);
+            command
+                .args([
+                    "-force_key_frames",
+                    "expr:gte(t,n_forced*6)",
+                    "-avoid_negative_ts",
+                    "make_zero",
+                    "-f",
+                    "hls",
+                    "-hls_time",
+                    "6",
+                    "-hls_list_size",
+                    "0",
+                    "-start_number",
+                    &index.to_string(),
+                    "-hls_flags",
+                    "independent_segments+temp_file",
+                    "-hls_segment_filename",
+                ])
+                .arg(run.directory.join("segment-%06d.ts"))
+                .arg(run.directory.join("work.m3u8"))
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .kill_on_drop(true);
+            #[cfg(windows)]
+            command.creation_flags(0x08000000);
+            let mut child = command.spawn().context("Start public video conversion")?;
+            let mut canceled = run.canceled.subscribe();
+            let directory = run.directory.clone();
+            let task = tokio::spawn(async move {
+                let _slot = slot;
+                let result = tokio::select! {
+                    result = tokio::time::timeout(Duration::from_secs(60), child.wait()) =>
+                        result.context("Public video conversion timed out").and_then(|r| r.map_err(Into::into)),
+                    _ = canceled.changed() => Err(anyhow::anyhow!("Playback was stopped")),
+                    result = monitor_work(&directory) => Err(result),
+                };
+                if result.is_err() {
+                    let _ = child.kill().await;
+                }
+                anyhow::ensure!(result?.success(), "Unable to prepare public video segments");
+                Ok(())
+            });
+            *work = Some(RemoteWork {
+                first: index,
+                end,
+                task,
+            });
+        }
+        tokio::time::timeout(Duration::from_secs(40), async {
+            loop {
+                if *run.canceled.borrow() {
+                    bail!("Playback was stopped");
+                }
+                if tokio::fs::try_exists(&path).await? {
+                    trim(&run.directory, &path).await?;
+                    return Ok(path);
+                }
+                if work.as_ref().unwrap().task.is_finished() {
+                    (&mut work.take().unwrap().task).await??;
+                    // A successful muxer must have published the requested segment.
+                    if tokio::fs::try_exists(&path).await? {
+                        return Ok(path);
+                    }
+                    bail!("Public video segment is unavailable");
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .context("Public video segment timed out")?
     }
     pub async fn maintain(&self, active: &[String], budget: u64) -> Result<Vec<String>> {
         let runs = self

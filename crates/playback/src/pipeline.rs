@@ -244,6 +244,18 @@ impl Pipelines {
     ) -> Result<(String, f64)> {
         Ok((self.vod.start(id, source, options, mode).await?, 0.0))
     }
+    pub async fn start_remote_vod(
+        &self,
+        id: &str,
+        source: &RemoteSource,
+        duration: f64,
+        options: &Options,
+    ) -> Result<(String, f64)> {
+        Ok((
+            self.vod.start_remote(id, source, duration, options).await?,
+            0.0,
+        ))
+    }
     pub async fn file(&self, id: &str, revision: &str, name: &str) -> Result<Option<PathBuf>> {
         let valid = name == "index.m3u8"
             || (name.starts_with("segment-")

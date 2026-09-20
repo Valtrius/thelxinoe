@@ -44,7 +44,7 @@ pub fn result(items: Vec<Value>, total: usize, start: usize) -> Value {
 }
 pub async fn views(state: &AppState) -> Result<Value> {
     let server = state.server_id.to_string();
-    let items = state.db.call(move |db| {
+    let mut items = state.db.call(move |db| {
         let mut items = db.prepare("SELECT id,name,kind FROM library_roots ORDER BY name")?.query_map([], |r| {
             let domain: String = r.get(2)?;
             Ok(json!({"Id":r.get::<_,String>(0)?,"Name":r.get::<_,String>(1)?,"Type":"CollectionFolder","IsFolder":true,"CollectionType":if domain=="shows" {"tvshows"}else{&domain},"ServerId":server,"ImageTags":{}}))
@@ -52,6 +52,7 @@ pub async fn views(state: &AppState) -> Result<Value> {
         items.push(json!({"Id":PLAYLIST_VIEW,"Name":"Playlists","Type":"CollectionFolder","IsFolder":true,"CollectionType":"playlists","ServerId":server,"ImageTags":{}}));
         Ok(items)
     }).await?;
+    items.extend(super::online::views(&state.server_id));
     let total = items.len();
     Ok(result(items, total, 0))
 }
@@ -134,6 +135,9 @@ pub async fn browse(
     query: &Query,
     id: Option<&str>,
 ) -> Result<Value> {
+    if let Some(value) = super::online::browse(state, p, query, id).await? {
+        return Ok(value);
+    }
     if let Some(id) = id {
         if is_playlist(state, id).await? {
             return playlists(state, p, Some(id), query).await;
@@ -330,6 +334,7 @@ pub async fn playlists(
     id: Option<&str>,
     q: &Query,
 ) -> Result<Value> {
+    super::online::ensure_lists(state, p).await?;
     let user = p.user.id.clone();
     let id = id.map(canonical);
     let single = id.is_some();
@@ -354,10 +359,36 @@ pub async fn playlists(
             .unwrap_or(100)
             .min(500)
     };
+    let search = q.get("searchterm").cloned();
+    let media = q.get("mediatypes").cloned();
+    let order = if q
+        .get("sortby")
+        .is_some_and(|v| v.to_ascii_lowercase().contains("date"))
+    {
+        "updated_at"
+    } else {
+        "name COLLATE NOCASE"
+    };
+    let direction = if q
+        .get("sortorder")
+        .is_some_and(|v| v.eq_ignore_ascii_case("Descending"))
+    {
+        "DESC"
+    } else {
+        "ASC"
+    };
     let (items,total)=state.db.call(move|db|{
-        let filter="(?2 IS NULL OR p.id=?2) AND (?3=0 OR EXISTS(SELECT 1 FROM playlist_favorites f WHERE f.playlist_id=p.id AND f.user_id=?1))";
-        let total=db.query_row(&format!("SELECT COUNT(*) FROM playlists p WHERE {filter}"),params![user,id,favorite],|r|r.get::<_,i64>(0).map(|v|v as usize))?;
-        let items=db.prepare(&format!("SELECT p.id,p.name,p.description,EXISTS(SELECT 1 FROM playlist_favorites f WHERE f.playlist_id=p.id AND f.user_id=?1),(SELECT COUNT(*) FROM playlist_items i WHERE i.playlist_id=p.id) FROM playlists p WHERE {filter} ORDER BY p.name,p.id LIMIT ?4 OFFSET ?5"))?.query_map(params![user,id,favorite,limit,start],|r|Ok(json!({"Id":r.get::<_,String>(0)?,"Name":r.get::<_,String>(1)?,"Overview":r.get::<_,String>(2)?,"Type":"Playlist","MediaType":"Audio","IsFolder":true,"ServerId":server,"ChildCount":r.get::<_,i64>(4)?,"ImageTags":{},"UserData":{"Key":r.get::<_,String>(0)?,"ItemId":r.get::<_,String>(0)?,"IsFavorite":r.get::<_,bool>(3)?,"PlayCount":0,"Played":false,"PlaybackPositionTicks":0}})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let source="WITH lists AS (
+          SELECT p.id,p.name,p.description,'Audio' media_type,EXISTS(SELECT 1 FROM playlist_favorites f WHERE f.playlist_id=p.id AND f.user_id=?1) favorite,
+          (SELECT COUNT(*) FROM playlist_items i WHERE i.playlist_id=p.id) children,0 updated_at
+          FROM playlists p
+          UNION ALL
+          SELECT c.id,w.name,CASE WHEN w.auto_download=1 THEN 'YouTube watchlist · Automatic server downloads enabled' ELSE 'YouTube watchlist' END,'Video',c.favorite,
+          (SELECT COUNT(*) FROM youtube_watchlist_items i WHERE i.watchlist_id=w.id),w.updated_at
+          FROM youtube_watchlists w JOIN compat_online_items c ON c.user_id=w.user_id AND c.watchlist_id=w.id WHERE w.user_id=?1)";
+        let filter="(?2 IS NULL OR id=?2) AND (?3=0 OR favorite=1) AND (?4 IS NULL OR instr(lower(name),lower(?4))>0) AND (?5 IS NULL OR instr(lower(?5),lower(media_type))>0)";
+        let total=db.query_row(&format!("{source} SELECT COUNT(*) FROM lists WHERE {filter}"),params![user,id,favorite,search,media],|r|r.get::<_,i64>(0).map(|v|v as usize))?;
+        let items=db.prepare(&format!("{source} SELECT id,name,description,media_type,favorite,children FROM lists WHERE {filter} ORDER BY {order} {direction},id LIMIT ?6 OFFSET ?7"))?.query_map(params![user,id,favorite,search,media,limit,start],|r|Ok(json!({"Id":r.get::<_,String>(0)?,"Name":r.get::<_,String>(1)?,"Overview":r.get::<_,String>(2)?,"Type":"Playlist","MediaType":r.get::<_,String>(3)?,"IsFolder":true,"LocationType":"Remote","ServerId":server,"ChildCount":r.get::<_,i64>(5)?,"ImageTags":{},"UserData":{"Key":r.get::<_,String>(0)?,"ItemId":r.get::<_,String>(0)?,"IsFavorite":r.get::<_,bool>(4)?,"PlayCount":0,"Played":false,"PlaybackPositionTicks":0}})))?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok((items,total))
     }).await?;
     if single {

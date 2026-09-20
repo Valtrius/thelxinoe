@@ -22,7 +22,7 @@ use thelxinoe_playback::Source;
 mod tests;
 
 pub(crate) async fn authorize(state: &AppState, p: &Principal, video: &str) -> Result<()> {
-    if p.transport == "jellyfin" || !sync::identifier(video, 11) {
+    if !sync::identifier(video, 11) {
         return Err(ApiError::not_found());
     }
     let user = p.user.id.clone();
@@ -165,13 +165,21 @@ pub async fn request(
     Path(video): Path<String>,
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
-    authorize(&state, &p, &video).await?;
-    if !enabled(&state).await? {
+    request_for(&state, &p, video).await
+}
+pub(crate) async fn request_for(
+    state: &AppState,
+    p: &Principal,
+    video: String,
+) -> Result<Json<Value>> {
+    authorize(state, p, &video).await?;
+    if !enabled(state).await? {
         return Err(ApiError::conflict(
             "YouTube downloads are disabled by the administrator",
         ));
     }
-    let bundle = tools::ready(&state).await?;
+    let bundle = tools::ready(state).await?;
+    let p = p.clone();
     let result=state.db.call(move |db| {
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let interest=tx.query_row("SELECT EXISTS(SELECT 1 FROM youtube_state WHERE user_id=?1 AND video_id=?2 AND (watchlist=1 OR pinned=1))",params![p.user.id,video],|r|r.get::<_,bool>(0))?;

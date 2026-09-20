@@ -358,6 +358,7 @@ pub fn negotiate(
                             .get("VideoRangeType")
                             .is_some_and(|v| ["HDR10", "HLG"].contains(&v.as_str())),
                         deinterlace: values.get("IsInterlaced").is_some_and(|v| v == "true"),
+                        fit: false,
                     });
                     break 'candidate;
                 }

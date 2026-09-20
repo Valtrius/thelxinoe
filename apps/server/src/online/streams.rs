@@ -138,12 +138,14 @@ pub(crate) async fn info(state: &AppState, p: &Principal, video: &str) -> Result
         json!({"sources":[{"id":video,"edition":"public","duration":prepared.duration,"video":true,"tracks":[],"probe":{},"size":0}],"progress":[{"edition":"public","position":position,"duration":prepared.duration}],"watched":false,"live":prepared.source.live}),
     )
 }
-pub(crate) async fn create(
+
+pub(crate) async fn create_with_delivery(
     state: &AppState,
     p: &Principal,
     video: &str,
     options: Options,
     position: Option<f64>,
+    vod: bool,
 ) -> Result<Value> {
     if live::domain(video) {
         live::authorize(state, p, video).await?;
@@ -207,10 +209,17 @@ pub(crate) async fn create(
         .lock()
         .await
         .insert(sid.clone(), prepared.clone());
-    let prepared_pipeline = state
-        .playback
-        .start_remote(&sid, &prepared.source, &options, start)
-        .await;
+    let prepared_pipeline = if vod && !live {
+        state
+            .playback
+            .start_remote_vod(&sid, &prepared.source, prepared.duration, &options)
+            .await
+    } else {
+        state
+            .playback
+            .start_remote(&sid, &prepared.source, &options, start)
+            .await
+    };
     let (revision, offset) = match prepared_pipeline {
         Ok(value) => value,
         Err(_) => {

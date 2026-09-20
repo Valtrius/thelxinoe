@@ -12,7 +12,7 @@ Three followed live channels were tested. CLI and resident extraction alternated
 | First HLS playlist                      |        3.43 s, six-second segments |         1.29 s, two-second segments |                   6 |
 | First HLS playlist with reduced probing |                                  — |         1.49 s, two-second segments |                   6 |
 
-Reduced FFmpeg probing did not improve this sample and was not adopted. The implemented changes are two resident Streamlink workers and two-second online segments. The rolling playlist still covers approximately two minutes. Local media keeps its existing segment settings.
+Reduced FFmpeg probing did not improve this sample and was not adopted. The implemented changes are two resident Streamlink workers and two-second segments for continuous online playback. The rolling playlist still covers approximately two minutes. Local media keeps its existing segment settings.
 
 Browser timing starts at the card click and ends at the first decoded frame with an advancing playback position. A second pass reuses the server's one-minute extracted-source cache; it still creates a fresh playback session and FFmpeg pipeline.
 
@@ -31,7 +31,7 @@ The managed yt-dlp 2026.08.19 standalone executable was compared with the matchi
 
 The first batch measured CLI/API medians of 3.15/1.08 seconds. A second batch explicitly checked for supported H.264 video and audio formats and measured 3.13/2.00 seconds; all six attempts per method succeeded. Hashing the two managed executables took another 0.61 seconds in the second batch. Network/session variability therefore matters: the experiment supports a benefit, but not a fixed two-second saving.
 
-The Python API experiment is not enabled in production. It requires a managed Python package snapshot and update/version handling alongside the existing standalone executable bundle. Production YouTube extraction continues to use the verified CLI; it benefits from the shorter online HLS segments.
+The Python API experiment is not enabled in production. It requires a managed Python package snapshot and update/version handling alongside the existing standalone executable bundle. Production YouTube extraction continues to use the verified CLI; it benefits from the shorter continuous online HLS segments. Wholphin uses a separate complete VOD timeline for YouTube seeking, with six-second segments prepared in bounded windows over a shared upstream connection.
 
 ## Reproduction
 

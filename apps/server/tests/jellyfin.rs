@@ -78,6 +78,328 @@ async fn call(
 const DEVICE: &str = "MediaBrowser Client=\"Test%20client\", Device=\"Living room, TV\", DeviceId=\"tv-one\", Version=\"1\"";
 
 #[tokio::test]
+async fn online_libraries_and_watchlists_are_private_stable_and_use_existing_settings() {
+    let (_temp, state, first_party) = fixture().await;
+    state.db.call(|db| {
+        for user in ["alice","bob"] {
+            db.execute("INSERT INTO youtube_subscriptions(user_id,channel_id,title,snapshot,active) VALUES(?1,'channel','Channel','s',1)",[user])?;
+            for video in ["aaaaaaaaaaa","bbbbbbbbbbb"] {
+                db.execute("INSERT INTO youtube_videos(user_id,video_id,channel_id,title,privacy,duration,published_at) VALUES(?1,?2,'channel',?2,'public',120,100)",rusqlite::params![user,video])?;
+            }
+            db.execute("INSERT INTO twitch_streams(user_id,channel_id,login,display_name,title,category,viewers,started_at,snapshot,active) VALUES(?1,'123','channel','Live channel','Live','Game',10,'2026-09-20T10:00:00Z','s',1)",[user])?;
+            db.execute("INSERT INTO kick_channels(user_id,slug,generation,live,title) VALUES(?1,'channel','g',1,'Kick live')",[user])?;
+        }
+        Ok(())
+    }).await.unwrap();
+    let mut tokens = Vec::new();
+    for user in ["alice", "bob"] {
+        let (status, login) = call(
+            &state,
+            "/Users/AuthenticateByName",
+            "POST",
+            json!({"Username":user,"Pw":"a long test-only password"}),
+            &[("Authorization", DEVICE)],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        tokens.push(login["AccessToken"].as_str().unwrap().to_owned());
+    }
+    let auth = [("X-Emby-Token", tokens[0].as_str())];
+    let bob = [("X-Emby-Token", tokens[1].as_str())];
+    let views = call(&state, "/UserViews", "GET", Value::Null, &auth).await;
+    assert_eq!(views.0, StatusCode::OK);
+    let roots = views.1["Items"].as_array().unwrap();
+    let mut video_id = String::new();
+    for (name, count) in [("YouTube", 2), ("Twitch", 1), ("Kick", 1)] {
+        let root = roots.iter().find(|v| v["Name"] == name).unwrap()["Id"]
+            .as_str()
+            .unwrap();
+        let path = format!("/Items?ParentId={root}&IncludeItemTypes=Video&Limit=1");
+        let (status, page) = call(&state, &path, "GET", Value::Null, &auth).await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert_eq!(page["TotalRecordCount"], count);
+        let id = page["Items"][0]["Id"].as_str().unwrap().to_owned();
+        assert!(uuid::Uuid::parse_str(&id).is_ok());
+        assert_eq!(page["Items"][0]["LocationType"], "Remote");
+        assert_eq!(page["Items"][0]["MediaSources"][0]["Id"], id);
+        assert_eq!(
+            page["Items"][0]["MediaSources"][0]["MediaStreams"][0]["IsInterlaced"],
+            false
+        );
+        assert_eq!(
+            call(&state, &path, "GET", Value::Null, &auth).await.1["Items"][0]["Id"],
+            id
+        );
+        assert_eq!(
+            call(&state, &format!("/Items/{id}"), "GET", Value::Null, &bob)
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            call(
+                &state,
+                &format!("/Items/{id}/PlaybackInfo"),
+                "POST",
+                json!({}),
+                &bob
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+        if name == "YouTube" {
+            video_id = id;
+        }
+    }
+    let create = json!({"Name":"TV list","Ids":[video_id],"Users":[{"UserId":"alice","CanEdit":true}],"IsPublic":false});
+    let (status, list) = call(&state, "/Playlists", "POST", create.clone(), &auth).await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    let list = list["Id"].as_str().unwrap();
+    let foreign = call(
+        &state,
+        &format!("/Items?ParentId={list}&IncludeItemTypes=Video"),
+        "GET",
+        Value::Null,
+        &bob,
+    )
+    .await;
+    assert!(
+        foreign.0 == StatusCode::NOT_FOUND
+            || foreign.1["Items"].as_array().is_some_and(Vec::is_empty)
+    );
+    // Wholphin edits membership, preserving the user's existing list policy.
+    let list_key = list.to_owned();
+    state.db.call(move|db|{db.execute("UPDATE youtube_watchlists SET auto_download=1,auto_remove_watched=1,sort_mode='date',sort_direction='desc' WHERE id=(SELECT watchlist_id FROM compat_online_items WHERE id=?1)",[list_key])?;Ok(())}).await.unwrap();
+    assert_eq!(
+        call(
+            &state,
+            &format!("/Playlists/{list}/Users/alice"),
+            "GET",
+            Value::Null,
+            &auth
+        )
+        .await
+        .1["CanEdit"],
+        true
+    );
+    assert_eq!(
+        call(
+            &state,
+            &format!("/Playlists/{list}/Users/alice"),
+            "GET",
+            Value::Null,
+            &bob
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            &state,
+            &format!("/Items?ParentId={list}"),
+            "GET",
+            Value::Null,
+            &auth
+        )
+        .await
+        .1["Items"][0]["Id"],
+        video_id
+    );
+    assert_eq!(
+        call(
+            &state,
+            "/Items?IncludeItemTypes=Playlist&MediaTypes=Video&SearchTerm=TV",
+            "GET",
+            Value::Null,
+            &auth
+        )
+        .await
+        .1["TotalRecordCount"],
+        1
+    );
+    assert_eq!(
+        call(
+            &state,
+            "/Items?IncludeItemTypes=Playlist&MediaTypes=Video&SearchTerm=TV",
+            "GET",
+            Value::Null,
+            &bob
+        )
+        .await
+        .1["TotalRecordCount"],
+        0
+    );
+    assert_eq!(
+        call(
+            &state,
+            &format!("/Playlists/{list}/Items?EntryIds={video_id}"),
+            "DELETE",
+            Value::Null,
+            &bob
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &state,
+            &format!("/Playlists/{list}/Items?EntryIds={video_id}"),
+            "DELETE",
+            Value::Null,
+            &auth
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        call(
+            &state,
+            &format!("/Playlists/{list}/Items?Ids={video_id}"),
+            "POST",
+            Value::Null,
+            &auth
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    let bearer = format!("Bearer {first_party}");
+    let web = call(
+        &state,
+        "/api/v1/online/youtube/watchlists",
+        "GET",
+        Value::Null,
+        &[("Authorization", &bearer)],
+    )
+    .await;
+    let saved = web
+        .1
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["name"] == "TV list")
+        .unwrap();
+    assert_eq!(saved["autoDownload"], true);
+    assert_eq!(saved["autoRemoveWatched"], true);
+    assert_eq!(saved["sortMode"], "date");
+    assert_eq!(saved["sortDirection"], "desc");
+    assert_eq!(saved["items"].as_array().unwrap().len(), 1);
+    let second = call(
+        &state,
+        "/Items?IncludeItemTypes=Video&SearchTerm=bbbbbbbbbbb",
+        "GET",
+        Value::Null,
+        &auth,
+    )
+    .await
+    .1["Items"][0]["Id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        call(
+            &state,
+            &format!("/Playlists/{list}/Items?Ids={second}"),
+            "POST",
+            Value::Null,
+            &auth
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    let movement = format!("/Playlists/{list}/Items/{second}/Move/0");
+    assert_eq!(
+        call(&state, &movement, "POST", Value::Null, &bob).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(&state, &movement, "POST", Value::Null, &auth).await.0,
+        StatusCode::NO_CONTENT
+    );
+    let reordered = call(
+        &state,
+        &format!("/Items?ParentId={list}"),
+        "GET",
+        Value::Null,
+        &auth,
+    )
+    .await
+    .1;
+    assert_eq!(reordered["Items"][0]["Id"], second);
+    assert_eq!(reordered["Items"][1]["Id"], video_id);
+    let key = list.to_owned();
+    assert!(state.db.call(move|db|Ok(db.query_row("SELECT auto_download=1 AND auto_remove_watched=1 AND sort_mode='manual' AND sort_direction='asc' FROM youtube_watchlists WHERE id=(SELECT watchlist_id FROM compat_online_items WHERE id=?1)",[key],|r|r.get::<_,bool>(0))?)).await.unwrap());
+    assert!(
+        state
+            .db
+            .call(|db| Ok(db.query_row(
+                "SELECT COUNT(*) FROM events WHERE user_id='alice' AND kind='youtube.changed'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?))
+            .await
+            .unwrap()
+            > 0
+    );
+    let mut public = create;
+    public["IsPublic"] = json!(true);
+    assert_eq!(
+        call(&state, "/Playlists", "POST", public, &auth).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(
+            &state,
+            &format!("/UserFavoriteItems/{video_id}"),
+            "POST",
+            Value::Null,
+            &auth
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &state,
+            &format!("/UserPlayedItems/{video_id}"),
+            "POST",
+            Value::Null,
+            &auth
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    state
+        .db
+        .call(|db| {
+            db.execute("DELETE FROM youtube_videos WHERE user_id='alice'", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        call(
+            &state,
+            &format!("/Items/{video_id}"),
+            "GET",
+            Value::Null,
+            &auth
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(state.db.call(|db|Ok(db.query_row("SELECT COUNT(*) FROM compat_online_items WHERE user_id='alice' AND youtube_video_id IS NOT NULL",[],|r|r.get::<_,i64>(0))?)).await.unwrap(),0);
+}
+
+#[tokio::test]
 async fn diagnostics_exclude_compatibility_credentials_and_untrusted_errors() {
     let (_temp, state, first_party) = fixture().await;
     state

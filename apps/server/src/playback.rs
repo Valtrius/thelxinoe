@@ -167,24 +167,25 @@ pub(crate) async fn create_with_delivery(
         }
     }
     if crate::online::live::domain(&input.media_id) {
-        if input.queue.is_some() || vod {
+        if input.queue.is_some() {
             return Err(ApiError::bad(
                 "Live channels are not part of the local library",
             ));
         }
-        return crate::online::streams::create(
+        return crate::online::streams::create_with_delivery(
             state,
             p,
             &input.media_id,
             input.options,
             input.position,
+            vod,
         )
         .await;
     }
     let online_video = input.media_id.strip_prefix("youtube:").map(str::to_owned);
     let source = if let Some(video) = &online_video {
         crate::online::downloads::authorize(state, p, video).await?;
-        if input.queue.is_some() || vod {
+        if input.queue.is_some() {
             return Err(ApiError::bad(
                 "Online media is not part of the local library",
             ));
@@ -192,12 +193,13 @@ pub(crate) async fn create_with_delivery(
         match crate::online::downloads::source(state, video).await {
             Ok(value) => value,
             Err(error) if error.0 == axum::http::StatusCode::CONFLICT => {
-                return crate::online::streams::create(
+                return crate::online::streams::create_with_delivery(
                     state,
                     p,
                     video,
                     input.options,
                     input.position,
+                    vod,
                 )
                 .await;
             }

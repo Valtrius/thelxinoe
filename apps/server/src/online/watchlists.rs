@@ -13,9 +13,9 @@ use axum::{
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use thelxinoe_core::now;
+use thelxinoe_core::{Principal, now};
 
-pub(super) fn default_list(db: &Connection, user: &str) -> anyhow::Result<i64> {
+pub(crate) fn default_list(db: &Connection, user: &str) -> anyhow::Result<i64> {
     db.execute("INSERT INTO youtube_watchlists(user_id,name,is_default,created_at,updated_at) SELECT ?1,'Watch Later',1,?2,?2 WHERE NOT EXISTS(SELECT 1 FROM youtube_watchlists WHERE user_id=?1 AND is_default=1)",params![user,now()])?;
     Ok(db.query_row(
         "SELECT id FROM youtube_watchlists WHERE user_id=?1 AND is_default=1",
@@ -61,7 +61,7 @@ pub async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<J
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Create {
-    name: String,
+    pub name: String,
 }
 fn name_valid(name: &str) -> bool {
     !name.trim().is_empty() && name.chars().count() <= 80 && !name.chars().any(char::is_control)
@@ -72,6 +72,13 @@ pub async fn create(
     Json(input): Json<Create>,
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
+    create_for(&state, &p, input).await
+}
+pub(crate) async fn create_for(
+    state: &AppState,
+    p: &Principal,
+    input: Create,
+) -> Result<Json<Value>> {
     if !name_valid(&input.name) {
         return Err(ApiError::bad("Enter a watchlist name of 1–80 characters"));
     }
@@ -83,7 +90,7 @@ pub async fn create(
         tx.execute("INSERT INTO youtube_watchlists(user_id,name,created_at,updated_at) VALUES(?1,?2,?3,?3)",params![user,input.name.trim(),now()])?;
         let id=tx.last_insert_rowid();tx.commit()?;Ok(Some(id))
     }).await?.ok_or_else(||ApiError::conflict("You can create up to 50 watchlists"))?;
-    let _ = changed(&state, p.user.id).await?;
+    let _ = changed(state, p.user.id.clone()).await?;
     Ok(Json(json!(id)))
 }
 #[derive(Deserialize)]
@@ -143,8 +150,8 @@ pub async fn delete(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Add {
-    video_id: String,
-    manual_position: f64,
+    pub video_id: String,
+    pub manual_position: f64,
 }
 pub async fn add(
     State(state): State<AppState>,
@@ -153,13 +160,21 @@ pub async fn add(
     Json(input): Json<Add>,
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
-    authorize(&state, &p.user.id, id).await?;
+    add_for(&state, &p, id, input).await
+}
+pub(crate) async fn add_for(
+    state: &AppState,
+    p: &Principal,
+    id: i64,
+    input: Add,
+) -> Result<Json<Value>> {
+    authorize(state, &p.user.id, id).await?;
     let video = feed::video_id(&input.video_id)
         .ok_or_else(|| ApiError::bad("Enter a YouTube video URL or ID"))?;
     if !input.manual_position.is_finite() || input.manual_position.abs() > 1e15 {
         return Err(ApiError::bad("Invalid watchlist position"));
     }
-    let grant = grants::issue(&state, &p, "youtube-artwork", 300).await?;
+    let grant = grants::issue(state, p, "youtube-artwork", 300).await?;
     let user = p.user.id.clone();
     let result = video.clone();
     let added=state.db.call(move|db|{
@@ -188,11 +203,11 @@ pub async fn add(
         })
         .await?;
     let download_error = if auto_download {
-        downloads::request(State(state.clone()),headers,Path(result)).await.err().map(|_|json!({"category":"api","code":"download_pending","message":"Saved. Automatic download will retry when server tools and video metadata are ready.","technical":""}))
+        downloads::request_for(state,p,result).await.err().map(|_|json!({"category":"api","code":"download_pending","message":"Saved. Automatic download will retry when server tools and video metadata are ready.","technical":""}))
     } else {
         None
     };
-    let _ = changed(&state, p.user.id).await?;
+    let _ = changed(state, p.user.id.clone()).await?;
     Ok(Json(
         json!({"added":added.0,"video":added.1,"autoDownloadError":download_error}),
     ))
@@ -203,10 +218,18 @@ pub async fn remove(
     Path((id, video)): Path<(i64, String)>,
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
-    authorize(&state, &p.user.id, id).await?;
+    remove_for(&state, &p, id, video).await
+}
+pub(crate) async fn remove_for(
+    state: &AppState,
+    p: &Principal,
+    id: i64,
+    video: String,
+) -> Result<Json<Value>> {
+    authorize(state, &p.user.id, id).await?;
     let user = p.user.id.clone();
     state.db.call(move|db|{db.execute("DELETE FROM youtube_watchlist_items WHERE user_id=?1 AND watchlist_id=?2 AND video_id=?3",params![user,id,video])?;Ok(())}).await?;
-    changed(&state, p.user.id).await
+    changed(state, p.user.id.clone()).await
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

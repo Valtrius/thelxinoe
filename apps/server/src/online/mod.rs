@@ -1,7 +1,7 @@
 mod browse;
 pub(crate) mod downloads;
 mod extract;
-mod feed;
+pub(crate) mod feed;
 pub(crate) mod kick;
 pub(crate) mod live;
 pub(crate) mod oauth;
@@ -13,7 +13,7 @@ pub(crate) mod streams;
 mod sync;
 pub(crate) mod tools;
 mod twitch;
-mod watchlists;
+pub(crate) mod watchlists;
 mod youtube;
 use crate::{
     AppState,
@@ -58,6 +58,52 @@ pub(super) fn public_image(value: Option<&str>) -> Option<String> {
                 || host.ends_with(".kickcdn.com")
         }))
     .then(|| value.to_owned())
+}
+pub(crate) fn artwork_url(value: &str) -> Option<String> {
+    if let Some(value) = public_image(Some(value)) {
+        return Some(value);
+    }
+    let url = reqwest::Url::parse(value).ok()?;
+    (url.scheme() == "https"
+        && url.host_str() == Some("i.ytimg.com")
+        && url.username().is_empty()
+        && url.password().is_none())
+    .then(|| value.to_owned())
+}
+pub(crate) async fn artwork_bytes(
+    state: &AppState,
+    address: &str,
+) -> Result<(&'static str, Vec<u8>)> {
+    let address = artwork_url(address).ok_or_else(ApiError::not_found)?;
+    let _slot = state
+        .online
+        .slots
+        .acquire()
+        .await
+        .map_err(|_| ApiError::not_found())?;
+    let response = state
+        .online
+        .http
+        .get(address)
+        .send()
+        .await
+        .map_err(|_| ApiError::not_found())?;
+    let (status, _, bytes) = bounded_response(response)
+        .await
+        .map_err(|_| ApiError::not_found())?;
+    if !status.is_success() {
+        return Err(ApiError::not_found());
+    }
+    let mime = if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        "image/jpeg"
+    } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "image/png"
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        "image/webp"
+    } else {
+        return Err(ApiError::not_found());
+    };
+    Ok((mime, bytes.to_vec()))
 }
 pub struct Runtime {
     http: reqwest::Client,

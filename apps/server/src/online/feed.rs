@@ -141,9 +141,9 @@ pub async fn add(
 }
 #[derive(Deserialize)]
 pub struct Edit {
-    watchlist: Option<bool>,
-    pinned: Option<bool>,
-    watched: Option<bool>,
+    pub watchlist: Option<bool>,
+    pub pinned: Option<bool>,
+    pub watched: Option<bool>,
 }
 pub async fn edit(
     State(state): State<AppState>,
@@ -152,6 +152,14 @@ pub async fn edit(
     Json(input): Json<Edit>,
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
+    edit_for(&state, &p, video, input).await
+}
+pub(crate) async fn edit_for(
+    state: &AppState,
+    p: &thelxinoe_core::Principal,
+    video: String,
+    input: Edit,
+) -> Result<Json<Value>> {
     let user = p.user.id.clone();
     let updated=state.db.call(move|db|{
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -179,7 +187,7 @@ pub async fn edit(
         return Err(ApiError::not_found());
     }
     state
-        .emit(Some(p.user.id), "youtube.changed", json!({}))
+        .emit(Some(p.user.id.clone()), "youtube.changed", json!({}))
         .await?;
     Ok(Json(json!({"saved":true})))
 }

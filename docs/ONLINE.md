@@ -42,7 +42,7 @@ The server queues installation of the official yt-dlp and Deno releases when You
 
 Play opens public media immediately in the browser or MPV player. The server extracts public CDN sources and converts them to the same bounded HLS pipeline used by local playback. Signed source URLs remain in server memory. VOD supports seeking and resume; live playback hides seeking and does not infer watched state or save a VOD resume position. Original quality and online caption selection require a completed download; immediate streaming currently converts to H.264/AAC up to 1080p.
 
-The administrator separately enables YouTube downloads (disabled by default). Save or pin a video, then choose Download to retain it. Once ready, Play uses that completed file. Downloads share physical media while each user keeps separate resume, watched state and history records. Online media never enters Movies, Shows, Music or the Jellyfin catalog.
+The administrator separately enables YouTube downloads (disabled by default). Save or pin a video, then choose Download to retain it. Once ready, Play uses that completed file. Downloads share physical media while each user keeps separate resume, watched state and history records. Online media stays separate from Movies, Shows and Music. Wholphin and compatible Jellyfin clients can browse dedicated YouTube, Twitch and Kick libraries, plus private YouTube watchlists; see [TV compatibility](JELLYFIN.md#online-libraries-and-watchlists).
 
 Extraction runs with a cleared environment, temporary home/config/cache directories, ignored yt-dlp configuration and plugins, no browser cookies, and no remote JavaScript component downloads. Deno is an explicitly selected, verified runtime. Process groups on Linux and job objects on Windows terminate descendants on cancellation. Metadata extraction has two slots, a two-minute timeout and bounded output. Downloads have one separate worker, a thirty-minute timeout, disk monitoring, and cancellation when downloads are disabled or no user retains the video.
 
@@ -68,7 +68,7 @@ The Linux x86-64 server image includes Streamlink 8.6.1 in an isolated Python en
 
 Each live session has its own bounded software H.264/AAC pipeline. Auto or a bitrate preference is supported; Original and online track selection are unavailable. Seeking and VOD watched/resume inference are disabled for live streams. Twitch and Kick have separate private history filters and administrator statistics. Restricted, offline or extractor-incompatible channels return an explicit playback error; no account entitlement is borrowed. Streamlink resolves the initial source, while FFmpeg reads the resulting public HLS stream; provider advertisement/discontinuity behavior is not guaranteed by the short playback validation.
 
-Online streams use two-second segments and retain sixty segments in the rolling playlist, preserving the previous two-minute window. Local-file playback retains its existing segment settings. See [startup measurements and reproduction](PLAYBACK_PERFORMANCE.md).
+Continuous online streams use two-second segments and retain sixty segments in the rolling playlist, preserving the previous two-minute window. Local-file playback retains its existing segment settings. See [startup measurements and reproduction](PLAYBACK_PERFORMANCE.md).
 
 ## Kick tracked channels
 

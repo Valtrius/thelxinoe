@@ -15,9 +15,6 @@ pub(crate) async fn authorize(
     p: &Principal,
     media: &str,
 ) -> Result<(String, String)> {
-    if p.transport == "jellyfin" {
-        return Err(ApiError::not_found());
-    }
     if let Some(channel) = media.strip_prefix("kick:") {
         let channel = super::kick::slug(channel)?;
         let user = p.user.id.clone();

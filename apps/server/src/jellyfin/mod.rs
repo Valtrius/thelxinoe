@@ -2,6 +2,7 @@ mod audio;
 mod auth;
 mod catalog;
 pub(crate) mod discovery;
+mod online;
 mod playback;
 mod profile;
 pub(crate) mod quick_connect;
@@ -53,6 +54,7 @@ pub fn router() -> Router<AppState> {
         "/Branding/{*path}",
         "/MediaSegments/{*path}",
         "/Playlists/{*path}",
+        "/Playlists",
     ] {
         router = router.route(path, any(dispatch));
     }
@@ -298,6 +300,48 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
     if method == "GET" && lower == "/system/info" {
         return Ok(axum::Json(public_info()).into_response());
     }
+    if method == "POST" && lower == "/playlists" {
+        return Ok(
+            axum::Json(online::playlist_create(&state, &p, body(request).await?).await?)
+                .into_response(),
+        );
+    }
+    if parts.first() == Some(&"Playlists") && parts.len() >= 3 {
+        let item = online::resolve(&state, &p, parts[1]).await?;
+        if parts.len() == 6 && parts[2] == "Items" && parts[4] == "Move" && method == "POST" {
+            let item = item.ok_or_else(ApiError::not_found)?;
+            let index = parts[5]
+                .parse::<usize>()
+                .map_err(|_| ApiError::bad("Invalid playlist position"))?;
+            online::playlist_move(&state, &p, &item, parts[3], index).await?;
+            return Ok(StatusCode::NO_CONTENT.into_response());
+        }
+        if parts.len() == 4 && parts[2] == "Users" && method == "GET" {
+            if canonical(parts[3]) != p.user.id {
+                return Err(ApiError::forbidden());
+            }
+            let can_edit = item.as_ref().is_some_and(|i| i.kind == "watchlist");
+            if !can_edit && !catalog::is_playlist(&state, &canonical(parts[1])).await? {
+                return Err(ApiError::not_found());
+            }
+            return Ok(axum::Json(json!({"UserId":p.user.id,"CanEdit":can_edit})).into_response());
+        }
+        if parts.len() == 3
+            && parts[2] == "Items"
+            && let Some(item) = item
+        {
+            if method == "POST" || method == "DELETE" {
+                online::playlist_change(&state, &p, &item, &query, method == "POST").await?;
+                return Ok(StatusCode::NO_CONTENT.into_response());
+            }
+            if method == "GET" {
+                query.insert("parentid".into(), item.id);
+                return Ok(
+                    axum::Json(catalog::browse(&state, &p, &query, None).await?).into_response()
+                );
+            }
+        }
+    }
     if method == "POST" || method == "DELETE" {
         let action = match parts.as_slice() {
             ["UserFavoriteItems", id] | ["Users", _, "FavoriteItems", id] => Some((*id, true)),
@@ -306,7 +350,9 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
         };
         if let Some((id, favorite)) = action {
             let id = canonical(id);
-            if favorite && catalog::is_playlist(&state, &id).await? {
+            if let Some(item) = online::resolve(&state, &p, &id).await? {
+                online::set_flag(&state, &p, &item, favorite, method == "POST").await?;
+            } else if favorite && catalog::is_playlist(&state, &id).await? {
                 crate::playlists::favorite_for(&state, &p, &id, method == "POST").await?;
             } else {
                 crate::user_media::set_for(
@@ -348,10 +394,10 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
             );
         }
         if method == "GET" {
-            return Ok(
-                axum::Json(json!({"MediaSources":playback::sources(&state,&media).await?}))
-                    .into_response(),
-            );
+            return Ok(axum::Json(
+                json!({"MediaSources":playback::sources_for(&state,&p,&media).await?}),
+            )
+            .into_response());
         }
     }
     if method == "POST"
@@ -401,6 +447,12 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
     {
         let id = parts[1].to_owned();
         let kind = parts[3].to_owned();
+        if let Some(item) = online::resolve(&state, &p, &id).await? {
+            if !["Primary", "Thumb"].contains(&kind.as_str()) {
+                return Err(ApiError::not_found());
+            }
+            return online::image(&state, &p, &item, method == "HEAD").await;
+        }
         return catalog::image(&state, &id, &kind, request).await;
     }
     if parts.len() == 2 && parts[0] == "DisplayPreferences" {
@@ -486,7 +538,7 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
                 let mut item = catalog::browse(&state, &p, &query, Some(tail[0])).await?;
                 if item["IsFolder"] == false {
                     item["MediaSources"] =
-                        json!(playback::sources(&state, &canonical(tail[0])).await?);
+                        json!(playback::sources_for(&state, &p, &canonical(tail[0])).await?);
                 }
                 return Ok(axum::Json(item).into_response());
             }
