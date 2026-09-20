@@ -359,6 +359,24 @@ pub async fn stream(
     );
     Ok(response)
 }
+pub async fn remote(
+    State(state): State<AppState>,
+    Path((id, track)): Path<(String, String)>,
+    Query(grant): Query<Grant>,
+    request: Request,
+) -> Result<Response> {
+    let (p, session) = from_grant(&state, &id, &grant.grant).await?;
+    if !session.streaming || session.mode != "direct" || !session.options.capabilities.native_remote
+    {
+        return Err(ApiError::not_found());
+    }
+    let video = session
+        .media
+        .strip_prefix("youtube:")
+        .ok_or_else(ApiError::not_found)?;
+    crate::online::downloads::authorize(&state, &p, video).await?;
+    crate::online::relay::stream(&state, &id, &track, request).await
+}
 pub async fn hls(
     State(state): State<AppState>,
     Path((id, revision, name)): Path<(String, String, String)>,
@@ -457,7 +475,10 @@ pub async fn seek(
     }
     let grant = grants::issue(&state, &p, &format!("playback:{id}"), 120).await?;
     let mut timeline_start = 0.0;
-    let url = if session.streaming {
+    let url = if session.streaming && session.mode == "direct" {
+        crate::online::streams::validate(&state, &id).await?;
+        format!("/api/v1/playback/{id}/remote/video?grant={grant}")
+    } else if session.streaming {
         let (revision, offset) =
             crate::online::streams::seek(&state, &id, &session.options, input.position).await?;
         timeline_start = offset;

@@ -15,12 +15,14 @@ use tokio::sync::Mutex;
 pub(crate) struct Runtime {
     prepared: Mutex<HashMap<String, Prepared>>,
     sessions: Mutex<HashMap<String, Prepared>>,
+    pub(super) relay: super::relay::Relay,
 }
 #[derive(Clone)]
 struct Prepared {
     source: RemoteSource,
     duration: f64,
     expires: i64,
+    native: bool,
 }
 
 async fn prepare(state: &AppState, video: &str) -> Result<Prepared> {
@@ -36,6 +38,7 @@ async fn prepare(state: &AppState, video: &str) -> Result<Prepared> {
             source: live::extract(state, video).await?,
             duration: 0.0,
             expires: now() + 60,
+            native: false,
         }
     } else {
         let metadata = extract::metadata(state, video).await?;
@@ -93,14 +96,24 @@ fn select(metadata: &Value) -> Result<Prepared> {
                         .unwrap_or(0.0)
                         .total_cmp(&b["abr"].as_f64().unwrap_or(0.0))
                 })
-                .and_then(|f| f["url"].as_str())
-                .ok_or_else(|| ApiError::conflict("No supported public audio stream is available"))?
-                .to_owned(),
+                .filter(|f| f["url"].is_string())
+                .ok_or_else(|| {
+                    ApiError::conflict("No supported public audio stream is available")
+                })?,
         )
     };
+    // Only finite, independently seekable files can be relayed to MPV. HLS
+    // manifests and live sources retain the server's conversion pipeline.
+    let native = !live
+        && video["protocol"] == "https"
+        && video["ext"] == "mp4"
+        && audio.is_none_or(|f| {
+            f["protocol"] == "https"
+                && matches!(f["ext"].as_str(), Some("m4a" | "mp4" | "webm" | "opus"))
+        });
     let source = RemoteSource {
         video: video["url"].as_str().unwrap().into(),
-        audio,
+        audio: audio.map(|f| f["url"].as_str().unwrap().to_owned()),
         live,
     };
     source
@@ -110,6 +123,7 @@ fn select(metadata: &Value) -> Result<Prepared> {
         source,
         duration: if live { 0.0 } else { duration },
         expires: now() + 300,
+        native,
     })
 }
 pub(crate) async fn info(state: &AppState, p: &Principal, video: &str) -> Result<Value> {
@@ -180,6 +194,9 @@ pub(crate) async fn create_with_delivery(
     };
     let prepared = prepare(state, video).await?;
     let sid = thelxinoe_core::id();
+    let native =
+        prepared.native && options.capabilities.native_remote && options.quality == "auto" && !vod;
+    let mode = if native { "direct" } else { "transcode" };
     let key = sid.clone();
     let owner = p.user.id.clone();
     let auth = p.session_id.clone();
@@ -199,7 +216,7 @@ pub(crate) async fn create_with_delivery(
         let saved=tx.query_row("SELECT position FROM youtube_state WHERE user_id=?1 AND video_id=?2",params![owner,video],|r|r.get::<_,f64>(0)).optional()?.unwrap_or(0.0);
         let start=if live {0.0}else {position.unwrap_or(if saved>=duration*0.9 {0.0}else{saved}).clamp(0.0,(duration-0.1).max(0.0))};
         tx.execute("INSERT INTO youtube_media(video_id) VALUES (?1) ON CONFLICT DO NOTHING",[&video])?;
-        tx.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,generation,edition,state,mode,options,duration,position,created_at,updated_at,youtube_video_id,streaming) VALUES (?1,?2,?3,?1,'public','ready','transcode',?4,?5,?6,?7,?7,?8,1)",params![key,owner,auth,serde_json::to_string(&input)?,duration,start,now(),video])?;
+        tx.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,generation,edition,state,mode,options,duration,position,created_at,updated_at,youtube_video_id,streaming) VALUES (?1,?2,?3,?1,'public','ready',?9,?4,?5,?6,?7,?7,?8,1)",params![key,owner,auth,serde_json::to_string(&input)?,duration,start,now(),video,mode])?;
         tx.commit()?;Ok(start)
     }).await?;
     state
@@ -209,7 +226,9 @@ pub(crate) async fn create_with_delivery(
         .lock()
         .await
         .insert(sid.clone(), prepared.clone());
-    let prepared_pipeline = if vod && !live {
+    let prepared_pipeline = if native {
+        Ok((String::new(), 0.0))
+    } else if vod && !live {
         state
             .playback
             .start_remote_vod(&sid, &prepared.source, prepared.duration, &options)
@@ -248,8 +267,15 @@ pub(crate) async fn create_with_delivery(
         return Err(ApiError::not_found());
     }
     let grant = grants::issue(state, p, &format!("playback:{sid}"), 120).await?;
+    let url = if native {
+        format!("/api/v1/playback/{sid}/remote/video?grant={grant}")
+    } else {
+        format!("/api/v1/playback/{sid}/hls/{revision}/index.m3u8?grant={grant}")
+    };
+    let external_audio = (native && prepared.source.audio.is_some())
+        .then(|| format!("/api/v1/playback/{sid}/remote/audio?grant={grant}"));
     Ok(
-        json!({"id":sid,"url":format!("/api/v1/playback/{sid}/hls/{revision}/index.m3u8?grant={grant}"),"grant":grant,"mode":"transcode","position":start,"duration":prepared.duration,"timeline_start":offset,"video":true,"live":live,"tracks":[],"subtitles":[],"selected_subtitle":null,"options":options,"probe":{},"replay_gain":"off"}),
+        json!({"id":sid,"url":url,"external_audio":external_audio,"grant":grant,"mode":mode,"position":start,"duration":prepared.duration,"timeline_start":offset,"video":true,"live":live,"tracks":[],"subtitles":[],"selected_subtitle":null,"options":options,"probe":{},"replay_gain":"off"}),
     )
 }
 pub(crate) async fn validate(state: &AppState, id: &str) -> Result<()> {
@@ -257,6 +283,18 @@ pub(crate) async fn validate(state: &AppState, id: &str) -> Result<()> {
         return Err(ApiError::conflict("Stream expired; start playback again"));
     }
     Ok(())
+}
+pub(super) async fn remote_source(state: &AppState, id: &str) -> Result<RemoteSource> {
+    state
+        .online
+        .streams
+        .sessions
+        .lock()
+        .await
+        .get(id)
+        .filter(|p| p.native)
+        .map(|p| p.source.clone())
+        .ok_or_else(ApiError::not_found)
 }
 pub(crate) async fn seek(
     state: &AppState,
@@ -307,21 +345,176 @@ mod tests {
     use crate::online::oauth::tests::{call, fixture};
     use axum::http::StatusCode;
     fn metadata(live: bool) -> Value {
-        json!({"is_live":live,"duration":100,"formats":[{"vcodec":"avc1.640028","acodec":"none","height":1080,"protocol":"https","url":"https://r1.googlevideo.com/video?signature=private"},{"vcodec":"none","acodec":"mp4a.40.2","abr":128,"protocol":"https","url":"https://r1.googlevideo.com/audio?signature=private"}]})
+        json!({"is_live":live,"duration":100,"formats":[{"vcodec":"avc1.640028","acodec":"none","height":1080,"protocol":"https","ext":"mp4","url":"https://r1.googlevideo.com/video?signature=private"},{"vcodec":"none","acodec":"mp4a.40.2","abr":128,"protocol":"https","ext":"m4a","url":"https://r1.googlevideo.com/audio?signature=private"}]})
     }
     #[test]
     fn selection_handles_separate_streams_and_live_without_exposing_urls() {
         let vod = select(&metadata(false)).unwrap();
         assert_eq!(vod.duration, 100.0);
         assert!(vod.source.audio.is_some());
+        assert!(vod.native);
+        assert!(!select(&metadata(true)).unwrap().native);
         assert_eq!(select(&metadata(true)).unwrap().duration, 0.0);
         let mut live = metadata(true);
         live["formats"][1]["acodec"] = Value::Null;
         live["formats"][1]["protocol"] = json!("m3u8_native");
         assert!(select(&live).unwrap().source.audio.is_some());
+        let mut manifest = metadata(false);
+        manifest["formats"][0]["protocol"] = json!("m3u8_native");
+        assert!(!select(&manifest).unwrap().native);
+        let mut audio_manifest = metadata(false);
+        audio_manifest["formats"][1]["protocol"] = json!("m3u8_native");
+        assert!(!select(&audio_manifest).unwrap().native);
         let mut malformed = metadata(false);
         malformed["formats"][0]["url"] = json!("https://localhost/private");
         assert!(select(&malformed).is_err());
+    }
+    #[tokio::test]
+    async fn native_files_keep_sources_private_and_enforce_playback_grants() {
+        let (_temp, state, cookie) = fixture().await;
+        let video = "abcdefghijk";
+        state
+            .online
+            .streams
+            .prepared
+            .lock()
+            .await
+            .insert(video.into(), select(&metadata(false)).unwrap());
+        let input = json!({"media_id":"youtube:abcdefghijk","position":20,"options":{"quality":"auto","audio":null,"subtitle":null,"capabilities":{"video":["h264"],"audio":["aac"],"containers":[],"hls":true,"native_remote":true}}});
+        assert_eq!(
+            call(&state, "/api/v1/playback", "POST", input.clone(), &cookie)
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        state.db.call(move|db| { db.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES ('alice',?1,'Public fixture')",[video])?; Ok(()) }).await.unwrap();
+        let created = call(&state, "/api/v1/playback", "POST", input.clone(), &cookie).await;
+        assert_eq!(created.0, StatusCode::OK);
+        let data = created.2;
+        assert_eq!(data["mode"], "direct");
+        assert_eq!(data["position"].as_f64(), Some(20.0));
+        assert_eq!(data["timeline_start"].as_f64(), Some(0.0));
+        assert!(!data.to_string().contains("googlevideo"));
+        assert!(!data.to_string().contains("signature"));
+        assert!(
+            data["url"]
+                .as_str()
+                .unwrap()
+                .contains("/remote/video?grant=")
+        );
+        assert!(
+            data["external_audio"]
+                .as_str()
+                .unwrap()
+                .contains("/remote/audio?grant=")
+        );
+        let id = data["id"].as_str().unwrap();
+        let grant = data["grant"].as_str().unwrap();
+        // A valid session still cannot select an arbitrary upstream address.
+        assert_eq!(
+            call(
+                &state,
+                &format!("/api/v1/playback/{id}/remote/other?grant={grant}"),
+                "GET",
+                json!({}),
+                &cookie
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            call(
+                &state,
+                &format!("/api/v1/playback/{id}/remote/video?grant=invalid"),
+                "GET",
+                json!({}),
+                &cookie
+            )
+            .await
+            .0,
+            StatusCode::UNAUTHORIZED
+        );
+        let other = call(&state, "/api/v1/playback", "POST", input, &cookie)
+            .await
+            .2;
+        assert_eq!(
+            call(
+                &state,
+                &format!(
+                    "/api/v1/playback/{}/remote/video?grant={grant}",
+                    other["id"].as_str().unwrap()
+                ),
+                "GET",
+                json!({}),
+                &cookie
+            )
+            .await
+            .0,
+            StatusCode::UNAUTHORIZED
+        );
+        let seek = call(
+            &state,
+            &format!("/api/v1/playback/{id}/seek"),
+            "POST",
+            json!({"position":60}),
+            &cookie,
+        )
+        .await;
+        assert_eq!(seek.0, StatusCode::OK);
+        assert!(
+            seek.2["url"]
+                .as_str()
+                .unwrap()
+                .contains("/remote/video?grant=")
+        );
+        assert_eq!(
+            call(
+                &state,
+                &format!("/api/v1/playback/{id}"),
+                "DELETE",
+                json!({}),
+                &cookie
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            call(
+                &state,
+                data["url"].as_str().unwrap(),
+                "GET",
+                json!({}),
+                &cookie
+            )
+            .await
+            .0,
+            StatusCode::UNAUTHORIZED
+        );
+        state
+            .db
+            .call(move |db| {
+                db.execute(
+                    "DELETE FROM youtube_videos WHERE user_id='alice' AND video_id=?1",
+                    [video],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            call(
+                &state,
+                other["url"].as_str().unwrap(),
+                "GET",
+                json!({}),
+                &cookie
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
     }
     #[tokio::test]
     async fn cached_public_stream_still_requires_user_visibility_and_live_does_not_mark_watched() {

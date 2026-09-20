@@ -8,6 +8,7 @@ pub(crate) mod oauth;
 mod presentation;
 mod process;
 mod quota;
+pub(crate) mod relay;
 mod streamlink_worker;
 pub(crate) mod streams;
 mod sync;

@@ -386,6 +386,7 @@ pub fn negotiate(
         hls: remux || can_convert,
         native_tracks: true,
         conversion,
+        native_remote: false,
     }
 }
 

@@ -17,6 +17,9 @@ pub struct Capabilities {
     pub hls: bool,
     #[serde(default)]
     pub native_tracks: bool,
+    /// Can load separate original online video/audio through scoped server URLs.
+    #[serde(default)]
+    pub native_remote: bool,
     #[serde(default)]
     pub conversion: Option<Conversion>,
 }

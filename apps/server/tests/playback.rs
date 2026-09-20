@@ -106,6 +106,7 @@ async fn replacement_and_restart_keep_resume_but_invalidate_old_playback_generat
             audio: vec!["aac".into()],
             hls: true,
             native_tracks: false,
+            native_remote: false,
             conversion: None,
         },
     };

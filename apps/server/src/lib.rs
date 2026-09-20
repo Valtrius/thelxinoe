@@ -226,6 +226,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/playback/{id}/seek", post(playback::seek))
         .route("/api/v1/playback/{id}/stream", get(playback::stream))
         .route(
+            "/api/v1/playback/{id}/remote/{track}",
+            get(playback::remote),
+        )
+        .route(
             "/api/v1/playback/{id}/hls/{revision}/{name}",
             get(playback::hls),
         )
