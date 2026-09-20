@@ -18,6 +18,18 @@ cargo run -p thelxinoe-server
 
 Open http://127.0.0.1:8484. First-run setup requires the code in `.local/server/secrets/setup-token`. Development data remains in `.local`; it never uses YouTwitch's application directories. For frontend hot reload, run `npm run dev` in another terminal. Vite proxies the API and WebSocket to port 8484.
 
+For a new empty Windows development instance on every launch:
+
+```powershell
+npm run dev:fresh
+# Optional: another port and an already-built frontend
+npm run dev:fresh -- -Port 18487 -SkipBuild
+```
+
+The launcher builds the frontend and runs the server at http://127.0.0.1:18486. It prints the setup-code file path; use that code to create the first administrator. Each invocation creates separate state, cache and media folders under `.local/dev-runs/`, with no provider credentials or linked accounts. Ctrl+C stops the server. Earlier runs stay on disk, and existing deployments are preserved. Inherited `THELXINOE_*` settings are temporarily replaced and restored when the script exits. This serves the built web UI without hot reload or the Docker controller.
+
+The underlying `scripts/dev-fresh.ps1` can also be invoked by its full path from another working directory. Run `npm ci` once before first use.
+
 ```sh
 docker compose up --build -d
 docker compose exec server cat /var/lib/thelxinoe/secrets/setup-token
