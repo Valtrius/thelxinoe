@@ -91,6 +91,7 @@
             class="size-5 shrink-0"
           /></SidebarButton
         >{/each}
+      <div class="sidebar-divider" data-sidebar-resize="x"></div>
       <SidebarButton
         label="Requests"
         {collapsed}

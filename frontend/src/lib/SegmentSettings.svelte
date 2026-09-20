@@ -1,9 +1,14 @@
 <script lang="ts">
   import Switch from './providers/components/ui/Switch.svelte';
+  import ExclusiveChoiceGroup from './ui/ExclusiveChoiceGroup.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
   let { admin = false } = $props<{ admin?: boolean }>();
   const kinds = ['Intro', 'Recap', 'Credits', 'Preview'];
+  const choices = ['Ask', 'Auto', 'Ignore'].map((value) => ({
+    value,
+    label: value,
+  }));
   let preferences = $state<Record<string, string>>({
     Intro: 'Ask',
     Recap: 'Ask',
@@ -52,12 +57,18 @@
       leaves it untouched. Jellyfin clients use their own skip preferences.
     </p>
     <div class="choices">
-      {#each kinds as kind (kind)}<label
-          >{kind}<select bind:value={preferences[kind]} disabled={busy}
-            ><option>Ask</option><option>Auto</option><option>Ignore</option
-            ></select
-          ></label
-        >{/each}
+      {#each kinds as kind (kind)}
+        <div class="segment-choice">
+          <span>{kind}</span>
+          <ExclusiveChoiceGroup
+            {choices}
+            value={preferences[kind]}
+            ariaLabel={`${kind} skipping`}
+            disabled={busy}
+            onChange={(value) => (preferences[kind] = value)}
+          />
+        </div>
+      {/each}
     </div>
     <button
       class="primary"
@@ -107,9 +118,10 @@
     gap: 1rem;
     flex-wrap: wrap;
   }
-  .choices label {
-    min-width: 8rem;
-    margin: 0;
+  .segment-choice {
+    display: grid;
+    gap: 0.5rem;
+    font-size: 0.8rem;
   }
   button {
     justify-self: start;
