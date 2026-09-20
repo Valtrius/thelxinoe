@@ -25,6 +25,25 @@ async fn main() -> anyhow::Result<()> {
             }
             "snapshot-copy" => state_copy::run(false),
             "snapshot-restore" => state_copy::run(true),
+            "verify-state" => {
+                let root = std::path::Path::new("/state");
+                let schema = thelxinoe_database::verify_snapshot(&root.join("thelxinoe.sqlite3"))?;
+                anyhow::ensure!(
+                    std::fs::metadata(root.join("secrets/master.key"))?.len() == 32,
+                    "Invalid credential key"
+                );
+                store::write_json(
+                    &root.join(".snapshot-validation.json"),
+                    &serde_json::json!({"schema":schema,"verified":true}),
+                )
+            }
+            "controller-probe" => {
+                println!(
+                    "{}",
+                    serde_json::json!({"version":thelxinoe_core::VERSION,"recovery_protocol":1})
+                );
+                Ok(())
+            }
             _ => anyhow::bail!("Unknown worker command"),
         };
     }
@@ -53,6 +72,7 @@ async fn main() -> anyhow::Result<()> {
     };
     let socket = directory.join("controller.sock");
     stack::retain_worker_image().await?;
+    stack::recover_backups().await?;
     if socket.exists() {
         if !std::fs::symlink_metadata(&socket)?.file_type().is_socket() {
             anyhow::bail!("Refusing to replace a non-socket path");

@@ -13,3 +13,6 @@ fs2 = "0.4"
 reqwest.workspace = true
 
 serde.workspace = true
+thelxinoe-backup = { path = "../../crates/backup" }
+thelxinoe-database.workspace = true
+thelxinoe-releases = { path = "../../crates/releases" }

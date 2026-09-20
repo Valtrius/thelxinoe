@@ -11,7 +11,7 @@ pub(super) fn router() -> Router<AppState> {
         .route("/api/v1/admin/stack/{id}/action", post(action))
         .route("/api/v1/admin/stack/{id}/retry", post(retry))
 }
-pub(super) async fn controller(state: &AppState, path: &str, body: Option<Value>) -> Result<Value> {
+pub(crate) async fn controller(state: &AppState, path: &str, body: Option<Value>) -> Result<Value> {
     #[cfg(unix)]
     {
         let client = reqwest::Client::builder()

@@ -6,8 +6,10 @@ mod requests;
 mod retention;
 mod stack;
 mod support;
+pub(crate) use support::operational_health;
 mod updates;
 pub(crate) use retention::run as run_retention;
+pub(crate) use stack::controller as controller_request;
 pub(crate) use stack::provision;
 pub(crate) use updates::{run as run_updates, run_job as update_service};
 #[cfg(test)]

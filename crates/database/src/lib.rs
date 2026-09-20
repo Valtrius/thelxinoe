@@ -6,6 +6,29 @@ use std::{
     time::Duration,
 };
 
+pub const SCHEMA_VERSION: u32 = 25;
+
+/// Inspect a quiesced database without applying migrations or creating missing files.
+pub fn verify_snapshot(path: &Path) -> Result<u32> {
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let checks = conn
+        .prepare("PRAGMA integrity_check")?
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    anyhow::ensure!(checks == ["ok"], "Database integrity check failed");
+    anyhow::ensure!(
+        !conn.prepare("PRAGMA foreign_key_check")?.exists([])?,
+        "Database has invalid references"
+    );
+    let schema: u32 = conn.query_row(
+        "SELECT COALESCE(MAX(version),0) FROM schema_migrations",
+        [],
+        |r| r.get(0),
+    )?;
+    anyhow::ensure!(schema > 0, "Missing database schema");
+    Ok(schema)
+}
+
 #[derive(Clone)]
 pub struct Database {
     path: Arc<PathBuf>,
@@ -59,6 +82,8 @@ impl Database {
             include_str!("../migrations/021.sql"),
             include_str!("../migrations/022.sql"),
             include_str!("../migrations/023.sql"),
+            include_str!("../migrations/024.sql"),
+            include_str!("../migrations/025.sql"),
         ];
         if version > migrations.len() as i64 {
             anyhow::bail!("Database is newer than this server; use the matching release");
@@ -95,7 +120,9 @@ impl Database {
     }
     pub async fn backup(&self, destination: PathBuf) -> Result<()> {
         self.call(move |conn| {
+            anyhow::ensure!(!destination.exists(), "Backup destination already exists");
             conn.backup(rusqlite::MAIN_DB, &destination, None)?;
+            verify_snapshot(&destination)?;
             Ok(())
         })
         .await

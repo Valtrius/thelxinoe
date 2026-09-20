@@ -4,6 +4,10 @@
   import MetadataSettings from './lib/MetadataSettings.svelte';
   import PlaybackSettings from './lib/PlaybackSettings.svelte';
   import SegmentSettings from './lib/SegmentSettings.svelte';
+  import NotificationCenter from './lib/NotificationCenter.svelte';
+  import AdminOperations from './lib/AdminOperations.svelte';
+  import BackupSettings from './lib/BackupSettings.svelte';
+  import UserAdministration from './lib/UserAdministration.svelte';
   import Player from './lib/Player.svelte';
   import MusicPlayer from './lib/MusicPlayer.svelte';
   import MpvSettings from './lib/MpvSettings.svelte';
@@ -105,6 +109,7 @@
   let settingsTimer: ReturnType<typeof setTimeout> | undefined,
     settingsLoading = false;
   let catalogRevision = $state(0);
+  let notificationRevision = $state(0);
   let scans = $state<Record<string, { completed: number; total: number }>>({});
   let serverAddress = $state('');
   async function act(fn: () => Promise<void>) {
@@ -158,6 +163,7 @@
     events?.close();
     events = new Events(
       (event) => {
+        if (event.kind === 'notifications.changed') notificationRevision++;
         if (
           [
             'media-state.changed',
@@ -398,6 +404,7 @@
             {section === 'Home' ? `Good to see you, ${user.username}` : section}
           </h1>
         </div>
+        <NotificationCenter revision={notificationRevision} />
         <span class="connection"
           ><i class:online={connected}></i>{connected
             ? 'Connected'
@@ -481,6 +488,8 @@
             </div>{/each}
         </section>
         {#if user.role === 'admin'}
+          <AdminOperations />
+          <BackupSettings />
           <MetadataSettings />
           <OnlineSettings />
           <ManagerSettings />
@@ -529,11 +538,11 @@
           </section>
           <section class="panel">
             <h2>People</h2>
-            {#each users as person (person.id)}<div class="row">
-                <strong>{person.username}</strong><span class="badge"
-                  >{person.role}</span
-                >
-              </div>{/each}
+            {#each users as person (person.id)}<UserAdministration
+                {person}
+                currentId={user.id}
+                changed={loadSettings}
+              />{/each}
             <form
               class="inline-form"
               onsubmit={(e) => {

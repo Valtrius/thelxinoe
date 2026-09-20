@@ -12,12 +12,19 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
+#[path = "backups.rs"]
+mod backups;
 #[path = "updates.rs"]
 mod updates;
 pub async fn retain_worker_image() -> anyhow::Result<()> {
     updates::current_image()
         .await
         .map(|_| ())
+        .map_err(|(_, message)| anyhow::anyhow!(message))
+}
+pub async fn recover_backups() -> anyhow::Result<()> {
+    backups::recover_interrupted()
+        .await
         .map_err(|(_, message)| anyhow::anyhow!(message))
 }
 #[derive(Clone)]
@@ -290,6 +297,8 @@ pub fn router() -> Router {
         .route("/stack", get(list))
         .route("/stack/install", post(install))
         .route("/stack/updates", get(updates::list))
+        .route("/stack/backups", get(backups::list).post(backups::create))
+        .route("/stack/backups/{id}/restore", post(backups::restore))
         .route("/stack/{id}/preflight", post(updates::preflight))
         .route("/stack/updates/{id}/activate", post(updates::activate))
         .route("/stack/updates/{id}/recover", post(updates::recover))

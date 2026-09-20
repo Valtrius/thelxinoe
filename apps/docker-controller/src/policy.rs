@@ -170,13 +170,40 @@ pub fn validate_adoption(
     Ok(())
 }
 pub fn appdata_isolated(source: &str, media: &str) -> bool {
-    use std::path::Path;
-    let source = Path::new(source);
-    let media = Path::new(media);
+    let (Some(source), Some(media)) = (host_path(source), host_path(media)) else {
+        return false;
+    };
+    let desktop =
+        source.starts_with("/run/desktop/mnt/host") || media.starts_with("/run/desktop/mnt/host");
+    let source = if desktop {
+        std::path::PathBuf::from(source.to_string_lossy().to_ascii_lowercase())
+    } else {
+        source
+    };
+    let media = if desktop {
+        std::path::PathBuf::from(media.to_string_lossy().to_ascii_lowercase())
+    } else {
+        media
+    };
+    if source.starts_with("/run/desktop/mnt/host") {
+        let tail = source
+            .strip_prefix("/run/desktop/mnt/host")
+            .unwrap()
+            .components()
+            .collect::<Vec<_>>();
+        if tail.len() < 3
+            || matches!(
+                tail.get(1).and_then(|v| v.as_os_str().to_str()),
+                Some("windows" | "program files" | "program files (x86)" | "programdata")
+            )
+        {
+            return false;
+        }
+    }
     source.is_absolute()
         && source.components().count() > 2
-        && !source.starts_with(media)
-        && !media.starts_with(source)
+        && !source.starts_with(&media)
+        && !media.starts_with(&source)
         && ![
             "/etc",
             "/proc",
@@ -194,6 +221,32 @@ pub fn appdata_isolated(source: &str, media: &str) -> bool {
         .iter()
         .any(|root| source.starts_with(root))
 }
+/// Docker Desktop may report a Windows bind source in either host or VM notation.
+pub fn host_path(value: &str) -> Option<std::path::PathBuf> {
+    let bytes = value.as_bytes();
+    let value = if bytes.len() > 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/')
+    {
+        format!(
+            "/run/desktop/mnt/host/{}/{}",
+            (bytes[0] as char).to_ascii_lowercase(),
+            value[3..].replace('\\', "/")
+        )
+    } else {
+        value.into()
+    };
+    let path = std::path::PathBuf::from(value);
+    (path.is_absolute()
+        && path.components().all(|c| {
+            matches!(
+                c,
+                std::path::Component::RootDir | std::path::Component::Normal(_)
+            )
+        }))
+    .then_some(path)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,6 +257,19 @@ mod tests {
         assert!(!appdata_isolated("/media/appdata", "/media"));
         assert!(!appdata_isolated("/srv", "/srv/media"));
         assert!(appdata_isolated("/srv/appdata/radarr", "/srv/media"));
+        assert!(!appdata_isolated(
+            "/run/desktop/mnt/host/c/Users/Jake/Data/Appdata",
+            r"C:\Users\jake\data"
+        ));
+        assert!(!appdata_isolated(
+            r"C:\Windows\System32",
+            r"C:\Media\Movies"
+        ));
+        assert!(appdata_isolated(
+            r"C:\Users\Jake\appdata\server",
+            r"C:\Users\Jake\media"
+        ));
+        assert!(!appdata_isolated("/srv/state/../../etc/service", "/media"));
     }
     #[test]
     fn foreign_orchestrator_ownership_is_always_rejected() {

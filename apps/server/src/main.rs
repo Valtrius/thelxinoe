@@ -17,6 +17,10 @@ async fn main() -> Result<()> {
         .write(true)
         .open(config.state.join("server.lock"))?;
     fs2::FileExt::try_lock_exclusive(&lock)?;
+    if let Some(command) = std::env::args().nth(1) {
+        anyhow::ensure!(command == "validate-state", "Unknown server command");
+        return thelxinoe_server::validation::run(config).await;
+    }
     let bind = config.bind;
     let state = AppState::open(config).await?;
     tracing::info!(version=thelxinoe_core::VERSION, %bind, "Starting Thelxinoe; first-run code is in the state directory at secrets/setup-token");
@@ -29,13 +33,14 @@ async fn main() -> Result<()> {
     let updates = tokio::spawn(thelxinoe_server::run_service_updates(state.clone()));
     let retention = tokio::spawn(thelxinoe_server::run_retention(state.clone()));
     let segments = tokio::spawn(thelxinoe_server::segments::run(state.clone()));
+    let operations = tokio::spawn(thelxinoe_server::operations::run(state.clone()));
     let listener = tokio::net::TcpListener::bind(bind).await?;
     let server = axum::serve(
         listener,
         router(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown());
-    tokio::select! {result=server=>result?,result=worker=>{result??;},result=scanner=>{result??;},result=playback=>{result??;},result=discovery=>{result??;},result=online=>{result??;},result=downloads=>{result??;},result=updates=>{result??;},result=retention=>{result??;},result=segments=>{result??;}}
+    tokio::select! {result=server=>result?,result=worker=>{result??;},result=scanner=>{result??;},result=playback=>{result??;},result=discovery=>{result??;},result=online=>{result??;},result=downloads=>{result??;},result=updates=>{result??;},result=retention=>{result??;},result=segments=>{result??;},result=operations=>{result??;}}
     Ok(())
 }
 async fn shutdown() {

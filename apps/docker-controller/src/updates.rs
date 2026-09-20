@@ -45,7 +45,7 @@ pub(super) async fn list() -> Result<Json<Value>> {
     }
     Ok(Json(json!({"items":items})))
 }
-async fn verified(s: &Managed, d: &Deployment) -> Result<Value> {
+pub(super) async fn verified(s: &Managed, d: &Deployment) -> Result<Value> {
     let raw = engine(&format!("/containers/{}/json", s.container)).await?;
     if policy::fingerprint(&raw) != s.expected
         || raw["Config"]["Labels"]["app.thelxinoe.deployment"] != d.id
@@ -147,7 +147,7 @@ pub(super) async fn current_image() -> Result<String> {
     .await?;
     Ok(image)
 }
-async fn start(container: &str) -> Result<()> {
+pub(super) async fn start(container: &str) -> Result<()> {
     request(
         Method::POST,
         &format!("/containers/{container}/start"),
@@ -156,7 +156,7 @@ async fn start(container: &str) -> Result<()> {
     .await
     .map(|_| ())
 }
-async fn stop(container: &str) -> Result<()> {
+pub(super) async fn stop(container: &str) -> Result<()> {
     request(
         Method::POST,
         &format!("/containers/{container}/stop?t=30"),
@@ -165,7 +165,7 @@ async fn stop(container: &str) -> Result<()> {
     .await
     .map(|_| ())
 }
-async fn remove(container: &str) -> Result<()> {
+pub(super) async fn remove(container: &str) -> Result<()> {
     match request(
         Method::DELETE,
         &format!("/containers/{container}?force=true&v=false"),
@@ -194,8 +194,18 @@ async fn worker(
     restore: bool,
     label: &str,
 ) -> Result<()> {
-    let name = format!("thelxinoe-state-{}-{label}", &u.id[..8]);
-    let spec = json!({"Image":current_image().await?,"Cmd":[if restore {"snapshot-restore"} else {"snapshot-copy"}],"Healthcheck":{"Test":["NONE"]},"Labels":{"app.thelxinoe.update":u.id,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":"none","ReadonlyRootfs":true,"CapDrop":["ALL"],"CapAdd":["CHOWN","FOWNER","DAC_OVERRIDE"],"SecurityOpt":["no-new-privileges:true"],"Memory":536870912,"NanoCpus":1000000000u64,"PidsLimit":32,"Mounts":[{"Type":"bind","Source":source,"Target":"/source","ReadOnly":true},{"Type":"bind","Source":destination,"Target":"/destination"}]}});
+    copy_state(d, &u.id, source, destination, restore, label).await
+}
+pub(super) async fn copy_state(
+    d: &Deployment,
+    operation: &str,
+    source: &str,
+    destination: &str,
+    restore: bool,
+    label: &str,
+) -> Result<()> {
+    let name = format!("thelxinoe-state-{}-{label}", &operation[..8]);
+    let spec = json!({"Image":current_image().await?,"Cmd":[if restore {"snapshot-restore"} else {"snapshot-copy"}],"Healthcheck":{"Test":["NONE"]},"Labels":{"app.thelxinoe.update":operation,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":"none","ReadonlyRootfs":true,"CapDrop":["ALL"],"CapAdd":["CHOWN","FOWNER","DAC_OVERRIDE"],"SecurityOpt":["no-new-privileges:true"],"Memory":536870912,"NanoCpus":1000000000u64,"PidsLimit":32,"Mounts":[{"Type":"bind","Source":source,"Target":"/source","ReadOnly":true},{"Type":"bind","Source":destination,"Target":"/destination"}]}});
     let value = request(
         Method::POST,
         &format!("/containers/create?name={name}"),

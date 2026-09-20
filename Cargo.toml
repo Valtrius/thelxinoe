@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/server", "apps/docker-controller", "apps/desktop", "crates/core", "crates/database", "crates/auth", "crates/jobs", "crates/catalog", "crates/playback"]
+members = ["apps/server", "apps/docker-controller", "apps/desktop", "crates/core", "crates/database", "crates/auth", "crates/jobs", "crates/catalog", "crates/playback", "crates/backup", "crates/releases"]
 default-members = ["apps/server", "apps/docker-controller", "crates/core", "crates/database", "crates/auth", "crates/jobs", "crates/catalog", "crates/playback"]
 resolver = "2"
 

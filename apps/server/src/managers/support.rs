@@ -284,6 +284,46 @@ async fn snapshot(c: &Connection<'_>, s: &Support) -> Result<Value> {
         }
     }
 }
+pub(crate) async fn operational_health(state: &AppState) -> anyhow::Result<()> {
+    let rows = state
+        .db
+        .call(|db| {
+            Ok(db
+                .prepare(
+                    "SELECT id,kind FROM support_services WHERE kind IN ('prowlarr','nzbget')",
+                )?
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+        .await?;
+    let mut items = Vec::new();
+    for (key, kind) in rows {
+        let result = async {
+            let service = load(state, &key).await?;
+            let c = connect(state, &service).await?;
+            snapshot(&c, &service).await
+        }
+        .await;
+        let value = match result {
+            Ok(data) => {
+                let problem = kind == "prowlarr"
+                    && (data["health"].as_array().is_some_and(|r| !r.is_empty())
+                        || data["indexers"].as_array().is_some_and(|rows| {
+                            rows.iter().any(|r| {
+                                r["disabled_until"]
+                                    .as_str()
+                                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                                    .is_some_and(|date| date.timestamp() > now())
+                            })
+                        }));
+                json!({"id":key,"kind":kind,"problem":problem,"rate":data["rate"],"paused":data["paused"],"remaining_mb":data["remaining_mb"],"queue_count":data["queue"].as_array().map(Vec::len),"health_count":data["health"].as_array().map(Vec::len)})
+            }
+            Err(_) => json!({"id":key,"kind":kind,"problem":true,"unavailable":true}),
+        };
+        items.push(value);
+    }
+    state.db.call(move|db|{db.execute("INSERT INTO settings VALUES ('operations.support',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[json!({"items":items,"checked_at":now()}).to_string()])?;Ok(())}).await
+}
 async fn inspect(
     State(state): State<AppState>,
     headers: HeaderMap,

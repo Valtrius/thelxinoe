@@ -8,12 +8,16 @@ pub mod library;
 mod managers;
 pub mod metadata;
 mod online;
+pub mod operations;
+#[cfg(test)]
+mod operations_tests;
 pub mod playback;
 mod playlists;
 mod realtime;
 pub mod security;
 pub mod segments;
 pub mod user_media;
+pub mod validation;
 pub use jellyfin::discovery::run as run_discovery;
 pub use online::downloads::run as run_downloads;
 pub use online::run as run_online;
@@ -134,6 +138,7 @@ pub fn router(state: AppState) -> Router {
         .merge(online::router())
         .merge(managers::router())
         .merge(segments::router())
+        .merge(operations::router())
         .route("/api/v1/{*path}", axum::routing::any(not_found))
         .route("/api/v1/health", get(health))
         .route(

@@ -1,0 +1,42 @@
+name: thelxinoe-operations-v4
+services:
+  controller:
+    image: thelxinoe-controller:0.1.0
+    network_mode: none
+    volumes:
+      - runtime:/run/thelxinoe
+      - deployment:/var/lib/thelxinoe/deployment
+      - /var/run/docker.sock:/var/run/docker.sock
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
+    labels: {app.thelxinoe.component: controller}
+  server:
+    image: thelxinoe-server:0.1.0
+    ports: ["127.0.0.1:19393:8484"]
+    environment:
+      THELXINOE_PUBLIC_URL: https://localhost:27443
+      THELXINOE_TRUSTED_PROXIES: 172.31.240.0/24
+    volumes:
+      - ./.local/operations-v4/server:/var/lib/thelxinoe
+      - ./.local/operations-v4/cache:/var/cache/thelxinoe
+      - ./.local/operations-v4/data:/data
+      - runtime:/run/thelxinoe:ro
+    networks: [test]
+    depends_on:
+      controller: {condition: service_healthy}
+    labels: {app.thelxinoe.component: server}
+  proxy:
+    image: caddy:2
+    ports: ["127.0.0.1:27443:9443"]
+    volumes: ["./tests/Caddyfile:/etc/caddy/Caddyfile:ro"]
+    networks: [test]
+    depends_on:
+      server: {condition: service_healthy}
+networks:
+  test:
+    ipam:
+      config: [{subnet: 172.31.240.0/24}]
+volumes:
+  runtime:
+  deployment:
