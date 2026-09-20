@@ -7,6 +7,8 @@
   import NotificationCenter from './lib/NotificationCenter.svelte';
   import AdminOperations from './lib/AdminOperations.svelte';
   import BackupSettings from './lib/BackupSettings.svelte';
+  import ProductUpdates from './lib/ProductUpdates.svelte';
+  import DesktopUpdates from './lib/DesktopUpdates.svelte';
   import UserAdministration from './lib/UserAdministration.svelte';
   import Player from './lib/Player.svelte';
   import MusicPlayer from './lib/MusicPlayer.svelte';
@@ -112,6 +114,7 @@
   let notificationRevision = $state(0);
   let scans = $state<Record<string, { completed: number; total: number }>>({});
   let serverAddress = $state('');
+  let updateRequired = $state('');
   async function act(fn: () => Promise<void>) {
     busy = true;
     error = '';
@@ -127,6 +130,21 @@
     try {
       await initializeTransport();
       serverAddress = serverUrl();
+      updateRequired = '';
+      const contract = await api<{
+        api_version: number;
+        api_min?: number;
+        api_max?: number;
+      }>('/health');
+      if (
+        !Number.isInteger(contract.api_version) ||
+        (contract.api_min ?? contract.api_version) > 1 ||
+        (contract.api_max ?? contract.api_version) < 1
+      ) {
+        updateRequired =
+          'This client cannot use the server’s API version. Update the client or connect to a compatible server.';
+        return;
+      }
       setup = (await api<{ setup_required: boolean }>('/setup')).setup_required;
       if (!setup) {
         try {
@@ -277,8 +295,14 @@
     });
   }
   onMount(() => {
+    const incompatible = (event: Event) => {
+      updateRequired = (event as CustomEvent<string>).detail;
+      events?.close();
+    };
+    window.addEventListener('thelxinoe-update-required', incompatible);
     void boot();
     return () => {
+      window.removeEventListener('thelxinoe-update-required', incompatible);
       events?.close();
       clearTimeout(settingsTimer);
     };
@@ -289,6 +313,25 @@
   <main class="auth-page">
     <div class="brand-mark">T</div>
     <p>Connecting to your library…</p>
+  </main>
+{:else if updateRequired}
+  <main class="auth-page">
+    <div class="auth-card">
+      <h1>Update required</h1>
+      <p>{updateRequired}</p>
+      {#if desktop}<DesktopUpdates /><label
+          >Server address<input bind:value={serverAddress} /></label
+        ><button
+          class="secondary"
+          onclick={() =>
+            act(async () => {
+              await changeServer(serverAddress);
+              await boot();
+            })}>Connect to server</button
+        >{:else}<button class="secondary" onclick={() => location.reload()}
+          >Reload current web app</button
+        >{/if}
+    </div>
   </main>
 {:else if !user}
   <main class="auth-page">
@@ -434,7 +477,7 @@
         <PlaybackSettings />
         <SegmentSettings admin={user.role === 'admin'} />
         <QuickConnect username={user.username} />
-        {#if desktop}<MpvSettings />{/if}
+        {#if desktop}<MpvSettings /><DesktopUpdates />{/if}
         {#if desktop}<section class="panel">
             <h2>Server connection</h2>
             <form
@@ -490,6 +533,7 @@
         {#if user.role === 'admin'}
           <AdminOperations />
           <BackupSettings />
+          <ProductUpdates />
           <MetadataSettings />
           <OnlineSettings />
           <ManagerSettings />

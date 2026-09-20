@@ -117,10 +117,22 @@ pub struct Create {
 }
 pub async fn create(
     State(state): State<AppState>,
+    axum::Extension(context): axum::Extension<security::RequestContext>,
     headers: HeaderMap,
-    Json(input): Json<Create>,
+    Json(mut input): Json<Create>,
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
+    if context.remote() && input.options.quality == "auto" && input.options.capabilities.hls {
+        let video = crate::online::live::domain(&input.media_id)
+            || input.media_id.starts_with("youtube:")
+            || source(&state, &input.media_id, input.file_id.as_deref())
+                .await?
+                .video_codec()
+                .is_some();
+        if video {
+            input.options.quality = "4mbps".into();
+        }
+    }
     create_for(&state, &p, input).await.map(Json)
 }
 pub async fn create_for(state: &AppState, p: &Principal, input: Create) -> Result<Value> {

@@ -72,6 +72,7 @@ async fn replacement_and_restart_keep_resume_but_invalidate_old_playback_generat
         bind: "127.0.0.1:0".parse().unwrap(),
         public_url: None,
         trusted_proxies: vec![],
+        cors_origins: vec![],
         controller_socket: temp.path().join("socket"),
     };
     let state = AppState::open(config.clone()).await.unwrap();

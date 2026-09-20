@@ -13,6 +13,7 @@ pub mod operations;
 mod operations_tests;
 pub mod playback;
 mod playlists;
+pub mod product;
 mod realtime;
 pub mod security;
 pub mod segments;
@@ -58,6 +59,8 @@ pub struct AppState {
     pub online: Arc<online::Runtime>,
     pub(crate) managers: Arc<managers::Runtime>,
     pub(crate) media_operations: Arc<tokio::sync::RwLock<()>>,
+    pub(crate) release_gate: Arc<tokio::sync::RwLock<()>>,
+    pub(crate) release_quiescing: Arc<std::sync::atomic::AtomicBool>,
 }
 impl AppState {
     pub async fn open(config: Config) -> anyhow::Result<Self> {
@@ -109,6 +112,8 @@ impl AppState {
             online: Arc::new(online::Runtime::new()?),
             managers: Arc::new(managers::Runtime::new()?),
             media_operations: Arc::new(tokio::sync::RwLock::new(())),
+            release_gate: Arc::new(tokio::sync::RwLock::new(())),
+            release_quiescing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             dummy_hash: Arc::new(thelxinoe_auth::password_hash(thelxinoe_auth::token()).await?),
         })
     }
@@ -134,6 +139,7 @@ impl AppState {
 }
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .merge(product::router())
         .merge(jellyfin::router())
         .merge(online::router())
         .merge(managers::router())
@@ -263,7 +269,7 @@ pub fn router(state: AppState) -> Router {
 }
 async fn health() -> Json<serde_json::Value> {
     Json(
-        json!({"status":"ok","version":thelxinoe_core::VERSION,"api_version":thelxinoe_core::API_VERSION}),
+        json!({"status":"ok","version":thelxinoe_core::VERSION,"api_version":thelxinoe_core::API_VERSION,"api_min":thelxinoe_core::API_VERSION,"api_max":thelxinoe_core::API_VERSION}),
     )
 }
 async fn admin_health(
@@ -293,7 +299,18 @@ pub async fn run_jobs(state: AppState) -> anyhow::Result<()> {
     let queue = Queue(state.db.clone());
     queue.recover().await?;
     loop {
-        if let Some(job) = queue.claim().await? {
+        let job = {
+            let _gate = state.release_gate.read().await;
+            if state
+                .release_quiescing
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                None
+            } else {
+                queue.claim().await?
+            }
+        };
+        if let Some(job) = job {
             match job.kind.as_str() {
                 "checkpoint" => queue.checkpoint(&job).await?,
                 "stack.install" => {

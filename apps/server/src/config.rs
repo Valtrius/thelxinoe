@@ -11,6 +11,7 @@ pub struct Config {
     pub bind: SocketAddr,
     pub public_url: Option<url::Url>,
     pub trusted_proxies: Vec<IpNet>,
+    pub cors_origins: Vec<String>,
     pub controller_socket: PathBuf,
 }
 impl Config {
@@ -47,6 +48,26 @@ impl Config {
                 .parse()?,
             public_url,
             trusted_proxies,
+            cors_origins: std::env::var("THELXINOE_CORS_ORIGINS")
+                .unwrap_or_default()
+                .split(',')
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| {
+                    let value = s.trim();
+                    let url = url::Url::parse(value)?;
+                    anyhow::ensure!(
+                        matches!(url.scheme(), "http" | "https")
+                            && url.host_str().is_some()
+                            && url.username().is_empty()
+                            && url.password().is_none()
+                            && url.path() == "/"
+                            && url.query().is_none()
+                            && url.fragment().is_none(),
+                        "CORS origins must be explicit HTTP(S) origins"
+                    );
+                    Ok(url.origin().ascii_serialization())
+                })
+                .collect::<Result<Vec<_>>>()?,
             controller_socket: env_path(
                 "THELXINOE_CONTROLLER_SOCKET",
                 "/run/thelxinoe/controller.sock",

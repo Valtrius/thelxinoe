@@ -21,6 +21,12 @@ pub(crate) async fn request(
     path: &str,
     body: Option<Value>,
 ) -> Result<Value> {
+    if method != reqwest::Method::GET && !crate::lease::active() {
+        return Err((
+            StatusCode::CONFLICT,
+            "Controller does not hold the Docker mutation lease",
+        ));
+    }
     let client = reqwest::Client::builder()
         .unix_socket("/var/run/docker.sock")
         .no_proxy()

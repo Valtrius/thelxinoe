@@ -1,0 +1,49 @@
+name: thelxinoe-release-v6
+services:
+  controller:
+    image: thelxinoe-controller:release-base
+    network_mode: none
+    restart: unless-stopped
+    environment:
+      THELXINOE_RELEASE_KEY_FILE: /etc/thelxinoe/releases/release.pub
+    volumes:
+      - runtime:/run/thelxinoe
+      - deployment:/var/lib/thelxinoe/deployment
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./.local/releases/channel:/etc/thelxinoe/releases:ro
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
+    labels: {app.thelxinoe.component: controller}
+  server:
+    image: thelxinoe-server:release-base
+    ports: ["127.0.0.1:19494:8484"]
+    environment:
+      THELXINOE_PUBLIC_URL: https://localhost:28443
+      THELXINOE_TRUSTED_PROXIES: 172.31.234.0/24
+      THELXINOE_RELEASE_KEY_FILE: /etc/thelxinoe/releases/release.pub
+      THELXINOE_RELEASE_MANIFEST_FILE: /etc/thelxinoe/releases/latest.json
+    volumes:
+      - ./.local/releases-v6/server:/var/lib/thelxinoe
+      - ./.local/releases-v6/cache:/var/cache/thelxinoe
+      - ./.local/releases-v6/data:/data
+      - ./.local/releases/channel:/etc/thelxinoe/releases:ro
+      - runtime:/run/thelxinoe:ro
+    networks: [test]
+    depends_on:
+      controller: {condition: service_healthy}
+    labels: {app.thelxinoe.component: server}
+  proxy:
+    image: caddy:2
+    ports: ["127.0.0.1:28443:9443"]
+    volumes: ["./tests/Caddyfile:/etc/caddy/Caddyfile:ro"]
+    networks: [test]
+    depends_on:
+      server: {condition: service_healthy}
+networks:
+  test:
+    ipam:
+      config: [{subnet: 172.31.234.0/24}]
+volumes:
+  runtime:
+  deployment:

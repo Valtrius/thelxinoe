@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod mpv;
+mod updates;
 use serde_json::Value;
 use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
@@ -37,8 +38,8 @@ async fn open_youtube_linking(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|_| "Could not open your browser".into())
 }
 
-fn credential() -> Result<keyring::Entry, String> {
-    keyring::Entry::new("app.thelxinoe.desktop", "server-session").map_err(|e| e.to_string())
+fn credential(app: &tauri::AppHandle) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(&app.config().identifier, "server-session").map_err(|e| e.to_string())
 }
 fn config_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
@@ -64,7 +65,7 @@ async fn change_server(app: tauri::AppHandle, value: String) -> Result<String, S
     }
     #[cfg(windows)]
     app.state::<mpv::DesktopPlayback>().player.stop().await;
-    match credential()?.delete_credential() {
+    match credential(&app)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => {}
         Err(e) => return Err(e.to_string()),
     }
@@ -87,7 +88,7 @@ async fn backend_request(
     {
         return Err("Invalid API path".into());
     }
-    let base = server_url(app)?;
+    let base = server_url(app.clone())?;
     let auth = matches!(path.as_str(), "/auth/login" | "/setup") && method == "POST";
     if auth && let Some(value) = body.as_mut() {
         value["transport"] = Value::String("device".into());
@@ -105,8 +106,9 @@ async fn backend_request(
                 .map_err(|e| e.to_string())?,
             format!("{base}/api/v1{path}"),
         )
-        .header("X-Thelxinoe-Client", "1");
-    match credential()?.get_password() {
+        .header("X-Thelxinoe-Client", "1")
+        .header("X-Thelxinoe-API", thelxinoe_core::API_VERSION.to_string());
+    match credential(&app)?.get_password() {
         Ok(token) => request = request.bearer_auth(token),
         Err(keyring::Error::NoEntry) => {}
         Err(e) => return Err(e.to_string()),
@@ -125,7 +127,7 @@ async fn backend_request(
         .map_err(|_| "Server returned an invalid response".to_string())?;
     if auth && status == 200 {
         if let Some(token) = value["token"].as_str() {
-            credential()?
+            credential(&app)?
                 .set_password(token)
                 .map_err(|e| e.to_string())?;
         }
@@ -134,7 +136,7 @@ async fn backend_request(
         }
     }
     if path == "/auth/logout" && status == 200 {
-        match credential()?.delete_credential() {
+        match credential(&app)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => {}
             Err(e) => return Err(e.to_string()),
         }
@@ -144,8 +146,10 @@ async fn backend_request(
 fn main() {
     tauri::Builder::default()
         .manage(mpv::DesktopPlayback::default())
+        .manage(updates::Runtime::default())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
@@ -163,6 +167,8 @@ fn main() {
             backend_request,
             open_youtube_linking,
             open_twitch_activation,
+            updates::desktop_update_check,
+            updates::desktop_update_install,
             mpv::mpv_settings,
             mpv::mpv_install,
             mpv::mpv_custom,

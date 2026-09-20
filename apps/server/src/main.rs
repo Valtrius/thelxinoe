@@ -34,13 +34,14 @@ async fn main() -> Result<()> {
     let retention = tokio::spawn(thelxinoe_server::run_retention(state.clone()));
     let segments = tokio::spawn(thelxinoe_server::segments::run(state.clone()));
     let operations = tokio::spawn(thelxinoe_server::operations::run(state.clone()));
+    let product = tokio::spawn(thelxinoe_server::product::run(state.clone()));
     let listener = tokio::net::TcpListener::bind(bind).await?;
     let server = axum::serve(
         listener,
         router(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown());
-    tokio::select! {result=server=>result?,result=worker=>{result??;},result=scanner=>{result??;},result=playback=>{result??;},result=discovery=>{result??;},result=online=>{result??;},result=downloads=>{result??;},result=updates=>{result??;},result=retention=>{result??;},result=segments=>{result??;},result=operations=>{result??;}}
+    tokio::select! {result=server=>result?,result=worker=>{result??;},result=scanner=>{result??;},result=playback=>{result??;},result=discovery=>{result??;},result=online=>{result??;},result=downloads=>{result??;},result=updates=>{result??;},result=retention=>{result??;},result=segments=>{result??;},result=operations=>{result??;},result=product=>{result??;}}
     Ok(())
 }
 async fn shutdown() {

@@ -31,6 +31,8 @@ struct Record {
     recovery: Option<String>,
     #[serde(default)]
     recovery_ready: bool,
+    #[serde(default)]
+    release_restore: Option<String>,
 }
 #[derive(Deserialize)]
 pub(super) struct Input {
@@ -95,7 +97,7 @@ pub(super) async fn list() -> Result<Json<Value>> {
 async fn inspect(d: &Deployment) -> Result<(Vec<Managed>, Vec<Component>)> {
     let server_id = d.server["Id"].as_str().ok_or_else(unavailable)?;
     let server = engine(&format!("/containers/{server_id}/json")).await?;
-    if policy::fingerprint(&server) != policy::fingerprint(&d.server) {
+    if !product::deployment_matches(&d.server, &server) {
         return Err(conflict(
             "First-party deployment drift blocks backup and restore",
         ));
@@ -215,6 +217,7 @@ pub(super) async fn create(
         components,
         recovery: None,
         recovery_ready: false,
+        release_restore: None,
     };
     record(&r)?;
     let response = public(&r);
@@ -295,6 +298,7 @@ pub(super) async fn restore(
             components: vec![],
             recovery: None,
             recovery_ready: false,
+            release_restore: None,
         }
     };
     if !matches!(
@@ -315,23 +319,29 @@ pub(super) async fn restore(
     .map_err(|_| unavailable())?
     .map_err(|_| conflict("Passphrase or archive verification failed"))?;
     let manifest: Manifest = persisted(store::read(&stage.join("manifest.json")))?;
-    // Until release recovery handles image transitions, never restore a database into a different generation.
+    // An archive cannot introduce a new Docker spec: match its authenticated
+    // descriptor against one previously accepted by this controller.
+    let accepted: Deployment = persisted(store::read(
+        &store::root()
+            .join("generations")
+            .join(manifest.deployment.generation.to_string())
+            .join("desired-state.json"),
+    ))?;
     if manifest.format != 1
         || manifest.deployment.id != d.id
-        || manifest.deployment.generation != d.generation
-        || manifest.deployment.server["Image"] != d.server["Image"]
-        || manifest.deployment.controller["Image"] != d.controller["Image"]
+        || serde_json::to_value(&manifest.deployment).map_err(|_| unavailable())?
+            != serde_json::to_value(&accepted).map_err(|_| unavailable())?
         || serde_json::to_value(&manifest.services).map_err(|_| unavailable())?
             != serde_json::to_value(&current_services).map_err(|_| unavailable())?
         || manifest.components.len() != components.len()
-        || manifest
-            .components
-            .iter()
-            .zip(&components)
-            .any(|(a, b)| a.key != b.key || a.container != b.container || a.source != b.source)
+        || manifest.components.iter().zip(&components).any(|(a, b)| {
+            a.key != b.key
+                || (a.key != "server" && a.container != b.container)
+                || a.source != b.source
+        })
     {
         return Err(conflict(
-            "Restore requires this backup's accepted deployment generation and component layout",
+            "Restore requires a previously accepted deployment and the same managed-service layout",
         ));
     }
     r.components = components;
@@ -339,6 +349,15 @@ pub(super) async fn restore(
     r.error = None;
     r.recovery = Some(format!("recovery-{restore_id}"));
     r.recovery_ready = false;
+    let change_release = manifest.deployment.server["Image"] != d.server["Image"]
+        || manifest.deployment.controller["Image"] != d.controller["Image"];
+    if change_release {
+        // Fail before stopping anything when a retained old image was removed.
+        for raw in [&manifest.deployment.server, &manifest.deployment.controller] {
+            engine(&format!("/images/{}/json", immutable(raw)?)).await?;
+        }
+    }
+    r.release_restore = change_release.then(|| restore_id.clone());
     record(&r)?;
     let response = public(&r);
     tokio::spawn(async move {
@@ -370,6 +389,26 @@ pub(super) async fn restore(
             for s in &manifest.services {
                 save(s)?;
             }
+            if change_release {
+                r.stage = "release-handoff".into();
+                record(&r)?;
+                let source = r
+                    .components
+                    .iter()
+                    .find(|c| c.key == "server")
+                    .ok_or_else(unavailable)?
+                    .source
+                    .clone();
+                product::restore_archive(
+                    key.clone(),
+                    restore_id.clone(),
+                    manifest.deployment,
+                    d.clone(),
+                    source,
+                )
+                .await?;
+                return Ok(());
+            }
             r.stage = "restore-activating".into();
             record(&r)?;
             Ok::<_, (StatusCode, &'static str)>(())
@@ -377,6 +416,9 @@ pub(super) async fn restore(
         .await;
         match result {
             Ok(()) => {
+                if change_release {
+                    return;
+                }
                 // External work can resume after this boundary. Do not copy old state over running components.
                 if restart(&r.components).await.is_ok() {
                     r.stage = "restored".into();
@@ -386,6 +428,12 @@ pub(super) async fn restore(
                 }
             }
             Err(e) => {
+                if change_release && product::recovery_stage(&restore_id).is_some() {
+                    r.stage = "release-handoff".into();
+                    r.error = Some("State restored; resume deployment recovery in Product updates or through the private controller API".into());
+                    let _ = record(&r);
+                    return;
+                }
                 r.stage = "restore-failed".into();
                 r.error = Some(e.1.into());
                 if crossed && captured {
@@ -425,6 +473,34 @@ pub(super) async fn recover_interrupted() -> Result<()> {
             continue;
         }
         let mut r: Record = persisted(store::read(&entry.path().join("operation.json")))?;
+        if r.stage == "release-handoff" {
+            match r
+                .release_restore
+                .as_deref()
+                .and_then(product::recovery_stage)
+                .as_deref()
+            {
+                Some("restored") => {
+                    let d = bootstrap().await?;
+                    let server = r
+                        .components
+                        .iter_mut()
+                        .find(|c| c.key == "server")
+                        .ok_or_else(unavailable)?;
+                    server.container = d.server["Id"].as_str().ok_or_else(unavailable)?.into();
+                    restart(&r.components).await?;
+                    r.stage = "restored".into();
+                    r.error = None;
+                    record(&r)?;
+                    continue;
+                }
+                Some(_) => continue,
+                None => {
+                    r.stage = "restoring".into();
+                    record(&r)?;
+                }
+            }
+        }
         if !matches!(
             r.stage.as_str(),
             "queued"

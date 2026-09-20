@@ -12,10 +12,22 @@ use axum::{
 use std::net::{IpAddr, SocketAddr};
 use thelxinoe_core::{Capability, Principal};
 
+#[derive(Clone)]
 pub struct RequestContext {
     pub secure: bool,
     pub origin: String,
     pub address: IpAddr,
+}
+impl RequestContext {
+    pub fn remote(&self) -> bool {
+        match self.address {
+            IpAddr::V4(ip) => !(ip.is_private() || ip.is_loopback() || ip.is_link_local()),
+            IpAddr::V6(ip) => ip.to_ipv4_mapped().map_or_else(
+                || !(ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local()),
+                |ip| !(ip.is_private() || ip.is_loopback() || ip.is_link_local()),
+            ),
+        }
+    }
 }
 pub fn request_context(
     config: &Config,
@@ -90,7 +102,42 @@ pub fn request_context(
     })
 }
 
-pub async fn guard(State(state): State<AppState>, request: Request, next: Next) -> Response {
+pub async fn guard(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
+    if request.uri().path().starts_with("/api/v1/")
+        && !["/api/v1/health", "/api/v1/release"].contains(&request.uri().path())
+        && let Some(version) = request.headers().get("x-thelxinoe-api")
+        && version.to_str().ok().and_then(|v| v.parse::<u32>().ok())
+            != Some(thelxinoe_core::API_VERSION)
+    {
+        return ApiError(axum::http::StatusCode::UPGRADE_REQUIRED,"update_required","This client uses an incompatible API. Update the client or connect to a compatible server.".into()).into_response();
+    }
+    let product_command = request
+        .uri()
+        .path()
+        .starts_with("/api/v1/admin/product-update/")
+        && request.method() == Method::POST;
+    let _release_gate = if product_command {
+        None
+    } else {
+        Some(state.release_gate.read().await)
+    };
+    if state
+        .release_quiescing
+        .load(std::sync::atomic::Ordering::SeqCst)
+        && !(request.method() == Method::GET
+            && (request.uri().path().starts_with("/api/v1/admin/")
+                || request.uri().path() == "/api/v1/health"
+                || !request.uri().path().starts_with("/api/")
+                    && (request.uri().path() == "/"
+                        || request.uri().path().starts_with("/assets/"))))
+    {
+        return ApiError(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "maintenance",
+            "The server is preparing an update. Reconnect shortly.".into(),
+        )
+        .into_response();
+    }
     let peer = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
@@ -100,6 +147,18 @@ pub async fn guard(State(state): State<AppState>, request: Request, next: Next) 
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
+    let cors = request
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .filter(|origin| {
+            state
+                .config
+                .cors_origins
+                .iter()
+                .any(|allowed| allowed == origin)
+        })
+        .map(str::to_owned);
     if request.uri().path().starts_with("/api/") {
         if let Some(origin) = request
             .headers()
@@ -110,7 +169,7 @@ pub async fn guard(State(state): State<AppState>, request: Request, next: Next) 
                 origin,
                 "http://tauri.localhost" | "https://tauri.localhost" | "tauri://localhost"
             );
-            if origin != context.origin && !desktop {
+            if origin != context.origin && !desktop && cors.is_none() {
                 return ApiError::forbidden().into_response();
             }
             if desktop && request.headers().contains_key(header::COOKIE) {
@@ -130,7 +189,47 @@ pub async fn guard(State(state): State<AppState>, request: Request, next: Next) 
         }
     }
     let api_request = request.uri().path().starts_with("/api/");
-    let mut response = next.run(request).await;
+    let preflight = api_request
+        && cors.is_some()
+        && request.method() == Method::OPTIONS
+        && request
+            .headers()
+            .contains_key(header::ACCESS_CONTROL_REQUEST_METHOD);
+    request.extensions_mut().insert(context.clone());
+    let mut response = if preflight {
+        axum::http::StatusCode::NO_CONTENT.into_response()
+    } else {
+        next.run(request).await
+    };
+    if api_request && let Some(origin) = cors {
+        response
+            .headers_mut()
+            .insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin.parse().unwrap());
+        response.headers_mut().insert(
+            header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+            "true".parse().unwrap(),
+        );
+        response
+            .headers_mut()
+            .append(header::VARY, "Origin".parse().unwrap());
+        if preflight {
+            response.headers_mut().insert(
+                header::ACCESS_CONTROL_ALLOW_METHODS,
+                "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS"
+                    .parse()
+                    .unwrap(),
+            );
+            response.headers_mut().insert(
+                header::ACCESS_CONTROL_ALLOW_HEADERS,
+                "Content-Type, Authorization, X-Thelxinoe-Client, X-Thelxinoe-API"
+                    .parse()
+                    .unwrap(),
+            );
+            response
+                .headers_mut()
+                .insert(header::ACCESS_CONTROL_MAX_AGE, "600".parse().unwrap());
+        }
+    }
     if api_request
         && response.status().is_client_error()
         && response

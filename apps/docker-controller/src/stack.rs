@@ -14,6 +14,8 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 #[path = "backups.rs"]
 mod backups;
+#[path = "product.rs"]
+pub(crate) mod product;
 #[path = "updates.rs"]
 mod updates;
 pub async fn retain_worker_image() -> anyhow::Result<()> {
@@ -44,7 +46,7 @@ struct Managed {
     #[serde(default)]
     error: Option<String>,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Deployment {
     id: String,
     generation: u64,
@@ -299,6 +301,10 @@ pub fn router() -> Router {
         .route("/stack/updates", get(updates::list))
         .route("/stack/backups", get(backups::list).post(backups::create))
         .route("/stack/backups/{id}/restore", post(backups::restore))
+        .route("/stack/product", get(product::list))
+        .route("/stack/product/preflight", post(product::preflight))
+        .route("/stack/product/{id}/activate", post(product::activate))
+        .route("/stack/product/{id}/recover", post(product::recover))
         .route("/stack/{id}/preflight", post(updates::preflight))
         .route("/stack/updates/{id}/activate", post(updates::activate))
         .route("/stack/updates/{id}/recover", post(updates::recover))

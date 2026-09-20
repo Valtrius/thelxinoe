@@ -2,7 +2,7 @@
 
 A self-hosted media server with a shared Svelte web and Windows Tauri application.
 
-Implementation follows [ROADMAP.md](ROADMAP.md). See [implementation status](docs/STATUS.md) for verified behavior and remaining work. This is a development build, not a v1 release.
+The planned v1 workflows are implemented and locally validated. See [implementation status](docs/STATUS.md) for evidence and supported limits, and the [release checklist](docs/RELEASE_CHECKLIST.md) before distributing a release. Public artifact hosting and hosted CI are not configured in this checkout.
 
 ## Development
 
@@ -43,9 +43,17 @@ Publish the server behind your own HTTPS reverse proxy. Set `THELXINOE_PUBLIC_UR
 
 The controller is intentionally unavailable outside its Unix socket. Do not publish the Docker daemon or mount it into the server.
 
+The web app supports installation as a Chromium PWA, mobile layouts, an offline reconnect screen and automatic remote video quality. See [remote access](docs/REMOTE.md) for proxy, CORS and cache behavior.
+
 ## YouTube
 
-Administrators configure a Google Web application in Settings, then each person connects their own YouTube account. The server owns OAuth, refresh, subscription/feed synchronization and the shared quota budget. Watchlists, pins and watched flags are private to each user. See [provider setup and current limits](docs/ONLINE.md). Server extraction, online playback and downloads remain in progress.
+Administrators configure a Google Web application in Settings, then each person connects their own YouTube account. The server owns OAuth, refresh, subscription/feed synchronization and the shared quota budget. Watchlists, pins and watched flags are private to each user. Public VOD/live streaming and retained downloads work in the browser and Windows MPV. Twitch uses per-user device authorization; Kick supports privately tracked public channels. See [provider setup and limits](docs/ONLINE.md).
+
+## Administration and updates
+
+Settings includes users/devices, service health, jobs, notifications, diagnostics, encrypted backups and recovery. The managed stack supports Radarr, Sonarr, Lidarr, Bazarr, Prowlarr and NZBGet, with guarded acquisition, retention and service updates. See [operations](docs/OPERATIONS.md), [managed services](docs/MANAGED-STACK.md) and [retention](docs/RETENTION.md).
+
+Signed product releases coordinate the server, controller, web and Windows application. Notify is the default; Automatic requires a maintenance window, idle state and tested recovery. Keep the deployment directory and retained images with backups. See [publishing and offline recovery](docs/RELEASES.md).
 
 ## TV clients
 

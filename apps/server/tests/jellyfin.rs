@@ -17,6 +17,7 @@ async fn fixture() -> (tempfile::TempDir, AppState, String) {
         bind: "127.0.0.1:0".parse().unwrap(),
         public_url: None,
         trusted_proxies: vec![],
+        cors_origins: vec![],
         controller_socket: temp.path().join("socket"),
     })
     .await
@@ -75,6 +76,74 @@ async fn call(
     )
 }
 const DEVICE: &str = "MediaBrowser Client=\"Test%20client\", Device=\"Living room, TV\", DeviceId=\"tv-one\", Version=\"1\"";
+
+#[tokio::test]
+async fn diagnostics_exclude_compatibility_credentials_and_untrusted_errors() {
+    let (_temp, state, first_party) = fixture().await;
+    state
+        .db
+        .call(|db| {
+            db.execute("UPDATE users SET role='admin' WHERE id='alice'", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let (status, login) = call(
+        &state,
+        "/Users/AuthenticateByName",
+        "POST",
+        json!({"Username":"alice","Pw":"a long test-only password"}),
+        &[("Authorization", DEVICE)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let token = login["AccessToken"].as_str().unwrap();
+    let query = format!("/Users/Me?api_key={token}");
+    assert_eq!(
+        call(&state, &query, "GET", Value::Null, &[]).await.0,
+        StatusCode::OK
+    );
+    let leaked_error = format!("untrusted-error-sentinel: {query}");
+    state.db.call(move |db| {
+        db.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,error,created_at) VALUES ('redaction','fixture','{}','redaction','failed',1,?1,1)", [&leaked_error])?;
+        db.execute("INSERT INTO audit(action,target,created_at) VALUES ('fixture',?1,1)", [&leaked_error])?;
+        Ok(())
+    }).await.unwrap();
+    let bearer = format!("Bearer {first_party}");
+    let (status, bundle) = call(
+        &state,
+        "/api/v1/admin/diagnostics",
+        "GET",
+        Value::Null,
+        &[("Authorization", &bearer)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bundle["database_ok"], true);
+    assert_eq!(bundle["jobs"], json!([{"state":"failed","count":1}]));
+    let serialized = bundle.to_string();
+    for secret in [
+        token,
+        first_party.as_str(),
+        "untrusted-error-sentinel",
+        "api_key",
+        "a long test-only password",
+    ] {
+        assert!(!serialized.contains(secret));
+    }
+    assert_eq!(
+        call(
+            &state,
+            "/api/v1/admin/diagnostics",
+            "GET",
+            Value::Null,
+            &[("X-Emby-Token", token)]
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+}
 
 #[tokio::test]
 async fn catalog_paging_playlist_order_and_private_state_match_first_party() {

@@ -10,6 +10,14 @@ cargo test
 
 On Linux, omit `--workspace` from Clippy to exclude the Windows desktop shell. Catalog tests require FFprobe. Generated fixtures require FFmpeg. CI installs those prerequisites explicitly.
 
+Windows hosts can also run the complete Linux Rust checks in Docker:
+
+```powershell
+docker build -f scripts/Dockerfile.verify -t thelxinoe-verified:local .
+```
+
+This runs formatting, Clippy and all default workspace tests with FFmpeg/FFprobe installed, including Linux-only controller locking, archive permissions and process behavior. The full acceptance matrix and local evidence are in [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md).
+
 ## Browser and reverse proxy
 
 ```powershell
@@ -41,7 +49,7 @@ node scripts/test-playback-tracks.mjs
 
 The first script checks real Chromium decoding of direct, remux and converted streams, seeks, range/HEAD/416 behavior, sidecar subtitles, grant revocation, two users, out-of-order reports, 90% watched inference and edition resume. It captures the application's actual Web Audio scheduling, then renders the buffers across their join to measure sample continuity and ReplayGain. The second verifies saved language preferences, embedded subtitles and the selected audio's actual 880 Hz signal. A Rust integration test replaces a real generated media file, rescans and reopens the database to verify logical resume and rejection of the old file generation.
 
-Browser gapless delivery uses up to two decoded FLAC/PCM tracks (64 MiB encoded and 128 MiB decoded per track, up to ten minutes each). Other formats and explicit conversion preferences use streaming playback with ReplayGain. Conversion uses four bounded FFmpeg slots, a rolling HLS window, a 2 GiB cache ceiling and idle cleanup; direct streams do not consume conversion slots. Playback grants expire after two minutes without an authenticated heartbeat and remain tied to their parent login session. Tests currently exercise Chromium; the final browser matrix belongs to release hardening.
+Browser gapless delivery uses up to two decoded FLAC/PCM tracks (64 MiB encoded and 128 MiB decoded per track, up to ten minutes each). Other formats and explicit conversion preferences use streaming playback with ReplayGain. Conversion uses four bounded FFmpeg slots, a rolling HLS window, a 2 GiB cache ceiling and idle cleanup; direct streams do not consume conversion slots. Playback grants expire after two minutes without an authenticated heartbeat and remain tied to their parent login session. The supported v1 browser matrix is Chromium, including mobile emulation and the installed Windows WebView2 shell.
 
 ## Windows desktop runtime
 
@@ -187,3 +195,33 @@ cargo run -p thelxinoe-desktop --example check-kick
 ```
 
 Linux fixture tests cover device-code/session binding, encrypted tokens, refresh, revoked/late replies, pagination, user isolation, rate limits, tracked-channel generations and live-session cleanup. They run without real account credentials.
+
+## Product release, recovery and native installer
+
+Use a dedicated local registry, publisher key, server state and test application identity. The fixture intentionally migrates to a schema the original release cannot open. Never point it at the main or live-provider deployment.
+
+1. Build the normal Linux images and Windows installer. Tag the Linux images `thelxinoe-server:release-base` and `thelxinoe-controller:release-base`.
+2. Run `node scripts/prepare-release-fixture.mjs`. Build both targets from `.local/release-fixture`, tag them `localhost:25000/thelxinoe/server:0.2.0` and `localhost:25000/thelxinoe/controller:0.2.0`, and push to a registry named `thelxinoe-release-registry` bound to `127.0.0.1:25000`.
+3. Run `node scripts/prepare-release-test.mjs`. This generates a private test manifest key if absent and signs the candidate image/schema metadata. The controller-only fixture uses placeholder desktop metadata; do not install that artifact.
+4. Start `docker compose -f compose.release.test.yaml up -d --wait`. On Linux, pre-create the bind-mounted server/cache/data directories with ownership `10001:10001`. The fixture uses HTTPS 28443, HTTP 19494 and separate state in `.local/releases-v6`.
+5. Run the following against that deployment. They use only synthetic accounts/media and the private test channel:
+
+```powershell
+$env:THELXINOE_RELEASE_PROJECT = 'thelxinoe-release-v6'
+$env:THELXINOE_RELEASE_STATE = '.local/releases-v6'
+$env:THELXINOE_RELEASE_ARCHIVE = '1'
+node scripts/test-product-release.mjs
+node scripts/test-release-interruption.mjs
+node scripts/test-release-recreation.mjs
+node scripts/test-pwa-remote.mjs
+```
+
+The product test checks a rejected live forward migration, successful signed activation, encrypted archive restoration of the earlier release and explicit state recovery. The interruption test stops the registry, kills the controller after forward migration and checks that the original state/server recover offline. The recreation test uses the persisted Compose override with deliberately stale bootstrap image names, actually recreates both containers and checks the accepted images and new generation. Run these in order; they leave recoverable test journals and retained images.
+
+For Windows installer validation, build both fixture versions with the same separate test application identifier (`app.thelxinoe.releasetest`), Tauri signing key and manifest publisher key. Use `THELXINOE_RELEASE_PUBLIC_KEY` at build time for that test key, and `THELXINOE_RELEASE_CA_PEM` only when serving the local publisher with a private TLS CA. The fixture override enables `bundle.createUpdaterArtifacts` and supplies `plugins.updater.pubkey`. Publish the candidate installer as `.local/releases/channel/setup.exe` with its `.sig`, and place the Tauri public key at `.local/releases/tauri.key.pub`. Run `prepare-release-test.mjs` again to assemble and sign the actual desktop artifact metadata. Serve only the channel directory at `https://localhost:29443`; never serve private keys.
+
+Install the base fixture into a separate directory/profile, launch its WebView with a local debugging port 9224, and run `node scripts/test-native-update.mjs`. It checks metadata mismatch, corrupt artifact rejection, actual installation/restart and preserved device authentication. Then run `node scripts/test-native-compatibility.mjs` against that same isolated application to verify the update-required screen and available updater on an incompatible server. Close the test application afterward. Build the production installer in a fresh shell with the normal identity and without either test publisher override.
+
+## PWA and remote quality
+
+`test-pwa-remote.mjs` uses the release fixture above. It creates the test administrator only if setup is required, checks all main sections at 390 pixels, Chromium installability, a public-only cache and offline reconnect. It also verifies HTTPS Range/HLS, cookies/CSRF/API compatibility, remote Auto quality and the update-required screen after an already-open client receives HTTP 426. `THELXINOE_RELEASE_ORIGIN` can override its HTTPS origin. Rust auth tests additionally cover explicit CORS and forwarded-address trust boundaries. The service worker never caches API responses, media or application bundles.

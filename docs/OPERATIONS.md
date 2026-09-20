@@ -12,7 +12,7 @@ The Backups panel takes an administrator-supplied passphrase of at least 16 byte
 
 Archives use the [age passphrase format](https://docs.rs/age/latest/age/struct.Encryptor.html) around TAR, with bounded size/entry counts. Restore rejects links, special files, traversal and duplicate names and verifies the authenticated end of the encrypted stream before touching live state. Passphrases are not stored in operation journals or SQLite.
 
-By default archives are `<controller deployment>/backups/<id>.age`. Mount a dedicated local destination on the controller and set `THELXINOE_BACKUPS=/backups` to place archives there. Internal staging and recovery snapshots remain under the private deployment tree. Copying an archive with its original UUID filename into the configured destination makes it available for import. Keep its passphrase separately. External replication and retention of backup files are the operator's responsibility.
+The main Compose file mounts `THELXINOE_BACKUP_ROOT` (default `.local/backups`) on the controller at `/backups`. Without that configuration archives default to `<controller deployment>/backups/<id>.age`. Internal staging and recovery snapshots remain under the private deployment tree. Copying an archive with its original UUID filename into the configured destination makes it available for import. Keep its passphrase separately. External replication and retention of backup files are the operator's responsibility.
 
 The controller requires `CHOWN`, `FOWNER` and `DAC_OVERRIDE` to preserve and read protected component files. These are declared in the main Compose file. It remains on `network_mode: none` with a read-only root filesystem and its private Unix socket. The server never receives Docker credentials or these capabilities.
 
@@ -22,7 +22,7 @@ The UI requires explicit confirmation before restoring. The entire archive is de
 
 If replacement fails before restart, it restores that recovery snapshot. The journal survives controller termination. On restart the controller cleans up its interrupted workers, restores pre-operation state when necessary and starts the original components. Once restored services are restarted, external work may resume; the controller does not automatically rewind those external effects.
 
-The current manual restore path requires the same accepted deployment generation and component layout. Its archive includes the full first-party descriptor, Compose pins and managed-service specifications. Recreating an older first-party generation after a release migration is part of the first-party update/recovery milestone and is not yet claimed here. An unrelated adoption or changed container layout blocks restoration instead of guessing new host paths.
+Archives include the full first-party descriptor, Compose pins and managed-service specifications. Restore can recreate an older server/controller generation using its previously accepted descriptor and retained images, including after a forward-only server migration. The old server validates a disposable copy before handoff. The managed-service layout must still match; unrelated adoption or changed paths block restoration instead of guessing host locations. Preserve the deployment directory and retained images alongside portable archives when moving hosts. See [release recovery](RELEASES.md) for the private offline recovery API.
 
 ## Evidence
 

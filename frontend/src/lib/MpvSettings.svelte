@@ -134,7 +134,6 @@
       </form>
     </details>
     <p class="muted">
-      Desktop {settings.product_version} · Updates will be available with published
-      releases.
+      Desktop {settings.product_version}
     </p>{/if}
 </section>

@@ -18,6 +18,7 @@ async fn fixture() -> (tempfile::TempDir, AppState) {
         bind: "127.0.0.1:0".parse().unwrap(),
         public_url: None,
         trusted_proxies: vec!["10.0.0.0/24".parse().unwrap()],
+        cors_origins: vec![],
         controller_socket: temp.path().join("socket"),
     })
     .await
@@ -431,6 +432,132 @@ async fn missing_master_key_blocks_startup_without_generating_a_replacement() {
     std::fs::remove_file(&key).unwrap();
     assert!(AppState::open(state.config.as_ref().clone()).await.is_err());
     assert!(!key.exists());
+}
+
+#[tokio::test]
+async fn explicit_cors_and_api_compatibility_preserve_authentication() {
+    let (_temp, state) = fixture().await;
+    let cookie = setup(&state).await;
+    let origin = "https://client.example.test";
+    let preflight = [
+        ("origin", origin),
+        ("access-control-request-method", "POST"),
+        (
+            "access-control-request-headers",
+            "X-Thelxinoe-Client, Content-Type",
+        ),
+    ];
+    assert_eq!(
+        request(
+            &state,
+            "/api/v1/auth/login",
+            "OPTIONS",
+            Value::Null,
+            None,
+            &preflight
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let mut config = state.config.as_ref().clone();
+    config.cors_origins = vec![origin.into()];
+    let state = AppState::open(config).await.unwrap();
+    let (status, headers, _) = request(
+        &state,
+        "/api/v1/auth/login",
+        "OPTIONS",
+        Value::Null,
+        None,
+        &preflight,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(headers["access-control-allow-origin"], origin);
+    assert_eq!(headers["access-control-allow-credentials"], "true");
+    assert_eq!(
+        request(
+            &state,
+            "/api/v1/auth/me",
+            "GET",
+            Value::Null,
+            None,
+            &[("origin", origin)]
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, headers, _) = request(
+        &state,
+        "/api/v1/auth/me",
+        "GET",
+        Value::Null,
+        Some(&cookie),
+        &[("origin", origin)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["access-control-allow-origin"], origin);
+    assert_eq!(
+        request(
+            &state,
+            "/api/v1/auth/me",
+            "GET",
+            Value::Null,
+            Some(&cookie),
+            &[("x-thelxinoe-api", "999")]
+        )
+        .await
+        .0,
+        StatusCode::UPGRADE_REQUIRED
+    );
+    for endpoint in ["/api/v1/health", "/api/v1/release"] {
+        assert_eq!(
+            request(
+                &state,
+                endpoint,
+                "GET",
+                Value::Null,
+                None,
+                &[("x-thelxinoe-api", "999")]
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+    }
+}
+
+#[tokio::test]
+async fn remote_quality_uses_the_trusted_client_address() {
+    let (_temp, state) = fixture().await;
+    for (address, remote) in [
+        ("192.168.1.9", false),
+        ("127.0.0.1", false),
+        ("::ffff:192.168.1.9", false),
+        ("2001:4860:4860::8888", true),
+        ("8.8.8.8", true),
+    ] {
+        let headers = axum::http::HeaderMap::from_iter([(
+            "x-forwarded-for".parse::<axum::http::HeaderName>().unwrap(),
+            address.parse().unwrap(),
+        )]);
+        let context = thelxinoe_server::security::request_context(
+            &state.config,
+            &headers,
+            "10.0.0.2:1234".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(context.remote(), remote);
+        let untrusted = thelxinoe_server::security::request_context(
+            &state.config,
+            &headers,
+            "192.168.1.2:1234".parse().unwrap(),
+        )
+        .unwrap();
+        assert!(!untrusted.remote());
+    }
 }
 
 #[tokio::test]

@@ -7,10 +7,15 @@ services:
       target: controller
     restart: unless-stopped
     network_mode: none
+    environment:
+      THELXINOE_RELEASE_KEY_FILE: /etc/thelxinoe/release.pub
+      THELXINOE_BACKUPS: /backups
     volumes:
       - controller-runtime:/run/thelxinoe
       - /var/run/docker.sock:/var/run/docker.sock
       - ${THELXINOE_STATE_ROOT:-./.local/docker}/deployment:/var/lib/thelxinoe/deployment
+      - ${THELXINOE_BACKUP_ROOT:-./.local/backups}:/backups
+      - ./releases/release.pub:/etc/thelxinoe/release.pub:ro
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -35,12 +40,16 @@ services:
       THELXINOE_TRUSTED_PROXIES: ${THELXINOE_TRUSTED_PROXIES:-}
       THELXINOE_DISCOVERY: ${THELXINOE_DISCOVERY:-true}
       THELXINOE_DISCOVERY_URL: ${THELXINOE_DISCOVERY_URL:-}
+      THELXINOE_RELEASE_URL: ${THELXINOE_RELEASE_URL:-}
+      THELXINOE_RELEASE_KEY_FILE: /etc/thelxinoe/release.pub
+      THELXINOE_CORS_ORIGINS: ${THELXINOE_CORS_ORIGINS:-}
     volumes:
       - ${THELXINOE_STATE_ROOT:-./.local/docker}/server:/var/lib/thelxinoe
       - ${THELXINOE_STATE_ROOT:-./.local/docker}/cache:/var/cache/thelxinoe
       - ${THELXINOE_DATA_ROOT:-./.local/media}:/data
       - ${THELXINOE_BACKUP_ROOT:-./.local/backups}:/backups
       - controller-runtime:/run/thelxinoe:ro
+      - ./releases/release.pub:/etc/thelxinoe/release.pub:ro
     read_only: true
     tmpfs:
       - /tmp:size=128m

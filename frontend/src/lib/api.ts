@@ -20,6 +20,11 @@ export class ApiError extends Error {
     message: string,
   ) {
     super(message);
+    if (status === 426 && typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('thelxinoe-update-required', { detail: message }),
+      );
+    }
   }
 }
 export function serverUrl(): string {
@@ -48,6 +53,7 @@ export async function api<T>(
     credentials: 'include',
     headers: {
       'X-Thelxinoe-Client': '1',
+      'X-Thelxinoe-API': '1',
       ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),

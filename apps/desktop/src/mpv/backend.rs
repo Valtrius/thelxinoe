@@ -17,7 +17,7 @@ impl Backend {
                 .timeout(Duration::from_secs(30))
                 .build()?,
             origin: crate::server_url(app.clone()).map_err(anyhow::Error::msg)?,
-            token: crate::credential()
+            token: crate::credential(app)
                 .map_err(anyhow::Error::msg)?
                 .get_password()?,
         })
@@ -27,7 +27,8 @@ impl Backend {
             .client
             .request(method.parse()?, format!("{}/api/v1{path}", self.origin))
             .bearer_auth(&self.token)
-            .header("X-Thelxinoe-Client", "1");
+            .header("X-Thelxinoe-Client", "1")
+            .header("X-Thelxinoe-API", thelxinoe_core::API_VERSION.to_string());
         if let Some(body) = body {
             request = request.json(&body);
         }

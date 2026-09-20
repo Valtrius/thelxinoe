@@ -49,6 +49,7 @@ pub(crate) async fn fixture() -> (tempfile::TempDir, AppState, String) {
         bind: "127.0.0.1:0".parse().unwrap(),
         public_url: Some("https://media.test".parse().unwrap()),
         trusted_proxies: vec!["127.0.0.1/32".parse().unwrap()],
+        cors_origins: vec![],
         controller_socket: temp.path().join("socket"),
     })
     .await

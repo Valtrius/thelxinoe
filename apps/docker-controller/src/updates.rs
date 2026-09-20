@@ -222,7 +222,7 @@ pub(super) async fn copy_state(
     result?;
     cleaned
 }
-async fn wait(container: &str, seconds: u64) -> Result<()> {
+pub(super) async fn wait(container: &str, seconds: u64) -> Result<()> {
     for _ in 0..seconds {
         let raw = engine(&format!("/containers/{container}/json")).await?;
         if raw["State"]["Running"] == false {

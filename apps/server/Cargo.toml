@@ -17,6 +17,7 @@ thelxinoe-auth.workspace = true
 thelxinoe-jobs.workspace = true
 thelxinoe-catalog.workspace = true
 thelxinoe-playback.workspace = true
+thelxinoe-releases = { path = "../../crates/releases" }
 notify = "8"
 tracing.workspace = true
 tracing-subscriber.workspace = true

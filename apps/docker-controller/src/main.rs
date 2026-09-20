@@ -3,6 +3,8 @@ mod contract;
 #[cfg(unix)]
 mod docker;
 #[cfg(unix)]
+mod lease;
+#[cfg(unix)]
 mod policy;
 #[cfg(unix)]
 mod stack;
@@ -37,13 +39,10 @@ async fn main() -> anyhow::Result<()> {
                     &serde_json::json!({"schema":schema,"verified":true}),
                 )
             }
-            "controller-probe" => {
-                println!(
-                    "{}",
-                    serde_json::json!({"version":thelxinoe_core::VERSION,"recovery_protocol":1})
-                );
-                Ok(())
-            }
+            "controller-probe" => store::write_json(
+                std::path::Path::new("/probe/controller.json"),
+                &serde_json::json!({"version":thelxinoe_core::VERSION,"recovery_protocol":1}),
+            ),
             _ => anyhow::bail!("Unknown worker command"),
         };
     }
@@ -52,36 +51,45 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("THELXINOE_RUNTIME").unwrap_or("/run/thelxinoe".into()),
     );
     std::fs::create_dir_all(&directory)?;
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(directory.join("controller.lock"))?;
-    fs2::FileExt::try_lock_exclusive(&lock)?;
-    let deployment = store::root();
-    let _deployment_lease = if deployment.is_dir() {
-        let lease = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(deployment.join("mutation.lock"))?;
-        fs2::FileExt::try_lock_exclusive(&lease)?;
-        Some(lease)
-    } else {
-        None
-    };
-    let socket = directory.join("controller.sock");
-    stack::retain_worker_image().await?;
-    stack::recover_backups().await?;
-    if socket.exists() {
-        if !std::fs::symlink_metadata(&socket)?.file_type().is_socket() {
-            anyhow::bail!("Refusing to replace a non-socket path");
+    loop {
+        stack::product::standby().await?;
+        let handoff = std::env::var("THELXINOE_HANDOFF").is_ok();
+        let mut attempts = 0;
+        let writer = loop {
+            attempts += 1;
+            match lease::Lease::acquire(&directory) {
+                Ok(writer) => {
+                    if stack::product::accepted_writer().await? {
+                        break writer;
+                    }
+                    drop(writer);
+                    anyhow::ensure!(
+                        handoff,
+                        "This controller is not the accepted deployment generation"
+                    );
+                }
+                Err(e) if !handoff => return Err(e),
+                Err(_) => (),
+            }
+            anyhow::ensure!(
+                attempts < 180,
+                "Successor was not accepted before the handoff deadline"
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        };
+        let socket = directory.join("controller.sock");
+        stack::retain_worker_image().await?;
+        stack::product::startup().await?;
+        stack::recover_backups().await?;
+        if socket.exists() {
+            if !std::fs::symlink_metadata(&socket)?.file_type().is_socket() {
+                anyhow::bail!("Refusing to replace a non-socket path");
+            }
+            std::fs::remove_file(&socket)?;
         }
-        std::fs::remove_file(&socket)?;
-    }
-    let listener = tokio::net::UnixListener::bind(&socket)?;
-    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o660))?;
-    let app = axum::Router::new().merge(docker::router()).merge(stack::router()).route(
+        let listener = tokio::net::UnixListener::bind(&socket)?;
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o660))?;
+        let app = axum::Router::new().merge(docker::router()).merge(stack::router()).route(
         "/health",
         axum::routing::get(|| async {
             axum::Json(
@@ -89,7 +97,15 @@ async fn main() -> anyhow::Result<()> {
             )
         }),
     );
-    axum::serve(listener, app).await?;
+        tokio::select! {
+            result = axum::serve(listener, app) => result?,
+            _ = lease::HANDOFF.notified() => {
+                drop(writer);
+                if stack::product::watchdog(&directory).await? { continue; }
+            }
+        }
+        break;
+    }
     Ok(())
 }
 #[cfg(not(unix))]

@@ -25,6 +25,7 @@ async fn fixture() -> (tempfile::TempDir, AppState) {
         bind: "127.0.0.1:0".parse().unwrap(),
         public_url: None,
         trusted_proxies: vec![],
+        cors_origins: vec![],
         controller_socket: temp.path().join("socket"),
     })
     .await
