@@ -8,6 +8,7 @@ pub(crate) mod oauth;
 mod presentation;
 mod process;
 mod quota;
+mod streamlink_worker;
 pub(crate) mod streams;
 mod sync;
 pub(crate) mod tools;
@@ -29,6 +30,7 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 pub async fn run(state: AppState) -> anyhow::Result<()> {
+    state.online.streamlink.warm().await;
     tokio::try_join!(
         sync::run(state.clone()),
         sync::run_classifications(state.clone()),
@@ -65,6 +67,7 @@ pub struct Runtime {
     slots: tokio::sync::Semaphore,
     refresh: tokio::sync::Mutex<()>,
     extraction: tokio::sync::Semaphore,
+    streamlink: streamlink_worker::Pool,
     pub(crate) streams: streams::Runtime,
     twitch: twitch::Runtime,
     kick: kick::Runtime,
@@ -83,6 +86,7 @@ impl Runtime {
             slots: tokio::sync::Semaphore::new(4),
             refresh: tokio::sync::Mutex::new(()),
             extraction: tokio::sync::Semaphore::new(2),
+            streamlink: streamlink_worker::Pool::default(),
             streams: streams::Runtime::default(),
             twitch: twitch::Runtime::default(),
             kick: kick::Runtime::default(),

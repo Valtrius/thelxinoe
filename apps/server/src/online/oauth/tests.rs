@@ -133,6 +133,7 @@ async fn oauth_is_browser_bound_single_use_and_keeps_tokens_encrypted() {
         slots: tokio::sync::Semaphore::new(4),
         refresh: tokio::sync::Mutex::new(()),
         extraction: tokio::sync::Semaphore::new(2),
+        streamlink: super::super::streamlink_worker::Pool::default(),
         streams: crate::online::streams::Runtime::default(),
         twitch: crate::online::twitch::Runtime::default(),
         kick: crate::online::kick::Runtime::default(),

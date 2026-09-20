@@ -64,9 +64,11 @@ Protocol references: [Twitch device flow](https://dev.twitch.tv/docs/authenticat
 
 ## Twitch and Kick public playback
 
-The Linux x86-64 server image includes Streamlink 8.6.1 in an isolated Python environment, with every dependency pinned and checked against its published SHA-256 digest. Updating the server image updates this bundle. Streamlink receives only the public channel URL, runs with a cleared environment and temporary configuration directories, and has a 45-second timeout and bounded output. It receives no viewer tokens or browser cookies. The server validates the extracted HTTPS CDN address and keeps it in memory; clients receive the ordinary scoped HLS playback URL.
+The Linux x86-64 server image includes Streamlink 8.6.1 in an isolated Python environment, with every dependency pinned and checked against its published SHA-256 digest. Updating the server image updates this bundle. Two resident Python workers load Streamlink at startup and reuse anonymous sessions for public extraction. Each worker has a cleared environment and its own temporary home/configuration directories, and receives no viewer tokens or browser cookies. Requests share the two extraction slots, have a 45-second deadline and bounded output, and restart a broken worker once within that deadline. Cancellation discards the worker and its pending response. The server validates the extracted HTTPS CDN address and keeps it in memory; clients receive the ordinary scoped HLS playback URL.
 
 Each live session has its own bounded software H.264/AAC pipeline. Auto or a bitrate preference is supported; Original and online track selection are unavailable. Seeking and VOD watched/resume inference are disabled for live streams. Twitch and Kick have separate private history filters and administrator statistics. Restricted, offline or extractor-incompatible channels return an explicit playback error; no account entitlement is borrowed. Streamlink resolves the initial source, while FFmpeg reads the resulting public HLS stream; provider advertisement/discontinuity behavior is not guaranteed by the short playback validation.
+
+Online streams use two-second segments and retain sixty segments in the rolling playlist, preserving the previous two-minute window. Local-file playback retains its existing segment settings. See [startup measurements and reproduction](PLAYBACK_PERFORMANCE.md).
 
 ## Kick tracked channels
 
@@ -80,7 +82,7 @@ Real validation passed the imported Kick application credentials, public metadat
 
 The server owns YouTube, Twitch, and Kick synchronization and playback tools.
 
-yt-dlp and Streamlink are server-managed packages that can update independently of the main server image. Running jobs pin the resolved tool version for their lifetime.
+yt-dlp and Deno are server-managed executables that can update independently of the main server image. Running jobs pin the resolved tool version for their lifetime. Streamlink and its dependencies are pinned in the server image.
 
 The main YouTwitch user-facing behavior stays in v1: YouTube subscriptions/feed, Shorts filtering, live/replay handling, watchlists, downloads, resume and watched state, Twitch followed-live channels, per-user tracked Kick channels, history/statistics, and quota-aware synchronization.
 

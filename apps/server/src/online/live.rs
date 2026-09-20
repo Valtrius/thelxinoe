@@ -4,7 +4,6 @@ use crate::{
     error::{ApiError, Result},
 };
 use rusqlite::{OptionalExtension, params};
-use std::{path::Path, time::Duration};
 use thelxinoe_core::{Principal, now};
 use thelxinoe_playback::RemoteSource;
 
@@ -71,34 +70,16 @@ pub(crate) async fn extract(state: &AppState, media: &str) -> Result<RemoteSourc
         .acquire()
         .await
         .map_err(|_| ApiError::conflict("Extraction is unavailable"))?;
-    let output = super::process::run(
-        Path::new("/opt/streamlink/bin/streamlink"),
-        &[
-            "--no-config".into(),
-            "--loglevel".into(),
-            "error".into(),
-            "--stream-url".into(),
-            "--http-timeout".into(),
-            "15".into(),
-            format!(
-                "https://{}/{login}",
-                if kick { "kick.com" } else { "www.twitch.tv" }
+    let address = state
+        .online
+        .streamlink
+        .resolve(if kick { "kick" } else { "twitch" }, &login)
+        .await
+        .map_err(|_| {
+            ApiError::conflict(
+                "This channel is offline or public extraction is unavailable; retry later",
             )
-            .into(),
-            "1080p,1080p60,720p,720p60,480p,best".into(),
-        ],
-        Duration::from_secs(45),
-        32 * 1024,
-    )
-    .await
-    .map_err(|_| ApiError::conflict("Streamlink could not resolve this public live stream"))?;
-    if !output.success {
-        return Err(ApiError::conflict(
-            "This channel is offline or public extraction is unavailable; retry later",
-        ));
-    }
-    let address = String::from_utf8(output.stdout)
-        .map_err(|_| ApiError::conflict("Invalid public live source"))?;
+        })?;
     let source = RemoteSource {
         video: address.trim().to_owned(),
         audio: None,

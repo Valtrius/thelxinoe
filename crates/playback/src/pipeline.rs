@@ -111,6 +111,9 @@ impl Pipelines {
         let revision = uuid::Uuid::new_v4().to_string();
         let directory = self.root.join(&revision);
         tokio::fs::create_dir(&directory).await?;
+        // Publish online streams sooner, retaining the two-minute live window.
+        let online = matches!(input, Input::Remote(_));
+        let segment_seconds = if online { "2" } else { "6" };
         let mut command = Command::new("ffmpeg");
         if let Input::Remote(source) = &input {
             // FFREPORT may otherwise write signed upstream addresses to disk.
@@ -169,9 +172,10 @@ impl Pipelines {
         if mode == "remux" {
             command.args(["-c", "copy"]);
         } else {
-            command
-                .args(conversion_args(options)?)
-                .args(["-force_key_frames", "expr:gte(t,n_forced*6)"]);
+            command.args(conversion_args(options)?).args([
+                "-force_key_frames",
+                &format!("expr:gte(t,n_forced*{segment_seconds})"),
+            ]);
         }
         command
             .args([
@@ -180,9 +184,9 @@ impl Pipelines {
                 "-f",
                 "hls",
                 "-hls_time",
-                "6",
+                segment_seconds,
                 "-hls_list_size",
-                "20",
+                if online { "60" } else { "20" },
                 "-hls_delete_threshold",
                 "2",
                 "-hls_flags",

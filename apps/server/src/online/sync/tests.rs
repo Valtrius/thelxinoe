@@ -52,6 +52,7 @@ pub(crate) async fn stub(
         slots: tokio::sync::Semaphore::new(4),
         refresh: tokio::sync::Mutex::new(()),
         extraction: tokio::sync::Semaphore::new(2),
+        streamlink: super::super::streamlink_worker::Pool::default(),
         streams: crate::online::streams::Runtime::default(),
         twitch: crate::online::twitch::Runtime::default(),
         kick: crate::online::kick::Runtime::default(),
