@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Switch from './providers/components/ui/Switch.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
   let { admin } = $props<{ admin: boolean }>();
@@ -63,13 +64,11 @@
     >Save skip preferences</button
   >
   {#if admin}<h3>Episode analysis</h3>
-    <label class="check"
-      ><input type="checkbox" bind:checked={config.local} disabled={busy} /> Detect
-      recurring intro and credit audio locally</label
+    <Switch bind:checked={config.local} disabled={busy}
+      >Detect recurring intro and credit audio locally</Switch
     >
-    <label class="check"
-      ><input type="checkbox" bind:checked={config.external} disabled={busy} /> Fetch
-      TheIntroDB timestamps for confirmed episode matches</label
+    <Switch bind:checked={config.external} disabled={busy}
+      >Fetch TheIntroDB timestamps for confirmed episode matches</Switch
     >
     <p>
       External lookups send the show's public identifier, episode coordinates
@@ -109,14 +108,6 @@
   .choices label {
     min-width: 8rem;
     margin: 0;
-  }
-  .check {
-    flex-direction: row;
-    align-items: center;
-    margin: 0;
-  }
-  .check input {
-    width: auto;
   }
   button {
     justify-self: start;

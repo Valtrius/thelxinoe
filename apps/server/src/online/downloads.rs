@@ -156,7 +156,7 @@ pub async fn status(
     let p = security::principal(&state, &headers).await?;
     authorize(&state, &p, &video).await?;
     let enabled = enabled(&state).await?;
-    let download=state.db.call(move |db| Ok(db.query_row("SELECT state,size,error FROM youtube_downloads WHERE video_id=?1",[video],|r|Ok(json!({"state":r.get::<_,String>(0)?,"size":r.get::<_,Option<i64>>(1)?,"error":r.get::<_,Option<String>>(2)?}))).optional()?)).await?;
+    let download=state.db.call(move |db| Ok(db.query_row("SELECT state,size,error,downloaded_bytes,total_bytes,eta_seconds,media_kind FROM youtube_downloads WHERE video_id=?1",[video],|r|Ok(json!({"state":r.get::<_,String>(0)?,"size":r.get::<_,Option<i64>>(1)?,"error":r.get::<_,Option<String>>(2)?,"downloaded_bytes":r.get::<_,i64>(3)?,"total_bytes":r.get::<_,Option<i64>>(4)?,"eta_seconds":r.get::<_,Option<i64>>(5)?,"media_kind":r.get::<_,Option<String>>(6)?}))).optional()?)).await?;
     Ok(Json(json!({"enabled":enabled,"download":download})))
 }
 pub async fn request(
@@ -179,7 +179,7 @@ pub async fn request(
         tx.execute("INSERT INTO youtube_media(video_id) VALUES (?1) ON CONFLICT DO NOTHING",[&video])?;
         tx.execute("DELETE FROM youtube_download_suppressed WHERE video_id=?1",[&video])?;
         // A retained interest is required before acquiring shared physical media.
-        tx.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) VALUES (?1,?2,'queued',?3,?4,?4) ON CONFLICT(video_id) DO UPDATE SET generation=excluded.generation,state='queued',tools=excluded.tools,error=NULL,updated_at=excluded.updated_at WHERE youtube_downloads.state IN ('failed','unavailable','extractor_authentication_required')",params![video,thelxinoe_core::id(),serde_json::to_string(&bundle)?,now()])?;
+        tx.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) VALUES (?1,?2,'queued',?3,?4,?4) ON CONFLICT(video_id) DO UPDATE SET generation=excluded.generation,state='queued',tools=excluded.tools,error=NULL,downloaded_bytes=0,total_bytes=NULL,eta_seconds=NULL,media_kind=NULL,updated_at=excluded.updated_at WHERE youtube_downloads.state IN ('failed','unavailable','extractor_authentication_required')",params![video,thelxinoe_core::id(),serde_json::to_string(&bundle)?,now()])?;
         tx.commit()?;Ok(true)
     }).await?;
     if !result {
@@ -276,7 +276,9 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
                         }
                     }
                 }
+                let completed_video = video.clone();
                 state.db.call(move |db| {db.execute("UPDATE youtube_downloads SET state=?3,error=CASE WHEN ?3='ready' THEN NULL ELSE ?3 END,updated_at=?4 WHERE video_id=?1 AND generation=?2",params![video,generation,status,now()])?;Ok(())}).await?;
+                publish_progress(&state, &completed_video).await?;
                 state
                     .emit(None, "online.download.changed", json!({}))
                     .await?;
@@ -334,6 +336,49 @@ fn system_tool(name: &str) -> anyhow::Result<PathBuf> {
         .canonicalize()
         .map_err(Into::into)
 }
+fn parse_progress(line: &str) -> Option<(i64, Option<i64>, Option<i64>, &'static str)> {
+    let parts = line
+        .strip_prefix("THELXINOE_PROGRESS:")?
+        .trim()
+        .split('\t')
+        .collect::<Vec<_>>();
+    let number = |index: usize| {
+        parts
+            .get(index)?
+            .parse::<f64>()
+            .ok()
+            .filter(|n| n.is_finite() && *n >= 0.0 && *n <= 64.0 * 1024.0 * 1024.0 * 1024.0)
+            .map(|n| n as i64)
+    };
+    Some((
+        number(0)?,
+        number(1).or_else(|| number(2)),
+        number(3),
+        if parts.get(4) == Some(&"none") {
+            "audio"
+        } else {
+            "video"
+        },
+    ))
+}
+
+async fn publish_progress(state: &AppState, video: &str) -> anyhow::Result<()> {
+    let id = video.to_owned();
+    let (progress,users)=state.db.call(move|db|{
+        let progress=db.query_row("SELECT generation,state,size,downloaded_bytes,total_bytes,eta_seconds,media_kind FROM youtube_downloads WHERE video_id=?1",[&id],|r|Ok(json!({"video_id":id,"generation":r.get::<_,String>(0)?,"state":r.get::<_,String>(1)?,"size":r.get::<_,Option<i64>>(2)?,"downloaded_bytes":r.get::<_,i64>(3)?,"total_bytes":r.get::<_,Option<i64>>(4)?,"eta_seconds":r.get::<_,Option<i64>>(5)?,"media_kind":r.get::<_,Option<String>>(6)?}))).optional()?;
+        let users=db.prepare("SELECT user_id FROM youtube_videos WHERE video_id=?1")?.query_map([id],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok((progress,users))
+    }).await?;
+    if let Some(progress) = progress {
+        for user in users {
+            state
+                .emit(Some(user), "online.download.progress", progress.clone())
+                .await?;
+        }
+    }
+    Ok(())
+}
+
 async fn download(
     state: &AppState,
     video: &str,
@@ -374,7 +419,12 @@ async fn download(
     args.truncate(args.len() - 4); // replace metadata output flags and canonical URL
     args.extend(
         [
-            "--no-progress",
+            "--progress",
+            "--newline",
+            "--progress-delta",
+            "1",
+            "--progress-template",
+            "download:THELXINOE_PROGRESS:%(progress.downloaded_bytes)s\t%(progress.total_bytes)s\t%(progress.total_bytes_estimate)s\t%(progress.eta)s\t%(info.vcodec)s\t%(info.acodec)s",
             "--no-warnings",
             "--no-simulate",
             "--max-filesize",
@@ -396,17 +446,26 @@ async fn download(
         "--".into(),
         format!("https://www.youtube.com/watch?v={video}").into(),
     ]);
-    let execution = process::run(
+    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(16);
+    let execution = process::run_progress(
         &bundle.yt_dlp.path,
         &args,
         Duration::from_secs(1800),
         1024 * 1024,
+        Some(progress_tx),
     );
     tokio::pin!(execution);
     let mut interval = tokio::time::interval(Duration::from_secs(2));
     let output = loop {
         tokio::select! {
             result=&mut execution => break result?,
+            Some(line)=progress_rx.recv()=> {
+                if let Some(progress) = parse_progress(&line) {
+                    let id=video.to_owned(); let version=generation.to_owned();
+                    let changed=state.db.call(move|db|Ok(db.execute("UPDATE youtube_downloads SET downloaded_bytes=?3,total_bytes=?4,eta_seconds=?5,media_kind=?6 WHERE video_id=?1 AND generation=?2 AND state='downloading'",params![id,version,progress.0,progress.1,progress.2,progress.3])?)).await?;
+                    if changed==1 {publish_progress(state, video).await?;}
+                }
+            }
             _=interval.tick()=> {
                 let video=video.to_owned();
                 let generation=generation.to_owned();

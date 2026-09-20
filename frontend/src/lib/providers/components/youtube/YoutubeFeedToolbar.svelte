@@ -12,7 +12,6 @@
     PanelRightClose,
     PanelRightOpen,
     RefreshCw,
-    RotateCw,
     Search,
   } from '@lucide/svelte';
   import Button from '../ui/Button.svelte';
@@ -36,7 +35,7 @@
   let {
     filters = $bindable(),
     watchlistSidebarOpen = $bindable(),
-    onFullRefresh,
+    refreshing,
     channels,
     counts,
     syncStatus,
@@ -54,7 +53,7 @@
   }: {
     filters: YoutubeFeedPreferences;
     watchlistSidebarOpen: boolean;
-    onFullRefresh: () => void;
+    refreshing: boolean;
     channels: YoutubeChannelOption[];
     counts: YoutubeVideoCounts;
     syncStatus: SyncStatus;
@@ -446,23 +445,15 @@
   <Button
     size="icon"
     variant="ghost"
-    disabled={syncStatus.isRefreshing}
+    disabled={refreshing}
     aria-label="Refresh YouTube feed"
     title={syncStatus.isRefreshing
-      ? `${syncStatus.phase} · ${syncStatus.completed}/${syncStatus.total ?? '—'}`
+      ? `Server sync: ${syncStatus.phase}. Click to reload the cached feed.`
       : `Refresh · updated ${relativeTime(syncStatus.lastSuccessAt)}`}
     onclick={() => refresh('normal')}
     ><RefreshCw
       class={`size-4 ${syncStatus.isRefreshing ? 'animate-spin' : ''}`}
     /></Button
-  >
-  <Button
-    size="icon"
-    variant="ghost"
-    disabled={syncStatus.isRefreshing}
-    aria-label="Full YouTube refresh"
-    title="Full YouTube refresh"
-    onclick={onFullRefresh}><RotateCw class="size-4" /></Button
   >
   <span class="mx-0.5 h-5 w-px bg-(--line)" aria-hidden="true"></span>
   <Button

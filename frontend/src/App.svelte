@@ -10,6 +10,8 @@
     loadAppearance,
     updateAppearance,
     resetAppearance,
+    acceptAppearance,
+    type Appearance,
   } from './lib/appearance';
   import { createSidebarMotion } from './lib/sidebar-motion';
   import { syncMediaLayouts } from './lib/card-grid-zoom';
@@ -61,6 +63,7 @@
   import Player from './lib/Player.svelte';
   import MusicPlayer from './lib/MusicPlayer.svelte';
   import MpvSettings from './lib/MpvSettings.svelte';
+  import { connectTools } from './lib/providers/tools-events';
   import NativePlayer from './lib/NativePlayer.svelte';
   import PersonalHome from './lib/PersonalHome.svelte';
   import Playlists from './lib/Playlists.svelte';
@@ -156,6 +159,54 @@
     { name: 'Kick', icon: Radio },
   ];
   let events: Events | undefined;
+  let navigationReady = $state(false);
+  function restoreNavigation() {
+    if (!user) return;
+    const key = `thelxinoe:${serverUrl()}:${user.id}:navigation`;
+    try {
+      const saved = JSON.parse(localStorage.getItem(key) ?? 'null');
+      const query = new URLSearchParams(location.search);
+      const requested = query.has('youtube_link')
+        ? 'YouTube'
+        : query.get('section');
+      const destination = requested ?? saved?.section;
+      if (
+        [
+          ...sections.map((item) => item.name),
+          'Settings',
+          'Statistics',
+        ].includes(destination)
+      )
+        section = destination;
+      if (typeof saved?.settingsSection === 'string')
+        settingsSection = saved.settingsSection;
+      if (!desktop && ['mpv', 'connection'].includes(settingsSection))
+        settingsSection = 'account';
+    } catch {
+      /* Ignore an obsolete device preference. */
+    }
+    navigationReady = true;
+    if (section === 'Settings') void loadSettings();
+  }
+  $effect(() => {
+    if (navigationReady && user) {
+      localStorage.setItem(
+        `thelxinoe:${serverUrl()}:${user.id}:navigation`,
+        JSON.stringify({ section, settingsSection }),
+      );
+      if (!desktop) {
+        const url = new URL(location.href);
+        if (
+          url.searchParams.has('section') ||
+          url.searchParams.has('youtube_link')
+        ) {
+          url.searchParams.delete('youtube_link');
+          url.searchParams.set('section', section);
+          window.history.replaceState(null, '', url);
+        }
+      }
+    }
+  });
   let settingsTimer: ReturnType<typeof setTimeout> | undefined,
     settingsLoading = false;
   let catalogRevision = $state(0);
@@ -203,6 +254,7 @@
       }
       if (user) {
         await loadAppearance(user.id);
+        restoreNavigation();
         startEvents();
         if (desktop) {
           const state = await invoke<{
@@ -230,6 +282,16 @@
     events?.close();
     events = new Events(
       (event) => {
+        if (event.kind === 'online.download.progress')
+          window.dispatchEvent(
+            new CustomEvent('thelxinoe-download-progress', {
+              detail: event.payload,
+            }),
+          );
+        if (event.kind === 'appearance.changed')
+          acceptAppearance(
+            (event.payload as { appearance: Appearance }).appearance,
+          );
         if (event.kind === 'notifications.changed') notificationRevision++;
         if (
           [
@@ -282,12 +344,14 @@
       passwordConfirmation = '';
       setup = false;
       await loadAppearance(user.id);
+      restoreNavigation();
       startEvents();
     });
   }
   async function logout() {
     await act(async () => {
       await api('/auth/logout', 'POST');
+      navigationReady = false;
       resetAppearance();
       playing = null;
       user = null;
@@ -351,6 +415,9 @@
   }
   onMount(() => {
     document.body.classList.toggle('desktop-app', desktop);
+    const toolsConnection = desktop
+      ? connectTools()
+      : Promise.resolve(() => {});
     const media = window.matchMedia('(max-width: 720px)');
     const resize = () => {
       compact = media.matches;
@@ -364,6 +431,7 @@
     window.addEventListener('thelxinoe-update-required', incompatible);
     void boot();
     return () => {
+      void toolsConnection.then((disconnect) => disconnect());
       window.removeEventListener('thelxinoe-update-required', incompatible);
       events?.close();
       clearTimeout(settingsTimer);
@@ -484,20 +552,18 @@
         onclick={() => (mobileNavOpen = false)}
       ></button>{/if}
     <main class="content" bind:this={main}>
-      {#if !providerPage}<header class="page-header">
-          <div>
-            <h1 data-sidebar-resize="x-pos">
-              {section === 'Home'
-                ? `Good to see you, ${user.username}`
-                : section}
-            </h1>
-          </div>
-          <span class="connection"
-            ><i class:online={connected}></i>{connected
-              ? 'Connected'
-              : 'Reconnecting'}</span
-          >
-        </header>{/if}
+      <header class="page-header">
+        <div>
+          <h1 data-sidebar-resize="x-pos">
+            {section === 'Home' ? `Good to see you, ${user.username}` : section}
+          </h1>
+        </div>
+        <span class="connection"
+          ><i class:online={connected}></i>{connected
+            ? 'Connected'
+            : 'Reconnecting'}</span
+        >
+      </header>
       <div
         class="workspace-scroll"
         class:provider-workspace={providerPage}

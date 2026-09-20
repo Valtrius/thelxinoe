@@ -63,11 +63,11 @@ export function youtubeVideoPresentation(
           : video.isUpcoming
             ? 'Not live yet'
             : 'Play';
-  const downloadPercent = downloadEvent?.totalBytes
-    ? Math.min(
-        100,
-        (downloadEvent.downloadedBytes / downloadEvent.totalBytes) * 100,
-      )
+  const totalBytes = downloadEvent?.totalBytes ?? activeDownload?.totalBytes;
+  const downloadedBytes =
+    downloadEvent?.downloadedBytes ?? activeDownload?.downloadedBytes ?? 0;
+  const downloadPercent = totalBytes
+    ? Math.min(100, (downloadedBytes / totalBytes) * 100)
     : null;
   const downloadFormatLabel = activeDownload?.heightPixels
     ? `${activeDownload.heightPixels}p${activeDownload.frameRate ? Math.round(activeDownload.frameRate) : ''}`
@@ -81,9 +81,10 @@ export function youtubeVideoPresentation(
         break;
       case 'downloading': {
         const activity =
-          downloadEvent?.mediaKind === 'video'
+          (downloadEvent?.mediaKind ?? activeDownload?.mediaKind) === 'video'
             ? 'Downloading video'
-            : downloadEvent?.mediaKind === 'audio'
+            : (downloadEvent?.mediaKind ?? activeDownload?.mediaKind) ===
+                'audio'
               ? 'Downloading audio'
               : 'Downloading media';
         downloadLabel =

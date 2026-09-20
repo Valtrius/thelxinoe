@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Switch from './providers/components/ui/Switch.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
   type Backup = {
@@ -74,9 +75,8 @@
       bind:value={passphrase}
     /></label
   >
-  <label class="check"
-    ><input type="checkbox" bind:checked={confirmation} />I understand that
-    services will temporarily stop.</label
+  <Switch bind:checked={confirmation}
+    >I understand that services will temporarily stop.</Switch
   >
   <button
     class="primary"
@@ -127,15 +127,6 @@
     display: block;
     margin: 1rem 0;
     max-width: 34rem;
-  }
-  .check {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    gap: 0.6rem;
-  }
-  .check input {
-    width: auto;
   }
   button {
     margin: 0.3rem;

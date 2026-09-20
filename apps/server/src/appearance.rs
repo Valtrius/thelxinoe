@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Appearance {
+    provider_preferences: std::collections::BTreeMap<String, String>,
+    audio_volume: f64,
     youtube_card_shortcuts: Vec<String>,
     theme: String,
     sidebar_collapsed: bool,
@@ -21,6 +23,8 @@ pub struct Appearance {
 impl Default for Appearance {
     fn default() -> Self {
         Self {
+            provider_preferences: Default::default(),
+            audio_volume: 1.0,
             youtube_card_shortcuts: vec![],
             theme: "system".into(),
             sidebar_collapsed: false,
@@ -33,6 +37,8 @@ impl Default for Appearance {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Change {
+    provider_preferences: Option<std::collections::BTreeMap<String, String>>,
+    audio_volume: Option<f64>,
     youtube_card_shortcuts: Option<Vec<String>>,
     theme: Option<String>,
     sidebar_collapsed: Option<bool>,
@@ -62,6 +68,24 @@ pub async fn update(
     Json(change): Json<Change>,
 ) -> Result<Json<Appearance>> {
     let p = security::principal(&state, &headers).await?;
+    let recipient = p.user.id.clone();
+    if change
+        .audio_volume
+        .is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v))
+        || change.provider_preferences.as_ref().is_some_and(|v| {
+            v.iter().any(|(key, value)| {
+                ![
+                    "youtube-feed-layout",
+                    "youtube-watchlist-sidebar-open",
+                    "youtube-selected-watchlist-id",
+                ]
+                .contains(&key.as_str())
+                    || value.len() > 8192
+            })
+        })
+    {
+        return Err(ApiError::bad("Invalid player or provider preferences"));
+    }
     if change.youtube_card_shortcuts.as_ref().is_some_and(|v| {
         v.len() > 3
             || v.iter().collect::<std::collections::HashSet<_>>().len() != v.len()
@@ -98,6 +122,8 @@ pub async fn update(
     let value = state.db.call(move |db| {
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let mut value = read(&tx, &p.user.id)?;
+        if let Some(v) = change.provider_preferences { value.provider_preferences.extend(v); }
+        if let Some(v) = change.audio_volume { value.audio_volume = v; }
         if let Some(v) = change.youtube_card_shortcuts { value.youtube_card_shortcuts = v; }
         if let Some(v) = change.theme { value.theme = v; }
         if let Some(v) = change.sidebar_collapsed { value.sidebar_collapsed = v; }
@@ -108,6 +134,13 @@ pub async fn update(
         tx.commit()?;
         Ok(value)
     }).await?;
+    state
+        .emit(
+            Some(recipient),
+            "appearance.changed",
+            serde_json::json!({"appearance":value}),
+        )
+        .await?;
     Ok(Json(value))
 }
 
@@ -115,6 +148,59 @@ pub async fn update(
 mod tests {
     use crate::online::oauth::tests::{call, fixture};
     use serde_json::{Value, json};
+    #[tokio::test]
+    async fn player_and_provider_changes_merge_and_emit_only_to_the_owner() {
+        let (_temp, state, alice) = fixture().await;
+        let (volume, filter) = tokio::join!(
+            call(
+                &state,
+                "/api/v1/me/appearance",
+                "PATCH",
+                json!({"audio_volume":0.27}),
+                &alice
+            ),
+            call(
+                &state,
+                "/api/v1/me/appearance",
+                "PATCH",
+                json!({"provider_preferences":{"youtube-feed-layout":"{\"showLive\":true}"}}),
+                &alice
+            )
+        );
+        assert_eq!(volume.0, axum::http::StatusCode::OK);
+        assert_eq!(filter.0, axum::http::StatusCode::OK);
+        let saved = call(
+            &state,
+            "/api/v1/me/appearance",
+            "PATCH",
+            json!({"provider_preferences":{"youtube-watchlist-sidebar-open":"true"}}),
+            &alice,
+        )
+        .await
+        .2;
+        assert_eq!(saved["audio_volume"], 0.27);
+        assert_eq!(
+            saved["provider_preferences"]["youtube-feed-layout"],
+            "{\"showLive\":true}"
+        );
+        state.db.call(|db| {
+            assert_eq!(db.query_row("SELECT COUNT(*) FROM events WHERE kind='appearance.changed' AND user_id='alice'", [], |r|r.get::<_,i64>(0))?, 3);
+            assert_eq!(db.query_row("SELECT COUNT(*) FROM events WHERE kind='appearance.changed' AND (user_id IS NULL OR user_id<>'alice')", [], |r|r.get::<_,i64>(0))?, 0);
+            Ok(())
+        }).await.unwrap();
+        assert_eq!(
+            call(
+                &state,
+                "/api/v1/me/appearance",
+                "PATCH",
+                json!({"audio_volume":1.1}),
+                &alice
+            )
+            .await
+            .0,
+            axum::http::StatusCode::BAD_REQUEST
+        );
+    }
     #[tokio::test]
     async fn partial_preferences_preserve_theme_and_stay_private() {
         let (_temp, state, alice) = fixture().await;

@@ -1,6 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod error;
+mod models;
 mod mpv;
+mod tools;
 mod updates;
+mod utils;
 use serde_json::Value;
 use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
@@ -166,6 +170,11 @@ fn main() {
     tauri::Builder::default()
         .manage(mpv::DesktopPlayback::default())
         .manage(updates::Runtime::default())
+        .setup(|app| {
+            tools::initialize(app)?;
+            Ok(())
+        })
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -176,6 +185,9 @@ fn main() {
                 tauri::async_runtime::spawn(async move {
                     #[cfg(windows)]
                     app.state::<mpv::DesktopPlayback>().player.stop().await;
+                    let tools = &app.state::<tools::DesktopTools>().tools;
+                    tools.close();
+                    tools.wait_for_operations().await;
                     app.exit(0);
                 });
             }
@@ -189,11 +201,27 @@ fn main() {
             open_twitch_activation,
             updates::desktop_update_check,
             updates::desktop_update_install,
-            mpv::mpv_settings,
-            mpv::mpv_install,
-            mpv::mpv_custom,
-            mpv::mpv_configuration,
-            mpv::mpv_plugin,
+            tools::commands::tools_get,
+            tools::commands::tools_check,
+            tools::commands::tools_updates,
+            tools::commands::tools_update,
+            tools::commands::tools_set_preference,
+            tools::commands::tools_refresh,
+            tools::commands::tools_install,
+            tools::commands::tools_activate,
+            tools::commands::tools_rollback,
+            tools::commands::tools_remove,
+            tools::commands::tools_repair,
+            tools::commands::mpv_set_preferences,
+            tools::commands::mpv_config_files,
+            tools::commands::mpv_config_read,
+            tools::commands::mpv_config_save,
+            tools::commands::mpv_config_restore,
+            tools::commands::mpv_config_import,
+            tools::commands::mpv_plugin_import,
+            tools::commands::mpv_open_configuration_directory,
+            tools::commands::mpv_options,
+            tools::commands::mpv_test_configuration,
             mpv::mpv_play,
             mpv::mpv_state,
             mpv::mpv_command

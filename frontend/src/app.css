@@ -181,7 +181,7 @@
 }
 
 /* Library and Settings form defaults must not restyle the shared provider views. */
-@scope (:root) to (.provider-surface, .provider-overlay) {
+@scope (:root) to (.provider-surface, .provider-overlay, .youtwitch-switch) {
   @layer base {
     body {
       font-size: 13px;
@@ -583,7 +583,7 @@
       display: flex;
       align-items: center;
       gap: 20px;
-      padding: 18px 24px;
+      padding: 8px 24px;
       flex-shrink: 0;
       border-bottom: 1px solid var(--line);
       background: color-mix(in srgb, var(--background) 88%, transparent);
@@ -591,6 +591,11 @@
     .page-header > div:first-child {
       margin-right: auto;
       min-width: 0;
+    }
+    .page-header h1 {
+      font-size: 18px;
+      line-height: 24px;
+      margin: 0;
     }
     .page-header .eyebrow {
       font-size: 9px;
@@ -1095,7 +1100,7 @@
 
   @media (max-width: 1000px) {
     .page-header {
-      padding: 16px;
+      padding: 8px 16px;
     }
     .workspace-scroll,
     .settings-content {

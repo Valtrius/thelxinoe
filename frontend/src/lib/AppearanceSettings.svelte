@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Switch from './providers/components/ui/Switch.svelte';
   import { appearance, appearanceError, updateAppearance } from './appearance';
 </script>
 
@@ -34,13 +35,10 @@
       >
     </div>
   </div>
-  <label class="check-row"
-    ><input
-      type="checkbox"
-      checked={$appearance.fade_watched}
-      onchange={(e) =>
-        updateAppearance({ fade_watched: e.currentTarget.checked })}
-    />Fade watched videos</label
+  <Switch
+    checked={$appearance.fade_watched}
+    onCheckedChange={(checked) => updateAppearance({ fade_watched: checked })}
+    >Fade watched videos</Switch
   >
   {#if $appearanceError}<p role="status">{$appearanceError}</p>{/if}
 </section>

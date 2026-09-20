@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
-  import { invoke } from '@tauri-apps/api/core';
+  import { toolsApi } from './tools-api';
   import { api as request, desktop } from '../api';
   import { appearance, updateAppearance } from '../appearance';
   import type { MediaChoice } from '../playback';
@@ -9,6 +9,7 @@
     activeMediaId,
     iso,
     normalizeError,
+    downloadEvent,
     preferences,
     type OnlineAccount,
     type KickFeed,
@@ -21,6 +22,7 @@
     SyncStatus,
     YoutubeProgressEvent,
     YoutubeProgressUpdate,
+    YoutubeDownloadEvent,
   } from './types';
   import { createYoutubeWatchlists } from './youtube-watchlist-controller.svelte';
   import { showToast, clearToasts } from './toasts';
@@ -47,6 +49,7 @@
   let kick = $state<KickFeed | null>(null);
   let dataRevision = $state(0);
   let youtubeProgress = $state<YoutubeProgressUpdate | null>(null);
+  let youtubeDownload = $state<YoutubeDownloadEvent | null>(null);
   let youtubeDownloadRemoval = $state<{
     videoId: string;
     sequence: number;
@@ -115,8 +118,8 @@
     const error = platform === 'kick' ? kickError : sync?.error;
     return {
       platform,
-      phase: sync?.in_progress ? 'Refreshing' : 'Idle',
-      isRefreshing: sync?.in_progress ?? false,
+      phase: sync?.phase ?? (sync?.in_progress ? 'Refreshing' : 'Idle'),
+      isRefreshing: (sync?.in_progress ?? false) && !rawAccount?.quota?.blocked,
       completed: 0,
       lastSuccessAt: iso(last),
       stale: !!error || !last,
@@ -189,11 +192,22 @@
     });
   });
   $effect(() => {
+    const selected = $preferences['youtube-selected-watchlist-id'];
+    if (selected && Number.isSafeInteger(Number(selected)))
+      watchlistController.selectedWatchlistId = Number(selected);
+  });
+  $effect(() => {
     const selected = watchlistController.selectedWatchlistId;
     if (selected !== null)
       preferences.setItem('youtube-selected-watchlist-id', String(selected));
   });
   onMount(() => {
+    const downloading = (event: Event) => {
+      youtubeDownload = downloadEvent(
+        (event as CustomEvent<Parameters<typeof downloadEvent>[0]>).detail,
+      );
+    };
+    window.addEventListener('thelxinoe-download-progress', downloading);
     const progress = (event: Event) => {
       const detail = (event as CustomEvent<YoutubeProgressEvent>).detail;
       if (watchlistController.pendingManualWatchedVideoIds.has(detail.videoId))
@@ -218,9 +232,12 @@
     window.addEventListener('thelxinoe-youtube-download-removed', removed);
     void load();
     if (desktop)
-      void invoke<{ selection: { path: string } }>('mpv_settings')
+      void toolsApi
+        .check('mpv')
+        .then(() => toolsApi.get())
         .then((value) => {
-          nativeReady = !!value.selection.path;
+          nativeReady = !!value.tools.find((tool) => tool.id === 'mpv')
+            ?.diagnostic?.detected;
         })
         .catch(() => {
           nativeReady = false;
@@ -231,6 +248,7 @@
       clearInterval(timer);
       clearTimeout(refreshTimer);
       clearToasts();
+      window.removeEventListener('thelxinoe-download-progress', downloading);
       window.removeEventListener(
         'thelxinoe-provider-auth-cancelled',
         cancelled,
@@ -275,7 +293,7 @@
         !!rawAccount.linking_available}
       {dataRevision}
       {youtubeProgress}
-      youtubeDownload={null}
+      {youtubeDownload}
       {youtubeDownloadRemoval}
       onAuthStarted={authStarted}
       onNavigateSettings={navigateSettings}

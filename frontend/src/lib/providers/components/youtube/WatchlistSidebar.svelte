@@ -199,7 +199,6 @@
     }
     const source = event.currentTarget as HTMLElement;
     const rect = source.getBoundingClientRect();
-    source.setPointerCapture(event.pointerId);
     dragCandidate = {
       pointerId: event.pointerId,
       videoId,
@@ -216,6 +215,7 @@
 
   function startPointerDrag(event: PointerEvent) {
     if (!dragCandidate || !selected) return;
+    dragCandidate.source.setPointerCapture(event.pointerId);
     disableTextSelection();
     draggingVideoId = dragCandidate.videoId;
     dragItems = selected.items.map((item) => item.video.videoId);

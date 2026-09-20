@@ -3,6 +3,8 @@ import { get, writable } from 'svelte/store';
 import { api } from './api';
 export type Theme = 'light' | 'system' | 'dark';
 export type Appearance = {
+  provider_preferences: Record<string, string>;
+  audio_volume: number;
   youtube_card_shortcuts: YoutubeCardShortcut[];
   theme: Theme;
   sidebar_collapsed: boolean;
@@ -11,6 +13,8 @@ export type Appearance = {
   thumbnail_fit: 'contain' | 'cover';
 };
 const defaults: Appearance = {
+  provider_preferences: {},
+  audio_volume: 1,
   youtube_card_shortcuts: [],
   theme: 'system',
   sidebar_collapsed: false,
@@ -29,6 +33,23 @@ export const appearanceError = writable('');
 let owner = '';
 let generation = 0;
 let pending = Promise.resolve();
+const localChanges = new Map<number, Partial<Appearance>>();
+let changeId = 0;
+function merge(value: Appearance, change: Partial<Appearance>): Appearance {
+  return {
+    ...value,
+    ...change,
+    provider_preferences: {
+      ...value.provider_preferences,
+      ...change.provider_preferences,
+    },
+  };
+}
+export function acceptAppearance(value: Appearance) {
+  let next = { ...defaults, ...value };
+  for (const change of localChanges.values()) next = merge(next, change);
+  appearance.set(next);
+}
 function updateBrowserColor() {
   document
     .querySelector('meta[name="theme-color"]')
@@ -54,7 +75,7 @@ export async function loadAppearance(userId: string) {
   try {
     const value = await api<Appearance>('/me/appearance');
     if (current === generation) {
-      appearance.set(value);
+      acceptAppearance(value);
       appearanceError.set('');
     }
   } catch {
@@ -67,11 +88,14 @@ export async function loadAppearance(userId: string) {
 export function resetAppearance() {
   owner = '';
   generation++;
+  localChanges.clear();
 }
 export function updateAppearance(change: Partial<Appearance>) {
-  appearance.update((value) => ({ ...value, ...change }));
+  appearance.update((value) => merge(value, change));
   if (!owner) return;
   const current = generation;
+  const id = ++changeId;
+  localChanges.set(id, change);
   pending = pending.then(async () => {
     if (current !== generation) return;
     try {
@@ -82,6 +106,8 @@ export function updateAppearance(change: Partial<Appearance>) {
         appearanceError.set(
           'Your appearance changed here, but could not be saved to the server.',
         );
+    } finally {
+      localChanges.delete(id);
     }
   });
 }

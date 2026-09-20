@@ -1,6 +1,8 @@
 // The YouTwitch views share their presentation and controllers. All state and
 // playback operations cross Thelxinoe's authenticated server transport here.
 import { invoke } from '@tauri-apps/api/core';
+import { derived, get } from 'svelte/store';
+import { appearance, updateAppearance } from '../appearance';
 import { api as request, ApiError, desktop, serverUrl } from '../api';
 import type { MediaChoice } from '../playback';
 import type {
@@ -9,6 +11,7 @@ import type {
   KickSnapshot,
   TwitchLiveStream,
   YoutubeDownload,
+  YoutubeDownloadEvent,
   YoutubeFeedQuery,
   YoutubeVideo,
   YoutubeVideoPage,
@@ -43,10 +46,16 @@ export function activeMediaId(choice: MediaChoice): string {
   return id;
 }
 export const preferences = {
+  subscribe: derived(appearance, (value) => value.provider_preferences)
+    .subscribe,
   getItem: (key: string) =>
+    get(appearance).provider_preferences[key] ??
     localStorage.getItem(`thelxinoe:${serverUrl()}:${owner}:${key}`),
-  setItem: (key: string, value: string) =>
-    localStorage.setItem(`thelxinoe:${serverUrl()}:${owner}:${key}`, value),
+  setItem: (key: string, value: string) => {
+    localStorage.setItem(`thelxinoe:${serverUrl()}:${owner}:${key}`, value);
+    if (get(appearance).provider_preferences[key] !== value)
+      updateAppearance({ provider_preferences: { [key]: value } });
+  },
 };
 export function normalizeError(error: unknown): AppError {
   if (
@@ -85,11 +94,40 @@ function remember(video: YoutubeVideo): YoutubeVideo {
 }
 export const iso = (seconds?: number | null) =>
   seconds ? new Date(seconds * 1000).toISOString() : null;
+export function downloadEvent(payload: {
+  video_id: string;
+  state: string;
+  size?: number;
+  downloaded_bytes: number;
+  total_bytes?: number | null;
+  eta_seconds?: number | null;
+  media_kind?: 'video' | 'audio' | 'media' | null;
+}): YoutubeDownloadEvent {
+  const previous = videos.get(payload.video_id)?.download;
+  return {
+    download: {
+      ...previous,
+      videoId: payload.video_id,
+      status: (['queued', 'downloading', 'ready'].includes(payload.state)
+        ? payload.state
+        : 'failed') as YoutubeDownload['status'],
+      fileSizeBytes: payload.size ?? 0,
+      pinned: previous?.pinned ?? false,
+      quality: previous?.quality ?? '1080p',
+      requestedAt: previous?.requestedAt ?? '',
+    },
+    downloadedBytes: payload.downloaded_bytes,
+    totalBytes: payload.total_bytes,
+    etaSeconds: payload.eta_seconds,
+    mediaKind: payload.media_kind,
+  };
+}
 export type OnlineAccount = {
   configured: boolean;
   linking_available?: boolean;
   linking_url?: string | null;
   downloads_enabled?: boolean;
+  quota?: { blocked: boolean };
   account: {
     status: string;
     display_name: string;
@@ -107,6 +145,7 @@ export type OnlineAccount = {
     next_run: number;
     error: string | null;
     in_progress?: boolean;
+    phase?: string;
   } | null;
 };
 export type KickFeed = {

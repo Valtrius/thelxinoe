@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Switch from './providers/components/ui/Switch.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
   type Policy = {
@@ -64,9 +65,7 @@
   {#each policies as policy (policy.domain)}
     <fieldset disabled={busy}>
       <legend>{policy.domain === 'movies' ? 'Movies' : 'TV seasons'}</legend>
-      <label
-        ><input type="checkbox" bind:checked={policy.enabled} /> Enable retention</label
-      >
+      <Switch bind:checked={policy.enabled}>Enable retention</Switch>
       <label
         >Grace period (hours)<input
           type="number"
@@ -78,21 +77,19 @@
             (policy.grace_seconds = Number(event.currentTarget.value) * 3600)}
         /></label
       >
-      {#if policy.domain === 'shows'}<label
-          ><input type="checkbox" bind:checked={policy.exclude_specials} /> Exclude
-          specials (Season 0)</label
+      {#if policy.domain === 'shows'}<Switch
+          bind:checked={policy.exclude_specials}
+          >Exclude specials (Season 0)</Switch
         >{/if}
       <p>Retention-trigger users</p>
-      {#each users as user (user.id)}<label
-          ><input
-            type="checkbox"
-            checked={policy.trigger_users.includes(user.id)}
-            onchange={(event) =>
-              (policy.trigger_users = event.currentTarget.checked
-                ? [...policy.trigger_users, user.id]
-                : policy.trigger_users.filter((id) => id !== user.id))}
-          />
-          {user.username}</label
+      {#each users as user (user.id)}<Switch
+          checked={policy.trigger_users.includes(user.id)}
+          onCheckedChange={(checked) =>
+            (policy.trigger_users = checked
+              ? [...policy.trigger_users, user.id]
+              : policy.trigger_users.filter((id) => id !== user.id))}
+        >
+          {user.username}</Switch
         >{/each}
       <button
         onclick={() =>
@@ -107,19 +104,17 @@
     Automatic direct deletion requires an explicit opt-in for each library root.
     Otherwise eligible files wait here for an administrator to delete them.
   </p>
-  {#each roots as root (root.id)}<label
-      ><input
-        type="checkbox"
-        disabled={busy}
-        checked={root.automatic_unmanaged_deletion}
-        onchange={(event) =>
-          work(() =>
-            api(`/admin/retention/root/${root.id}`, 'POST', {
-              automatic_unmanaged_deletion: event.currentTarget.checked,
-            }),
-          )}
-      />
-      Allow automatic deletion in {root.name}</label
+  {#each roots as root (root.id)}<Switch
+      disabled={busy}
+      checked={root.automatic_unmanaged_deletion}
+      onCheckedChange={(checked) =>
+        work(() =>
+          api(`/admin/retention/root/${root.id}`, 'POST', {
+            automatic_unmanaged_deletion: checked,
+          }),
+        )}
+    >
+      Allow automatic deletion in {root.name}</Switch
     >{/each}
   <div class="actions">
     <button
@@ -191,9 +186,6 @@
     align-items: center;
     gap: 0.5rem;
     margin: 0;
-  }
-  input[type='checkbox'] {
-    width: auto;
   }
   button {
     padding: 0.7rem 1rem;

@@ -2,7 +2,7 @@ import { chromium, expect } from '@playwright/test';
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
 import { resolve } from 'node:path';
 const browser = await chromium.connectOverCDP('http://127.0.0.1:9223');
-let originalConfig, originalPreferences;
+let originalConfig, originalPreferences, originalMpvPreferences;
 const page = browser
   .contexts()[0]
   .pages()
@@ -16,6 +16,14 @@ async function native(command, args = {}) {
     ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args),
     { command, args },
   );
+}
+async function saveConfig(text) {
+  const document = await native('mpv_config_read', { name: 'mpv.conf' });
+  return native('mpv_config_save', {
+    name: 'mpv.conf',
+    text,
+    revision: document.revision,
+  });
 }
 async function api(path, method = 'GET', body = null) {
   const response = await native('backend_request', { path, method, body });
@@ -46,46 +54,47 @@ try {
     .getByRole('navigation', { name: 'Settings navigation' })
     .getByRole('button', { name: 'MPV', exact: true })
     .click();
-  originalConfig = (await native('mpv_settings')).text;
-  const settings = await native('mpv_settings');
-  if (!settings.selection.path) {
-    await page
-      .getByRole('button', { name: 'Install or update MPV', exact: true })
-      .click();
-    await expect(
-      page.getByText('MPV installed and verified', { exact: true }),
-    ).toBeVisible({ timeout: 180000 });
+  originalConfig = (await native('mpv_config_read', { name: 'mpv.conf' })).text;
+  let settings = await native('tools_get');
+  originalMpvPreferences = settings.mpv;
+  await native('mpv_set_preferences', {
+    preferences: { source: 'managed', directory: null },
+  });
+  let mpv = settings.tools.find((tool) => tool.id === 'mpv');
+  if (!mpv.preference.active) {
+    await native('tools_refresh');
+    settings = await native('tools_get');
+    mpv = settings.tools.find((tool) => tool.id === 'mpv');
+    await native('tools_install', {
+      packageId: mpv.versions.find((v) => v.recommended).id,
+    });
   }
-  const selected = await native('mpv_settings');
-  expect(selected.selection.version).toMatch(/^mpv /);
-  expect(selected.selection.digest).toMatch(/^[a-f0-9]{64}$/);
+  await native('tools_check', { tool: 'mpv' });
+  const selected = (await native('tools_get')).tools.find(
+    (tool) => tool.id === 'mpv',
+  );
+  expect(selected.diagnostic.version).toMatch(/^mpv /);
+  expect(
+    selected.installed.find((v) => v.package.id === selected.preference.active)
+      .package.sha256,
+  ).toMatch(/^[a-f0-9]{64}$/);
   await page.getByRole('button', { name: 'Movies', exact: true }).click();
   await page.getByRole('button', { name: 'Direct 2020', exact: true }).click();
   await page.getByRole('button', { name: 'Play media', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Native player' })).toHaveCount(
+    0,
+  );
   await expect
-    .poll(
-      async () =>
-        Number(
-          await page
-            .getByLabel('Native playback position', { exact: true })
-            .inputValue(),
-        ),
-      { timeout: 30000 },
-    )
+    .poll(async () => (await native('mpv_state')).position, { timeout: 30000 })
     .toBeGreaterThan(1);
-  await page.getByRole('button', { name: 'Pause', exact: true }).click();
+  await native('mpv_command', { command: 'pause', value: null });
   await expect.poll(async () => (await native('mpv_state')).paused).toBe(true);
   await expect
     .poll(async () => (await native('mpv_state')).video_ready)
     .toBe(true);
   const paused = await native('mpv_state');
   expect(paused.status).not.toBe('failed');
-  await page
-    .getByLabel('Native playback position', { exact: true })
-    .evaluate((el) => {
-      el.value = '10';
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+  await native('mpv_command', { command: 'seek', value: 10 });
   await expect
     .poll(async () => (await native('mpv_state')).position, { timeout: 10000 })
     .toBeGreaterThanOrEqual(9.8);
@@ -94,12 +103,12 @@ try {
     fullPage: true,
   });
   await page.reload();
-  await expect(
-    page.getByRole('region', { name: 'Native player' }),
-  ).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Native player' })).toHaveCount(
+    0,
+  );
   expect((await native('mpv_state')).position).toBeGreaterThanOrEqual(9.8);
   expect((await native('mpv_state')).paused).toBe(true);
-  await page.getByRole('button', { name: 'Close player', exact: true }).click();
+  await native('mpv_command', { command: 'stop', value: null });
   await expect(
     page.getByRole('region', { name: 'Native player' }),
   ).not.toBeVisible();
@@ -157,9 +166,9 @@ try {
   );
   const pcm = resolve('.local/mpv-gapless.wav').replaceAll('\\', '/');
   if (existsSync(pcm)) unlinkSync(pcm);
-  await native('mpv_configuration', {
-    text: `${originalConfig}\nao=pcm\nao-pcm-file=${pcm}\naudio-format=s16\naudio-samplerate=48000\naudio-channels=mono\nvolume=100\n`,
-  });
+  await saveConfig(
+    `${originalConfig}\nao=pcm\nao-pcm-file=${pcm}\naudio-format=s16\naudio-samplerate=48000\naudio-channels=mono\nvolume=100\n`,
+  );
   await page.getByRole('button', { name: 'Music', exact: true }).click();
   await page
     .getByRole('button', { name: 'Gapless Artist artist', exact: true })
@@ -232,7 +241,7 @@ try {
     JSON.stringify(
       {
         verified_at: new Date().toISOString(),
-        mpv_version: selected.selection.version,
+        mpv_version: selected.diagnostic.version,
         native_video: true,
         seek: true,
         server_progress: true,
@@ -248,7 +257,11 @@ try {
 } finally {
   await native('mpv_command', { command: 'stop', value: null }).catch(() => {});
   if (originalConfig !== undefined)
-    await native('mpv_configuration', { text: originalConfig }).catch(() => {});
+    await saveConfig(originalConfig).catch(() => {});
+  if (originalMpvPreferences)
+    await native('mpv_set_preferences', {
+      preferences: originalMpvPreferences,
+    }).catch(() => {});
   if (originalPreferences)
     await api('/playback/preferences', 'PUT', originalPreferences).catch(
       () => {},

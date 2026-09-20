@@ -34,7 +34,7 @@
 </script>
 
 <label
-  class={`inline-flex w-fit items-center gap-2 text-(--muted) ${disabled ? 'cursor-not-allowed opacity-45' : 'cursor-pointer'} ${className}`}
+  class={`youtwitch-switch inline-flex w-fit items-center gap-2 text-(--muted) ${disabled ? 'cursor-not-allowed opacity-45' : 'cursor-pointer'} ${className}`}
 >
   <span class={`relative shrink-0 ${trackClass}`}>
     <input

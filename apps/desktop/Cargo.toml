@@ -26,7 +26,21 @@ thelxinoe-core.workspace = true
 thelxinoe-releases = { path = "../../crates/releases" }
 semver = "1"
 
+chrono.workspace = true
+rusqlite.workspace = true
+tracing.workspace = true
+thiserror = "2"
+fs2 = "0.4.3"
+regex = "1.13.1"
+open = "5.4.0"
+which = "8"
+futures = "0.3"
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
+tauri-plugin-dialog = "2"
+
 [dev-dependencies]
+tempfile = "3"
 thelxinoe-auth.workspace = true
 thelxinoe-database.workspace = true
 anyhow.workspace = true

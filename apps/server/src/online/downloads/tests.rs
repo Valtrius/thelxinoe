@@ -3,6 +3,50 @@ use crate::online::oauth::tests::{call, fixture};
 use axum::http::StatusCode;
 const VIDEO: &str = "abcdefghijk";
 
+#[test]
+fn progress_accepts_estimates_and_rejects_invalid_byte_counts() {
+    assert_eq!(
+        parse_progress("THELXINOE_PROGRESS:25\t100\tNA\t3\th264\tnone"),
+        Some((25, Some(100), Some(3), "video"))
+    );
+    assert_eq!(
+        parse_progress("THELXINOE_PROGRESS:25\tNA\t50\tNA\tnone\topus"),
+        Some((25, Some(50), None, "audio"))
+    );
+    for input in ["NaN", "inf", "-1", "9999999999999"] {
+        assert!(parse_progress(&format!("THELXINOE_PROGRESS:{input}\t100")).is_none());
+    }
+    assert!(parse_progress("unrelated extractor output").is_none());
+}
+
+#[tokio::test]
+async fn download_progress_reaches_only_users_with_that_video() {
+    let (_temp, state, _) = fixture().await;
+    state.db.call(|db| {
+        db.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES('alice',?1,'Video')", [VIDEO])?;
+        db.execute("INSERT INTO youtube_downloads(video_id,generation,state,requested_at,updated_at,tools,downloaded_bytes,total_bytes,eta_seconds,media_kind) VALUES(?1,'g','downloading',1,1,'{}',25,100,3,'video')", [VIDEO])?;
+        Ok(())
+    }).await.unwrap();
+    publish_progress(&state, VIDEO).await.unwrap();
+    state
+        .db
+        .call(|db| {
+            let (user, payload): (String, String) = db.query_row(
+                "SELECT user_id,payload FROM events WHERE kind='online.download.progress'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            assert_eq!(user, "alice");
+            let payload: Value = serde_json::from_str(&payload)?;
+            assert_eq!(payload["downloaded_bytes"], 25);
+            assert_eq!(payload["total_bytes"], 100);
+            assert_eq!(payload["state"], "downloading");
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn auto_removal_keeps_other_lists_and_the_manual_undo_window() {
     let (_temp, state, _) = fixture().await;

@@ -32,6 +32,51 @@ pub(super) async fn run(
     timeout: Duration,
     output_limit: usize,
 ) -> anyhow::Result<Output> {
+    run_progress(executable, args, timeout, output_limit, None).await
+}
+
+async fn collect_progress(
+    mut pipe: impl AsyncRead + Unpin,
+    limit: usize,
+    progress: Option<tokio::sync::mpsc::Sender<String>>,
+) -> anyhow::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let mut line = Vec::new();
+    let mut buffer = [0; 8192];
+    loop {
+        let count = pipe.read(&mut buffer).await?;
+        if count == 0 {
+            return Ok(bytes);
+        }
+        ensure!(
+            bytes.len() + count <= limit,
+            "Online tool output exceeded its limit"
+        );
+        bytes.extend_from_slice(&buffer[..count]);
+        if let Some(progress) = &progress {
+            for byte in &buffer[..count] {
+                if *byte == b'\n' {
+                    if line.starts_with(b"THELXINOE_PROGRESS:")
+                        && let Ok(value) = String::from_utf8(line.clone())
+                    {
+                        let _ = progress.try_send(value);
+                    }
+                    line.clear();
+                } else if line.len() < 2048 {
+                    line.push(*byte);
+                }
+            }
+        }
+    }
+}
+
+pub(super) async fn run_progress(
+    executable: &Path,
+    args: &[OsString],
+    timeout: Duration,
+    output_limit: usize,
+    progress: Option<tokio::sync::mpsc::Sender<String>>,
+) -> anyhow::Result<Output> {
     let home = tempfile::tempdir()?;
     let mut command = CommandWrap::with_new(executable, |cmd| {
         cmd.args(args)
@@ -80,7 +125,7 @@ pub(super) async fn run(
     let result = tokio::time::timeout(timeout, async {
         tokio::try_join!(
             async { Ok::<_, anyhow::Error>(child.wait().await?) },
-            collect(stdout, output_limit),
+            collect_progress(stdout, output_limit, progress),
             collect(stderr, 256 * 1024),
         )
     })
@@ -105,6 +150,32 @@ pub(super) async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn reports_progress_before_process_output_completes() {
+        use tokio::io::AsyncWriteExt;
+        let (mut writer, reader) = tokio::io::duplex(256);
+        let (send, mut receive) = tokio::sync::mpsc::channel(2);
+        let task = tokio::spawn(collect_progress(reader, 1024, Some(send)));
+        writer
+            .write_all(b"ordinary output\nTHELXINOE_PROG")
+            .await
+            .unwrap();
+        writer
+            .write_all(b"RESS:25\t100\tNA\t3\th264\tnone\n")
+            .await
+            .unwrap();
+        let progress = tokio::time::timeout(Duration::from_secs(1), receive.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(progress, "THELXINOE_PROGRESS:25\t100\tNA\t3\th264\tnone");
+        assert!(
+            !task.is_finished(),
+            "Progress must be delivered while the tool is still running"
+        );
+        drop(writer);
+        assert!(task.await.unwrap().is_ok());
+    }
     #[tokio::test]
     async fn bounded_output_rejects_overflow() {
         assert_eq!(collect(&b"abc"[..], 3).await.unwrap(), b"abc");

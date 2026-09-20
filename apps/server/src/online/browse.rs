@@ -16,7 +16,7 @@ pub(super) fn date(timestamp: i64) -> String {
         .to_rfc3339()
 }
 
-pub(super) const VIDEO_SELECT: &str = "SELECT v.video_id,v.channel_id,v.channel_title,v.title,v.published_at,v.duration,v.broadcast,v.available,v.metadata_at,v.privacy,COALESCE(s.watched,0),COALESCE(s.position,0),COALESCE(s.pinned,0),c.thumbnail_url,v.scheduled_start,v.actual_start,v.actual_end,d.state,d.size,d.requested_at,d.error FROM youtube_videos v LEFT JOIN youtube_state s USING(user_id,video_id) LEFT JOIN youtube_subscriptions c ON c.user_id=v.user_id AND c.channel_id=v.channel_id LEFT JOIN youtube_downloads d ON d.video_id=v.video_id";
+pub(super) const VIDEO_SELECT: &str = "SELECT v.video_id,v.channel_id,v.channel_title,v.title,v.published_at,v.duration,v.broadcast,v.available,v.metadata_at,v.privacy,COALESCE(s.watched,0),COALESCE(s.position,0),COALESCE(s.pinned,0),c.thumbnail_url,v.scheduled_start,v.actual_start,v.actual_end,d.state,d.size,d.requested_at,d.error,d.downloaded_bytes,d.total_bytes,d.eta_seconds,d.media_kind FROM youtube_videos v LEFT JOIN youtube_state s USING(user_id,video_id) LEFT JOIN youtube_subscriptions c ON c.user_id=v.user_id AND c.channel_id=v.channel_id LEFT JOIN youtube_downloads d ON d.video_id=v.video_id";
 
 pub(super) fn video(row: &rusqlite::Row<'_>, grant: &str) -> rusqlite::Result<Value> {
     let id: String = row.get(0)?;
@@ -27,7 +27,7 @@ pub(super) fn video(row: &rusqlite::Row<'_>, grant: &str) -> rusqlite::Result<Va
     let download = status.map(|status| -> rusqlite::Result<Value> { Ok(json!({
         "videoId":id,"status":match status.as_str(){"ready"=>"ready","queued"=>"queued","downloading"=>"downloading","processing"=>"processing",_=>"failed"},
         "fileSizeBytes":row.get::<_,Option<i64>>(18)?.unwrap_or(0),"pinned":row.get::<_,bool>(12)?,"quality":"1080p",
-        "requestedAt":date(row.get::<_,Option<i64>>(19)?.unwrap_or(0)),"errorMessage":row.get::<_,Option<String>>(20)?
+        "downloadedBytes":row.get::<_,Option<i64>>(21)?.unwrap_or(0),"totalBytes":row.get::<_,Option<i64>>(22)?,"etaSeconds":row.get::<_,Option<i64>>(23)?,"mediaKind":row.get::<_,Option<String>>(24)?,"requestedAt":date(row.get::<_,Option<i64>>(19)?.unwrap_or(0)),"errorMessage":row.get::<_,Option<String>>(20)?
     })) }).transpose()?;
     Ok(json!({
         "videoId":id,"channelId":row.get::<_,String>(1)?,"channelName":row.get::<_,String>(2)?,
@@ -104,7 +104,7 @@ pub async fn list(
         let q=input.query;
         let user=p.user.id;
         let base="v.user_id=? AND EXISTS(SELECT 1 FROM youtube_subscriptions sub WHERE sub.user_id=v.user_id AND sub.channel_id=v.channel_id AND sub.active=1)";
-        let mut where_sql=format!("{base} AND (? OR COALESCE(v.is_short,0)=0) AND (? OR v.broadcast<>'live') AND (? OR v.broadcast<>'replay') AND (? OR v.broadcast<>'upcoming')");
+        let mut where_sql=format!("{base} AND (? OR (v.is_short=0 OR v.broadcast<>'none')) AND (? OR v.broadcast<>'live') AND (? OR v.broadcast<>'replay') AND (? OR v.broadcast<>'upcoming')");
         let mut binds:Vec<SqlValue>=vec![user.clone().into(),(q.include_shorts as i64).into(),(q.include_live as i64).into(),(q.include_live_replays as i64).into(),(q.include_upcoming as i64).into()];
         if !q.search.is_empty(){where_sql.push_str(" AND (instr(lower(v.title),lower(?))>0 OR instr(lower(v.channel_title),lower(?))>0)");binds.push(q.search.clone().into());binds.push(q.search.into());}
         if let Some(channel)=q.channel_id.filter(|s|!s.is_empty()){where_sql.push_str(" AND v.channel_id=?");binds.push(channel.into());}
@@ -121,7 +121,7 @@ pub async fn list(
         let states=q.watch_states.iter().map(|s|match s.as_str(){"watched"=>"s.watched=1","in_progress"=>"(COALESCE(s.watched,0)=0 AND s.position>1)",_=>"(COALESCE(s.watched,0)=0 AND COALESCE(s.position,0)<=1)"}).collect::<Vec<_>>().join(" OR ");
         where_sql.push_str(&format!(" AND ({states})"));
         let sort=match q.sort_field.as_str(){"channel"=>"v.channel_title COLLATE NOCASE","duration"=>"v.duration",_=>"v.published_at"};
-        let sql=format!("{VIDEO_SELECT} WHERE {where_sql} ORDER BY {sort} {},v.video_id LIMIT ? OFFSET ?",q.sort_direction);
+        let sql=format!("{VIDEO_SELECT} WHERE {where_sql} ORDER BY (v.broadcast='live') DESC,{sort} {},v.video_id LIMIT ? OFFSET ?",q.sort_direction);
         binds.push((input.page_size as i64+1).into());binds.push((input.page as i64*input.page_size as i64).into());
         let mut items=db.prepare(&sql)?.query_map(params_from_iter(&binds),|r|video(r,&grant))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let more=items.len()>input.page_size as usize;items.truncate(input.page_size as usize);

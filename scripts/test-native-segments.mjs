@@ -1,5 +1,6 @@
 import { chromium, expect } from '@playwright/test';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, readdirSync } from 'node:fs';
+import net from 'node:net';
 const browser = await chromium.connectOverCDP('http://127.0.0.1:9223');
 const page = browser
   .contexts()[0]
@@ -69,6 +70,7 @@ try {
     .click();
   const results = [];
   for (const mode of ['Ask', 'Auto', 'Ignore']) {
+    const previousPipes = new Set(readdirSync('\\\\.\\pipe\\'));
     await api(`/catalog/${episode.id}/state`, 'PUT', { watched: false });
     await api('/me/segments', 'PUT', { ...preferences, Intro: mode });
     await page.getByRole('button', { name: 'Play media', exact: true }).click();
@@ -81,10 +83,39 @@ try {
     expect(view.file_id).toBe(segments.file_id);
     expect(view.generation).toBe(segments.generation);
     await native('mpv_command', { command: 'seek', value: intro.start + 1 });
-    if (mode === 'Ask')
-      await page
-        .getByRole('button', { name: 'Skip intro', exact: true })
-        .click();
+    await expect(
+      page.getByRole('region', { name: 'Native player' }),
+    ).toHaveCount(0);
+    if (mode === 'Ask') {
+      await expect
+        .poll(async () => (await native('mpv_state')).position)
+        .toBeGreaterThanOrEqual(intro.start);
+      const pipe = readdirSync('\\\\.\\pipe\\').find(
+        (name) => name.startsWith('thelxinoe-') && !previousPipes.has(name),
+      );
+      expect(pipe).toBeTruthy();
+      await new Promise((resolve, reject) => {
+        const socket = net.connect('\\\\.\\pipe\\' + pipe);
+        socket.setTimeout(3000, () =>
+          socket.destroy(new Error('MPV keypress timed out')),
+        );
+        socket.on('error', reject);
+        socket.on('connect', () =>
+          socket.write(
+            JSON.stringify({
+              command: ['keypress', 'Ctrl+ENTER'],
+              request_id: 1,
+            }) + '\n',
+          ),
+        );
+        socket.on('data', (data) => {
+          if (data.toString().includes('"request_id":1')) {
+            socket.end();
+            resolve();
+          }
+        });
+      });
+    }
     if (mode !== 'Ignore')
       await expect
         .poll(async () => (await native('mpv_state')).position, {
@@ -103,9 +134,7 @@ try {
     results.push({ mode, position: (await native('mpv_state')).position });
     if (mode === 'Ask')
       await page.screenshot({ path: '.local/native-segments.png' });
-    await page
-      .getByRole('button', { name: 'Close player', exact: true })
-      .click();
+    await native('mpv_command', { command: 'stop', value: null });
     await expect(
       page.getByRole('region', { name: 'Native player' }),
     ).toHaveCount(0);

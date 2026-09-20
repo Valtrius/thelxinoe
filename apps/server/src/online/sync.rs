@@ -47,6 +47,33 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
         tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
     }
 }
+pub(super) async fn run_classifications(state: AppState) -> anyhow::Result<()> {
+    loop {
+        if classify_next(&state).await.is_err() {
+            tracing::warn!("YouTube Shorts classification will retry");
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+}
+async fn classify_next(state: &AppState) -> anyhow::Result<()> {
+    let candidate=state.db.call(|db|{
+        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let row=tx.query_row("SELECT v.user_id,v.video_id,a.generation FROM youtube_videos v JOIN online_accounts a ON a.user_id=v.user_id AND a.provider='youtube' AND a.status='connected' WHERE v.available=1 AND v.privacy='public' AND v.broadcast='none' AND v.is_short IS NULL AND v.duration BETWEEN 1 AND 180 AND v.short_checked<?1 ORDER BY v.short_checked,v.published_at DESC LIMIT 1",[now()-86400],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional()?;
+        if let Some((user,video,_))=&row {tx.execute("UPDATE youtube_videos SET short_checked=?1 WHERE user_id=?2 AND video_id=?3",params![now(),user,video])?;}
+        tx.commit()?;Ok(row)
+    }).await?;
+    if let Some((user, video, generation)) = candidate {
+        let result = short(state, &video).await;
+        let recipient = user.clone();
+        let changed=state.db.call(move|db|Ok(db.execute("UPDATE youtube_videos SET is_short=?1,short_checked=?2 WHERE user_id=?3 AND video_id=?4 AND EXISTS(SELECT 1 FROM online_accounts WHERE user_id=?3 AND provider='youtube' AND status='connected' AND generation=?5)",params![result,if result.is_some(){now()}else{now()-86400+300},user,video,generation])?)).await?;
+        if changed > 0 && result.is_some() {
+            state
+                .emit(Some(recipient), "youtube.changed", json!({}))
+                .await?;
+        }
+    }
+    Ok(())
+}
 async fn claim(state: &AppState) -> anyhow::Result<Option<Turn>> {
     state.db.call(|db|{
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -404,18 +431,7 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
                 Ok(())
             }).await
         }
-        "shorts" => {
-            let owner = user.clone();
-            let candidate=state.db.call(move|db|Ok(db.query_row("SELECT video_id FROM youtube_videos WHERE user_id=?1 AND available=1 AND is_short IS NULL AND duration BETWEEN 1 AND 180 AND short_checked<?2 ORDER BY short_checked,published_at DESC LIMIT 1",params![owner,now()-86400],|r|r.get::<_,String>(0)).optional()?)).await?;
-            let Some(video) = candidate.filter(|_| turn.cursor.pages < 50) else {
-                return save(state, turn, true, |_| Ok(())).await;
-            };
-            let result = short(state, &video).await;
-            turn.cursor.pages += 1;
-            save(state,turn,false,move|tx|{
-                tx.execute("UPDATE youtube_videos SET is_short=?1,short_checked=?2 WHERE user_id=?3 AND video_id=?4",params![result,now(),user,video])?;Ok(())
-            }).await
-        }
+        "shorts" => save(state, turn, true, |_| Ok(())).await,
         _ => Err(ApiError::bad("Invalid persisted YouTube sync cursor")),
     }
 }

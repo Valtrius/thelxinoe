@@ -47,7 +47,6 @@
   } from '../../youtube-feed-preferences';
   import { youtubeVideoIdFromInput } from '../../youtube-video-input';
   import Button from '../ui/Button.svelte';
-  import ConfirmDialog from '../ui/ConfirmDialog.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
   import YoutubeFeedToolbar from './YoutubeFeedToolbar.svelte';
   import VideoGrid from './VideoGrid.svelte';
@@ -131,7 +130,7 @@
   );
 
   let error = $state<AppError | null>(null);
-  let fullRefreshOpen = $state(false);
+  let refreshing = $state(false);
   let watchlistSidebarOpen = $state(
     preferences.getItem(watchlistSidebarKey) === 'true',
   );
@@ -286,6 +285,24 @@
       filters.downloadFilter !== 'all',
   );
   const quotaReset = $derived(localDateTime(syncStatus.quotaPausedUntil));
+
+  $effect(() => {
+    const serialized = $preferences[feedPreferencesKey];
+    if (serialized)
+      untrack(() => {
+        const remote = parseYoutubeFeedPreferences(serialized);
+        const current = {
+          ...filters,
+          searchText: directVideoId ? '' : filters.searchText,
+        };
+        if (JSON.stringify(remote) !== JSON.stringify(current))
+          filters = remote;
+      });
+  });
+  $effect(() => {
+    const saved = $preferences[watchlistSidebarKey];
+    if (saved !== undefined) watchlistSidebarOpen = saved === 'true';
+  });
 
   $effect(() => {
     const value = filters.searchText;
@@ -500,6 +517,19 @@
   });
 
   $effect(() => {
+    const watchlistError = watchlistController.error;
+    if (watchlistError) {
+      showToast({
+        key: 'youtube-watchlist-error',
+        tone: 'error',
+        title: 'Watchlist change failed',
+        message: watchlistError.message,
+        durationMs: null,
+      });
+    } else dismissToastByKey('youtube-watchlist-error');
+  });
+
+  $effect(() => {
     if (error) {
       showToast({
         key: 'youtube-action-error',
@@ -620,13 +650,18 @@
   }
 
   async function refresh(mode: 'normal' | 'full') {
-    fullRefreshOpen = false;
+    if (refreshing) return;
+    refreshing = true;
     error = null;
     try {
-      await api.syncYoutube(mode);
+      await feed.refreshLoadedVideos();
+      await watchlistController.loadWatchlists();
+      if (!syncStatus.isRefreshing) await api.syncYoutube(mode);
     } catch (caught) {
       error = normalizeError(caught);
       if (error.category === 'authentication') onAccountChanged();
+    } finally {
+      refreshing = false;
     }
   }
 
@@ -825,7 +860,7 @@
     <YoutubeFeedToolbar
       bind:filters
       bind:watchlistSidebarOpen
-      onFullRefresh={() => (fullRefreshOpen = true)}
+      {refreshing}
       channels={feed.channels}
       counts={feed.counts}
       {syncStatus}
@@ -1045,14 +1080,6 @@
   </div>
 </div>
 
-<ConfirmDialog
-  open={fullRefreshOpen}
-  title="Force every subscribed channel to refresh?"
-  message="A full refresh checks every uploads playlist and may use substantial YouTube API quota. Cached content remains available if the run stops."
-  confirmLabel="Start full refresh"
-  onConfirm={() => refresh('full')}
-  onCancel={() => (fullRefreshOpen = false)}
-/>
 {#if actionBusy}<div
     class="pointer-events-none fixed right-5 bottom-5 z-40 border border-(--line-strong) bg-(--surface-strong) px-3 py-2 text-xs text-(--accent)"
   >

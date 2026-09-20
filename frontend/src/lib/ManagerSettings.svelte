@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Switch from './providers/components/ui/Switch.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
   type Container = {
@@ -115,22 +116,19 @@
     users below.
   </p>
   {#each approvalUsers as user (user.id)}
-    <label
-      ><input
-        type="checkbox"
-        checked={user.enabled}
-        disabled={busy}
-        onchange={(event) => {
-          const enabled = event.currentTarget.checked;
-          void act(async () => {
-            await api(`/admin/acquisition/users/${user.id}`, 'PUT', {
-              enabled,
-            });
-            await load();
+    <Switch
+      checked={user.enabled}
+      disabled={busy}
+      onCheckedChange={(enabled) => {
+        void act(async () => {
+          await api(`/admin/acquisition/users/${user.id}`, 'PUT', {
+            enabled,
           });
-        }}
-      />
-      {user.username}</label
+          await load();
+        });
+      }}
+    >
+      {user.username}</Switch
     >
   {/each}
   <form
@@ -233,9 +231,8 @@
               >{/each}</select
           ></label
         >{/if}
-      <label
-        ><input type="checkbox" bind:checked={monitored} /> Monitor and search approved
-        requests</label
+      <Switch bind:checked={monitored}
+        >Monitor and search approved requests</Switch
       ><button class="primary" disabled={busy || !root || !profile}
         >Save acquisition defaults</button
       >

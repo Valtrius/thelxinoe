@@ -42,6 +42,12 @@ export function createYoutubeWatchlists(savedSelectedWatchlistId: number) {
     }
   >();
   let additionRevision = 0;
+  let orderRevision = 0;
+  const localOrders = new SvelteMap<
+    number,
+    { ids: string[]; confirmedRevision: number | null }
+  >();
+  const reorderQueue = new KeyedAsyncQueue();
   const displayedWatchlists = $derived.by(() =>
     watchlists.map((watchlist) => {
       const items = [...watchlist.items];
@@ -55,7 +61,19 @@ export function createYoutubeWatchlists(savedSelectedWatchlistId: number) {
           items.push(addition.item);
         }
       }
-      items.sort((left, right) => left.manualPosition - right.manualPosition);
+      const order = localOrders.get(watchlist.id);
+      const positions = new SvelteMap(
+        order?.ids.map((id, index) => [id, index]),
+      );
+      items.sort(
+        (left, right) =>
+          (positions.get(left.video.videoId) ?? left.manualPosition) -
+          (positions.get(right.video.videoId) ?? right.manualPosition),
+      );
+      if (order)
+        items.forEach((item, index) => {
+          items[index] = { ...item, manualPosition: index };
+        });
       return { ...watchlist, items };
     }),
   );
@@ -115,9 +133,17 @@ export function createYoutubeWatchlists(savedSelectedWatchlistId: number) {
     const selectionAtStart = selectedWatchlistId;
     const sequence = ++watchlistLoadSequence;
     const confirmedBeforeLoad = additionRevision;
+    const ordersBeforeLoad = orderRevision;
     try {
       const next = await api.youtubeWatchlists();
       if (sequence !== watchlistLoadSequence) return false;
+      for (const [id, order] of localOrders) {
+        if (
+          order.confirmedRevision !== null &&
+          order.confirmedRevision <= ordersBeforeLoad
+        )
+          localOrders.delete(id);
+      }
       // Only a refresh started after an add completed can confirm its membership.
       // Older responses still apply unrelated list changes beneath the local entries.
       for (const [key, addition] of localAdditions) {
@@ -497,10 +523,20 @@ export function createYoutubeWatchlists(savedSelectedWatchlistId: number) {
   async function reorderWatchlist(watchlistId: number, videoIds: string[]) {
     error = null;
     watchlistLoadSequence += 1;
+    const order = {
+      ids: [...videoIds],
+      confirmedRevision: null as number | null,
+    };
+    localOrders.set(watchlistId, order);
     try {
-      await api.reorderYoutubeWatchlist(watchlistId, videoIds);
+      await reorderQueue.run(String(watchlistId), () =>
+        api.reorderYoutubeWatchlist(watchlistId, videoIds),
+      );
+      order.confirmedRevision = ++orderRevision;
       await loadWatchlists(watchlistId);
     } catch (caught) {
+      if (localOrders.get(watchlistId) !== order) return;
+      localOrders.delete(watchlistId);
       const actionError = normalizeError(caught);
       await loadWatchlists(watchlistId, false);
       error = actionError;
@@ -542,6 +578,7 @@ export function createYoutubeWatchlists(savedSelectedWatchlistId: number) {
     takeDeferredWatchlistRemovals();
     pendingManualWatchedVideoIds.clear();
     localAdditions.clear();
+    localOrders.clear();
     watchlists = [];
     selectedWatchlistId = null;
   }

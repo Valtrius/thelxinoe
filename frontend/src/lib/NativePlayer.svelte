@@ -3,7 +3,6 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { time, type MediaChoice } from './playback';
-  import SegmentSkip from './SegmentSkip.svelte';
   type View = {
     file_id: string;
     generation: string;
@@ -42,6 +41,12 @@
         if (generation === revision) {
           view = event.payload;
           if (event.payload.error) error = event.payload.error;
+          if (
+            event.payload.status === 'stopped' &&
+            event.payload.media_id === selected.id &&
+            !busy
+          )
+            closed(selected);
         }
       });
       const result = selected.restore
@@ -71,77 +76,69 @@
   });
 </script>
 
-<section class="panel" aria-label="Native player">
-  <div class="section-heading">
-    <h2>{view?.title ?? choice.title}</h2>
-    <button
-      class="secondary"
-      onclick={async () => {
-        const closing = choice;
-        await command('stop');
-        closed(closing);
-      }}>Close player</button
-    >
-  </div>
-  {#if error}<p class="error" role="alert">{error}</p>{/if}{#if busy}<p
-      role="status"
-    >
-      Opening MPV…
-    </p>{/if}
-  {#if view}<p class="muted">
-      {view.music
-        ? 'Music plays through MPV.'
-        : 'Video plays in its MPV window.'} · {view.status}
-    </p>
-    {#if view.file_id && view.generation && !view.music}<SegmentSkip
-        mediaId={view.media_id}
-        fileId={view.file_id}
-        generation={view.generation}
-        position={view.position}
-        paused={view.paused}
-        {busy}
-        seek={(at) => command('seek', at)}
-      />{/if}
-    <div class="controls">
+{#if choice.kind === 'track'}<section class="panel" aria-label="Native player">
+    <div class="section-heading">
+      <h2>{view?.title ?? choice.title}</h2>
       <button
-        class="primary"
-        disabled={busy || view.status === 'stopped'}
-        onclick={() => void command('pause')}
-        >{view.paused ? 'Play' : 'Pause'}</button
-      >{#if view.music}<button
-          class="secondary"
-          onclick={() => void command('next')}>Next track</button
-        >{/if}<span
-        >{view.duration === 0
-          ? 'Live'
-          : `${time(view.position)} / ${time(view.duration)}`}</span
-      >{#if view.duration > 0}<label
-          >Position<input
-            aria-label="Native playback position"
-            type="range"
-            min="0"
-            max={view.duration}
-            step="0.1"
-            value={view.position}
-            onchange={(e) =>
-              void command('seek', Number(e.currentTarget.value))}
-          /></label
-        >{/if}<label
-        >Volume<input
-          aria-label="Native playback volume"
-          type="range"
-          min="0"
-          max="100"
-          step="1"
-          value="100"
-          oninput={(e) => void command('volume', Number(e.currentTarget.value))}
-        /></label
+        class="secondary"
+        onclick={async () => {
+          const closing = choice;
+          await command('stop');
+          closed(closing);
+        }}>Close player</button
       >
     </div>
-    {#if view.count > 1}<p class="muted">
-        Track {view.index + 1} of {view.count}
-      </p>{/if}{/if}
-</section>
+    {#if error}<p class="error" role="alert">{error}</p>{/if}{#if busy}<p
+        role="status"
+      >
+        Opening MPV…
+      </p>{/if}
+    {#if view}<p class="muted">
+        {view.music
+          ? 'Music plays through MPV.'
+          : 'Video plays in its MPV window.'} · {view.status}
+      </p>
+      <div class="controls">
+        <button
+          class="primary"
+          disabled={busy || view.status === 'stopped'}
+          onclick={() => void command('pause')}
+          >{view.paused ? 'Play' : 'Pause'}</button
+        >{#if view.music}<button
+            class="secondary"
+            onclick={() => void command('next')}>Next track</button
+          >{/if}<span
+          >{view.duration === 0
+            ? 'Live'
+            : `${time(view.position)} / ${time(view.duration)}`}</span
+        >{#if view.duration > 0}<label
+            >Position<input
+              aria-label="Native playback position"
+              type="range"
+              min="0"
+              max={view.duration}
+              step="0.1"
+              value={view.position}
+              onchange={(e) =>
+                void command('seek', Number(e.currentTarget.value))}
+            /></label
+          >{/if}<label
+          >Volume<input
+            aria-label="Native playback volume"
+            type="range"
+            min="0"
+            max="100"
+            step="1"
+            value="100"
+            oninput={(e) =>
+              void command('volume', Number(e.currentTarget.value))}
+          /></label
+        >
+      </div>
+      {#if view.count > 1}<p class="muted">
+          Track {view.index + 1} of {view.count}
+        </p>{/if}{/if}
+  </section>{:else if error}<p class="error" role="alert">{error}</p>{/if}
 
 <style>
   .controls {

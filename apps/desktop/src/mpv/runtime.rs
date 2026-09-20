@@ -1,4 +1,5 @@
-use super::{backend::Backend, ipc::Ipc, tools::ToolStore};
+use super::{backend::Backend, ipc::Ipc};
+use crate::tools::{LaunchTools, ToolManager, models::ToolId};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -8,7 +9,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 use tokio::{
     net::windows::named_pipe::ClientOptions,
@@ -100,7 +101,7 @@ impl Player {
     pub async fn play(
         &self,
         app: AppHandle,
-        store: ToolStore,
+        tools: Arc<ToolManager>,
         choices: Vec<Choice>,
         music: bool,
     ) -> Result<View> {
@@ -116,11 +117,15 @@ impl Player {
         );
         let _operation = self.operation.lock().await;
         self.stop_inner().await;
-        let selection = store.selection()?;
-        ensure!(
-            !selection.path.is_empty(),
-            "Install or select MPV in Windows player settings"
-        );
+        let (settings, launch) = tools
+            .resolve_launch(&Default::default(), &[ToolId::Mpv], true)
+            .await?;
+        let diagnostic =
+            crate::tools::discovery::detect_named_executable("mpv", settings.mpv_path.as_deref())
+                .await;
+        let executable = diagnostic
+            .path
+            .context("Install or select MPV in Windows player settings")?;
         let backend = Backend::new(&app)?;
         let (commands, rx) = mpsc::channel(32);
         let view = Arc::new(Mutex::new(View {
@@ -133,16 +138,18 @@ impl Player {
         }));
         let state = view.clone();
         let (ready, started) = oneshot::channel();
+        let controls = commands.clone();
         let task = tokio::spawn(async move {
             if let Err(error) = run(
                 &app,
                 backend,
-                store,
-                selection.path,
+                launch,
+                executable,
                 choices,
                 music,
                 state.clone(),
                 rx,
+                controls,
                 ready,
             )
             .await
@@ -256,17 +263,23 @@ async fn report(backend: &Backend, entry: &mut Prepared, state: &str) -> Result<
 async fn run(
     app: &AppHandle,
     backend: Backend,
-    store: ToolStore,
+    launch: LaunchTools,
     executable: String,
     choices: Vec<Choice>,
     music: bool,
     view: Arc<Mutex<View>>,
     mut commands: mpsc::Receiver<Control>,
+    controls: mpsc::Sender<Control>,
     ready: oneshot::Sender<Result<()>>,
 ) -> Result<()> {
     let pipe = format!(r"\\.\pipe\thelxinoe-{}", uuid::Uuid::new_v4());
-    let mut child = Command::new(executable)
-        .arg(format!("--config-dir={}", store.configuration().display()))
+    let segment_script = app.path().app_local_data_dir()?.join("segments.lua");
+    std::fs::write(&segment_script, include_str!("segments.lua"))?;
+    let mut command = Command::new(executable);
+    launch.configure(&mut command)?;
+    let mut child = command
+        .args(&launch.mpv_args)
+        .arg(format!("--scripts-append={}", segment_script.display()))
         .args([
             "--config=yes",
             "--idle=yes",
@@ -286,7 +299,6 @@ async fn run(
         } else {
             vec!["--force-window=immediate"]
         })
-        .env("MPV_HOME", store.configuration())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -346,7 +358,7 @@ async fn run(
                     Some(Control::Pause) => { ipc.call(json!(["cycle", "pause"])).await?; }
                     Some(Control::Seek(position)) => {
                         let entry = prepared.get_mut(&current).context("No active media")?;
-                        if entry.data["live"]==true {continue;}
+                        if !loaded || entry.data["live"]==true {continue;}
                         let position = position.min((entry.data["duration"].as_f64().unwrap_or(0.0) - 0.1).max(0.0));
                         if entry.data["mode"] == "direct" {
                             ipc.call(json!(["seek", position, "absolute+exact"])).await?;
@@ -393,6 +405,13 @@ async fn run(
                             Some("video-out-params") => { video_ready = message["data"]["w"].as_u64().unwrap_or(0) > 0; }
                             _ => {}
                         },
+                        Some("client-message") if message["args"][0] == "thelxinoe-seek" => {
+                            if let Some(entry) = prepared.get(&current)
+                                && message["args"][1] == entry.data["file_id"]
+                                && message["args"][2] == entry.data["generation"]
+                                && let Some(at) = message["args"][3].as_str().and_then(|s| s.parse::<f64>().ok()).filter(|v| v.is_finite() && *v >= 0.0)
+                            { let _ = controls.try_send(Control::Seek(at)); }
+                        }
                         Some("file-loaded") => {
                             loaded = true;
                             if let Some(entry) = prepared.get_mut(&current) {
@@ -400,6 +419,15 @@ async fn run(
                                 if let Some(sub) = entry.data["selected_subtitle"].as_str().filter(|s| s.starts_with("sidecar-") || (entry.data["mode"] != "direct" && *s != "off"))
                                     && let Some(url) = entry.data["subtitles"].as_array().into_iter().flatten().find(|s| s["id"].as_str() == Some(sub)).and_then(|s| s["url"].as_str())
                                 { ipc.call(json!(["sub-add", format!("{}{url}", backend.origin), "select"])).await?; }
+                            }
+                            if !music && let Some(entry) = prepared.get(&current)
+                                && let Some(file) = entry.data["file_id"].as_str()
+                                && let Ok(mut segments) = backend.call(&format!("/catalog/{}/segments?file_id={}", choices[current].id, file), "GET", None).await
+                                && segments["generation"] == entry.data["generation"]
+                            {
+                                segments["file"] = json!(file);
+                                segments["timeline"] = entry.data["timeline_start"].clone();
+                                let _ = ipc.call(json!(["script-message", "thelxinoe-segments", segments.to_string()])).await;
                             }
                             let _ = app.notification().builder().title("Now playing").body(&choices[current].title).show();
                             if music && next < choices.len() && next <= current + 1 {
@@ -442,7 +470,7 @@ async fn run(
                     }
                     if let Some(entry) = prepared.get(&current) {
                         let mut state = view.lock().await;
-                        *state = View { file_id: entry.data["file_id"].as_str().unwrap_or_default().into(), generation: entry.data["generation"].as_str().unwrap_or_default().into(), media_id: choices[current].id.clone(), mode: entry.data["mode"].as_str().unwrap_or_default().into(), title: choices[current].title.clone(), position: entry.position, duration: entry.data["duration"].as_f64().unwrap_or(0.0), paused, status: if !loaded { "starting" } else if paused { "paused" } else { "playing" }.into(), music, index: current, count: choices.len(), error: None, video_ready };
+                        *state = View { file_id: entry.data["file_id"].as_str().unwrap_or_default().into(), generation: entry.data["generation"].as_str().unwrap_or_default().into(), media_id: choices[current].id.clone(), mode: entry.data["mode"].as_str().unwrap_or_default().into(), title: choices[current].title.clone(), position: entry.position, duration: entry.data["duration"].as_f64().unwrap_or(0.0), paused, status: if !loaded { "starting" } else if paused { "paused" } else { "playing" }.into(), music, index: current, count: choices.len(), error: None, video_ready: loaded && video_ready };
                         let _ = app.emit("mpv-state", state.clone());
                     }
                 }
@@ -478,5 +506,6 @@ async fn run(
     state.status = "stopped".into();
     state.paused = true;
     let _ = app.emit("mpv-state", state.clone());
+    drop(launch); // Keep versions and the plugin configuration snapshot leased until MPV exits.
     work
 }

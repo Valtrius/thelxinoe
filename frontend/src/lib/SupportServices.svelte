@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Switch from './providers/components/ui/Switch.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
   type Service = {
@@ -298,10 +299,8 @@
               placeholder="en"
             /></label
           >
-          <label
-            ><input type="checkbox" bind:checked={forced} /> Forced subtitles</label
-          ><label
-            ><input type="checkbox" bind:checked={hearing} /> Hearing impaired subtitles</label
+          <Switch bind:checked={forced}>Forced subtitles</Switch><Switch
+            bind:checked={hearing}>Hearing impaired subtitles</Switch
           >
           {#if !data.movies?.length && !data.episodes?.length}<p>
               No missing subtitles reported. Configure language profiles and

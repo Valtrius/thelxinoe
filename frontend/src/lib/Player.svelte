@@ -3,6 +3,7 @@
   import Hls from 'hls.js';
   import SegmentSkip from './SegmentSkip.svelte';
   import { api } from './api';
+  import { appearance, updateAppearance } from './appearance';
   import {
     capabilities,
     mediaUrl,
@@ -36,6 +37,9 @@
     audioElement: HTMLVideoElement | undefined,
     gain: GainNode | undefined;
   const cueTimes = new WeakMap<TextTrackCue, { start: number; end: number }>();
+  $effect(() => {
+    if (player) player.volume = $appearance.audio_volume;
+  });
   const timer = setInterval(() => {
     void report(paused ? 'paused' : 'playing');
   }, 10000);
@@ -90,6 +94,7 @@
   }
   async function attach(url: string, at: number) {
     if (!active || !player) return;
+    player.volume = $appearance.audio_volume;
     if (!active.video) {
       if (audioElement !== player) {
         await audioContext?.close();
@@ -328,8 +333,11 @@
           min="0"
           max="1"
           step="0.01"
-          value="1"
-          oninput={(e) => (player.volume = Number(e.currentTarget.value))}
+          value={$appearance.audio_volume}
+          oninput={(e) => {
+            player.volume = Number(e.currentTarget.value);
+            updateAppearance({ audio_volume: player.volume });
+          }}
         /></label
       >
       <button class="primary" disabled={busy} onclick={() => void toggle()}

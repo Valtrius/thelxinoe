@@ -176,6 +176,10 @@ export interface YoutubeWatchlistAddResult {
 }
 
 export interface YoutubeDownload {
+  downloadedBytes?: number;
+  totalBytes?: number | null;
+  etaSeconds?: number | null;
+  mediaKind?: 'video' | 'audio' | 'media' | null;
   videoId: string;
   status:
     | 'queued'

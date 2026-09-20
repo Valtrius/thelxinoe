@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Switch from './providers/components/ui/Switch.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
   type Update = {
@@ -139,9 +140,8 @@
         onclick={() => command('prepare')}>Prepare and test release</button
       >
     {/if}
-    <label class="confirm"
-      ><input type="checkbox" bind:checked={confirmed} />I understand that
-      installation briefly stops the server.</label
+    <Switch bind:checked={confirmed}
+      >I understand that installation briefly stops the server.</Switch
     >
     {#each status.controller.items as item (item.id)}
       <div class="update">
@@ -194,16 +194,6 @@
   }
   .controls label {
     min-width: 12rem;
-  }
-  .confirm {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    gap: 0.6rem;
-    margin: 1rem 0;
-  }
-  .confirm input {
-    width: auto;
   }
   .update {
     border-top: 1px solid var(--line);

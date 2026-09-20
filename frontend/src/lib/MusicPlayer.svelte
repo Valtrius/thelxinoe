@@ -3,6 +3,7 @@
   import { GaplessQueue, StreamingRequired, type MusicState } from './gapless';
   import { time, type MediaChoice } from './playback';
   import Player from './Player.svelte';
+  import { appearance, updateAppearance } from './appearance';
   import { choiceIndex } from './media-state';
   let { choice, closed } = $props<{
     choice: MediaChoice;
@@ -13,8 +14,11 @@
     busy = $state(true),
     streaming = $state(false);
   let streamChoice = $state<MediaChoice | null>(null);
-  let queue: GaplessQueue | undefined,
-    generation = 0;
+  let queue = $state<GaplessQueue>();
+  let generation = 0;
+  $effect(() => {
+    queue?.setVolume($appearance.audio_volume);
+  });
   $effect(() => {
     const selected = choice;
     untrack(() => void open(selected));
@@ -46,6 +50,7 @@
       },
     );
     try {
+      queue.setVolume($appearance.audio_volume);
       await queue.start();
     } catch (e) {
       await queue.close();
@@ -96,8 +101,12 @@
             min="0"
             max="1"
             step="0.01"
-            value="1"
-            oninput={(e) => queue?.setVolume(Number(e.currentTarget.value))}
+            value={$appearance.audio_volume}
+            oninput={(e) => {
+              const volume = Number(e.currentTarget.value);
+              queue?.setVolume(volume);
+              updateAppearance({ audio_volume: volume });
+            }}
           /></label
         >
         <button class="primary" onclick={() => void queue?.toggle()}

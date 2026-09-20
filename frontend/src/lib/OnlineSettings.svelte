@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Switch from './providers/components/ui/Switch.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
   import TwitchSettings from './TwitchSettings.svelte';
@@ -109,9 +110,7 @@
         required
       /></label
     >
-    <label
-      ><input type="checkbox" bind:checked={downloads} /> Allow YouTube downloads</label
-    >
+    <Switch bind:checked={downloads}>Allow YouTube downloads</Switch>
     <button class="primary" disabled={busy || !config}
       >Save YouTube settings</button
     >

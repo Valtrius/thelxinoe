@@ -46,7 +46,7 @@ pub async fn list(
     }
     let owner = p.user.id.clone();
     let (mut items,total,sync)=state.db.call(move|db|{
-        let from="FROM youtube_videos v LEFT JOIN youtube_state s USING(user_id,video_id) WHERE v.user_id=?1 AND (?2=0 OR s.watchlist=1) AND (?3=0 OR s.pinned=1) AND (?4=0 OR COALESCE(v.is_short,0)=0) AND (?5=0 OR COALESCE(s.watched,0)=0) AND (?6='' OR instr(lower(v.title),lower(?6))>0 OR instr(lower(v.channel_title),lower(?6))>0) AND (?7='' OR v.channel_id=?7) AND (?2=1 OR ?3=1 OR EXISTS(SELECT 1 FROM youtube_subscriptions c WHERE c.user_id=v.user_id AND c.channel_id=v.channel_id AND c.active=1))";
+        let from="FROM youtube_videos v LEFT JOIN youtube_state s USING(user_id,video_id) WHERE v.user_id=?1 AND (?2=0 OR s.watchlist=1) AND (?3=0 OR s.pinned=1) AND (?4=0 OR (v.is_short=0 OR v.broadcast<>'none')) AND (?5=0 OR COALESCE(s.watched,0)=0) AND (?6='' OR instr(lower(v.title),lower(?6))>0 OR instr(lower(v.channel_title),lower(?6))>0) AND (?7='' OR v.channel_id=?7) AND (?2=1 OR ?3=1 OR EXISTS(SELECT 1 FROM youtube_subscriptions c WHERE c.user_id=v.user_id AND c.channel_id=v.channel_id AND c.active=1))";
         let query=params![owner,filter.watchlist,filter.pinned,filter.hide_shorts,filter.unwatched,filter.search,filter.channel];
         let total=db.query_row(&format!("SELECT COUNT(*) {from}"),query,|r|r.get::<_,u32>(0))?;
         let sql=format!("SELECT v.video_id,v.title,v.channel_title,v.published_at,v.duration,v.broadcast,v.available,v.is_short,v.metadata_at,COALESCE(s.watchlist,0),COALESCE(s.pinned,0),COALESCE(s.watched,0),COALESCE(s.position,0),v.privacy {from} ORDER BY CASE WHEN ?2=1 THEN s.added_at ELSE v.published_at END DESC,v.video_id LIMIT 50 OFFSET ?8");

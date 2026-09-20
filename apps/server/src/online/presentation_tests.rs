@@ -5,6 +5,59 @@ use serde_json::{Value, json};
 use thelxinoe_core::now;
 
 #[tokio::test]
+async fn live_cards_precede_pagination_and_unknown_shorts_never_flash_in_filtered_feed() {
+    let (_temp, state, alice) = fixture().await;
+    state.db.call(|db| {
+        db.execute("INSERT INTO youtube_subscriptions(user_id,channel_id,title,snapshot,active) VALUES('alice','UCaaaaaaaaaaaaaaaaaaaaaa','Channel','s',1)", [])?;
+        for (id, published, short, broadcast) in [
+            ("aaaaaaaaaaa",10,Some(0),"none"),
+            ("bbbbbbbbbbb",20,Some(0),"none"),
+            ("ccccccccccc",30,None,"none"),
+            ("ddddddddddd",40,Some(1),"none"),
+            ("eeeeeeeeeee",1,None,"live"),
+        ] {
+            db.execute("INSERT INTO youtube_videos(user_id,video_id,title,channel_id,published_at,is_short,broadcast,duration) VALUES('alice',?1,?1,'UCaaaaaaaaaaaaaaaaaaaaaa',?2,?3,?4,60)", params![id,published,short,broadcast])?;
+        }
+        Ok(())
+    }).await.unwrap();
+    let mut query = json!({"search":"","watchStates":["unwatched","in_progress","watched"],"includeShorts":false,"includeLive":true,"includeLiveReplays":false,"includeUpcoming":false,"channelId":null,"durationFilter":"any","publishedFilter":"any","sortField":"date","sortDirection":"desc","grouping":"smart","downloadFilter":"all"});
+    let page = call(
+        &state,
+        "/api/v1/online/youtube/browse",
+        "POST",
+        json!({"query":query,"page":0,"pageSize":2}),
+        &alice,
+    )
+    .await;
+    assert_eq!(page.0, StatusCode::OK);
+    assert_eq!(page.2["items"][0]["videoId"], "eeeeeeeeeee");
+    assert_eq!(page.2["items"][1]["videoId"], "bbbbbbbbbbb");
+    assert_eq!(page.2["counts"]["all"], 3);
+    query["includeLive"] = json!(false);
+    let page = call(
+        &state,
+        "/api/v1/online/youtube/browse",
+        "POST",
+        json!({"query":query,"page":0,"pageSize":20}),
+        &alice,
+    )
+    .await
+    .2;
+    assert_eq!(page["items"].as_array().unwrap().len(), 2);
+    query["includeShorts"] = json!(true);
+    let page = call(
+        &state,
+        "/api/v1/online/youtube/browse",
+        "POST",
+        json!({"query":query,"page":0,"pageSize":20}),
+        &alice,
+    )
+    .await
+    .2;
+    assert_eq!(page["items"].as_array().unwrap().len(), 4);
+}
+
+#[tokio::test]
 async fn named_watchlists_keep_private_memberships_and_retention_consistent() {
     let (_temp, state, alice) = fixture().await;
     let bob = thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())

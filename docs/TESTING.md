@@ -240,3 +240,19 @@ Install the base fixture into a separate directory/profile, launch its WebView w
 ## PWA and remote quality
 
 `test-pwa-remote.mjs` uses the release fixture above. It creates the test administrator only if setup is required, checks all main sections at 390 pixels, Chromium installability, a public-only cache and offline reconnect. It also verifies HTTPS Range/HLS, cookies/CSRF/API compatibility, remote Auto quality and the update-required screen after an already-open client receives HTTP 426. `THELXINOE_RELEASE_ORIGIN` can override its HTTPS origin. Rust auth tests additionally cover explicit CORS and forwarded-address trust boundaries. The service worker never caches API responses, media or application bundles.
+
+## Provider interaction checks
+
+Start a fresh disposable server:
+
+```powershell
+npm run dev:fresh -- -Port 19487
+# In a second terminal:
+$env:THELXINOE_INTERACTION_TEST = '1'
+$env:THELXINOE_TEST_URL = 'http://127.0.0.1:19487'
+npx playwright test --workers=1
+```
+
+These tests create a synthetic administrator and watchlist. They use real sessions, preferences, watchlist writes and WebSocket delivery, with fixture provider metadata/playback. They check two-client filter/order synchronization, immediate drag ordering during delayed saves, rollback/error display, card clicks, volume persistence, navigation and shared switches. Never point them at a personal instance.
+
+The Windows MPV manager retains YouTwitch's version, archive, update, configuration and plugin tests. To qualify real upstream MPV/uosc/thumbfast/sub-select packages in a temporary directory, run `cargo test -p thelxinoe-desktop qualify_upstream_packages -- --ignored --nocapture`. This downloads and starts MPV, checks its option schema and validates both managed and clean configurations. It does not alter the user's tool profile.

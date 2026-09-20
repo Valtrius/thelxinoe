@@ -31,6 +31,7 @@ use serde_json::{Value, json};
 pub async fn run(state: AppState) -> anyhow::Result<()> {
     tokio::try_join!(
         sync::run(state.clone()),
+        sync::run_classifications(state.clone()),
         downloads::run_watchlists(state.clone()),
         twitch::run(state.clone()),
         kick::run(state)
@@ -304,7 +305,7 @@ async fn configure(
 async fn account(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
     let user = p.user.id.clone();
-    let sync=state.db.call(move|db|Ok(db.query_row("SELECT next_run,last_complete,error,cursor FROM youtube_sync WHERE user_id=?1",[user],|r|Ok(json!({"next_run":r.get::<_,i64>(0)?,"last_complete":r.get::<_,Option<i64>>(1)?,"error":r.get::<_,Option<String>>(2)?,"in_progress":r.get::<_,String>(3)?!="{}"}))).optional()?)).await?;
+    let sync=state.db.call(move|db|Ok(db.query_row("SELECT next_run,last_complete,error,cursor,failures FROM youtube_sync WHERE user_id=?1",[user],|r|Ok(json!({"next_run":r.get::<_,i64>(0)?,"last_complete":r.get::<_,Option<i64>>(1)?,"error":r.get::<_,Option<String>>(2)?,"in_progress":r.get::<_,String>(3)?!="{}" && r.get::<_,u32>(4)?==0,"phase":serde_json::from_str::<Value>(&r.get::<_,String>(3)?).ok().and_then(|v|v["phase"].as_str().map(str::to_owned))}))).optional()?)).await?;
     let account=state.db.call(move|db|Ok(db.query_row("SELECT status,display_name,external_id,updated_at FROM online_accounts WHERE user_id=?1 AND provider='youtube'",[p.user.id],|r|Ok(json!({"status":r.get::<_,String>(0)?,"display_name":r.get::<_,String>(1)?,"external_id":r.get::<_,String>(2)?,"updated_at":r.get::<_,i64>(3)?}))).optional()?)).await?.unwrap_or(json!({"status":"disconnected","display_name":"","external_id":""}));
     Ok(Json(
         json!({"account":account,"sync":sync,"downloads_enabled":downloads::enabled(&state).await?,"configured":google(&state).await.is_ok(),"linking_available":redirect_uri(&state).is_ok(),"linking_url":state.config.public_url.as_ref().map(|u|format!("{}/?section=YouTube",u.origin().ascii_serialization())),"quota":quota::status(&state).await?}),
