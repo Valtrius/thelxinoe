@@ -72,6 +72,10 @@ try {
   const page = await context.newPage();
   await page.goto('https://localhost:24443');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page
+    .getByRole('navigation', { name: 'Settings navigation' })
+    .getByRole('button', { name: 'Media services', exact: true })
+    .click();
   const panel = page.locator('section').filter({
     has: page.getByRole('heading', { name: 'Service updates', exact: true }),
   });

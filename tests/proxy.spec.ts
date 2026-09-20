@@ -49,6 +49,10 @@ test('HTTPS setup, secure login, event replay, CSRF rejection and device revocat
   });
   const headers = { 'X-Thelxinoe-Client': '1' };
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page
+    .getByRole('navigation', { name: 'Settings navigation' })
+    .getByRole('button', { name: 'Server', exact: true })
+    .click();
   await expect(page.getByText('Connected', { exact: true })).toHaveCount(2);
   const events = await page.evaluate(async () => {
     const ticket = async () =>

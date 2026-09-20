@@ -42,6 +42,10 @@ try {
     .fill('test-only long passphrase');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page
+    .getByRole('navigation', { name: 'Settings navigation' })
+    .getByRole('button', { name: 'MPV', exact: true })
+    .click();
   originalConfig = (await native('mpv_settings')).text;
   const settings = await native('mpv_settings');
   if (!settings.selection.path) {

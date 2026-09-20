@@ -3,14 +3,35 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <meta name="theme-color" content="#101b22" />
+    <meta name="theme-color" content="#05070b" />
     <title>Thelxinoe — connection unavailable</title>
     <style>
+      :root {
+        color-scheme: light;
+        --background: #edf1f3;
+        --foreground: #11171b;
+        --muted: #5d6870;
+        --accent: #087e9f;
+        --line: #087e9f40;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          color-scheme: dark;
+          --background: #05070b;
+          --foreground: #eef7fb;
+          --muted: #93a1aa;
+          --accent: #bcecff;
+          --line: #bcecff40;
+        }
+      }
       body {
         margin: 0;
-        background: #10181e;
-        color: #e2ece8;
-        font: 18px system-ui;
+        background: var(--background);
+        color: var(--foreground);
+        font:
+          14px 'Segoe UI',
+          system-ui,
+          sans-serif;
         min-height: 100dvh;
         display: grid;
         place-items: center;
@@ -20,20 +41,24 @@
         padding: 2rem;
       }
       h1 {
-        font-size: 2rem;
+        font-size: 1.5rem;
+        letter-spacing: -0.035em;
       }
       p {
         line-height: 1.6;
-        color: #aec3ba;
+        color: var(--muted);
       }
       a {
         display: inline-block;
         padding: 0.8rem 1.4rem;
-        border-radius: 0.5rem;
-        background: #a5d7c5;
-        color: #17382e;
+        border: 1px solid var(--line);
+        background: color-mix(in srgb, var(--accent) 8%, transparent);
+        color: var(--accent);
         text-decoration: none;
         font-weight: 600;
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
       }
     </style>
   </head>

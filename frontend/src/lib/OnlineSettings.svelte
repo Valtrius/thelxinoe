@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from './api';
-  import OnlineTools from './OnlineTools.svelte';
   import TwitchSettings from './TwitchSettings.svelte';
   import KickSettings from './KickSettings.svelte';
   type Configuration = {
@@ -127,4 +126,3 @@
 </section>
 <TwitchSettings />
 <KickSettings />
-<OnlineTools />

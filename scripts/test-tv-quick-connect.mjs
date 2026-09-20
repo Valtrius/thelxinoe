@@ -18,6 +18,10 @@ try {
     .fill('test-only long passphrase');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page
+    .getByRole('navigation', { name: 'Settings navigation' })
+    .getByRole('button', { name: 'Devices', exact: true })
+    .click();
   await page.getByLabel('TV code', { exact: true }).fill(code[1] + code[2]);
   await page.getByRole('button', { name: 'Find device', exact: true }).click();
   const lookup = page.getByRole('region', {

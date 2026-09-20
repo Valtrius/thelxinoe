@@ -48,15 +48,31 @@ pub async fn request_install(
     headers: HeaderMap,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
+    let queued = enqueue_install(&state, Some(p.user.id)).await?;
+    Ok(Json(json!({"job_id":queued})))
+}
+async fn enqueue_install(state: &AppState, actor: Option<String>) -> anyhow::Result<String> {
     let queued=state.db.call(move|db|{
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         if let Some(id)=tx.query_row("SELECT id FROM jobs WHERE kind='online.tools.install' AND state IN ('queued','running') LIMIT 1",[],|r|r.get::<_,String>(0)).optional()?{return Ok(id);}
         let id=thelxinoe_core::id();
         tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'online.tools.install','{}',?1,'queued',?2,?2)",params![id,now()])?;
-        tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'online.tools.install',?2,?3)",params![p.user.id,id,now()])?;
+        tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'online.tools.install',?2,?3)",params![actor,id,now()])?;
         tx.commit()?;Ok(id)
     }).await?;
-    Ok(Json(json!({"job_id":queued})))
+    Ok(queued)
+}
+/// Playback dependencies belong to the server, not a client settings menu.
+pub(super) async fn ready(state: &AppState) -> Result<Bundle> {
+    if let Some(bundle) = selection(state).await? {
+        return Ok(bundle);
+    }
+    enqueue_install(state, None).await?;
+    Err(crate::error::ApiError(
+        axum::http::StatusCode::CONFLICT,
+        "playback_preparing",
+        "The server is preparing YouTube playback. Try again shortly.".into(),
+    ))
 }
 pub(super) async fn selection(state: &AppState) -> anyhow::Result<Option<Bundle>> {
     state
@@ -381,6 +397,40 @@ pub(super) async fn verify(executable: &Executable) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[tokio::test]
+    async fn concurrent_first_playback_queues_only_one_install() {
+        let (_temp, state, _) = crate::online::oauth::tests::fixture().await;
+        let (first, second) = tokio::join!(ready(&state), ready(&state));
+        for result in [first, second] {
+            let error = result
+                .err()
+                .expect("Playback must wait for its dependencies");
+            assert_eq!(error.0, axum::http::StatusCode::CONFLICT);
+            assert_eq!(error.1, "playback_preparing");
+        }
+        state.db.call(|db| {
+            assert_eq!(db.query_row("SELECT COUNT(*) FROM jobs WHERE kind='online.tools.install' AND state='queued'", [], |r| r.get::<_, i64>(0))?, 1);
+            db.execute("UPDATE jobs SET state='running' WHERE kind='online.tools.install'", [])?;
+            Ok(())
+        }).await.unwrap();
+        assert_eq!(ready(&state).await.err().unwrap().1, "playback_preparing");
+        state
+            .db
+            .call(|db| {
+                assert_eq!(
+                    db.query_row(
+                        "SELECT COUNT(*) FROM jobs WHERE kind='online.tools.install'",
+                        [],
+                        |r| r.get::<_, i64>(0)
+                    )?,
+                    1
+                );
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn changed_executable_is_rejected() {

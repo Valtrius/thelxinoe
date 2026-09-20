@@ -156,7 +156,7 @@ async fn add(
 async fn feed(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
     let (connected,items)=state.db.call(move|db|{let connected=db.query_row("SELECT status='connected' FROM online_accounts WHERE user_id=?1 AND provider='kick'",[&p.user.id],|r|r.get::<_,bool>(0)).optional()?.unwrap_or(false);
-        let items=db.prepare("SELECT slug,title,category,live,viewers,updated_at,next_run,error FROM kick_channels WHERE user_id=?1 ORDER BY COALESCE(live,0) DESC,viewers DESC,slug")?.query_map([p.user.id],|r|Ok(json!({"slug":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"category":r.get::<_,String>(2)?,"live":r.get::<_,Option<bool>>(3)?,"viewers":r.get::<_,i64>(4)?,"updated_at":r.get::<_,i64>(5)?,"next_run":r.get::<_,i64>(6)?,"error":r.get::<_,Option<String>>(7)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;Ok((connected,items))}).await?;
+        let items=db.prepare("SELECT slug,title,category,live,viewers,updated_at,next_run,error,thumbnail_url,started_at FROM kick_channels WHERE user_id=?1 ORDER BY COALESCE(live,0) DESC,viewers DESC,slug")?.query_map([p.user.id],|r|Ok(json!({"slug":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"category":r.get::<_,String>(2)?,"live":r.get::<_,Option<bool>>(3)?,"viewers":r.get::<_,i64>(4)?,"updated_at":r.get::<_,i64>(5)?,"next_run":r.get::<_,i64>(6)?,"error":r.get::<_,Option<String>>(7)?,"thumbnail_url":r.get::<_,Option<String>>(8)?,"started_at":r.get::<_,Option<String>>(9)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;Ok((connected,items))}).await?;
     Ok(Json(
         json!({"connected":connected,"configured":client(&state).await.is_ok(),"items":items}),
     ))
@@ -318,11 +318,16 @@ async fn step(state: &AppState, t: &Turn) -> Result<()> {
         .chars()
         .take(200)
         .collect::<String>();
+    let thumbnail = super::public_image(row["stream"]["thumbnail"].as_str());
+    let started_at = row["stream"]["start_time"]
+        .as_str()
+        .filter(|s| chrono::DateTime::parse_from_rfc3339(s).is_ok())
+        .map(str::to_owned);
     let user = t.user.clone();
     let slug = t.slug.clone();
     let generation = t.generation.clone();
     let account = t.account.clone();
-    state.db.call(move|db|{db.execute("UPDATE kick_channels SET title=?1,category=?2,live=?3,viewers=?4,updated_at=?5,next_run=?5+60,failures=0,error=NULL WHERE user_id=?6 AND slug=?7 AND generation=?8 AND EXISTS(SELECT 1 FROM online_accounts a WHERE a.user_id=?6 AND a.provider='kick' AND a.status='connected' AND a.generation=?9)",params![title,category,live,viewers,now(),user,slug,generation,account])?;Ok(())}).await?;
+    state.db.call(move|db|{db.execute("UPDATE kick_channels SET title=?1,category=?2,live=?3,viewers=?4,updated_at=?5,next_run=?5+60,failures=0,error=NULL,thumbnail_url=?10,started_at=?11 WHERE user_id=?6 AND slug=?7 AND generation=?8 AND EXISTS(SELECT 1 FROM online_accounts a WHERE a.user_id=?6 AND a.provider='kick' AND a.status='connected' AND a.generation=?9)",params![title,category,live,viewers,now(),user,slug,generation,account,thumbnail,started_at])?;Ok(())}).await?;
     Ok(())
 }
 pub(super) async fn run(state: AppState) -> anyhow::Result<()> {

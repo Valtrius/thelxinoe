@@ -1,6 +1,8 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { api } from './api';
+  import MediaGrid from './ui/MediaGrid.svelte';
+  import LibraryCard from './ui/LibraryCard.svelte';
   import {
     clientId,
     restoreQueue,
@@ -54,33 +56,35 @@
 </script>
 
 {#if error}<p class="error" role="alert">{error}</p>{/if}
-{#if home}{#each shelves as [key, title] (key)}<section
-      class="panel"
+{#if home}{#each shelves.filter(([key]) => home?.[key].length) as [key, title] (key)}<section
+      class="home-shelf"
       aria-label={title}
     >
       <h2>{title}</h2>
-      {#each home[key] as item (item.id)}<div class="row">
-          <button class="secondary" onclick={() => open(item)}
-            >{item.show_title
-              ? `${item.show_title} · `
-              : ''}{item.title}</button
-          >
-          {#if item.duration}<small
-              >{time(item.position ?? 0)} / {time(item.duration)}</small
-            >{/if}
-          {#if ['movie', 'episode', 'track'].includes(item.kind)}<button
-              class="primary"
-              disabled={!item.available}
-              onclick={() => play(item)}
-              >{key === 'continue_watching' ? 'Resume' : 'Play'}</button
-            >{/if}
-        </div>{:else}<p class="muted">
+      {#if home[key].length}<MediaGrid
+          revision={home[key].map((i) => i.id).join(',')}
+          label={title}
+          >{#each home[key] as item (item.id)}<LibraryCard
+              {item}
+              keyPrefix={key}
+              open={() => open(item)}
+              play={['movie', 'episode', 'track'].includes(item.kind)
+                ? () => play(item)
+                : undefined}
+            />{/each}</MediaGrid
+        >{:else}<p class="muted">
           {key === 'continue_watching'
             ? 'Your unfinished movies and episodes will appear here.'
             : key === 'next_up'
               ? 'Continue a series or add it to your favorites to see its next episode.'
               : 'Items you save will appear here.'}
-        </p>{/each}
+        </p>{/if}
+    </section>{:else}<section class="empty home-empty">
+      <h2>Pick up where you left off</h2>
+      <p>
+        Continue watching, next episodes, favorites and saved titles will appear
+        here as you use your library.
+      </p>
     </section>{/each}{/if}
 {#if queue?.items.length}<section class="panel" aria-label="Saved music queue">
     <div class="section-heading">

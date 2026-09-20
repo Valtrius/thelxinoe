@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import MediaGrid from './ui/MediaGrid.svelte';
+  import LiveMediaCard from './ui/LiveMediaCard.svelte';
   import { api } from './api';
   import type { MediaChoice } from './playback';
   let { play } = $props<{ play: (choice: MediaChoice) => void }>();
@@ -9,6 +11,8 @@
     category: string;
     live: boolean | null;
     viewers: number;
+    thumbnail_url?: string;
+    started_at?: string;
     error: string | null;
   };
   type Feed = { connected: boolean; configured: boolean; items: Channel[] };
@@ -61,8 +65,8 @@
   });
 </script>
 
-<section class="panel">
-  <h2>Kick</h2>
+<details class="provider-account">
+  <summary>Manage Kick channels</summary>
   <p>
     Track channels on this server. A Kick account is not needed for public
     playback.
@@ -107,38 +111,35 @@
       onclick={() => void act('/online/kick/data', 'DELETE')}
       >Confirm delete Kick data</button
     >{/if}
-</section>
+</details>
 <section aria-label="Tracked Kick channels">
-  {#each feed?.items ?? [] as item (item.slug)}
-    <article class="panel">
-      <h3>{item.slug}</h3>
-      <p>{item.title}</p>
-      <p class="muted">
-        {item.live === null ? 'Status unknown' : item.live ? 'Live' : 'Offline'} ·
-        {item.category}{item.live
-          ? ` · ${item.viewers.toLocaleString()} viewers`
-          : ''}
-      </p>
-      <button
-        class="primary"
-        aria-label={`Play ${item.slug}`}
-        onclick={() =>
+  <h2>Tracked channels</h2>
+  <MediaGrid
+    label="Kick channels"
+    revision={feed?.items.map((s) => s.slug).join(',')}
+  >
+    {#each feed?.items ?? [] as item (item.slug)}<LiveMediaCard
+        id={item.slug}
+        platform="kick"
+        name={item.slug}
+        title={item.title}
+        category={item.category}
+        viewers={item.viewers}
+        thumbnail={item.thumbnail_url}
+        startedAt={item.started_at}
+        live={item.live}
+        error={item.error}
+        play={() =>
           play({
             id: `kick:${item.slug}`,
             title: item.title || item.slug,
             kind: 'video',
-          })}>Play live</button
-      >
-      <button
-        disabled={busy}
-        aria-label={`Stop tracking ${item.slug}`}
-        onclick={() =>
+          })}
+        remove={() =>
           void act(
             `/online/kick/channels/${encodeURIComponent(item.slug)}`,
             'DELETE',
-          )}>Stop tracking</button
-      >
-      {#if item.error}<p role="status">{item.error}</p>{/if}
-    </article>
-  {/each}
+          )}
+      />{:else}<p class="muted">Track a channel to see it here.</p>{/each}
+  </MediaGrid>
 </section>

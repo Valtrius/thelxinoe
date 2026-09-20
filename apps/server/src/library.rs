@@ -94,16 +94,39 @@ pub async fn browse(
         let mut query=db.prepare("SELECT m.id,m.kind,m.title,m.parent_id,m.year,m.sort_number,m.metadata,m.overrides,EXISTS(SELECT 1 FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1) FROM media m WHERE (?1 IS NULL OR m.kind=?1) AND (?2 IS NULL OR m.parent_id=?2) AND (?3 IS NULL OR COALESCE(json_extract(m.overrides,'$.title'),json_extract(m.metadata,'$.title'),json_extract(m.metadata,'$.name'),m.title) LIKE '%'||?3||'%') AND (?4 IS NULL OR json_extract(m.metadata,'$.belongs_to_collection.id')=?4) ORDER BY m.sort_number,m.title LIMIT 500")?;
         Ok(query.query_map(params![input.kind,input.parent,input.q,input.collection],media_row)?.collect::<std::result::Result<Vec<_>,_>>()?)
     }).await?;
-    let grant = crate::grants::issue(&state, &p, "artwork", 300).await?;
-    for item in &mut items {
-        if item["metadata"]["artwork_cached"].as_bool() == Some(true) {
-            item["artwork_url"] = json!(format!(
-                "/api/v1/catalog/{}/artwork?grant={grant}",
-                item["id"].as_str().unwrap_or_default()
-            ));
+    decorate_cards(&state, &p, &mut items.iter_mut().collect::<Vec<_>>()).await?;
+    Ok(Json(json!({"items":items})))
+}
+/// Resolve cached art from the item, album or show in one bounded query.
+pub(crate) async fn decorate_cards(
+    state: &AppState,
+    p: &thelxinoe_core::Principal,
+    items: &mut [&mut Value],
+) -> Result<()> {
+    let ids = items
+        .iter()
+        .filter_map(|item| item["id"].as_str())
+        .collect::<Vec<_>>();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let ids = json!(ids).to_string();
+    let metadata = state.db.call(move |db| {
+        let mut query = db.prepare("SELECT m.id,m.year,CASE WHEN json_extract(m.metadata,'$.artwork_cached')=1 THEN m.id WHEN json_extract(p.metadata,'$.artwork_cached')=1 THEN p.id WHEN json_extract(g.metadata,'$.artwork_cached')=1 THEN g.id END FROM media m LEFT JOIN media p ON p.id=m.parent_id LEFT JOIN media g ON g.id=p.parent_id WHERE m.id IN (SELECT value FROM json_each(?1))")?;
+        Ok(query.query_map([ids], |r| Ok((r.get::<_,String>(0)?, (r.get::<_,Option<i64>>(1)?,r.get::<_,Option<String>>(2)?))))?.collect::<rusqlite::Result<std::collections::HashMap<_,_>>>()?)
+    }).await?;
+    let grant = crate::grants::issue(state, p, "artwork", 300).await?;
+    for item in items {
+        if let Some((year, art)) = item["id"].as_str().and_then(|id| metadata.get(id)) {
+            if item.get("year").is_none() {
+                item["year"] = json!(year);
+            }
+            if let Some(id) = art {
+                item["artwork_url"] = json!(format!("/api/v1/catalog/{id}/artwork?grant={grant}"));
+            }
         }
     }
-    Ok(Json(json!({"items":items})))
+    Ok(())
 }
 fn media_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     let metadata =
@@ -209,5 +232,43 @@ pub async fn reconcile(state: AppState) -> anyhow::Result<()> {
         for root in thelxinoe_catalog::roots(&state.db).await? {
             enqueue_scan(&state, &root.id).await?;
         }
+    }
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use crate::online::oauth::tests::{call, fixture};
+    use serde_json::Value;
+    #[tokio::test]
+    async fn home_inherits_show_artwork_without_exposing_other_users_shelves() {
+        let (_temp, state, alice) = fixture().await;
+        state.db.call(|db| {
+            db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Shows','shows','/data/shows')",[])?;
+            for (id,kind,parent,metadata) in [("show","show",None,"{\"artwork_cached\":true}"),("season","season",Some("show"),"{}"),("episode","episode",Some("season"),"{}")] {
+                db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,metadata,created_at) VALUES (?1,'root',?2,?3,?1,?1,?4,1)",rusqlite::params![id,kind,parent,metadata])?;
+            }
+            db.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at,favorite) VALUES ('alice','episode',0,1,1)",[])?;
+            Ok(())
+        }).await.unwrap();
+        let response = call(&state, "/api/v1/me/home", "GET", Value::Null, &alice).await;
+        assert_eq!(response.0, axum::http::StatusCode::OK);
+        let url = response.2["favorites"][0]["artwork_url"].as_str().unwrap();
+        assert!(url.starts_with("/api/v1/catalog/show/artwork?grant="));
+        let bob =
+            thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())
+                .await
+                .unwrap();
+        assert_eq!(
+            call(
+                &state,
+                "/api/v1/me/home",
+                "GET",
+                Value::Null,
+                &format!("thelxinoe_session={bob}")
+            )
+            .await
+            .2["favorites"],
+            serde_json::json!([])
+        );
     }
 }

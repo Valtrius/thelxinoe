@@ -26,6 +26,10 @@ try {
   });
   await page.goto(base);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page
+    .getByRole('navigation', { name: 'Settings navigation' })
+    .getByRole('button', { name: 'Media services', exact: true })
+    .click();
   const containers = (await api('/admin/managers/containers')).items;
   for (const [kind, port] of [
     ['bazarr', 26767],

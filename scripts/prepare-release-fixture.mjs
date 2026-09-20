@@ -50,16 +50,26 @@ edit('package-lock.json', (s) => {
   v.packages.frontend.version = '0.2.0';
   return JSON.stringify(v, null, 2) + '\n';
 });
+const schema = Number(
+  readFileSync('crates/database/src/lib.rs', 'utf8').match(
+    /SCHEMA_VERSION: u32 = (\d+)/,
+  )[1],
+);
+const nextSchema = schema + 1;
+const migration = (n) => String(n).padStart(3, '0');
 edit('crates/database/src/lib.rs', (s) =>
   s
-    .replace('SCHEMA_VERSION: u32 = 25', 'SCHEMA_VERSION: u32 = 26')
     .replace(
-      'include_str!("../migrations/025.sql"),',
-      'include_str!("../migrations/025.sql"),\n            include_str!("../migrations/026.sql"),',
+      `SCHEMA_VERSION: u32 = ${schema}`,
+      `SCHEMA_VERSION: u32 = ${nextSchema}`,
+    )
+    .replace(
+      `include_str!("../migrations/${migration(schema)}.sql"),`,
+      `include_str!("../migrations/${migration(schema)}.sql"),\n            include_str!("../migrations/${migration(nextSchema)}.sql"),`,
     ),
 );
 writeFileSync(
-  join(root, 'crates/database/migrations/026.sql'),
+  join(root, `crates/database/migrations/${migration(nextSchema)}.sql`),
   'CREATE TABLE release_forward_only_fixture(id INTEGER PRIMARY KEY, value TEXT NOT NULL);\n',
 );
 edit('apps/server/src/validation.rs', (s) =>
@@ -69,5 +79,5 @@ edit('apps/server/src/validation.rs', (s) =>
   ),
 );
 console.log(
-  'Prepared private 0.2.0 release with schema 26 and a controlled migration failure fixture',
+  `Prepared private 0.2.0 release with schema ${nextSchema} and a controlled migration failure fixture`,
 );

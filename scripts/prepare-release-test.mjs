@@ -32,6 +32,11 @@ const installer = readFileSync(
   'target/release/bundle/nsis/Thelxinoe_0.1.0_x64-setup.exe',
 );
 const now = Math.floor(Date.now() / 1000);
+const schema = Number(
+  readFileSync('crates/database/src/lib.rs', 'utf8').match(
+    /SCHEMA_VERSION: u32 = (\d+)/,
+  )[1],
+);
 const manifest = {
   format: 1,
   version: '0.2.0',
@@ -48,8 +53,8 @@ const manifest = {
   },
   api: { min: 1, max: 1 },
   migration: {
-    from: { min: 25, max: 25 },
-    target: 26,
+    from: { min: schema, max: schema },
+    target: schema + 1,
     recovery: 'full-state-restore',
     recovery_protocol: 1,
   },

@@ -197,14 +197,14 @@
   }
   button {
     padding: 0.7rem 1rem;
-    background: #24363f;
-    color: #d6e4eb;
+    background: var(--surface-soft);
+    color: var(--foreground);
     justify-self: start;
     font-weight: 600;
     font-size: 13px;
   }
   button.danger {
-    background: #6b292f;
+    background: color-mix(in srgb, var(--danger) 25%, var(--surface));
     color: white;
   }
   input[type='number'] {

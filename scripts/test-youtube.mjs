@@ -77,9 +77,7 @@ try {
   });
   expect(denied.status()).toBe(403);
   await page.goto(`${origin}/?section=YouTube`);
-  await expect(
-    page.getByRole('heading', { name: 'Your YouTube account' }),
-  ).toBeVisible();
+  await expect(page.locator('.provider-account').first()).toBeVisible();
   const releases = [];
   await page.route('**/api/v1/online/youtube/watchlist', async (route) => {
     await new Promise((resolve) => releases.push(resolve));
@@ -104,8 +102,11 @@ try {
     page.getByText('https://youtu.be/abcdefghijk', { exact: true }),
   ).toBeVisible();
   releases[0]();
+  await page.getByRole('button', { name: 'Watchlist', exact: true }).click();
   await expect(
-    page.getByRole('heading', { name: 'abcdefghijk', exact: true }),
+    page
+      .locator('.youtube-feed')
+      .getByRole('heading', { name: 'abcdefghijk', exact: true }),
   ).toBeVisible();
   await page.unroute('**/api/v1/online/youtube/watchlist');
   expect((await api(guest, '/online/youtube/feed?watchlist=true')).total).toBe(
@@ -164,9 +165,7 @@ try {
   await expect(
     page.getByText(/Account linking did not complete\./),
   ).toBeVisible();
-  await expect(
-    page.getByRole('heading', { name: 'Your YouTube account' }),
-  ).toBeVisible();
+  await expect(page.locator('.provider-account').first()).toBeVisible();
   expect(
     (await owner.cookies()).some((c) => c.name === 'thelxinoe_youtube_oauth'),
   ).toBe(false);
@@ -182,13 +181,19 @@ try {
   );
   await page.getByRole('button', { name: 'Watchlist', exact: true }).click();
   await expect(
-    page.getByRole('heading', { name: 'abcdefghijk', exact: true }),
+    page
+      .locator('.youtube-feed')
+      .getByRole('heading', { name: 'abcdefghijk', exact: true }),
   ).toBeVisible();
   await page.screenshot({
     path: '.local/youtube-watchlist.png',
     fullPage: true,
   });
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page
+    .getByRole('navigation', { name: 'Settings navigation' })
+    .getByRole('button', { name: 'Online accounts', exact: true })
+    .click();
   await expect(
     page.getByRole('textbox', { name: 'Authorized redirect URI' }),
   ).toHaveValue(`${origin}/api/v1/online/youtube/callback`);

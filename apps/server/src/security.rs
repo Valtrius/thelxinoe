@@ -255,7 +255,7 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
     response
         .headers_mut()
         .insert("x-frame-options", "DENY".parse().unwrap());
-    response.headers_mut().insert("content-security-policy","default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'".parse().unwrap());
+    response.headers_mut().insert("content-security-policy","default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://static-cdn.jtvnw.net https://kick.com https://*.kick.com https://*.kickcdn.com; media-src 'self' blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'".parse().unwrap());
     if context.secure {
         response.headers_mut().insert(
             "strict-transport-security",

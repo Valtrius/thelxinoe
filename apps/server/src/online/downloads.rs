@@ -97,9 +97,7 @@ pub async fn request(
             "YouTube downloads are disabled by the administrator",
         ));
     }
-    let bundle = tools::selection(&state)
-        .await?
-        .ok_or_else(|| ApiError::conflict("Install online playback tools first"))?;
+    let bundle = tools::ready(&state).await?;
     let result=state.db.call(move |db| {
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let interest=tx.query_row("SELECT EXISTS(SELECT 1 FROM youtube_state WHERE user_id=?1 AND video_id=?2 AND (watchlist=1 OR pinned=1))",params![p.user.id,video],|r|r.get::<_,bool>(0))?;

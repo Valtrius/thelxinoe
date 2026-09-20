@@ -91,7 +91,16 @@ pub(crate) async fn set_for(
 }
 pub async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
-    home_for(&state, &p).await.map(Json)
+    let mut home = home_for(&state, &p).await?;
+    let mut items = home
+        .as_object_mut()
+        .into_iter()
+        .flat_map(|shelves| shelves.values_mut())
+        .filter_map(Value::as_array_mut)
+        .flat_map(|items| items.iter_mut())
+        .collect::<Vec<_>>();
+    crate::library::decorate_cards(&state, &p, &mut items).await?;
+    Ok(Json(home))
 }
 pub(crate) async fn home_for(state: &AppState, principal: &Principal) -> Result<Value> {
     let p = principal.clone();

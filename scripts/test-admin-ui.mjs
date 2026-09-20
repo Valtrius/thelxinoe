@@ -24,6 +24,10 @@ try {
   const page = await context.newPage();
   await page.goto(origin);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page
+    .getByRole('navigation', { name: 'Settings navigation' })
+    .getByRole('button', { name: 'People', exact: true })
+    .click();
   const name = 'cleanup-' + Date.now();
   await page.getByLabel('Username', { exact: true }).fill(name);
   await page
@@ -92,6 +96,10 @@ try {
   expect((await guest.request.get(origin + '/api/v1/auth/me')).status()).toBe(
     401,
   );
+  await page
+    .getByRole('navigation', { name: 'Settings navigation' })
+    .getByRole('button', { name: 'Server', exact: true })
+    .click();
   const dashboard = page.getByRole('region', {
     name: 'Administration overview',
     exact: true,

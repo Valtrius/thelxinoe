@@ -7,6 +7,10 @@ test('movie, multi-episode and tagged music scan into browsable libraries with s
     !process.env.THELXINOE_PROXY_TEST,
     'Requires generated media and isolated Compose fixture',
   );
+  // Docker Desktop may not forward host file events into Linux bind mounts.
+  // Allow the server's five-minute reconciliation fallback on Windows hosts.
+  const watchTimeout = process.platform === 'win32' ? 330_000 : 15_000;
+  test.setTimeout(watchTimeout * 2 + 30_000);
   await page.goto('/');
   await page.getByLabel('Username', { exact: true }).fill('admin');
   await page
@@ -79,7 +83,11 @@ test('movie, multi-episode and tagged music scan into browsable libraries with s
   ).toBeVisible();
   await page.getByRole('button', { name: 'Thelxinoe Fixture 2020' }).click();
   await expect(
-    page.getByRole('heading', { name: 'Thelxinoe Fixture', exact: true }),
+    page.getByRole('heading', {
+      name: 'Thelxinoe Fixture',
+      level: 2,
+      exact: true,
+    }),
   ).toBeVisible();
   await page
     .getByLabel('Manual title', { exact: true })
@@ -91,7 +99,11 @@ test('movie, multi-episode and tagged music scan into browsable libraries with s
     .getByRole('button', { name: 'Save corrections', exact: true })
     .click();
   await expect(
-    page.getByRole('heading', { name: 'Corrected fixture', exact: true }),
+    page.getByRole('heading', {
+      name: 'Corrected fixture',
+      level: 2,
+      exact: true,
+    }),
   ).toBeVisible();
   await page.getByRole('button', { name: 'Close', exact: true }).click();
   await page
@@ -104,7 +116,11 @@ test('movie, multi-episode and tagged music scan into browsable libraries with s
     .getByRole('button', { name: 'Clear corrections', exact: true })
     .click();
   await expect(
-    page.getByRole('heading', { name: 'Thelxinoe Fixture', exact: true }),
+    page.getByRole('heading', {
+      name: 'Thelxinoe Fixture',
+      level: 2,
+      exact: true,
+    }),
   ).toBeVisible();
   await page.screenshot({ path: '.local/library.png', fullPage: true });
   const watchedCopy = '.local/fixtures/movies/Watch Fixture (2020).mp4';
@@ -126,7 +142,7 @@ test('movie, multi-episode and tagged music scan into browsable libraries with s
           copiedId = copy?.id;
           return copy?.available;
         },
-        { timeout: 15000 },
+        { timeout: watchTimeout, intervals: [500, 1000, 3000, 5000] },
       )
       .toBe(true);
     expect(copiedId).not.toBe(movieId);
@@ -137,7 +153,7 @@ test('movie, multi-episode and tagged music scan into browsable libraries with s
     .poll(
       async () =>
         (await (await api.get(`/api/v1/catalog/${copiedId}`)).json()).available,
-      { timeout: 15000 },
+      { timeout: watchTimeout, intervals: [500, 1000, 3000, 5000] },
     )
     .toBe(false);
 });

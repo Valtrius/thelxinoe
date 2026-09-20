@@ -36,6 +36,10 @@ try {
   await page.reload();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page
+    .getByRole('navigation', { name: 'Settings navigation' })
+    .getByRole('button', { name: 'Updates', exact: true })
+    .click();
+  await page
     .getByRole('button', { name: 'Check desktop release', exact: true })
     .click();
   await expect(

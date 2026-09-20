@@ -1,5 +1,51 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
+  import Sidebar from './lib/ui/Sidebar.svelte';
+  import SettingsLayout from './lib/ui/SettingsLayout.svelte';
+  import WindowTitlebar from './lib/ui/WindowTitlebar.svelte';
+  import AppearanceSettings from './lib/AppearanceSettings.svelte';
+  import {
+    appearance,
+    appearanceError,
+    loadAppearance,
+    updateAppearance,
+    resetAppearance,
+  } from './lib/appearance';
+  import { createSidebarMotion } from './lib/sidebar-motion';
+  import { syncMediaLayouts } from './lib/card-grid-zoom';
+  import { createLayoutMotion, settleLayoutMotions } from './lib/layout-motion';
+  import { createCardGridWheelHandler } from './lib/card-grid-wheel';
+  import { get } from 'svelte/store';
+  const mediaMotion = createLayoutMotion();
+  function zoomWheel(node: HTMLElement) {
+    const wheel = createCardGridWheelHandler({
+      anchorAttribute: 'data-layout-key',
+      motion: mediaMotion,
+      getColumns: () => get(appearance).card_columns,
+      setColumns: (card_columns) => updateAppearance({ card_columns }),
+    });
+    node.addEventListener('wheel', wheel, { passive: false });
+    return { destroy: () => node.removeEventListener('wheel', wheel) };
+  }
+  let shell = $state<HTMLDivElement | null>(null);
+  let main = $state<HTMLElement | null>(null);
+  let compact = $state(false),
+    mobileNavOpen = $state(false);
+  let settingsSection = $state('account');
+  const sidebarMotion = createSidebarMotion();
+  const collapsed = $derived(
+    compact ? !mobileNavOpen : $appearance.sidebar_collapsed,
+  );
+  async function toggleSidebar() {
+    const animate = sidebarMotion.capture(shell, main);
+    settleLayoutMotions();
+    if (compact) mobileNavOpen = !mobileNavOpen;
+    else
+      updateAppearance({ sidebar_collapsed: !$appearance.sidebar_collapsed });
+    await tick();
+    syncMediaLayouts();
+    animate();
+  }
   import LibraryView from './lib/LibraryView.svelte';
   import MetadataSettings from './lib/MetadataSettings.svelte';
   import PlaybackSettings from './lib/PlaybackSettings.svelte';
@@ -43,8 +89,6 @@
     Music,
     Play,
     Radio,
-    Settings,
-    LogOut,
     Library,
     ShieldCheck,
     RefreshCw,
@@ -154,6 +198,7 @@
         }
       }
       if (user) {
+        await loadAppearance(user.id);
         startEvents();
         if (desktop) {
           const state = await invoke<{
@@ -229,12 +274,14 @@
       password = '';
       setupToken = '';
       setup = false;
+      await loadAppearance(user.id);
       startEvents();
     });
   }
   async function logout() {
     await act(async () => {
       await api('/auth/logout', 'POST');
+      resetAppearance();
       playing = null;
       user = null;
       events?.close();
@@ -263,6 +310,7 @@
     }
   }
   async function navigate(name: string) {
+    mobileNavOpen = false;
     focusId = undefined;
     section = name;
     error = '';
@@ -295,6 +343,13 @@
     });
   }
   onMount(() => {
+    document.body.classList.toggle('desktop-app', desktop);
+    const media = window.matchMedia('(max-width: 720px)');
+    const resize = () => {
+      compact = media.matches;
+    };
+    resize();
+    media.addEventListener('change', resize);
     const incompatible = (event: Event) => {
       updateRequired = (event as CustomEvent<string>).detail;
       events?.close();
@@ -305,10 +360,13 @@
       window.removeEventListener('thelxinoe-update-required', incompatible);
       events?.close();
       clearTimeout(settingsTimer);
+      sidebarMotion.destroy();
+      media.removeEventListener('change', resize);
     };
   });
 </script>
 
+{#if desktop}<WindowTitlebar />{/if}
 {#if loading}
   <main class="auth-page">
     <div class="brand-mark">T</div>
@@ -404,46 +462,27 @@
     </div>
   </main>
 {:else}
-  <div class="app-shell">
-    <aside>
-      <a class="brand" href="#home" onclick={() => navigate('Home')}
-        ><span class="brand-mark small">T</span>Thelxinoe</a
-      >
-      <p class="nav-label">YOUR LIBRARY</p>
-      <nav aria-label="Main navigation">
-        {#each sections as item (item.name)}<button
-            class:active={section === item.name}
-            onclick={() => navigate(item.name)}
-            ><item.icon size={19} /><span>{item.name}</span></button
-          >{/each}
-      </nav>
-      <div class="sidebar-bottom">
-        <button
-          class:active={section === 'Settings'}
-          onclick={() => navigate('Settings')}
-          ><Settings size={19} />Settings</button
-        >
-        <div class="profile">
-          <span class="avatar">{user.username.slice(0, 1).toUpperCase()}</span>
-          <div>
-            <strong>{user.username}</strong><small
-              >{user.role === 'admin' ? 'Administrator' : 'Member'}</small
-            >
-          </div>
-          <button
-            class="icon-button"
-            title="Sign out"
-            aria-label="Sign out"
-            onclick={logout}><LogOut size={17} /></button
-          >
-        </div>
-      </div>
-    </aside>
-    <main class="content">
-      <header>
+  <div class="app-shell" bind:this={shell}>
+    <Sidebar
+      {section}
+      {collapsed}
+      {user}
+      navigate={(name) => void navigate(name)}
+      toggle={() => void toggleSidebar()}
+      logout={() => void logout()}
+    />
+    {#if compact && mobileNavOpen}<button
+        class="sidebar-scrim"
+        aria-label="Close navigation"
+        onclick={() => (mobileNavOpen = false)}
+      ></button>{/if}
+    <main class="content" bind:this={main}>
+      <header class="page-header">
         <div>
-          <p class="eyebrow">YOUR PERSONAL MEDIA SERVER</p>
-          <h1>
+          <p class="eyebrow" data-sidebar-resize="x-pos">
+            THELXINOE / {section.toUpperCase()}
+          </p>
+          <h1 data-sidebar-resize="x-pos">
             {section === 'Home' ? `Good to see you, ${user.username}` : section}
           </h1>
         </div>
@@ -454,267 +493,274 @@
             : 'Reconnecting'}</span
         >
       </header>
-      {#if error}<p class="error" role="alert">{error}</p>{/if}
-      {#if playing && desktop}<NativePlayer
-          choice={playing}
-          closed={(closedChoice) => {
-            if (playing === closedChoice) playing = null;
-          }}
-        />{:else if playing && playing.kind === 'track'}<MusicPlayer
-          choice={playing}
-          closed={() => (playing = null)}
-        />{:else if playing}<Player
-          choice={playing}
-          closed={() => (playing = null)}
-        />{/if}
-      {#if section === 'Settings'}
-        <UserPreferences
-          {user}
-          changed={(zone) => {
-            if (user) user = { ...user, timezone: zone };
-          }}
-        />
-        <PlaybackSettings />
-        <SegmentSettings admin={user.role === 'admin'} />
-        <QuickConnect username={user.username} />
-        {#if desktop}<MpvSettings /><DesktopUpdates />{/if}
-        {#if desktop}<section class="panel">
-            <h2>Server connection</h2>
-            <form
-              class="inline-form"
-              onsubmit={(e) => {
-                e.preventDefault();
-                void act(async () => {
-                  await changeServer(serverAddress);
-                  playing = null;
-                  events?.close();
-                  user = null;
-                  await boot();
-                });
-              }}
-            >
-              <label
-                >Server address<input
-                  bind:value={serverAddress}
-                  required
-                /></label
-              ><button class="secondary" disabled={busy}>Change server</button>
-            </form>
-          </section>{/if}
-        <section class="panel">
-          <h2>Your devices</h2>
-          <p class="muted">
-            Revoke access to a browser or desktop at any time.
-          </p>
-          {#each sessions as session (session.id)}<div class="row">
-              <div>
-                <strong>{session.name}</strong><small
-                  >{session.transport} · {new Date(
-                    session.last_seen * 1000,
-                  ).toLocaleString()}{session.id === currentSession
-                    ? ' · This device'
-                    : ''}</small
-                >
-              </div>
-              <button
-                class="secondary"
-                disabled={busy}
-                onclick={() =>
-                  act(async () => {
-                    await api(`/auth/sessions/${session.id}`, 'DELETE');
-                    if (session.id === currentSession) {
-                      user = null;
+      <div
+        class="workspace-scroll"
+        class:settings-workspace={section === 'Settings'}
+        data-feed-scroll
+        data-sidebar-resize="xy"
+        data-sidebar-resize-origin
+        use:mediaMotion.connect
+        use:zoomWheel
+      >
+        {#if $appearanceError}<p class="muted" role="status">
+            {$appearanceError}
+          </p>{/if}
+        {#if error}<p class="error" role="alert">{error}</p>{/if}
+        {#if playing && desktop}<NativePlayer
+            choice={playing}
+            closed={(closedChoice) => {
+              if (playing === closedChoice) playing = null;
+            }}
+          />{:else if playing && playing.kind === 'track'}<MusicPlayer
+            choice={playing}
+            closed={() => (playing = null)}
+          />{:else if playing}<Player
+            choice={playing}
+            closed={() => (playing = null)}
+          />{/if}
+        {#if section === 'Settings'}
+          <SettingsLayout {user} bind:active={settingsSection}>
+            {#if settingsSection === 'account'}
+              <UserPreferences
+                {user}
+                changed={(zone) => {
+                  if (user) user = { ...user, timezone: zone };
+                }}
+              />
+              <AppearanceSettings />{/if}
+            {#if settingsSection === 'playback'}<PlaybackSettings />
+              <SegmentSettings admin={user.role === 'admin'} />
+            {/if}
+            {#if settingsSection === 'devices'}<QuickConnect
+                username={user.username}
+              />{/if}
+            {#if desktop && settingsSection === 'mpv'}<MpvSettings />{/if}
+            {#if settingsSection === 'updates'}{#if desktop}<DesktopUpdates
+                />{/if}{#if user.role === 'admin'}<ProductUpdates />{/if}{/if}
+            {#if desktop && settingsSection === 'connection'}<section
+                class="panel"
+              >
+                <h2>Server connection</h2>
+                <form
+                  class="inline-form"
+                  onsubmit={(e) => {
+                    e.preventDefault();
+                    void act(async () => {
+                      await changeServer(serverAddress);
+                      playing = null;
                       events?.close();
-                    } else await loadSettings();
-                  })}>Revoke</button
-              >
-            </div>{/each}
-        </section>
-        {#if user.role === 'admin'}
-          <AdminOperations />
-          <BackupSettings />
-          <ProductUpdates />
-          <MetadataSettings />
-          <OnlineSettings />
-          <ManagerSettings />
-          <ManagerOwnership />
-          <ManagedStack />
-          <ServiceUpdates />
-          <RetentionSettings />
-          <SupportServices />
-          <section class="panel">
-            <h2><ShieldCheck size={20} /> Server</h2>
-            <div class="stats">
-              <div>
-                <strong>{health?.version ?? '—'}</strong><small
-                  >Product version</small
-                >
-              </div>
-              <div>
-                <strong
-                  >{health?.controller ? 'Connected' : 'Unavailable'}</strong
-                ><small>Docker controller</small>
-              </div>
-              <div>
-                <strong
-                  >{health
-                    ? `${(health.cache_free_bytes / 1024 ** 3).toFixed(1)} GB`
-                    : '—'}</strong
-                ><small>Cache space available</small>
-              </div>
-            </div>
-            <form
-              class="inline-form"
-              onsubmit={(e) => {
-                e.preventDefault();
-                void act(async () => {
-                  await api('/admin/settings', 'PUT', { timezone });
-                });
-              }}
-            >
-              <label
-                >Server timezone<input
-                  bind:value={timezone}
-                  placeholder="Europe/Paris"
-                /></label
-              ><button class="secondary" disabled={busy}>Save</button>
-            </form>
-          </section>
-          <section class="panel">
-            <h2>People</h2>
-            {#each users as person (person.id)}<UserAdministration
-                {person}
-                currentId={user.id}
-                changed={loadSettings}
-              />{/each}
-            <form
-              class="inline-form"
-              onsubmit={(e) => {
-                e.preventDefault();
-                void createUser();
-              }}
-            >
-              <label
-                >Username<input
-                  bind:value={newUsername}
-                  required
-                  autocomplete="off"
-                /></label
-              ><label
-                >Password<input
-                  bind:value={newPassword}
-                  type="password"
-                  required
-                  minlength="12"
-                  autocomplete="new-password"
-                /></label
-              ><label
-                >Role<select bind:value={newRole}
-                  ><option value="user">User</option><option value="admin"
-                    >Administrator</option
-                  ></select
-                ></label
-              ><button class="primary" disabled={busy}>Add user</button>
-            </form>
-          </section>
-          <History {user} audit />
-          <section class="panel">
-            <div class="section-heading">
-              <h2>Background jobs</h2>
-              <button
-                class="secondary"
-                onclick={() =>
-                  act(async () => {
-                    await api('/admin/jobs', 'POST', {
-                      key: crypto.randomUUID(),
+                      user = null;
+                      await boot();
                     });
-                    await loadSettings();
-                  })}><RefreshCw size={15} /> Run checkpoint</button
-              >
-            </div>
-            {#each jobs as job (job.id)}<div class="row">
-                <span>{job.kind}</span><span class="badge">{job.state}</span>
-              </div>{:else}<p class="muted">No background jobs yet.</p>{/each}
-          </section>
+                  }}
+                >
+                  <label
+                    >Server address<input
+                      bind:value={serverAddress}
+                      required
+                    /></label
+                  ><button class="secondary" disabled={busy}
+                    >Change server</button
+                  >
+                </form>
+              </section>{/if}
+            {#if settingsSection === 'devices'}<section class="panel">
+                <h2>Your devices</h2>
+                <p class="muted">
+                  Revoke access to a browser or desktop at any time.
+                </p>
+                {#each sessions as session (session.id)}<div class="row">
+                    <div>
+                      <strong>{session.name}</strong><small
+                        >{session.transport} · {new Date(
+                          session.last_seen * 1000,
+                        ).toLocaleString()}{session.id === currentSession
+                          ? ' · This device'
+                          : ''}</small
+                      >
+                    </div>
+                    <button
+                      class="secondary"
+                      disabled={busy}
+                      onclick={() =>
+                        act(async () => {
+                          await api(`/auth/sessions/${session.id}`, 'DELETE');
+                          if (session.id === currentSession) {
+                            user = null;
+                            events?.close();
+                          } else await loadSettings();
+                        })}>Revoke</button
+                    >
+                  </div>{/each}
+              </section>
+            {/if}
+            {#if user.role === 'admin'}
+              {#if settingsSection === 'server'}<AdminOperations />{/if}
+              {#if settingsSection === 'backups'}<BackupSettings />{/if}
+              {#if settingsSection === 'library'}<MetadataSettings />{/if}
+              {#if settingsSection === 'providers'}<OnlineSettings />{/if}
+              {#if settingsSection === 'services'}<ManagerSettings />{/if}
+              {#if settingsSection === 'services'}<ManagerOwnership />{/if}
+              {#if settingsSection === 'services'}<ManagedStack />{/if}
+              {#if settingsSection === 'services'}<ServiceUpdates />{/if}
+              {#if settingsSection === 'retention'}<RetentionSettings />{/if}
+              {#if settingsSection === 'services'}<SupportServices />{/if}
+              {#if settingsSection === 'server'}<section class="panel">
+                  <h2><ShieldCheck size={20} /> Server</h2>
+                  <div class="stats">
+                    <div>
+                      <strong>{health?.version ?? '—'}</strong><small
+                        >Product version</small
+                      >
+                    </div>
+                    <div>
+                      <strong
+                        >{health?.controller
+                          ? 'Connected'
+                          : 'Unavailable'}</strong
+                      ><small>Docker controller</small>
+                    </div>
+                    <div>
+                      <strong
+                        >{health
+                          ? `${(health.cache_free_bytes / 1024 ** 3).toFixed(1)} GB`
+                          : '—'}</strong
+                      ><small>Cache space available</small>
+                    </div>
+                  </div>
+                  <form
+                    class="inline-form"
+                    onsubmit={(e) => {
+                      e.preventDefault();
+                      void act(async () => {
+                        await api('/admin/settings', 'PUT', { timezone });
+                      });
+                    }}
+                  >
+                    <label
+                      >Server timezone<input
+                        bind:value={timezone}
+                        placeholder="Europe/Paris"
+                      /></label
+                    ><button class="secondary" disabled={busy}>Save</button>
+                  </form>
+                </section>
+              {/if}
+              {#if settingsSection === 'people'}<section class="panel">
+                  <h2>People</h2>
+                  {#each users as person (person.id)}<UserAdministration
+                      {person}
+                      currentId={user.id}
+                      changed={loadSettings}
+                    />{/each}
+                  <form
+                    class="inline-form"
+                    onsubmit={(e) => {
+                      e.preventDefault();
+                      void createUser();
+                    }}
+                  >
+                    <label
+                      >Username<input
+                        bind:value={newUsername}
+                        required
+                        autocomplete="off"
+                      /></label
+                    ><label
+                      >Password<input
+                        bind:value={newPassword}
+                        type="password"
+                        required
+                        minlength="12"
+                        autocomplete="new-password"
+                      /></label
+                    ><label
+                      >Role<select bind:value={newRole}
+                        ><option value="user">User</option><option value="admin"
+                          >Administrator</option
+                        ></select
+                      ></label
+                    ><button class="primary" disabled={busy}>Add user</button>
+                  </form>
+                </section>
+              {/if}
+              {#if settingsSection === 'audit'}<History {user} audit />{/if}
+              {#if settingsSection === 'jobs'}<section class="panel">
+                  <div class="section-heading">
+                    <h2>Background jobs</h2>
+                    <button
+                      class="secondary"
+                      onclick={() =>
+                        act(async () => {
+                          await api('/admin/jobs', 'POST', {
+                            key: crypto.randomUUID(),
+                          });
+                          await loadSettings();
+                        })}><RefreshCw size={15} /> Run checkpoint</button
+                    >
+                  </div>
+                  {#each jobs as job (job.id)}<div class="row">
+                      <span>{job.kind}</span><span class="badge"
+                        >{job.state}</span
+                      >
+                    </div>{:else}<p class="muted">
+                      No background jobs yet.
+                    </p>{/each}
+                </section>
+              {/if}
+            {/if}
+          </SettingsLayout>
+        {:else if section === 'Home'}
+          <PersonalHome
+            revision={mediaRevision}
+            open={openMedia}
+            play={(choice) => void playMedia(choice)}
+          />
+          <div class="section-heading">
+            <h2>Your collections</h2>
+            <span class="muted">Built around you</span>
+          </div>
+          <div class="domain-grid">
+            {#each sections.slice(1, 4) as item (item.name)}<button
+                class="domain-card"
+                onclick={() => navigate(item.name)}
+                ><item.icon size={30} /><strong>{item.name}</strong><span
+                  >Browse your collection →</span
+                ></button
+              >{/each}
+          </div>
+        {:else if ['Movies', 'Shows', 'Music'].includes(section)}
+          <LibraryView
+            domain={section}
+            admin={user.role === 'admin'}
+            revision={catalogRevision}
+            {scans}
+            userId={user.id}
+            {focusId}
+            play={(choice) => void playMedia(choice)}
+          />
+        {:else if section === 'Playlists'}<Playlists
+            userId={user.id}
+            revision={mediaRevision}
+            play={(choice) => void playMedia(choice)}
+          />
+        {:else if section === 'Requests'}<Requests {user} />
+        {:else if section === 'History' || section === 'Statistics'}<History
+            {user}
+            statistics={section === 'Statistics'}
+          />
+        {:else if section === 'Kick'}<Kick
+            play={(choice) => void playMedia(choice)}
+          />
+        {:else if section === 'Twitch'}<Twitch
+            play={(choice) => void playMedia(choice)}
+          />
+        {:else if section === 'YouTube'}<YouTube
+            revision={mediaRevision}
+            play={(choice) => void playMedia(choice)}
+          />
         {/if}
-      {:else if section === 'Home'}
-        <PersonalHome
-          revision={mediaRevision}
-          open={openMedia}
-          play={(choice) => void playMedia(choice)}
-        />
-        <section class="welcome">
-          <div>
-            <p class="eyebrow">MAKE YOURSELF AT HOME</p>
-            <h2>One home for everything<br />you love to watch and hear.</h2>
-            <p>
-              Movies, series, music, and your favorite creators.<br />All
-              together, with your place always saved.
-            </p>
-            <button class="primary" onclick={() => navigate('Movies')}
-              >Explore your library</button
-            >
-          </div>
-          <div class="welcome-art" aria-hidden="true">
-            <Film size={64} /><Music size={50} /><Tv size={60} />
-          </div>
-        </section>
-        <div class="section-heading">
-          <h2>Your collections</h2>
-          <span class="muted">Built around you</span>
-        </div>
-        <div class="domain-grid">
-          {#each sections.slice(1, 4) as item (item.name)}<button
-              class="domain-card"
-              onclick={() => navigate(item.name)}
-              ><item.icon size={30} /><strong>{item.name}</strong><span
-                >Browse your collection →</span
-              ></button
-            >{/each}
-        </div>
-      {:else if ['Movies', 'Shows', 'Music'].includes(section)}
-        <LibraryView
-          domain={section}
-          admin={user.role === 'admin'}
-          revision={catalogRevision}
-          {scans}
-          userId={user.id}
-          {focusId}
-          play={(choice) => void playMedia(choice)}
-        />
-      {:else if section === 'Playlists'}<Playlists
-          userId={user.id}
-          revision={mediaRevision}
-          play={(choice) => void playMedia(choice)}
-        />
-      {:else if section === 'Requests'}<Requests {user} />
-      {:else if section === 'History'}<History {user} />
-      {:else if section === 'Kick'}<Kick
-          play={(choice) => void playMedia(choice)}
-        />
-      {:else if section === 'Twitch'}<Twitch
-          play={(choice) => void playMedia(choice)}
-        />
-      {:else if section === 'YouTube'}<YouTube
-          revision={mediaRevision}
-          play={(choice) => void playMedia(choice)}
-        />
-      {:else}
-        <section class="empty">
-          <Library size={42} />
-          <h2>
-            {['Movies', 'Shows', 'Music'].includes(section)
-              ? 'Your library starts here'
-              : 'Your creators, together'}
-          </h2>
-          <p>
-            {['Movies', 'Shows', 'Music'].includes(section)
-              ? 'Add a library folder to discover your media.'
-              : 'Connect your account to bring your channels and watchlists to Thelxinoe.'}
-          </p>
-          <span class="badge">This section is being implemented</span>
-        </section>
-      {/if}
+      </div>
     </main>
   </div>
 {/if}

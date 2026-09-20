@@ -1,4 +1,5 @@
 mod accounts;
+mod appearance;
 pub mod config;
 pub mod error;
 mod grants;
@@ -171,6 +172,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/events", get(realtime::events))
         .route("/api/v1/me/home", get(user_media::home))
+        .route(
+            "/api/v1/me/appearance",
+            get(appearance::get).patch(appearance::update),
+        )
         .route(
             "/api/v1/me/preferences",
             axum::routing::put(user_media::preferences),

@@ -1,20 +1,15 @@
 <script lang="ts">
-  import {
-    Film,
-    Music,
-    Folder,
-    RefreshCw,
-    ArrowLeft,
-    FileVideo,
-  } from '@lucide/svelte';
-  import { api, serverUrl } from './api';
+  import { Folder, RefreshCw, ArrowLeft } from '@lucide/svelte';
+  import { api } from './api';
+  import MediaGrid from './ui/MediaGrid.svelte';
+  import LibraryCard from './ui/LibraryCard.svelte';
   import MetadataEditor from './MetadataEditor.svelte';
   import EpisodeMapping from './EpisodeMapping.svelte';
   import MediaActions from './MediaActions.svelte';
   import MediaOperations from './MediaOperations.svelte';
   import SegmentEditor from './SegmentEditor.svelte';
   import Requests from './Requests.svelte';
-  import { untrack } from 'svelte';
+  import { untrack, onDestroy } from 'svelte';
   import type { MediaChoice } from './playback';
   let {
     domain,
@@ -74,6 +69,16 @@
       local_trailers?: { file_id: string }[];
     } | null>(null);
   let generation = 0;
+  let search = $state('');
+  let searchTimer: ReturnType<typeof setTimeout>;
+  onDestroy(() => {
+    clearTimeout(searchTimer);
+    generation++;
+  });
+  function searchChanged() {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => void load(), 250);
+  }
   let acquisition = $state(false);
   async function load() {
     const request = ++generation;
@@ -85,7 +90,7 @@
         ? `parent=${parent}`
         : `kind=${domain === 'Movies' ? 'movie' : domain === 'Shows' ? 'show' : 'artist'}`;
       const result = await api<{ items: Item[] }>(
-        `/catalog?${query}${collection ? `&collection=${collection}` : ''}`,
+        `/catalog?${query}&q=${encodeURIComponent(search)}${collection ? `&collection=${collection}` : ''}`,
       );
       if (request !== generation) return;
       items = result.items;
@@ -202,6 +207,15 @@
       ><Folder size={16} /> Add folder</button
     >{/if}
 </div>
+<div class="view-toolbar">
+  <label class="search-field"
+    >Search {domain.toLowerCase()}<input
+      bind:value={search}
+      oninput={searchChanged}
+      placeholder={`Search your ${domain.toLowerCase()}`}
+    /></label
+  ><span class="muted">{items.length} items · Ctrl + scroll to zoom</span>
+</div>
 {#if acquisition}{#key domain}<Requests
       user={{ id: userId, role: admin ? 'admin' : 'user' }}
       {domain}
@@ -238,31 +252,34 @@
       /></label
     ><button class="primary" disabled={busy}>Add and scan</button>
   </form>{/if}
-{#if admin && roots.length}<div class="library-roots">
-    {#each roots as root (root.id)}<div class="row">
-        <div>
-          <strong>{root.name}</strong><small
-            >{scans[root.id]
-              ? `Scanning ${scans[root.id].completed} of ${scans[root.id].total} files`
-              : (root.scan_error ??
-                (root.last_scan
-                  ? `Scanned ${new Date(root.last_scan * 1000).toLocaleString()}`
-                  : 'Waiting for first scan'))}</small
+{#if admin && roots.length}<details class="library-roots">
+    <summary>Library folders · {roots.length}</summary>
+    <div>
+      {#each roots as root (root.id)}<div class="row">
+          <div>
+            <strong>{root.name}</strong><small
+              >{scans[root.id]
+                ? `Scanning ${scans[root.id].completed} of ${scans[root.id].total} files`
+                : (root.scan_error ??
+                  (root.last_scan
+                    ? `Scanned ${new Date(root.last_scan * 1000).toLocaleString()}`
+                    : 'Waiting for first scan'))}</small
+            >
+          </div>
+          <button
+            class="secondary"
+            disabled={busy}
+            onclick={async () => {
+              try {
+                await api(`/catalog/roots/${root.id}/scan`, 'POST');
+              } catch (e) {
+                error = String(e);
+              }
+            }}><RefreshCw size={14} /> Scan</button
           >
-        </div>
-        <button
-          class="secondary"
-          disabled={busy}
-          onclick={async () => {
-            try {
-              await api(`/catalog/roots/${root.id}/scan`, 'POST');
-            } catch (e) {
-              error = String(e);
-            }
-          }}><RefreshCw size={14} /> Scan</button
-        >
-      </div>{/each}
-  </div>{/if}
+        </div>{/each}
+    </div>
+  </details>{/if}
 {#if selected}<section class="panel">
     <div class="section-heading">
       <h2>{selected.title}</h2>
@@ -316,36 +333,29 @@
           changed={() => void load()}
         />{/if}{/if}
   </section>{/if}
-{#if items.length}<div class="media-grid">
-    {#each items as item (item.id)}<div>
-        <button class="media-card" onclick={() => open(item)}
-          ><div class="poster">
-            {#if item.artwork_url}<img
-                src={`${serverUrl()}${item.artwork_url}`}
-                alt=""
-                loading="lazy"
-              />{:else if domain === 'Music'}<Music
-                size={45}
-              />{:else if item.kind === 'episode'}<FileVideo
-                size={45}
-              />{:else}<Film size={45} />{/if}
-          </div>
-          <strong>{item.title}</strong><small
-            >{item.year ?? item.kind}{['movie', 'episode', 'track'].includes(
-              item.kind,
-            ) && !item.available
-              ? ' · Unavailable'
-              : ''}</small
-          ></button
-        >{#if !['movie', 'episode', 'track'].includes(item.kind)}<button
-            class="metadata-button"
-            onclick={() => select(item)}>Details</button
-          >{/if}{#if admin && !['movie', 'episode', 'track'].includes(item.kind)}<button
-            class="metadata-button"
-            onclick={() => select(item)}>Edit metadata</button
-          >{/if}
-      </div>{/each}
-  </div>{:else}<section class="empty">
+{#if items.length}<MediaGrid
+    revision={items.map((i) => i.id).join(',')}
+    label={domain}
+  >
+    {#each items as item (item.id)}<LibraryCard
+        {item}
+        open={() => void open(item)}
+        details={() => void select(item)}
+        play={['movie', 'episode', 'track'].includes(item.kind) &&
+        item.available
+          ? () =>
+              play({
+                id: item.id,
+                title: item.title,
+                kind: item.kind,
+                queue:
+                  item.kind === 'track'
+                    ? items.filter((i) => i.kind === 'track' && i.available)
+                    : undefined,
+              })
+          : undefined}
+      />{/each}
+  </MediaGrid>{:else}<section class="empty">
     <Folder size={42} />
     <h2>{busy ? 'Loading your library…' : 'Your collection starts here'}</h2>
     <p>
@@ -357,51 +367,10 @@
 
 <style>
   .library-roots {
-    margin-bottom: 25px;
+    margin-bottom: 20px;
+    border-bottom: 1px solid var(--line);
   }
   .collection-filter {
     max-width: 320px;
-    margin-bottom: 20px;
-  }
-  .media-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-    gap: 23px;
-  }
-  .media-card {
-    width: 100%;
-    text-align: left;
-    background: transparent;
-    color: inherit;
-    padding: 0;
-  }
-  .poster img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    border-radius: 8px;
-  }
-  .metadata-button {
-    background: transparent;
-    color: var(--muted);
-    font-size: 11px;
-    padding: 8px 0;
-  }
-  .poster {
-    height: 215px;
-    display: grid;
-    place-items: center;
-    background: linear-gradient(145deg, #30463e, #20313c);
-    border: 1px solid #3c514c;
-    border-radius: 9px;
-    margin-bottom: 12px;
-    color: #87b5a2;
-  }
-  .media-card:hover .poster {
-    border-color: #a5d7c5;
-  }
-  .media-card strong {
-    font-size: 13px;
-    font-weight: 550;
   }
 </style>

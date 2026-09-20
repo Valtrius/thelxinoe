@@ -171,6 +171,10 @@ try {
   await page.goto(origin);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page
+    .getByRole('navigation', { name: 'Settings navigation' })
+    .getByRole('button', { name: 'Updates', exact: true })
+    .click();
+  await page
     .getByRole('region', { name: 'Product updates', exact: true })
     .screenshot({ path: '.local/product-updates.png' });
   writeFileSync(

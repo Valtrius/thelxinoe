@@ -227,7 +227,7 @@
     margin: 0.6rem 0;
   }
   article {
-    border-top: 1px solid var(--border);
+    border-top: 1px solid var(--line);
     padding: 1rem 0;
   }
   button {

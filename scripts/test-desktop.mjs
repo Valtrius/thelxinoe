@@ -72,6 +72,10 @@ try {
   });
   await page.screenshot({ path: '.local/desktop-library.png' });
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page
+    .getByRole('navigation', { name: 'Settings navigation' })
+    .getByRole('button', { name: 'Devices', exact: true })
+    .click();
   const row = page
     .locator('.row')
     .filter({ has: page.getByText('Windows desktop', { exact: true }) })

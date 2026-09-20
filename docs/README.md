@@ -4,24 +4,25 @@ Start with [product scope](PRODUCT.md), [implementation status](STATUS.md) and [
 
 ## Design and operations
 
-| Topic                                          | Document                                  |
-| ---------------------------------------------- | ----------------------------------------- |
-| Runtime boundaries, code layout and jobs       | [Architecture](ARCHITECTURE.md)           |
-| Persistent paths and shared media mounts       | [Storage](STORAGE.md)                     |
-| Accounts, secrets and transport separation     | [Security](SECURITY.md)                   |
-| Catalog identity, metadata, playback and music | [Media model](MEDIA-MODEL.md)             |
-| HTTPS, proxy trust, CORS and PWA               | [Remote access](REMOTE.md)                |
-| YouTube, Twitch and Kick                       | [Online providers](ONLINE.md)             |
-| Wholphin and Jellyfin Android TV               | [Client compatibility](JELLYFIN.md)       |
-| Acquisition and manager ownership              | [Acquisition](ACQUISITION.md)             |
-| Container installation and adoption            | [Managed stack](MANAGED-STACK.md)         |
-| Service update isolation and recovery          | [Service updates](SERVICE-UPDATES.md)     |
-| Watched media cleanup                          | [Retention](RETENTION.md)                 |
-| Intro, recap, credits and preview skipping     | [Segments](SEGMENTS.md)                   |
-| Health, users, diagnostics and backups         | [Operations](OPERATIONS.md)               |
-| Signed product releases and offline recovery   | [Releases](RELEASES.md)                   |
-| Required release checks                        | [Release checklist](RELEASE_CHECKLIST.md) |
-| Provider and reused UI credits                 | [Attribution](ATTRIBUTION.md)             |
+| Topic                                            | Document                                  |
+| ------------------------------------------------ | ----------------------------------------- |
+| Runtime boundaries, code layout and jobs         | [Architecture](ARCHITECTURE.md)           |
+| Persistent paths and shared media mounts         | [Storage](STORAGE.md)                     |
+| Accounts, secrets and transport separation       | [Security](SECURITY.md)                   |
+| Theme, navigation and platform-specific settings | [Appearance](APPEARANCE.md)               |
+| Catalog identity, metadata, playback and music   | [Media model](MEDIA-MODEL.md)             |
+| HTTPS, proxy trust, CORS and PWA                 | [Remote access](REMOTE.md)                |
+| YouTube, Twitch and Kick                         | [Online providers](ONLINE.md)             |
+| Wholphin and Jellyfin Android TV                 | [Client compatibility](JELLYFIN.md)       |
+| Acquisition and manager ownership                | [Acquisition](ACQUISITION.md)             |
+| Container installation and adoption              | [Managed stack](MANAGED-STACK.md)         |
+| Service update isolation and recovery            | [Service updates](SERVICE-UPDATES.md)     |
+| Watched media cleanup                            | [Retention](RETENTION.md)                 |
+| Intro, recap, credits and preview skipping       | [Segments](SEGMENTS.md)                   |
+| Health, users, diagnostics and backups           | [Operations](OPERATIONS.md)               |
+| Signed product releases and offline recovery     | [Releases](RELEASES.md)                   |
+| Required release checks                          | [Release checklist](RELEASE_CHECKLIST.md) |
+| Provider and reused UI credits                   | [Attribution](ATTRIBUTION.md)             |
 
 ## Accepted delivery criteria
 

@@ -3,6 +3,8 @@ import type { MediaChoice } from './playback';
 export type Card = MediaChoice & {
   kind: string;
   available: boolean;
+  artwork_url?: string;
+  year?: number | null;
   show_title?: string;
   edition?: string;
   position?: number;

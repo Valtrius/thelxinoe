@@ -35,6 +35,21 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
 }
 use thelxinoe_core::{Capability, now};
 
+// Provider images are loaded by the client, with no credentials or server fetch.
+pub(super) fn public_image(value: Option<&str>) -> Option<String> {
+    let value = value.filter(|s| s.len() <= 2048)?;
+    let url = reqwest::Url::parse(value).ok()?;
+    (url.scheme() == "https"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.host_str().is_some_and(|host| {
+            host == "static-cdn.jtvnw.net"
+                || host == "kick.com"
+                || host.ends_with(".kick.com")
+                || host.ends_with(".kickcdn.com")
+        }))
+    .then(|| value.to_owned())
+}
 pub struct Runtime {
     http: reqwest::Client,
     authorize: String,

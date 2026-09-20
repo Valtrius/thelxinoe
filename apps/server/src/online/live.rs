@@ -166,7 +166,7 @@ mod tests {
         state.db.call(|db|{
             db.execute("INSERT INTO live_media VALUES ('twitch:42','Live fixture')",[])?;
             for user in ["alice","bob"] {
-                db.execute("INSERT INTO twitch_streams VALUES (?1,'42','fixture','Fixture','Live fixture','Science',10,'today','s',1)",[user])?;
+                db.execute("INSERT INTO twitch_streams(user_id,channel_id,login,display_name,title,category,viewers,started_at,snapshot,active) VALUES (?1,'42','fixture','Fixture','Live fixture','Science',10,'today','s',1)",[user])?;
                 db.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,generation,edition,state,mode,options,duration,created_at,updated_at,live_media_id,streaming) SELECT ?1,user_id,id,'g','live','playing','transcode','{}',0,?2,?2,'twitch:42',1 FROM sessions WHERE user_id=?1 LIMIT 1",params![user,now()])?;
             }Ok(())
         }).await.unwrap();

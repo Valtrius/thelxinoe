@@ -3,14 +3,19 @@
   import { invoke } from '@tauri-apps/api/core';
   import {
     Bookmark,
-    Check,
-    Pin,
     RefreshCw,
     Link,
     Play,
-    Download,
+    PanelRightClose,
+    PanelRightOpen,
+    X,
   } from '@lucide/svelte';
   import { api, desktop, serverUrl } from './api';
+  import YouTubeCard from './ui/YouTubeCard.svelte';
+  import FeedGroup from './ui/FeedGroup.svelte';
+  import { appearance } from './appearance';
+  import { scaleYoutubeMediaScope } from './card-grid-zoom';
+  import { type Video, duration } from './youtube-types';
   import type { MediaChoice } from './playback';
   let { revision = 0, play } = $props<{
     revision?: number;
@@ -54,23 +59,6 @@
     linking_url: string | null;
     quota: { used: number; blocked: boolean };
   };
-  type Video = {
-    id: string;
-    title: string;
-    channel: string;
-    published_at: number;
-    duration: number | null;
-    broadcast: string;
-    available: boolean;
-    is_short: boolean | null;
-    pending: boolean;
-    watchlist: boolean;
-    pinned: boolean;
-    watched: boolean;
-    position: number;
-    artwork_url?: string;
-    download?: string;
-  };
   type Feed = {
     items: Video[];
     total: number;
@@ -92,12 +80,41 @@
     unwatched = $state(false),
     search = $state(''),
     offset = $state(0),
-    confirmDelete = $state(false);
+    confirmDelete = $state(false),
+    dockOpen = $state(true),
+    compact = $state(false),
+    watchlist = $state<Feed | null>(null);
   let additions = $state<
     { key: string; url: string; id?: string; error?: string }[]
   >([]);
   let request = 0,
     timer: ReturnType<typeof setTimeout> | undefined;
+  const groups = $derived.by(() => {
+    const values: { key: string; title: string; items: Video[] }[] = [];
+    for (const video of feed?.items ?? []) {
+      const date = video.published_at
+        ? new Date(video.published_at * 1000)
+        : null;
+      const key = date?.toLocaleDateString() ?? 'pending';
+      let group = values.at(-1);
+      if (!group || group.key !== key) {
+        group = {
+          key,
+          title:
+            date?.toLocaleDateString(undefined, {
+              weekday: 'long',
+              day: 'numeric',
+              month: 'long',
+              year: 'numeric',
+            }) ?? 'Video details pending',
+          items: [],
+        };
+        values.push(group);
+      }
+      group.items.push(video);
+    }
+    return values;
+  });
   async function load() {
     const current = ++request;
     const query = new URLSearchParams({
@@ -109,16 +126,20 @@
       search,
     });
     try {
-      const [a, f] = await Promise.all([
+      const [a, f, w] = await Promise.all([
         api<Account>('/online/youtube'),
         api<Feed>(`/online/youtube/feed?${query}`),
+        api<Feed>('/online/youtube/feed?watchlist=true'),
       ]);
       if (current !== request) return;
       account = a;
       feed = f;
-      for (const video of f.items)
+      watchlist = w;
+      for (const video of [...f.items, ...w.items])
         downloadStates[video.id] = video.download ?? '';
-      additions = additions.filter((a) => !a.id);
+      additions = additions.filter(
+        (a) => !a.id || !w.items.some((v) => v.id === a.id),
+      );
     } catch (e) {
       if (current === request) error = String(e);
     }
@@ -136,6 +157,10 @@
     });
   });
   onMount(() => {
+    const media = matchMedia('(max-width: 900px)');
+    const resize = () => (compact = media.matches);
+    resize();
+    media.addEventListener('change', resize);
     const result = new URLSearchParams(location.search).get('youtube_link');
     if (result) {
       notice =
@@ -145,6 +170,7 @@
       history.replaceState(null, '', location.pathname);
     }
     return () => {
+      media.removeEventListener('change', resize);
       request++;
       clearTimeout(timer);
     };
@@ -197,7 +223,8 @@
     const key = crypto.randomUUID();
     additions = [{ key, url: value }, ...additions];
     url = '';
-    tab = 'watchlist';
+    dockOpen = true;
+    if (compact) tab = 'watchlist';
     offset = 0;
     try {
       const result = await api<{ id: string }>(
@@ -222,18 +249,17 @@
       });
     });
   }
-  function duration(seconds: number | null) {
-    if (seconds === null) return '';
-    const h = Math.floor(seconds / 3600),
-      m = Math.floor(seconds / 60) % 60,
-      s = seconds % 60;
-    return h
-      ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-      : `${m}:${String(s).padStart(2, '0')}`;
-  }
 </script>
 
-<section class="panel">
+<details
+  class="provider-account"
+  open={account?.account.status !== 'connected'}
+>
+  <summary
+    >{account?.account.status === 'connected'
+      ? 'Connected as ' + account.account.display_name
+      : 'Your YouTube account'}</summary
+  >
   <div class="section-heading">
     <div>
       <h2>Your YouTube account</h2>
@@ -298,29 +324,10 @@
         >Delete YouTube data…</button
       >{/if}
   </details>
-</section>
+</details>
 {#if error}<p class="error" role="alert">{error}</p>{/if}
-<section class="panel">
-  <form
-    class="inline-form"
-    onsubmit={(e) => {
-      e.preventDefault();
-      void add();
-    }}
-  >
-    <label
-      >Save a video<input
-        bind:value={url}
-        placeholder="Paste a YouTube URL"
-        aria-label="YouTube video URL"
-        maxlength="2048"
-      /></label
-    ><button class="primary" disabled={!url.trim()}
-      ><Bookmark size={16} />Add to watchlist</button
-    >
-  </form>
-</section>
-<div class="section-heading">
+
+<div class="view-toolbar">
   <div class="actions" aria-label="YouTube views">
     {#each [['feed', 'Subscriptions'], ['watchlist', 'Watchlist'], ['pins', 'Pinned']] as [value, label] (value)}<button
         class={tab === value ? 'primary' : 'secondary'}
@@ -340,6 +347,15 @@
         notice = 'Synchronization queued.';
       })}><RefreshCw size={15} />Sync</button
   >
+  {#if !compact}<button
+      class="icon-button dock-toggle"
+      aria-label={dockOpen ? 'Hide watchlist' : 'Show watchlist'}
+      title={dockOpen ? 'Hide watchlist' : 'Show watchlist'}
+      onclick={() => (dockOpen = !dockOpen)}
+      >{#if dockOpen}<PanelRightClose size={18} />{:else}<PanelRightOpen
+          size={18}
+        />{/if}</button
+    >{/if}
 </div>
 <div class="filters">
   <label
@@ -377,217 +393,365 @@
       feed.sync.last_complete * 1000,
     ).toLocaleString()}.
   </p>{/if}
-{#if tab === 'watchlist'}{#each additions as addition (addition.key)}<div
-      class="panel row"
-      aria-busy={!addition.id && !addition.error}
+{#if compact}
+  <form
+    class="inline-form"
+    onsubmit={(e) => {
+      e.preventDefault();
+      void add();
+    }}
+  >
+    <label
+      >Save a video<input
+        bind:value={url}
+        placeholder="Paste a YouTube URL"
+        aria-label="YouTube video URL"
+        maxlength="2048"
+      /></label
+    ><button class="primary" disabled={!url.trim()}
+      ><Bookmark size={16} />Add to watchlist</button
     >
-      <div>
-        <strong>{addition.url}</strong>
-        <p class="muted">
-          {addition.error ??
-            (addition.id
-              ? 'Saved — waiting for video details.'
-              : 'Adding to your watchlist…')}
-        </p>
-      </div>
-      {#if addition.error}<button
-          class="secondary"
-          onclick={() =>
-            (additions = additions.filter((a) => a.key !== addition.key))}
-          >Dismiss</button
-        >{/if}
-    </div>{/each}{/if}
-<div class="youtube-grid">
-  {#each feed?.items ?? [] as video (video.id)}
-    <article class="video-card">
-      <div class="thumbnail">
-        {#if video.artwork_url}<img
-            src={`${serverUrl()}${video.artwork_url}`}
-            alt=""
-            loading="lazy"
-          />{:else}<Play size={32} />{/if}<span
-          >{video.broadcast !== 'none'
-            ? video.broadcast
-            : duration(video.duration)}</span
-        >
-      </div>
-      <div class="video-body">
-        <h3>{video.title}</h3>
-        <p class="muted">
-          {video.channel || 'Video details pending'}{video.published_at
-            ? ` · ${new Date(video.published_at * 1000).toLocaleDateString()}`
-            : ''}
-        </p>
-        {#if video.pending}<p class="muted">
-            {account?.account.status === 'connected'
-              ? 'Waiting for metadata…'
-              : 'Connect YouTube to load details.'}
-          </p>{:else if !video.available}<p class="muted">
-            This video is unavailable to your connected account.
-          </p>{/if}
-        {#if video.is_short === true}<span class="badge">Short</span>{/if}
-        {#if ['queued', 'downloading'].includes(downloadStates[video.id])}<p
-            class="muted"
-          >
-            Downloading for playback…
+  </form>
+  {#if tab === 'watchlist'}{#each additions as addition (addition.key)}<div
+        class="watchlist-pending"
+        aria-busy={!addition.id && !addition.error}
+      >
+        <div>
+          <strong>{addition.url}</strong>
+          <p class="muted">
+            {addition.error ??
+              (addition.id
+                ? 'Saved — waiting for video details.'
+                : 'Adding to your watchlist…')}
           </p>
-        {:else if downloadStates[video.id] === 'extractor_authentication_required'}<p
-            class="muted"
-          >
-            Extractor authentication required. This video cannot be played with
-            public access.
-          </p>
-        {:else if ['failed', 'unavailable'].includes(downloadStates[video.id])}<p
-            class="muted"
-          >
-            The public download could not complete. You can retry.
-          </p>{/if}
-        <div class="actions">
-          <button
-            class="secondary"
-            aria-label={`Play ${video.title}`}
-            onclick={() =>
-              play({ id: `youtube:${video.id}`, title: video.title })}
-            ><Play size={17} />Play</button
-          >
-          <button
-            class="secondary"
-            aria-label={`Download ${video.title}`}
-            disabled={['queued', 'downloading', 'ready'].includes(
-              downloadStates[video.id],
-            )}
-            onclick={() => prepare(video)}><Download size={17} /></button
-          >
-          <button
-            class="secondary"
-            title={video.watchlist
-              ? 'Remove from watchlist'
-              : 'Add to watchlist'}
-            aria-label={`${video.watchlist ? 'Remove' : 'Save'} ${video.title} ${video.watchlist ? 'from' : 'to'} watchlist`}
-            aria-pressed={video.watchlist}
-            disabled={busy}
-            onclick={() => change(video, 'watchlist')}
-            ><Bookmark size={17} /></button
-          >
-          <button
-            class="secondary"
-            title={video.pinned ? 'Unpin' : 'Keep downloaded video'}
-            aria-label={`Pin ${video.title}`}
-            aria-pressed={video.pinned}
-            disabled={busy}
-            onclick={() => change(video, 'pinned')}><Pin size={17} /></button
-          >
-          <button
-            class="secondary"
-            title={video.watched ? 'Mark unwatched' : 'Mark watched'}
-            aria-label={`Watched ${video.title}`}
-            aria-pressed={video.watched}
-            disabled={busy}
-            onclick={() => change(video, 'watched')}><Check size={17} /></button
-          >
         </div>
+        {#if addition.error}<button
+            class="secondary"
+            onclick={() =>
+              (additions = additions.filter((a) => a.key !== addition.key))}
+            >Dismiss</button
+          >{/if}
+      </div>{/each}
+  {/if}{/if}
+<div
+  class="youtube-media"
+  use:scaleYoutubeMediaScope={{
+    columns: compact ? 2 : $appearance.card_columns,
+    sidebarOpen: dockOpen && !compact,
+  }}
+>
+  <div
+    class="youtube-feed"
+    data-feed-scroll
+    data-sidebar-resize="xy"
+    data-sidebar-resize-origin
+  >
+    {#each groups as group, index (index)}<FeedGroup title={group.title}>
+        {#each group.items as video (video.id)}<YouTubeCard
+            {video}
+            {busy}
+            download={downloadStates[video.id]}
+            play={() => play({ id: `youtube:${video.id}`, title: video.title })}
+            prepare={() => void prepare(video)}
+            change={(key) => void change(video, key)}
+          />{:else}<p class="muted">
+            {feed ? 'No videos match this view.' : 'Loading your videos…'}
+          </p>{/each}
+      </FeedGroup>{/each}
+    {#if !feed?.items.length}<p class="muted">
+        {feed ? 'No videos match this view.' : 'Loading your videos…'}
+      </p>{/if}
+    {#if feed && feed.total > 50}<div class="section-heading">
+        <button
+          class="secondary"
+          disabled={offset === 0}
+          onclick={() => (offset = Math.max(0, offset - 50))}>Previous</button
+        ><span
+          >{offset + 1}–{Math.min(offset + 50, feed.total)} of {feed.total}</span
+        ><button
+          class="secondary"
+          disabled={offset + 50 >= feed.total}
+          onclick={() => (offset += 50)}>Next</button
+        >
+      </div>{/if}
+  </div>
+  <aside
+    class="watchlist-frame"
+    data-youtube-watchlist-frame
+    aria-label="Watchlist"
+    inert={!dockOpen || compact}
+    aria-hidden={!dockOpen || compact}
+  >
+    <div class="watchlist-scale" data-youtube-watchlist-scale>
+      <div class="watchlist-header" data-sidebar-resize="xy">
+        <Bookmark size={16} />
+        <h2>Watchlist</h2>
+        <span>{watchlist?.total ?? 0}</span>
       </div>
-    </article>
-  {:else}<p class="muted">
-      {feed ? 'No videos match this view.' : 'Loading your videos…'}
-    </p>{/each}
+      <div class="watchlist-add" data-sidebar-resize="xy">
+        <form
+          class="inline-form"
+          onsubmit={(e) => {
+            e.preventDefault();
+            void add();
+          }}
+        >
+          <label
+            >Save a video<input
+              bind:value={url}
+              placeholder="Paste a YouTube URL"
+              aria-label="YouTube video URL"
+              maxlength="2048"
+            /></label
+          ><button class="primary" disabled={!url.trim()}
+            ><Bookmark size={16} />Add to watchlist</button
+          >
+        </form>
+      </div>
+      <div class="watchlist-items">
+        {#each additions as addition (addition.key)}<div
+            class="watchlist-pending"
+            aria-busy={!addition.id && !addition.error}
+          >
+            <div>
+              <strong>{addition.url}</strong>
+              <p class="muted">
+                {addition.error ??
+                  (addition.id
+                    ? 'Saved — waiting for video details.'
+                    : 'Adding to your watchlist…')}
+              </p>
+            </div>
+            {#if addition.error}<button
+                class="secondary"
+                onclick={() =>
+                  (additions = additions.filter((a) => a.key !== addition.key))}
+                >Dismiss</button
+              >{/if}
+          </div>{/each}
+
+        {#each watchlist?.items ?? [] as video (video.id)}<article
+            class="watchlist-item"
+            data-sidebar-resize="xy"
+            data-layout-key={'watchlist:' + video.id}
+          >
+            <button
+              class="watchlist-play"
+              aria-label={`Play saved ${video.title}`}
+              onclick={() =>
+                play({ id: `youtube:${video.id}`, title: video.title })}
+              ><div class="watchlist-thumb">
+                {#if video.artwork_url}<img
+                    src={serverUrl() + video.artwork_url}
+                    alt=""
+                    loading="lazy"
+                  />{:else}<Play size={20} />{/if}{#if video.duration}<span
+                    >{duration(video.duration)}</span
+                  >{/if}
+              </div>
+              <div>
+                <small>{video.channel || 'Video details pending'}</small>
+                <h3>{video.title}</h3>
+                {#if video.pending}<small>Waiting for video details…</small
+                  >{/if}
+              </div></button
+            >
+            <button
+              class="icon-button watchlist-remove"
+              aria-label={`Remove saved ${video.title}`}
+              title="Remove from watchlist"
+              disabled={busy}
+              onclick={() => void change(video, 'watchlist')}
+              ><X size={14} /></button
+            >
+          </article>{:else}{#if !additions.length}<p
+              class="muted watchlist-empty"
+            >
+              Save a video from the feed or paste its URL above.
+            </p>{/if}{/each}
+        {#if watchlist && watchlist.total > 50}<button
+            class="secondary"
+            onclick={() => {
+              tab = 'watchlist';
+              offset = 0;
+            }}>Browse all {watchlist.total} saved videos</button
+          >{/if}
+      </div>
+    </div>
+  </aside>
 </div>
-{#if feed && feed.total > 50}<div class="section-heading">
-    <button
-      class="secondary"
-      disabled={offset === 0}
-      onclick={() => (offset = Math.max(0, offset - 50))}>Previous</button
-    ><span
-      >{offset + 1}–{Math.min(offset + 50, feed.total)} of {feed.total}</span
-    ><button
-      class="secondary"
-      disabled={offset + 50 >= feed.total}
-      onclick={() => (offset += 50)}>Next</button
-    >
-  </div>{/if}
 
 <style>
   .actions,
   .filters {
     display: flex;
     align-items: center;
-    gap: 0.6rem;
+    gap: 10px;
     flex-wrap: wrap;
   }
   .filters {
-    margin: 1rem 0;
+    margin: 16px 0;
   }
-  .actions button {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
+  .filters label {
+    margin: 0;
   }
-  .actions .secondary[aria-pressed='true'] {
-    color: var(--accent);
-    box-shadow: inset 0 0 0 1px var(--accent);
-  }
-  .youtube-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-    gap: 1.2rem;
-    margin: 1rem 0;
+  .filters label:first-child {
+    flex: 1;
+    max-width: 330px;
   }
   .filters label:has(input[type='checkbox']) {
     flex-direction: row;
     align-items: center;
-    margin-bottom: 0;
   }
-  .filters input[type='checkbox'] {
-    width: auto;
+  .actions button {
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
-  .video-card {
-    background: var(--surface);
-    overflow: hidden;
-    border-radius: 10px;
+  .dock-toggle {
+    margin-left: auto;
   }
-  .thumbnail {
-    aspect-ratio: 16/9;
-    background: #20303a;
+  .youtube-media {
+    display: flex;
+    gap: 0;
+    align-items: flex-start;
+    min-width: 0;
     position: relative;
+  }
+  .youtube-feed {
+    flex: 1;
+    min-width: 0;
+  }
+  .watchlist-frame {
+    flex-shrink: 0;
+    overflow: clip;
+    position: sticky;
+    top: 0;
+    align-self: flex-start;
+  }
+  .watchlist-scale {
+    border-left: 1px solid var(--line);
+    background: var(--surface);
+    min-height: 500px;
+    max-height: calc(100dvh / var(--youtube-media-scale, 1) - 110px);
+    display: flex;
+    flex-direction: column;
+  }
+  .watchlist-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 20px;
+    border-bottom: 1px solid var(--line);
+    color: var(--accent);
+  }
+  .watchlist-header h2 {
+    margin: 0;
+    flex: 1;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .watchlist-header span {
+    color: var(--muted);
+    font-size: 11px;
+  }
+  .watchlist-add {
+    padding: 0 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  .watchlist-add :global(.inline-form) {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+  .watchlist-items {
+    min-height: 0;
+    overflow: auto;
+  }
+  .watchlist-item {
+    position: relative;
+    border-bottom: 1px solid var(--line);
+    padding: 16px;
+  }
+  .watchlist-play {
+    display: flex;
+    width: 100%;
+    align-items: flex-start;
+    gap: 12px;
+    text-align: left;
+    background: transparent;
+    color: var(--foreground);
+    padding: 0;
+  }
+  .watchlist-play > div:last-child {
+    min-width: 0;
+    flex: 1;
+  }
+  .watchlist-play h3 {
+    font-size: 13px;
+    line-height: 18px;
+    margin-top: 7px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .watchlist-play small {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .watchlist-thumb {
+    width: 120px;
+    aspect-ratio: 16/9;
+    flex-shrink: 0;
+    position: relative;
+    background: #080b10;
     display: grid;
     place-items: center;
-    color: var(--muted);
+    overflow: hidden;
   }
-  .thumbnail img {
+  .watchlist-thumb img {
     width: 100%;
     height: 100%;
-    object-fit: cover;
-    position: absolute;
+    object-fit: contain;
   }
-  .thumbnail span {
+  .watchlist-thumb span {
     position: absolute;
-    right: 8px;
-    bottom: 8px;
-    background: #10181ee0;
+    bottom: 3px;
+    right: 3px;
+    background: #000c;
     color: white;
-    padding: 2px 6px;
-    border-radius: 4px;
-    text-transform: capitalize;
+    padding: 2px 4px;
+    font:
+      9px ui-monospace,
+      monospace;
   }
-  .video-body {
-    padding: 1rem;
+  .watchlist-remove {
+    position: absolute;
+    right: 3px;
+    top: 3px;
+    opacity: 0;
+    background: var(--surface-strong);
   }
-  .video-body h3 {
-    margin: 0;
-    font-size: 1rem;
-    line-height: 1.5;
+  .watchlist-item:hover .watchlist-remove,
+  .watchlist-item:focus-within .watchlist-remove {
+    opacity: 1;
   }
-  .video-body p {
-    font-size: 0.85rem;
+  .watchlist-pending {
+    margin: 12px;
+    padding: 14px;
+    border: 1px solid var(--line);
+    font-size: 11px;
+    overflow-wrap: anywhere;
   }
-  .video-body .actions {
-    margin-top: 0.8rem;
+  .watchlist-pending p {
+    margin: 8px 0 0;
   }
-  details {
-    margin-top: 1rem;
-  }
-  summary {
-    cursor: pointer;
-    color: var(--muted);
+  .watchlist-empty {
+    font-size: 12px;
+    padding: 24px;
   }
 </style>

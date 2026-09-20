@@ -6,8 +6,8 @@
   "description": "Your shared media library, subscriptions and playback.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#10181e",
-  "theme_color": "#101b22",
+  "background_color": "#05070b",
+  "theme_color": "#05070b",
   "icons": [
     {
       "src": "/192x192.png",

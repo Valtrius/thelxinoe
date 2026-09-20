@@ -60,9 +60,7 @@ pub(super) async fn metadata(state: &AppState, id: &str) -> Result<Value> {
         .extraction
         .try_acquire()
         .map_err(|_| ApiError::conflict("Both extraction slots are busy; try again shortly"))?;
-    let bundle = tools::selection(state)
-        .await?
-        .ok_or_else(|| ApiError::conflict("An administrator must install online playback tools"))?;
+    let bundle = tools::ready(state).await?;
     tools::verify(&bundle.yt_dlp).await?;
     tools::verify(&bundle.deno).await?;
     let args = arguments(&bundle, id);

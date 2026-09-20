@@ -1,6 +1,6 @@
 // Only a public connection screen is retained. API responses, media and the
 // application shell always use the network so a release never serves stale code.
-const CACHE = 'thelxinoe-connection-v1';
+const CACHE = 'thelxinoe-connection-v2';
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE).then((cache) => cache.add('/offline.html')),

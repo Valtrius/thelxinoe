@@ -37,5 +37,6 @@ Private evidence lives in `.local` and is excluded from source control. The scri
 | Product upgrade and recovery        | `scripts/test-product-release.mjs`, `test-release-interruption.mjs`, `test-release-recreation.mjs`, `product-release-result.json`                          |
 | PWA and remote delivery             | `scripts/test-pwa-remote.mjs`, `pwa-remote-result.json`, `pwa-mobile-settings.png`                                                                         |
 | Native updater                      | `scripts/test-native-update.mjs`, `test-native-compatibility.mjs`, `native-update-result.json`, `native-compatibility-result.json`                         |
+| Appearance and media motion         | `tests/appearance.spec.ts`, `ui-validation/screens-result.json`, `ui-validation/native-result.json`, `ui-validation/live-result.json`                      |
 
 The selected Android emulator does not provide normal LAN broadcast discovery. Host UDP discovery and manual TV connection are tested; a physical LAN broadcast smoke check remains a deployment acceptance check. Wholphin's long, already-active subtitle cue behavior after seeking is documented in its compatibility matrix. Hosted CI and public artifact publication require a configured repository/runner/release host; local builds do not imply those services have run.

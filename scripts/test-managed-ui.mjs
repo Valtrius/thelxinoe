@@ -24,6 +24,10 @@ try {
   });
   await page.goto(base);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page
+    .getByRole('navigation', { name: 'Settings navigation' })
+    .getByRole('button', { name: 'Media services', exact: true })
+    .click();
   for (const [kind, root] of [
     ['radarr', '/data/movies'],
     ['sonarr', '/data/shows'],

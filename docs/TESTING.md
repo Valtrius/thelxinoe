@@ -31,7 +31,22 @@ npm run test:e2e
 
 The proxy project runs first and creates its test administrator on a fresh database. The catalog project indexes generated video, multi-episode TV, music tags and a local trailer. Checks cover secure cookies, Origin rejection, event replay, device revocation, stable identities and manual corrections. Only the test browser ignores the local Caddy certificate's trust error.
 
+Docker Desktop may not forward Windows file notifications into Linux bind mounts. On Windows, the catalog test allows the server's five-minute reconciliation fallback for file creation and removal; this portion can take up to eleven minutes. Native notification tests keep the shorter deadline.
+
 For the first-run page on an untouched main deployment, clear those two environment variables and run `npm run test:e2e`.
+
+### Appearance and media motion
+
+After creating the disposable proxy/catalog fixture above, run the appearance suite against that same explicit test URL:
+
+```powershell
+$env:THELXINOE_UI_TEST = '1'
+npm run test:e2e
+```
+
+The suite changes the test user's theme and density, samples intermediate sidebar animation frames, checks Ctrl+wheel sizing and mobile overflow, and uses real delayed HTTP requests to check concurrent optimistic watchlist additions. It expects the fixture administrator and at least one indexed movie. It adds two synthetic video IDs to that user's watchlist, so use a disposable test deployment. Screenshots are written under `.local/ui-validation`.
+
+Native checks should use an isolated Tauri identifier and WebView profile. Verify that theme controls appear only in the title bar, MPV appears only in native Settings, light/dark selection persists through the native transport, and maximize/restore/close work. Test ordinary production configuration as well as release fixtures: the updater plugin needs its bootstrap configuration even when no release channel is set.
 
 ## Browser playback
 

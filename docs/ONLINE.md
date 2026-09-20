@@ -36,7 +36,7 @@ Google OAuth covers the Data API only. Extraction receives no Google tokens, coo
 
 ## Public extraction and downloads
 
-An administrator installs the official yt-dlp and Deno releases from Settings. Downloads are checked against GitHub's published SHA-256 asset digests. Each installation has separate executable paths; jobs pin the selected versions, and each executable is checked before use. Installation selects the new bundle only after both tools pass startup checks.
+The server queues installation of the official yt-dlp and Deno releases when YouTube playback or a download first needs them. Clients show preparation status and have no tool-management menu. Downloads are checked against GitHub's published SHA-256 asset digests. Each installation has separate executable paths; jobs pin the selected versions, and each executable is checked before use. Installation selects the new bundle only after both tools pass startup checks. Administrators can inspect failures in server activity; the administrative tool API remains available for maintenance.
 
 Play opens public media immediately in the browser or MPV player. The server extracts public CDN sources and converts them to the same bounded HLS pipeline used by local playback. Signed source URLs remain in server memory. VOD supports seeking and resume; live playback hides seeking and does not infer watched state or save a VOD resume position. Original quality and online caption selection require a completed download; immediate streaming currently converts to H.264/AAC up to 1080p.
 

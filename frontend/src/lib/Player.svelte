@@ -401,17 +401,17 @@
   .player {
     position: relative;
     margin: 0 0 28px;
-    background: #101c21;
+    background: var(--surface-strong);
   }
   .player video {
     width: 100%;
     max-height: 60vh;
-    background: #05090b;
-    border-radius: 6px;
+    background: var(--background);
+    border-radius: 0;
   }
   .player video.music {
     height: 70px;
-    background: linear-gradient(90deg, #29483d, #22313d);
+    background: var(--surface-soft);
   }
   .controls {
     display: flex;

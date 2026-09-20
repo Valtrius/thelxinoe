@@ -73,7 +73,7 @@
     max-height: 70vh;
     overflow: auto;
     z-index: 80;
-    background: var(--panel);
+    background: var(--surface-strong);
   }
   article {
     padding: 1rem 0;

@@ -102,8 +102,10 @@ async fn history(
     Ok(state.db.call(move|db|{
         let items=db.prepare(&format!("SELECT h.id,h.media_id,h.kind,h.title,h.edition,u.id,u.username,h.device_name,h.started_at,h.updated_at,h.ended_at,h.position,h.duration,h.played_seconds,h.state FROM {source} h JOIN users u ON u.id=h.user_id WHERE (?1 IS NULL OR h.user_id=?1) AND (?2 IS NULL OR h.started_at>=?2) AND (?3 IS NULL OR h.started_at<?3) AND (?4 IS NULL OR h.id<?4) ORDER BY h.id DESC LIMIT 100"))?.query_map(params![user,filter.since,filter.until,filter.before],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"media_id":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"title":r.get::<_,String>(3)?,"edition":r.get::<_,String>(4)?,"user_id":r.get::<_,String>(5)?,"username":r.get::<_,String>(6)?,"device":r.get::<_,String>(7)?,"started_at":r.get::<_,i64>(8)?,"updated_at":r.get::<_,i64>(9)?,"ended_at":r.get::<_,Option<i64>>(10)?,"position":r.get::<_,f64>(11)?,"duration":r.get::<_,f64>(12)?,"played_seconds":r.get::<_,f64>(13)?,"state":r.get::<_,String>(14)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
         let stats=db.query_row(&format!("SELECT COUNT(*),COALESCE(SUM(played_seconds),0),COUNT(DISTINCT media_id),COUNT(DISTINCT user_id) FROM {source} WHERE (?1 IS NULL OR user_id=?1) AND (?2 IS NULL OR started_at>=?2) AND (?3 IS NULL OR started_at<?3)"),params![user,filter.since,filter.until],|r|Ok(json!({"plays":r.get::<_,i64>(0)?,"played_seconds":r.get::<_,f64>(1)?,"media_count":r.get::<_,i64>(2)?,"user_count":r.get::<_,i64>(3)?})))?;
+        let daily=db.prepare(&format!("SELECT strftime('%Y-%m-%d',started_at,'unixepoch'),COUNT(*),SUM(played_seconds) FROM {source} WHERE (?1 IS NULL OR user_id=?1) AND (?2 IS NULL OR started_at>=?2) AND (?3 IS NULL OR started_at<?3) GROUP BY 1 ORDER BY 1 DESC LIMIT 90"))?.query_map(params![user,filter.since,filter.until],|r|Ok(json!({"date":r.get::<_,String>(0)?,"plays":r.get::<_,i64>(1)?,"played_seconds":r.get::<_,f64>(2)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let top=db.prepare(&format!("SELECT title,COUNT(*),SUM(played_seconds) FROM {source} WHERE (?1 IS NULL OR user_id=?1) AND (?2 IS NULL OR started_at>=?2) AND (?3 IS NULL OR started_at<?3) GROUP BY media_id ORDER BY SUM(played_seconds) DESC LIMIT 10"))?.query_map(params![user,filter.since,filter.until],|r|Ok(json!({"title":r.get::<_,String>(0)?,"plays":r.get::<_,i64>(1)?,"played_seconds":r.get::<_,f64>(2)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let users=if admin{db.prepare(&format!("SELECT u.id,u.username,COUNT(*),SUM(h.played_seconds) FROM {source} h JOIN users u ON u.id=h.user_id WHERE (?1 IS NULL OR h.user_id=?1) AND (?2 IS NULL OR h.started_at>=?2) AND (?3 IS NULL OR h.started_at<?3) GROUP BY u.id ORDER BY SUM(h.played_seconds) DESC"))?.query_map(params![user,filter.since,filter.until],|r|Ok(json!({"id":r.get::<_,String>(0)?,"username":r.get::<_,String>(1)?,"plays":r.get::<_,i64>(2)?,"played_seconds":r.get::<_,f64>(3)?})))?.collect::<std::result::Result<Vec<_>,_>>()?}else{vec![]};
-        Ok(json!({"items":items,"stats":stats,"users":users,"next_before":items.last().map(|i|i["id"].clone()).filter(|_|items.len()==100)}))
+        Ok(json!({"items":items,"stats":stats,"users":users,"daily":daily,"top":top,"next_before":items.last().map(|i|i["id"].clone()).filter(|_|items.len()==100)}))
     }).await?)
 }
 pub async fn audit(
@@ -116,4 +118,33 @@ pub async fn audit(
     Ok(Json(
         json!({"next_before":items.last().map(|i|i["id"].clone()).filter(|_|items.len()==100),"items":items}),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::online::oauth::tests::{call, fixture};
+    use serde_json::Value;
+    #[tokio::test]
+    async fn charts_follow_the_same_user_and_date_scope_as_history() {
+        let (_temp, state, alice) = fixture().await;
+        state.db.call(|db| {
+            for (id,user,time,seconds) in [("a","alice",100,10),("b","alice",200,20),("c","bob",200,900)] {
+                db.execute("INSERT INTO live_history VALUES (?1,?2,'twitch:42','Stream','Browser',?3,?3,?4,?4,'stopped')",rusqlite::params![id,user,time,seconds])?;
+            }
+            Ok(())
+        }).await.unwrap();
+        let response = call(
+            &state,
+            "/api/v1/me/history?domain=twitch&since=150&until=300&user=bob",
+            "GET",
+            Value::Null,
+            &alice,
+        )
+        .await;
+        assert_eq!(response.0, axum::http::StatusCode::OK);
+        assert_eq!(response.2["stats"]["played_seconds"], 20.0);
+        assert_eq!(response.2["daily"][0]["played_seconds"], 20.0);
+        assert_eq!(response.2["top"][0]["plays"], 1);
+        assert_eq!(response.2["users"], serde_json::json!([]));
+    }
 }

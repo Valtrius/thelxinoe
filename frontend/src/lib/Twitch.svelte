@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import MediaGrid from './ui/MediaGrid.svelte';
+  import LiveMediaCard from './ui/LiveMediaCard.svelte';
   import { api, desktop } from './api';
   import { invoke } from '@tauri-apps/api/core';
   import type { MediaChoice } from './playback';
@@ -26,6 +28,8 @@
     title: string;
     category: string;
     viewers: number;
+    thumbnail_url?: string;
+    started_at?: string;
   };
   let account = $state<Account | null>(null),
     streams = $state<Stream[]>([]),
@@ -87,8 +91,15 @@
   });
 </script>
 
-<section class="panel">
-  <h2>Twitch</h2>
+<details
+  class="provider-account"
+  open={account?.account.status !== 'connected'}
+>
+  <summary
+    >{account?.account.status === 'connected'
+      ? `Connected as ${account.account.display_name}`
+      : 'Your Twitch account'}</summary
+  >
   {#if error}<p role="alert">{error}</p>{/if}
   {#if account}
     <p>
@@ -155,31 +166,33 @@
         ).toLocaleTimeString()}.
       </p>{/if}
   {/if}
-</section>
+</details>
 <section aria-label="Followed live Twitch channels">
   <h2>Followed live channels</h2>
   {#if streams.length === 0}<p>
       No live channels in the latest completed synchronization.
     </p>{/if}
-  {#each streams as stream (stream.id)}
-    <article class="panel">
-      <h3>{stream.display_name}</h3>
-      <button
-        class="primary"
-        aria-label={`Play ${stream.display_name}`}
-        onclick={() =>
+  <MediaGrid
+    label="Live Twitch channels"
+    revision={streams.map((s) => s.id).join(',')}
+  >
+    {#each streams as stream (stream.id)}<LiveMediaCard
+        id={stream.id}
+        platform="twitch"
+        name={stream.display_name}
+        title={stream.title}
+        category={stream.category}
+        viewers={stream.viewers}
+        thumbnail={stream.thumbnail_url}
+        startedAt={stream.started_at}
+        play={() =>
           play({
             id: `twitch:${stream.id}`,
             title: stream.title,
             kind: 'video',
-          })}>Play live</button
-      >
-      <p>{stream.title}</p>
-      <p class="muted">
-        {stream.category} · {stream.viewers.toLocaleString()} viewers
-      </p>
-    </article>
-  {/each}
+          })}
+      />{/each}
+  </MediaGrid>
 </section>
 
 <style>
