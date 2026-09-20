@@ -1,5 +1,4 @@
 import { chromium, expect } from '@playwright/test';
-import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 const b = await chromium.launch();
 const c = await b.newContext({ ignoreHTTPSErrors: true });
@@ -16,21 +15,7 @@ async function api(p, m = 'GET', data) {
 try {
   const auth = { username: 'admin', password: 'test-only long passphrase' };
   if ((await api('/setup')).setup_required) {
-    const token = execFileSync(
-      'docker',
-      [
-        'compose',
-        '-f',
-        'compose.managed.test.yaml',
-        'exec',
-        '-T',
-        'server',
-        'cat',
-        '/var/lib/thelxinoe/secrets/setup-token',
-      ],
-      { encoding: 'utf8' },
-    ).trim();
-    await api('/setup', 'POST', { ...auth, setup_token: token });
+    await api('/setup', 'POST', auth);
   } else await api('/auth/login', 'POST', auth);
   let last;
   for (const [kind, host_port] of [

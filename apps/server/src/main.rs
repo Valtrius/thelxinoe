@@ -23,7 +23,7 @@ async fn main() -> Result<()> {
     }
     let bind = config.bind;
     let state = AppState::open(config).await?;
-    tracing::info!(version=thelxinoe_core::VERSION, %bind, "Starting Thelxinoe; first-run code is in the state directory at secrets/setup-token");
+    tracing::info!(version=thelxinoe_core::VERSION, %bind, "Starting Thelxinoe");
     let worker = tokio::spawn(run_jobs(state.clone()));
     let scanner = tokio::spawn(thelxinoe_server::library::reconcile(state.clone()));
     let playback = tokio::spawn(thelxinoe_server::playback::maintain(state.clone()));

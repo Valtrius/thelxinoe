@@ -37,23 +37,7 @@ const credentials = {
   password: 'test-only long passphrase',
 };
 if ((await call('/setup')).setup_required) {
-  const code = execFileSync(
-    'docker',
-    [
-      'compose',
-      '-p',
-      'thelxinoe-compat',
-      '-f',
-      'compose.test.yaml',
-      'exec',
-      '-T',
-      'server',
-      'cat',
-      '/var/lib/thelxinoe/secrets/setup-token',
-    ],
-    { encoding: 'utf8', windowsHide: true },
-  ).trim();
-  await call('/setup', 'POST', { ...credentials, setup_token: code });
+  await call('/setup', 'POST', credentials);
 } else await call('/auth/login', 'POST', credentials);
 const roots = (await call('/catalog/roots')).items;
 for (const kind of ['movies', 'shows', 'music']) {

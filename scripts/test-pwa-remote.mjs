@@ -1,6 +1,6 @@
 import { chromium, expect } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 const origin =
   process.env.THELXINOE_RELEASE_ORIGIN || 'https://localhost:28443';
 const project = process.env.THELXINOE_RELEASE_PROJECT || 'thelxinoe-release-v6';
@@ -35,11 +35,9 @@ const sessions = [];
 try {
   await page.goto(origin);
   await page.getByLabel('Username', { exact: true }).waitFor();
-  const setup = await page.getByLabel('Setup code').isVisible();
-  if (setup)
-    await page
-      .getByLabel('Setup code')
-      .fill(readFileSync(`${root}/server/secrets/setup-token`, 'utf8').trim());
+  const setup = await page
+    .getByRole('button', { name: 'Create your server', exact: true })
+    .isVisible();
   await page.getByLabel('Username', { exact: true }).fill('admin');
   await page
     .getByLabel('Password', { exact: true })

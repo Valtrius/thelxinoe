@@ -28,15 +28,7 @@ async function api(path, method = 'GET', data) {
 try {
   const auth = { username: 'admin', password: 'test-only long passphrase' };
   if ((await api('/setup')).setup_required) {
-    const setup_token = docker([
-      ...compose,
-      'exec',
-      '-T',
-      'server',
-      'cat',
-      '/var/lib/thelxinoe/secrets/setup-token',
-    ]);
-    await api('/setup', 'POST', { ...auth, setup_token });
+    await api('/setup', 'POST', auth);
   } else await api('/auth/login', 'POST', auth);
   const state = await api('/admin/stack');
   const foreign = docker([

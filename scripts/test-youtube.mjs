@@ -1,6 +1,5 @@
 // Isolated fixture deployment only. Never run against a server with real users.
 import { chromium, expect } from '@playwright/test';
-import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 const origin = 'https://localhost:22443';
 const browser = await chromium.launch();
@@ -20,26 +19,9 @@ async function api(context, path, method = 'GET', data) {
 try {
   const setup = await api(owner, '/setup');
   if (setup.setup_required) {
-    const code = execFileSync(
-      'docker',
-      [
-        'compose',
-        '-p',
-        'thelxinoe-online',
-        '-f',
-        'compose.test.yaml',
-        'exec',
-        '-T',
-        'server',
-        'cat',
-        '/var/lib/thelxinoe/secrets/setup-token',
-      ],
-      { encoding: 'utf8' },
-    ).trim();
     await api(owner, '/setup', 'POST', {
       username: 'admin',
       password: 'test-only long passphrase',
-      setup_token: code,
     });
   } else
     await api(owner, '/auth/login', 'POST', {

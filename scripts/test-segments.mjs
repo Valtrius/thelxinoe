@@ -1,5 +1,5 @@
 import { chromium, expect } from '@playwright/test';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 const origin = 'https://localhost:26443';
 const browser = await chromium.launch();
 const context = await browser.newContext({
@@ -24,13 +24,7 @@ try {
     password: 'test-only long passphrase',
   };
   if ((await api('/setup')).setup_required)
-    await api('/setup', 'POST', {
-      ...credentials,
-      setup_token: readFileSync(
-        '.local/segments/server/secrets/setup-token',
-        'utf8',
-      ).trim(),
-    });
+    await api('/setup', 'POST', credentials);
   else await api('/auth/login', 'POST', credentials);
   const roots = (await api('/catalog/roots')).items;
   const root =

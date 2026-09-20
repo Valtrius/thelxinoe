@@ -40,7 +40,7 @@ Google, Twitch and Kick application settings were found in YouTwitch's Windows C
 
 ## Runtime and evidence
 
-- Main Compose deployment: `http://127.0.0.1:8484`, data in `.local/docker`, awaiting creation of the administrator account. Setup code: `.local/docker/server/secrets/setup-token`.
+- Main Compose deployment: `http://127.0.0.1:8484`, data in `.local/docker`, awaiting creation of the administrator account through the welcome screen.
 - Isolated HTTPS test deployment: `compose.test.yaml`, Caddy at `https://localhost:9443`, direct test server at `127.0.0.1:18484`. Uses generated media and test-only accounts in separate named volumes.
 - Windows installer: `target/release/bundle/nsis/Thelxinoe_0.1.0_x64-setup.exe`.
 - Screenshots: `.local/library.png`, `.local/desktop-library.png`, `.local/proxy-settings.png`.

@@ -86,20 +86,6 @@ impl AppState {
             );
         }
         let secrets = SecretStore::open(&config.state.join("secrets"))?;
-        let setup_path = config.state.join("secrets/setup-token");
-        if !setup_path.exists() {
-            use std::io::Write;
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            let mut file = options.open(setup_path)?;
-            file.write_all(thelxinoe_auth::token().as_bytes())?;
-            file.sync_all()?;
-        }
         Ok(Self {
             server_id: Arc::new(server_id),
             playback: Arc::new(thelxinoe_playback::Pipelines::open(&config.cache).await?),

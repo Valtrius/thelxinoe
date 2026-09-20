@@ -16,7 +16,7 @@ npm run build
 cargo run -p thelxinoe-server
 ```
 
-Open http://127.0.0.1:8484. First-run setup requires the code in `.local/server/secrets/setup-token`. Development data remains in `.local`; it never uses YouTwitch's application directories. For frontend hot reload, run `npm run dev` in another terminal. Vite proxies the API and WebSocket to port 8484.
+Open http://127.0.0.1:8484 and choose a username and password to create the first administrator. Development data remains in `.local`; it never uses YouTwitch's application directories. For frontend hot reload, run `npm run dev` in another terminal. Vite proxies the API and WebSocket to port 8484.
 
 For a new empty Windows development instance on every launch:
 
@@ -26,18 +26,17 @@ npm run dev:fresh
 npm run dev:fresh -- -Port 18487 -SkipBuild
 ```
 
-The launcher builds the frontend and runs the server at http://127.0.0.1:18486. It prints the setup-code file path; use that code to create the first administrator. Each invocation creates separate state, cache and media folders under `.local/dev-runs/`, with no provider credentials or linked accounts. Ctrl+C stops the server. Earlier runs stay on disk, and existing deployments are preserved. Inherited `THELXINOE_*` settings are temporarily replaced and restored when the script exits. This serves the built web UI without hot reload or the Docker controller.
+The launcher builds the frontend and runs the server at http://127.0.0.1:18486. Open that address and choose the first administrator's username and password. Each invocation creates separate state, cache and media folders under `.local/dev-runs/`, with no provider credentials or linked accounts. Ctrl+C stops the server. Earlier runs stay on disk, and existing deployments are preserved. Inherited `THELXINOE_*` settings are temporarily replaced and restored when the script exits. This serves the built web UI without hot reload or the Docker controller.
 
 The underlying `scripts/dev-fresh.ps1` can also be invoked by its full path from another working directory. Run `npm ci` once before first use.
 
 ```sh
 docker compose up --build -d
-docker compose exec server cat /var/lib/thelxinoe/secrets/setup-token
 ```
 
 For Linux bind mounts, create the server, cache, and backup directories before startup and give them to uid/gid `10001:10001`. Configure persistent paths using `.env.example`. The Docker daemon is mounted only into the controller, which has no TCP network. The server connects over a private Unix socket.
 
-The first account is an administrator. Additional accounts require an administrator. Passwords require at least 12 characters. Provider secrets use AES-256-GCM with a persistent master key outside SQLite. Losing that key loses the ability to decrypt provider credentials.
+The first account is an administrator. First-run setup is available while the server has no users; after that, additional accounts require an administrator. Passwords require at least 12 characters. Provider secrets use AES-256-GCM with a persistent master key outside SQLite. Losing that key loses the ability to decrypt provider credentials.
 
 ## Checks
 

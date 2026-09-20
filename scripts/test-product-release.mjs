@@ -1,5 +1,5 @@
 import { chromium, expect } from '@playwright/test';
-import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { writeFileSync, unlinkSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 const origin = 'https://localhost:28443';
 const project = process.env.THELXINOE_RELEASE_PROJECT || 'thelxinoe-release-v6';
@@ -94,13 +94,7 @@ async function waitBackup(id, stage) {
 }
 try {
   if ((await api('/setup')).setup_required)
-    await api('/setup', 'POST', {
-      ...credentials,
-      setup_token: readFileSync(
-        `${dataRoot}/server/secrets/setup-token`,
-        'utf8',
-      ).trim(),
-    });
+    await api('/setup', 'POST', credentials);
   else await api('/auth/login', 'POST', credentials);
   await api('/admin/product-update/policy', 'POST', {
     policy: 'manual',

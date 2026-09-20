@@ -1,6 +1,5 @@
 import { chromium, request } from '@playwright/test';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 
 // Explicit opt-in: uses private local configuration and real provider requests.
@@ -50,23 +49,7 @@ try {
     password: 'test-only long passphrase',
   };
   if (setup.setup_required) {
-    const code = execFileSync(
-      'docker',
-      [
-        'compose',
-        '-p',
-        'thelxinoe-live',
-        '-f',
-        'compose.test.yaml',
-        'exec',
-        '-T',
-        'server',
-        'cat',
-        '/var/lib/thelxinoe/secrets/setup-token',
-      ],
-      { encoding: 'utf8', windowsHide: true },
-    ).trim();
-    await call('/setup', 'POST', { ...credentials, setup_token: code });
+    await call('/setup', 'POST', credentials);
   } else await call('/auth/login', 'POST', credentials);
   await call('/admin/metadata', 'PUT', {
     tmdb_token: token,

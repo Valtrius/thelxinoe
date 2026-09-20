@@ -1,5 +1,4 @@
 import { request, chromium } from '@playwright/test';
-import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 const origin = 'https://localhost:20443';
@@ -36,23 +35,7 @@ try {
     password: 'test-only long passphrase',
   };
   if ((await call('/setup')).setup_required) {
-    const code = execFileSync(
-      'docker',
-      [
-        'compose',
-        '-p',
-        'thelxinoe-playback',
-        '-f',
-        'compose.test.yaml',
-        'exec',
-        '-T',
-        'server',
-        'cat',
-        '/var/lib/thelxinoe/secrets/setup-token',
-      ],
-      { encoding: 'utf8', windowsHide: true },
-    ).trim();
-    await call('/setup', 'POST', { ...credentials, setup_token: code });
+    await call('/setup', 'POST', credentials);
   } else await call('/auth/login', 'POST', credentials);
   const roots = (await call('/catalog/roots')).items;
   for (const kind of ['movies', 'music']) {

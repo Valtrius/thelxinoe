@@ -1,5 +1,4 @@
 import { test, expect } from '@playwright/test';
-import { execFileSync } from 'node:child_process';
 
 test('HTTPS setup, secure login, event replay, CSRF rejection and device revocation', async ({
   page,
@@ -10,23 +9,11 @@ test('HTTPS setup, secure login, event replay, CSRF rejection and device revocat
     !process.env.THELXINOE_PROXY_TEST,
     'Requires isolated Compose proxy fixture',
   );
-  const token = execFileSync(
-    'docker',
-    [
-      'compose',
-      '-f',
-      'compose.test.yaml',
-      'exec',
-      '-T',
-      'server',
-      'cat',
-      '/var/lib/thelxinoe/secrets/setup-token',
-    ],
-    { encoding: 'utf8' },
-  ).trim();
   await page.goto('/');
-  const setup = await page.getByLabel('Setup code').isVisible();
-  if (setup) await page.getByLabel('Setup code').fill(token);
+  await page.getByLabel('Username', { exact: true }).waitFor();
+  const setup = await page
+    .getByRole('button', { name: 'Create your server', exact: true })
+    .isVisible();
   await page.getByLabel('Username', { exact: true }).fill('admin');
   await page
     .getByLabel('Password', { exact: true })

@@ -1,6 +1,5 @@
 // Uses only the isolated compose.acquisition.test.yaml deployment.
 import { chromium, expect } from '@playwright/test';
-import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 const origin = 'https://localhost:23443';
 const browser = await chromium.launch();
@@ -23,21 +22,7 @@ const credentials = {
 const results = [];
 try {
   if ((await api(admin, '/setup')).setup_required) {
-    const token = execFileSync(
-      'docker',
-      [
-        'compose',
-        '-f',
-        'compose.acquisition.test.yaml',
-        'exec',
-        '-T',
-        'server',
-        'cat',
-        '/var/lib/thelxinoe/secrets/setup-token',
-      ],
-      { encoding: 'utf8' },
-    ).trim();
-    await api(admin, '/setup', 'POST', { ...credentials, setup_token: token });
+    await api(admin, '/setup', 'POST', credentials);
   } else await api(admin, '/auth/login', 'POST', credentials);
   if (
     !(await api(admin, '/users')).items.some(

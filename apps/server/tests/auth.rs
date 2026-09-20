@@ -59,12 +59,11 @@ async fn request(
     (status, headers, value)
 }
 async fn setup(state: &AppState) -> String {
-    let token = std::fs::read_to_string(state.config.state.join("secrets/setup-token")).unwrap();
     let (status, headers, _) = request(
         state,
         "/api/v1/setup",
         "POST",
-        json!({"username":"admin","password":"a good long password","setup_token":token}),
+        json!({"username":"admin","password":"a good long password"}),
         None,
         &[("x-forwarded-proto", "https")],
     )
@@ -76,16 +75,89 @@ async fn setup(state: &AppState) -> String {
     cookie.split(';').next().unwrap().into()
 }
 #[tokio::test]
-async fn first_admin_is_atomic_and_sessions_survive_restart_and_revoke() {
+async fn setup_needs_only_credentials_and_accepts_one_concurrent_administrator() {
     let (_temp, state) = fixture().await;
-    let cookie = setup(&state).await;
-    let token = std::fs::read_to_string(state.config.state.join("secrets/setup-token")).unwrap();
+    assert!(!state.config.state.join("secrets/setup-token").exists());
     assert_eq!(
         request(
             &state,
             "/api/v1/setup",
             "POST",
-            json!({"username":"other","password":"a good long password","setup_token":token}),
+            json!({"username":"intruder","password":"a good long password"}),
+            None,
+            &[("origin", "https://unrelated.test")],
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let (first, second) = tokio::join!(
+        request(
+            &state,
+            "/api/v1/setup",
+            "POST",
+            json!({"username":"alice","password":"a good long password"}),
+            None,
+            &[],
+        ),
+        request(
+            &state,
+            "/api/v1/setup",
+            "POST",
+            json!({"username":"bob","password":"another long password"}),
+            None,
+            &[],
+        )
+    );
+    let mut statuses = [first.0.as_u16(), second.0.as_u16()];
+    statuses.sort_unstable();
+    assert_eq!(statuses, [200, 409]);
+    state
+        .db
+        .call(|db| {
+            assert_eq!(
+                db.query_row("SELECT COUNT(*) FROM users WHERE role='admin'", [], |row| {
+                    row.get::<_, i64>(0)
+                })?,
+                1
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let reopened = AppState::open(state.config.as_ref().clone()).await.unwrap();
+    assert_eq!(
+        request(&reopened, "/api/v1/setup", "GET", Value::Null, None, &[])
+            .await
+            .2["setup_required"],
+        false
+    );
+    assert_eq!(
+        request(
+            &reopened,
+            "/api/v1/setup",
+            "POST",
+            json!({"username":"later","password":"a good long password"}),
+            None,
+            &[],
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+}
+
+#[tokio::test]
+async fn first_admin_is_atomic_and_sessions_survive_restart_and_revoke() {
+    let (_temp, state) = fixture().await;
+    let cookie = setup(&state).await;
+    assert_eq!(
+        request(
+            &state,
+            "/api/v1/setup",
+            "POST",
+            json!({"username":"other","password":"a good long password"}),
             None,
             &[]
         )

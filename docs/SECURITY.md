@@ -42,7 +42,7 @@ When Thelxinoe generates a Jellyfin-compatible playback URL itself it should use
 
 ## Authentication and authorization
 
-The first account becomes an administrator. Administrators create or invite later users. Public registration is disabled.
+An unconfigured server accepts a username and password through first-run setup. The first successfully created account becomes an administrator, and account creation is atomic so concurrent setup requests cannot create multiple administrators. Setup closes once any user exists and stays closed across restarts. Administrators create or invite later users; there is no open registration after setup.
 
 V1 exposes two roles in the UI:
 

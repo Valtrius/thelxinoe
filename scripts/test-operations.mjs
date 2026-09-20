@@ -1,5 +1,5 @@
 import { chromium, expect } from '@playwright/test';
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 const origin = 'https://localhost:27443';
@@ -58,13 +58,7 @@ async function waitBackup(id, stage) {
 }
 try {
   if ((await api('/setup')).setup_required)
-    await api('/setup', 'POST', {
-      ...credentials,
-      setup_token: readFileSync(
-        '.local/operations-v4/server/secrets/setup-token',
-        'utf8',
-      ).trim(),
-    });
+    await api('/setup', 'POST', credentials);
   else await login();
   let managed = (await api('/admin/stack')).items.find(
     (s) => s.kind === 'radarr',

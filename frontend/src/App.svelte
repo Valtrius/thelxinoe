@@ -117,7 +117,6 @@
     connected = $state(false);
   let username = $state(''),
     password = $state(''),
-    setupToken = $state(''),
     section = $state(
       new URLSearchParams(location.search).has('youtube_link') ||
         new URLSearchParams(location.search).get('section') === 'YouTube'
@@ -268,11 +267,9 @@
         await api<{ user: User }>(setup ? '/setup' : '/auth/login', 'POST', {
           username,
           password,
-          setup_token: setupToken,
         })
       ).user;
       password = '';
-      setupToken = '';
       setup = false;
       await loadAppearance(user.id);
       startEvents();
@@ -422,14 +419,6 @@
           void authenticate();
         }}
       >
-        {#if setup}<label
-            >Setup code<input
-              bind:value={setupToken}
-              required
-              autocomplete="off"
-              placeholder="From your server’s secrets/setup-token file"
-            /></label
-          >{/if}
         <label
           >Username<input
             bind:value={username}

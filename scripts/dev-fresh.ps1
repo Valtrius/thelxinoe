@@ -71,7 +71,7 @@ try {
     New-Item -ItemType Directory -Path $runEnvironment.THELXINOE_MEDIA -Force | Out-Null
     Write-Host "Fresh instance: $($runEnvironment.THELXINOE_PUBLIC_URL)"
     Write-Host "Data directory: $runRoot"
-    Write-Host "Setup code file (created at startup): $($runEnvironment.THELXINOE_STATE)/secrets/setup-token"
+    Write-Host 'Open the address above and choose a username and password for your first administrator.'
     Write-Host 'Press Ctrl+C to stop. This run remains on disk; the next invocation starts empty.'
 
     & $cargoCommand run --locked -p thelxinoe-server

@@ -14,7 +14,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use thelxinoe_auth::{
-    digest, issue_session, password_hash, user_row, validate_credentials, verify_password,
+    issue_session, password_hash, user_row, validate_credentials, verify_password,
 };
 use thelxinoe_core::{Capability, Role, id, now};
 
@@ -26,8 +26,6 @@ pub struct Credentials {
     transport: Option<String>,
     #[serde(default)]
     device_name: Option<String>,
-    #[serde(default)]
-    setup_token: Option<String>,
 }
 
 pub async fn setup_status(State(state): State<AppState>) -> Result<Json<Value>> {
@@ -103,12 +101,6 @@ pub async fn setup(
     let context = security::request_context(&state.config, &headers, peer)?;
     if !matches!(c.transport.as_deref().unwrap_or("web"), "web" | "device") {
         return Err(ApiError::bad("Unsupported transport"));
-    }
-    let expected = tokio::fs::read_to_string(state.config.state.join("secrets/setup-token"))
-        .await
-        .map_err(anyhow::Error::from)?;
-    if digest(c.setup_token.as_deref().unwrap_or("")) != digest(expected.trim()) {
-        return Err(ApiError::forbidden());
     }
     validate_credentials(&c.username, &c.password).map_err(|e| ApiError::bad(e.to_string()))?;
     let hash = password_hash(c.password.clone()).await?;
