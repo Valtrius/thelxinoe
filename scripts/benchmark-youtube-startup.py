@@ -2,8 +2,8 @@
 
 Usage: /opt/streamlink/bin/python benchmark-youtube-startup.py inputs.json
 Input: {"youtube": [{"id": "public-video-id"}, ...]}. Output contains timings only.
-Install the same yt-dlp version with its default extras into
-/tmp/thelxinoe-benchmark-packages first. This leaves installed server tools intact.
+Run after the server prepares its matching resident yt-dlp module. This leaves
+installed server tools intact and requires no additional Python installation.
 """
 import hashlib
 import json
@@ -34,15 +34,21 @@ def main():
         if len(paths) != 1:
             raise RuntimeError("Expected one installed development tool bundle")
         tools[name] = paths[0]
+    installed = subprocess.check_output([str(tools["yt-dlp"]), "--version"], text=True).strip()
+    module = json.loads((root / "yt-dlp-module" / (installed + ".json")).read_text())
+    with Path(module["path"]).open("rb") as source:
+        if module["version"] != installed or hashlib.file_digest(source, "sha256").hexdigest() != module["digest"]:
+            raise RuntimeError("Resident module snapshot failed verification")
     with tempfile.TemporaryDirectory(prefix="thelxinoe-youtube-benchmark-") as home:
         os.environ.clear()
         os.environ.update({key: home for key in ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "TMPDIR"]})
         os.environ.update({"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"})
         os.chdir(home)
         logging.disable(logging.CRITICAL)
-        sys.path.insert(0, "/tmp/thelxinoe-benchmark-packages")
+        sys.path.insert(0, module["path"])
         import yt_dlp
-        installed = subprocess.check_output([str(tools["yt-dlp"]), "--version"], text=True).strip()
+        from yt_dlp.globals import plugin_dirs
+        plugin_dirs.value = []
         if yt_dlp.version.__version__ != installed:
             raise RuntimeError("Benchmark package and managed executable versions differ")
         options = {

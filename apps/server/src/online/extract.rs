@@ -61,6 +61,22 @@ pub(super) async fn metadata(state: &AppState, id: &str) -> Result<Value> {
         .try_acquire()
         .map_err(|_| ApiError::conflict("Both extraction slots are busy; try again shortly"))?;
     let bundle = tools::ready(state).await?;
+    if let Some(response) = state
+        .online
+        .youtube_worker
+        .resolve(&bundle, id)
+        .await
+        .map_err(|_| ApiError::conflict("Public extraction failed or timed out; try again later"))?
+    {
+        return match response.get("metadata") {
+            Some(metadata) => Ok(metadata.clone()),
+            None => Err(extraction_error(match response["error"].as_str() {
+                Some("extractor_authentication_required") => "extractor_authentication_required",
+                Some("unavailable") => "unavailable",
+                _ => "extraction_failed",
+            })),
+        };
+    }
     tools::verify(&bundle.yt_dlp).await?;
     tools::verify(&bundle.deno).await?;
     let args = arguments(&bundle, id);
@@ -74,7 +90,7 @@ pub(super) async fn metadata(state: &AppState, id: &str) -> Result<Value> {
     .map_err(|_| ApiError::conflict("Public extraction failed or timed out; try again later"))?;
     if !output.success {
         let code = failure(&output.stderr);
-        return Err(ApiError(axum::http::StatusCode::CONFLICT,code,match code {"extractor_authentication_required"=>"Extractor authentication required; this video cannot be played with public access", "unavailable"=>"This video is unavailable with public access",_=>"Public extraction failed; try again later"}.into()));
+        return Err(extraction_error(code));
     }
     let metadata: Value = serde_json::from_slice(&output.stdout)
         .map_err(|_| ApiError::conflict("The extractor returned invalid metadata"))?;
@@ -84,6 +100,20 @@ pub(super) async fn metadata(state: &AppState, id: &str) -> Result<Value> {
         ));
     }
     Ok(metadata)
+}
+fn extraction_error(code: &'static str) -> ApiError {
+    ApiError(
+        axum::http::StatusCode::CONFLICT,
+        code,
+        match code {
+            "extractor_authentication_required" => {
+                "Extractor authentication required; this video cannot be played with public access"
+            }
+            "unavailable" => "This video is unavailable with public access",
+            _ => "Public extraction failed; try again later",
+        }
+        .into(),
+    )
 }
 pub(super) fn arguments(bundle: &tools::Bundle, id: &str) -> Vec<OsString> {
     let mut args: Vec<OsString> = [

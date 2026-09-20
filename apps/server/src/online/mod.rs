@@ -16,6 +16,7 @@ pub(crate) mod tools;
 mod twitch;
 pub(crate) mod watchlists;
 mod youtube;
+mod youtube_worker;
 use crate::{
     AppState,
     error::{ApiError, Result},
@@ -37,7 +38,8 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
         sync::run_classifications(state.clone()),
         downloads::run_watchlists(state.clone()),
         twitch::run(state.clone()),
-        kick::run(state)
+        kick::run(state.clone()),
+        state.online.youtube_worker.run(&state)
     )?;
     Ok(())
 }
@@ -136,6 +138,7 @@ pub struct Runtime {
     refresh: tokio::sync::Mutex<()>,
     extraction: tokio::sync::Semaphore,
     streamlink: streamlink_worker::Pool,
+    youtube_worker: youtube_worker::Pool,
     pub(crate) streams: streams::Runtime,
     twitch: twitch::Runtime,
     kick: kick::Runtime,
@@ -155,6 +158,7 @@ impl Runtime {
             refresh: tokio::sync::Mutex::new(()),
             extraction: tokio::sync::Semaphore::new(2),
             streamlink: streamlink_worker::Pool::default(),
+            youtube_worker: youtube_worker::Pool::default(),
             streams: streams::Runtime::default(),
             twitch: twitch::Runtime::default(),
             kick: kick::Runtime::default(),

@@ -23,13 +23,13 @@ struct Asset {
     digest: String,
     size: u64,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Executable {
     pub version: String,
     pub path: PathBuf,
     pub digest: String,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Bundle {
     pub yt_dlp: Executable,
     pub deno: Executable,
@@ -116,6 +116,7 @@ fn client() -> anyhow::Result<reqwest::Client> {
 }
 fn asset_name(tool: &str) -> anyhow::Result<&'static str> {
     match (tool, std::env::consts::OS, std::env::consts::ARCH) {
+        ("yt-dlp-module", _, _) => Ok("yt-dlp"),
         ("yt-dlp", "linux", "x86_64") => Ok("yt-dlp_linux"),
         ("yt-dlp", "linux", "aarch64") => Ok("yt-dlp_linux_aarch64"),
         ("yt-dlp", "windows", "x86_64") => Ok("yt-dlp.exe"),
@@ -127,7 +128,7 @@ fn asset_name(tool: &str) -> anyhow::Result<&'static str> {
 }
 fn repository(tool: &str) -> anyhow::Result<&'static str> {
     match tool {
-        "yt-dlp" => Ok("yt-dlp/yt-dlp"),
+        "yt-dlp" | "yt-dlp-module" => Ok("yt-dlp/yt-dlp"),
         "deno" => Ok("denoland/deno"),
         _ => anyhow::bail!("Unsupported managed tool"),
     }
@@ -159,9 +160,12 @@ fn valid_asset(asset: &Asset) -> bool {
             )
 }
 async fn latest(http: &reqwest::Client, tool: &str) -> anyhow::Result<Asset> {
+    release(http, tool, "latest").await
+}
+async fn release(http: &reqwest::Client, tool: &str, endpoint: &str) -> anyhow::Result<Asset> {
     let response = http
         .get(format!(
-            "https://api.github.com/repos/{}/releases/latest",
+            "https://api.github.com/repos/{}/releases/{endpoint}",
             repository(tool)?
         ))
         .send()
@@ -196,6 +200,60 @@ async fn latest(http: &reqwest::Client, tool: &str) -> anyhow::Result<Asset> {
         valid_asset(&selected),
         "Official tool release is missing a valid SHA-256 digest or asset address"
     );
+    Ok(selected)
+}
+/// The official zipimport package includes the matching EJS scripts. Keep it
+/// beside the managed tools, pinned to the selected CLI version, so extractor
+/// updates do not require rebuilding the server's Python environment.
+pub(super) async fn python_module(state: &AppState, bundle: &Bundle) -> anyhow::Result<Executable> {
+    let version = &bundle.yt_dlp.version;
+    ensure!(
+        !version.is_empty()
+            && version.len() <= 40
+            && version != "."
+            && version != ".."
+            && version
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-')),
+        "Invalid selected extractor version"
+    );
+    let root = state.config.state.join("tools");
+    let modules = root.join("yt-dlp-module");
+    tokio::fs::create_dir_all(&modules).await?;
+    let manifest = modules.join(format!("{version}.json"));
+    if let Ok(bytes) = tokio::fs::read(&manifest).await {
+        let selected: Executable = serde_json::from_slice(&bytes)?;
+        ensure!(
+            selected.version == *version
+                && selected.digest.len() == 64
+                && selected.digest.bytes().all(|c| c.is_ascii_hexdigit()),
+            "Invalid extractor module snapshot"
+        );
+        let expected = modules
+            .join(&selected.digest)
+            .join("resident")
+            .join(if cfg!(windows) {
+                "yt-dlp.exe"
+            } else {
+                "yt-dlp"
+            });
+        ensure!(
+            selected.path == tokio::fs::canonicalize(expected).await?,
+            "Extractor module escaped its snapshot"
+        );
+        verify(&selected).await?;
+        return Ok(selected);
+    }
+    let http = client()?;
+    let asset = release(&http, "yt-dlp-module", &format!("tags/{version}")).await?;
+    ensure!(
+        asset.version == *version && asset.size <= 16 * 1024 * 1024,
+        "Unexpected extractor module release"
+    );
+    let selected = install_asset(&http, &root, &asset, "resident").await?;
+    let pending = manifest.with_extension("pending");
+    tokio::fs::write(&pending, serde_json::to_vec(&selected)?).await?;
+    tokio::fs::rename(pending, manifest).await?;
     Ok(selected)
 }
 pub async fn install(state: &AppState, job: &thelxinoe_jobs::Job) -> anyhow::Result<()> {
@@ -484,5 +542,49 @@ mod tests {
         assert!(!valid_asset(&asset));
         asset.version = "../escape".into();
         assert!(!valid_asset(&asset));
+    }
+
+    #[tokio::test]
+    async fn resident_module_is_pinned_and_verified_without_network() {
+        let (_temp, state, _) = crate::online::oauth::tests::fixture().await;
+        let bytes = b"module fixture";
+        let hash = hex(&Sha256::digest(bytes));
+        let root = state.config.state.join("tools/yt-dlp-module");
+        let dir = root.join(&hash).join("resident");
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let path = dir.join(if cfg!(windows) {
+            "yt-dlp.exe"
+        } else {
+            "yt-dlp"
+        });
+        tokio::fs::write(&path, bytes).await.unwrap();
+        let selected = Executable {
+            version: "2026.08.19".into(),
+            path: tokio::fs::canonicalize(&path).await.unwrap(),
+            digest: hash,
+        };
+        let manifest = root.join("2026.08.19.json");
+        tokio::fs::write(&manifest, serde_json::to_vec(&selected).unwrap())
+            .await
+            .unwrap();
+        let bundle = Bundle {
+            yt_dlp: selected.clone(),
+            deno: selected.clone(),
+        };
+        assert!(python_module(&state, &bundle).await.unwrap() == selected);
+        let mut wrong_version = selected.clone();
+        wrong_version.version = "2025.01.01".into();
+        tokio::fs::write(&manifest, serde_json::to_vec(&wrong_version).unwrap())
+            .await
+            .unwrap();
+        assert!(python_module(&state, &bundle).await.is_err());
+        tokio::fs::write(&manifest, serde_json::to_vec(&selected).unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(path, b"replacement").await.unwrap();
+        assert!(python_module(&state, &bundle).await.is_err());
+        let mut traversal = bundle;
+        traversal.yt_dlp.version = "../escape".into();
+        assert!(python_module(&state, &traversal).await.is_err());
     }
 }
