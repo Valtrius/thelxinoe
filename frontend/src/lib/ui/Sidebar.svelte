@@ -126,9 +126,15 @@
         ><Settings class="size-5 shrink-0" /></SidebarButton
       >
       <NotificationCenter revision={notificationRevision} {collapsed} />
-      {#if !desktop}<div class="web-theme-controls"><ThemeControls /></div>{/if}
+      {#if !desktop}<div class="web-theme-controls">
+          <span class="sidebar-rule" data-sidebar-resize="x" aria-hidden="true"
+          ></span>
+          <ThemeControls resizeWithSidebar />
+        </div>{/if}
       <div class="sidebar-profile">
-        <span class="avatar" title={user.username}
+        <span class="sidebar-rule" data-sidebar-resize="x" aria-hidden="true"
+        ></span>
+        <span class="avatar" data-sidebar-resize="xy" title={user.username}
           >{user.username[0].toUpperCase()}</span
         ><span class="profile-label"
           ><strong>{user.username}</strong><small
@@ -136,6 +142,7 @@
           ></span
         ><button
           class="icon-button"
+          data-sidebar-resize="x-pos"
           title="Sign out"
           aria-label="Sign out"
           onclick={logout}><LogOut size={15} /></button

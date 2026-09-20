@@ -13,6 +13,101 @@ test.beforeEach(async ({ page }) => {
   ).toBeVisible();
 });
 
+test('sidebar footer keeps its rows and animates controls without stretching icons', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1360, height: 900 });
+  await page.request.patch('/api/v1/me/appearance', {
+    headers: { 'X-Thelxinoe-Client': '1' },
+    data: { sidebar_collapsed: false },
+  });
+  await expect(page.locator('.primary-sidebar')).not.toHaveClass(/collapsed/);
+  for (const label of ['Collapse sidebar', 'Expand sidebar']) {
+    const samples = await page.evaluate(async (label) => {
+      const snapshot = () => {
+        const rect = (element: Element) => {
+          const r = element.getBoundingClientRect();
+          return { x: r.x, y: r.y, width: r.width, height: r.height };
+        };
+        return {
+          buttons: [
+            ...document.querySelectorAll('.web-theme-controls button'),
+          ].map(rect),
+          icons: [...document.querySelectorAll('.web-theme-controls svg')].map(
+            rect,
+          ),
+          avatar: rect(document.querySelector('.sidebar-profile .avatar')!),
+          logout: rect(document.querySelector('.sidebar-profile button')!),
+          history: rect(document.querySelector('[aria-label="History"]')!),
+          navigation: rect(document.querySelector('.primary-navigation')!),
+        };
+      };
+      const frames = [snapshot()];
+      (
+        document.querySelector(`[aria-label="${label}"]`) as HTMLElement
+      ).click();
+      const start = performance.now();
+      while (performance.now() - start < 300) {
+        await new Promise(requestAnimationFrame);
+        frames.push(snapshot());
+      }
+      return frames;
+    }, label);
+    const first = samples[0],
+      last = samples.at(-1)!;
+    for (const frame of samples) {
+      expect(frame.history.y).toBeCloseTo(first.history.y, 0);
+      expect(frame.navigation.height).toBeCloseTo(first.navigation.height, 0);
+      for (const button of frame.buttons) {
+        expect(button.y).toBeCloseTo(first.buttons[0].y, 0);
+        expect(button.height).toBe(32);
+      }
+      for (const icon of frame.icons) {
+        expect(icon.width).toBeCloseTo(14, 0);
+        expect(icon.height).toBeCloseTo(14, 0);
+      }
+    }
+    const moves = [
+      (s: typeof first) => s.buttons[0].x,
+      (s: typeof first) => s.buttons[2].x,
+      (s: typeof first) => s.avatar.x,
+      (s: typeof first) => s.logout.x,
+    ];
+    for (const position of moves) {
+      const lo = Math.min(position(first), position(last));
+      const hi = Math.max(position(first), position(last));
+      expect(hi - lo).toBeGreaterThan(5);
+      expect(
+        samples.some((s) => position(s) > lo + 1 && position(s) < hi - 1),
+      ).toBe(true);
+      expect(
+        samples.every((s) => position(s) >= lo - 1 && position(s) <= hi + 1),
+      ).toBe(true);
+    }
+    expect(last.buttons[0].width).toBe(label === 'Collapse sidebar' ? 20 : 32);
+  }
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page
+    .getByRole('button', { name: 'Collapse sidebar', exact: true })
+    .click();
+  await expect(page.locator('.primary-sidebar')).toHaveClass(/collapsed/);
+  expect(
+    await page
+      .locator('.sidebar-bottom')
+      .evaluate(
+        (e) =>
+          e
+            .getAnimations({ subtree: true })
+            .filter(
+              (a) =>
+                a instanceof Animation &&
+                a.effect instanceof KeyframeEffect &&
+                a.effect.getKeyframes().some((k) => 'transform' in k),
+            ).length,
+      ),
+  ).toBe(0);
+});
+
 test('appearance persists, native menus stay hidden on web, and cards animate during zoom and sidebar resize', async ({
   page,
 }) => {
@@ -125,6 +220,20 @@ test('appearance persists, native menus stay hidden on web, and cards animate du
 test('YouTube keeps concurrent optimistic additions visible and saves named lists', async ({
   page,
 }) => {
+  const lists = await (
+    await page.request.get('/api/v1/online/youtube/watchlists')
+  ).json();
+  await page.request.patch('/api/v1/me/appearance', {
+    headers: { 'X-Thelxinoe-Client': '1' },
+    data: {
+      provider_preferences: {
+        'youtube-watchlist-sidebar-open': 'false',
+        'youtube-selected-watchlist-id': String(
+          lists.find((list: { isDefault: boolean }) => list.isDefault).id,
+        ),
+      },
+    },
+  });
   await page.route('**/api/v1/online/youtube', (route) =>
     route.fulfill({
       json: {
@@ -134,7 +243,7 @@ test('YouTube keeps concurrent optimistic additions visible and saves named list
       },
     }),
   );
-  await page.getByRole('button', { name: 'YouTube', exact: true }).click();
+  await page.goto('/?section=YouTube');
   await page
     .getByRole('button', { name: 'Open watchlists', exact: true })
     .click();

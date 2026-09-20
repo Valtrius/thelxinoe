@@ -6,6 +6,8 @@ The proxy must preserve the host and support WebSocket upgrades, streaming respo
 
 CORS is disabled by default. A separate browser client may be allowed explicitly with comma-separated `THELXINOE_CORS_ORIGINS` origins; wildcards, paths and embedded credentials are rejected. Allowed origins receive bounded methods/headers and credential support. SameSite=Strict still applies to cookies; cross-site API clients require a revocable device credential. The normal PWA needs no CORS configuration.
 
+The desktop authenticates API requests through its native transport. Its event WebSocket uses a 30-second, single-use ticket tied to that device session. Valid device tickets also work from the desktop development page's origin without adding Vite to the CORS allowlist. Browser-session tickets still require the normal origin checks; device tickets grant no access to other endpoints and stop working when the session is revoked.
+
 Install the app from Chromium's install menu after opening the HTTPS site. Its manifest declares standalone display and 192/512-pixel icons. Only a public connection screen is retained by the service worker. API responses, credentials, media and application bundles are never stored by it. If offline, the installed app shows a reconnect action; media playback requires the server. Background Web Push and offline media remain outside v1.
 
 Auto video quality uses a 4 Mbps transcode default for public client addresses when the client supports HLS. LAN clients keep automatic direct-play/remux behavior. Explicit Original and bitrate choices take precedence. Music keeps its existing direct/gapless path. Correct proxy trust is necessary for address-based defaults; remote access through a private VPN is treated as LAN.

@@ -474,7 +474,7 @@
       display: flex;
       flex-direction: column;
       min-height: 0;
-      overflow: hidden;
+      overflow: visible;
     }
     .sidebar-brand {
       height: 64px;
@@ -482,6 +482,7 @@
       display: flex;
       align-items: center;
       white-space: nowrap;
+      overflow: hidden;
     }
     .brand-symbol {
       width: 30px;
@@ -514,12 +515,12 @@
       padding-bottom: 8px;
     }
     .sidebar-profile {
+      position: relative;
       display: flex;
       align-items: center;
       gap: 8px;
       height: 58px;
       padding: 0 12px 0 21px;
-      border-top: 1px solid var(--line);
     }
     .avatar {
       width: 30px;
@@ -564,13 +565,20 @@
       height: 28px;
     }
     .web-theme-controls {
+      position: relative;
       display: flex;
       justify-content: center;
       padding: 8px 0;
-      border-top: 1px solid var(--line);
     }
-    .collapsed .web-theme-controls [role='group'] {
-      flex-direction: column;
+    .sidebar-rule {
+      position: absolute;
+      inset: 0 0 auto;
+      height: 1px;
+      background: var(--line);
+      pointer-events: none;
+    }
+    .collapsed .web-theme-controls {
+      --compact-choice-width: 20px;
     }
     .content {
       flex: 1;

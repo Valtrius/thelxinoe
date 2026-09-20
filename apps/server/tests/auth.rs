@@ -678,3 +678,200 @@ async fn concurrent_library_additions_serialize_overlap_checks_and_job_writes() 
         8
     );
 }
+
+#[tokio::test]
+async fn desktop_event_tickets_connect_from_dev_origins_without_relaxing_cookie_auth() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::{connect_async, tungstenite::client::IntoClientRequest};
+
+    let (_temp, state) = fixture().await;
+    let cookie = setup(&state).await;
+    let (_, _, login) = request(
+        &state,
+        "/api/v1/auth/login",
+        "POST",
+        json!({"username":"admin","password":"a good long password","transport":"device"}),
+        None,
+        &[],
+    )
+    .await;
+    let bearer = format!("Bearer {}", login["token"].as_str().unwrap());
+    let device = [("authorization", bearer.as_str())];
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = router(state.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let handshake = |ticket: &str, since: i64, origin: &str| {
+        let mut req = format!("ws://{address}/api/v1/events?ticket={ticket}&since={since}")
+            .into_client_request()
+            .unwrap();
+        req.headers_mut().insert("origin", origin.parse().unwrap());
+        req
+    };
+
+    // Both packaged and development WebViews receive changes from browser clients.
+    // Each reconnect obtains a new ticket and replays changes after its cursor.
+    for origin in [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://tauri.localhost",
+    ] {
+        let (_, _, issued) = request(
+            &state,
+            "/api/v1/auth/event-ticket",
+            "POST",
+            json!({}),
+            None,
+            &device,
+        )
+        .await;
+        let ticket = issued["ticket"].as_str().unwrap();
+        let since = issued["cursor"].as_i64().unwrap();
+        let (mut socket, response) = connect_async(handshake(ticket, since, origin))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+        assert_eq!(
+            request(
+                &state,
+                "/api/v1/me/appearance",
+                "PATCH",
+                json!({"theme":"dark"}),
+                Some(&cookie),
+                &[]
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        let event = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let message = socket.next().await.unwrap().unwrap();
+                if message.is_text() {
+                    let event: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                    if event["kind"] == "appearance.changed" {
+                        break event;
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(event["payload"]["appearance"]["theme"], "dark");
+        let cursor = event["id"].as_i64().unwrap();
+        socket.close(None).await.unwrap();
+        assert!(
+            connect_async(handshake(ticket, cursor, origin))
+                .await
+                .is_err(),
+            "Tickets must be single-use"
+        );
+
+        assert_eq!(
+            request(
+                &state,
+                "/api/v1/me/appearance",
+                "PATCH",
+                json!({"theme":"light"}),
+                Some(&cookie),
+                &[]
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        let (_, _, issued) = request(
+            &state,
+            "/api/v1/auth/event-ticket",
+            "POST",
+            json!({}),
+            None,
+            &device,
+        )
+        .await;
+        let (mut socket, _) = connect_async(handshake(
+            issued["ticket"].as_str().unwrap(),
+            cursor,
+            origin,
+        ))
+        .await
+        .unwrap();
+        let replay = tokio::time::timeout(std::time::Duration::from_secs(3), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let replay: Value = serde_json::from_str(replay.to_text().unwrap()).unwrap();
+        assert_eq!(replay["payload"]["appearance"]["theme"], "light");
+        socket.close(None).await.unwrap();
+    }
+
+    let origin = "http://localhost:5173";
+    let (_, _, web) = request(
+        &state,
+        "/api/v1/auth/event-ticket",
+        "POST",
+        json!({}),
+        Some(&cookie),
+        &[],
+    )
+    .await;
+    for ticket in ["", "invalid", web["ticket"].as_str().unwrap()] {
+        let error = connect_async(handshake(ticket, 0, origin))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, tokio_tungstenite::tungstenite::Error::Http(r) if r.status() == StatusCode::FORBIDDEN)
+        );
+    }
+    assert_eq!(
+        request(
+            &state,
+            "/api/v1/auth/event-ticket",
+            "POST",
+            json!({}),
+            Some(&cookie),
+            &[("origin", origin)]
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let (_, _, issued) = request(
+        &state,
+        "/api/v1/auth/event-ticket",
+        "POST",
+        json!({}),
+        None,
+        &device,
+    )
+    .await;
+    let ticket = issued["ticket"].as_str().unwrap();
+    assert_eq!(
+        request(
+            &state,
+            &format!("/api/v1/auth/me?ticket={ticket}"),
+            "GET",
+            json!({}),
+            Some(&cookie),
+            &[("origin", origin)]
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    request(
+        &state,
+        "/api/v1/auth/logout",
+        "POST",
+        json!({}),
+        None,
+        &device,
+    )
+    .await;
+    assert!(
+        connect_async(handshake(ticket, 0, origin)).await.is_err(),
+        "Revoked device tickets must fail"
+    );
+    server.abort();
+}

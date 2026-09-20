@@ -20,7 +20,7 @@ use thelxinoe_core::{Capability, now};
 pub struct Cursor {
     #[serde(default)]
     since: i64,
-    ticket: Option<String>,
+    pub(crate) ticket: Option<String>,
 }
 pub async fn events(
     State(state): State<AppState>,

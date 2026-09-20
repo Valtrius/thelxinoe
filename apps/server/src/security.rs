@@ -170,7 +170,25 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
                 "http://tauri.localhost" | "https://tauri.localhost" | "tauri://localhost"
             );
             if origin != context.origin && !desktop && cors.is_none() {
-                return ApiError::forbidden().into_response();
+                // Development WebViews use their dev-server origin. Their Rust
+                // transport already authenticated to obtain this short-lived,
+                // single-use device ticket; no browser cookie authorizes it.
+                let device_ticket = if request.method() == Method::GET
+                    && request.uri().path() == "/api/v1/events"
+                    && let Ok(axum::extract::Query(cursor)) =
+                        axum::extract::Query::<crate::realtime::Cursor>::try_from_uri(request.uri())
+                    && let Some(ticket) = cursor.ticket
+                {
+                    matches!(
+                        crate::grants::resolve(&state, &ticket, "events", false).await,
+                        Ok(Some(p)) if p.transport == "device"
+                    )
+                } else {
+                    false
+                };
+                if !device_ticket {
+                    return ApiError::forbidden().into_response();
+                }
             }
             if desktop && request.headers().contains_key(header::COOKIE) {
                 return ApiError::forbidden().into_response();

@@ -6143,6 +6143,7 @@ dependencies = [
  "thelxinoe-playback",
  "thelxinoe-releases",
  "tokio",
+ "tokio-tungstenite",
  "tower",
  "tower-http",
  "tracing",
