@@ -234,13 +234,18 @@ pub async fn image(
     head: bool,
 ) -> Result<Response> {
     let key = identity.key.clone();
+    let video = (identity.kind == "youtube").then(|| key.clone());
     let kind = identity.kind.clone();
     let user = p.user.id.clone();
     let address=state.db.call(move |db| {
         let sql=match kind.as_str(){"youtube"=>"SELECT 'https://i.ytimg.com/vi/'||video_id||'/mqdefault.jpg' FROM youtube_videos WHERE user_id=?1 AND video_id=?2 AND privacy='public'","twitch"=>"SELECT 'https://static-cdn.jtvnw.net/previews-ttv/live_user_'||login||'-640x360.jpg' FROM twitch_streams WHERE user_id=?1 AND channel_id=?2 AND active=1","kick"=>"SELECT COALESCE(thumbnail_url,profile_image_url,'') FROM kick_channels WHERE user_id=?1 AND slug=?2",_=>return Ok(None)};
         Ok(db.query_row(sql,params![user,key],|r|r.get::<_,String>(0)).optional()?)
     }).await?.ok_or_else(ApiError::not_found)?;
-    let (mime, bytes) = crate::online::artwork_bytes(state, &address).await?;
+    let (mime, bytes) = if let Some(video) = video {
+        crate::online::youtube_artwork_bytes(state, &video).await?
+    } else {
+        crate::online::artwork_bytes(state, &address).await?
+    };
     Ok((
         [
             (header::CONTENT_TYPE, mime),

@@ -1,4 +1,4 @@
-use super::{bounded_response, sync};
+use super::sync;
 use crate::{
     AppState,
     error::{ApiError, Result},
@@ -232,28 +232,10 @@ pub async fn artwork(
     if !allowed {
         return Err(ApiError::not_found());
     }
-    let _slot = state
-        .online
-        .slots
-        .acquire()
-        .await
-        .map_err(|_| ApiError::not_found())?;
-    let response = state
-        .online
-        .http
-        .get(format!("https://i.ytimg.com/vi/{video}/mqdefault.jpg"))
-        .send()
-        .await
-        .map_err(|_| ApiError::not_found())?;
-    let (status, _, bytes) = bounded_response(response)
-        .await
-        .map_err(|_| ApiError::not_found())?;
-    if !status.is_success() || !bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        return Err(ApiError::not_found());
-    }
+    let (mime, bytes) = super::youtube_artwork_bytes(&state, &video).await?;
     Ok((
         [
-            (header::CONTENT_TYPE, "image/jpeg"),
+            (header::CONTENT_TYPE, mime),
             (header::CACHE_CONTROL, "private, max-age=300"),
         ],
         bytes,

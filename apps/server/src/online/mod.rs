@@ -105,6 +105,27 @@ pub(crate) async fn artwork_bytes(
     };
     Ok((mime, bytes.to_vec()))
 }
+pub(crate) async fn youtube_artwork_bytes(
+    state: &AppState,
+    video: &str,
+) -> Result<(&'static str, Vec<u8>)> {
+    if !sync::identifier(video, 11) {
+        return Err(ApiError::not_found());
+    }
+    // Match YouTwitch's wide-image preference. Older uploads may not have a
+    // maxres thumbnail; medium is the wide fallback without baked-in bars.
+    for variant in ["maxresdefault", "mqdefault"] {
+        if let Ok(image) = artwork_bytes(
+            state,
+            &format!("https://i.ytimg.com/vi/{video}/{variant}.jpg"),
+        )
+        .await
+        {
+            return Ok(image);
+        }
+    }
+    Err(ApiError::not_found())
+}
 pub struct Runtime {
     http: reqwest::Client,
     authorize: String,
