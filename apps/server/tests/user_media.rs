@@ -31,7 +31,7 @@ async fn fixture() -> (tempfile::TempDir, AppState) {
     .await
     .unwrap();
     state.db.call(|db|{
-        for user in ["alice","bob","admin"]{db.execute("INSERT INTO users VALUES (?1,?1,'unused',?2,'UTC',?3)",params![user,if user=="admin"{"admin"}else{"user"},now()])?;}
+        for user in ["alice","bob","admin"]{db.execute("INSERT INTO users(id,username,password_hash,role,timezone,created_at) VALUES (?1,?1,'unused',?2,'UTC',?3)",params![user,if user=="admin"{"admin"}else{"user"},now()])?;}
         db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Test','movies','/data/test')",[])?;
         for (id,kind,parent,number) in [("movie","movie",None,0),("a","track",None,1),("b","track",None,2),("show","show",None,0),("season","season",Some("show"),1),("specials","season",Some("show"),0),("special","episode",Some("specials"),1),("e1","episode",Some("season"),1),("e2","episode",Some("season"),2)] {
             db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES (?1,'root',?2,?3,?1,?1,?4,?5)",params![id,kind,parent,number,now()])?;
@@ -112,6 +112,199 @@ async fn ok(state: &AppState, token: &str, path: &str, method: &str, body: Value
     let (status, value) = call(state, token, path, method, body).await;
     assert_eq!(status, StatusCode::OK, "{path}: {value}");
     value
+}
+#[tokio::test]
+async fn timezone_defaults_follow_server_changes_until_explicitly_overridden() {
+    let (_temp, state) = fixture().await;
+    let (alice, _) = login(&state, "alice").await;
+    let (bob, _) = login(&state, "bob").await;
+    let (admin, _) = login(&state, "admin").await;
+    let initial = ok(&state, &alice, "/me/preferences", "GET", Value::Null).await;
+    assert_eq!(
+        initial,
+        json!({"timezone":"UTC","timezone_override":null,"server_timezone":"UTC"})
+    );
+
+    // Explicitly choosing UTC must remain distinct from leaving the default.
+    ok(
+        &state,
+        &bob,
+        "/me/preferences",
+        "PUT",
+        json!({"timezone":"UTC"}),
+    )
+    .await;
+    ok(
+        &state,
+        &admin,
+        "/admin/settings",
+        "PUT",
+        json!({"timezone":"Europe/Paris"}),
+    )
+    .await;
+    assert_eq!(
+        ok(&state, &alice, "/auth/me", "GET", Value::Null).await["user"]["timezone"],
+        "Europe/Paris"
+    );
+    assert_eq!(
+        ok(&state, &bob, "/auth/me", "GET", Value::Null).await["user"]["timezone"],
+        "UTC"
+    );
+    assert_eq!(
+        ok(&state, &alice, "/me/preferences", "GET", Value::Null).await,
+        json!({"timezone":"Europe/Paris","timezone_override":null,"server_timezone":"Europe/Paris"})
+    );
+
+    // New accounts and their initial login use the current server default.
+    let created = ok(
+        &state,
+        &admin,
+        "/users",
+        "POST",
+        json!({"username":"charlie","password":"test-only long passphrase","role":"user"}),
+    )
+    .await;
+    let (charlie, _) = login(&state, created["id"].as_str().unwrap()).await;
+    assert_eq!(
+        ok(&state, &charlie, "/auth/me", "GET", Value::Null).await["user"]["timezone"],
+        "Europe/Paris"
+    );
+    let logged_in = ok(
+        &state,
+        "",
+        "/auth/login",
+        "POST",
+        json!({"username":"charlie","password":"test-only long passphrase","transport":"device"}),
+    )
+    .await;
+    assert_eq!(logged_in["user"]["timezone"], "Europe/Paris");
+
+    ok(
+        &state,
+        &alice,
+        "/me/preferences",
+        "PUT",
+        json!({"timezone":"Asia/Tokyo"}),
+    )
+    .await;
+    ok(
+        &state,
+        &admin,
+        "/admin/settings",
+        "PUT",
+        json!({"timezone":"America/New_York"}),
+    )
+    .await;
+    assert_eq!(
+        ok(&state, &alice, "/auth/me", "GET", Value::Null).await["user"]["timezone"],
+        "Asia/Tokyo"
+    );
+    assert_eq!(
+        ok(&state, &charlie, "/auth/me", "GET", Value::Null).await["user"]["timezone"],
+        "America/New_York"
+    );
+    assert_eq!(
+        ok(
+            &state,
+            &alice,
+            "/me/preferences",
+            "PUT",
+            json!({"timezone":null})
+        )
+        .await,
+        json!({"timezone":"America/New_York","timezone_override":null,"server_timezone":"America/New_York"})
+    );
+    let users = ok(&state, &admin, "/users", "GET", Value::Null).await;
+    assert!(
+        users["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|user| user["id"] == "alice" && user["timezone"] == "America/New_York")
+    );
+
+    for zone in ["UTC+2", "not/a/zone", ""] {
+        assert_eq!(
+            call(
+                &state,
+                &alice,
+                "/me/preferences",
+                "PUT",
+                json!({"timezone":zone})
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            call(
+                &state,
+                &admin,
+                "/admin/settings",
+                "PUT",
+                json!({"timezone":zone})
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert_eq!(
+        call(
+            &state,
+            &alice,
+            "/admin/settings",
+            "PUT",
+            json!({"timezone":"UTC"})
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        ok(&state, &alice, "/auth/me", "GET", Value::Null).await["user"]["timezone"],
+        "America/New_York"
+    );
+    state
+        .db
+        .call(|db| {
+            assert!(
+                db.prepare(
+                    "SELECT 1 FROM events WHERE kind='preferences.changed' AND user_id='alice'"
+                )?
+                .exists([])?
+            );
+            assert!(
+                db.prepare(
+                    "SELECT 1 FROM events WHERE kind='server.settings.changed' AND user_id IS NULL"
+                )?
+                .exists([])?
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn timezone_choices_include_every_supported_timezone() {
+    let (_temp, state) = fixture().await;
+    let (alice, _) = login(&state, "alice").await;
+    let response = ok(&state, &alice, "/timezones", "GET", Value::Null).await;
+    let zones: Vec<_> = response["timezones"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|zone| zone.as_str().unwrap())
+        .collect();
+    assert_eq!(zones.len(), chrono_tz::TZ_VARIANTS.len());
+    assert!(zones.windows(2).all(|pair| pair[0] < pair[1]));
+    assert!(zones.contains(&"Europe/Paris"));
+    assert!(zones.contains(&"UTC"));
+    assert!(zones.contains(&"Etc/GMT-2"));
+    for zone in zones {
+        assert!(zone.parse::<chrono_tz::Tz>().is_ok());
+    }
 }
 #[tokio::test]
 async fn shared_playlists_keep_owner_edits_and_private_favorites_and_queues() {

@@ -1,28 +1,65 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
   import { api, type User } from './api';
-  let { user, changed } = $props<{
+  import TimezoneSelect from './TimezoneSelect.svelte';
+  let {
+    user,
+    changed,
+    revision = 0,
+  } = $props<{
     user: User;
     changed: (zone: string) => void;
+    revision?: number;
   }>();
+  type Preferences = {
+    timezone: string;
+    timezone_override: string | null;
+    server_timezone: string;
+  };
+  const userId = $derived(user.id);
   let timezone = $state(''),
+    serverTimezone = $state('UTC'),
+    busy = $state(true),
     error = $state(''),
     saved = $state(false);
   $effect(() => {
-    const zone = user.timezone;
-    untrack(() => (timezone = zone));
+    void userId;
+    void revision;
+    let active = true;
+    busy = true;
+    error = '';
+    void api<Preferences>('/me/preferences')
+      .then((value) => {
+        if (!active) return;
+        timezone = value.timezone_override ?? '';
+        serverTimezone = value.server_timezone;
+        changed(value.timezone);
+      })
+      .catch((e) => {
+        if (active) error = String(e);
+      })
+      .finally(() => {
+        if (active) busy = false;
+      });
+    return () => {
+      active = false;
+    };
   });
   async function save() {
     error = '';
     saved = false;
+    busy = true;
     try {
-      const value = await api<{ timezone: string }>('/me/preferences', 'PUT', {
-        timezone,
+      const value = await api<Preferences>('/me/preferences', 'PUT', {
+        timezone: timezone || null,
       });
+      timezone = value.timezone_override ?? '';
+      serverTimezone = value.server_timezone;
       changed(value.timezone);
       saved = true;
     } catch (e) {
       error = String(e);
+    } finally {
+      busy = false;
     }
   }
 </script>
@@ -36,20 +73,18 @@
       void save();
     }}
   >
-    <label
-      >Display timezone<input
-        bind:value={timezone}
-        required
-        placeholder="Europe/Paris"
-        list="timezones"
-      /></label
-    ><datalist id="timezones"
-      ><option value="UTC"></option><option value="Europe/Paris"
-      ></option><option value="America/New_York"></option><option
-        value="Asia/Tokyo"
-      ></option></datalist
-    ><button class="primary">Save display preferences</button>
+    <TimezoneSelect
+      label="Display timezone"
+      bind:value={timezone}
+      defaultTimezone={serverTimezone}
+      disabled={busy}
+    />
+    <button class="primary" disabled={busy}>Save display preferences</button>
   </form>
+  <p class="muted">
+    Use the server default or choose your own timezone. Regional timezones
+    adjust automatically for daylight saving time.
+  </p>
   {#if error}<p role="alert" class="error">{error}</p>{/if}{#if saved}<p
       role="status"
     >

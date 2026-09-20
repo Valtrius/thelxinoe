@@ -198,30 +198,3 @@ pub async fn queue_put(
         _ => Ok(Json(result.1)),
     }
 }
-#[derive(Deserialize)]
-pub struct Preferences {
-    timezone: String,
-}
-pub async fn preferences(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(input): Json<Preferences>,
-) -> Result<Json<Value>> {
-    let p = security::principal(&state, &headers).await?;
-    input
-        .timezone
-        .parse::<chrono_tz::Tz>()
-        .map_err(|_| ApiError::bad("Unknown timezone"))?;
-    let zone = input.timezone.clone();
-    state
-        .db
-        .call(move |db| {
-            db.execute(
-                "UPDATE users SET timezone=?1 WHERE id=?2",
-                params![input.timezone, p.user.id],
-            )?;
-            Ok(())
-        })
-        .await?;
-    Ok(Json(json!({"timezone":zone})))
-}

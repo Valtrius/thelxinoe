@@ -18,6 +18,7 @@ pub mod product;
 mod realtime;
 pub mod security;
 pub mod segments;
+mod timezones;
 pub mod user_media;
 pub mod validation;
 pub use jellyfin::discovery::run as run_discovery;
@@ -158,13 +159,14 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/events", get(realtime::events))
         .route("/api/v1/me/home", get(user_media::home))
+        .route("/api/v1/timezones", get(timezones::list))
         .route(
             "/api/v1/me/appearance",
             get(appearance::get).patch(appearance::update),
         )
         .route(
             "/api/v1/me/preferences",
-            axum::routing::put(user_media::preferences),
+            get(timezones::get).put(timezones::update),
         )
         .route(
             "/api/v1/me/queue/{client}",

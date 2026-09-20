@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-pub const SCHEMA_VERSION: u32 = 29;
+pub const SCHEMA_VERSION: u32 = 30;
 
 /// Inspect a quiesced database without applying migrations or creating missing files.
 pub fn verify_snapshot(path: &Path) -> Result<u32> {
@@ -88,6 +88,7 @@ impl Database {
             include_str!("../migrations/027.sql"),
             include_str!("../migrations/028.sql"),
             include_str!("../migrations/029.sql"),
+            include_str!("../migrations/030.sql"),
         ];
         if version > migrations.len() as i64 {
             anyhow::bail!("Database is newer than this server; use the matching release");
@@ -136,6 +137,48 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn timezone_migration_preserves_personal_choices_and_resolves_server_defaults() -> Result<()> {
+        let db = Connection::open_in_memory()?;
+        for version in 1..=29 {
+            let path =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("migrations/{version:03}.sql"));
+            db.execute_batch(&std::fs::read_to_string(path)?)?;
+        }
+        db.execute_batch(
+            "INSERT INTO users VALUES ('default','default','unused','user','UTC',1);
+             INSERT INTO users VALUES ('personal','personal','unused','user','Asia/Tokyo',1);
+             INSERT INTO settings VALUES ('timezone','Europe/Paris');",
+        )?;
+        db.execute_batch(include_str!("../migrations/030.sql"))?;
+        let profile = |user: &str| {
+            db.query_row(
+                "SELECT timezone,timezone_override FROM user_profiles WHERE id=?1",
+                [user],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+            )
+        };
+        assert_eq!(profile("default")?, ("Europe/Paris".into(), None));
+        assert_eq!(
+            profile("personal")?,
+            ("Asia/Tokyo".into(), Some("Asia/Tokyo".into()))
+        );
+        db.execute(
+            "UPDATE settings SET value='America/New_York' WHERE key='timezone'",
+            [],
+        )?;
+        assert_eq!(profile("default")?, ("America/New_York".into(), None));
+        assert_eq!(
+            profile("personal")?,
+            ("Asia/Tokyo".into(), Some("Asia/Tokyo".into()))
+        );
+        db.execute(
+            "INSERT INTO users(id,username,password_hash,role,created_at) VALUES ('new','new','unused','user',1)",
+            [],
+        )?;
+        assert_eq!(profile("new")?, ("America/New_York".into(), None));
+        Ok(())
+    }
     #[test]
     fn named_watchlist_migration_preserves_existing_private_saved_videos() -> Result<()> {
         let db = Connection::open_in_memory()?;

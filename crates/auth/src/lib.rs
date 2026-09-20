@@ -202,7 +202,7 @@ pub async fn resolve(db: &Database, raw: &str, transport: &str) -> Result<Option
     let hash = digest(raw);
     let transport = transport.to_owned();
     db.call(move |c| {
-        let result = c.query_row("SELECT u.id,u.username,u.role,u.timezone,s.id,s.transport,s.last_seen FROM sessions s JOIN users u ON u.id=s.user_id WHERE token_hash=?1 AND transport=?2 AND expires_at>?3", params![hash,transport,now()], |r| Ok((Principal { user: user_row(r)?, session_id: r.get(4)?, transport: r.get(5)? },r.get::<_,i64>(6)?))).optional()?;
+        let result = c.query_row("SELECT u.id,u.username,u.role,u.timezone,s.id,s.transport,s.last_seen FROM sessions s JOIN user_profiles u ON u.id=s.user_id WHERE token_hash=?1 AND transport=?2 AND expires_at>?3", params![hash,transport,now()], |r| Ok((Principal { user: user_row(r)?, session_id: r.get(4)?, transport: r.get(5)? },r.get::<_,i64>(6)?))).optional()?;
         if let Some((p,last_seen)) = &result && *last_seen<now()-60 { c.execute("UPDATE sessions SET last_seen=?1 WHERE id=?2 AND last_seen<?3", params![now(),p.session_id,now()-60])?; }
         Ok(result.map(|(p,_)|p))
     }).await

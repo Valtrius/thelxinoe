@@ -31,7 +31,7 @@ async function login(page, username) {
 }
 try {
   await login(page, 'admin');
-  originalZone = (await api(owner, '/auth/me')).user.timezone;
+  originalZone = (await api(owner, '/me/preferences')).timezone_override;
   const users = (await api(owner, '/users')).items;
   if (!users.some((u) => u.username === 'state-user'))
     await api(owner, '/users', 'POST', {
@@ -144,7 +144,7 @@ try {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page
     .getByLabel('Display timezone', { exact: true })
-    .fill('Europe/Paris');
+    .selectOption('Europe/Paris');
   await page
     .getByRole('button', { name: 'Save display preferences', exact: true })
     .click();
@@ -198,7 +198,7 @@ try {
       favorite: originalFlags.favorite,
       watch_later: originalFlags.watch_later,
     }).catch(() => {});
-  if (originalZone)
+  if (originalZone !== undefined)
     await api(owner, '/me/preferences', 'PUT', {
       timezone: originalZone,
     }).catch(() => {});

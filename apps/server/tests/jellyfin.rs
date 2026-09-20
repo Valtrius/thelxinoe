@@ -30,7 +30,7 @@ async fn fixture() -> (tempfile::TempDir, AppState, String) {
         .call(move |db| {
             for name in ["alice", "bob"] {
                 db.execute(
-                    "INSERT INTO users VALUES (?1,?1,?2,'user','UTC',1)",
+                    "INSERT INTO users(id,username,password_hash,role,timezone,created_at) VALUES (?1,?1,?2,'user','UTC',1)",
                     rusqlite::params![name, hash],
                 )?;
             }

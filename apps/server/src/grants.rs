@@ -38,7 +38,7 @@ pub async fn resolve(
     let hash = thelxinoe_auth::digest(token);
     let resource = resource.to_string();
     state.db.call(move|db|{
-        let query=|db:&rusqlite::Connection|db.query_row("SELECT u.id,u.username,u.role,u.timezone,s.id,s.transport FROM playback_grants g JOIN sessions s ON s.id=g.session_id JOIN users u ON u.id=g.user_id WHERE g.token_hash=?1 AND g.resource=?2 AND g.expires_at>?3 AND s.expires_at>?3",params![hash,resource,now()],|r|Ok(Principal{user:thelxinoe_auth::user_row(r)?,session_id:r.get(4)?,transport:r.get(5)?})).optional();
+        let query=|db:&rusqlite::Connection|db.query_row("SELECT u.id,u.username,u.role,u.timezone,s.id,s.transport FROM playback_grants g JOIN sessions s ON s.id=g.session_id JOIN user_profiles u ON u.id=g.user_id WHERE g.token_hash=?1 AND g.resource=?2 AND g.expires_at>?3 AND s.expires_at>?3",params![hash,resource,now()],|r|Ok(Principal{user:thelxinoe_auth::user_row(r)?,session_id:r.get(4)?,transport:r.get(5)?})).optional();
         if !consume{return Ok(query(db)?);}
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;let principal=query(&tx)?;
         tx.execute("DELETE FROM playback_grants WHERE token_hash=?1",[hash])?;tx.commit()?;Ok(principal)

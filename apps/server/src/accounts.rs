@@ -67,7 +67,7 @@ async fn respond_session(
         .db
         .call(move |db| {
             Ok(db.query_row(
-                "SELECT id,username,role,timezone FROM users WHERE id=?1",
+                "SELECT id,username,role,timezone FROM user_profiles WHERE id=?1",
                 [user_id],
                 user_row,
             )?)
@@ -115,7 +115,7 @@ pub async fn setup(
                 return Ok(false);
             }
             tx.execute(
-                "INSERT INTO users VALUES (?1,?2,?3,'admin','UTC',?4)",
+                "INSERT INTO users(id,username,password_hash,role,timezone,created_at) VALUES (?1,?2,?3,'admin','UTC',?4)",
                 params![uid, username, hash, now()],
             )?;
             tx.execute(
@@ -243,7 +243,7 @@ pub async fn users(State(state): State<AppState>, headers: HeaderMap) -> Result<
         .db
         .call(|db| {
             Ok(db
-                .prepare("SELECT id,username,role,timezone FROM users ORDER BY username")?
+                .prepare("SELECT id,username,role,timezone FROM user_profiles ORDER BY username")?
                 .query_map([], user_row)?
                 .collect::<std::result::Result<Vec<_>, _>>()?)
         })
@@ -272,7 +272,7 @@ pub async fn create_user(
     let hash = password_hash(user.password).await?;
     let result=state.db.call(move |db|{
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;let uid=id();
-        let n=tx.execute("INSERT OR IGNORE INTO users VALUES (?1,?2,?3,?4,'UTC',?5)",params![uid,user.username,hash,user.role.as_str(),now()])?;
+        let n=tx.execute("INSERT OR IGNORE INTO users(id,username,password_hash,role,timezone,created_at) VALUES (?1,?2,?3,?4,'UTC',?5)",params![uid,user.username,hash,user.role.as_str(),now()])?;
         if n==0{return Ok(None);}
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'user.create',?2,?3)",params![p.user.id,uid,now()])?;tx.commit()?;Ok(Some(uid))
     }).await?;
@@ -311,6 +311,14 @@ pub async fn save_settings(
         .timezone
         .parse::<chrono_tz::Tz>()
         .map_err(|_| ApiError::bad("Unknown timezone"))?;
+    let timezone = settings.timezone.clone();
     state.db.call(move |db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;tx.execute("INSERT INTO settings VALUES ('timezone',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[settings.timezone])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'settings.update','server',?2)",params![p.user.id,now()])?;tx.commit()?;Ok(())}).await?;
+    state
+        .emit(
+            None,
+            "server.settings.changed",
+            json!({"timezone":timezone}),
+        )
+        .await?;
     Ok(Json(json!({"ok":true})))
 }

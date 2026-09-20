@@ -55,6 +55,7 @@
   import MetadataSettings from './lib/MetadataSettings.svelte';
   import PlaybackSettings from './lib/PlaybackSettings.svelte';
   import SegmentSettings from './lib/SegmentSettings.svelte';
+  import TimezoneSelect from './lib/TimezoneSelect.svelte';
   import AdminOperations from './lib/AdminOperations.svelte';
   import BackupSettings from './lib/BackupSettings.svelte';
   import ProductUpdates from './lib/ProductUpdates.svelte';
@@ -140,6 +141,7 @@
   let newUsername = $state(''),
     newPassword = $state(''),
     newRole = $state<'admin' | 'user'>('user');
+  let preferencesRevision = $state(0);
   let timezone = $state('UTC'),
     health = $state<{
       version: string;
@@ -295,6 +297,20 @@
             (event.payload as { appearance: Appearance }).appearance,
           );
         if (event.kind === 'notifications.changed') notificationRevision++;
+        if (
+          event.kind === 'preferences.changed' ||
+          event.kind === 'server.settings.changed'
+        ) {
+          preferencesRevision++;
+          if (event.kind === 'server.settings.changed')
+            timezone = (event.payload as { timezone: string }).timezone;
+          const userId = user?.id;
+          void api<{ user: User }>('/auth/me')
+            .then((result) => {
+              if (user?.id === userId) user = result.user;
+            })
+            .catch((e) => (error = String(e)));
+        }
         if (
           [
             'media-state.changed',
@@ -609,6 +625,7 @@
             {#if settingsSection === 'account'}
               <UserPreferences
                 {user}
+                revision={preferencesRevision}
                 changed={(zone) => {
                   if (user) user = { ...user, timezone: zone };
                 }}
@@ -728,13 +745,17 @@
                       });
                     }}
                   >
-                    <label
-                      >Server timezone<input
-                        bind:value={timezone}
-                        placeholder="Europe/Paris"
-                      /></label
-                    ><button class="secondary" disabled={busy}>Save</button>
+                    <TimezoneSelect
+                      label="Server default timezone"
+                      bind:value={timezone}
+                      disabled={busy}
+                    />
+                    <button class="secondary" disabled={busy}>Save</button>
                   </form>
+                  <p class="muted">
+                    Used by everyone who has not chosen a personal display
+                    timezone. Stored timestamps remain in UTC.
+                  </p>
                 </section>
               {/if}
               {#if settingsSection === 'people'}<section class="panel">

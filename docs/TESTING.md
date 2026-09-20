@@ -89,7 +89,9 @@ node scripts/test-user-media.mjs
 
 This exercises separate users' Favorites and Watch Later, owner-controlled shared playlists, independent playlist favorites, actual playlist playback, queue restoration after reload, separate browser-client queues, display timezone and history permissions through HTTPS. Rust integration tests additionally cover stale revisions, late progress from an earlier queued track, seeks not inflating viewing time, the correct edition in Continue Watching, and history surviving device revocation.
 
-Playback time is accumulated from observed position advances bounded by elapsed reporting time. Each report can add at most 30 seconds; large seek jumps are excluded. Timestamps are stored in UTC. History displays the user's selected timezone; its date filters explicitly use UTC.
+Playback time is accumulated from observed position advances bounded by elapsed reporting time. Each report can add at most 30 seconds; large seek jumps are excluded. Timestamps are stored in UTC. History uses the server default timezone unless the user chooses a personal override; its date filters explicitly use UTC. Both timezone selectors list every timezone supported by the server. Choosing “Use server default” resumes inheritance, while explicitly choosing UTC remains a personal override. Regional timezones apply daylight saving rules automatically.
+
+Migration 30 preserves existing non-UTC user choices. Existing UTC accounts inherit the server default because earlier versions did not record whether UTC had been explicitly selected. Rust tests cover migration, new accounts, default changes, personal overrides, reset to inheritance, and the complete timezone list. Timezone changes emit events so connected clients refresh their display preferences.
 
 ## Windows MPV playback
 
