@@ -106,6 +106,15 @@ try {
     storageState: await api.storageState(),
   });
   await context.addInitScript(() => {
+    // Match the constant-signal FLAC fixture's rate. Resampling its edges from
+    // 48 kHz to a runner's default 44.1 kHz introduces filter ringing, which is
+    // unrelated to a gap between the two scheduled buffers.
+    const NativeAudioContext = window.AudioContext;
+    window.AudioContext = class extends NativeAudioContext {
+      constructor(options = {}) {
+        super({ ...options, sampleRate: 48000 });
+      }
+    };
     window.__audioProbe = [];
     const connect = AudioNode.prototype.connect;
     AudioNode.prototype.connect = function (...args) {
@@ -283,11 +292,12 @@ try {
     };
   });
   assert.ok(Math.abs(audioProof.gap) < 1 / audioProof.rate);
+  assert.equal(audioProof.rate, 48000);
   assert.ok(Math.abs(audioProof.gain - 0.5) < 0.00001);
   assert.ok(audioProof.min > 0.249 && audioProof.max < 0.251);
   await page.getByRole('button', { name: 'Close player', exact: true }).click();
   console.log(
-    'Real browser FLAC sequencing has a sample-continuous seam with ReplayGain applied (-6.02 dB).',
+    'Real browser FLAC sequencing at 48 kHz has a sample-continuous seam with ReplayGain applied (-6.02 dB).',
   );
   const name = `viewer-${Date.now()}`;
   await call('/users', 'POST', {
