@@ -25,9 +25,15 @@ async function login(page, username) {
     .fill('test-only long passphrase');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Home', exact: true }).click();
   await expect(
-    page.getByRole('region', { name: 'Favorites', exact: true }),
+    page.getByRole('heading', { name: 'Your collections', exact: true }),
   ).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() => localStorage.getItem('thelxinoe-client-id')),
+    )
+    .not.toBeNull();
 }
 try {
   await login(page, 'admin');
@@ -58,14 +64,14 @@ try {
   await expect(
     page
       .getByRole('region', { name: 'Favorites', exact: true })
-      .getByRole('button', { name: 'Direct', exact: true }),
+      .getByRole('button', { name: 'Direct 2020', exact: true }),
   ).toBeVisible();
   await login(other, 'state-user');
   expect((await api(guest, `/catalog/${movie.id}/state`)).favorite).toBe(false);
   await expect(
     other
       .getByRole('region', { name: 'Favorites', exact: true })
-      .getByRole('button', { name: 'Direct', exact: true }),
+      .getByRole('button', { name: 'Direct 2020', exact: true }),
   ).toHaveCount(0);
   await page.getByRole('button', { name: 'Playlists', exact: true }).click();
   await page.getByRole('button', { name: 'New playlist', exact: true }).click();
@@ -129,6 +135,10 @@ try {
   await page.getByRole('button', { name: 'Close player', exact: true }).click();
   await page.reload();
   await expect(
+    page.getByRole('heading', { name: 'Playlists', exact: true }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'Home', exact: true }).click();
+  await expect(
     page.getByRole('region', { name: 'Saved music queue', exact: true }),
   ).toBeVisible();
   await expect(
@@ -143,7 +153,7 @@ try {
   expect((await api(second, `/me/queue/${otherClient}`)).items).toHaveLength(0);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page
-    .getByLabel('Display timezone', { exact: true })
+    .getByRole('combobox', { name: 'Display timezone', exact: true })
     .selectOption('Europe/Paris');
   await page
     .getByRole('button', { name: 'Save display preferences', exact: true })
