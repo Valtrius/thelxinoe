@@ -1,6 +1,79 @@
 import { test, expect, type Page } from '@playwright/test';
 import { installUiFixture } from './helpers/ui-fixture';
 
+test('profile pictures are cropped, resized, saved and removable', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page);
+  let saved: string | null = null;
+  await page.route('**/api/v1/me/avatar', async (route) => {
+    saved = route.request().postDataJSON().image;
+    await route.fulfill({ json: { avatar: saved } });
+  });
+  await page.goto('/');
+  const data = await page.evaluate(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 256;
+    const context = canvas.getContext('2d')!;
+    context.fillStyle = '#ff0000';
+    context.fillRect(0, 0, 256, 256);
+    context.fillStyle = '#0000ff';
+    context.fillRect(256, 0, 256, 256);
+    return canvas.toDataURL('image/png').split(',')[1];
+  });
+  await page.getByLabel('Choose a picture').setInputFiles({
+    name: 'two-colors.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from(data, 'base64'),
+  });
+  const preview = page.getByRole('button', { name: 'Reframe profile picture' });
+  await expect(preview).toBeVisible();
+  await page
+    .getByLabel('Picture zoom')
+    .evaluate((element: HTMLInputElement) => {
+      element.value = '2';
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  await preview.scrollIntoViewIfNeeded();
+  const bounds = (await preview.boundingBox())!;
+  await page.mouse.move(bounds.x + 128, bounds.y + 128);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x - 150, bounds.y + 128, { steps: 5 });
+  await page.mouse.up();
+  await page.getByLabel('Saved picture size').selectOption('128');
+  await page.getByRole('button', { name: 'Save picture', exact: true }).click();
+  await expect(
+    page.getByRole('status').filter({ hasText: 'Profile picture saved' }),
+  ).toBeVisible();
+  const crop = await page.evaluate(async (source) => {
+    const image = new Image();
+    image.src = source!;
+    await image.decode();
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 128;
+    const context = canvas.getContext('2d')!;
+    context.drawImage(image, 0, 0);
+    return {
+      width: image.naturalWidth,
+      height: image.naturalHeight,
+      pixel: [...context.getImageData(64, 64, 1, 1).data],
+    };
+  }, saved);
+  expect(crop.width).toBe(128);
+  expect(crop.height).toBe(128);
+  expect(crop.pixel[2]).toBeGreaterThan(230);
+  expect(crop.pixel[0]).toBeLessThan(20);
+  await expect(page.locator('.sidebar-profile .avatar img')).toHaveAttribute(
+    'src',
+    saved!,
+  );
+  await page.getByRole('button', { name: 'Remove picture' }).click();
+  await expect(page.locator('.sidebar-profile .avatar img')).toHaveCount(0);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 async function expectFullHeightNavigation(page: Page) {
   await expect
     .poll(() =>

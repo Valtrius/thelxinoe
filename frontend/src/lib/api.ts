@@ -12,6 +12,7 @@ export type User = {
   username: string;
   role: 'admin' | 'user';
   timezone: string;
+  avatar?: string | null;
 };
 export class ApiError extends Error {
   constructor(

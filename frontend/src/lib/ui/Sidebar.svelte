@@ -174,10 +174,17 @@
           aria-hidden="true"
         ></span>
         <span
-          class="avatar grid size-7.5 shrink-0 place-items-center rounded-full border border-line bg-surface-soft text-accent group-[.collapsed]/sidebar:size-7"
+          class="avatar grid size-7.5 shrink-0 place-items-center overflow-hidden rounded-full border border-line bg-surface-soft text-accent group-[.collapsed]/sidebar:size-7"
           data-sidebar-resize="xy"
-          title={user.username}>{user.username[0].toUpperCase()}</span
-        ><span
+          title={user.username}
+        >
+          {#if user.avatar}<img
+              src={user.avatar}
+              alt=""
+              class="size-full object-cover"
+            />
+          {:else}{user.username[0].toUpperCase()}{/if}
+        </span><span
           class="profile-label pointer-events-none absolute left-14.75 w-17.75 overflow-hidden text-[11px] whitespace-nowrap transition-opacity duration-150 group-[.collapsed]/sidebar:opacity-0"
           ><strong class="block truncate">{user.username}</strong><small
             class="mt-0.5 text-[9px]"

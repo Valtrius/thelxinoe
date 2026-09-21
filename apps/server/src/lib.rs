@@ -2,6 +2,7 @@ mod accounts;
 #[cfg(test)]
 mod accounts_tests;
 mod appearance;
+mod avatars;
 pub mod config;
 pub mod error;
 mod grants;
@@ -144,6 +145,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/login", post(accounts::login))
         .route("/api/v1/auth/logout", post(accounts::logout))
         .route("/api/v1/auth/me", get(accounts::me))
+        .route(
+            "/api/v1/me/avatar",
+            axum::routing::put(avatars::save).layer(DefaultBodyLimit::max(512 * 1024)),
+        )
         .route(
             "/api/v1/me/password",
             axum::routing::put(accounts::change_password),

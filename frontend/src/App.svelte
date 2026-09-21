@@ -86,6 +86,7 @@
   import History from './lib/History.svelte';
   import UserPreferences from './lib/UserPreferences.svelte';
   import PasswordSettings from './lib/PasswordSettings.svelte';
+  import ProfilePicture from './lib/ProfilePicture.svelte';
   import QuickConnect from './lib/QuickConnect.svelte';
   import OnlineAccounts from './lib/OnlineAccounts.svelte';
   import OnlineSettings from './lib/OnlineSettings.svelte';
@@ -316,7 +317,8 @@
         if (event.kind === 'notifications.changed') notificationRevision++;
         if (
           event.kind === 'preferences.changed' ||
-          event.kind === 'server.settings.changed'
+          event.kind === 'server.settings.changed' ||
+          event.kind === 'account.profile.changed'
         ) {
           preferencesRevision++;
           if (event.kind === 'server.settings.changed')
@@ -694,6 +696,12 @@
         {#if section === 'Settings'}
           <SettingsLayout {user} bind:active={settingsSection}>
             {#if settingsSection === 'account'}
+              <ProfilePicture
+                {user}
+                changed={(id, avatar) => {
+                  if (user?.id === id) user = { ...user, avatar };
+                }}
+              />
               <UserPreferences
                 {user}
                 revision={preferencesRevision}

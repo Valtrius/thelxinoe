@@ -73,6 +73,7 @@ async fn respond_session(
             )?)
         })
         .await?;
+    let user = crate::avatars::profile(state, user).await?;
     let mut response =
         Json(json!({"user":user,"token":if transport=="device"{Some(&raw)}else{None}}))
             .into_response();
@@ -266,8 +267,9 @@ pub async fn change_password(
     Ok(Json(json!({"saved":true})))
 }
 pub async fn me(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
+    let user = security::principal(&state, &headers).await?.user;
     Ok(Json(
-        json!({"user":security::principal(&state,&headers).await?.user}),
+        json!({"user":crate::avatars::profile(&state, user).await?}),
     ))
 }
 pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
