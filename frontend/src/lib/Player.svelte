@@ -479,17 +479,35 @@
   </div>
 
   {#if error}
-    <div class="player-status" data-sidebar-resize="xy-pos" role="alert">
-      <AlertCircle size={28} />
-      <p>{error}</p>
-      <button class="retry-button" onclick={() => void open(choice)}
-        >Retry playback</button
+    <div
+      class="player-status"
+      data-sidebar-resize="xy"
+      data-sidebar-resize-origin
+      role="alert"
+    >
+      <span class="inline-flex" data-sidebar-resize="xy-pos"
+        ><AlertCircle size={28} /></span
+      >
+      <p data-sidebar-resize="xy-pos">{error}</p>
+      <button
+        class="retry-button"
+        data-sidebar-resize="xy-pos"
+        onclick={() => void open(choice)}>Retry playback</button
       >
     </div>
   {:else if loading}
-    <div class="player-status" data-sidebar-resize="xy-pos" role="status">
-      <span class="loading-spinner"><LoaderCircle size={36} /></span>
-      <p>{busy ? 'Preparing playback…' : 'Buffering…'}</p>
+    <div
+      class="player-status"
+      data-sidebar-resize="xy"
+      data-sidebar-resize-origin
+      role="status"
+    >
+      <span class="inline-flex" data-sidebar-resize="xy-pos"
+        ><span class="loading-spinner"><LoaderCircle size={36} /></span></span
+      >
+      <p data-sidebar-resize="xy-pos">
+        {busy ? 'Preparing playback…' : 'Buffering…'}
+      </p>
     </div>
   {/if}
 

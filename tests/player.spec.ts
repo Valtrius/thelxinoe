@@ -858,6 +858,115 @@ test('the player and its controls follow sidebar resizing without clipping or st
   expect(state.errors).toEqual([]);
 });
 
+test('player loading and error messages stay centered during sidebar resizing', async ({
+  page,
+}) => {
+  const state = await fixture(page, { app: true, hold: true, fail: true });
+  await page
+    .getByRole('button', { name: 'Watch Channel 0', exact: true })
+    .click();
+  await expect(page.locator('.player')).toHaveCSS('transform', 'none');
+  await page.evaluate(() => {
+    const animate = Element.prototype.animate;
+    const animations: Animation[] = [];
+    Reflect.set(window, 'statusTestAnimations', animations);
+    Element.prototype.animate = function (keyframes, options) {
+      const animation = animate.call(this, keyframes, options);
+      if (this.hasAttribute('data-sidebar-resize')) {
+        animation.pause();
+        animations.push(animation);
+      }
+      return animation;
+    };
+  });
+  for (const phase of ['loading', 'error']) {
+    if (phase === 'error') {
+      state.metadata.release();
+      state.preparation.release();
+      await expect(page.getByRole('alert')).toContainText(
+        'The stream is temporarily unavailable',
+      );
+    } else await expect(page.getByRole('status')).toBeVisible();
+    for (const width of [1280, 1000]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.evaluate(
+        () =>
+          new Promise((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(resolve)),
+          ),
+      );
+      for (const direction of ['Collapse', 'Expand']) {
+        await page
+          .getByRole('button', { name: `${direction} sidebar` })
+          .click();
+        for (const time of [0, 25, 50, 100, 200]) {
+          const frame = await page.evaluate((time) => {
+            for (const animation of Reflect.get(
+              window,
+              'statusTestAnimations',
+            ) as Animation[])
+              animation.currentTime = time;
+            const box = (element: Element) =>
+              element.getBoundingClientRect().toJSON();
+            const status = document.querySelector('.player-status')!;
+            const retry = status.querySelector('button');
+            const retryBox = retry ? box(retry) : null;
+            return {
+              player: box(document.querySelector('.player')!),
+              status: box(status),
+              children: [...status.children].map(box),
+              spinnerRunning: status
+                .querySelector('.loading-spinner')
+                ?.getAnimations()
+                .some((animation) => animation.playState === 'running'),
+              retryClickable:
+                retryBox &&
+                document
+                  .elementsFromPoint(
+                    retryBox.x + retryBox.width / 2,
+                    retryBox.y + retryBox.height / 2,
+                  )
+                  .includes(retry!),
+            };
+          }, time);
+          const centerX = frame.player.x + frame.player.width / 2;
+          const centerY = frame.player.y + frame.player.height / 2 - 12;
+          expect(
+            frame.status.x + frame.status.width / 2,
+            `${phase}: ${direction} at ${time}ms`,
+          ).toBeCloseTo(centerX, 0);
+          expect(frame.status.y + frame.status.height / 2).toBeCloseTo(
+            centerY,
+            0,
+          );
+          for (const child of frame.children)
+            expect(child.x + child.width / 2).toBeCloseTo(centerX, 0);
+          const first = frame.children[0],
+            last = frame.children.at(-1)!;
+          expect((first.y + last.bottom) / 2).toBeCloseTo(centerY, 0);
+          expect(first.width).toBeCloseTo(phase === 'error' ? 28 : 36, 0);
+          expect(first.height).toBeCloseTo(phase === 'error' ? 28 : 36, 0);
+          if (phase === 'loading') expect(frame.spinnerRunning).toBe(true);
+          else expect(frame.retryClickable).toBe(true);
+          if (time === 50 && width === 1000)
+            await page.screenshot({
+              path: `.local/player-ui/status-${phase}-${direction.toLowerCase()}.png`,
+            });
+        }
+        await page.evaluate(() => {
+          const animations = Reflect.get(
+            window,
+            'statusTestAnimations',
+          ) as Animation[];
+          for (const animation of animations) animation.finish();
+          animations.length = 0;
+        });
+      }
+    }
+  }
+  expect(state.errors).toEqual([]);
+});
+
 test('the online player shares the page scrollbar and closes by sliding the feed upward', async ({
   page,
 }) => {
