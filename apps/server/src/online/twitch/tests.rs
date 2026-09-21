@@ -59,6 +59,13 @@ async fn setup() -> (
             assert!(matches!(headers["authorization"].to_str().unwrap(),"OAuth access-secret"|"OAuth new-access-secret"));
             Json(json!({"client_id":"fixtureclient","login":"fixtureviewer","user_id":"123","scopes":[SCOPE],"expires_in":3600}))
         }))
+        .route("/users",get(|headers:HeaderMap,axum::extract::RawQuery(query):axum::extract::RawQuery|async move {
+            assert_eq!(headers["client-id"], "fixtureclient");
+            let users = url::form_urlencoded::parse(query.as_deref().unwrap_or("").as_bytes())
+                .filter(|(key, _)| key == "id")
+                .map(|(_, id)| json!({"id":id,"display_name":format!("User {id}"),"profile_image_url":format!("https://static-cdn.jtvnw.net/{id}.png")})).collect::<Vec<_>>();
+            Json(json!({"data":users}))
+        }))
         .route("/streams/followed",get(move|headers:HeaderMap,Query(query):Query<BTreeMap<String,String>>|{let c=page_control.clone();async move {
             assert_eq!(headers["client-id"],"fixtureclient");assert_eq!(query["user_id"],"123");
             c.pages.fetch_add(1,Ordering::SeqCst);
@@ -107,6 +114,45 @@ async fn ready_sync(state: &AppState) {
         })
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn connected_twitch_avatar_uses_the_viewer_and_refreshes_existing_connections() {
+    let (_temp, state, cookie, control, server) = setup().await;
+    let attempt = start_attempt(&state, &cookie).await;
+    control.mode.store(1, Ordering::SeqCst);
+    poll(&state, &attempt).await.unwrap();
+    for _ in 0..2 {
+        state.db.call(|db| {
+            db.execute("UPDATE online_accounts SET avatar_url=NULL,profile_checked_at=0 WHERE provider='twitch'", [])?;
+            Ok(())
+        }).await.unwrap();
+        ready_sync(&state).await;
+        sync_tick(&state).await.unwrap();
+        let account = call(&state, "/api/v1/online/twitch", "GET", Value::Null, &cookie)
+            .await
+            .2;
+        assert_eq!(
+            account["account"]["avatar_url"],
+            "https://static-cdn.jtvnw.net/123.png"
+        );
+        assert_eq!(account["account"]["display_name"], "User 123");
+    }
+    call(
+        &state,
+        "/api/v1/online/twitch",
+        "DELETE",
+        Value::Null,
+        &cookie,
+    )
+    .await;
+    assert!(
+        call(&state, "/api/v1/online/twitch", "GET", Value::Null, &cookie)
+            .await
+            .2["account"]["avatar_url"]
+            .is_null()
+    );
+    server.abort();
 }
 #[tokio::test]
 async fn device_connection_is_encrypted_session_bound_and_rate_limited() {

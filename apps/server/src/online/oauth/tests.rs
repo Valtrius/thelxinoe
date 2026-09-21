@@ -117,7 +117,7 @@ async fn oauth_is_browser_bound_single_use_and_keeps_tokens_encrypted() {
         }
     })).route("/channels",axum::routing::get(|headers:HeaderMap|async move{
         assert_eq!(headers[header::AUTHORIZATION],"Bearer viewer-access-secret");
-        Json(json!({"items":[{"id":"UCfixture","snippet":{"title":"Alice's channel"}}]}))
+        Json(json!({"items":[{"id":"UCfixture","snippet":{"title":"Alice's channel","thumbnails":{"default":{"url":"https://yt3.ggpht.com/alice-avatar.jpg"}}}}]}))
     }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -176,6 +176,10 @@ async fn oauth_is_browser_bound_single_use_and_keeps_tokens_encrypted() {
     .await
     .2;
     assert_eq!(mine["account"]["display_name"], "Alice's channel");
+    assert_eq!(
+        mine["account"]["avatar_url"],
+        "https://yt3.ggpht.com/alice-avatar.jpg"
+    );
     assert_eq!(mine["account"]["status"], "connected");
     assert!(!mine.to_string().contains("secret"));
     let encrypted = state

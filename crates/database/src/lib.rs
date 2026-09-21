@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-pub const SCHEMA_VERSION: u32 = 32;
+pub const SCHEMA_VERSION: u32 = 33;
 
 /// Inspect a quiesced database without applying migrations or creating missing files.
 pub fn verify_snapshot(path: &Path) -> Result<u32> {
@@ -91,6 +91,7 @@ impl Database {
             include_str!("../migrations/030.sql"),
             include_str!("../migrations/031.sql"),
             include_str!("../migrations/032.sql"),
+            include_str!("../migrations/033.sql"),
         ];
         if version > migrations.len() as i64 {
             anyhow::bail!("Database is newer than this server; use the matching release");

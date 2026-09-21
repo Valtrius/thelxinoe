@@ -133,7 +133,7 @@ async fn response(
 async fn account(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
     let data=state.db.call(move|db|{
-        let account=db.query_row("SELECT status,display_name FROM online_accounts WHERE user_id=?1 AND provider='twitch'",[&p.user.id],|r|Ok(json!({"status":r.get::<_,String>(0)?,"display_name":r.get::<_,String>(1)?}))).optional()?.unwrap_or(json!({"status":"disconnected","display_name":""}));
+        let account=db.query_row("SELECT status,display_name,avatar_url FROM online_accounts WHERE user_id=?1 AND provider='twitch'",[&p.user.id],|r|Ok(json!({"status":r.get::<_,String>(0)?,"display_name":r.get::<_,String>(1)?,"avatar_url":r.get::<_,Option<String>>(2)?}))).optional()?.unwrap_or(json!({"status":"disconnected","display_name":"","avatar_url":null}));
         let attempt=db.query_row("SELECT generation,device,expires_at,error FROM twitch_attempts WHERE user_id=?1 AND session_id=?2 AND expires_at>?3",params![p.user.id,p.session_id,now()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Vec<u8>>(1)?,r.get::<_,i64>(2)?,r.get::<_,Option<String>>(3)?))).optional()?;
         let sync=db.query_row("SELECT last_complete,next_run,error FROM twitch_sync WHERE user_id=?1",[p.user.id],|r|Ok(json!({"last_complete":r.get::<_,Option<i64>>(0)?,"next_run":r.get::<_,i64>(1)?,"error":r.get::<_,Option<String>>(2)?}))).optional()?;
         Ok((account,attempt,sync))
@@ -221,7 +221,7 @@ async fn start(State(state): State<AppState>, headers: HeaderMap) -> Result<Json
 async fn clear(state: &AppState, headers: &HeaderMap, delete: bool) -> Result<Json<Value>> {
     let p = security::principal(state, headers).await?;
     let stopped=state.db.call(move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        tx.execute("UPDATE online_accounts SET credential=NULL,status='disconnected',expires_at=0,generation=?1,updated_at=?2 WHERE user_id=?3 AND provider='twitch'",params![id(),now(),p.user.id])?;
+        tx.execute("UPDATE online_accounts SET credential=NULL,status='disconnected',expires_at=0,generation=?1,updated_at=?2,avatar_url=NULL,profile_checked_at=0 WHERE user_id=?3 AND provider='twitch'",params![id(),now(),p.user.id])?;
         tx.execute("DELETE FROM twitch_attempts WHERE user_id=?1",[&p.user.id])?;tx.execute("DELETE FROM twitch_sync WHERE user_id=?1",[&p.user.id])?;
         let stopped=if delete {
             let ids=tx.prepare("SELECT id FROM playback_sessions WHERE user_id=?1 AND live_media_id LIKE 'twitch:%' AND state IN ('ready','playing','paused')")?.query_map([&p.user.id],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -354,7 +354,7 @@ async fn poll(state: &AppState, a: &Attempt) -> Result<()> {
     let connected=state.db.call(move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let valid=tx.query_row("SELECT EXISTS(SELECT 1 FROM twitch_attempts t JOIN sessions s ON s.id=t.session_id JOIN online_accounts a ON a.user_id=t.user_id AND a.provider='twitch' AND a.generation=t.generation WHERE t.user_id=?1 AND t.generation=?2 AND t.session_id=?3 AND s.expires_at>?4 AND t.expires_at>?4)",params![user,generation,session,now()],|r|r.get::<_,bool>(0))?;
         if !valid{return Ok(false)}
-        tx.execute("UPDATE online_accounts SET credential=?1,status='connected',external_id=?2,display_name=?3,expires_at=?4,updated_at=?5 WHERE user_id=?6 AND provider='twitch' AND generation=?7",params![encrypted,v.user_id,v.login,now()+v.expires_in.min(86400*60),now(),user,generation])?;
+        tx.execute("UPDATE online_accounts SET credential=?1,status='connected',external_id=?2,display_name=?3,expires_at=?4,updated_at=?5,avatar_url=NULL,profile_checked_at=0 WHERE user_id=?6 AND provider='twitch' AND generation=?7",params![encrypted,v.user_id,v.login,now()+v.expires_in.min(86400*60),now(),user,generation])?;
         tx.execute("INSERT INTO twitch_sync(user_id,generation,validated_at) VALUES (?1,?2,?3) ON CONFLICT(user_id) DO UPDATE SET generation=excluded.generation,validated_at=excluded.validated_at,next_run=0,cursor='',snapshot='',pages=0,error=NULL,failures=0",params![user,generation,now()])?;
         tx.execute("DELETE FROM twitch_attempts WHERE user_id=?1 AND generation=?2",params![user,generation])?;tx.commit()?;Ok(true)
     }).await?;
@@ -541,46 +541,67 @@ async fn sync_step(state: &AppState, t: &Turn) -> Result<()> {
         }
     }
     let mut profiles = std::collections::HashMap::<String, String>::new();
-    if !limited && !rows.is_empty() {
-        let ids = rows
+    let owner = t.user.clone();
+    let profile_due = state.db.call(move |db| {
+        Ok(db.query_row("SELECT profile_checked_at<?1 FROM online_accounts WHERE user_id=?2 AND provider='twitch'", params![now()-86400,owner], |r|r.get::<_,bool>(0)).optional()?.unwrap_or(false))
+    }).await?;
+    let mut own_profile = None;
+    if !limited {
+        let mut ids = rows
             .iter()
             .filter_map(|r| r["user_id"].as_str().map(|id| ("id", id)))
             .collect::<Vec<_>>();
-        if let Ok((profile_status, profile_headers, users)) = response(
-            state
-                .online
-                .http
-                .get(format!("{}/users", state.online.twitch.api))
-                .bearer_auth(&credential.access_token)
-                .header("Client-Id", &client)
-                .query(&ids),
-        )
-        .await
-        {
-            if profile_status == axum::http::StatusCode::TOO_MANY_REQUESTS
-                || profile_headers
-                    .get("ratelimit-remaining")
-                    .is_some_and(|v| v == "0")
+        if profile_due && !ids.iter().any(|(_, id)| *id == t.external) {
+            ids.push(("id", t.external.as_str()));
+        }
+        for ids in ids.chunks(100) {
+            if let Ok((profile_status, profile_headers, users)) = response(
+                state
+                    .online
+                    .http
+                    .get(format!("{}/users", state.online.twitch.api))
+                    .bearer_auth(&credential.access_token)
+                    .header("Client-Id", &client)
+                    .query(ids),
+            )
+            .await
             {
-                limited = true;
-                reset = profile_headers
-                    .get("ratelimit-reset")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(now() + 60)
-                    .clamp(now() + 1, now() + 3600);
-            }
-            if profile_status.is_success()
-                && let Some(users) = users["data"].as_array()
-            {
-                for user in users.iter().take(100) {
-                    if let (Some(id), Some(image)) = (
-                        user["id"].as_str(),
-                        super::public_image(user["profile_image_url"].as_str()),
-                    ) {
-                        profiles.insert(id.to_owned(), image);
+                if profile_status == axum::http::StatusCode::TOO_MANY_REQUESTS
+                    || profile_headers
+                        .get("ratelimit-remaining")
+                        .is_some_and(|v| v == "0")
+                {
+                    limited = true;
+                    reset = profile_headers
+                        .get("ratelimit-reset")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(now() + 60)
+                        .clamp(now() + 1, now() + 3600);
+                }
+                if profile_status.is_success()
+                    && let Some(users) = users["data"].as_array()
+                {
+                    for user in users.iter().take(100) {
+                        if user["id"].as_str() == Some(t.external.as_str()) {
+                            own_profile = Some((
+                                user["display_name"]
+                                    .as_str()
+                                    .map(|name| name.chars().take(200).collect::<String>()),
+                                super::public_image(user["profile_image_url"].as_str()),
+                            ));
+                        }
+                        if let (Some(id), Some(image)) = (
+                            user["id"].as_str(),
+                            super::public_image(user["profile_image_url"].as_str()),
+                        ) {
+                            profiles.insert(id.to_owned(), image);
+                        }
                     }
                 }
+            }
+            if limited {
+                break;
             }
         }
     }
@@ -591,16 +612,29 @@ async fn sync_step(state: &AppState, t: &Turn) -> Result<()> {
     } else {
         t.snapshot.clone()
     };
-    state.db.call(move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let profile_changed = state.db.call(move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let valid=tx.query_row("SELECT EXISTS(SELECT 1 FROM online_accounts WHERE user_id=?1 AND provider='twitch' AND generation=?2 AND status='connected')",params![user,generation],|r|r.get::<_,bool>(0))?;
-        if !valid{return Ok(())}
+        if !valid{return Ok(false)}
+        let profile_changed = own_profile.is_some();
+        if let Some((name, avatar)) = own_profile {
+            tx.execute("UPDATE online_accounts SET display_name=COALESCE(?1,display_name),avatar_url=?2,profile_checked_at=?3 WHERE user_id=?4 AND provider='twitch'",params![name,avatar,now(),user])?;
+        }
         for r in rows {tx.execute("INSERT INTO twitch_streams(user_id,channel_id,login,display_name,title,category,viewers,started_at,snapshot,thumbnail_url,profile_image_url) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(user_id,channel_id) DO UPDATE SET login=excluded.login,display_name=excluded.display_name,title=excluded.title,category=excluded.category,viewers=excluded.viewers,started_at=excluded.started_at,snapshot=excluded.snapshot,thumbnail_url=excluded.thumbnail_url,profile_image_url=COALESCE(excluded.profile_image_url,twitch_streams.profile_image_url)",params![user,r["user_id"].as_str(),r["user_login"].as_str(),r["user_name"].as_str(),r["title"].as_str(),r["game_name"].as_str(),r["viewer_count"].as_i64(),r["started_at"].as_str(),snapshot,super::public_image(r["thumbnail_url"].as_str()).map(|url|url.replace("{width}","640").replace("{height}","360")),profiles.get(r["user_id"].as_str().unwrap_or(""))])?;}
         if next.is_empty(){
             tx.execute("DELETE FROM twitch_streams WHERE user_id=?1 AND snapshot<>?2",params![user,snapshot])?;
             tx.execute("UPDATE twitch_streams SET active=1 WHERE user_id=?1",[&user])?;
             tx.execute("UPDATE twitch_sync SET cursor='',snapshot='',pages=0,next_run=?1,last_complete=?2,failures=0,error=NULL WHERE user_id=?3 AND generation=?4",params![if limited{reset.max(now()+60)}else{now()+60},now(),user,generation])?;
         }else{tx.execute("UPDATE twitch_sync SET cursor=?1,snapshot=?2,pages=pages+1,next_run=?3,failures=0,error=NULL WHERE user_id=?4 AND generation=?5",params![next,snapshot,if limited{reset}else{now()+1},user,generation])?;}
-        tx.commit()?;Ok(())
+        tx.commit()?;Ok(profile_changed)
     }).await?;
+    if profile_changed {
+        state
+            .emit(
+                Some(t.user.clone()),
+                "online.account.changed",
+                json!({"provider":"twitch"}),
+            )
+            .await?;
+    }
     Ok(())
 }

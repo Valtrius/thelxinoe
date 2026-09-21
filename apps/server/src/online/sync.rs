@@ -289,21 +289,33 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
             let owner = user.clone();
             let after = turn.cursor.after.clone();
             let channels=state.db.call(move|db|Ok(db.prepare("SELECT channel_id FROM youtube_subscriptions WHERE user_id=?1 AND active=1 AND channel_id>?2 ORDER BY channel_id LIMIT 50")?.query_map(params![owner,after],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
-            if channels.is_empty() {
+            let owner = user.clone();
+            let profile = state.db.call(move |db| {
+                Ok(db.query_row("SELECT external_id FROM online_accounts WHERE user_id=?1 AND provider='youtube' AND external_id<>'' AND profile_checked_at<?2", params![owner, now()-86400], |row| row.get::<_, String>(0)).optional()?)
+            }).await?.filter(|_| channels.len() < 50);
+            if channels.is_empty() && profile.is_none() {
                 turn.cursor.phase = "uploads".into();
                 turn.cursor.after.clear();
                 turn.cursor.page.clear();
                 turn.cursor.pages = 0;
                 return save(state, turn, false, |_| Ok(())).await;
             }
-            let ids = channels.join(",");
+            // Reuse the channel metadata batch to refresh the connected profile.
+            // Existing accounts acquire an avatar without needing to reconnect.
+            let mut ids = channels.clone();
+            if let Some(profile) = &profile
+                && !ids.contains(profile)
+            {
+                ids.push(profile.clone());
+            }
+            let ids = ids.join(",");
             let data = youtube::get(
                 state,
                 &user,
                 &access,
                 "channels",
                 &[
-                    ("part", "contentDetails"),
+                    ("part", "contentDetails,snippet"),
                     ("id", &ids),
                     ("maxResults", "50"),
                 ],
@@ -326,12 +338,44 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
                     ))
                 })
                 .collect::<Vec<_>>();
-            turn.cursor.after = channels.last().unwrap().clone();
+            let own_channel = profile.as_ref().and_then(|id| {
+                items(&data)
+                    .ok()?
+                    .iter()
+                    .find(|item| item["id"].as_str() == Some(id.as_str()))
+            });
+            let avatar = own_channel.and_then(super::channel_avatar);
+            let name = own_channel
+                .and_then(|channel| channel["snippet"]["title"].as_str())
+                .map(|s| s.chars().take(200).collect::<String>());
+            let has_profile = own_channel.is_some();
+            let refresh_profile = profile.is_some();
+            let owner = user.clone();
+            turn.cursor.after = channels.last().cloned().unwrap_or_default();
+            if channels.is_empty() {
+                turn.cursor.phase = "uploads".into();
+                turn.cursor.after.clear();
+                turn.cursor.page.clear();
+                turn.cursor.pages = 0;
+            }
             save(state,turn,false,move|tx|{
+                if refresh_profile {
+                    tx.execute("UPDATE online_accounts SET profile_checked_at=?1,display_name=COALESCE(?2,display_name),avatar_url=CASE WHEN ?3 THEN ?4 ELSE avatar_url END WHERE user_id=?5 AND provider='youtube'",params![now(),name,has_profile,avatar,user])?;
+                }
                 for channel in channels {tx.execute("UPDATE youtube_subscriptions SET uploads=NULL WHERE user_id=?1 AND channel_id=?2",params![user,channel])?;}
                 for (channel,playlist) in rows {tx.execute("UPDATE youtube_subscriptions SET uploads=?1 WHERE user_id=?2 AND channel_id=?3",params![playlist,user,channel])?;}
                 Ok(())
-            }).await
+            }).await?;
+            if refresh_profile {
+                state
+                    .emit(
+                        Some(owner),
+                        "online.account.changed",
+                        json!({"provider":"youtube"}),
+                    )
+                    .await?;
+            }
+            Ok(())
         }
         "uploads" => {
             if turn.cursor.page.is_empty() {

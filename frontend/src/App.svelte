@@ -233,6 +233,7 @@
     settingsLoading = false;
   let catalogRevision = $state(0);
   let notificationRevision = $state(0);
+  let accountRevision = $state(0);
   let scans = $state<Record<string, { completed: number; total: number }>>({});
   let serverAddress = $state('');
   let updateRequired = $state('');
@@ -315,6 +316,7 @@
             (event.payload as { appearance: Appearance }).appearance,
           );
         if (event.kind === 'notifications.changed') notificationRevision++;
+        if (event.kind === 'online.account.changed') accountRevision++;
         if (
           event.kind === 'preferences.changed' ||
           event.kind === 'server.settings.changed' ||
@@ -712,6 +714,7 @@
               <AppearanceSettings />
               <PasswordSettings changed={() => void loadSettings()} />{/if}
             {#if settingsSection === 'online'}<OnlineAccounts
+                revision={accountRevision}
                 navigate={(name) => void navigate(name)}
               />{/if}
             {#if settingsSection === 'playback'}<PlaybackSettings />

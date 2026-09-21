@@ -131,6 +131,7 @@ export type OnlineAccount = {
   account: {
     status: string;
     display_name: string;
+    avatar_url?: string | null;
     external_id?: string;
     updated_at?: number;
   };

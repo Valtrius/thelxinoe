@@ -16,6 +16,101 @@ use std::sync::Arc;
 const CHANNEL: &str = "UCaaaaaaaaaaaaaaaaaaaaaa";
 const OTHER: &str = "UCbbbbbbbbbbbbbbbbbbbbbb";
 const VIDEO: &str = "abcdefghijk";
+
+#[tokio::test]
+async fn connected_youtube_avatar_is_backfilled_without_subscribing_to_own_channel() {
+    let (_temp, mut state, cookie) = fixture().await;
+    let generation = connect(&state, "alice").await;
+    state
+        .db
+        .call(|db| {
+            db.execute(
+                "UPDATE online_accounts SET external_id=?1 WHERE user_id='alice'",
+                [CHANNEL],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = requests.clone();
+    let server = stub(&mut state, axum::Router::new().route("/channels", get(move |Query(query): Query<HashMap<String,String>>| {
+        let count = count.clone();
+        async move {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(query["id"], CHANNEL);
+            assert!(query["part"].contains("snippet"));
+            Json(json!({"items":[{"id":CHANNEL,"snippet":{"title":"Alice","thumbnails":{"medium":{"url":"https://yt3.googleusercontent.com/alice.jpg"}}}}]}))
+        }
+    }))).await;
+    for _ in 0..2 {
+        step(
+            &state,
+            Turn {
+                user: "alice".into(),
+                generation: generation.clone(),
+                cursor: Cursor {
+                    phase: "channels".into(),
+                    ..Default::default()
+                },
+                failures: 0,
+            },
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let account = call(
+        &state,
+        "/api/v1/online/youtube",
+        "GET",
+        Value::Null,
+        &cookie,
+    )
+    .await
+    .2;
+    assert_eq!(
+        account["account"]["avatar_url"],
+        "https://yt3.googleusercontent.com/alice.jpg"
+    );
+    assert_eq!(account["account"]["display_name"], "Alice");
+    state
+        .db
+        .call(|db| {
+            assert_eq!(
+                db.query_row("SELECT COUNT(*) FROM youtube_subscriptions", [], |row| row
+                    .get::<_, i64>(
+                    0
+                ))?,
+                0
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+    call(
+        &state,
+        "/api/v1/online/youtube",
+        "DELETE",
+        Value::Null,
+        &cookie,
+    )
+    .await;
+    assert!(
+        call(
+            &state,
+            "/api/v1/online/youtube",
+            "GET",
+            Value::Null,
+            &cookie
+        )
+        .await
+        .2["account"]["avatar_url"]
+            .is_null()
+    );
+    server.abort();
+}
+
 pub(crate) async fn connect(state: &AppState, user: &str) -> String {
     let encrypted = state
         .secrets

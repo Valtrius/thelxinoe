@@ -240,6 +240,7 @@ async fn complete(state: &AppState, headers: &HeaderMap, input: Callback) -> Res
         .chars()
         .take(200)
         .collect::<String>();
+    let avatar = super::channel_avatar(channel);
     let external = channel["id"]
         .as_str()
         .filter(|s| s.len() <= 128)
@@ -257,7 +258,7 @@ async fn complete(state: &AppState, headers: &HeaderMap, input: Callback) -> Res
     let user = attempt.user.clone();
     let saved=state.db.call(move|db|{
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let saved=tx.execute("UPDATE online_accounts SET status='connected',credential=?1,expires_at=?2,display_name=?3,external_id=?4,updated_at=?5 WHERE user_id=?6 AND provider='youtube' AND generation=?7 AND EXISTS(SELECT 1 FROM sessions WHERE id=?8 AND user_id=?6 AND expires_at>?5)",params![encrypted,now()+expires,name,external,now(),attempt.user,attempt.generation,attempt.session])?==1;
+        let saved=tx.execute("UPDATE online_accounts SET status='connected',credential=?1,expires_at=?2,display_name=?3,external_id=?4,updated_at=?5,profile_checked_at=?5,avatar_url=?9 WHERE user_id=?6 AND provider='youtube' AND generation=?7 AND EXISTS(SELECT 1 FROM sessions WHERE id=?8 AND user_id=?6 AND expires_at>?5)",params![encrypted,now()+expires,name,external,now(),attempt.user,attempt.generation,attempt.session,avatar])?==1;
         if saved {tx.execute("INSERT INTO youtube_sync(user_id,generation) VALUES (?1,?2) ON CONFLICT(user_id) DO UPDATE SET generation=excluded.generation,cursor='{}',next_run=0,failures=0,error=NULL",params![attempt.user,attempt.generation])?;}
         tx.commit()?;Ok(saved)
     }).await?;

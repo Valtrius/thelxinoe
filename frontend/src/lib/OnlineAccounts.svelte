@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import { api } from './api';
   import {
     api as providerApi,
@@ -9,7 +9,10 @@
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
   import { errorClass } from './ui/styles';
-  let { navigate } = $props<{ navigate: (section: string) => void }>();
+  let { navigate, revision = 0 } = $props<{
+    navigate: (section: string) => void;
+    revision?: number;
+  }>();
   let accounts = $state<Partial<Record<'youtube' | 'twitch', OnlineAccount>>>(
     {},
   );
@@ -17,14 +20,22 @@
   let busy = $state(false),
     error = $state(''),
     deleting = $state('');
+  let request = 0;
   async function load() {
-    const [youtube, twitch, tracked] = await Promise.all([
-      api<OnlineAccount>('/online/youtube'),
-      api<OnlineAccount>('/online/twitch'),
-      api<KickFeed>('/online/kick'),
-    ]);
-    accounts = { youtube, twitch };
-    kick = tracked;
+    const current = ++request;
+    try {
+      const [youtube, twitch, tracked] = await Promise.all([
+        api<OnlineAccount>('/online/youtube'),
+        api<OnlineAccount>('/online/twitch'),
+        api<KickFeed>('/online/kick'),
+      ]);
+      if (current === request) {
+        accounts = { youtube, twitch };
+        kick = tracked;
+      }
+    } catch (caught) {
+      if (current === request) throw caught;
+    }
   }
   async function act(action: () => Promise<unknown>) {
     busy = true;
@@ -39,9 +50,11 @@
       busy = false;
     }
   }
-  onMount(() => {
-    void act(load);
+  $effect(() => {
+    void revision;
+    untrack(() => void load().catch((caught) => (error = String(caught))));
   });
+  onDestroy(() => request++);
 </script>
 
 <Panel>
@@ -57,15 +70,30 @@
     <div
       class="mb-4.5 flex flex-col items-start gap-4 border-b border-line py-4"
     >
-      <div>
-        <strong>{label}</strong>
-        <p class="mt-1.5 mb-0 text-muted">
-          {account?.account.status === 'connected'
-            ? account.account.display_name
-            : account?.account.status === 'reconnect_required'
-              ? 'Reconnect to resume synchronization.'
-              : 'Not connected'}
-        </p>
+      <div class="flex items-center gap-3">
+        {#if account?.account.status === 'connected' && account.account.avatar_url}
+          <img
+            src={account.account.avatar_url}
+            alt=""
+            referrerpolicy="no-referrer"
+            class="size-9 rounded-full border border-line object-cover"
+          />
+        {:else}
+          <span
+            class="grid size-9 place-items-center rounded-full border border-line bg-surface-soft text-xs font-semibold text-muted"
+            >{label[0]}</span
+          >
+        {/if}
+        <div>
+          <strong>{label}</strong>
+          <p class="mt-1.5 mb-0 text-muted">
+            {account?.account.status === 'connected'
+              ? account.account.display_name
+              : account?.account.status === 'reconnect_required'
+                ? 'Reconnect to resume synchronization.'
+                : 'Not connected'}
+          </p>
+        </div>
       </div>
       <div class="flex flex-wrap gap-2">
         <Button
@@ -87,7 +115,7 @@
           >{account?.account.status === 'connected' ? 'Reconnect' : 'Connect'}
           {label}</Button
         >
-        {#if account?.account.status !== 'disconnected'}<Button
+        {#if account && account.account.status !== 'disconnected'}<Button
             variant="secondary"
             size="form"
             disabled={busy}
