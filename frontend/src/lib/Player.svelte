@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, tick, untrack } from 'svelte';
+  import { PlaybackActivity } from './playback-activity';
   import Hls from 'hls.js';
   import {
     AlertCircle,
@@ -136,11 +137,24 @@
     revealControls();
   }
   function ready() {
-    if (active && player.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA)
+    if (
+      active &&
+      !player.seeking &&
+      player.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+    ) {
       buffering = false;
+      if (activity.setActive(!player.paused))
+        void report(player.paused ? 'paused' : 'playing');
+    }
+  }
+  let activity = new PlaybackActivity();
+  function waiting() {
+    if (!active) return;
+    buffering = true;
+    if (activity.setActive(false)) void report('paused');
   }
   const timer = setInterval(() => {
-    void report(paused ? 'paused' : 'playing');
+    void report(paused || buffering ? 'paused' : 'playing');
   }, 10000);
   $effect(() => {
     const current = choice;
@@ -190,6 +204,7 @@
       return;
     }
     active = result;
+    activity = new PlaybackActivity();
     sequence = 0;
     position = result.position;
     subtitle = result.selected_subtitle ?? 'off';
@@ -260,7 +275,12 @@
   function report(state: string) {
     if (!active) return Promise.resolve();
     const id = active.id;
-    const data = { sequence: sequence++, position, state };
+    const data = {
+      sequence: sequence++,
+      position,
+      state,
+      active_seconds: activity.seconds(),
+    };
     reporting = reporting
       .catch(() => {})
       .then(() => api(`/playback/${id}/progress`, 'POST', data))
@@ -272,6 +292,7 @@
     return reporting;
   }
   async function stop() {
+    activity.setActive(false);
     const stopped = active ? report('stopped') : Promise.resolve();
     active = null;
     paused = true;
@@ -362,6 +383,7 @@
       );
   }
   async function end() {
+    activity.setActive(false);
     if (active) {
       if (!active.live) position = active.duration;
       await report('stopped');
@@ -458,24 +480,19 @@
     bind:this={player}
     playsinline
     ontimeupdate={update}
-    onloadstart={() => {
-      if (active) buffering = true;
-    }}
-    onwaiting={() => {
-      if (active) buffering = true;
-    }}
-    onseeking={() => {
-      if (active) buffering = true;
-    }}
+    onloadstart={waiting}
+    onwaiting={waiting}
+    onseeking={waiting}
     onseeked={ready}
     onloadeddata={ready}
     oncanplay={ready}
     onplaying={ready}
     onplay={() => {
       paused = false;
-      void report('playing');
+      ready();
     }}
     onpause={() => {
+      activity.setActive(false);
       paused = true;
       void report('paused');
     }}

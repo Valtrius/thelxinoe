@@ -128,6 +128,7 @@ async fn replacement_and_restart_keep_resume_but_invalidate_old_playback_generat
         &principal,
         active["id"].as_str().unwrap(),
         Progress {
+            active_seconds: None,
             sequence: 0,
             position: 7.0,
             state: "paused".into(),
@@ -204,6 +205,7 @@ async fn replacement_and_restart_keep_resume_but_invalidate_old_playback_generat
             &principal,
             resumed["id"].as_str().unwrap(),
             Progress {
+                active_seconds: None,
                 sequence: 0,
                 position: 9.0,
                 state: "stopped".into()
@@ -219,6 +221,7 @@ async fn replacement_and_restart_keep_resume_but_invalidate_old_playback_generat
             &principal,
             resumed["id"].as_str().unwrap(),
             Progress {
+                active_seconds: None,
                 sequence: 1,
                 position: 1.0,
                 state: "playing".into()

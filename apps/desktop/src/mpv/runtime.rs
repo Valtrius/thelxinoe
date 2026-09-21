@@ -177,6 +177,7 @@ struct Prepared {
     position: f64,
     sequence: i64,
     finished: bool,
+    activity: thelxinoe_core::activity::ActivityClock,
 }
 async fn prepare(backend: &Backend, choice: &Choice, first: bool) -> Result<Prepared> {
     let preferences = backend.call("/playback/preferences", "GET", None).await?;
@@ -196,6 +197,7 @@ async fn prepare(backend: &Backend, choice: &Choice, first: bool) -> Result<Prep
         data,
         sequence: 0,
         finished: false,
+        activity: Default::default(),
     })
 }
 async fn load(ipc: &mut Ipc, entry: &mut Prepared, title: &str, mode: &str) -> Result<()> {
@@ -262,7 +264,7 @@ async fn report(backend: &Backend, entry: &mut Prepared, state: &str) -> Result<
         .call(
             &format!("/playback/{}/progress", entry.id),
             "POST",
-            Some(json!({"sequence":entry.sequence,"position":entry.position,"state":state})),
+            Some(json!({"sequence":entry.sequence,"position":entry.position,"state":state,"active_seconds":entry.activity.seconds()})),
         )
         .await?;
     entry.sequence += 1;
@@ -342,7 +344,10 @@ async fn run(
         }
     };
     let (mut ipc, mut events) = Ipc::new(client);
-    for (index, property) in ["time-pos", "pause", "video-out-params"].iter().enumerate() {
+    for (index, property) in ["time-pos", "pause", "video-out-params", "core-idle"]
+        .iter()
+        .enumerate()
+    {
         ipc.call(json!(["observe_property", index, property]))
             .await?;
     }
@@ -350,6 +355,7 @@ async fn run(
     let mut next = 0;
     let mut current = 0;
     let mut paused = false;
+    let mut idle = true;
     let mut loaded = false;
     let mut video_ready = false;
     let mut started = false;
@@ -372,6 +378,7 @@ async fn run(
                     Some(Control::Seek(position)) => {
                         let entry = prepared.get_mut(&current).context("No active media")?;
                         if !loaded || entry.data["live"]==true {continue;}
+                        entry.activity.set_active(false);
                         let position = position.min((entry.data["duration"].as_f64().unwrap_or(0.0) - 0.1).max(0.0));
                         if entry.data["mode"] == "direct" {
                             ipc.call(json!(["seek", position, "absolute+exact"])).await?;
@@ -400,6 +407,7 @@ async fn run(
                     let Some(message) = message else { anyhow::bail!("MPV control connection closed"); };
                     match message["event"].as_str() {
                         Some("start-file") => {
+                            if let Some(entry) = prepared.get_mut(&current) { entry.activity.set_active(false); }
                             if let Some((index, _)) = prepared.iter().find(|(_, e)| Some(e.playlist_id) == message["playlist_entry_id"].as_i64()) {
                                 current = *index;
                                 loaded = false;
@@ -414,7 +422,14 @@ async fn run(
                                     && !entry.finished
                                 { entry.position = (position + entry.data["timeline_start"].as_f64().unwrap_or(0.0)).max(0.0); }
                             }
-                            Some("pause") => { paused = message["data"].as_bool().unwrap_or(false); }
+                            Some("pause" | "core-idle") => {
+                                if message["name"]=="pause" { paused=message["data"].as_bool().unwrap_or(true); }
+                                else { idle=message["data"].as_bool().unwrap_or(true); }
+                                if let Some(entry)=prepared.get_mut(&current)
+                                    && !entry.finished && entry.activity.set_active(loaded && !paused && !idle) {
+                                    report(&backend,entry,if paused || idle {"paused"}else{"playing"}).await?;
+                                }
+                            }
                             Some("video-out-params") => { video_ready = message["data"]["w"].as_u64().unwrap_or(0) > 0; }
                             _ => {}
                         },
@@ -428,7 +443,8 @@ async fn run(
                         Some("file-loaded") => {
                             loaded = true;
                             if let Some(entry) = prepared.get_mut(&current) {
-                                report(&backend, entry, if paused { "paused" } else { "playing" }).await?;
+                                entry.activity.set_active(!paused && !idle);
+                                report(&backend, entry, if paused || idle { "paused" } else { "playing" }).await?;
                                 if let Some(sub) = entry.data["selected_subtitle"].as_str().filter(|s| s.starts_with("sidecar-") || (entry.data["mode"] != "direct" && *s != "off"))
                                     && let Some(url) = entry.data["subtitles"].as_array().into_iter().flatten().find(|s| s["id"].as_str() == Some(sub)).and_then(|s| s["url"].as_str())
                                 { ipc.call(json!(["sub-add", format!("{}{url}", backend.origin), "select"])).await?; }
@@ -454,6 +470,7 @@ async fn run(
                             let index = prepared.iter().find(|(_, e)| Some(e.playlist_id) == message["playlist_entry_id"].as_i64()).map(|(i, _)| *i);
                             if let Some(index) = index {
                                 let entry = prepared.get_mut(&index).unwrap();
+                                entry.activity.set_active(false);
                                 if message["reason"] == "error" { anyhow::bail!("MPV could not decode or retrieve this media"); }
                                 if message["reason"] == "eof" && entry.data["live"]!=true { entry.position = entry.data["duration"].as_f64().unwrap_or(entry.position); }
                                 report(&backend, entry, "stopped").await?;
@@ -467,6 +484,9 @@ async fn run(
                 },
                 _ = tick.tick() => {
                     if child.try_wait()?.is_some() { break; }
+                    for (index,entry) in &mut prepared {
+                        entry.activity.set_active(*index==current && loaded && !paused && !idle && !entry.finished);
+                    }
                     // MPV can keep the same output format across a reload, so its
                     // property observer need not emit another dimensions change.
                     if loaded && !music && !video_ready {
@@ -476,7 +496,7 @@ async fn run(
                     if last_report.elapsed() >= Duration::from_secs(5) {
                         for (index, entry) in &mut prepared {
                             if entry.finished { continue; }
-                            if *index == current && loaded { report(&backend, entry, if paused { "paused" } else { "playing" }).await?; }
+                            if *index == current && loaded { report(&backend, entry, if paused || idle { "paused" } else { "playing" }).await?; }
                             else { backend.call(&format!("/playback/{}/keepalive", entry.id), "POST", None).await?; }
                         }
                         last_report = Instant::now();
@@ -491,6 +511,9 @@ async fn run(
         }
         Ok::<_, anyhow::Error>(())
     }.await;
+    for entry in prepared.values_mut() {
+        entry.activity.set_active(false);
+    }
     // Preserve the last observed position before MPV unload resets its properties.
     // A normal quit flushes output devices (including PCM) before process teardown.
     let _ = tokio::time::timeout(Duration::from_secs(1), ipc.call(json!(["quit"]))).await;

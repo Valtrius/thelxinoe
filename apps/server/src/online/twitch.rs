@@ -226,6 +226,7 @@ async fn clear(state: &AppState, headers: &HeaderMap, delete: bool) -> Result<Js
         let stopped=if delete {
             let ids=tx.prepare("SELECT id FROM playback_sessions WHERE user_id=?1 AND live_media_id LIKE 'twitch:%' AND state IN ('ready','playing','paused')")?.query_map([&p.user.id],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
             for key in &ids {tx.execute("UPDATE playback_sessions SET state='stopped' WHERE id=?1",[key])?;tx.execute("DELETE FROM playback_grants WHERE resource=?1",[format!("playback:{key}")])?;}
+            crate::statistics::delete_provider(&tx,&p.user.id,"twitch")?;
             tx.execute("DELETE FROM live_history WHERE user_id=?1 AND media_id LIKE 'twitch:%'",[&p.user.id])?;
             ids
         }else{vec![]};

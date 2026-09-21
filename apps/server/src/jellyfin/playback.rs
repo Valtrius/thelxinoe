@@ -358,6 +358,7 @@ pub async fn report(state: &AppState, p: &Principal, input: Value, stopped: bool
         p,
         &id,
         core::Progress {
+            active_seconds: None,
             sequence: row.0,
             position: input["PositionTicks"]
                 .as_f64()

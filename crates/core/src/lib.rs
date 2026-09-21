@@ -73,3 +73,4 @@ mod tests {
         assert!(Role::User.allows(Capability::Play));
     }
 }
+pub mod activity;

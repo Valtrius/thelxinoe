@@ -505,6 +505,8 @@ pub struct Progress {
     pub sequence: i64,
     pub position: f64,
     pub state: String,
+    /// Cumulative active wall seconds. Compatibility clients omit this field.
+    pub active_seconds: Option<f64>,
 }
 pub async fn progress(
     State(state): State<AppState>,
@@ -518,6 +520,9 @@ pub async fn progress(
 pub async fn report(state: &AppState, p: &Principal, id: &str, input: Progress) -> Result<Value> {
     let _lease = state.media_operations.read().await;
     if input.sequence < 0
+        || input
+            .active_seconds
+            .is_some_and(|value| !value.is_finite() || !(0.0..=1e12).contains(&value))
         || !input.position.is_finite()
         || input.position < 0.0
         || !["playing", "paused", "stopped"].contains(&input.state.as_str())
@@ -536,13 +541,14 @@ pub async fn report(state: &AppState, p: &Principal, id: &str, input: Progress) 
         let Some((media,edition,duration,sequence,status))=row else {return Ok(None);};
         if input.sequence<=sequence || ["stopped","failed"].contains(&status.as_str()) {return Ok(Some(false));}
         let position=if duration==0.0 {input.position}else{input.position.min(duration)};
+        let seconds=crate::statistics::record(&tx,&key,&input)?;
         tx.execute("UPDATE playback_sessions SET position=?1,sequence=?2,state=?3,updated_at=?4 WHERE id=?5",params![position,input.sequence,input.state,now(),key])?;
-        if crate::online::live::domain(&media) { crate::online::live::record(&tx,&key,position,&input.state)?; } else if let Some(video)=media.strip_prefix("youtube:") {
-            crate::online::downloads::record(&tx,&key,&user,video,position,duration,&input.state)?;
+        if crate::online::live::domain(&media) { crate::online::live::record(&tx,&key,position,&input.state,seconds)?; } else if let Some(video)=media.strip_prefix("youtube:") {
+            crate::online::downloads::record(&tx,&key,&user,video,position,duration,&input.state,seconds)?;
         } else {
         tx.execute("INSERT INTO edition_progress VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(user_id,media_id,edition) DO UPDATE SET position=excluded.position,duration=excluded.duration,updated_at=excluded.updated_at",params![user,media,edition,position,duration,now()])?;
         tx.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES (?1,?2,?3,?4) ON CONFLICT(user_id,media_id) DO UPDATE SET watched=MAX(watched,excluded.watched),updated_at=excluded.updated_at",params![user,media,position>=duration*0.9,now()])?;
-        crate::history::record(&tx,&key,position,&input.state)?;
+        crate::history::record(&tx,&key,position,&input.state,seconds)?;
         }
         let resource=format!("playback:{key}");
         if stopped {tx.execute("DELETE FROM playback_grants WHERE resource=?1",[resource])?;} else {tx.execute("UPDATE playback_grants SET expires_at=?1 WHERE resource=?2 AND expires_at>?3",params![now()+120,resource,now()])?;}

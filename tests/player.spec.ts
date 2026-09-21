@@ -104,7 +104,11 @@ async function fixture(
     media,
     starts: [] as { position: number; options: { quality: string } }[],
     seeks: [] as number[],
-    progress: [] as { state: string; position: number }[],
+    progress: [] as {
+      state: string;
+      position: number;
+      active_seconds: number;
+    }[],
     errors: [] as string[],
     savedVolume: 0.31,
     fail: options.fail ?? false,
@@ -373,6 +377,38 @@ async function decoded(page: Page) {
     .toBeGreaterThan(0);
   await expect(page.getByRole('status')).toHaveCount(0);
 }
+
+test('web playback records active time but excludes paused time and seeking', async ({
+  page,
+}) => {
+  const state = await fixture(page);
+  await decoded(page);
+  await expect
+    .poll(() =>
+      page
+        .locator('video')
+        .evaluate((video: HTMLVideoElement) => video.currentTime),
+    )
+    .toBeGreaterThan(0.5);
+  await page
+    .locator('video')
+    .evaluate((video: HTMLVideoElement) => video.pause());
+  await expect.poll(() => state.progress.at(-1)?.state).toBe('paused');
+  const seconds = state.progress.at(-1)!.active_seconds;
+  expect(seconds).toBeGreaterThan(0);
+  expect(seconds).toBeLessThan(10);
+  await page.locator('video').evaluate(async (video: HTMLVideoElement) => {
+    await new Promise<void>((resolve) => {
+      video.addEventListener('seeked', () => resolve(), { once: true });
+      video.currentTime = 45;
+    });
+  });
+  await page.getByRole('button', { name: 'Close player', exact: true }).click();
+  await expect.poll(() => state.progress.at(-1)?.state).toBe('stopped');
+  expect(state.progress.at(-1)!.active_seconds).toBe(seconds);
+  expect(state.progress.at(-1)!.position).toBeGreaterThanOrEqual(45);
+  expect(state.errors).toEqual([]);
+});
 
 test('web player fills the workspace edges and resizes by pointer and keyboard', async ({
   page,

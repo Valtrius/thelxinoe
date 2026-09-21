@@ -100,29 +100,8 @@ pub(crate) fn record(
     playback: &str,
     position: f64,
     status: &str,
+    seconds: f64,
 ) -> anyhow::Result<()> {
-    let previous = tx
-        .query_row(
-            "SELECT position,updated_at,state FROM live_history WHERE playback_id=?1",
-            [playback],
-            |r| {
-                Ok((
-                    r.get::<_, f64>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, String>(2)?,
-                ))
-            },
-        )
-        .optional()?;
-    let seconds = previous.map_or(0.0, |(old, time, state)| {
-        let elapsed = (now() - time).clamp(0, 30) as f64;
-        let advanced = position - old;
-        if state == "playing" && advanced >= 0.0 && advanced <= elapsed * 2.0 + 2.0 {
-            advanced.min(elapsed)
-        } else {
-            0.0
-        }
-    });
     tx.execute("INSERT INTO live_history(playback_id,user_id,media_id,title,device_name,started_at,updated_at,position,played_seconds,state) SELECT p.id,p.user_id,p.live_media_id,m.title,s.name,?2,?2,?3,?4,?5 FROM playback_sessions p JOIN sessions s ON s.id=p.auth_session_id JOIN live_media m ON m.id=p.live_media_id WHERE p.id=?1 ON CONFLICT(playback_id) DO UPDATE SET updated_at=excluded.updated_at,position=excluded.position,played_seconds=played_seconds+?4,state=excluded.state",params![playback,now(),position,seconds,status])?;
     Ok(())
 }

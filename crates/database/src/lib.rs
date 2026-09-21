@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-pub const SCHEMA_VERSION: u32 = 33;
+pub const SCHEMA_VERSION: u32 = 34;
 
 /// Inspect a quiesced database without applying migrations or creating missing files.
 pub fn verify_snapshot(path: &Path) -> Result<u32> {
@@ -92,6 +92,7 @@ impl Database {
             include_str!("../migrations/031.sql"),
             include_str!("../migrations/032.sql"),
             include_str!("../migrations/033.sql"),
+            include_str!("../migrations/034.sql"),
         ];
         if version > migrations.len() as i64 {
             anyhow::bail!("Database is newer than this server; use the matching release");
@@ -140,6 +141,64 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn statistics_migration_keeps_legacy_totals_and_marks_their_time_as_estimated() -> Result<()> {
+        let db = Connection::open_in_memory()?;
+        db.pragma_update(None, "foreign_keys", "ON")?;
+        for version in 1..=33 {
+            let path =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("migrations/{version:03}.sql"));
+            db.execute_batch(&std::fs::read_to_string(path)?)?;
+        }
+        db.execute_batch("INSERT INTO users(id,username,password_hash,role,created_at) VALUES ('alice','Alice','unused','user',1);
+            INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Films','movies','/media');
+            INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES ('film','root','movie','film','Film',1);
+            INSERT INTO playback_history(playback_id,user_id,media_id,edition,device_name,started_at,updated_at,position,duration,played_seconds,state) VALUES ('old','alice','film','','Web',100,300,180,200,150,'stopped');
+            INSERT INTO youtube_videos(user_id,video_id,title,channel_title) VALUES ('alice','video','Video','Channel');
+            INSERT INTO youtube_state(user_id,video_id,watched,added_at,updated_at) VALUES ('alice','video',1,1,1);
+            INSERT INTO youtube_history VALUES ('yt','alice','video','Video','Web',300,500,100,100,90,'stopped');
+            INSERT INTO live_history VALUES ('live','alice','twitch:42','Old live stream','Web',500,600,100,70,'stopped');")?;
+        db.execute_batch(include_str!("../migrations/034.sql"))?;
+        let totals: (f64, f64, i64) = db.query_row(
+            "SELECT SUM(active_seconds),SUM(estimated_seconds),COUNT(*) FROM playback_activity",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        assert_eq!(totals, (310.0, 310.0, 3));
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM playback_statistics WHERE completed=1",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?,
+            2
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT channel_name FROM playback_statistics WHERE platform='twitch'",
+                [],
+                |r| r.get::<_, String>(0)
+            )?,
+            "Old live stream"
+        );
+        db.execute("DELETE FROM media WHERE id='film'", [])?;
+        assert_eq!(
+            db.query_row(
+                "SELECT SUM(active_seconds) FROM playback_activity",
+                [],
+                |r| r.get::<_, f64>(0)
+            )?,
+            310.0
+        );
+        assert!(!db.prepare("PRAGMA foreign_key_check")?.exists([])?);
+        db.execute("DELETE FROM users WHERE id='alice'", [])?;
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM playback_activity", [], |r| r
+                .get::<_, i64>(0))?,
+            0
+        );
+        Ok(())
+    }
     #[test]
     fn timezone_migration_preserves_personal_choices_and_resolves_server_defaults() -> Result<()> {
         let db = Connection::open_in_memory()?;

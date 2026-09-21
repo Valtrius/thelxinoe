@@ -1,4 +1,5 @@
 import { api } from './api';
+import { PlaybackActivity } from './playback-activity';
 import {
   capabilities,
   mediaUrl,
@@ -19,6 +20,7 @@ type Entry = {
   end: number;
   node?: ReturnType<typeof scheduleBuffer>;
   reports: Promise<unknown>;
+  activity: PlaybackActivity;
 };
 export type MusicState = {
   title: string;
@@ -139,6 +141,7 @@ export class GaplessQueue {
         offset: playback.position,
         end: 0,
         reports: Promise.resolve(),
+        activity: new PlaybackActivity(),
       });
       return;
     } finally {
@@ -173,6 +176,7 @@ export class GaplessQueue {
       this.context.currentTime >= this.entries[0].end
     ) {
       const done = this.entries.shift()!;
+      done.activity.setActive(false);
       void this.report(done, 'stopped', done.buffer.duration);
       done.node?.volume.disconnect();
       this.index++;
@@ -231,9 +235,13 @@ export class GaplessQueue {
         this.context.currentTime - current.start + current.offset,
       ),
     );
-    if (this.lastCurrent !== current) {
+    const playing =
+      this.context.state === 'running' &&
+      this.context.currentTime >= current.start;
+    const activityChanged = current.activity.setActive(playing);
+    if (this.lastCurrent !== current || activityChanged) {
       this.lastCurrent = current;
-      void this.report(current, 'playing', position);
+      void this.report(current, playing ? 'playing' : 'paused', position);
     }
     this.changed({
       title: current.choice.title,
@@ -247,6 +255,7 @@ export class GaplessQueue {
   }
   private report(entry: Entry, state: string, position: number) {
     const sequence = entry.sequence++;
+    const activeSeconds = entry.activity.seconds();
     entry.reports = entry.reports
       .catch(() => {})
       .then(() =>
@@ -254,6 +263,7 @@ export class GaplessQueue {
           sequence,
           state,
           position,
+          active_seconds: activeSeconds,
         }),
       );
     return entry.reports.catch((e) => {
@@ -295,6 +305,7 @@ export class GaplessQueue {
   seek(position: number) {
     const current = this.entries[0];
     if (!current) return;
+    current.activity.setActive(false);
     for (const e of this.entries) {
       e.node?.source.stop();
       e.node?.volume.disconnect();
@@ -311,6 +322,7 @@ export class GaplessQueue {
   async skip() {
     const current = this.entries[0];
     if (!current) return;
+    current.activity.setActive(false);
     await this.report(
       current,
       'stopped',
@@ -332,6 +344,7 @@ export class GaplessQueue {
     clearInterval(this.heartbeat);
     const position = this.context.currentTime;
     for (const [i, e] of this.entries.entries()) {
+      e.activity.setActive(false);
       e.node?.source.stop();
       if (i === 0 && e.node)
         await this.report(

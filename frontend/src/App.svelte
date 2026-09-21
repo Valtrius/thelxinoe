@@ -84,6 +84,7 @@
   import PersonalHome from './lib/PersonalHome.svelte';
   import Playlists from './lib/Playlists.svelte';
   import History from './lib/History.svelte';
+  import StatisticsView from './lib/statistics/StatisticsView.svelte';
   import UserPreferences from './lib/UserPreferences.svelte';
   import AutoSaveForm from './lib/ui/AutoSaveForm.svelte';
   import PasswordSettings from './lib/PasswordSettings.svelte';
@@ -954,10 +955,8 @@
             play={(choice) => void playMedia(choice)}
           />
         {:else if section === 'Requests'}<Requests {user} />
-        {:else if section === 'History' || section === 'Statistics'}<History
-            {user}
-            statistics={section === 'Statistics'}
-          />
+        {:else if section === 'Statistics'}<StatisticsView {user} />
+        {:else if section === 'History'}<History {user} />
         {:else if providerPage}<ProviderView
             platform={section.toLowerCase() as 'youtube' | 'twitch' | 'kick'}
             userId={user.id}

@@ -21,6 +21,7 @@ pub mod product;
 mod realtime;
 pub mod security;
 pub mod segments;
+mod statistics;
 mod timezones;
 pub mod user_media;
 pub mod validation;
@@ -184,6 +185,8 @@ pub fn router(state: AppState) -> Router {
             get(user_media::queue_get).put(user_media::queue_put),
         )
         .route("/api/v1/me/history", get(history::mine))
+        .route("/api/v1/me/statistics", get(statistics::mine))
+        .route("/api/v1/admin/statistics", get(statistics::admin))
         .route("/api/v1/admin/history", get(history::admin))
         .route("/api/v1/admin/audit", get(history::audit))
         .route(

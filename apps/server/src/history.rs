@@ -8,7 +8,7 @@ use axum::{
     extract::{Query, State},
     http::HeaderMap,
 };
-use rusqlite::{OptionalExtension, params};
+use rusqlite::params;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use thelxinoe_core::{Capability, now};
@@ -18,23 +18,8 @@ pub(crate) fn record(
     playback: &str,
     position: f64,
     state: &str,
+    seconds: f64,
 ) -> anyhow::Result<()> {
-    let previous: Option<(f64, i64, String)> = tx
-        .query_row(
-            "SELECT position,updated_at,state FROM playback_history WHERE playback_id=?1",
-            [playback],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .optional()?;
-    let seconds = previous.map_or(0.0, |(old, time, status)| {
-        let elapsed = (now() - time).clamp(0, 30) as f64;
-        let advanced = position - old;
-        if status == "playing" && advanced >= 0.0 && advanced <= elapsed * 2.0 + 2.0 {
-            advanced.min(elapsed)
-        } else {
-            0.0
-        }
-    });
     tx.execute("INSERT INTO playback_history(playback_id,user_id,media_id,edition,device_name,started_at,updated_at,ended_at,position,duration,played_seconds,state) SELECT p.id,p.user_id,p.media_id,p.edition,s.name,?2,?2,CASE WHEN ?4='stopped' THEN ?2 ELSE NULL END,?3,p.duration,?5,?4 FROM playback_sessions p JOIN sessions s ON s.id=p.auth_session_id WHERE p.id=?1 ON CONFLICT(playback_id) DO UPDATE SET updated_at=excluded.updated_at,ended_at=excluded.ended_at,position=excluded.position,played_seconds=played_seconds+?5,state=excluded.state",params![playback,now(),position,state,seconds])?;
     // A prefetched session does not advance the saved queue until its own first
     // progress report. A late stop from an earlier item cannot rewind it.

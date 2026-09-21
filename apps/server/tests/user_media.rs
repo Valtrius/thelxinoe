@@ -521,6 +521,7 @@ async fn progress(
         p,
         key,
         Progress {
+            active_seconds: None,
             sequence,
             position,
             state: status.into(),
@@ -541,8 +542,8 @@ async fn viewing_statistics_exclude_seek_jumps_and_survive_device_revocation() {
         .db
         .call(|db| {
             db.execute(
-                "UPDATE playback_history SET updated_at=?1 WHERE playback_id='play'",
-                [now() - 10],
+                "UPDATE playback_activity_clocks SET reported_at_ms=?1 WHERE playback_id='play'",
+                [chrono::Utc::now().timestamp_millis() - 10_000],
             )?;
             Ok(())
         })

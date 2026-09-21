@@ -13,11 +13,7 @@
     sectionHeadingClass,
     statsClass,
   } from './ui/styles';
-  let {
-    user,
-    audit = false,
-    statistics = false,
-  } = $props<{ user: User; audit?: boolean; statistics?: boolean }>();
+  let { user, audit = false } = $props<{ user: User; audit?: boolean }>();
   type Row = {
     id: number;
     title?: string;
@@ -36,8 +32,6 @@
   };
   type Result = {
     items: Row[];
-    daily?: { date: string; plays: number; played_seconds: number }[];
-    top?: { title: string; plays: number; played_seconds: number }[];
     next_before: number | null;
     stats?: {
       plays: number;
@@ -114,11 +108,7 @@
 <Panel>
   <div class={sectionHeadingClass}>
     <h2>
-      {audit
-        ? 'Administrative activity'
-        : statistics
-          ? 'Watching statistics'
-          : 'Playback history'}
+      {audit ? 'Administrative activity' : 'Playback history'}
     </h2>
     <Button
       variant="secondary"
@@ -196,125 +186,35 @@
       </div>
     </div>
     <p class="text-muted">Playback time excludes seeks.</p>{/if}
-  {#if statistics}
-    <section
-      class="mt-7 border-t border-line pt-6"
-      aria-label="Daily watch time"
-    >
-      <h3 class="mb-2">Watch time by day</h3>
-      <p class="text-[11px] text-muted">
-        Most recent 90 active days, grouped in UTC.
-      </p>
-      {#if result?.daily?.length}<div
-          class="flex h-[210px] items-stretch gap-2 overflow-x-auto pt-[15px] pb-[30px]"
-        >
-          {#each [...result.daily].reverse() as day (day.date)}<div
-              class="group relative flex min-w-6 max-w-20 flex-1 flex-col justify-end"
-              title={day.date +
-                ': ' +
-                time(day.played_seconds) +
-                ' · ' +
-                day.plays +
-                ' plays'}
-            >
-              <div
-                class="min-h-0.5 border-t-2 border-accent bg-accent-soft transition-[background] duration-200 ease-[ease] group-hover:bg-accent/35"
-                style:height={Math.max(
-                  1,
-                  (day.played_seconds /
-                    Math.max(1, ...result.daily.map((d) => d.played_seconds))) *
-                    100,
-                ) + '%'}
-              ></div>
-              <span
-                class="absolute bottom-[-21px] font-mono text-[9px] leading-[normal] text-muted"
-                >{day.date.slice(5)}</span
-              >
-            </div>{/each}
-        </div>
-        <details>
-          <summary>Daily figures</summary>
-          <table>
-            <thead
-              ><tr><th>Date (UTC)</th><th>Plays</th><th>Time watched</th></tr
-              ></thead
-            ><tbody
-              >{#each result.daily as day (day.date)}<tr
-                  ><td>{day.date}</td><td>{day.plays}</td><td
-                    >{time(day.played_seconds)}</td
-                  ></tr
-                >{/each}</tbody
-            >
-          </table>
-        </details>
-      {:else}<p
-          class="grid h-[170px] place-items-center border border-dashed border-line text-[11px]"
-        >
-          Play something to start your watching statistics.
-        </p>{/if}
-    </section>
-    <section class="mt-7 border-t border-line pt-6">
-      <h3 class="mb-2">Most watched titles</h3>
-      {#each result?.top ?? [] as item, index (index)}<div
-          class="flex items-center gap-5 border-b border-line py-4.5 text-xs leading-normal"
-        >
-          <span class="font-mono text-[11px] leading-[normal] text-muted"
-            >{String(index + 1).padStart(2, '0')}</span
-          >
-          <div class="flex-1">
-            <strong>{item.title}</strong><small>{item.plays} plays</small>
-            <div
-              class="mt-2.5 h-0.5 bg-accent"
-              style:width={Math.max(
-                1,
-                (item.played_seconds /
-                  Math.max(
-                    1,
-                    ...(result?.top ?? []).map((t) => t.played_seconds),
-                  )) *
-                  100,
-              ) + '%'}
-            ></div>
-          </div>
-          <span>{time(item.played_seconds)}</span>
-        </div>{:else}<p class="text-[11px] text-muted">
-          No activity in this view yet.
-        </p>{/each}
-    </section>
-  {/if}
   {#if all && result?.users?.length}<h3>By user</h3>
     {#each result.users as p (p.id)}<div class={rowClass}>
         <span>{p.username}</span><small
           >{p.plays} plays · {time(p.played_seconds)} played</small
         >
       </div>{/each}{/if}
-  {#if !statistics}
-    {#each result?.items ?? [] as row (row.id)}<div class={rowClass}>
-        <div>
-          <strong>{audit ? row.action : row.title}</strong><small
-            >{date(audit ? row.created_at : row.started_at)}{audit
-              ? ` · ${row.actor ?? 'Deleted user'}`
-              : all
-                ? ` · ${row.username}`
-                : ''}</small
-          ><small
-            >{audit
-              ? row.target
-              : `${row.device} · ${row.edition || 'Original edition'}`}</small
-          >
-        </div>
-        {#if !audit}<span
-            >{time(row.position ?? 0)} / {time(row.duration ?? 0)}</span
-          ><small>{time(row.played_seconds ?? 0)} played · {row.state}</small
-          >{/if}
-      </div>{:else}<p class="text-muted">
-        No activity in this view yet.
-      </p>{/each}
-    {#if result?.next_before}<Button
-        variant="secondary"
-        size="form"
-        disabled={busy}
-        onclick={() => void load(audit, true)}>Load older activity</Button
-      >{/if}
-  {/if}
+  {#each result?.items ?? [] as row (row.id)}<div class={rowClass}>
+      <div>
+        <strong>{audit ? row.action : row.title}</strong><small
+          >{date(audit ? row.created_at : row.started_at)}{audit
+            ? ` · ${row.actor ?? 'Deleted user'}`
+            : all
+              ? ` · ${row.username}`
+              : ''}</small
+        ><small
+          >{audit
+            ? row.target
+            : `${row.device} · ${row.edition || 'Original edition'}`}</small
+        >
+      </div>
+      {#if !audit}<span
+          >{time(row.position ?? 0)} / {time(row.duration ?? 0)}</span
+        ><small>{time(row.played_seconds ?? 0)} played · {row.state}</small
+        >{/if}
+    </div>{:else}<p class="text-muted">No activity in this view yet.</p>{/each}
+  {#if result?.next_before}<Button
+      variant="secondary"
+      size="form"
+      disabled={busy}
+      onclick={() => void load(audit, true)}>Load older activity</Button
+    >{/if}
 </Panel>

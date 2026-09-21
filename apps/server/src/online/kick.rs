@@ -182,7 +182,7 @@ async fn erase(
         let ids=tx.prepare("SELECT id FROM playback_sessions WHERE user_id=?1 AND live_media_id LIKE 'kick:%' AND (?2 IS NULL OR live_media_id=?2) AND state IN ('ready','playing','paused')")?.query_map(params![p.user.id,media],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         for key in &ids {tx.execute("UPDATE playback_sessions SET state='stopped' WHERE id=?1",[key])?;tx.execute("DELETE FROM playback_grants WHERE resource=?1",[format!("playback:{key}")])?;}
         tx.execute("DELETE FROM kick_channels WHERE user_id=?1 AND (?2 IS NULL OR slug=?2)",params![p.user.id,channel])?;
-        if channel.is_none(){tx.execute("DELETE FROM live_history WHERE user_id=?1 AND media_id LIKE 'kick:%'",[&p.user.id])?;tx.execute("DELETE FROM online_accounts WHERE user_id=?1 AND provider='kick'",[&p.user.id])?;}
+        if channel.is_none(){crate::statistics::delete_provider(&tx,&p.user.id,"kick")?;tx.execute("DELETE FROM live_history WHERE user_id=?1 AND media_id LIKE 'kick:%'",[&p.user.id])?;tx.execute("DELETE FROM online_accounts WHERE user_id=?1 AND provider='kick'",[&p.user.id])?;}
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'online.delete_data','kick',?2)",params![p.user.id,now()])?;tx.commit()?;Ok(ids)}).await?;
     for key in ids {
         state.playback.stop(&key).await;
