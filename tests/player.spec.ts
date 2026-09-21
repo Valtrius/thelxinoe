@@ -373,6 +373,135 @@ async function decoded(page: Page) {
     .toBeGreaterThan(0);
   await expect(page.getByRole('status')).toHaveCount(0);
 }
+
+test('sidebar controls stay aligned through collapse, expansion, and reversal', async ({
+  page,
+}) => {
+  const state = await fixture(page, { app: true });
+  await page.getByRole('button', { name: 'Collapse sidebar' }).waitFor();
+  const sidebar = page.locator('.primary-sidebar');
+  await page.evaluate(() => {
+    const animate = Element.prototype.animate;
+    Element.prototype.animate = function (keyframes, options) {
+      const animation = animate.call(this, keyframes, options);
+      if (this.closest('.primary-sidebar')) animation.pause();
+      return animation;
+    };
+  });
+  async function toggle(name: string) {
+    await sidebar.evaluate(async (element, name) => {
+      element
+        .querySelector<HTMLButtonElement>(`button[aria-label="${name}"]`)!
+        .click();
+      await new Promise(requestAnimationFrame);
+      for (const animation of element.getAnimations({ subtree: true })) {
+        animation.pause();
+        animation.currentTime = 0;
+      }
+    }, name);
+  }
+  async function seek(time: number) {
+    await sidebar.evaluate((element, time) => {
+      for (const animation of element.getAnimations({ subtree: true })) {
+        animation.currentTime = time;
+      }
+    }, time);
+  }
+  async function finish() {
+    await sidebar.evaluate((element) => {
+      for (const animation of element.getAnimations({ subtree: true }))
+        animation.finish();
+    });
+  }
+  async function snapshot() {
+    return sidebar.evaluate((element) => {
+      const box = (e: Element) => e.getBoundingClientRect().toJSON();
+      const label = element.querySelector('.profile-label')!;
+      return {
+        surface: box(element.querySelector('.sidebar-surface')!),
+        group: box(
+          element.querySelector('.web-theme-controls [role="group"]')!,
+        ),
+        label: box(label),
+        opacity: Number(getComputedStyle(label).opacity),
+        themes: [...element.querySelectorAll('.web-theme-controls button')].map(
+          (button) => ({
+            button: box(button),
+            icon: box(button.querySelector('svg')!),
+          }),
+        ),
+      };
+    });
+  }
+  const expanded = await snapshot();
+  function aligned(frame: Awaited<ReturnType<typeof snapshot>>) {
+    // Check painted controls and their hit areas together, not just endpoints.
+    expect(frame.label).toEqual(expanded.label);
+    expect(frame.group.x + frame.group.width / 2).toBeCloseTo(
+      frame.surface.width / 2,
+      1,
+    );
+    expect(frame.themes[0].button.x).toBeCloseTo(frame.group.x, 1);
+    expect(frame.themes[2].button.right).toBeCloseTo(frame.group.right, 1);
+    for (const { button, icon } of frame.themes) {
+      expect(button.width * 3).toBeCloseTo(frame.group.width, 1);
+      expect(icon.x + icon.width / 2).toBeCloseTo(
+        button.x + button.width / 2,
+        1,
+      );
+      expect(icon.width).toBeCloseTo(14, 1);
+      expect(icon.height).toBe(14);
+    }
+  }
+  for (const direction of ['Collapse', 'Expand']) {
+    await toggle(`${direction} sidebar`);
+    for (const time of [0, 25, 50, 100, 150, 200]) {
+      await seek(time);
+      const frame = await snapshot();
+      aligned(frame);
+      if (time === 50) {
+        expect(frame.opacity).toBeGreaterThan(0);
+        expect(frame.opacity).toBeLessThan(1);
+        await page.screenshot({
+          path: `.local/player-ui/sidebar-${direction.toLowerCase()}.png`,
+        });
+      }
+    }
+    await finish();
+    const end = await snapshot();
+    expect(end.opacity).toBe(direction === 'Collapse' ? 0 : 1);
+    if (direction === 'Collapse') {
+      expect(end.group.width).toBe(end.surface.width);
+      expect(end.group.x).toBe(end.surface.x);
+      await page.screenshot({ path: '.local/player-ui/sidebar-collapsed.png' });
+    } else {
+      expect(end.group).toEqual(expanded.group);
+    }
+  }
+  await toggle('Collapse sidebar');
+  await seek(50);
+  const interrupted = await snapshot();
+  await toggle('Expand sidebar');
+  const reversed = await snapshot();
+  expect(reversed.group.x).toBeCloseTo(interrupted.group.x, 1);
+  expect(reversed.group.width).toBeCloseTo(interrupted.group.width, 1);
+  for (const time of [0, 50, 100, 200]) {
+    await seek(time);
+    aligned(await snapshot());
+  }
+  await finish();
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.getByRole('button', { name: 'Collapse sidebar' }).click();
+  await expect(sidebar).toHaveCSS('width', '72px');
+  const reduced = await snapshot();
+  aligned(reduced);
+  expect(reduced.group.width).toBe(reduced.surface.width);
+  await page.getByRole('button', { name: 'Light theme' }).click();
+  await expect(
+    page.getByRole('button', { name: 'Light theme' }),
+  ).toHaveAttribute('aria-pressed', 'true');
+  expect(state.errors).toEqual([]);
+});
 async function insidePlayer(page: Page) {
   for (const locator of [
     page.getByRole('heading', { name: title }),

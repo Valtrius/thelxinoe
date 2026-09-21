@@ -37,14 +37,14 @@
 
 <div
   class={`inline-flex ${resizeWithSidebar ? 'overflow-visible' : 'overflow-hidden'} ${compact ? '' : 'border border-(--line) bg-(--surface)'}`}
+  data-sidebar-resize={resizeWithSidebar ? 'x' : undefined}
+  data-sidebar-resize-origin={resizeWithSidebar ? '' : undefined}
   role="group"
   aria-label={ariaLabel}
 >
   {#each choices as choice (choice.value)}
     <button
       type="button"
-      data-sidebar-resize={resizeWithSidebar ? 'x' : undefined}
-      data-sidebar-resize-origin={resizeWithSidebar ? '' : undefined}
       class={choiceClass(choice.value)}
       {disabled}
       aria-label={choice.label}

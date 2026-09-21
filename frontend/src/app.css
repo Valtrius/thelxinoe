@@ -529,8 +529,11 @@
       border-radius: 50%;
     }
     .profile-label {
-      min-width: 0;
-      flex: 1;
+      /* Keep the username in place throughout the sidebar's opacity fade. */
+      position: absolute;
+      left: 59px;
+      width: 71px;
+      pointer-events: none;
       font-size: 11px;
       white-space: nowrap;
       overflow: hidden;
@@ -548,8 +551,13 @@
     .collapsed .brand-label,
     .collapsed .profile-label {
       opacity: 0;
+    }
+    .collapsed .brand-label {
       width: 0;
       flex-basis: 0;
+    }
+    .sidebar-profile .icon-button {
+      margin-left: auto;
     }
     .collapsed .sidebar-profile {
       padding: 0 6px;
@@ -573,7 +581,7 @@
       pointer-events: none;
     }
     .collapsed .web-theme-controls {
-      --compact-choice-width: 20px;
+      --compact-choice-width: 24px;
     }
     .content {
       flex: 1;
