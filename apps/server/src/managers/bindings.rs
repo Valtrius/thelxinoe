@@ -159,7 +159,6 @@ pub(super) async fn reconcile(state: &AppState) -> Result<()> {
     }
     state.db.call(|db| {
         db.execute("UPDATE media_files SET ownership=CASE
-          WHEN (SELECT COUNT(*) FROM manager_bindings b JOIN manager_services s ON s.id=b.service_id JOIN manager_reconciliations r ON r.service_id=s.id WHERE b.file_id=media_files.id AND b.generation=media_files.generation AND b.service_generation=s.generation AND r.generation=s.generation AND r.error IS NULL AND b.checked_at>=?1)>1 THEN 'ambiguous'
           WHEN EXISTS(SELECT 1 FROM manager_services s LEFT JOIN manager_reconciliations r ON r.service_id=s.id JOIN library_roots l ON l.id=media_files.root_id WHERE s.enabled=1 AND s.kind=CASE l.kind WHEN 'movies' THEN 'radarr' WHEN 'shows' THEN 'sonarr' ELSE 'lidarr' END AND (r.error IS NOT NULL OR r.checked_at IS NULL OR r.checked_at<?1 OR r.generation<>s.generation)) THEN 'unresolved'
           WHEN EXISTS(SELECT 1 FROM manager_bindings b JOIN manager_services s ON s.id=b.service_id WHERE b.file_id=media_files.id AND b.generation=media_files.generation AND b.service_generation=s.generation AND b.checked_at>=?1 AND s.enabled=1) THEN 'managed'
           WHEN EXISTS(SELECT 1 FROM manager_bindings b WHERE b.file_id=media_files.id) THEN 'unresolved'

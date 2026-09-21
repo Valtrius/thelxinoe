@@ -8,7 +8,7 @@ Request status can inspect availability and downloads. Administrators can change
 
 ## File operations
 
-Ownership reconciliation stores manager entity/file IDs, exact episode/track IDs and mapped paths for each concrete file generation. An unavailable manager retains its historical evidence and makes ownership unresolved. Multiple claims are ambiguous. Both states block destructive operations.
+Ownership reconciliation stores manager entity/file IDs, exact episode/track IDs and mapped paths for each concrete file generation. Each manager type has one configured instance. An unavailable manager retains its historical evidence and makes ownership unresolved, which blocks destructive operations.
 
 The media detail panel offers Keep protection and reviewed monitor/unmonitor/delete operations. Preparation captures the complete file set, generations, fingerprints and manager claims. Execution holds a server media-operation lease shared with scanning and playback creation, rechecks active playback and Keep, hashes the physical files, refreshes ownership, and checks manager commands/download activity. A file shared with logical media outside the selection blocks the command. Movie/album monitoring cannot silently widen a partial selection to other files.
 
@@ -72,18 +72,15 @@ Admins can also run manual release searches and explicit grabs. Thelxinoe displa
 
 Thelxinoe reconciles local file paths with Radarr, Sonarr, and Lidarr API file records. Managed and external containers share the same canonical `/media` bind and library paths. File paths are used directly; there are no path mappings.
 
-A concrete file has one of four ownership states:
+A concrete file has one of three ownership states:
 
-- `managed`: a current reconciliation proves one owning manager instance and records its stable manager entity/file IDs;
-- `unmanaged`: a current successful reconciliation against every enabled relevant manager proves that none owns the file;
+- `managed`: a current reconciliation proves that the relevant manager owns the file and records its stable manager entity/file IDs;
+- `unmanaged`: a current successful reconciliation against the enabled relevant manager proves that it does not own the file;
 - `unresolved`: ownership cannot currently be proven because a relevant manager is unavailable, a file path is outside the required library root, or previous ownership evidence cannot yet be refreshed;
-- `ambiguous`: more than one manager currently claims the file.
 
 Historical ownership is sticky evidence. A previously managed file does not become unmanaged merely because its manager is offline, its mount mapping breaks, or a reconciliation record expires. It becomes unresolved until ownership can be proved again.
 
-If one file matches multiple managers, Thelxinoe marks the binding ambiguous and blocks manager-routed destructive actions until the conflict is resolved.
-
-Before a destructive or monitoring action, Thelxinoe refreshes the ownership state when the last successful reconciliation is no longer current enough for that operation. Managed deletion and monitoring changes go through the owning manager API. Direct filesystem deletion is allowed only for confirmed-unmanaged files. Unresolved and ambiguous ownership blocks the action. A manager timeout, rejection, or API failure never causes a fallback to direct filesystem deletion.
+Before a destructive or monitoring action, Thelxinoe refreshes the ownership state when the last successful reconciliation is no longer current enough for that operation. Managed deletion and monitoring changes go through the owning manager API. Direct filesystem deletion is allowed only for confirmed-unmanaged files. Unresolved ownership blocks the action. A manager timeout, rejection, or API failure never causes a fallback to direct filesystem deletion.
 
 TV bindings retain the exact manager episode/file identities associated with each logical episode. Season-level actions translate the Thelxinoe logical season into the exact set of manager-owned episodes/files. Matching numeric season and episode coordinates alone is insufficient. If provider/order mapping is not one-to-one or cannot be proven, automated season-level monitoring/deletion is blocked until the mapping is corrected.
 

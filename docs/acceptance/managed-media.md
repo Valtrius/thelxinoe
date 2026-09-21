@@ -21,7 +21,7 @@ Deliver:
 - manual release search and grab;
 - manager-owned scoring/rejection display;
 - exact manager binding by file record/path and stable IDs;
-- manager ownership state model covering managed, confirmed unmanaged, unresolved, and ambiguous files, including sticky historical ownership when a manager cannot currently be reached;
+- manager ownership state model covering managed, confirmed unmanaged, and unresolved files, including sticky historical ownership when a manager cannot currently be reached;
 - TV provider/order mapping from logical episodes to the exact Sonarr episode/file identities used for manager actions instead of assuming numeric season/episode equality;
 - durable media-operation coordinator for destructive commands, with target file-generation capture, local conflict leases, and final ownership/identity/protection revalidation;
 - no fallback from a failed manager-routed destructive action to direct filesystem deletion.

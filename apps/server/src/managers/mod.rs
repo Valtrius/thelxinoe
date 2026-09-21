@@ -404,14 +404,14 @@ async fn register_with_actor(
         .filter(|v| v.len() < 100)
         .ok_or_else(unavailable)?
         .to_owned();
-    let container = input.container_id.clone();
+    let kind = input.kind.clone();
     let existing = state
         .db
         .call(move |db| {
             Ok(db
                 .query_row(
-                    "SELECT id FROM manager_services WHERE container_id=?1",
-                    [container],
+                    "SELECT id FROM manager_services WHERE kind=?1",
+                    [kind],
                     |r| r.get::<_, String>(0),
                 )
                 .optional()?)
@@ -422,7 +422,20 @@ async fn register_with_actor(
     let credential = state
         .secrets
         .encrypt(&format!("manager:{key}"), input.api_key.as_bytes())?;
-    state.db.call(move|db|{let tx=db.transaction()?;tx.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(id) DO UPDATE SET name=excluded.name,kind=excluded.kind,port=excluded.port,generation=excluded.generation,credential=excluded.credential,media_source=excluded.media_source,version=excluded.version,checked_at=excluded.checked_at,error=NULL",params![key,input.name.trim(),input.kind,input.container_id,input.port,id(),credential,media_source,version,now()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'manager.register',?2,?3)",params![actor_id,key,now()])?;tx.commit()?;Ok(())}).await?;
+    let allowed=state.db.call(move|db|{
+        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let provision:Option<(String,Option<String>)>=tx.query_row("SELECT state,container_id FROM stack_provisions WHERE kind=?1",[&input.kind],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+        if provision.is_some_and(|(state,container)| state!="connecting" || container.as_deref()!=Some(input.container_id.as_str())) {return Ok(false);}
+        tx.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(id) DO UPDATE SET name=excluded.name,container_id=excluded.container_id,port=excluded.port,generation=excluded.generation,credential=excluded.credential,media_source=excluded.media_source,version=excluded.version,checked_at=excluded.checked_at,error=NULL",params![key,input.name.trim(),input.kind,input.container_id,input.port,id(),credential,media_source,version,now()])?;
+        tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'manager.register',?2,?3)",params![actor_id,key,now()])?;
+        tx.commit()?;
+        Ok(true)
+    }).await?;
+    if !allowed {
+        return Err(ApiError::conflict(
+            "A managed service operation already owns this integration type",
+        ));
+    }
     Ok(Json(json!({"id":returned})))
 }
 async fn options(

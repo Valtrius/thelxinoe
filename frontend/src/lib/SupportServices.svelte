@@ -43,13 +43,19 @@
     movies?: Missing[];
     episodes?: Missing[];
   };
+  const serviceKinds = [
+    { kind: 'bazarr', label: 'Bazarr', port: 6767 },
+    { kind: 'prowlarr', label: 'Prowlarr', port: 9696 },
+    { kind: 'nzbget', label: 'NZBGet', port: 6789 },
+  ] as const;
+  type ServiceKind = (typeof serviceKinds)[number]['kind'];
   let services = $state<Service[]>([]),
     containers = $state<{ id: string; names: string[] }[]>([]),
     snapshots = $state<Record<string, Snapshot>>({}),
     busy = $state(false),
     message = $state('');
   let name = $state(''),
-    kind = $state('bazarr'),
+    kind = $state<ServiceKind>('bazarr'),
     container = $state(''),
     port = $state(6767),
     username = $state(''),
@@ -59,6 +65,16 @@
     language = $state('en'),
     forced = $state(false),
     hearing = $state(false);
+  let availableKinds = $derived(
+    serviceKinds.filter(
+      (candidate) =>
+        !services.some((service) => service.kind === candidate.kind),
+    ),
+  );
+  function selectKind(next: ServiceKind) {
+    kind = next;
+    port = serviceKinds.find((candidate) => candidate.kind === next)!.port;
+  }
   async function act(fn: () => Promise<void>) {
     busy = true;
     message = '';
@@ -71,10 +87,20 @@
     }
   }
   async function load() {
-    services = (await api<{ items: Service[] }>('/admin/support')).items;
-    containers = (
-      await api<{ items: typeof containers }>('/admin/managers/containers')
-    ).items;
+    const loadedServices = (await api<{ items: Service[] }>('/admin/support'))
+      .items;
+    services = loadedServices;
+    const missing = serviceKinds.filter(
+      (candidate) =>
+        !loadedServices.some((service) => service.kind === candidate.kind),
+    );
+    if (missing.length) {
+      if (!missing.some((candidate) => candidate.kind === kind))
+        selectKind(missing[0].kind);
+      containers = (
+        await api<{ items: typeof containers }>('/admin/managers/containers')
+      ).items;
+    } else containers = [];
   }
   async function refresh(id: string) {
     snapshots[id] = await api<Snapshot>(`/admin/support/${id}`);
@@ -113,68 +139,68 @@
     configuration.
   </p>
   {#if message}<p role="status">{message}</p>{/if}
-  <form
-    class={inlineFormClass}
-    onsubmit={(e) => {
-      e.preventDefault();
-      void act(register);
-    }}
-  >
-    <label
-      >Service name<input bind:value={name} required maxlength="100" /></label
+  {#if availableKinds.length}
+    <form
+      class={inlineFormClass}
+      onsubmit={(e) => {
+        e.preventDefault();
+        void act(register);
+      }}
     >
-    <label
-      >Service type<select
-        bind:value={kind}
-        onchange={() =>
-          (port = kind === 'bazarr' ? 6767 : kind === 'prowlarr' ? 9696 : 6789)}
-        ><option value="bazarr">Bazarr</option><option value="prowlarr"
-          >Prowlarr</option
-        ><option value="nzbget">NZBGet</option></select
-      ></label
-    >
-    <label
-      >Service container<select bind:value={container} required
-        ><option value="">Select container</option
-        >{#each containers as c (c.id)}<option value={c.id}>{c.names[0]}</option
-          >{/each}</select
-      ></label
-    >
-    <label
-      >Service internal port<input
-        type="number"
-        bind:value={port}
-        min="1"
-        max="65535"
-        required
-      /></label
-    >
-    {#if kind === 'nzbget'}<label
-        >NZBGet username<input
-          bind:value={username}
+      <label
+        >Service name<input bind:value={name} required maxlength="100" /></label
+      >
+      <label
+        >Service type<select bind:value={kind} onchange={() => selectKind(kind)}
+          >{#each availableKinds as candidate (candidate.kind)}<option
+              value={candidate.kind}>{candidate.label}</option
+            >{/each}</select
+        ></label
+      >
+      <label
+        >Service container<select bind:value={container} required
+          ><option value="">Select container</option
+          >{#each containers as c (c.id)}<option value={c.id}
+              >{c.names[0]}</option
+            >{/each}</select
+        ></label
+      >
+      <label
+        >Service internal port<input
+          type="number"
+          bind:value={port}
+          min="1"
+          max="65535"
           required
-          autocomplete="off"
         /></label
-      >{/if}
-    <label
-      >{kind === 'nzbget' ? 'NZBGet password' : 'Service API key'}<input
-        type="password"
-        bind:value={secret}
-        required
-        autocomplete="new-password"
-      /></label
-    >
-    <label
-      >Native service UI address<input
-        type="url"
-        bind:value={native}
-        placeholder="https://service.example.com"
-      /></label
-    >
-    <Button type="submit" size="form" disabled={busy}
-      >Connect support service</Button
-    >
-  </form>
+      >
+      {#if kind === 'nzbget'}<label
+          >NZBGet username<input
+            bind:value={username}
+            required
+            autocomplete="off"
+          /></label
+        >{/if}
+      <label
+        >{kind === 'nzbget' ? 'NZBGet password' : 'Service API key'}<input
+          type="password"
+          bind:value={secret}
+          required
+          autocomplete="new-password"
+        /></label
+      >
+      <label
+        >Native service UI address<input
+          type="url"
+          bind:value={native}
+          placeholder="https://service.example.com"
+        /></label
+      >
+      <Button type="submit" size="form" disabled={busy}
+        >Connect support service</Button
+      >
+    </form>
+  {/if}
   {#each services as service (service.id)}
     {@const data = snapshots[service.id]}
     <article class={panelClass}>

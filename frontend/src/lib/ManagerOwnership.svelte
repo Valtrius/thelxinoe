@@ -46,7 +46,7 @@
   <h2>Media ownership and operations</h2>
   <p>
     Refresh ownership after a manager import or configuration change. Unresolved
-    and ambiguous files cannot be deleted.
+    files cannot be deleted.
   </p>
   <Button
     variant="secondary"

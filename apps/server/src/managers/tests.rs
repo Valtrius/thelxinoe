@@ -163,6 +163,34 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
     let registered = call(&state, "/api/v1/admin/managers", "POST", input, &bob).await;
     assert_eq!(registered.0, StatusCode::OK, "{}", registered.2);
     let service = registered.2["id"].as_str().unwrap();
+    let replacement = "c".repeat(64);
+    state.managers.docker.lock().unwrap().insert(
+        format!("containers/{replacement}"),
+        json!({"id":replacement,"running":true,"mounts":[{"kind":"bind","source":"/physical","destination":"/media","writable":true}],"networks":[{"id":"network","address":"127.0.0.1"}]}),
+    );
+    let replaced = call(
+        &state,
+        "/api/v1/admin/managers",
+        "POST",
+        json!({"name":"Replacement","kind":"radarr","container_id":replacement,"port":port,"api_key":"fixture-manager-secret-key"}),
+        &bob,
+    )
+    .await;
+    assert_eq!(replaced.0, StatusCode::OK, "{}", replaced.2);
+    assert_eq!(replaced.2["id"], service);
+    assert_eq!(
+        state
+            .db
+            .call(|db| Ok(db.query_row(
+                "SELECT COUNT(*) FROM manager_services WHERE kind='radarr'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?))
+            .await
+            .unwrap(),
+        1
+    );
+    let container = replacement;
     let metadata = call(
         &state,
         "/api/v1/metadata/search?kind=movie&q=Public",
@@ -331,6 +359,47 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
         .0,
         StatusCode::CONFLICT
     );
+    state
+        .managers
+        .docker
+        .lock()
+        .unwrap()
+        .get_mut(&format!("containers/{container}"))
+        .unwrap()["mounts"][0]["source"] = json!("/physical");
+    let provision_container = container.clone();
+    state.db.call(move |db|{
+        db.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,container_id,created_at,updated_at) VALUES ('manager-provision','radarr','bob',7878,X'00','queued',?1,1,1)",[provision_container])?;
+        Ok(())
+    }).await.unwrap();
+    let blocked = call(
+        &state,
+        "/api/v1/admin/managers",
+        "POST",
+        json!({"name":"Blocked","kind":"radarr","container_id":container,"port":port,"api_key":"fixture-manager-secret-key"}),
+        &bob,
+    )
+    .await;
+    assert_eq!(blocked.0, StatusCode::CONFLICT, "{}", blocked.2);
+    state
+        .db
+        .call(|db| {
+            db.execute(
+                "UPDATE stack_provisions SET state='connecting' WHERE id='manager-provision'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let internal = call(
+        &state,
+        "/api/v1/admin/managers",
+        "POST",
+        json!({"name":"Managed","kind":"radarr","container_id":container,"port":port,"api_key":"fixture-manager-secret-key"}),
+        &bob,
+    )
+    .await;
+    assert_eq!(internal.0, StatusCode::OK, "{}", internal.2);
     server.abort();
 }
 
@@ -514,6 +583,33 @@ async fn support_services_are_admin_only_redacted_and_expose_only_allowed_comman
     let response = call(&state, "/api/v1/admin/support", "POST", input, &admin).await;
     assert_eq!(response.0, StatusCode::OK, "{}", response.2);
     let key = response.2["id"].as_str().unwrap();
+    let replacement = "e".repeat(64);
+    state.managers.docker.lock().unwrap().insert(
+        format!("containers/{replacement}"),
+        json!({"id":replacement,"running":true,"mounts":[{"kind":"bind","source":"/physical","destination":"/media","writable":true}],"networks":[{"id":"network","address":"127.0.0.1"}]}),
+    );
+    let replaced = call(
+        &state,
+        "/api/v1/admin/support",
+        "POST",
+        json!({"name":"Replacement downloader","kind":"nzbget","container_id":replacement,"port":port,"credentials":{"username":"fixture","secret":"private-test-secret"},"native_url":"http://localhost:6789"}),
+        &admin,
+    )
+    .await;
+    assert_eq!(replaced.0, StatusCode::OK, "{}", replaced.2);
+    assert_eq!(replaced.2["id"], key);
+    assert_eq!(
+        state
+            .db
+            .call(|db| Ok(db.query_row(
+                "SELECT COUNT(*) FROM support_services WHERE kind='nzbget'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?))
+            .await
+            .unwrap(),
+        1
+    );
     let path = format!("/api/v1/admin/support/{key}");
     assert_eq!(
         call(&state, &path, "GET", Value::Null, &alice).await.0,
@@ -562,6 +658,40 @@ async fn support_services_are_admin_only_redacted_and_expose_only_allowed_comman
         .await
         .unwrap();
     assert!(!String::from_utf8_lossy(&stored).contains("private-test-secret"));
+    let provision_container = replacement.clone();
+    state.db.call(move |db|{
+        db.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,container_id,created_at,updated_at) VALUES ('support-provision','nzbget','bob',6789,X'00','queued',?1,1,1)",[provision_container])?;
+        Ok(())
+    }).await.unwrap();
+    let blocked = call(
+        &state,
+        "/api/v1/admin/support",
+        "POST",
+        json!({"name":"Blocked downloader","kind":"nzbget","container_id":replacement,"port":port,"credentials":{"username":"fixture","secret":"private-test-secret"},"native_url":"http://localhost:6789"}),
+        &admin,
+    )
+    .await;
+    assert_eq!(blocked.0, StatusCode::CONFLICT, "{}", blocked.2);
+    state
+        .db
+        .call(|db| {
+            db.execute(
+                "UPDATE stack_provisions SET state='connecting' WHERE id='support-provision'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let internal = call(
+        &state,
+        "/api/v1/admin/support",
+        "POST",
+        json!({"name":"Managed downloader","kind":"nzbget","container_id":replacement,"port":port,"credentials":{"username":"fixture","secret":"private-test-secret"},"native_url":"http://localhost:6789"}),
+        &admin,
+    )
+    .await;
+    assert_eq!(internal.0, StatusCode::OK, "{}", internal.2);
     task.abort();
 }
 
@@ -626,6 +756,40 @@ async fn provisioning_is_admin_only_durable_and_never_puts_credentials_in_jobs()
         .0,
         StatusCode::BAD_REQUEST
     );
+    state
+        .db
+        .call(|db| {
+            db.execute(
+                "INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('existing-radarr','Existing Radarr','radarr','existing-container',7878,'generation',X'00','/media','1',1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        call(
+            &state,
+            "/api/v1/admin/stack/install",
+            "POST",
+            input.clone(),
+            &admin,
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    state
+        .db
+        .call(|db| {
+            db.execute(
+                "DELETE FROM manager_services WHERE id='existing-radarr'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
     let result = call(
         &state,
         "/api/v1/admin/stack/install",

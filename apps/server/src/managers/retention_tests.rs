@@ -132,7 +132,7 @@ async fn watched_revision_protection_and_generation_are_revalidated() {
             )?;
             assert_ne!(before, eligibility(db, "ret-movie")?.unwrap().stamp);
             db.execute(
-                "UPDATE media_files SET ownership='ambiguous' WHERE id='ret-file'",
+                "UPDATE media_files SET ownership='unresolved' WHERE id='ret-file'",
                 [],
             )?;
             assert!(eligibility(db, "ret-movie")?.is_none());

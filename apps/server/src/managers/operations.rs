@@ -89,11 +89,11 @@ pub(super) async fn prepare_locked(
 fn validate_ownership(files: &[Target], action: &str) -> Result<()> {
     for file in files {
         match file.ownership.as_str() {
-            "managed" if file.claims.len() == 1 => (),
+            "managed" => (),
             "unmanaged" if action == "delete" && file.claims.is_empty() => (),
             _ => {
                 return Err(ApiError::conflict(
-                    "Ownership is unresolved or ambiguous, or this action requires an owning manager",
+                    "Ownership is unresolved, or this action requires an owning manager",
                 ));
             }
         }

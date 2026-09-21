@@ -84,9 +84,7 @@ pub(super) async fn preview(
 ) -> Result<Json<Value>> {
     let _guard = runtime.0.lock().await;
     let d = bootstrap().await?;
-    if services()?.iter().any(|s| s.kind == input.kind) {
-        return Err(conflict("This service already has a managed installation"));
-    }
+    ensure_kind_available(&d, &input.kind).await?;
     let (raw, image) = inspect(&d, &input).await?;
     let review = Review {
         id: thelxinoe_core::id(),
@@ -146,7 +144,9 @@ pub(super) async fn check(
     Json(input): Json<Adopt>,
 ) -> Result<Json<Value>> {
     let _guard = runtime.0.lock().await;
-    checked(&bootstrap().await?, &input).await?;
+    let d = bootstrap().await?;
+    ensure_kind_available(&d, &input.kind).await?;
+    checked(&d, &input).await?;
     Ok(Json(json!({"accepted":true})))
 }
 fn frozen(original: &Value) -> Value {
@@ -178,22 +178,16 @@ pub(super) async fn adopt(
 ) -> Result<Json<Value>> {
     let _guard = runtime.0.lock().await;
     let d = bootstrap().await?;
+    let containers = ensure_kind_available(&d, &input.kind).await?;
     let review = checked(&d, &input).await?;
-    if services()?.iter().any(|s| s.kind == input.kind)
-        || service_path(&input.operation_id).exists()
-    {
+    if service_path(&input.operation_id).exists() {
         return Err(conflict(
             "This service already has a managed installation or interrupted transfer",
         ));
     }
     let t = templates::find(&input.kind).ok_or_else(unavailable)?;
     let key = &input.operation_id;
-    let name = choose_service_name(
-        t.kind,
-        key,
-        &engine("/containers/json?all=true").await?,
-        None,
-    )?;
+    let name = choose_service_name(t.kind, key, &containers, None)?;
     let source = mount(&review.original, "/config")?["Source"]
         .as_str()
         .ok_or_else(unavailable)?

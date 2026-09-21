@@ -26,9 +26,15 @@
     service_id: string | null;
     error: string | null;
   };
+  type ConnectedService = {
+    id: string;
+    name: string;
+    kind: string;
+  };
   let nativeUrl = $state(''),
     adoptId = $state(''),
-    available = $state<{ id: string; name: string }[]>([]);
+    available = $state<ConnectedService[]>([]),
+    installKinds = $state<string[]>([]);
   type TransferReview = {
     review_id: string;
     name: string;
@@ -64,15 +70,30 @@
     );
     services = result.items;
     provisions = result.provisions;
-    const managers = await api<{ items: { id: string; name: string }[] }>(
+    const managers = await api<{ items: ConnectedService[] }>(
       '/admin/managers',
     );
-    const support = await api<{ items: { id: string; name: string }[] }>(
-      '/admin/support',
+    const support = await api<{ items: ConnectedService[] }>('/admin/support');
+    const connected = [...managers.items, ...support.items];
+    const managedKinds = new Set([
+      ...result.items.map((service) => service.kind),
+      ...result.provisions.map((provision) => provision.kind),
+    ]);
+    const connectedKinds = new Set(connected.map((service) => service.kind));
+    installKinds = Object.keys(ports).filter(
+      (candidate) =>
+        !managedKinds.has(candidate) && !connectedKinds.has(candidate),
     );
-    available = [...managers.items, ...support.items].filter(
-      (service) => !provisions.some((p) => p.service_id === service.id),
-    );
+    if (installKinds.length && !installKinds.includes(kind)) {
+      kind = installKinds[0];
+      hostPort = ports[kind];
+    }
+    available = connected.filter((service) => !managedKinds.has(service.kind));
+    if (adoptId && !available.some((service) => service.id === adoptId)) {
+      adoptId = '';
+      transferReview = null;
+      releasedCompose = false;
+    }
     loaded = true;
   }
   async function act(work: () => Promise<void>) {
@@ -151,95 +172,96 @@
           await refresh();
         })}>Connect installed services</Button
     >
-    <form
-      class="my-5 grid gap-3"
-      onsubmit={(event) => {
-        event.preventDefault();
-        void act(async () => {
-          await api('/admin/stack/install', 'POST', {
-            kind,
-            host_port: hostPort,
-            native_url: nativeUrl,
+    {#if installKinds.length}
+      <form
+        class="my-5 grid gap-3"
+        onsubmit={(event) => {
+          event.preventDefault();
+          void act(async () => {
+            await api('/admin/stack/install', 'POST', {
+              kind,
+              host_port: hostPort,
+              native_url: nativeUrl,
+            });
+            await refresh();
           });
-          await refresh();
-        });
-      }}
-    >
-      <label
-        >Service to install<select
-          bind:value={kind}
-          onchange={() => {
-            hostPort = ports[kind];
-          }}
-          >{#each Object.keys(ports) as name (name)}<option value={name}
-              >{name}</option
-            >{/each}</select
-        ></label
+        }}
       >
-      <label
-        >Local service port<input
-          type="number"
-          min="1024"
-          max="65535"
-          bind:value={hostPort}
-          required
-        /></label
-      >
-      <label
-        >Advanced UI address (optional)<input
-          type="url"
-          bind:value={nativeUrl}
-          placeholder="https://radarr.example.test"
-        /></label
-      >
-      <Button
-        type="submit"
-        variant="secondary"
-        size="form"
-        disabled={busy || provisions.some((p) => p.kind === kind)}
-        >Install service</Button
-      >
-    </form>
-    <form
-      class="my-5 grid gap-3"
-      onsubmit={(event) => {
-        event.preventDefault();
-        void act(async () => {
-          transferReview = await api<TransferReview>(
-            '/admin/stack/adopt/preview',
-            'POST',
-            { service_id: adoptId },
-          );
-          releasedCompose = false;
-        });
-      }}
-    >
-      <label
-        >Existing connected service<select
-          bind:value={adoptId}
-          required
-          onchange={() => {
-            transferReview = null;
+        <label
+          >Service to install<select
+            bind:value={kind}
+            onchange={() => {
+              hostPort = ports[kind];
+            }}
+            >{#each installKinds as name (name)}<option value={name}
+                >{name}</option
+              >{/each}</select
+          ></label
+        >
+        <label
+          >Local service port<input
+            type="number"
+            min="1024"
+            max="65535"
+            bind:value={hostPort}
+            required
+          /></label
+        >
+        <label
+          >Advanced UI address (optional)<input
+            type="url"
+            bind:value={nativeUrl}
+            placeholder="https://radarr.example.test"
+          /></label
+        >
+        <Button type="submit" variant="secondary" size="form" disabled={busy}
+          >Install service</Button
+        >
+      </form>
+    {/if}
+    {#if available.length}
+      <form
+        class="my-5 grid gap-3"
+        onsubmit={(event) => {
+          event.preventDefault();
+          void act(async () => {
+            transferReview = await api<TransferReview>(
+              '/admin/stack/adopt/preview',
+              'POST',
+              { service_id: adoptId },
+            );
             releasedCompose = false;
-          }}
-          ><option value="">Select a service</option
-          >{#each available as service (service.id)}<option value={service.id}
-              >{service.name}</option
-            >{/each}</select
-        ></label
+          });
+        }}
       >
-      <p>
-        Take ownership of an existing service on this Docker server. Thelxinoe
-        stops it, copies its configuration into managed storage and connects the
-        replacement. Its settings, library and current version are preserved.
-      </p>
-      <Button
-        type="submit"
-        variant="secondary"
-        size="form"
-        disabled={busy || !adoptId}>Review ownership transfer</Button
-      >
-    </form>
+        <label
+          >Existing connected service<select
+            bind:value={adoptId}
+            required
+            onchange={() => {
+              transferReview = null;
+              releasedCompose = false;
+            }}
+            ><option value="">Select a service</option
+            >{#each available as service (service.id)}<option value={service.id}
+                >{service.name}</option
+              >{/each}</select
+          ></label
+        >
+        <p>
+          Take ownership of an existing service on this Docker server. Thelxinoe
+          stops it, copies its configuration into managed storage and connects
+          the replacement. Its settings, library and current version are
+          preserved.
+        </p>
+        <Button
+          type="submit"
+          variant="secondary"
+          size="form"
+          disabled={busy || !adoptId}>Review ownership transfer</Button
+        >
+      </form>
+    {/if}
     {#if transferReview}
       <Panel aria-label="Ownership transfer review">
         <h3>Take ownership of {transferReview.name}</h3>

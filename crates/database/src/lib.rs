@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-pub const SCHEMA_VERSION: u32 = 35;
+pub const SCHEMA_VERSION: u32 = 36;
 
 /// Inspect a quiesced database without applying migrations or creating missing files.
 pub fn verify_snapshot(path: &Path) -> Result<u32> {
@@ -94,6 +94,7 @@ impl Database {
             include_str!("../migrations/033.sql"),
             include_str!("../migrations/034.sql"),
             include_str!("../migrations/035.sql"),
+            include_str!("../migrations/036.sql"),
         ];
         if version > migrations.len() as i64 {
             anyhow::bail!("Database is newer than this server; use the matching release");
@@ -383,6 +384,67 @@ mod tests {
             "\"UTC\""
         );
         Database::open(temp.path().join("main.db"))?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn integration_kinds_are_unique() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let db = Database::open(temp.path().join("main.db"))?;
+        db.call(|c| {
+            c.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('manager-1','Radarr','radarr','container-1',7878,'g1',X'00','/media','1',1)",[])?;
+            assert!(c.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('manager-2','Other Radarr','radarr','container-2',7878,'g2',X'00','/media','1',1)",[]).is_err());
+            c.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('manager-2','Sonarr','sonarr','container-2',8989,'g2',X'00','/media','1',1)",[])?;
+
+            c.execute("INSERT INTO support_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('support-1','NZBGet','nzbget','container-3',6789,'g1',X'00','/media','1',1)",[])?;
+            assert!(c.execute("INSERT INTO support_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('support-2','Other NZBGet','nzbget','container-4',6789,'g2',X'00','/media','1',1)",[]).is_err());
+            c.execute("INSERT INTO support_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('support-2','Prowlarr','prowlarr','container-4',9696,'g2',X'00','','1',1)",[])?;
+            Ok(())
+        }).await
+    }
+
+    #[test]
+    fn singleton_migration_reconciles_legacy_duplicate_integrations() -> Result<()> {
+        let db = Connection::open_in_memory()?;
+        db.pragma_update(None, "foreign_keys", "ON")?;
+        for version in 1..=35 {
+            let path =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("migrations/{version:03}.sql"));
+            db.execute_batch(&std::fs::read_to_string(path)?)?;
+        }
+        db.execute("INSERT INTO users(id,username,password_hash,role,created_at) VALUES ('admin','admin','unused','admin',1)",[])?;
+        db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('managed-radarr','Managed','radarr','container-1',7878,'g1',X'00','/media','1',10)",[])?;
+        db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('newer-radarr','Newer','radarr','container-2',7878,'g2',X'00','/media','2',20)",[])?;
+        db.execute("INSERT INTO acquisition_requests(id,user_id,service_id,generation,external_id,title,state,created_at,updated_at) VALUES ('request','admin','newer-radarr','g2','1','Movie','pending',1,1)",[])?;
+        db.execute("INSERT INTO support_services(id,name,kind,container_id,port,generation,credential,media_source,native_url,version,checked_at) VALUES ('older-nzbget','Older','nzbget','container-3',6789,'g1',X'00','/media','','1',10)",[])?;
+        db.execute("INSERT INTO support_services(id,name,kind,container_id,port,generation,credential,media_source,native_url,version,checked_at) VALUES ('newer-nzbget','Newer','nzbget','container-4',6789,'g2',X'00','/media','','2',20)",[])?;
+        db.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,container_id,service_id,created_at,updated_at) VALUES ('provision','radarr','admin',17878,X'00','complete','container-1','managed-radarr',1,1)",[])?;
+
+        db.execute_batch(include_str!("../migrations/036.sql"))?;
+
+        assert_eq!(
+            db.query_row(
+                "SELECT id FROM manager_services WHERE kind='radarr'",
+                [],
+                |r| r.get::<_, String>(0)
+            )?,
+            "managed-radarr"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT id FROM support_services WHERE kind='nzbget'",
+                [],
+                |r| r.get::<_, String>(0)
+            )?,
+            "newer-nzbget"
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM acquisition_requests", [], |r| r
+                .get::<_, i64>(0))?,
+            0
+        );
+        assert!(db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('duplicate','Duplicate','radarr','container-5',7878,'g3',X'00','/media','3',30)",[]).is_err());
+        assert!(!db.prepare("PRAGMA foreign_key_check")?.exists([])?);
         Ok(())
     }
 }

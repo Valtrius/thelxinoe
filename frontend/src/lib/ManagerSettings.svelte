@@ -31,6 +31,12 @@
     profiles: { id: number; name: string }[];
     metadata_profiles: { id: number; name: string }[];
   };
+  const managerKinds = [
+    { kind: 'radarr', label: 'Radarr', port: 7878 },
+    { kind: 'sonarr', label: 'Sonarr', port: 8989 },
+    { kind: 'lidarr', label: 'Lidarr', port: 8686 },
+  ] as const;
+  type ManagerKind = (typeof managerKinds)[number]['kind'];
   let approvalUsers = $state<
     { id: string; username: string; enabled: boolean }[]
   >([]);
@@ -38,7 +44,7 @@
     services = $state<Service[]>([]),
     container = $state(''),
     name = $state(''),
-    kind = $state('radarr'),
+    kind = $state<ManagerKind>('radarr'),
     port = $state(7878),
     key = $state(''),
     busy = $state(false),
@@ -49,14 +55,34 @@
     profile = $state(0),
     metadata = $state<number | null>(null),
     monitored = $state(true);
+  let availableKinds = $derived(
+    managerKinds.filter(
+      (candidate) =>
+        !services.some((service) => service.kind === candidate.kind),
+    ),
+  );
+  function selectKind(next: ManagerKind) {
+    kind = next;
+    port = managerKinds.find((candidate) => candidate.kind === next)!.port;
+  }
   async function load() {
     approvalUsers = (
       await api<{ items: typeof approvalUsers }>('/admin/acquisition/users')
     ).items;
-    services = (await api<{ items: Service[] }>('/admin/managers')).items;
-    containers = (
-      await api<{ items: Container[] }>('/admin/managers/containers')
-    ).items;
+    const loadedServices = (await api<{ items: Service[] }>('/admin/managers'))
+      .items;
+    services = loadedServices;
+    const missing = managerKinds.filter(
+      (candidate) =>
+        !loadedServices.some((service) => service.kind === candidate.kind),
+    );
+    if (missing.length) {
+      if (!missing.some((candidate) => candidate.kind === kind))
+        selectKind(missing[0].kind);
+      containers = (
+        await api<{ items: Container[] }>('/admin/managers/containers')
+      ).items;
+    } else containers = [];
   }
   async function act(fn: () => Promise<void>) {
     busy = true;
@@ -141,59 +167,58 @@
       {user.username}</Switch
     >
   {/each}
-  <form
-    class={inlineFormClass}
-    onsubmit={(e) => {
-      e.preventDefault();
-      void act(register);
-    }}
-  >
-    <label
-      >Manager name<input bind:value={name} required maxlength="100" /></label
+  {#if availableKinds.length}
+    <form
+      class={inlineFormClass}
+      onsubmit={(e) => {
+        e.preventDefault();
+        void act(register);
+      }}
     >
-    <label
-      >Manager type<select
-        bind:value={kind}
-        onchange={() =>
-          (port = kind === 'radarr' ? 7878 : kind === 'sonarr' ? 8989 : 8686)}
-        ><option value="radarr">Radarr</option><option value="sonarr"
-          >Sonarr</option
-        ><option value="lidarr">Lidarr</option></select
-      ></label
+      <label
+        >Manager name<input bind:value={name} required maxlength="100" /></label
+      >
+      <label
+        >Manager type<select bind:value={kind} onchange={() => selectKind(kind)}
+          >{#each availableKinds as candidate (candidate.kind)}<option
+              value={candidate.kind}>{candidate.label}</option
+            >{/each}</select
+        ></label
+      >
+      <label
+        >Docker container<select bind:value={container} required
+          ><option value="">Select container</option
+          >{#each containers as c (c.id)}<option value={c.id}
+              >{c.names[0]} ({c.state})</option
+            >{/each}</select
+        ></label
+      >
+      <label
+        >Internal API port<input
+          type="number"
+          bind:value={port}
+          min="1"
+          max="65535"
+          required
+        /></label
+      >
+      <label
+        >Manager API key<input
+          type="password"
+          bind:value={key}
+          required
+          autocomplete="new-password"
+        /></label
+      >
+      <Button type="submit" size="form" disabled={busy}>Connect manager</Button>
+    </form>
+    <Button
+      variant="secondary"
+      size="form"
+      disabled={busy}
+      onclick={() => void act(load)}>Refresh containers</Button
     >
-    <label
-      >Docker container<select bind:value={container} required
-        ><option value="">Select container</option
-        >{#each containers as c (c.id)}<option value={c.id}
-            >{c.names[0]} ({c.state})</option
-          >{/each}</select
-      ></label
-    >
-    <label
-      >Internal API port<input
-        type="number"
-        bind:value={port}
-        min="1"
-        max="65535"
-        required
-      /></label
-    >
-    <label
-      >Manager API key<input
-        type="password"
-        bind:value={key}
-        required
-        autocomplete="new-password"
-      /></label
-    >
-    <Button type="submit" size="form" disabled={busy}>Connect manager</Button>
-  </form>
-  <Button
-    variant="secondary"
-    size="form"
-    disabled={busy}
-    onclick={() => void act(load)}>Refresh containers</Button
-  >
+  {/if}
   {#each services as service (service.id)}<article class={panelClass}>
       <h3>{service.name}</h3>
       <p>{service.kind} {service.version}</p>

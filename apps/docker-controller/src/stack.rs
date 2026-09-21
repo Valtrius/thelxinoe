@@ -122,7 +122,7 @@ fn services() -> Result<Vec<Managed>> {
     if !path.exists() {
         return Ok(vec![]);
     }
-    let mut rows = Vec::new();
+    let mut rows: Vec<Managed> = Vec::new();
     for entry in std::fs::read_dir(path).map_err(|_| unavailable())? {
         let entry = entry.map_err(|_| unavailable())?;
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -130,11 +130,34 @@ fn services() -> Result<Vec<Managed>> {
         if entry.path().join("service.json").exists() {
             let service = load(&name)?;
             if service.phase != "returned" {
+                if rows.iter().any(|existing| existing.kind == service.kind) {
+                    return Err(conflict("Managed state contains duplicate service kinds"));
+                }
                 rows.push(service);
             }
         }
     }
     Ok(rows)
+}
+fn deployment_has_kind(containers: &Value, deployment: &str, kind: &str) -> Result<bool> {
+    Ok(containers
+        .as_array()
+        .ok_or_else(unavailable)?
+        .iter()
+        .any(|container| {
+            container["Labels"]["app.thelxinoe.deployment"] == deployment
+                && container["Labels"]["app.thelxinoe.kind"] == kind
+        }))
+}
+async fn ensure_kind_available(d: &Deployment, kind: &str) -> Result<Value> {
+    if services()?.iter().any(|service| service.kind == kind) {
+        return Err(conflict("This service already has a managed installation"));
+    }
+    let containers = engine("/containers/json?all=true").await?;
+    if deployment_has_kind(&containers, &d.id, kind)? {
+        return Err(conflict("This service already has a managed installation"));
+    }
+    Ok(containers)
 }
 fn mount<'a>(c: &'a Value, destination: &str) -> Result<&'a Value> {
     c["Mounts"]
@@ -431,6 +454,7 @@ async fn install(
         return Err(bad("Choose a nonprivileged local port"));
     }
     let d = bootstrap().await?;
+    let containers = ensure_kind_available(&d, &input.kind).await?;
     if t.media {
         // Compose edits must not silently provision with a stale stored layout.
         let server = engine(&format!(
@@ -448,9 +472,6 @@ async fn install(
             ));
         }
     }
-    if services()?.iter().any(|s| s.kind == input.kind) {
-        return Err(conflict("This service already has a managed installation"));
-    }
     id(&input.operation_id)?;
     let key = input.operation_id.clone();
     if service_path(&key).exists() {
@@ -465,12 +486,7 @@ async fn install(
         None,
     )
     .await?;
-    let name = choose_service_name(
-        t.kind,
-        &key,
-        &engine("/containers/json?all=true").await?,
-        None,
-    )?;
+    let name = choose_service_name(t.kind, &key, &containers, None)?;
     let mut mounts = vec![
         json!({"Type":"bind","Source":format!("{}/services/{key}/appdata",d.appdata_source),"Target":"/config"}),
     ];
@@ -695,5 +711,15 @@ mod naming_tests {
         let collision =
             json!([{"Id":"other","Names":["/thelxinoe-radarr", "/thelxinoe-radarr-01234567"]}]);
         assert!(choose_service_name("radarr", key, &collision, None).is_err());
+    }
+
+    #[test]
+    fn managed_kind_detection_is_scoped_to_the_current_deployment() {
+        let containers = json!([
+            {"Labels":{"app.thelxinoe.deployment":"current","app.thelxinoe.kind":"radarr"}},
+            {"Labels":{"app.thelxinoe.deployment":"other","app.thelxinoe.kind":"sonarr"}}
+        ]);
+        assert!(deployment_has_kind(&containers, "current", "radarr").unwrap());
+        assert!(!deployment_has_kind(&containers, "current", "sonarr").unwrap());
     }
 }

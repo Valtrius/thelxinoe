@@ -72,24 +72,24 @@ fn valid_external_id(kind: &str, value: &str) -> bool {
     }
 }
 
-async fn services(state: &AppState, kind: &str) -> Result<Vec<Service>> {
+async fn service_for_kind(state: &AppState, kind: &str) -> Result<Option<Service>> {
     let kind = kind.to_owned();
-    let ids = state
+    let id = state
         .db
         .call(move |db| {
             Ok(db
-                .prepare(
-                    "SELECT id FROM manager_services WHERE enabled=1 AND kind=?1 ORDER BY name,id",
-                )?
-                .query_map([kind], |r| r.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?)
+                .query_row(
+                    "SELECT id FROM manager_services WHERE enabled=1 AND kind=?1",
+                    [kind],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?)
         })
         .await?;
-    let mut result = Vec::new();
-    for id in ids {
-        result.push(service(state, &id).await?);
+    match id {
+        Some(id) => Ok(Some(service(state, &id).await?)),
+        None => Ok(None),
     }
-    Ok(result)
 }
 
 #[derive(Deserialize)]
@@ -113,7 +113,7 @@ async fn search(
     let (path, _) =
         search_kind(&query.kind).ok_or_else(|| ApiError::bad("Unsupported media type"))?;
     let mut items = Vec::new();
-    for service in services(&state, manager).await? {
+    if let Some(service) = service_for_kind(&state, manager).await? {
         let connection = Connection::open(&state, &service).await?;
         let rows = connection
             .call(
