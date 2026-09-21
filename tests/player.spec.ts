@@ -374,6 +374,57 @@ async function decoded(page: Page) {
   await expect(page.getByRole('status')).toHaveCount(0);
 }
 
+test('web player fills the workspace edges and resizes by pointer and keyboard', async ({
+  page,
+}) => {
+  const state = await fixture(page, { app: true });
+  await page
+    .getByRole('button', { name: 'Watch Channel 0', exact: true })
+    .click();
+  await decoded(page);
+  const player = page.getByRole('region', { name: 'Media player' });
+  const handle = page.getByRole('slider', { name: 'Resize player height' });
+  await expect(player).toHaveCSS('transform', 'none');
+  const edges = await player.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const workspace = element.closest('.workspace-scroll')!;
+    const bounds = workspace.getBoundingClientRect();
+    return {
+      left: box.left - bounds.left,
+      top: box.top - bounds.top,
+      right: bounds.left + workspace.clientWidth - box.right,
+    };
+  });
+  expect(Math.abs(edges.left)).toBeLessThanOrEqual(1);
+  expect(Math.abs(edges.top)).toBeLessThanOrEqual(1);
+  expect(Math.abs(edges.right)).toBeLessThanOrEqual(1);
+  const initial = (await player.boundingBox())!.height;
+  const grip = (await handle.boundingBox())!;
+  await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(
+    grip.x + grip.width / 2,
+    grip.y + grip.height / 2 - 100,
+    { steps: 8 },
+  );
+  await page.mouse.up();
+  await expect
+    .poll(async () => (await player.boundingBox())!.height)
+    .toBeCloseTo(initial - 100, 0);
+  await handle.focus();
+  await page.keyboard.press('ArrowDown');
+  await expect
+    .poll(async () => (await player.boundingBox())!.height)
+    .toBeCloseTo(initial - 90, 0);
+  await page.keyboard.press('Home');
+  await expect(player).toHaveCSS('height', '210px');
+  await page.keyboard.press('Enter');
+  await expect
+    .poll(async () => (await player.boundingBox())!.height)
+    .toBeCloseTo(initial, 0);
+  expect(state.errors).toEqual([]);
+});
+
 test('sidebar controls stay aligned through collapse, expansion, and reversal', async ({
   page,
 }) => {

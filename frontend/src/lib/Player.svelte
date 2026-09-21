@@ -30,11 +30,31 @@
     type MediaInfo,
     type Playback,
   } from './playback';
-  let { choice, closed, ended } = $props<{
+  let {
+    choice,
+    closed,
+    ended,
+    resizable = false,
+  } = $props<{
     choice: MediaChoice;
     closed: () => void;
     ended?: () => void;
+    resizable?: boolean;
   }>();
+  const playerId = $props.id();
+  let resizedHeight = $state<number | null>(null);
+  let viewportHeight = $state(window.innerHeight);
+  const minimumHeight = 210;
+  const maximumHeight = $derived(Math.max(minimumHeight, viewportHeight - 120));
+  const boundedHeight = $derived(
+    resizedHeight === null
+      ? undefined
+      : Math.max(minimumHeight, Math.min(maximumHeight, resizedHeight)),
+  );
+  let drag: { pointer: number; y: number; height: number } | undefined;
+  function resizeBy(height: number) {
+    resizedHeight = Math.max(minimumHeight, Math.min(maximumHeight, height));
+  }
   let player = $state<HTMLVideoElement>() as HTMLVideoElement;
   let container = $state<HTMLElement>() as HTMLElement;
   let active = $state<Playback | null>(null),
@@ -387,6 +407,7 @@
     (fullscreen = document.fullscreenElement === container)}
 />
 <svelte:window
+  bind:innerHeight={viewportHeight}
   onkeydown={(event) => {
     if (!container?.contains(event.target as Node | null)) return;
     revealControls();
@@ -394,15 +415,25 @@
 />
 
 <section
+  id={playerId}
+  data-sidebar-resize={resizable ? 'xy' : undefined}
+  data-sidebar-resize-origin={resizable ? '' : undefined}
   bind:this={container}
   bind:clientHeight={playerHeight}
   style:--player-height={`${playerHeight}px`}
+  style:height={fullscreen || boundedHeight === undefined
+    ? undefined
+    : `${boundedHeight}px`}
   transition:playerReveal|global
   onoutrostart={() => {
     generation++;
     player?.pause();
   }}
-  class="player relative isolate mb-7 aspect-video max-h-[60vh] min-h-[210px] w-full overflow-hidden bg-[#090b0c] text-[#f5f6f7] [color-scheme:dark] [container-type:inline-size] fullscreen:m-0 fullscreen:aspect-auto fullscreen:h-full fullscreen:max-h-none fullscreen:w-full"
+  class={[
+    'player relative isolate aspect-video min-h-[210px] w-full overflow-hidden bg-[#090b0c] text-[#f5f6f7] [color-scheme:dark] [container-type:inline-size] fullscreen:m-0 fullscreen:aspect-auto fullscreen:h-full fullscreen:max-h-none fullscreen:w-full',
+    resizable ? 'm-0' : 'mb-7',
+    boundedHeight === undefined ? 'max-h-[60vh]' : 'max-h-[calc(100dvh-120px)]',
+  ]}
   class:controls-hidden={!controlsShown}
   aria-label="Media player"
   onpointermove={revealControls}
@@ -717,6 +748,60 @@
     </div>
   </div>
 </section>
+
+{#if resizable && !fullscreen}
+  <div
+    role="slider"
+    tabindex="0"
+    aria-label="Resize player height"
+    aria-orientation="vertical"
+    data-sidebar-resize="xy"
+    aria-controls={playerId}
+    aria-valuemin={minimumHeight}
+    aria-valuemax={maximumHeight}
+    aria-valuenow={Math.round(playerHeight)}
+    aria-valuetext={`${Math.round(playerHeight)} pixels`}
+    title="Drag to resize; use arrow keys or double-click to reset"
+    class="player-resize-handle group flex h-2 w-full touch-none cursor-row-resize items-center justify-center bg-surface hover:bg-accent-soft focus-visible:bg-accent-soft focus-visible:-outline-offset-2"
+    onpointerdown={(event) => {
+      if (event.button !== 0 || !event.isPrimary) return;
+      event.preventDefault();
+      drag = {
+        pointer: event.pointerId,
+        y: event.clientY,
+        height: playerHeight,
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }}
+    onpointermove={(event) => {
+      if (drag?.pointer === event.pointerId)
+        resizeBy(drag.height + event.clientY - drag.y);
+    }}
+    onpointerup={(event) => {
+      if (drag?.pointer === event.pointerId) {
+        drag = undefined;
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    }}
+    onlostpointercapture={() => (drag = undefined)}
+    onpointercancel={() => (drag = undefined)}
+    ondblclick={() => (resizedHeight = null)}
+    onkeydown={(event) => {
+      const step = event.shiftKey ? 50 : 10;
+      if (event.key === 'ArrowUp') resizeBy(playerHeight - step);
+      else if (event.key === 'ArrowDown') resizeBy(playerHeight + step);
+      else if (event.key === 'Home') resizeBy(minimumHeight);
+      else if (event.key === 'End') resizeBy(maximumHeight);
+      else if (event.key === 'Enter') resizedHeight = null;
+      else return;
+      event.preventDefault();
+    }}
+  >
+    <span
+      class="h-0.5 w-12 rounded-full bg-line-strong group-hover:bg-accent group-focus-visible:bg-accent"
+    ></span>
+  </div>
+{/if}
 
 <style>
   :is(button, input):focus-visible {

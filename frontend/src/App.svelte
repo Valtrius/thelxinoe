@@ -675,11 +675,20 @@
             choice={playing}
             closed={() => (playing = null)}
           />{:else if playing}<div
-            class="player-frame"
-            data-sidebar-resize="xy"
-            data-sidebar-resize-origin
+            class={[
+              'player-frame',
+              providerPage
+                ? '-mt-3 -ml-3'
+                : section === 'Settings'
+                  ? ''
+                  : '-mx-6 -mt-6 narrow:-mx-4 narrow:-mt-4 compact:-mx-3 compact:-mt-3',
+            ]}
           >
-            <Player choice={playing} closed={() => (playing = null)} />
+            <Player
+              choice={playing}
+              closed={() => (playing = null)}
+              resizable
+            />
           </div>{/if}
         {#if section === 'Settings'}
           <SettingsLayout {user} bind:active={settingsSection}>
