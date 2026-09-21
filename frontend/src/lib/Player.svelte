@@ -84,9 +84,11 @@
     optionMenu = $state<string | null>(null),
     playerHeight = $state(0),
     fullscreen = $state(false),
-    muted = $state(false);
+    muted = $state(false),
+    speed = $state(1);
   let hideTimer: ReturnType<typeof setTimeout> | undefined;
   let audibleVolume = 1;
+  let lastSubtitle: string | null = null;
   $effect.pre(() => {
     const savedHeight = $appearance.player_height;
     if (resizable && !drag) resizedHeight = savedHeight;
@@ -133,6 +135,7 @@
     }, 2500);
   }
   function changeVolume(value: number) {
+    value = Math.max(0, Math.min(1, value));
     muted = false;
     player.volume = value;
     updateAppearance({ audio_volume: value });
@@ -149,6 +152,134 @@
     } catch {
       // A browser may deny fullscreen without interrupting playback.
     }
+    revealControls();
+  }
+  function setSubtitle(value: string) {
+    if (value === 'off') {
+      if (subtitle && subtitle !== 'off') lastSubtitle = subtitle;
+    } else {
+      lastSubtitle = value;
+    }
+    subtitle = value;
+    selectSubtitle();
+  }
+  function toggleSubtitles() {
+    const subtitles = active?.subtitles ?? [];
+    if (!subtitles.length) return;
+    if (subtitle !== 'off') {
+      setSubtitle('off');
+      return;
+    }
+    const selected = [lastSubtitle, active?.selected_subtitle]
+      .filter((id): id is string => !!id && id !== 'off')
+      .find((id) => subtitles.some((track) => track.id === id));
+    setSubtitle(selected ?? subtitles[0].id);
+  }
+  function changeSpeed(delta: number) {
+    speed = Math.max(0.25, Math.min(2, Math.round((speed + delta) * 4) / 4));
+    player.playbackRate = speed;
+  }
+  function parseFrameRate(value?: string) {
+    if (!value) return undefined;
+    const [numerator, denominator = '1'] = value.split('/');
+    const rate = Number(numerator) / Number(denominator);
+    return Number.isFinite(rate) && rate > 0 ? rate : undefined;
+  }
+  function frameRate() {
+    const stream = active?.probe.streams?.find(
+      (candidate) => candidate.codec_type === 'video',
+    );
+    return (
+      parseFrameRate(stream?.avg_frame_rate) ??
+      parseFrameRate(stream?.r_frame_rate) ??
+      30
+    );
+  }
+  function stepFrame(direction: -1 | 1) {
+    if (!active || !active.video || active.live || busy || !player.paused)
+      return;
+    const upperBound = Number.isFinite(player.duration)
+      ? player.duration
+      : Math.max(0, active.duration - active.timeline_start);
+    player.currentTime = Math.max(
+      0,
+      Math.min(upperBound, player.currentTime + direction / frameRate()),
+    );
+    position = Math.min(
+      active.duration,
+      player.currentTime + active.timeline_start,
+    );
+    void report('paused');
+  }
+  function seekBy(seconds: number) {
+    if (!active || active.live || (busy && active.mode !== 'direct')) return;
+    void seek(Math.max(0, Math.min(active.duration, position + seconds)));
+  }
+  function isInteractiveTarget(target: EventTarget | null) {
+    return (
+      target instanceof Element &&
+      !!target.closest(
+        'button, input, select, textarea, a, [contenteditable]:not([contenteditable="false"]), [role="menuitem"], [role="menuitemradio"]',
+      )
+    );
+  }
+  function handleShortcut(event: KeyboardEvent) {
+    if (
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      isInteractiveTarget(event.target)
+    )
+      return;
+    const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+    switch (key) {
+      case ' ':
+      case 'k':
+        void toggle();
+        break;
+      case 'ArrowLeft':
+        seekBy(-5);
+        break;
+      case 'ArrowRight':
+        seekBy(5);
+        break;
+      case 'j':
+        seekBy(-10);
+        break;
+      case 'l':
+        seekBy(10);
+        break;
+      case 'ArrowUp':
+        changeVolume($appearance.audio_volume + 0.05);
+        break;
+      case 'ArrowDown':
+        changeVolume($appearance.audio_volume - 0.05);
+        break;
+      case 'm':
+        toggleMute();
+        break;
+      case 'f':
+        void toggleFullscreen();
+        break;
+      case 'c':
+        toggleSubtitles();
+        break;
+      case '.':
+        stepFrame(1);
+        break;
+      case ',':
+        stepFrame(-1);
+        break;
+      case '>':
+        changeSpeed(0.25);
+        break;
+      case '<':
+        changeSpeed(-0.25);
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
     revealControls();
   }
   function ready() {
@@ -223,11 +354,12 @@
     sequence = 0;
     position = result.position;
     subtitle = result.selected_subtitle ?? 'off';
+    if (subtitle !== 'off') lastSubtitle = subtitle;
     await tick();
     if (revision !== generation) return;
     await attach(result.url, result.position);
   }
-  async function attach(url: string, at: number) {
+  async function attach(url: string, at: number, autoplay = true) {
     if (!active || !player) return;
     buffering = true;
     const session = active;
@@ -241,6 +373,7 @@
       });
     };
     player.volume = $appearance.audio_volume;
+    player.playbackRate = speed;
     if (!active.video) {
       if (audioElement !== player) {
         await audioContext?.close();
@@ -266,7 +399,7 @@
       player.onloadedmetadata = () => {
         if (active !== session) return;
         player.currentTime = Math.max(0, at - session.timeline_start);
-        play();
+        if (autoplay) play();
       };
     } else {
       hls = new Hls({
@@ -278,7 +411,7 @@
       });
       hls.loadSource(mediaUrl(url));
       hls.attachMedia(player);
-      hls.on(Hls.Events.MANIFEST_PARSED, play);
+      if (autoplay) hls.on(Hls.Events.MANIFEST_PARSED, play);
       hls.on(Hls.Events.ERROR, (_, data) => {
         if (data.fatal && active === session) {
           error = 'Playback interrupted. Try seeking or reopening this item.';
@@ -325,33 +458,35 @@
     await closingAudio;
     await stopped;
   }
-  async function seek(at: number) {
-    if (!active || active.live || busy) return;
+  async function seek(at: number, resume?: boolean) {
+    if (!active || active.live) return;
+    const shouldResume = resume ?? !player.paused;
+    if (active.mode === 'direct') {
+      player.currentTime = at;
+      position = at;
+      await report(player.paused ? 'paused' : 'playing');
+      return;
+    }
+    if (busy) return;
     busy = true;
     error = '';
     const revision = generation;
     const session = active;
     try {
-      if (active.mode === 'direct') {
-        player.currentTime = at;
-        position = at;
-        await report(paused ? 'paused' : 'playing');
-      } else {
-        player.pause();
-        const next = await api<{
-          url: string;
-          timeline_start: number;
-          position: number;
-        }>(`/playback/${active.id}/seek`, 'POST', {
-          position: Math.min(at, active.duration - 0.05),
-        });
-        if (revision !== generation || active !== session) return;
-        active = { ...active, ...next };
-        selectSubtitle();
-        position = next.position;
-        await attach(next.url, next.position);
-        await report('playing');
-      }
+      player.pause();
+      const next = await api<{
+        url: string;
+        timeline_start: number;
+        position: number;
+      }>(`/playback/${active.id}/seek`, 'POST', {
+        position: Math.min(at, active.duration - 0.05),
+      });
+      if (revision !== generation || active !== session) return;
+      active = { ...active, ...next };
+      selectSubtitle();
+      position = next.position;
+      await attach(next.url, next.position, shouldResume);
+      await report(shouldResume ? 'playing' : 'paused');
     } catch (e) {
       if (revision === generation) error = String(e);
     } finally {
@@ -428,13 +563,13 @@
       }
       return;
     }
-    if (!paused) {
+    if (!player.paused) {
       player.pause();
       return;
     }
     await audioContext?.resume();
     if (revision !== generation || active !== session) return;
-    if (active.mode !== 'direct' && !active.live) await seek(position);
+    if (active.mode !== 'direct' && !active.live) await seek(position, true);
     else await player.play().catch((e) => (error = String(e)));
   }
 </script>
@@ -448,6 +583,7 @@
   onkeydown={(event) => {
     if (!container?.contains(event.target as Node | null)) return;
     revealControls();
+    handleShortcut(event);
   }}
 />
 
@@ -473,9 +609,18 @@
   ]}
   class:controls-hidden={!controlsShown}
   aria-label="Media player"
+  tabindex="-1"
   onpointermove={revealControls}
-  onpointerdown={() => {
+  onpointerdown={(event) => {
     controlFocused = false;
+    if (event.button === 0 && !isInteractiveTarget(event.target))
+      container.focus({ preventScroll: true });
+    revealControls();
+  }}
+  oncontextmenu={(event) => {
+    if (isInteractiveTarget(event.target)) return;
+    event.preventDefault();
+    void toggle();
     revealControls();
   }}
   onfocusin={(event) => {
@@ -760,10 +905,7 @@
           disabled={busy || !active}
           open={optionMenu === 'subtitles'}
           setOpen={(open) => (optionMenu = open ? 'subtitles' : null)}
-          select={(value) => {
-            subtitle = value;
-            selectSubtitle();
-          }}
+          select={setSubtitle}
         >
           {#snippet icon()}<Captions size={20} />{/snippet}
         </PlayerOption>

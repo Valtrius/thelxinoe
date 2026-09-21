@@ -94,6 +94,7 @@ async function fixture(
     fail?: boolean;
     app?: boolean;
     playerHeight?: number | null;
+    subtitles?: boolean;
   } = {},
 ) {
   const metadata = gate(!!options.hold),
@@ -294,10 +295,21 @@ async function fixture(
           timeline_start: 0,
           video: true,
           tracks: [],
-          subtitles: [],
+          subtitles: options.subtitles
+            ? [
+                {
+                  id: 'english',
+                  language: 'en',
+                  title: 'English',
+                  url: '/fixture/subtitles.vtt',
+                },
+              ]
+            : [],
           selected_subtitle: 'off',
           options: input.options,
-          probe: {},
+          probe: {
+            streams: [{ codec_type: 'video', avg_frame_rate: '12/1' }],
+          },
           replay_gain: 'off',
         },
       });
@@ -347,6 +359,12 @@ async function fixture(
         body: url.pathname.endsWith('.ts') ? segment : mp4,
       });
     },
+  );
+  await page.route('**/fixture/subtitles.vtt', (route) =>
+    route.fulfill({
+      contentType: 'text/vtt',
+      body: 'WEBVTT\n\n00:00:00.000 --> 00:00:59.000\nFixture subtitle\n',
+    }),
   );
   await page.route('**/player-test*', (route) =>
     route.fulfill({
@@ -818,6 +836,100 @@ test('controls hide, recover with keyboard, retain volume, seek, and stay inside
   await insidePlayer(page);
   await page.getByRole('button', { name: 'Pause', exact: true }).click();
   await page.screenshot({ path: '.local/player-ui/mobile.png' });
+  expect(state.errors).toEqual([]);
+});
+
+test('web player supports YouTube playback shortcuts and right-click pause', async ({
+  page,
+}) => {
+  const state = await fixture(page, { subtitles: true });
+  await decoded(page);
+  const player = page.getByRole('region', { name: 'Media player' });
+  const video = page.locator('video');
+
+  await video.click({ position: { x: 100, y: 100 } });
+  await expect(player).toBeFocused();
+
+  await page.keyboard.press('k');
+  await expect
+    .poll(() => video.evaluate((element) => element.paused))
+    .toBe(true);
+  await page.keyboard.press('Space');
+  await expect
+    .poll(() => video.evaluate((element) => element.paused))
+    .toBe(false);
+  await video.click({ button: 'right', position: { x: 100, y: 100 } });
+  await expect
+    .poll(() => video.evaluate((element) => element.paused))
+    .toBe(true);
+
+  await video.evaluate((element) => {
+    element.currentTime = 20;
+    element.dispatchEvent(new Event('timeupdate'));
+  });
+  await player.focus();
+  for (const [key, expected] of [
+    ['ArrowLeft', 15],
+    ['ArrowRight', 20],
+    ['j', 10],
+    ['l', 20],
+  ] as const) {
+    await page.keyboard.press(key);
+    await expect
+      .poll(() => video.evaluate((element) => element.currentTime))
+      .toBeCloseTo(expected, 1);
+  }
+
+  await page.keyboard.press('ArrowUp');
+  await expect
+    .poll(() => video.evaluate((element) => element.volume))
+    .toBeCloseTo(0.36, 2);
+  await page.keyboard.press('ArrowDown');
+  await expect
+    .poll(() => video.evaluate((element) => element.volume))
+    .toBeCloseTo(0.31, 2);
+  await page.keyboard.press('m');
+  expect(await video.evaluate((element) => element.muted)).toBe(true);
+
+  await page.keyboard.press('f');
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        document.fullscreenElement?.classList.contains('player'),
+      ),
+    )
+    .toBe(true);
+  await page.keyboard.press('f');
+  await expect
+    .poll(() => page.evaluate(() => document.fullscreenElement))
+    .toBeNull();
+
+  await expect
+    .poll(() => video.evaluate((element) => element.textTracks.length))
+    .toBe(1);
+  await page.keyboard.press('c');
+  await expect
+    .poll(() => video.evaluate((element) => element.textTracks[0]?.mode))
+    .toBe('showing');
+  await page.keyboard.press('c');
+  await expect
+    .poll(() => video.evaluate((element) => element.textTracks[0]?.mode))
+    .toBe('disabled');
+
+  const beforeStep = await video.evaluate((element) => element.currentTime);
+  await page.keyboard.press('.');
+  await expect
+    .poll(() => video.evaluate((element) => element.currentTime))
+    .toBeCloseTo(beforeStep + 1 / 12, 2);
+  await page.keyboard.press(',');
+  await expect
+    .poll(() => video.evaluate((element) => element.currentTime))
+    .toBeCloseTo(beforeStep, 2);
+
+  await page.keyboard.press('Shift+Period');
+  expect(await video.evaluate((element) => element.playbackRate)).toBe(1.25);
+  await page.keyboard.press('Shift+Comma');
+  expect(await video.evaluate((element) => element.playbackRate)).toBe(1);
   expect(state.errors).toEqual([]);
 });
 

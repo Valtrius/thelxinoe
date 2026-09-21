@@ -54,7 +54,12 @@ export type Playback = {
 };
 export type Probe = {
   format?: { tags?: Record<string, string> };
-  streams?: { tags?: Record<string, string> }[];
+  streams?: {
+    tags?: Record<string, string>;
+    codec_type?: string;
+    avg_frame_rate?: string;
+    r_frame_rate?: string;
+  }[];
 };
 export type MediaInfo = {
   sources: {
