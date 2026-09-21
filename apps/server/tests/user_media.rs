@@ -542,7 +542,7 @@ async fn viewing_statistics_exclude_seek_jumps_and_survive_device_revocation() {
         .db
         .call(|db| {
             db.execute(
-                "UPDATE playback_activity_clocks SET reported_at_ms=?1 WHERE playback_id='play'",
+                "UPDATE playback_sessions SET reported_at_ms=?1 WHERE id='play'",
                 [chrono::Utc::now().timestamp_millis() - 10_000],
             )?;
             Ok(())
@@ -552,11 +552,28 @@ async fn viewing_statistics_exclude_seek_jumps_and_survive_device_revocation() {
     progress(&state, &p, "play", 1, 10.0, "playing").await;
     progress(&state, &p, "play", 2, 90.0, "paused").await;
     progress(&state, &p, "play", 1, 20.0, "playing").await;
-    let own = ok(&state, &alice, "/me/history", "GET", Value::Null).await;
-    assert_eq!(own["stats"]["played_seconds"], 10.0);
+    let own = ok(
+        &state,
+        &alice,
+        "/me/history?range=all&platform=movies",
+        "GET",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(own["items"][0]["played_seconds"], 10.0);
     assert_eq!(own["items"][0]["position"], 90.0);
     assert_eq!(
-        ok(&state, &bob, "/me/history?user=alice", "GET", Value::Null).await["stats"]["plays"],
+        ok(
+            &state,
+            &bob,
+            "/me/history?range=all&user=alice",
+            "GET",
+            Value::Null
+        )
+        .await["items"]
+            .as_array()
+            .unwrap()
+            .len(),
         0
     );
     assert_eq!(
@@ -569,11 +586,11 @@ async fn viewing_statistics_exclude_seek_jumps_and_survive_device_revocation() {
         ok(
             &state,
             &admin,
-            "/admin/history?user=alice",
+            "/admin/history?range=all&user=alice",
             "GET",
             Value::Null
         )
-        .await["users"][0]["username"],
+        .await["items"][0]["username"],
         "alice"
     );
     ok(
@@ -586,7 +603,7 @@ async fn viewing_statistics_exclude_seek_jumps_and_survive_device_revocation() {
     .await;
     let (again, _) = login(&state, "alice").await;
     assert_eq!(
-        ok(&state, &again, "/me/history", "GET", Value::Null).await["stats"]["played_seconds"],
+        ok(&state, &again, "/me/history?range=all", "GET", Value::Null).await["items"][0]["played_seconds"],
         10.0
     );
     assert_eq!(

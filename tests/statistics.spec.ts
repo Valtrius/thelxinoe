@@ -80,10 +80,38 @@ function overview(
   };
 }
 
+function historyPayload(title = 'History fixture') {
+  return {
+    items: [
+      {
+        id: 'history-fixture',
+        media_id: 'movie',
+        kind: 'movie',
+        title,
+        edition: '',
+        user_id: 'layout-fixture',
+        username: 'Layout viewer',
+        device: 'Browser',
+        started_at: 1_795_000_000,
+        updated_at: 1_795_000_060,
+        ended_at: 1_795_000_060,
+        position: 60,
+        duration: 120,
+        played_seconds: 60,
+        state: 'stopped',
+      },
+    ],
+    next_before: null,
+  };
+}
+
 async function fixture(page: Page, role: 'user' | 'admin' = 'user') {
   const base = await installUiFixture(page, { role, section: 'Statistics' });
   const queries: URL[] = [];
+  const historyQueries: URL[] = [];
   let override:
+    ((route: Route, url: URL) => Promise<void> | undefined) | undefined;
+  let historyOverride:
     ((route: Route, url: URL) => Promise<void> | undefined) | undefined;
   await page.route('**/api/v1/users', (route) =>
     route.fulfill({
@@ -112,17 +140,39 @@ async function fixture(page: Page, role: 'user' | 'admin' = 'user') {
     value.range = url.searchParams.get('range') as StatisticsRange;
     await route.fulfill({ json: value });
   });
+  await page.route('**/api/v1/*/history?*', async (route) => {
+    const url = new URL(route.request().url());
+    historyQueries.push(url);
+    const response = historyOverride?.(route, url);
+    if (response) return response;
+    await route.fulfill({ json: historyPayload() });
+  });
   return {
     ...base,
     queries,
+    historyQueries,
     setOverride(next: typeof override) {
       override = next;
+    },
+    setHistoryOverride(next: typeof historyOverride) {
+      historyOverride = next;
     },
   };
 }
 
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: 'ignoreErrors' });
+});
+
+test('legacy History navigation opens Statistics', async ({ page }) => {
+  await fixture(page);
+  await page.goto('/?section=History');
+  await expect(
+    page.getByRole('region', { name: 'Statistics summary' }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('heading', { name: 'Playback history', exact: true }),
+  ).toBeVisible();
 });
 
 test('statistics shows the youtwitch panels with all media, source filters and keyboard-accessible rhythm', async ({
@@ -135,6 +185,14 @@ test('statistics shows the youtwitch panels with all media, source filters and k
   ).toBeVisible();
   expect(state.queries[0].pathname).toBe('/api/v1/me/statistics');
   expect(state.queries[0].searchParams.get('platform')).toBe('all');
+  await expect(
+    page.getByRole('heading', { name: 'Playback history', exact: true }),
+  ).toBeVisible();
+  expect(state.historyQueries[0].pathname).toBe('/api/v1/me/history');
+  expect(state.historyQueries[0].searchParams.get('platform')).toBe('all');
+  expect(state.historyQueries[0].searchParams.get('range')).toBe('30d');
+  await expect(page.getByLabel('Media')).toHaveCount(0);
+  await expect(page.getByLabel('From date (UTC)')).toHaveCount(0);
   await expect(
     page.getByRole('combobox', { name: 'Statistics user' }),
   ).toHaveCount(0);
@@ -171,12 +229,18 @@ test('statistics shows the youtwitch panels with all media, source filters and k
     page.getByRole('heading', { name: '04 / TOP ARTISTS' }),
   ).toBeVisible();
   expect(state.queries.at(-1)?.searchParams.get('platform')).toBe('music');
+  await expect
+    .poll(() => state.historyQueries.at(-1)?.searchParams.get('platform'))
+    .toBe('music');
   await page
     .getByRole('group', { name: 'Statistics range' })
     .getByRole('button', { name: '7D', exact: true })
     .click();
   await expect
     .poll(() => state.queries.at(-1)?.searchParams.get('range'))
+    .toBe('7d');
+  await expect
+    .poll(() => state.historyQueries.at(-1)?.searchParams.get('range'))
     .toBe('7d');
   await page.getByRole('button', { name: 'How this is measured' }).click();
   await expect(page.getByRole('dialog')).toContainText('FILMS / SHOWS / MUSIC');
@@ -236,12 +300,19 @@ test('administrators can aggregate or select a user without stale responses repl
   ).toBeVisible();
   expect(state.queries.at(-1)?.pathname).toBe('/api/v1/admin/statistics');
   expect(state.queries.at(-1)?.searchParams.has('user')).toBe(false);
+  await expect
+    .poll(() => state.historyQueries.at(-1)?.pathname)
+    .toBe('/api/v1/admin/history');
+  expect(state.historyQueries.at(-1)?.searchParams.has('user')).toBe(false);
   await page
     .getByRole('region', { name: 'Watch time by user' })
     .getByRole('button', { name: /Bob/ })
     .click();
   await expect
     .poll(() => state.queries.at(-1)?.searchParams.get('user'))
+    .toBe('bob');
+  await expect
+    .poll(() => state.historyQueries.at(-1)?.searchParams.get('user'))
     .toBe('bob');
   await expect(
     page.getByRole('region', { name: 'Watch time by user' }),
@@ -271,8 +342,46 @@ test('administrators can aggregate or select a user without stale responses repl
   await expect
     .poll(() => state.queries.at(-1)?.pathname)
     .toBe('/api/v1/me/statistics');
+  await expect
+    .poll(() => state.historyQueries.at(-1)?.pathname)
+    .toBe('/api/v1/me/history');
+  await expect(
+    page.getByRole('combobox', { name: 'History scope' }),
+  ).toHaveCount(0);
   expect(state.errors).toEqual([]);
   expect(state.unexpected).toEqual([]);
+});
+
+test('history ignores stale responses when the administrator scope changes', async ({
+  page,
+}) => {
+  const state = await fixture(page, 'admin');
+  await page.goto('/');
+  const scope = page.getByRole('combobox', { name: 'Statistics user' });
+  let held: Route | undefined;
+  state.setHistoryOverride((route, url) => {
+    if (
+      url.pathname === '/api/v1/admin/history' &&
+      !url.searchParams.has('user')
+    ) {
+      held = route;
+      return Promise.resolve();
+    }
+  });
+  await scope.selectOption('all');
+  await expect.poll(() => Boolean(held)).toBe(true);
+  await scope.selectOption('bob');
+  await expect
+    .poll(() => state.historyQueries.at(-1)?.searchParams.get('user'))
+    .toBe('bob');
+  await expect(
+    page.getByText('History fixture', { exact: true }),
+  ).toBeVisible();
+  await held!.fulfill({ json: historyPayload('Stale history') });
+  await expect(page.getByText('Stale history', { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByText('History fixture', { exact: true }),
+  ).toBeVisible();
 });
 
 test('statistics failures can be retried and older time attribution is explained', async ({

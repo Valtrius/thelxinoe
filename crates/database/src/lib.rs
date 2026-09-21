@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-pub const SCHEMA_VERSION: u32 = 36;
+pub const SCHEMA_VERSION: u32 = 37;
 
 /// Inspect a quiesced database without applying migrations or creating missing files.
 pub fn verify_snapshot(path: &Path) -> Result<u32> {
@@ -95,6 +95,7 @@ impl Database {
             include_str!("../migrations/034.sql"),
             include_str!("../migrations/035.sql"),
             include_str!("../migrations/036.sql"),
+            include_str!("../migrations/037.sql"),
         ];
         if version > migrations.len() as i64 {
             anyhow::bail!("Database is newer than this server; use the matching release");
@@ -199,6 +200,88 @@ mod tests {
                 .get::<_, i64>(0))?,
             0
         );
+        Ok(())
+    }
+    #[test]
+    fn history_migration_unifies_sources_and_moves_activity_clocks() -> Result<()> {
+        let db = Connection::open_in_memory()?;
+        db.pragma_update(None, "foreign_keys", "ON")?;
+        for version in 1..=36 {
+            let path =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("migrations/{version:03}.sql"));
+            db.execute_batch(&std::fs::read_to_string(path)?)?;
+        }
+        db.execute_batch(
+            "INSERT INTO users(id,username,password_hash,role,timezone,created_at) VALUES ('alice','Alice','unused','user','UTC',1);
+             INSERT INTO sessions VALUES ('session','alice','hash','web','Browser',1,9999999999,1);
+             INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Films','movies','/media');
+             INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES ('film','root','movie','film','Film',1);
+             INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES ('file','root','/media/film.mkv','g',1,'1','hash','{}',1);
+             INSERT INTO playback_sessions(id,user_id,auth_session_id,media_id,file_id,generation,edition,state,mode,options,duration,created_at,updated_at) VALUES ('clock','alice','session','film','file','g','','playing','direct','{}',100,1,1);
+             INSERT INTO playback_activity_clocks VALUES ('clock',12345,67.5);
+             INSERT INTO playback_history(playback_id,user_id,media_id,edition,device_name,started_at,updated_at,ended_at,position,duration,played_seconds,state) VALUES ('local','alice','film','','Browser',100,200,200,100,100,90,'stopped');
+             INSERT INTO youtube_videos(user_id,video_id,title,channel_title,is_short,broadcast) VALUES ('alice','video','Video','Channel',1,'none');
+             INSERT INTO youtube_history VALUES ('shared','alice','video','Video','Browser',300,400,30,60,20,'stopped');
+             INSERT INTO live_history VALUES ('shared','alice','twitch:42','Old live stream','Browser',500,600,20,20,'stopped');",
+        )?;
+
+        db.execute_batch(include_str!("../migrations/037.sql"))?;
+
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM playback_history", [], |r| r
+                .get::<_, i64>(0))?,
+            3
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM playback_history WHERE playback_id='shared'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?,
+            2
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT platform||':'||content_type FROM playback_history WHERE media_id='youtube:video'",
+                [],
+                |r| r.get::<_, String>(0)
+            )?,
+            "youtube:short"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT reported_at_ms FROM playback_sessions WHERE id='clock'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?,
+            12345
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT client_active_seconds FROM playback_sessions WHERE id='clock'",
+                [],
+                |r| r.get::<_, f64>(0)
+            )?,
+            67.5
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('youtube_history','live_history','playback_activity_clocks')",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?,
+            0
+        );
+        db.execute("DELETE FROM media WHERE id='film'", [])?;
+        assert_eq!(
+            db.query_row(
+                "SELECT media_title FROM playback_history WHERE playback_id='local'",
+                [],
+                |r| r.get::<_, String>(0)
+            )?,
+            "Film"
+        );
+        assert!(!db.prepare("PRAGMA foreign_key_check")?.exists([])?);
         Ok(())
     }
     #[test]

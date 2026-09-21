@@ -5,7 +5,6 @@
     Tv,
     Music,
     ListMusic,
-    History,
     Search,
     ChartNoAxesCombined,
     PanelLeftClose,
@@ -127,15 +126,6 @@
       >
     </nav>
     <div class="sidebar-bottom mt-auto shrink-0 pb-2">
-      <SidebarButton
-        label="History"
-        {collapsed}
-        aria-label="History"
-        title={collapsed ? 'History' : undefined}
-        active={section === 'History'}
-        onclick={() => navigate('History')}
-        ><History class="size-5 shrink-0" /></SidebarButton
-      >
       <SidebarButton
         label="Statistics"
         {collapsed}

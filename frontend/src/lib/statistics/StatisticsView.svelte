@@ -27,6 +27,7 @@
   import ExclusiveChoiceGroup from '../ui/ExclusiveChoiceGroup.svelte';
   import ViewingRhythmChart from './ViewingRhythmChart.svelte';
   import WatchTimeChart from './WatchTimeChart.svelte';
+  import History from '../History.svelte';
 
   let { user } = $props<{ user: User }>();
   let scope = $state('mine');
@@ -658,6 +659,7 @@
       </section>
     {/if}
   {/if}
+  <History {user} {scope} {range} {platform} />
 </div>
 
 <dialog

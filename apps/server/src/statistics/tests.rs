@@ -23,7 +23,7 @@ async fn backdate(state: &AppState, id: &'static str, milliseconds: i64) {
         .db
         .call(move |db| {
             db.execute(
-                "UPDATE playback_activity_clocks SET reported_at_ms=?1 WHERE playback_id=?2",
+                "UPDATE playback_sessions SET reported_at_ms=?1 WHERE id=?2",
                 params![Utc::now().timestamp_millis() - milliseconds, id],
             )?;
             Ok(())
@@ -109,13 +109,13 @@ async fn statistics_progress_is_idempotent_private_and_survives_session_revocati
     assert_eq!(
         call(
             &state,
-            "/api/v1/me/history?domain=twitch",
+            "/api/v1/me/history?platform=twitch&range=all",
             "GET",
             Value::Null,
             &alice
         )
         .await
-        .2["stats"]["played_seconds"],
+        .2["items"][0]["played_seconds"],
         10.0
     );
     assert_eq!(

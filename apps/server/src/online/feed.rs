@@ -197,10 +197,11 @@ pub async fn delete_data(State(state): State<AppState>, headers: HeaderMap) -> R
     state.db.call(move|db|{
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         crate::statistics::delete_provider(&tx,&user,"youtube")?;
+        crate::history::delete_provider(&tx,&user,"youtube")?;
         for table in ["oauth_attempts","online_accounts"]{tx.execute(&format!("DELETE FROM {table} WHERE user_id=?1 AND provider='youtube'"),[&user])?;}
         tx.execute("UPDATE playback_sessions SET state='stopped',updated_at=?2 WHERE user_id=?1 AND youtube_video_id IS NOT NULL",params![user,now()])?;
         tx.execute("DELETE FROM playback_grants WHERE resource IN (SELECT 'playback:'||id FROM playback_sessions WHERE user_id=?1 AND youtube_video_id IS NOT NULL)",[&user])?;
-        for table in ["youtube_watchlists","youtube_sync","youtube_subscriptions","youtube_videos","youtube_history"]{tx.execute(&format!("DELETE FROM {table} WHERE user_id=?1"),[&user])?;}
+        for table in ["youtube_watchlists","youtube_sync","youtube_subscriptions","youtube_videos"]{tx.execute(&format!("DELETE FROM {table} WHERE user_id=?1"),[&user])?;}
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'online.delete-data','youtube',?2)",params![user,now()])?;
         tx.commit()?;Ok(())
     }).await?;

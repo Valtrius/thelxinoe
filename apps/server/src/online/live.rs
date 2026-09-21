@@ -4,7 +4,7 @@ use crate::{
     error::{ApiError, Result},
 };
 use rusqlite::{OptionalExtension, params};
-use thelxinoe_core::{Principal, now};
+use thelxinoe_core::Principal;
 use thelxinoe_playback::RemoteSource;
 
 pub(crate) fn domain(media: &str) -> bool {
@@ -95,17 +95,6 @@ pub(crate) async fn extract(state: &AppState, media: &str) -> Result<RemoteSourc
     }
     Ok(source)
 }
-pub(crate) fn record(
-    tx: &rusqlite::Transaction<'_>,
-    playback: &str,
-    position: f64,
-    status: &str,
-    seconds: f64,
-) -> anyhow::Result<()> {
-    tx.execute("INSERT INTO live_history(playback_id,user_id,media_id,title,device_name,started_at,updated_at,position,played_seconds,state) SELECT p.id,p.user_id,p.live_media_id,m.title,s.name,?2,?2,?3,?4,?5 FROM playback_sessions p JOIN sessions s ON s.id=p.auth_session_id JOIN live_media m ON m.id=p.live_media_id WHERE p.id=?1 ON CONFLICT(playback_id) DO UPDATE SET updated_at=excluded.updated_at,position=excluded.position,played_seconds=played_seconds+?4,state=excluded.state",params![playback,now(),position,seconds,status])?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,7 +113,7 @@ mod tests {
             db.execute("INSERT INTO live_media VALUES ('twitch:42','Live fixture')",[])?;
             for user in ["alice","bob"] {
                 db.execute("INSERT INTO twitch_streams(user_id,channel_id,login,display_name,title,category,viewers,started_at,snapshot,active) VALUES (?1,'42','fixture','Fixture','Live fixture','Science',10,'today','s',1)",[user])?;
-                db.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,generation,edition,state,mode,options,duration,created_at,updated_at,live_media_id,streaming) SELECT ?1,user_id,id,'g','live','playing','transcode','{}',0,?2,?2,'twitch:42',1 FROM sessions WHERE user_id=?1 LIMIT 1",params![user,now()])?;
+                db.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,generation,edition,state,mode,options,duration,created_at,updated_at,live_media_id,streaming) SELECT ?1,user_id,id,'g','live','playing','transcode','{}',0,?2,?2,'twitch:42',1 FROM sessions WHERE user_id=?1 LIMIT 1",params![user,thelxinoe_core::now()])?;
             }Ok(())
         }).await.unwrap();
         assert_eq!(
@@ -154,25 +143,31 @@ mod tests {
         assert_eq!(
             call(
                 &state,
-                "/api/v1/me/history?domain=twitch",
+                "/api/v1/me/history?platform=twitch&range=all",
                 "GET",
                 Value::Null,
                 &alice
             )
             .await
-            .2["stats"]["plays"],
+            .2["items"]
+                .as_array()
+                .unwrap()
+                .len(),
             1
         );
         assert_eq!(
             call(
                 &state,
-                "/api/v1/me/history?domain=twitch&user=alice",
+                "/api/v1/me/history?platform=twitch&range=all&user=alice",
                 "GET",
                 Value::Null,
                 &bob
             )
             .await
-            .2["stats"]["plays"],
+            .2["items"]
+                .as_array()
+                .unwrap()
+                .len(),
             0
         );
         assert_eq!(
@@ -207,13 +202,16 @@ mod tests {
         assert_eq!(
             call(
                 &state,
-                "/api/v1/me/history?domain=twitch",
+                "/api/v1/me/history?platform=twitch&range=all",
                 "GET",
                 Value::Null,
                 &alice
             )
             .await
-            .2["stats"]["plays"],
+            .2["items"]
+                .as_array()
+                .unwrap()
+                .len(),
             0
         );
         assert_eq!(

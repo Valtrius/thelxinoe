@@ -38,7 +38,9 @@ test('sidebar footer keeps its rows and animates controls without stretching ico
           ),
           avatar: rect(document.querySelector('.sidebar-profile .avatar')!),
           logout: rect(document.querySelector('.sidebar-profile button')!),
-          history: rect(document.querySelector('[aria-label="History"]')!),
+          statistics: rect(
+            document.querySelector('[aria-label="Statistics"]')!,
+          ),
           navigation: rect(document.querySelector('.primary-navigation')!),
         };
       };
@@ -56,7 +58,7 @@ test('sidebar footer keeps its rows and animates controls without stretching ico
     const first = samples[0],
       last = samples.at(-1)!;
     for (const frame of samples) {
-      expect(frame.history.y).toBeCloseTo(first.history.y, 0);
+      expect(frame.statistics.y).toBeCloseTo(first.statistics.y, 0);
       expect(frame.navigation.height).toBeCloseTo(first.navigation.height, 0);
       for (const button of frame.buttons) {
         expect(button.y).toBeCloseTo(first.buttons[0].y, 0);

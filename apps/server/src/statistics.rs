@@ -10,7 +10,7 @@ use axum::{
     extract::{Query, State},
     http::HeaderMap,
 };
-use chrono::{DateTime, Datelike, Duration, NaiveDate, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, LocalResult, NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 use rusqlite::{OptionalExtension, params};
 use serde::Deserialize;
@@ -18,7 +18,38 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use thelxinoe_core::Capability;
 
-const PLATFORMS: [&str; 6] = ["youtube", "twitch", "kick", "movies", "shows", "music"];
+pub(crate) const PLATFORMS: [&str; 6] = ["youtube", "twitch", "kick", "movies", "shows", "music"];
+pub(crate) const RANGES: [&str; 4] = ["7d", "30d", "90d", "all"];
+
+pub(crate) fn validate_scope(range: &str, platform: &str) -> Result<()> {
+    if !RANGES.contains(&range) || (platform != "all" && !PLATFORMS.contains(&platform)) {
+        return Err(ApiError::bad("Unknown range or platform"));
+    }
+    Ok(())
+}
+
+pub(crate) fn range_cutoff(zone: Tz, range: &str, now: DateTime<Utc>) -> Option<i64> {
+    let days = match range {
+        "7d" => Some(7),
+        "30d" => Some(30),
+        "90d" => Some(90),
+        _ => None,
+    };
+    days.map(|days| {
+        let today = now.with_timezone(&zone).date_naive();
+        let start = today - Duration::days(days - 1);
+        let mut local = start.and_hms_opt(0, 0, 0).unwrap();
+        loop {
+            match zone.from_local_datetime(&local) {
+                LocalResult::Single(value) => break value.timestamp(),
+                LocalResult::Ambiguous(first, second) => {
+                    break first.timestamp().min(second.timestamp());
+                }
+                LocalResult::None => local += Duration::minutes(1),
+            }
+        }
+    })
+}
 
 #[derive(Debug)]
 struct Snapshot {
@@ -44,13 +75,11 @@ fn record_at(
     input: &Progress,
     at: i64,
 ) -> anyhow::Result<f64> {
-    let (user, media, duration, created, old_position, old_state): (String,String,f64,i64,f64,String) = tx.query_row(
-        "SELECT user_id,COALESCE(media_id,'youtube:'||youtube_video_id,live_media_id),duration,created_at,position,state FROM playback_sessions WHERE id=?1", [playback],
-        |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)),
+    let (user, media, duration, created, old_position, old_state, reported_at_ms, client_active_seconds): (String,String,f64,i64,f64,String,Option<i64>,Option<f64>) = tx.query_row(
+        "SELECT user_id,COALESCE(media_id,'youtube:'||youtube_video_id,live_media_id),duration,created_at,position,state,reported_at_ms,client_active_seconds FROM playback_sessions WHERE id=?1", [playback],
+        |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?)),
     )?;
-    let previous: Option<(i64,Option<f64>)> = tx.query_row(
-        "SELECT reported_at_ms,client_active_seconds FROM playback_activity_clocks WHERE playback_id=?1", [playback], |r| Ok((r.get(0)?,r.get(1)?)),
-    ).optional()?;
+    let previous = reported_at_ms.map(|reported_at_ms| (reported_at_ms, client_active_seconds));
     let since = previous
         .map(|p| p.0)
         .unwrap_or(created * 1000)
@@ -75,7 +104,10 @@ fn record_at(
     let counter = input
         .active_seconds
         .map(|value| value.max(previous.and_then(|p| p.1).unwrap_or(0.0)));
-    tx.execute("INSERT INTO playback_activity_clocks VALUES (?1,?2,?3) ON CONFLICT(playback_id) DO UPDATE SET reported_at_ms=excluded.reported_at_ms,client_active_seconds=excluded.client_active_seconds", params![playback,at,counter])?;
+    tx.execute(
+        "UPDATE playback_sessions SET reported_at_ms=?2,client_active_seconds=?3 WHERE id=?1",
+        params![playback, at, counter],
+    )?;
 
     // Prepared/prefetched or cancelled media has not been played. In particular,
     // restoring a nonzero resume position alone does not count as a new start.
@@ -137,9 +169,9 @@ pub(crate) fn delete_provider(
 
 #[derive(Deserialize, Default)]
 pub struct Filter {
-    range: Option<String>,
-    platform: Option<String>,
-    user: Option<String>,
+    pub(crate) range: Option<String>,
+    pub(crate) platform: Option<String>,
+    pub(crate) user: Option<String>,
 }
 
 pub async fn mine(
@@ -171,11 +203,7 @@ async fn overview(
 ) -> Result<Value> {
     let range = filter.range.unwrap_or_else(|| "30d".into());
     let platform = filter.platform.unwrap_or_else(|| "all".into());
-    if !["7d", "30d", "90d", "all"].contains(&range.as_str())
-        || (platform != "all" && !PLATFORMS.contains(&platform.as_str()))
-    {
-        return Err(ApiError::bad("Unknown statistics range or platform"));
-    }
+    validate_scope(&range, &platform)?;
     let zone: Tz = zone
         .parse()
         .map_err(|_| ApiError::bad("Unknown display timezone"))?;
@@ -237,15 +265,7 @@ fn aggregate(
         _ => None,
     };
     let start = days.map(|days| today - Duration::days(days - 1));
-    // Bound SQLite's scan conservatively, then compare local dates below. This
-    // also handles zones whose midnight is ambiguous or skipped during DST.
-    let cutoff = start.map(|date| {
-        (date - Duration::days(1))
-            .and_hms_opt(0, 0, 0)
-            .unwrap()
-            .and_utc()
-            .timestamp()
-    });
+    let cutoff = range_cutoff(zone, range, now);
     let interval = match range {
         "90d" => "week",
         "all" => "month",

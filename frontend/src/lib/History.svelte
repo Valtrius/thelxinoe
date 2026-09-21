@@ -1,21 +1,29 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import { SvelteURLSearchParams } from 'svelte/reactivity';
   import { api, type User } from './api';
+  import { LatestRequest } from './providers/latest-request';
   import { time } from './playback';
-  import { twMerge } from 'tailwind-merge';
+  import type { StatisticsPlatform, StatisticsRange } from './statistics/types';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
-  import {
-    errorClass,
-    inlineFormClass,
-    rowClass,
-    sectionHeadingClass,
-    statsClass,
-  } from './ui/styles';
-  let { user, audit = false } = $props<{ user: User; audit?: boolean }>();
+  import { errorClass, rowClass, sectionHeadingClass } from './ui/styles';
+  let {
+    user,
+    audit = false,
+    scope = 'mine',
+    range = '30d',
+    platform = 'all',
+  } = $props<{
+    user: User;
+    audit?: boolean;
+    scope?: string;
+    range?: StatisticsRange;
+    platform?: StatisticsPlatform;
+  }>();
   type Row = {
-    id: number;
+    id: number | string;
+    kind?: string;
     title?: string;
     username?: string;
     device?: string;
@@ -32,65 +40,59 @@
   };
   type Result = {
     items: Row[];
-    next_before: number | null;
-    stats?: {
-      plays: number;
-      played_seconds: number;
-      media_count: number;
-      user_count: number;
-    };
-    users?: {
-      id: string;
-      username: string;
-      plays: number;
-      played_seconds: number;
-    }[];
+    next_before: number | string | null;
   };
   let result = $state<Result | null>(null),
-    people = $state<User[]>([]),
-    all = $state(false),
-    domain = $state('library'),
-    person = $state(''),
-    since = $state(''),
-    until = $state(''),
     error = $state(''),
     busy = $state(false);
+  const requests = new LatestRequest();
+  onDestroy(() => requests.invalidate());
   $effect(() => {
     const mode = audit;
+    const selectedScope = scope;
+    const selectedRange = range;
+    const selectedPlatform = platform;
     untrack(() => {
-      void load(mode);
-      if (user.role === 'admin')
-        void api<{ items: User[] }>('/users')
-          .then((v) => (people = v.items))
-          .catch((e) => (error = String(e)));
+      void load(mode, false, selectedScope, selectedRange, selectedPlatform);
     });
   });
-  async function load(mode = audit, more = false) {
+  async function load(
+    mode = audit,
+    more = false,
+    selectedScope = scope,
+    selectedRange = range,
+    selectedPlatform = platform,
+  ) {
+    const current = requests.begin();
     busy = true;
     error = '';
+    if (!more) result = null;
     try {
       const query = new SvelteURLSearchParams();
-      if (!mode) query.set('domain', domain);
+      if (!mode) {
+        query.set('range', selectedRange);
+        query.set('platform', selectedPlatform);
+      }
       if (more && result?.next_before)
         query.set('before', String(result.next_before));
-      if (since)
-        query.set('since', String(Date.parse(`${since}T00:00:00Z`) / 1000));
-      if (until)
-        query.set(
-          'until',
-          String(Date.parse(`${until}T00:00:00Z`) / 1000 + 86400),
-        );
-      if (all && person) query.set('user', person);
+      const administrative =
+        !mode && user.role === 'admin' && selectedScope !== 'mine';
+      if (administrative && selectedScope !== 'all')
+        query.set('user', selectedScope);
       const response = await api<Result>(
-        `${mode ? '/admin/audit' : all ? '/admin/history' : '/me/history'}?${query}`,
+        `${mode ? '/admin/audit' : administrative ? '/admin/history' : '/me/history'}?${query}`,
       );
-      result = more
-        ? { ...response, items: [...(result?.items ?? []), ...response.items] }
-        : response;
+      if (current())
+        result = more
+          ? {
+              ...response,
+              items: [...(result?.items ?? []), ...response.items],
+            }
+          : response;
     } catch (e) {
-      error = String(e);
+      if (current()) error = String(e);
     } finally {
-      busy = false;
+      if (current()) busy = false;
     }
   }
   function date(value?: number) {
@@ -101,6 +103,24 @@
           timeStyle: 'short',
           timeZone: user.timezone,
         }).format(value * 1000);
+  }
+  function kind(value?: string) {
+    switch (value) {
+      case 'movie':
+        return 'Movie';
+      case 'episode':
+        return 'Episode';
+      case 'track':
+        return 'Music';
+      case 'youtube':
+        return 'YouTube';
+      case 'twitch':
+        return 'Twitch';
+      case 'kick':
+        return 'Kick';
+      default:
+        return 'Media';
+    }
   }
 </script>
 
@@ -118,97 +138,30 @@
     >
   </div>
   <p class="text-muted">Times shown in {user.timezone}.</p>
-  {#if !audit}<form
-      class={twMerge(inlineFormClass, 'my-4')}
-      onsubmit={(e) => {
-        e.preventDefault();
-        void load();
-      }}
+  {#each result?.items ?? [] as row (`${row.kind ?? 'audit'}:${row.id}`)}<div
+      class={rowClass}
     >
-      <label
-        >Media<select bind:value={domain} onchange={() => void load()}
-          ><option value="library">Local library</option><option value="youtube"
-            >YouTube</option
-          ><option value="twitch">Twitch</option><option value="kick"
-            >Kick</option
-          ></select
-        ></label
-      >
-      {#if user.role === 'admin'}<label
-          >History scope<select
-            aria-label="History scope"
-            bind:value={all}
-            onchange={(event) => {
-              all = event.currentTarget.value === 'true';
-              person = '';
-              void load();
-            }}
-            ><option value={false}>My history</option><option value={true}
-              >All users</option
-            ></select
-          ></label
-        >{#if all}<label
-            >User<select bind:value={person}
-              ><option value="">Everyone</option
-              >{#each people as p (p.id)}<option value={p.id}
-                  >{p.username}</option
-                >{/each}</select
-            ></label
-          >{/if}{/if}
-      <label>From date (UTC)<input type="date" bind:value={since} /></label
-      ><label>Through date (UTC)<input type="date" bind:value={until} /></label
-      ><Button type="submit" size="form" disabled={busy}>Filter history</Button>
-    </form>{/if}
-  {#if result?.stats}<div class={statsClass}>
-      <div>
-        <strong>{time(result.stats.played_seconds)}</strong><small
-          >Time watched</small
-        >
-      </div>
-      <div>
-        <strong>{result.stats.plays.toLocaleString()}</strong><small
-          >Plays</small
-        >
-      </div>
-      <div>
-        <strong>{result.stats.media_count.toLocaleString()}</strong><small
-          >Unique titles</small
-        >
-      </div>
-      <div>
-        <strong
-          >{time(
-            result.stats.plays
-              ? result.stats.played_seconds / result.stats.plays
-              : 0,
-          )}</strong
-        ><small>Average per play</small>
-      </div>
-    </div>
-    <p class="text-muted">Playback time excludes seeks.</p>{/if}
-  {#if all && result?.users?.length}<h3>By user</h3>
-    {#each result.users as p (p.id)}<div class={rowClass}>
-        <span>{p.username}</span><small
-          >{p.plays} plays · {time(p.played_seconds)} played</small
-        >
-      </div>{/each}{/if}
-  {#each result?.items ?? [] as row (row.id)}<div class={rowClass}>
       <div>
         <strong>{audit ? row.action : row.title}</strong><small
           >{date(audit ? row.created_at : row.started_at)}{audit
             ? ` · ${row.actor ?? 'Deleted user'}`
-            : all
+            : scope !== 'mine'
               ? ` · ${row.username}`
               : ''}</small
         ><small
           >{audit
             ? row.target
-            : `${row.device} · ${row.edition || 'Original edition'}`}</small
+            : `${kind(row.kind)} · ${row.device} · ${row.edition || 'Original edition'}`}</small
         >
       </div>
-      {#if !audit}<span
-          >{time(row.position ?? 0)} / {time(row.duration ?? 0)}</span
-        ><small>{time(row.played_seconds ?? 0)} played · {row.state}</small
+      {#if !audit}<span>
+          {#if (row.duration ?? 0) > 0}
+            {time(row.position ?? 0)} / {time(row.duration ?? 0)}
+          {:else}
+            {time(row.played_seconds ?? 0)}
+          {/if}
+        </span><small
+          >{time(row.played_seconds ?? 0)} played · {row.state}</small
         >{/if}
     </div>{:else}<p class="text-muted">No activity in this view yet.</p>{/each}
   {#if result?.next_before}<Button

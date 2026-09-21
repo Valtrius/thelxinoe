@@ -174,7 +174,6 @@
     { name: 'Shows', icon: Tv },
     { name: 'Music', icon: Music },
     { name: 'Playlists', icon: Music },
-    { name: 'History', icon: Library },
     { name: 'Requests', icon: Library },
     { name: 'YouTube', icon: Play },
     { name: 'Twitch', icon: Radio },
@@ -191,7 +190,8 @@
       const requested = query.has('youtube_link')
         ? 'YouTube'
         : query.get('section');
-      const destination = requested ?? saved?.section;
+      const restored = requested ?? saved?.section;
+      const destination = restored === 'History' ? 'Statistics' : restored;
       if (
         [
           ...sections.map((item) => item.name),
@@ -959,7 +959,6 @@
           />
         {:else if section === 'Requests'}<Requests {user} />
         {:else if section === 'Statistics'}<StatisticsView {user} />
-        {:else if section === 'History'}<History {user} />
         {:else if providerPage}<ProviderView
             platform={section.toLowerCase() as 'youtube' | 'twitch' | 'kick'}
             userId={user.id}

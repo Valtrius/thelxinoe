@@ -46,7 +46,10 @@ try {
     .evaluate((v) => v.getVideoPlaybackQuality().totalVideoFrames);
   await page.getByRole('button', { name: 'Close player', exact: true }).click();
   await expect
-    .poll(async () => (await api('/me/history?domain=twitch')).stats.plays)
+    .poll(
+      async () =>
+        (await api('/me/history?platform=twitch&range=all')).items.length,
+    )
     .toBeGreaterThan(0);
   const result = {
     https: true,

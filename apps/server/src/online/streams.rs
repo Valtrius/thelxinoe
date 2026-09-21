@@ -575,19 +575,19 @@ mod tests {
         assert_eq!(row, (false, 0.0));
         let history = call(
             &state,
-            "/api/v1/me/history?domain=youtube&user=bob",
+            "/api/v1/me/history?platform=youtube&range=all&user=bob",
             "GET",
             json!({}),
             &cookie,
         )
         .await;
         assert_eq!(history.0, StatusCode::OK);
-        assert_eq!(history.2["stats"]["plays"], 1);
+        assert_eq!(history.2["items"].as_array().unwrap().len(), 1);
         assert_eq!(history.2["items"][0]["title"], "Live fixture");
         assert_eq!(
             call(
                 &state,
-                "/api/v1/admin/history?domain=youtube",
+                "/api/v1/admin/history?platform=youtube&range=all",
                 "GET",
                 json!({}),
                 &cookie
@@ -606,13 +606,13 @@ mod tests {
         .unwrap();
         let bob = call(
             &state,
-            "/api/v1/me/history?domain=youtube&user=alice",
+            "/api/v1/me/history?platform=youtube&range=all&user=alice",
             "GET",
             json!({}),
             &format!("thelxinoe_session={token}"),
         )
         .await;
         assert_eq!(bob.0, StatusCode::OK);
-        assert_eq!(bob.2["stats"]["plays"], 0);
+        assert_eq!(bob.2["items"].as_array().unwrap().len(), 0);
     }
 }

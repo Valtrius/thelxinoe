@@ -204,19 +204,14 @@ pub(crate) async fn source(state: &AppState, video: &str) -> Result<Source> {
     state.db.call(move |db| Ok(db.query_row("SELECT generation,path,size,modified,probe FROM youtube_downloads WHERE video_id=?1 AND state='ready'",[&video],|r|Ok(Source {id:video.clone(),media_id:format!("youtube:{video}"),generation:r.get(0)?,edition:"public".into(),path:PathBuf::from(r.get::<_,String>(1)?),root,size:r.get::<_,i64>(2)? as u64,modified:r.get(3)?,probe:serde_json::from_str(&r.get::<_,String>(4)?).unwrap_or_default()})).optional()?)).await?.ok_or_else(||ApiError::conflict("The public download is not ready"))
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn record(
+pub(crate) fn record_state(
     tx: &rusqlite::Transaction<'_>,
-    playback: &str,
     user: &str,
     video: &str,
     position: f64,
     duration: f64,
-    status: &str,
-    seconds: f64,
 ) -> anyhow::Result<()> {
     tx.execute("INSERT INTO youtube_state(user_id,video_id,watched,position,added_at,updated_at) SELECT ?1,?2,?3,?4,?5,?5 WHERE EXISTS(SELECT 1 FROM youtube_videos WHERE user_id=?1 AND video_id=?2) ON CONFLICT(user_id,video_id) DO UPDATE SET watched=MAX(watched,excluded.watched),position=excluded.position,updated_at=excluded.updated_at",params![user,video,duration>0.0&&position>=duration*0.9,if duration>0.0 {position}else{0.0},now()])?;
-    tx.execute("INSERT INTO youtube_history(playback_id,user_id,video_id,title,device_name,started_at,updated_at,position,duration,played_seconds,state) SELECT p.id,p.user_id,p.youtube_video_id,v.title,s.name,?2,?2,?3,p.duration,?4,?5 FROM playback_sessions p JOIN sessions s ON s.id=p.auth_session_id JOIN youtube_videos v ON v.user_id=p.user_id AND v.video_id=p.youtube_video_id WHERE p.id=?1 ON CONFLICT(playback_id) DO UPDATE SET updated_at=excluded.updated_at,position=excluded.position,played_seconds=played_seconds+?4,state=excluded.state",params![playback,now(),position,seconds,status])?;
     Ok(())
 }
 
