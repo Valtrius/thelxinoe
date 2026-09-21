@@ -1,4 +1,6 @@
 mod accounts;
+#[cfg(test)]
+mod accounts_tests;
 mod appearance;
 pub mod config;
 pub mod error;
@@ -142,6 +144,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/login", post(accounts::login))
         .route("/api/v1/auth/logout", post(accounts::logout))
         .route("/api/v1/auth/me", get(accounts::me))
+        .route(
+            "/api/v1/me/password",
+            axum::routing::put(accounts::change_password),
+        )
         .route("/api/v1/auth/event-ticket", post(grants::event_ticket))
         .route(
             "/api/v1/auth/quick-connect/inspect",

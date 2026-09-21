@@ -147,20 +147,7 @@ pub(crate) async fn check_credentials(
     username: &str,
     password: &str,
 ) -> Result<String> {
-    let address = address.to_string();
-    let allowed=state.db.call(move |db|{
-        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        tx.execute("DELETE FROM login_attempts WHERE window_start<?1",[now()-900])?;
-        let count:i64=tx.query_row("INSERT INTO login_attempts VALUES (?1,1,?2) ON CONFLICT(address) DO UPDATE SET count=count+1 RETURNING count",params![address,now()],|r|r.get(0))?;
-        tx.commit()?;Ok(count<=20)
-    }).await?;
-    if !allowed {
-        return Err(ApiError(
-            axum::http::StatusCode::TOO_MANY_REQUESTS,
-            "rate_limited",
-            "Too many login attempts. Try again in 15 minutes.".into(),
-        ));
-    }
+    allow_password_attempt(state, address.to_string()).await?;
     if password.len() > 256 || username.len() > 64 {
         return Err(ApiError::unauthorized());
     }
@@ -191,6 +178,92 @@ pub(crate) async fn check_credentials(
         return Err(ApiError::unauthorized());
     }
     Ok(record.unwrap().0)
+}
+async fn allow_password_attempt(state: &AppState, address: String) -> Result<()> {
+    let allowed=state.db.call(move |db|{
+        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute("DELETE FROM login_attempts WHERE window_start<?1",[now()-900])?;
+        let count:i64=tx.query_row("INSERT INTO login_attempts VALUES (?1,1,?2) ON CONFLICT(address) DO UPDATE SET count=count+1 RETURNING count",params![address,now()],|r|r.get(0))?;
+        tx.commit()?;Ok(count<=20)
+    }).await?;
+    if !allowed {
+        return Err(ApiError(
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "Too many login attempts. Try again in 15 minutes.".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PasswordChange {
+    current_password: String,
+    new_password: String,
+}
+
+pub async fn change_password(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<PasswordChange>,
+) -> Result<Json<Value>> {
+    let principal = security::principal(&state, &headers).await?;
+    validate_credentials(&principal.user.username, &input.new_password)
+        .map_err(|e| ApiError::bad(e.to_string()))?;
+    if input.current_password.len() > 256 {
+        return Err(ApiError::bad("Current password is incorrect"));
+    }
+    allow_password_attempt(&state, format!("password:{}", principal.user.id)).await?;
+    let _slot = state
+        .password_slots
+        .acquire()
+        .await
+        .map_err(anyhow::Error::from)?;
+    let user_id = principal.user.id.clone();
+    let previous_hash = state
+        .db
+        .call(move |db| {
+            Ok(db.query_row(
+                "SELECT password_hash FROM users WHERE id=?1",
+                [user_id],
+                |row| row.get::<_, String>(0),
+            )?)
+        })
+        .await?;
+    if !verify_password(input.current_password, previous_hash.clone()).await? {
+        return Err(ApiError::bad("Current password is incorrect"));
+    }
+    let hash = password_hash(input.new_password).await?;
+    let user_id = principal.user.id.clone();
+    let changed = state.db.call(move |db| {
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        // A concurrent reset or session revocation must invalidate this change.
+        let changed = tx.execute(
+            "UPDATE users SET password_hash=?1 WHERE id=?2 AND password_hash=?3
+             AND EXISTS(SELECT 1 FROM sessions WHERE id=?4 AND user_id=?2 AND expires_at>?5)",
+            params![hash, user_id, previous_hash, principal.session_id, now()],
+        )? == 1;
+        if changed {
+            tx.execute("DELETE FROM sessions WHERE user_id=?1 AND id<>?2", params![user_id, principal.session_id])?;
+            tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'user.password',?1,?2)", params![user_id, now()])?;
+        }
+        tx.commit()?;
+        Ok(changed)
+    }).await?;
+    if !changed {
+        return Err(ApiError::conflict(
+            "Your account changed. Sign in again before changing your password",
+        ));
+    }
+    state
+        .emit(
+            Some(principal.user.id),
+            "account.password.changed",
+            json!({}),
+        )
+        .await?;
+    Ok(Json(json!({"saved":true})))
 }
 pub async fn me(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     Ok(Json(

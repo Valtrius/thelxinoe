@@ -85,6 +85,7 @@
   import Playlists from './lib/Playlists.svelte';
   import History from './lib/History.svelte';
   import UserPreferences from './lib/UserPreferences.svelte';
+  import PasswordSettings from './lib/PasswordSettings.svelte';
   import QuickConnect from './lib/QuickConnect.svelte';
   import OnlineAccounts from './lib/OnlineAccounts.svelte';
   import OnlineSettings from './lib/OnlineSettings.svelte';
@@ -700,7 +701,8 @@
                   if (user) user = { ...user, timezone: zone };
                 }}
               />
-              <AppearanceSettings />{/if}
+              <AppearanceSettings />
+              <PasswordSettings changed={() => void loadSettings()} />{/if}
             {#if settingsSection === 'online'}<OnlineAccounts
                 navigate={(name) => void navigate(name)}
               />{/if}
