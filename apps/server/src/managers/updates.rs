@@ -1,6 +1,5 @@
 //! Administrator policy and durable orchestration; Docker journal remains authoritative.
 use super::*;
-use chrono::Timelike;
 use stack::controller;
 
 pub(super) fn router() -> Router<AppState> {
@@ -33,9 +32,7 @@ async fn policy(
         || input.window_start > 23
         || input.window_end > 23
     {
-        return Err(ApiError::bad(
-            "Invalid update policy or UTC maintenance window",
-        ));
+        return Err(ApiError::bad("Invalid update policy or maintenance window"));
     }
     state.db.call(move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;tx.execute("INSERT INTO service_update_policy(service_id,policy,window_start,window_end) VALUES (?1,?2,?3,?4) ON CONFLICT(service_id) DO UPDATE SET policy=excluded.policy,window_start=excluded.window_start,window_end=excluded.window_end",params![key,input.policy,input.window_start,input.window_end])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'service.update.policy',?2,?3)",params![p.user.id,key,now()])?;tx.commit()?;Ok(())}).await?;
     Ok(Json(json!({"saved":true})))
@@ -46,7 +43,7 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<
         let policies=db.prepare("SELECT service_id,policy,window_start,window_end,candidate,error,checked_at FROM service_update_policy")?.query_map([],|r|Ok(json!({"service_id":r.get::<_,String>(0)?,"policy":r.get::<_,String>(1)?,"window_start":r.get::<_,u8>(2)?,"window_end":r.get::<_,u8>(3)?,"candidate":r.get::<_,Option<String>>(4)?,"error":r.get::<_,Option<String>>(5)?,"checked_at":r.get::<_,i64>(6)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let items=db.prepare("SELECT id,service_id,state,candidate,error,created_at FROM service_updates ORDER BY created_at DESC LIMIT 100")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"service_id":r.get::<_,String>(1)?,"state":r.get::<_,String>(2)?,"candidate":r.get::<_,Option<String>>(3)?,"error":r.get::<_,Option<String>>(4)?,"created_at":r.get::<_,i64>(5)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let services=db.prepare("SELECT id,kind FROM stack_provisions WHERE state='complete'")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"kind":r.get::<_,String>(1)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(json!({"policies":policies,"items":items,"services":services}))
+        Ok(json!({"policies":policies,"items":items,"services":services,"timezone":crate::timezones::server_zone(db)?.name()}))
     }).await?;
     if let Ok(observed) = controller(&state, "/updates", None).await {
         for item in value["items"].as_array_mut().ok_or_else(unavailable)? {
@@ -180,7 +177,7 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
         && action != "recover"
     {
         let wait = automatic.2 != "automatic"
-            || !in_window(chrono::Utc::now().hour(), automatic.3, automatic.4)
+            || !crate::timezones::in_server_window(state, automatic.3, automatic.4).await?
             || idle(state, &automatic.1).await.is_err();
         if wait {
             let job_id = job.id.clone();
@@ -328,14 +325,6 @@ async fn reconnect(state: &AppState, provision: &str, container: &str) -> Result
         .await?;
     Ok(())
 }
-fn in_window(hour: u32, start: u32, end: u32) -> bool {
-    start == end
-        || if start < end {
-            (start..end).contains(&hour)
-        } else {
-            hour >= start || hour < end
-        }
-}
 async fn check_releases(state: &AppState, force: bool) -> Result<()> {
     let rows=state.db.call(|db|Ok(db.prepare("SELECT s.id,s.kind,COALESCE(NULLIF(p.policy,'inherit'),d.policy),CASE WHEN p.policy IS NULL OR p.policy='inherit' THEN d.window_start ELSE p.window_start END,CASE WHEN p.policy IS NULL OR p.policy='inherit' THEN d.window_end ELSE p.window_end END,COALESCE(p.checked_at,0) FROM stack_provisions s JOIN service_update_policy d ON d.service_id='default' LEFT JOIN service_update_policy p ON p.service_id=s.id WHERE s.state='complete'")?.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,u32>(3)?,r.get::<_,u32>(4)?,r.get::<_,i64>(5)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
     let pending: Vec<_> = rows
@@ -374,7 +363,9 @@ async fn check_releases(state: &AppState, force: bool) -> Result<()> {
                     json!({"service_id":service,"candidate":candidate}),
                 )
                 .await?;
-            if policy == "automatic" && in_window(chrono::Utc::now().hour(), start, end) {
+            if policy == "automatic"
+                && crate::timezones::in_server_window(state, start, end).await?
+            {
                 let _ = enqueue(state, &service, None).await;
             }
         }
@@ -387,22 +378,10 @@ pub(crate) async fn run(state: AppState) -> anyhow::Result<()> {
         let _ = check_releases(&state, false).await;
         let ready=state.db.call(|db|Ok(db.prepare("SELECT u.id,CASE WHEN p.policy IS NULL OR p.policy='inherit' THEN d.window_start ELSE p.window_start END,CASE WHEN p.policy IS NULL OR p.policy='inherit' THEN d.window_end ELSE p.window_end END FROM service_updates u JOIN service_update_policy d ON d.service_id='default' LEFT JOIN service_update_policy p ON p.service_id=u.service_id WHERE u.state='ready' AND COALESCE(NULLIF(p.policy,'inherit'),d.policy)='automatic'")?.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,u32>(1)?,r.get::<_,u32>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
         for (key, start, end) in ready {
-            if in_window(chrono::Utc::now().hour(), start, end) {
+            if crate::timezones::in_server_window(&state, start, end).await? {
                 let _ = queue_action(&state, key, "activate".into(), None).await;
             }
         }
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-    }
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn maintenance_windows_include_overnight_and_full_day() {
-        assert!(in_window(23, 22, 3));
-        assert!(in_window(2, 22, 3));
-        assert!(!in_window(3, 22, 3));
-        assert!(!in_window(12, 22, 3));
-        assert!(in_window(12, 0, 0));
     }
 }

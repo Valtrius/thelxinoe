@@ -5,6 +5,7 @@
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
   import { rowClass } from './ui/styles';
+  let { timezone } = $props<{ timezone: string }>();
   type Backup = {
     id: string;
     stage: string;
@@ -97,7 +98,9 @@
   {#each items as item (item.id)}<div class={rowClass}>
       <div>
         <strong
-          >{new Date(item.created_at * 1000).toLocaleString()} · {item.stage}</strong
+          >{new Date(item.created_at * 1000).toLocaleString(undefined, {
+            timeZone: timezone,
+          })} · {item.stage}</strong
         ><small class="block wrap-anywhere">{item.archive}</small
         >{#if item.error}<p>{item.error}</p>{/if}
       </div>

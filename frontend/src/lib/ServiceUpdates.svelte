@@ -45,7 +45,8 @@
     start = $state(0),
     end = $state(0);
   let busy = $state(false),
-    message = $state('');
+    message = $state(''),
+    timezone = $state('');
   function choose() {
     const value = policies.find((p) => p.service_id === selected);
     policy = value?.policy ?? 'inherit';
@@ -55,12 +56,14 @@
   async function refresh() {
     const result = await api<{
       policies: Policy[];
+      timezone: string;
       items: Update[];
       services: typeof services;
     }>('/admin/service-updates');
     policies = result.policies;
     updates = result.items;
     services = result.services;
+    timezone = result.timezone;
   }
   async function work(fn: () => Promise<void>) {
     busy = true;
@@ -128,7 +131,7 @@
       ></label
     >
     <label
-      >Maintenance starts (UTC hour)<input
+      >Maintenance starts ({timezone || 'server time'})<input
         type="number"
         min="0"
         max="23"
@@ -137,7 +140,7 @@
       /></label
     >
     <label
-      >Maintenance ends (UTC hour)<input
+      >Maintenance ends ({timezone || 'server time'})<input
         type="number"
         min="0"
         max="23"
@@ -145,7 +148,10 @@
         required
       /></label
     >
-    <p>Equal hours allow the full day. A window may cross midnight.</p>
+    <p>
+      Equal hours allow the full day. A window may cross midnight. Hours follow
+      the server timezone, including daylight-saving changes.
+    </p>
     <Button type="submit" size="form" disabled={busy}>Save update policy</Button
     >
   </form>

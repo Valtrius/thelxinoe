@@ -1,4 +1,5 @@
 <script lang="ts">
+  let { timezone } = $props<{ timezone: string }>();
   import { onMount } from 'svelte';
   import { api } from './api';
   import Button from './ui/Button.svelte';
@@ -104,7 +105,7 @@
         <strong>{service.kind}</strong><span
           >{service.healthy ? 'Last check passed' : 'Needs attention'} · {new Date(
             service.checked_at * 1000,
-          ).toLocaleString()}</span
+          ).toLocaleString(undefined, { timeZone: timezone })}</span
         >
       </div>{:else}<p>No integrations configured.</p>{/each}
     <h3>Downloads and indexers</h3>
@@ -128,7 +129,9 @@
     <h3>Recent failures</h3>
     {#each data.errors as item (item.id)}<div class={rowClass}>
         <strong>{item.kind}</strong><span
-          >{new Date(item.at * 1000).toLocaleString()}</span
+          >{new Date(item.at * 1000).toLocaleString(undefined, {
+            timeZone: timezone,
+          })}</span
         >
       </div>{:else}<p>No failed jobs.</p>{/each}
   {/if}

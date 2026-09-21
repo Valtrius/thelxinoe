@@ -16,6 +16,7 @@
   };
   type Status = {
     version: string;
+    timezone: string;
     configured: boolean;
     policy: { policy: string; window_start: number; window_end: number };
     release: {
@@ -88,7 +89,7 @@
         ></label
       >
       <label
-        >Maintenance starts (UTC)<input
+        >Maintenance starts ({status.timezone})<input
           type="number"
           min="0"
           max="23"
@@ -96,7 +97,7 @@
         /></label
       >
       <label
-        >Maintenance ends (UTC)<input
+        >Maintenance ends ({status.timezone})<input
           type="number"
           min="0"
           max="23"
@@ -107,7 +108,7 @@
     <p>
       Automatic updates wait for idle playback and background work and require a
       successfully tested recovery path. Equal start and end hours allow any
-      time.
+      time. Hours follow the server timezone, including daylight-saving changes.
     </p>
     <Button
       variant="secondary"
@@ -126,7 +127,7 @@
     {#if status.observation?.checked_at}<p>
         Last check: {new Date(
           status.observation.checked_at * 1000,
-        ).toLocaleString()}
+        ).toLocaleString(undefined, { timeZone: status.timezone })}
       </p>{/if}
     {#if status.observation?.error}<p role="status">
         {status.observation.error}

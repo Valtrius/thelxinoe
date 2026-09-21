@@ -10,7 +10,6 @@ use axum::{
     http::HeaderMap,
     routing::{get, post},
 };
-use chrono::Timelike;
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -80,7 +79,7 @@ async fn status(State(state): State<AppState>, headers: HeaderMap) -> Result<Jso
         .await
         .unwrap_or_else(|_| json!({"items":[],"error":"Controller unavailable"}));
     Ok(Json(
-        json!({"version":thelxinoe_core::VERSION,"policy":configured_policy(&state).await?,"release":setting(&state,"product.release").await?,"observation":setting(&state,"product.observation").await?,"configured":configured(),"controller":controller}),
+        json!({"version":thelxinoe_core::VERSION,"timezone":state.db.call(|db| crate::timezones::server_zone(db)).await?.name(),"policy":configured_policy(&state).await?,"release":setting(&state,"product.release").await?,"observation":setting(&state,"product.observation").await?,"configured":configured(),"controller":controller}),
     ))
 }
 pub(crate) async fn observe(state: &AppState) -> Result<()> {
@@ -97,9 +96,7 @@ async fn policy(
         || input.window_start > 23
         || input.window_end > 23
     {
-        return Err(ApiError::bad(
-            "Invalid update policy or UTC maintenance window",
-        ));
+        return Err(ApiError::bad("Invalid update policy or maintenance window"));
     }
     save(&state, "product.policy", json!(input)).await?;
     audit(&state, Some(p.user.id), "policy", "server").await?;
@@ -330,15 +327,6 @@ async fn release(State(state): State<AppState>) -> Result<Json<Value>> {
         json!({"envelope":setting(&state,"product.envelope").await?}),
     ))
 }
-fn window(start: u8, end: u8, hour: u8) -> bool {
-    if start == end {
-        true
-    } else if start < end {
-        hour >= start && hour < end
-    } else {
-        hour >= start || hour < end
-    }
-}
 pub async fn run(state: AppState) -> anyhow::Result<()> {
     loop {
         if configured()
@@ -362,11 +350,8 @@ async fn tick(state: &AppState) -> Result<()> {
         check_release(state).await?;
     }
     if p.policy != "automatic"
-        || !window(
-            p.window_start,
-            p.window_end,
-            chrono::Utc::now().hour() as u8,
-        )
+        || !crate::timezones::in_server_window(state, p.window_start.into(), p.window_end.into())
+            .await?
     {
         return Ok(());
     }

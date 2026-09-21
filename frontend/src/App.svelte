@@ -789,14 +789,18 @@
             {#if user.role === 'admin'}
               {#if settingsSection === 'server-updates'}<ProductUpdates />{/if}
               {#if settingsSection === 'analysis'}<SegmentSettings admin />{/if}
-              {#if settingsSection === 'backups'}<BackupSettings />{/if}
+              {#if settingsSection === 'backups'}<BackupSettings
+                  {timezone}
+                />{/if}
               {#if settingsSection === 'library'}<MetadataSettings />{/if}
               {#if settingsSection === 'providers'}<OnlineSettings />{/if}
               {#if settingsSection === 'services'}<ManagerSettings />{/if}
               {#if settingsSection === 'services'}<ManagerOwnership />{/if}
               {#if settingsSection === 'services'}<ManagedStack />{/if}
               {#if settingsSection === 'services'}<ServiceUpdates />{/if}
-              {#if settingsSection === 'retention'}<RetentionSettings />{/if}
+              {#if settingsSection === 'retention'}<RetentionSettings
+                  {timezone}
+                />{/if}
               {#if settingsSection === 'services'}<SupportServices />{/if}
               {#if settingsSection === 'server'}<Panel>
                   <h2><ShieldCheck size={20} /> Server</h2>
@@ -843,11 +847,13 @@
                     >
                   </form>
                   <p class="text-muted">
-                    Used by everyone who has not chosen a personal display
-                    timezone. Stored timestamps remain in UTC.
+                    Controls server maintenance windows and server activity
+                    times. Also used for display by everyone who has not chosen
+                    a personal timezone. Regional zones follow daylight-saving
+                    changes automatically.
                   </p>
                 </Panel>
-                <AdminOperations />
+                <AdminOperations {timezone} />
               {/if}
               {#if settingsSection === 'people'}<Panel>
                   <h2>People</h2>
