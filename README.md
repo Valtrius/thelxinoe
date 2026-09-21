@@ -4,7 +4,9 @@ A self-hosted media server with a shared Svelte web and Windows Tauri applicatio
 
 See the [documentation index](docs/README.md) for product scope, architecture and operations.
 
-The planned v1 workflows are implemented and locally validated. See [implementation status](docs/STATUS.md) for evidence and supported limits, and the [release checklist](docs/RELEASE_CHECKLIST.md) before distributing a release. Public artifact hosting and hosted CI are not configured in this checkout.
+The planned v1 workflows are implemented and locally validated. See [implementation status](docs/STATUS.md) for evidence and supported limits, and the [release checklist](docs/RELEASE_CHECKLIST.md) before distributing a release. [GitHub Actions](https://github.com/Valtrius/thelxinoe/actions/workflows/ci.yml) runs on pushes to `develop` and pull requests. Release publishing and deployment automation are not configured yet.
+
+The source is licensed under [MIT](LICENSE). Third-party dependencies and provider assets retain their own licenses; see [attribution](docs/ATTRIBUTION.md).
 
 ## Development
 
