@@ -763,7 +763,6 @@
               </Panel>
             {/if}
             {#if user.role === 'admin'}
-              {#if settingsSection === 'server'}<AdminOperations />{/if}
               {#if settingsSection === 'server-updates'}<ProductUpdates />{/if}
               {#if settingsSection === 'analysis'}<SegmentSettings admin />{/if}
               {#if settingsSection === 'backups'}<BackupSettings />{/if}
@@ -824,6 +823,7 @@
                     timezone. Stored timestamps remain in UTC.
                   </p>
                 </Panel>
+                <AdminOperations />
               {/if}
               {#if settingsSection === 'people'}<Panel>
                   <h2>People</h2>
