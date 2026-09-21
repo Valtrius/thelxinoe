@@ -17,7 +17,7 @@ impl Probe {
         extra: &[String],
         scripts: bool,
     ) -> AppResult<Self> {
-        let name = format!(r"\\.\pipe\youtwitch-options-{}", uuid::Uuid::new_v4());
+        let name = format!(r"\\.\pipe\thelxinoe-options-{}", uuid::Uuid::new_v4());
         let mut command = Command::new(executable);
         command.args(extra);
         if !scripts {

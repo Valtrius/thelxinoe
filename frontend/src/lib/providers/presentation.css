@@ -1,4 +1,4 @@
-/* The shared views use YouTwitch's Tailwind preflight and component styles. */
+/* Provider views share Tailwind preflight and component styles. */
 @layer components {
   .provider-surface,
   .provider-overlay {

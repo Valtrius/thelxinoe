@@ -689,7 +689,7 @@ mod tests {
             manager
                 .save_config_document(
                     "mpv.conf",
-                    "nonexistent-youtwitch-option=yes\n",
+                    "nonexistent-thelxinoe-option=yes\n",
                     &saved.revision,
                     &settings
                 )
@@ -705,7 +705,7 @@ mod tests {
             runtime
                 .mpv_args
                 .iter()
-                .filter(|a| a.contains("scripts-append") && !a.contains("youtwitch-bridge-"))
+                .filter(|a| a.contains("scripts-append") && !a.contains("thelxinoe-bridge-"))
                 .count(),
             3
         );

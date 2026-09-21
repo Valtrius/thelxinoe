@@ -103,7 +103,7 @@ node scripts/test-native-playback.mjs
 
 The test uses the playback fixture server on port 18686. It installs the official Windows x64 MPV build if needed, verifies its upstream SHA-256 digest, exercises native video output, pause, seek, desktop page reload, server resume, and HLS conversion. It temporarily selects MPV's PCM output for the two FLAC fixtures, then checks the sample count and amplitude across the track boundary. Configuration, playback preferences and the server address are restored afterward. Results are written under `.local`.
 
-MPV configuration and Lua plugins live in Thelxinoe's application data directory. The application supports a managed installation or a supplied MPV executable, without depending on YouTwitch's tool directory. Playback URLs travel over a random named pipe; account credentials and media URLs are absent from MPV process arguments. Closing the desktop stops its player and reports the last position to the server.
+MPV configuration and Lua plugins live in Thelxinoe's application data directory. The application supports a managed installation or a supplied MPV executable. Playback URLs travel over a random named pipe; account credentials and media URLs are absent from MPV process arguments. Closing the desktop stops its player and reports the last position to the server.
 
 ## Android TV preparation
 
@@ -149,11 +149,7 @@ The script exercises the real browser UI and backend through Caddy HTTPS. It ser
 
 Rust tests use a bounded local provider stub to check successful code exchange, encrypted storage, concurrent refresh, provider revocation, fair shared quota reservations, two-user subscription paging, persisted restart recovery, metadata isolation, and late responses after disconnect/deletion. No production endpoint override is exposed for these stubs.
 
-The read-only helper below checks whether the existing YouTwitch Google application reaches an interactive authorization page for the proposed callback. It never prints credentials, changes YouTwitch or signs in. Reaching sign-in does not prove that consent or the token exchange will succeed; those require the account owner.
-
-```powershell
-cargo run -p thelxinoe-desktop --example check-google-callback -- https://localhost:22443/api/v1/online/youtube/callback
-```
+For live validation, configure the Google application in **Settings → Provider applications** and register `https://localhost:22443/api/v1/online/youtube/callback` as its redirect URI. Connect YouTube through **Settings → Online accounts** and complete consent with the test account. Verify that linking succeeds and the subscription feed synchronizes; reaching the Google sign-in page alone does not establish a successful token exchange.
 
 ## Public YouTube playback validation
 
@@ -166,19 +162,20 @@ node scripts/test-youtube-stream.mjs
 
 The first test uses a retained public fixture and verifies decoded browser frames, seeking and server resume through HTTPS. The second selects a public VOD from the linked feed and verifies immediate streaming without downloading. These scripts do not replace application credentials. Live checks use a currently live public feed item; they verify decoded frames, absence of VOD seeking, and unchanged watched state. Native checks exercise the rebuilt Windows application through its MPV IPC and verify rapid VOD-to-live transitions, pause controls and server history. Private account-specific fixtures and sanitized results stay under `.local`.
 
-## Private provider import
+## Private provider configuration
 
-The offline helpers use an existing master key, never display credentials, and require the destination server to be stopped. For the main Windows Docker bind mount:
+Configure Google, Twitch and Kick application credentials through the administrator's **Settings → Provider applications** page. Each user links their own accounts in **Settings → Online accounts**. `npm run dev:online` reuses the saved development profile, including its encrypted application credentials and account connections.
+
+Metadata credentials can be configured through **Settings → Metadata**. The offline metadata helper uses an existing master key, never displays credentials, and requires the destination server to be stopped. For the main Windows Docker bind mount:
 
 ```powershell
 docker compose stop server
-cargo run -p thelxinoe-desktop --example import-youtwitch -- .local/docker/server
 # After placing the Thelxinoe TMDB token in the ignored local input file:
 cargo run -p thelxinoe-desktop --example import-tmdb -- .local/docker/server .local/tmdb-token .local/musicbrainz-contact
 docker compose up -d --wait
 ```
 
-Alternatively, an administrator can save metadata settings through the application. A configured token is never returned by the API. No real token or provider-contact address is committed.
+A configured token is never returned by the API. No real token or provider-contact address is committed.
 
 ## Live metadata validation
 
@@ -204,12 +201,6 @@ node scripts/test-kick-playback.mjs starladder
 ```
 
 The Twitch script selects a followed live channel. The Kick script temporarily tracks the named channel, waits for live metadata, and removes its temporary interest afterward. Choose a currently live public channel; availability changes. Both verify decoded browser frames, pause, hidden VOD seeking, and server history through HTTPS. Native validation uses the production Windows bundle and checks MPV video readiness, pause controls and history. Live test accounts, selected channels and results remain in `.local`.
-
-A read-only helper can list public live Kick channels using the existing YouTwitch application configuration. It prints channel names only:
-
-```powershell
-cargo run -p thelxinoe-desktop --example check-kick
-```
 
 Linux fixture tests cover device-code/session binding, encrypted tokens, refresh, revoked/late replies, pagination, user isolation, rate limits, tracked-channel generations and live-session cleanup. They run without real account credentials.
 
@@ -257,4 +248,4 @@ npx playwright test --workers=1
 
 These tests create a synthetic administrator and watchlist. They use real sessions, preferences, watchlist writes and WebSocket delivery, with fixture provider metadata/playback. They check two-client filter/order synchronization, immediate drag ordering during delayed saves, rollback/error display, card clicks, volume persistence, navigation and shared switches. Never point them at a personal instance.
 
-The Windows MPV manager retains YouTwitch's version, archive, update, configuration and plugin tests. To qualify real upstream MPV/uosc/thumbfast/sub-select packages in a temporary directory, run `cargo test -p thelxinoe-desktop qualify_upstream_packages -- --ignored --nocapture`. This downloads and starts MPV, checks its option schema and validates both managed and clean configurations. It does not alter the user's tool profile.
+The Windows MPV manager has version, archive, update, configuration and plugin tests. To qualify real upstream MPV/uosc/thumbfast/sub-select packages in a temporary directory, run `cargo test -p thelxinoe-desktop qualify_upstream_packages -- --ignored --nocapture`. This downloads and starts MPV, checks its option schema and validates both managed and clean configurations. It does not alter the user's tool profile.

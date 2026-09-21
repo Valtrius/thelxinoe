@@ -1,5 +1,5 @@
-// The YouTwitch views share their presentation and controllers. All state and
-// playback operations cross Thelxinoe's authenticated server transport here.
+// Provider views share their presentation and controllers across clients. All
+// state and playback operations cross the authenticated server transport here.
 import { invoke } from '@tauri-apps/api/core';
 import { derived, get } from 'svelte/store';
 import { appearance, updateAppearance } from '../appearance';

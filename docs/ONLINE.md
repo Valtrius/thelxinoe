@@ -20,7 +20,7 @@ The application secret, viewer access/refresh tokens and short-lived PKCE verifi
 
 Refresh requests are serialized and reread credentials before exchanging them. Account generations prevent delayed OAuth, refresh or sync responses from restoring a disconnected/deleted connection. Provider rejection requires reconnection; temporary failures back off without erasing the connection. Provider error bodies, OAuth codes, tokens and authorization URLs are not logged by the server.
 
-Disconnect removes this server's viewer credentials and pending authorization attempts. Saved videos and personal state remain. Delete YouTube data also removes the user's cached feed, subscriptions, watchlist, pins and watched flags. Application configuration remains administrator-owned. Neither action changes YouTwitch's credentials or local data.
+Disconnect removes this server's viewer credentials and pending authorization attempts. Saved videos and personal state remain. Delete YouTube data also removes the user's cached feed, subscriptions, watchlist, pins and watched flags. Application configuration remains administrator-owned.
 
 ## Synchronization and limits
 
@@ -54,11 +54,11 @@ The current download path supports completed videos up to six hours, 1080p and 2
 
 A shared download becomes eligible for cleanup only after one day without any user's watchlist/pin interest or active playback. Cleanup rechecks the exact generation and protections under the database write lock and removes only its canonical cache directory. Deleting one user's YouTube data stops their online sessions and removes their progress/history; another user's interests continue protecting the physical file. The broader media-operation coordinator remains a later roadmap phase.
 
-Real validation on the isolated HTTPS server passed Google consent using the imported YouTwitch application credentials, a complete 6,350-video initial sync, public artwork, official tool installation, public extraction, and downloaded-video decoding/seek/resume in Chromium. The rebuilt Windows application also passed MPV playback, seek and server resume for the public download. Automatic OAuth refresh after real token expiry also passed. Immediate VOD streaming, seeking and resume passed through HTTPS and MPV; live playback decoded frames in both clients. A rapid VOD-to-live transition test found and fixed a stale player-close callback. History offers a YouTube filter with private user records and capability-gated administrator statistics.
+Real validation on the isolated HTTPS server passed Google consent using the configured application credentials, a complete 6,350-video initial sync, public artwork, official tool installation, public extraction, and downloaded-video decoding/seek/resume in Chromium. The rebuilt Windows application also passed MPV playback, seek and server resume for the public download. Automatic OAuth refresh after real token expiry also passed. Immediate VOD streaming, seeking and resume passed through HTTPS and MPV; live playback decoded frames in both clients. A rapid VOD-to-live transition test found and fixed a stale player-close callback. History offers a YouTube filter with private user records and capability-gated administrator statistics.
 
 ## Twitch connection and followed-live feed
 
-Configure a public Twitch client ID in Settings, or import the existing YouTwitch application configuration while the destination server is stopped. Each user chooses Connect Twitch and completes the displayed device code at Twitch's activation page. The code is visible only in the initiating Thelxinoe session. Device secrets and viewer credentials are encrypted; no viewer credential is supplied to media extraction.
+Configure a public Twitch client ID in **Settings → Provider applications**. Each user chooses Connect Twitch and completes the displayed device code at Twitch's activation page. The code is visible only in the initiating Thelxinoe session. Device secrets and viewer credentials are encrypted; no viewer credential is supplied to media extraction.
 
 The server enforces provider polling intervals, slows down on request, expires attempts, and checks the initiating session and account generation before accepting tokens. Public-client refresh tokens are replaced before the next API request. Token validation runs on startup and at least hourly during successful synchronization. Revoked tokens require reconnection; temporary failures back off. Followed-live pages are bounded, scheduled fairly, and published after a complete snapshot; provider reset headers delay exhausted requests. Disconnect preserves cached channels. Delete Twitch data removes them.
 
@@ -88,7 +88,7 @@ The server owns YouTube, Twitch, and Kick synchronization and playback tools.
 
 yt-dlp and Deno are server-managed executables that can update independently of the main server image. Running jobs pin the resolved tool version for their lifetime. Streamlink and its dependencies are pinned in the server image.
 
-The main YouTwitch user-facing behavior stays in v1: YouTube subscriptions/feed, Shorts filtering, live/replay handling, watchlists, downloads, resume and watched state, Twitch followed-live channels, per-user tracked Kick channels, history/statistics, and quota-aware synchronization.
+V1 includes YouTube subscriptions/feed, Shorts filtering, live/replay handling, watchlists, downloads, resume and watched state, Twitch followed-live channels, per-user tracked Kick channels, history/statistics, and quota-aware synchronization.
 
 The server owns one shared YouTube Data API quota budget and schedules users fairly.
 

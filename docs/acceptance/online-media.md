@@ -4,7 +4,7 @@ These are the accepted v1 delivery criteria. Current results and supported limit
 
 ## Phase 9. YouTube server migration
 
-Move the most mature YouTwitch platform first.
+Implement YouTube account features and playback on the server.
 
 Deliver:
 
@@ -26,7 +26,7 @@ Deliver:
 
 Exit condition:
 
-- the new app covers the important YouTube behavior of YouTwitch without desktop-local credentials or playback tools.
+- web and desktop clients support YouTube feeds, filtering, watchlists, downloads and playback, with credentials and extraction tools managed by the server.
 
 ## Phase 10. Twitch and Kick server migration
 

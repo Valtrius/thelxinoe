@@ -115,7 +115,7 @@ pub(crate) async fn youtube_artwork_bytes(
     if !sync::identifier(video, 11) {
         return Err(ApiError::not_found());
     }
-    // Match YouTwitch's wide-image preference. Older uploads may not have a
+    // Prefer wide images without letterboxing. Older uploads may not have a
     // maxres thumbnail; medium is the wide fallback without baked-in bars.
     for variant in ["maxresdefault", "mqdefault"] {
         if let Ok(image) = artwork_bytes(

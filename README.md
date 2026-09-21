@@ -16,7 +16,7 @@ npm run build
 cargo run -p thelxinoe-server
 ```
 
-Open http://127.0.0.1:8484 and choose a username and password to create the first administrator. Development data remains in `.local`; it never uses YouTwitch's application directories. For frontend hot reload, run `npm run dev` in another terminal. Vite proxies the API and WebSocket to port 8484.
+Open http://127.0.0.1:8484 and choose a username and password to create the first administrator. Development data remains in `.local`. For frontend hot reload, run `npm run dev` in another terminal. Vite proxies the API and WebSocket to port 8484.
 
 For a new empty Windows development instance on every launch:
 

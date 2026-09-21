@@ -32,14 +32,11 @@ The following are deliberately outside v1:
 
 ## Product requirements
 
-Thelxinoe is a new program derived in part from YouTwitch, not a new version of YouTwitch.
-
 The current direction is:
 
 - Run the main backend in Docker.
 - Provide a web frontend and a Tauri desktop frontend with the same core UI.
 - Treat Android TV playback through Wholphin as a first-version bonus target. Wholphin is a Jellyfin client, so this means considering a compatible Jellyfin API subset rather than building a separate TV UI first.
-- Reuse suitable parts of the existing YouTwitch frontend and backend instead of rewriting them without reason.
 - Keep YouTube, Twitch, and Kick capabilities that still make sense in the new product.
 - Add music playback.
 - Add films and TV shows playback.
@@ -73,7 +70,7 @@ The current direction is:
 - Combine local-library results with Radarr/Sonarr/Lidarr acquisition results inside the relevant domain searches, with clear availability/request/download states.
 - Keep advanced managed-service UIs external: administrators can open Sonarr, Radarr, Lidarr, Bazarr, Prowlarr, or NZBGet directly rather than embedding them inside Thelxinoe.
 - Support admin-configurable automatic cleanup of watched media after a grace period. Movies are deleted individually; TV media is deleted by season; Music is never subject to watched-content retention. The admin selects the users whose watched state is sufficient to trigger Movie/Show retention. Managed content remains represented in Radarr/Sonarr/Lidarr, is unmonitored and deleted through its manager, and receives an import-list exclusion where needed so list automation cannot immediately add it again. YouTube downloads use a separate watchlist/pin/retained-interest cleanup rule.
-- Preserve the main YouTwitch user-facing online-media features in v1 while moving their state, credentials, playback tools, and synchronization ownership to the server architecture.
+- Support online-media feeds, watchlists, downloads, resume, watched state and live playback in v1, with state, credentials, playback tools and synchronization owned by the server.
 - Support Jellyfin-compatible LAN discovery and Quick Connect as part of the Movies/Shows/Music media-client compatibility layer.
 - Support Windows x64 for the Tauri client and Linux x86-64 for the server in v1; keep other desktop/server architectures future-friendly but unclaimed until tested.
 - Allow administrators to inspect both aggregate server viewing statistics and nominative per-user playback history/statistics.
@@ -85,7 +82,7 @@ The current direction is:
 - Use curated managed-service images in v1, record immutable image digests for installed versions, and keep arbitrary image definitions out of the UI.
 - Only manage stable upstream releases. Thelxinoe will never opt managed services into nightly, develop, beta, preview, or other unstable release channels.
 - Keep yt-dlp and Streamlink independently updateable on the backend while slower-moving native media tooling ships with the server image.
-- Reuse the YouTwitch desktop tool-management work as an MPV-only Tauri tool manager; yt-dlp, Streamlink, and FFmpeg no longer need desktop management.
+- Provide an MPV-only Tauri tool manager; yt-dlp, Streamlink, and FFmpeg are managed by the server.
 - Automatically wire Thelxinoe-created Radarr/Sonarr/Lidarr/Bazarr/Prowlarr/NZBGet instances together where their APIs allow it. Every managed service remains optional.
 - Keep managed service appdata below the configured Thelxinoe state root. Ownership transfer copies existing appdata there, preserving configuration and retaining the stopped original and its config for recovery.
 - Keep v1 English-only. Do not add localization/i18n complexity until there is a concrete second-language requirement.
@@ -136,18 +133,6 @@ For reverse-proxy deployments, Thelxinoe must understand its configured public b
 The first-run UI does not choose host-side Docker paths. Those mounts already exist before the server starts. The mandatory wizard is therefore limited to application-level setup such as the first administrator, timezone, logical library roots exposed inside the container, optional public URL/proxy settings, and optional media-stack installation. V1 is English-only.
 
 Host filesystem layout is deployment configuration rather than first-run application configuration. The Compose/`.env` layer provides Thelxinoe's persistent state root and the host media/download roots that are visible inside the containers. The backend uses fixed internal paths such as `/var/lib/thelxinoe` and `/media/...`. The setup UI selects and classifies directories that are already mounted into the server; it does not attempt to invent new host bind mounts from inside the container. Every integrated media service must bind the same host media root at `/media`; individual library overrides are not supported.
-
-There is no built-in YouTwitch migration requirement. One manual database migration may be performed separately during the transition, but migration code is not part of Thelxinoe.
-
-## Existing code available for reuse
-
-The sibling `../youtwitch` project has useful code in both halves of the application.
-
-Frontend areas include shared Svelte UI components, YouTube feed and watchlist logic, Twitch and Kick views, settings, statistics, and presentation helpers.
-
-Rust areas include platform APIs, OAuth, SQLite repositories and migrations, playback management, downloads, statistics, and managed media tools.
-
-The current frontend talks directly to Tauri through `src/lib/api.ts`. Thelxinoe uses a server-facing transport; Tauri-specific native functions remain separate from server functions.
 
 ## Maintaining these contracts
 

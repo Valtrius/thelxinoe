@@ -84,7 +84,7 @@ Exit condition:
 
 ## Phase 6. Tauri MPV playback
 
-Reuse the useful YouTwitch desktop code after the server playback contract exists.
+Build native playback on the server playback contract.
 
 Deliver:
 

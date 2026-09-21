@@ -1,4 +1,4 @@
-//! The subscription feed contract shared by the YouTwitch presentation components.
+//! The subscription feed contract shared by the provider presentation components.
 use crate::{
     AppState,
     error::{ApiError, Result},

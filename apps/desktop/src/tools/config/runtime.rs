@@ -101,7 +101,7 @@ impl ToolManager {
                             args.push("--osc=no".into());
                             args.push("--osd-bar=no".into());
                             let bridge = directory
-                                .join(format!("youtwitch-bridge-{}.lua", uuid::Uuid::new_v4()));
+                                .join(format!("thelxinoe-bridge-{}.lua", uuid::Uuid::new_v4()));
                             let managed =
                                 serde_json::to_string(&self.config_root().display().to_string())
                                     .map_err(|e| AppError::internal(e.to_string()))?;
@@ -206,7 +206,7 @@ mod tests {
                 .mpv_args
                 .iter()
                 .filter_map(|arg| arg.strip_prefix("--scripts-append="))
-                .filter(|path| !path.contains("youtwitch-bridge-"))
+                .filter(|path| !path.contains("thelxinoe-bridge-"))
                 .collect();
             assert_eq!(scripts.len(), (mask as u32).count_ones() as usize);
             for (index, id) in plugins.iter().enumerate() {
@@ -252,9 +252,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires YOUTWITCH_MPV_TEST_EXE pointing to a Windows MPV executable"]
+    #[ignore = "Requires THELXINOE_MPV_TEST_EXE pointing to a Windows MPV executable"]
     async fn real_mpv_loads_one_plugin_copy_with_the_saved_settings() {
-        let executable = std::env::var("YOUTWITCH_MPV_TEST_EXE").unwrap();
+        let executable = std::env::var("THELXINOE_MPV_TEST_EXE").unwrap();
         let directory = tempfile::tempdir().unwrap();
         let manager = ToolManager::new(directory.path().to_path_buf(), None).unwrap();
         let plugins = [ToolId::Uosc, ToolId::Thumbfast, ToolId::SubSelect];
@@ -288,7 +288,7 @@ mod tests {
                         r#"
 local options = {{ marker = 'default', subtitles_directory = '' }}
 require('mp.options').read_options(options, '{name}')
-mp.set_property_native('user-data/youtwitch-plugin-probe/' .. mp.get_script_name(), {{
+mp.set_property_native('user-data/thelxinoe-plugin-probe/' .. mp.get_script_name(), {{
     plugin = '{name}', source = '{source}', setting = options.marker
 }})
 "#,
@@ -307,7 +307,7 @@ mp.set_property_native('user-data/youtwitch-plugin-probe/' .. mp.get_script_name
         }
         fs::write(
             config.join("scripts/mpvSockets.lua"),
-            "mp.set_property('user-data/youtwitch-unrelated-script', 'loaded')\n",
+            "mp.set_property('user-data/thelxinoe-unrelated-script', 'loaded')\n",
         )
         .unwrap();
         manager
@@ -340,12 +340,12 @@ mp.set_property_native('user-data/youtwitch-plugin-probe/' .. mp.get_script_name
                 .await
                 .unwrap();
             let loaded = probe
-                .request(json!(["get_property", "user-data/youtwitch-plugin-probe"]))
+                .request(json!(["get_property", "user-data/thelxinoe-plugin-probe"]))
                 .await;
             let unrelated = probe
                 .request(json!([
                     "get_property",
-                    "user-data/youtwitch-unrelated-script"
+                    "user-data/thelxinoe-unrelated-script"
                 ]))
                 .await;
             let log = probe.finish().await.unwrap();

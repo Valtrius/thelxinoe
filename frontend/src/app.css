@@ -181,7 +181,7 @@
 }
 
 /* Library and Settings form defaults must not restyle the shared provider views. */
-@scope (:root) to (.provider-surface, .provider-overlay, .youtwitch-switch) {
+@scope (:root) to (.provider-surface, .provider-overlay, .ui-switch) {
   @layer base {
     body {
       font-size: 13px;
