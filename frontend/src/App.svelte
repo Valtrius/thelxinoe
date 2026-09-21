@@ -401,6 +401,10 @@
       settingsLoading = false;
     }
   }
+  $effect(() => {
+    void section;
+    if (workspace) workspace.scrollTop = 0;
+  });
   async function navigate(name: string) {
     mobileNavOpen = false;
     focusId = undefined;

@@ -666,12 +666,12 @@ test('YouTube and Kick use page scrolling while the watchlist stays within the v
   ).toHaveCount(1);
   await page.screenshot({ path: '.local/player-ui/youtube-scroll.png' });
   await page.getByRole('button', { name: 'Kick', exact: true }).click();
+  await expect
+    .poll(() => workspace.evaluate((element) => element.scrollTop))
+    .toBe(0);
   await expect(
     page.locator('[data-feed-content] [data-card-grid] > *'),
   ).toHaveCount(80);
-  await workspace.evaluate((element) => {
-    element.scrollTop = 0;
-  });
   const feed = page.locator('[data-feed-content]');
   const initial = (await feed.boundingBox())!.y;
   await workspace.evaluate((element) => {
