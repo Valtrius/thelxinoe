@@ -216,16 +216,18 @@ async fn automatic_deletion_requires_grace_and_root_optin_and_cannot_replay() {
 #[tokio::test]
 async fn season_requires_complete_confirmed_aired_metadata_and_one_users_watched_set() {
     let (_temp, state, _) = movie().await;
-    state.db.call(|db| {
+    let refreshed = now();
+    state.db.call(move |db| {
         db.execute("UPDATE library_roots SET kind='shows'",[])?;
-        db.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at,metadata) VALUES ('show','ret-root','show','show','Show',1,?1)",[json!({"refreshed_at":now(),"status":"Ended","seasons":[{"season_number":1,"episode_count":2}]}).to_string()])?;
+        db.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at,metadata) VALUES ('show','ret-root','show','show','Show',1,?1)",[json!({"refreshed_at":refreshed,"status":"Ended","seasons":[{"season_number":1,"episode_count":2}]}).to_string()])?;
         db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES ('season','ret-root','season','show','season','Season',1,1)",[])?;
-        db.execute("INSERT INTO provider_ids VALUES ('show','tmdb','42',NULL,'confirmed')",[])?;
-        for (episode,user) in [("e1","alice"),("e2","bob")] {
+        db.execute("INSERT INTO manager_services VALUES ('sonarr','Fixture Sonarr','sonarr','container-sonarr',8989,'g',X'00','','{}','1',1,1,NULL)",[])?;
+        db.execute("INSERT INTO metadata_bindings VALUES ('show','sonarr','g','42',9,?1)",[refreshed])?;
+        for (episode,user,manager_episode) in [("e1","alice",101),("e2","bob",102)] {
             db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,created_at) VALUES (?1,'ret-root','episode','season',?1,?1,1)",[episode])?;
             db.execute("INSERT INTO media_sources VALUES (?1,'ret-file')",[episode])?;
-            db.execute("INSERT INTO provider_episodes VALUES ('tmdb','42',?1,1,1,?2)",params![episode,json!({"air_date":"2000-01-01"}).to_string()])?;
-            db.execute("INSERT INTO episode_mappings VALUES (?1,'tmdb',?1,'confirmed')",[episode])?;
+            db.execute("INSERT INTO manager_episodes VALUES ('sonarr','g','42',?1,1,?2,?3,?4)",params![manager_episode,manager_episode-100,refreshed,json!({"air_date":"2000-01-01"}).to_string()])?;
+            db.execute("INSERT INTO manager_episode_mappings VALUES (?1,'sonarr','g',?2,'confirmed')",params![episode,manager_episode])?;
             db.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES (?1,?2,1,1)",params![user,episode])?;
         }
         db.execute("UPDATE retention_policies SET enabled=1,trigger_users='[\"alice\",\"bob\"]' WHERE domain='shows'",[])?;
@@ -238,18 +240,18 @@ async fn season_requires_complete_confirmed_aired_metadata_and_one_users_watched
         db.execute("UPDATE media SET kind='album' WHERE id='season'",[])?;
         assert!(eligibility(db,"season")?.is_none(),"Music never participates");
         db.execute("UPDATE media SET kind='season' WHERE id='season'",[])?;
-        db.execute("UPDATE episode_mappings SET state='complex' WHERE media_id='e2'",[])?;
+        db.execute("UPDATE manager_episode_mappings SET state='complex' WHERE media_id='e2'",[])?;
         assert!(eligibility(db,"season")?.is_none());
-        db.execute("UPDATE episode_mappings SET state='confirmed'",[])?;
-        db.execute("UPDATE provider_episodes SET metadata='{}' WHERE episode_id='e2'",[])?;
+        db.execute("UPDATE manager_episode_mappings SET state='confirmed'",[])?;
+        db.execute("UPDATE manager_episodes SET metadata='{}' WHERE manager_episode_id=102",[])?;
         assert!(eligibility(db,"season")?.is_none(),"Missing air dates are uncertain");
-        db.execute("UPDATE provider_episodes SET metadata='{\"air_date\":\"2000-01-01\"}'",[])?;
+        db.execute("UPDATE manager_episodes SET metadata='{\"air_date\":\"2000-01-01\"}'",[])?;
         db.execute("UPDATE media SET metadata=json_set(metadata,'$.status','Returning Series') WHERE id='show'",[])?;
         assert!(eligibility(db,"season")?.is_none(),"An airing season needs evidence of completion");
         db.execute("UPDATE media SET metadata=json_set(metadata,'$.status','Ended','$.seasons[0].episode_count',3) WHERE id='show'",[])?;
         assert!(eligibility(db,"season")?.is_none(),"Missing episodes block retention");
         db.execute("UPDATE media SET metadata=json_set(metadata,'$.seasons[0].episode_count',2,'$.refreshed_at',0) WHERE id='show'",[])?;
-        assert!(eligibility(db,"season")?.is_none(),"Stale provider data blocks retention");
+        assert!(eligibility(db,"season")?.is_none(),"Stale manager metadata blocks retention");
         Ok(())
     }).await.unwrap();
 }

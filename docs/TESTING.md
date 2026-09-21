@@ -171,34 +171,11 @@ node scripts/test-youtube-stream.mjs
 
 The first test uses a retained public fixture and verifies decoded browser frames, seeking and server resume through HTTPS. The second selects a public VOD from the linked feed and verifies immediate streaming without downloading. These scripts do not replace application credentials. Live checks use a currently live public feed item; they verify decoded frames, absence of VOD seeking, and unchanged watched state. Native checks exercise the rebuilt Windows application through its MPV IPC and verify rapid VOD-to-live transitions, pause controls and server history. Private account-specific fixtures and sanitized results stay under `.local`.
 
-## Private provider configuration
+## Private online-provider configuration
 
 Configure Google, Twitch and Kick application credentials through the administrator's **Settings → Provider applications** page. Each user links their own accounts in **Settings → Online accounts**. `npm run dev:online` reuses the saved development profile, including its encrypted application credentials and account connections.
 
-Metadata credentials can be configured through **Settings → Metadata**. The offline metadata helper uses an existing master key, never displays credentials, and requires the destination server to be stopped. For the main Windows Docker bind mount:
-
-```powershell
-docker compose stop server
-# After placing the Thelxinoe TMDB token in the ignored local input file:
-cargo run -p thelxinoe-desktop --example import-tmdb -- .local/docker/server .local/tmdb-token .local/musicbrainz-contact
-docker compose up -d --wait
-```
-
-A configured token is never returned by the API. No real token or provider-contact address is committed.
-
-## Live metadata validation
-
-This opt-in test uses those private input files against real providers. It creates separate test accounts, provider matches and named volumes, leaving the regular catalog fixtures independent.
-
-```powershell
-$env:THELXINOE_TEST_HTTP_PORT = '18585'
-$env:THELXINOE_TEST_HTTPS_PORT = '19443'
-$env:THELXINOE_TEST_SUBNET = '172.31.251.0/24'
-docker compose -p thelxinoe-live -f compose.test.yaml up -d --wait
-node scripts/test-live-metadata.mjs
-```
-
-It checks real movie/show searches and matches, collection membership, explicit episode mapping, MusicBrainz artist/album matching, downloaded TMDB/CAA images, and refresh preserving a manual correction. Evidence contains public titles and booleans, never credentials.
+Local-library metadata has no separate provider credentials or live-provider fixture. Connect Radarr, Sonarr and Lidarr through **Settings → Media services**. The acquisition fixture and manager adapter tests cover their lookup contracts, exact file/episode/track bindings, normalized metadata and artwork behavior. If an Arr service is absent, that domain keeps only local filename/tag/probe information.
 
 ## Twitch and Kick live validation
 

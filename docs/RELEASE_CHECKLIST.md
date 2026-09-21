@@ -25,14 +25,14 @@ Private evidence lives in `.local` and is excluded from source control. The scri
 | Workflow                            | Evidence / reproducible entry point                                                                                                                        |
 | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Identity, proxy, event reconnect    | `tests/setup.spec.ts`, `tests/proxy.spec.ts`, server auth integration tests                                                                                |
-| Indexing, metadata and artwork      | `scripts/test-live-metadata.mjs`, `live-metadata-result.json`, catalog indexing tests                                                                      |
+| Indexing, metadata and artwork      | `manager-files-result.json`, `manager-tv-music-result.json`, catalog indexing and manager metadata tests                                                   |
 | Browser playback and user state     | `scripts/test-playback.mjs`, `test-playback-tracks.mjs`, `test-user-media.mjs`, `playback-result.json`                                                     |
 | Windows MPV and segments            | `native-playback-result.json`, `native-segments-result.json`, tracked native test scripts                                                                  |
 | Jellyfin clients and credentials    | `scripts/test-jellyfin.mjs`, `jellyfin-result.json`, TV screenshots/history and [client matrix](JELLYFIN.md)                                               |
 | Real online providers               | `youtube-live-result.json`, `youtube-refresh-result.json`, `youtube-native-stream-result.json`, `twitch-playback-result.json`, `kick-playback-result.json` |
 | Acquisition and service integration | `acquisition-downloads-result.json`, `manager-files-result.json`, `manager-tv-music-result.json`, `support-actions-result.json`                            |
 | Managed lifecycle and updates       | `managed-install-result.json`, `ownership-test-*/result.json`, `service-update-result.json`, `service-rollback-result.json`                                |
-| Destructive retention and segments  | `retention-result.json`, `segments-result.json`, `segments-external-result.json`, Rust ownership/retention tests                                           |
+| Destructive retention and segments  | `retention-result.json`, `segments-result.json`, Rust ownership/retention/segment tests                                                                    |
 | Administration and backups          | `operations-result.json`, `backup-interruption-result.json`, `admin-ui-result.json`                                                                        |
 | Product upgrade and recovery        | `scripts/test-product-release.mjs`, `test-release-interruption.mjs`, `test-release-recreation.mjs`, `product-release-result.json`                          |
 | PWA and remote delivery             | `scripts/test-pwa-remote.mjs`, `pwa-remote-result.json`, `pwa-mobile-settings.png`                                                                         |

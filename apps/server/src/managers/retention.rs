@@ -132,12 +132,14 @@ fn complete_season(
     if episodes.is_empty() {
         return Ok(false);
     };
-    let (metadata,series)=db.query_row("SELECT m.metadata,p.external_id FROM media m JOIN provider_ids p ON p.media_id=m.id AND p.provider='tmdb' AND p.mapping_state='confirmed' WHERE m.id=?1",[show],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?.unwrap_or_default();
+    let binding=db.query_row("SELECT m.metadata,b.service_id,b.external_id,b.refreshed_at FROM media m JOIN metadata_bindings b ON b.media_id=m.id JOIN manager_services s ON s.id=b.service_id AND s.kind='sonarr' AND s.enabled=1 AND s.generation=b.service_generation WHERE m.id=?1",[show],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?))).optional()?;
+    let Some((metadata, service, series, refreshed_at)) = binding else {
+        return Ok(false);
+    };
     let metadata: Value = serde_json::from_str(&metadata).unwrap_or_default();
-    if series.is_empty()
-        || metadata["refreshed_at"]
-            .as_i64()
-            .is_none_or(|at| at < now() - 7 * 86400 || at > now() + 60)
+    if metadata["refreshed_at"]
+        .as_i64()
+        .is_none_or(|at| at != refreshed_at || at < now() - 7 * 86400 || at > now() + 60)
     {
         return Ok(false);
     };
@@ -145,7 +147,7 @@ fn complete_season(
     let mut seasons = BTreeSet::new();
     for episode in episodes {
         let present=db.query_row("SELECT EXISTS(SELECT 1 FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=?1 AND f.present=1)",[episode],|r|r.get::<_,bool>(0))?;
-        let mappings=db.prepare("SELECT p.episode_id,p.season_number,m.state FROM episode_mappings m JOIN provider_episodes p ON p.provider=m.provider AND p.episode_id=m.episode_id WHERE m.media_id=?1 AND p.provider='tmdb' AND p.series_id=?2")?.query_map(params![episode,series],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let mappings=db.prepare("SELECT e.manager_episode_id,e.season_number,m.state FROM manager_episode_mappings m JOIN manager_episodes e ON e.service_id=m.service_id AND e.service_generation=m.service_generation AND e.manager_episode_id=m.manager_episode_id JOIN metadata_bindings b ON b.service_id=e.service_id AND b.service_generation=e.service_generation AND b.external_id=e.series_external_id WHERE m.media_id=?1 AND b.media_id=?2 AND e.service_id=?3 AND e.series_external_id=?4 AND e.refreshed_at=?5")?.query_map(params![episode,show,service,series,refreshed_at],|r|Ok((r.get::<_,i64>(0)?.to_string(),r.get::<_,i64>(1)?,r.get::<_,String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
         if !present
             || mappings.len() != 1
             || mappings[0].2 != "confirmed"
@@ -162,7 +164,7 @@ fn complete_season(
     if exclude_specials && season == 0 {
         return Ok(false);
     };
-    let expected=db.prepare("SELECT episode_id,metadata FROM provider_episodes WHERE provider='tmdb' AND series_id=?1 AND season_number=?2")?.query_map(params![series,season],|r|Ok((r.get::<_,String>(0)?,serde_json::from_str::<Value>(&r.get::<_,String>(1)?).unwrap_or_default())))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let expected=db.prepare("SELECT e.manager_episode_id,e.metadata FROM manager_episodes e JOIN metadata_bindings b ON b.service_id=e.service_id AND b.service_generation=e.service_generation AND b.external_id=e.series_external_id WHERE b.media_id=?1 AND e.service_id=?2 AND e.series_external_id=?3 AND e.season_number=?4 AND e.refreshed_at=?5")?.query_map(params![show,service,series,season,refreshed_at],|r|Ok((r.get::<_,i64>(0)?.to_string(),serde_json::from_str::<Value>(&r.get::<_,String>(1)?).unwrap_or_default())))?.collect::<rusqlite::Result<Vec<_>>>()?;
     if expected
         .iter()
         .map(|e| e.0.clone())
@@ -188,13 +190,20 @@ fn complete_season(
     if expected.iter().any(|e| !aired(&e.1["air_date"])) {
         return Ok(false);
     };
-    let ended = matches!(metadata["status"].as_str(), Some("Ended" | "Canceled"));
+    let ended = metadata["status"].as_str().is_some_and(|status| {
+        matches!(
+            status.to_ascii_lowercase().as_str(),
+            "ended" | "canceled" | "cancelled"
+        )
+    });
     let later = metadata["seasons"]
         .as_array()
         .into_iter()
         .flatten()
         .any(|s| s["season_number"].as_i64().is_some_and(|n| n > season) && aired(&s["air_date"]));
-    let finale = expected.iter().any(|e| e.1["episode_type"] == "finale");
+    let finale = expected
+        .iter()
+        .any(|e| matches!(e.1["finale_type"].as_str(), Some("season" | "series")));
     Ok(ended || later || finale)
 }
 pub(super) async fn revalidate_operation(

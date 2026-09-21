@@ -10,7 +10,6 @@ mod history;
 mod jellyfin;
 pub mod library;
 mod managers;
-pub mod metadata;
 mod online;
 pub mod operations;
 #[cfg(test)]
@@ -213,23 +212,6 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/catalog/roots/{id}/scan", post(library::scan))
         .route("/api/v1/catalog", get(library::browse))
-        .route("/api/v1/catalog/collections", get(metadata::collections))
-        .route(
-            "/api/v1/catalog/{id}/provider-episodes",
-            get(metadata::provider_episodes),
-        )
-        .route(
-            "/api/v1/catalog/{id}/episode-mapping",
-            axum::routing::put(metadata::map_episode),
-        )
-        .route("/api/v1/metadata/search", get(metadata::search))
-        .route(
-            "/api/v1/admin/metadata",
-            get(metadata::configuration).put(metadata::configure),
-        )
-        .route("/api/v1/catalog/{id}/match", post(metadata::match_item))
-        .route("/api/v1/catalog/{id}/refresh", post(metadata::refresh))
-        .route("/api/v1/catalog/{id}/artwork", get(metadata::artwork))
         .route("/api/v1/catalog/{id}", get(library::detail))
         .route("/api/v1/playback", post(playback::create))
         .route("/api/v1/playback/{id}", delete(playback::cancel))
@@ -351,7 +333,7 @@ pub async fn run_jobs(state: AppState) -> anyhow::Result<()> {
                         .await?;
                 }
                 "metadata.match" | "metadata.refresh" => {
-                    let result = metadata::run(&state, &job.payload).await;
+                    let result = managers::run_metadata(&state, &job.payload).await;
                     queue
                         .finish(&job, result.err().map(|e| e.to_string()))
                         .await?;
@@ -371,6 +353,7 @@ pub async fn run_jobs(state: AppState) -> anyhow::Result<()> {
                             let root_id = root.id.clone();
                             async move { state.emit(None, "catalog.scan.progress", json!({"root_id":root_id,"completed":completed,"total":total})).await.map(|_| ()) }
                         }).await;
+                        let succeeded = result.is_ok();
                         let error = result.err().map(|e| e.to_string());
                         if let Some(error) = error.clone() {
                             state
@@ -385,6 +368,9 @@ pub async fn run_jobs(state: AppState) -> anyhow::Result<()> {
                                 .await?;
                         }
                         queue.finish(&job, error).await?;
+                        if succeeded {
+                            managers::reconcile_after_scan(&state).await;
+                        }
                         state
                             .emit(
                                 None,

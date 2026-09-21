@@ -21,7 +21,6 @@
   const admin = [
     ['server', 'Server', 'Health and current activity'],
     ['server-updates', 'Server updates', 'Product releases and recovery'],
-    ['library', 'Metadata', 'Matching and artwork providers'],
     ['analysis', 'Episode analysis', 'Intro and credit detection'],
     ['providers', 'Provider applications', 'YouTube, Twitch and Kick apps'],
     ['services', 'Media services', 'Installation and integrations'],

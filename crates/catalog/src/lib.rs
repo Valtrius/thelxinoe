@@ -224,7 +224,6 @@ where
                 tx.execute("INSERT OR IGNORE INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,year,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![id(),root.id,item.kind,parent,item.key,item.title,item.number,item.year,now()])?;
                 let media_id:String=tx.query_row("SELECT id FROM media WHERE root_id=?1 AND kind=?2 AND evidence_key=?3",params![root.id,item.kind,item.key],|r|r.get(0))?;
                 if item.playable{if file.probe["thelxinoe_local_trailer"].as_bool()==Some(true){tx.execute("INSERT OR IGNORE INTO local_trailers VALUES (?1,?2)",params![media_id,file_id])?;}else{tx.execute("INSERT OR IGNORE INTO media_sources VALUES (?1,?2)",params![media_id,file_id])?;}}
-                for (provider,external_id) in item.provider_ids{tx.execute("INSERT OR IGNORE INTO provider_ids(media_id,provider,external_id,mapping_state) VALUES (?1,?2,?3,'exact')",params![media_id,provider,external_id])?;}
             }
         }
         tx.execute("UPDATE library_roots SET last_scan=?1,scan_error=NULL WHERE id=?2",params![now(),root.id])?;tx.commit()?;Ok(())

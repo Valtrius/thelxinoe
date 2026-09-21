@@ -1,6 +1,7 @@
 //! Local Docker manager adapters. Docker evidence stays behind the private controller socket.
 mod bindings;
 mod controls;
+mod metadata;
 mod operations;
 mod requests;
 mod retention;
@@ -25,7 +26,13 @@ use axum::{
     http::HeaderMap,
     routing::{get, post},
 };
+pub(crate) use metadata::run as run_metadata;
 pub(crate) use requests::acquire;
+
+pub(crate) async fn reconcile_after_scan(state: &AppState) {
+    let _guard = state.managers.guard.lock().await;
+    let _ = bindings::reconcile(state).await;
+}
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -55,6 +62,7 @@ pub(crate) fn router() -> Router<AppState> {
         .merge(requests::router())
         .merge(bindings::router())
         .merge(controls::router())
+        .merge(metadata::router())
         .merge(operations::router())
         .merge(support::router())
         .merge(stack::router())

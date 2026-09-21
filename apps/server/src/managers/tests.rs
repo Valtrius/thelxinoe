@@ -163,6 +163,18 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
     let registered = call(&state, "/api/v1/admin/managers", "POST", input, &bob).await;
     assert_eq!(registered.0, StatusCode::OK, "{}", registered.2);
     let service = registered.2["id"].as_str().unwrap();
+    let metadata = call(
+        &state,
+        "/api/v1/metadata/search?kind=movie&q=Public",
+        "GET",
+        Value::Null,
+        &bob,
+    )
+    .await;
+    assert_eq!(metadata.0, StatusCode::OK, "{}", metadata.2);
+    assert_eq!(metadata.2["items"][0]["service_id"], service);
+    assert!(metadata.2["items"][0]["service_generation"].is_string());
+    assert_eq!(metadata.2["items"][0]["external_id"], "603");
     let defaults=call(&state,&format!("/api/v1/admin/managers/{service}/defaults"),"PUT",json!({"root_folder":"/media/movies","quality_profile":1,"metadata_profile":null,"monitored":true}),&bob).await;
     assert_eq!(defaults.0, StatusCode::OK, "{}", defaults.2);
     let listing = call(&state, "/api/v1/admin/managers", "GET", Value::Null, &bob).await;

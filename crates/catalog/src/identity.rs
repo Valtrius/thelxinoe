@@ -11,7 +11,6 @@ pub struct Identity {
     pub number: Option<i64>,
     pub year: Option<i64>,
     pub playable: bool,
-    pub provider_ids: Vec<(String, String)>,
 }
 fn item(
     kind: &str,
@@ -29,7 +28,6 @@ fn item(
         number,
         year: None,
         playable,
-        provider_ids: Vec::new(),
     }
 }
 fn normalize(s: &str) -> String {
@@ -152,8 +150,8 @@ pub fn identify(domain: &str, path: &Path, probe: &Value) -> Result<(Vec<Identit
         let album_key = album_id
             .clone()
             .unwrap_or_else(|| format!("{artist_key}:{}", album.to_lowercase()));
-        let mut a = item("artist", artist_key.clone(), artist, None, None, false);
-        let mut b = item(
+        let a = item("artist", artist_key.clone(), artist, None, None, false);
+        let b = item(
             "album",
             album_key.clone(),
             album,
@@ -161,7 +159,7 @@ pub fn identify(domain: &str, path: &Path, probe: &Value) -> Result<(Vec<Identit
             None,
             false,
         );
-        let mut t = item(
+        let t = item(
             "track",
             release_track_id.clone().unwrap_or_else(|| {
                 format!(
@@ -174,19 +172,6 @@ pub fn identify(domain: &str, path: &Path, probe: &Value) -> Result<(Vec<Identit
             Some(disc * 10000 + track),
             true,
         );
-        if let Some(id) = artist_id {
-            a.provider_ids.push(("musicbrainz".into(), id));
-        }
-        if let Some(id) = album_id {
-            b.provider_ids.push(("musicbrainz".into(), id));
-        }
-        if let Some(id) = track_id {
-            t.provider_ids.push(("musicbrainz".into(), id));
-        }
-        if let Some(id) = release_track_id {
-            t.provider_ids
-                .push(("musicbrainz.release-track".into(), id));
-        }
         return Ok((vec![a, b, t], String::new()));
     }
     bail!("Unknown library domain")
@@ -225,13 +210,6 @@ mod tests {
         data["format"]["tags"]["musicbrainz_releasetrackid"] =
             serde_json::json!("release-track-id");
         let (c, _) = identify("music", Path::new("track.flac"), &data).unwrap();
-        assert!(c[2].provider_ids.contains(&(
-            "musicbrainz.release-track".into(),
-            "release-track-id".into()
-        )));
-        assert!(
-            c[2].provider_ids
-                .contains(&("musicbrainz".into(), "recording-id".into()))
-        );
+        assert!(c[2].key.contains("release-track-id"));
     }
 }

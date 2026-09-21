@@ -22,7 +22,6 @@ Start with [product scope](PRODUCT.md), [implementation status](STATUS.md) and [
 | Health, users, diagnostics and backups           | [Operations](OPERATIONS.md)               |
 | Signed product releases and offline recovery     | [Releases](RELEASES.md)                   |
 | Required release checks                          | [Release checklist](RELEASE_CHECKLIST.md) |
-| Metadata provider credits                        | [Attribution](ATTRIBUTION.md)             |
 
 ## Accepted delivery criteria
 

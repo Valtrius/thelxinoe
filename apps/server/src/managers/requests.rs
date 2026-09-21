@@ -39,7 +39,7 @@ fn identifier(kind: &str, value: &str) -> bool {
         value.len() <= 12 && value.parse::<u64>().is_ok_and(|v| v > 0)
     }
 }
-async fn lookup(c: &Connection<'_>, external_id: &str) -> Result<Value> {
+pub(super) async fn lookup(c: &Connection<'_>, external_id: &str) -> Result<Value> {
     if !identifier(&c.kind, external_id) {
         return Err(ApiError::bad("Invalid provider identifier"));
     }
@@ -252,7 +252,7 @@ async fn perform(state: &AppState, key: &str) -> Result<()> {
     }
     let c = Connection::open(state, &s).await?;
     let kind = endpoint(&s.kind);
-    // Re-read provider metadata and manager ownership instead of accepting a client-supplied object.
+    // Re-read manager metadata and ownership instead of accepting a client-supplied object.
     let mut item = lookup(&c, &row.2).await?;
     let existing = c.get(kind).await?;
     let existing = existing

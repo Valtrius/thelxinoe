@@ -27,7 +27,7 @@ The local test server uses Docker project `thelxinoe-compat`, HTTP port 18787, H
 | Password login                         | Passed                                                             | Passed                                                  |
 | Quick Connect through Thelxinoe web UI | Passed                                                             | Passed                                                  |
 | Library navigation and movie list      | Passed                                                             | Passed                                                  |
-| Real cached TMDB artwork               | Passed                                                             | Passed                                                  |
+| Cached library artwork                 | Passed                                                             | Passed                                                  |
 | Direct H.264/AAC playback              | Passed                                                             | Passed                                                  |
 | Progress, completion, history          | Passed: 18-second clip, 17.901 seconds counted; episode completion | Passed: video progress and both music tracks completed  |
 | Subtitle display and selection         | Passed with timed SRT cues; limitation below                       | Passed after seek                                       |
@@ -37,7 +37,7 @@ The local test server uses Docker project `thelxinoe-compat`, HTTP port 18787, H
 | Shows                                  | Passed: specials, seasons, episode playback/completion             | Not exercised separately                                |
 | UDP discovery                          | Host protocol passed; emulator broadcast not verified              | Same                                                    |
 
-`scripts/test-jellyfin.mjs` validates authentication, browsing, search, token transport separation, granted direct byte ranges, progress and watched translation, stopped-stream rejection, and absence of token/grant values from Docker logs. It uses synthetic playback fixtures. `scripts/prepare-tv-metadata.mjs` explicitly uses the private local provider files to attach real TMDB artwork to that synthetic fixture. `scripts/test-tv-quick-connect.mjs` approves the code currently displayed in the emulator through the real web interface.
+`scripts/test-jellyfin.mjs` validates authentication, browsing, search, token transport separation, granted direct byte ranges, progress and watched translation, stopped-stream rejection, and absence of token/grant values from Docker logs. It uses synthetic playback fixtures. `scripts/test-tv-quick-connect.mjs` approves the code currently displayed in the emulator through the real web interface. Enriched library artwork is manager-sourced in normal deployments; the isolated compatibility fixture does not require an Arr stack.
 
 Rust integration tests cover device revocation, cross-user rejection, credential conflicts, and the Quick Connect approval and single-use boundaries. All previous server integration tests still pass.
 

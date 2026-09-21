@@ -67,7 +67,6 @@
     animate();
   }
   import LibraryView from './lib/LibraryView.svelte';
-  import MetadataSettings from './lib/MetadataSettings.svelte';
   import PlaybackSettings from './lib/PlaybackSettings.svelte';
   import SegmentSettings from './lib/SegmentSettings.svelte';
   import TimezoneSelect from './lib/TimezoneSelect.svelte';
@@ -202,6 +201,7 @@
         section = destination;
       if (typeof saved?.settingsSection === 'string')
         settingsSection = saved.settingsSection;
+      if (settingsSection === 'library') settingsSection = 'services';
       if (!desktop && ['mpv', 'connection'].includes(settingsSection))
         settingsSection = 'account';
       if (!desktop && settingsSection === 'updates')
@@ -794,7 +794,6 @@
               {#if settingsSection === 'backups'}<BackupSettings
                   {timezone}
                 />{/if}
-              {#if settingsSection === 'library'}<MetadataSettings />{/if}
               {#if settingsSection === 'providers'}<OnlineSettings />{/if}
               {#if settingsSection === 'services'}<ManagerSettings />{/if}
               {#if settingsSection === 'services'}<ManagerOwnership />{/if}

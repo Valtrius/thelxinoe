@@ -216,9 +216,9 @@ async fn store(
 async fn external(state: &AppState, src: &Source) -> anyhow::Result<()> {
     let media = src.media_id.clone();
     let coordinates=state.db.call(move|db|{
-        Ok(db.query_row("SELECT p.series_id,p.season_number,p.episode_number FROM episode_mappings m JOIN provider_episodes p ON p.provider=m.provider AND p.episode_id=m.episode_id WHERE m.media_id=?1 AND m.provider='tmdb' AND m.state='confirmed' AND (SELECT COUNT(*) FROM episode_mappings WHERE media_id=?1)=1",[media],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?))).optional()?)
+        Ok(db.query_row("SELECT b.external_id,NULLIF(json_extract(show.metadata,'$.tmdb_id'),0),e.season_number,e.episode_number FROM manager_episode_mappings m JOIN manager_episodes e ON e.service_id=m.service_id AND e.service_generation=m.service_generation AND e.manager_episode_id=m.manager_episode_id JOIN metadata_bindings b ON b.service_id=e.service_id AND b.service_generation=e.service_generation AND b.external_id=e.series_external_id AND b.refreshed_at=e.refreshed_at JOIN media show ON show.id=b.media_id JOIN manager_services s ON s.id=b.service_id AND s.kind='sonarr' AND s.enabled=1 AND s.generation=b.service_generation WHERE m.media_id=?1 AND m.state='confirmed' AND b.external_id GLOB '[0-9]*' AND (SELECT COUNT(*) FROM manager_episode_mappings WHERE media_id=?1)=1",[media],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<i64>>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?))).optional()?)
     }).await?;
-    let Some((series, season, episode)) = coordinates else {
+    let Some((series, tmdb_id, season, episode)) = coordinates else {
         return Ok(());
     };
     let client = reqwest::Client::builder()
@@ -229,7 +229,7 @@ async fn external(state: &AppState, src: &Source) -> anyhow::Result<()> {
     let mut response = client
         .get("https://api.theintrodb.org/v3/media")
         .query(&[
-            ("tmdb_id", series.clone()),
+            ("tvdb_id", series.clone()),
             ("season", season.to_string()),
             ("episode", episode.to_string()),
             (
@@ -256,18 +256,18 @@ async fn external(state: &AppState, src: &Source) -> anyhow::Result<()> {
         bytes.extend_from_slice(&chunk);
     }
     let value: Value = serde_json::from_slice(&bytes)?;
-    let segments = parse_external(&value, &series, season, episode, src.duration())?;
+    let segments = parse_external(&value, tmdb_id, season, episode, src.duration())?;
     store(state, src, segments, "theintrodb", None).await
 }
 pub(super) fn parse_external(
     value: &Value,
-    series: &str,
+    tmdb_id: Option<i64>,
     season: i64,
     episode: i64,
     duration: f64,
 ) -> anyhow::Result<Vec<Segment>> {
     anyhow::ensure!(
-        value["tmdb_id"].as_i64() == series.parse::<i64>().ok()
+        tmdb_id.is_none_or(|id| value["tmdb_id"].as_i64() == Some(id))
             && value["season"].as_i64() == Some(season)
             && value["episode"].as_i64() == Some(episode)
             && value["type"] == "tv",

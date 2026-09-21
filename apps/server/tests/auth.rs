@@ -330,35 +330,9 @@ async fn forwarded_headers_require_trusted_proxy_and_client_chain_is_resolved_fr
 }
 
 #[tokio::test]
-async fn metadata_credentials_are_redacted_and_manual_fields_win_after_provider_refresh() {
+async fn manual_fields_win_after_metadata_refresh() {
     let (_temp, state) = fixture().await;
     let cookie = setup(&state).await;
-    let secret = "tmdb-test-secret-that-must-never-be-returned";
-    assert_eq!(
-        request(
-            &state,
-            "/api/v1/admin/metadata",
-            "PUT",
-            json!({"tmdb_token":secret}),
-            Some(&cookie),
-            &[]
-        )
-        .await
-        .0,
-        StatusCode::OK
-    );
-    let config = request(
-        &state,
-        "/api/v1/admin/metadata",
-        "GET",
-        Value::Null,
-        Some(&cookie),
-        &[],
-    )
-    .await
-    .2;
-    assert_eq!(config["tmdb_configured"], true);
-    assert!(!config.to_string().contains(secret));
     state.db.call(|db|{db.execute_batch("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Fixture','movies','/fixture'); INSERT INTO media(id,root_id,kind,evidence_key,title,metadata,created_at) VALUES ('movie','root','movie','fixture','Local title','{\"title\":\"Initial provider title\"}',0);")?;Ok(())}).await.unwrap();
     assert_eq!(
         request(
@@ -421,20 +395,22 @@ async fn metadata_credentials_are_redacted_and_manual_fields_win_after_provider_
 }
 
 #[tokio::test]
-async fn episode_provider_numbering_is_explicit_and_complex_mappings_are_marked() {
+async fn episode_manager_numbering_is_explicit_and_complex_mappings_are_marked() {
     let (_temp, state) = fixture().await;
     let cookie = setup(&state).await;
     state.db.call(|db|{db.execute_batch("INSERT INTO library_roots(id,name,kind,path) VALUES ('r','TV','shows','/tv');
 INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES ('show','r','show',NULL,'show','Show',NULL,0),('season','r','season','show','s','Season',1,0),('e1','r','episode','season','e1','First',1,0),('e2','r','episode','season','e2','Second',2,0);
-INSERT INTO provider_ids(media_id,provider,external_id) VALUES ('show','tmdb','100');
-INSERT INTO provider_episodes VALUES ('tmdb','100','201',1,2,'{}'),('tmdb','100','202',1,1,'{}');")?;Ok(())}).await.unwrap();
+INSERT INTO manager_services VALUES ('sonarr','Fixture','sonarr','container',8989,'g',X'00','','{}','1',1,1,NULL);
+INSERT INTO metadata_bindings VALUES ('show','sonarr','g','100',NULL,1);
+INSERT INTO manager_episodes VALUES ('sonarr','g','100',201,1,2,1,'{}'),('sonarr','g','100',202,1,1,1,'{}');")?;Ok(())}).await.unwrap();
     assert_eq!(
         state
             .db
-            .call(|db| Ok(
-                db.query_row("SELECT count(*) FROM episode_mappings", [], |r| r
-                    .get::<_, i64>(0))?
-            ))
+            .call(|db| Ok(db.query_row(
+                "SELECT count(*) FROM manager_episode_mappings",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?))
             .await
             .unwrap(),
         0
@@ -469,7 +445,7 @@ INSERT INTO provider_episodes VALUES ('tmdb','100','201',1,2,'{}'),('tmdb','100'
         state
             .db
             .call(|db| Ok(db.query_row(
-                "SELECT count(*) FROM episode_mappings WHERE state='complex'",
+                "SELECT count(*) FROM manager_episode_mappings WHERE state='complex'",
                 [],
                 |r| r.get::<_, i64>(0)
             )?))

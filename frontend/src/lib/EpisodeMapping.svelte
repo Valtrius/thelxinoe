@@ -22,15 +22,15 @@
       const result = await api<{
         items: Episode[];
         mappings: { id: string; state: string }[];
-      }>(`/catalog/${id}/provider-episodes`);
+      }>(`/catalog/${id}/manager-episodes`);
       if (generation !== request) return;
       episodes = result.items;
       chosen = result.mappings.map((m) => m.id);
       message = result.mappings.some((m) => m.state === 'complex')
-        ? 'Complex mapping: multiple logical or provider episodes share this identity.'
+        ? 'Complex mapping: multiple logical or Sonarr episodes share this identity.'
         : chosen.length
           ? 'Confirmed mapping.'
-          : 'Unresolved: no provider episode has been selected.';
+          : 'Unresolved: no Sonarr episode has been selected.';
     } catch (e) {
       if (generation === request) error = String(e);
     }
@@ -61,9 +61,9 @@
 </script>
 
 <section class="mt-5 border-t border-line pt-4.5">
-  <h3 class="text-[15px] font-[550]">Provider episode mapping</h3>
+  <h3 class="text-[15px] font-[550]">Sonarr episode mapping</h3>
   <p class="text-[0.75rem] text-muted">
-    Select the episodes represented by this local item. Provider numbering can
+    Select the episodes represented by this local item. Sonarr numbering can
     differ from your files.
   </p>
   {#if error}<p role="alert" class={errorClass}>{error}</p>{/if}
@@ -88,6 +88,6 @@
       >Save episode mapping</Button
     >
   {:else}<p class="text-[0.75rem] text-muted">
-      Match the parent show and refresh its metadata to load provider episodes.
+      Match the parent show and refresh its metadata to load Sonarr episodes.
     </p>{/if}
 </section>

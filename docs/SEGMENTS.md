@@ -6,15 +6,14 @@ The local worker fingerprints the first and last quarter of each episode, capped
 
 Analysis runs separately at low CPU priority and yields when playback or ready library work appears. Failed analyses are visible in Settings; an administrator can requeue a specific edition from its library details. Generated fixtures demonstrate recurring audio detection; this is not a claim that every show's changing or silent intro will match.
 
-The optional TheIntroDB integration is disabled by default. It sends only confirmed TMDB episode coordinates and runtime to the public provider, validates the returned episode identity and bounds, and keeps external timestamps separate from local/manual results. No account token, file path or audio is sent. External timestamps may describe a different cut; use the per-edition correction UI when necessary.
+The optional TheIntroDB integration is disabled by default. It sends only Sonarr's TVDB series ID, the confirmed Sonarr season/episode coordinates, and runtime to the public service. The response identity and bounds are validated, and external timestamps stay separate from local/manual results. No account token, file path or audio is sent. If Sonarr does not provide a usable mapping, TheIntroDB is skipped. External timestamps may describe a different cut; use the per-edition correction UI when necessary.
 
 Browser and Windows MPV controls share the skip policy. Auto seeks once per segment per playback view; seeking back into an already handled segment does not create a seek loop. Jellyfin clients receive normal Media Segments DTOs and apply their own playback preferences. For multiple editions, the compatibility endpoint uses the current device's selected playback file and returns no segments when that choice is ambiguous.
 
 ## Validation
 
-- Rust tests cover recurring shifted audio, silence/short-match rejection, provider identity and bounds, private preferences, authorization, manual override/reset, replacement generations and Jellyfin edition/device isolation.
+- Rust tests cover recurring shifted audio, silence/short-match rejection, external timestamp identity and bounds, private preferences, authorization, manual override/reset, replacement generations and Jellyfin edition/device isolation.
 - `node scripts/generate-segment-fixtures.mjs` generates two synthetic episodes with shifted recurring music. `compose.segments.test.yaml` runs the isolated HTTPS test server. `node scripts/test-segments.mjs` checks detected intro/credit bounds, Jellyfin API responses, browser Ask/Auto/Ignore and manual editing. Evidence: `.local/segments-result.json`, `.local/segments-editor.png`.
-- `node scripts/test-segments-external.mjs` attaches confirmed public episode metadata to generated media and verifies real TheIntroDB ingestion. Evidence: `.local/segments-external-result.json`. It restores the external-provider setting after testing.
 - Wholphin 1.0.8 on the Android TV API 34 emulator requested `/MediaSegments/{id}` successfully, displayed Skip Intro for a generated fixture's 4–25 second segment and advanced to 26 seconds when selected. Evidence: `.local/wholphin-segments-seek.png` and `.local/wholphin-segment-fixtures.json`.
 - Windows production bundle and live MPV Ask/Auto/Ignore checks pass, including file-generation identity. Run `node scripts/test-native-segments.mjs` against the launched test app. Evidence: `.local/native-segments-result.json`, `.local/native-segments.png`.
 

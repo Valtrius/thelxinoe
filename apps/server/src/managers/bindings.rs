@@ -166,6 +166,7 @@ pub(super) async fn reconcile(state: &AppState) -> Result<()> {
           ELSE 'unmanaged' END WHERE present=1",[now()-60])?;
         Ok(())
     }).await?;
+    super::metadata::enqueue_managed_refreshes(state).await?;
     Ok(())
 }
 async fn reconcile_api(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {

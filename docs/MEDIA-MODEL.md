@@ -16,18 +16,18 @@ Important identity rules:
 - Concrete files remain separate records for technical media information and playback sources.
 - Movie editions share watched, Favorite, and Watch Later state but keep edition-specific resume positions.
 - TV specials, multi-episode files, multi-disc albums, and basic movie editions are modeled in v1.
-- One logical episode can store identifiers and ordering coordinates from multiple providers/managers. A concrete file can represent one or more logical episodes without forcing all providers to use the same season/episode numbering.
-- Provider display ordering and manager action mapping are separate. The UI may primarily display TMDB ordering while a Sonarr binding retains the Sonarr/TVDB episode identity needed for manager operations.
+- One logical episode can store identifiers and ordering coordinates from its media manager. A concrete file can represent one or more logical episodes without forcing filename numbering to match Sonarr numbering.
+- Display ordering and manager action mapping are separate. Sonarr's exact episode identity is retained for manager operations even when a filename uses different season/episode coordinates.
 
 ## Metadata
 
-Movies and Shows use TMDB as the main external metadata and display source. TMDB numbering is not assumed to be interchangeable with another provider's or a media manager's episode numbering.
+Enriched metadata comes only from configured media managers: Radarr for Movies, Sonarr for Shows/Episodes, and Lidarr for Artists/Albums/Tracks. Thelxinoe does not call TMDB, MusicBrainz, Cover Art Archive, or equivalent metadata services directly and has no separate metadata-provider credentials.
 
-Music uses embedded tags for local facts, MusicBrainz for identity and metadata, and Cover Art Archive for artwork.
+Without the matching Arr service, local media still indexes and plays from filenames, filesystem structure, FFprobe data, and embedded tags, but it has no network-enriched metadata or artwork. Embedded MusicBrainz identifiers remain useful local tag evidence for stable Music identities; they are not used for network lookups.
 
-Existing sidecars and manager IDs can help matching but do not own Thelxinoe's catalog. Provider-specific series/season/episode IDs and ordering data are retained where available so manager bindings can refer to the exact external entity instead of inferring identity from a displayed `SxxExx` coordinate.
+Manager IDs help matching but do not own Thelxinoe's catalog. Sonarr series/episode IDs and ordering data are retained so manager bindings can refer to the exact external entity instead of inferring identity from a displayed `SxxExx` coordinate.
 
-Provider-managed fields refresh periodically and on demand. Manual admin corrections live separately and always win until the admin clears them.
+Manager-sourced fields refresh on demand and when manager-backed metadata is reconciled. Manual admin corrections live separately and always win until the admin clears them.
 
 ## Playback model
 

@@ -17,8 +17,10 @@
     changed: () => void;
   }>();
   type Candidate = {
-    provider: string;
-    id: string;
+    service_id: string;
+    service_generation: string;
+    source: string;
+    external_id: string;
     title: string;
     year?: string;
     overview?: string;
@@ -64,7 +66,7 @@
     >
       {message}
     </p>{/if}
-  {#if ['movie', 'show', 'artist', 'album', 'track'].includes(kind)}<form
+  {#if ['movie', 'show', 'artist', 'album'].includes(kind)}<form
       class={inlineFormClass}
       onsubmit={(e) => {
         e.preventDefault();
@@ -81,7 +83,7 @@
         type="submit"
         variant="secondary"
         size="form"
-        disabled={busy}>Search provider</Button
+        disabled={busy}>Search media service</Button
       ><Button
         type="button"
         variant="secondary"
@@ -95,10 +97,12 @@
           })}>Refresh metadata</Button
       >
     </form>
-    {#each candidates as candidate (candidate.id)}<div class={rowClass}>
+    {#each candidates as candidate (`${candidate.service_id}:${candidate.external_id}`)}<div
+        class={rowClass}
+      >
         <div>
           <strong>{candidate.title}</strong><small
-            >{candidate.year ?? candidate.provider}</small
+            >{candidate.year ?? candidate.source}</small
           >
         </div>
         <Button
@@ -108,8 +112,9 @@
           onclick={() =>
             run(async () => {
               await api(`/catalog/${id}/match`, 'POST', {
-                provider: candidate.provider,
-                external_id: candidate.id,
+                service_id: candidate.service_id,
+                service_generation: candidate.service_generation,
+                external_id: candidate.external_id,
               });
               message = 'Match queued.';
               candidates = [];
@@ -127,7 +132,7 @@
           ...(year ? { year } : {}),
         });
         message =
-          'Corrections saved. They take precedence over provider metadata.';
+          'Corrections saved. They take precedence over media service metadata.';
         changed();
       });
     }}
@@ -135,12 +140,12 @@
     <label
       >Manual title<input
         bind:value={manualTitle}
-        placeholder="Leave empty to use provider title"
+        placeholder="Leave empty to use media service title"
       /></label
     ><label
       >Manual overview<input
         bind:value={overview}
-        placeholder="Leave empty to use provider overview"
+        placeholder="Leave empty to use media service overview"
       /></label
     ><label
       >Manual year<input
@@ -148,7 +153,7 @@
         min="1"
         max="9999"
         bind:value={year}
-        placeholder="Use provider year"
+        placeholder="Use media service year"
       /></label
     ><Button type="submit" variant="secondary" size="form" disabled={busy}
       >Save corrections</Button
@@ -164,7 +169,7 @@
           overview = '';
           year = undefined;
           changed();
-          message = 'Provider metadata restored.';
+          message = 'Media service metadata restored.';
         })}>Clear corrections</Button
     >
   </form>

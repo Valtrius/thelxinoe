@@ -4,11 +4,13 @@ use axum::http::StatusCode;
 #[test]
 fn external_timestamps_require_identity_and_explicit_bounded_fields() {
     let value = json!({"tmdb_id":1402,"season":1,"episode":1,"type":"tv","intro":[{}, {"start_ms":10000,"end_ms":20000},{"start_ms":20000,"end_ms":999999}],"credits":[{"start_ms":100000,"end_ms":null}]});
-    let items = analysis::parse_external(&value, "1402", 1, 1, 120.0).unwrap();
+    let items = analysis::parse_external(&value, Some(1402), 1, 1, 120.0).unwrap();
     assert_eq!(items.len(), 2);
     assert_eq!(items[0].start, 10.0);
     assert_eq!(items[1].end, 120.0);
-    assert!(analysis::parse_external(&value, "1402", 1, 2, 120.0).is_err());
+    assert!(analysis::parse_external(&value, Some(1402), 1, 2, 120.0).is_err());
+    assert!(analysis::parse_external(&value, Some(1), 1, 1, 120.0).is_err());
+    assert!(analysis::parse_external(&value, None, 1, 1, 120.0).is_ok());
 }
 #[tokio::test]
 async fn jellyfin_segments_follow_only_this_devices_selected_edition() {

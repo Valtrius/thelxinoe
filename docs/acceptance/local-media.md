@@ -14,7 +14,7 @@ Deliver:
 - periodic reconciliation scan;
 - persistent file index;
 - opaque logical Movie, Show, Season, Episode, Artist, Album, and Track identities that do not derive identity from path or displayed provider numbering;
-- embedded music tag parsing, including embedded MusicBrainz identifiers when present, so Artist/Album/Track identity does not need to be rewritten when network metadata arrives later;
+- embedded music tag parsing, including embedded MusicBrainz identifiers when present, so Artist/Album/Track identity stays stable independently of manager metadata;
 - technical media probing with FFprobe;
 - specials, multi-episode files, multi-disc albums, and basic editions;
 - scan status/progress events;
@@ -32,22 +32,21 @@ Turn the raw file index into a useful media catalog.
 
 Deliver:
 
-- TMDB integration for Movies/Shows;
-- MusicBrainz and Cover Art Archive integration;
-- provider-ID storage;
-- provider-specific TV series/episode identifiers and ordering coordinates stored alongside the internal identity;
-- explicit mapping between logical TV episodes and provider/order identities, including non-one-to-one and unresolved cases;
-- matching pipeline;
+- Radarr metadata lookup for Movies, Sonarr metadata lookup for Shows/Episodes, and Lidarr metadata lookup for Music;
+- manager metadata bindings stored separately from filesystem identity;
+- exact Sonarr series/episode identifiers and ordering coordinates stored alongside the internal identity;
+- explicit mapping between logical TV episodes and Sonarr episode identities, including non-one-to-one and unresolved cases;
+- manager-backed matching pipeline;
 - artwork cache;
 - metadata refresh jobs;
 - manual match/rematch;
-- manual field overrides stored separately from provider data;
-- TMDB collections/franchises;
+- manual field overrides stored separately from manager metadata;
+- Radarr collection/franchise metadata;
 - trailer metadata and discovered local trailer playback metadata.
 
 Exit condition:
 
-- the three local domains show stable metadata/artwork;
+- the three local domains show stable metadata/artwork when their corresponding Arr service is configured;
 - refresh does not overwrite manual corrections.
 
 ## Phase 5. Local playback and progress
