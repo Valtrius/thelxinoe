@@ -156,7 +156,7 @@
       >
       <NotificationCenter revision={notificationRevision} {collapsed} />
       {#if !desktop}<div
-          class="web-theme-controls relative flex justify-center py-2 group-[.collapsed]/sidebar:[--compact-choice-width:24px]"
+          class="web-theme-controls relative flex justify-center group-[.collapsed]/sidebar:[--compact-choice-width:24px]"
         >
           <span
             class="pointer-events-none absolute inset-x-0 top-0 h-px bg-line"
