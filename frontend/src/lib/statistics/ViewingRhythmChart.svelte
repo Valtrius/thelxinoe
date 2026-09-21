@@ -126,15 +126,10 @@
   data-sidebar-resize="xy"
   class="panel min-w-0 border border-line bg-surface p-4"
 >
-  <header
-    class="flex min-w-0 items-start justify-between gap-4 border-b border-line pb-3"
-  >
+  <header class="border-b border-line pb-3">
     <div class="min-w-0">
-      <h2 class={[eyebrowTextClass, 'm-0']}>03 / VIEWING RHYTHM</h2>
+      <h2 class={[eyebrowTextClass, 'm-0']}>VIEWING RHYTHM</h2>
     </div>
-    <span class="shrink-0 text-[0.58rem] tracking-[0.08em] text-muted uppercase"
-      >Time by hour</span
-    >
   </header>
 
   <div class="mt-4 overflow-x-auto pb-2">
@@ -197,10 +192,7 @@
       {/each}
     </div>
   </div>
-  <div
-    class="mt-2 flex items-center justify-between gap-3 text-[0.6rem] text-muted"
-  >
-    <span>Hover a square or use arrow keys for exact watch time.</span>
+  <div class="mt-2 flex items-center justify-end text-[0.6rem] text-muted">
     <span class="flex items-center gap-1.5" aria-hidden="true"
       >Less
       {#each [0, 1, 2, 3, 4, 5] as heat (heat)}

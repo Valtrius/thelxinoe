@@ -197,15 +197,23 @@ test('statistics shows the youtwitch panels with all media, source filters and k
     page.getByRole('combobox', { name: 'Statistics user' }),
   ).toHaveCount(0);
   for (const title of [
-    '01 / DAILY ACTIVITY',
-    '02 / PLATFORM SPLIT',
-    '03 / VIEWING RHYTHM',
-    '04 / TOP CHANNELS & TITLES',
-    '05 / LIBRARY COMPLETION',
+    'DAILY ACTIVITY',
+    'PLATFORM SPLIT',
+    'VIEWING RHYTHM',
+    'TOP CHANNELS & TITLES',
+    'LIBRARY COMPLETION',
   ])
     await expect(
       page.getByRole('heading', { name: title, exact: true }),
     ).toBeVisible();
+  await expect(
+    page
+      .getByRole('region', { name: 'Statistics summary' })
+      .getByText('Media consumed', { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('img', { name: /^Platform split:/ }),
+  ).toBeVisible();
   const grid = page.getByRole('grid', {
     name: 'Watch time by weekday and hour',
   });
@@ -220,13 +228,13 @@ test('statistics shows the youtwitch panels with all media, source filters and k
   const platforms = page.getByRole('group', { name: 'Statistics platform' });
   await platforms.getByRole('button', { name: 'Music', exact: true }).click();
   await expect(
-    page.getByRole('heading', { name: '05 / MUSIC LIBRARY' }),
+    page.getByRole('heading', { name: 'MUSIC LIBRARY' }),
   ).toBeVisible();
   await expect(
     page.getByText('2 artists · 3 albums', { exact: false }),
   ).toBeVisible();
   await expect(
-    page.getByRole('heading', { name: '04 / TOP ARTISTS' }),
+    page.getByRole('heading', { name: 'TOP ARTISTS' }),
   ).toBeVisible();
   expect(state.queries.at(-1)?.searchParams.get('platform')).toBe('music');
   await expect
@@ -242,12 +250,9 @@ test('statistics shows the youtwitch panels with all media, source filters and k
   await expect
     .poll(() => state.historyQueries.at(-1)?.searchParams.get('range'))
     .toBe('7d');
-  await page.getByRole('button', { name: 'How this is measured' }).click();
-  await expect(page.getByRole('dialog')).toContainText('FILMS / SHOWS / MUSIC');
-  await page.keyboard.press('Escape');
   await platforms.getByRole('button', { name: 'All', exact: true }).click();
   await expect(
-    page.getByRole('heading', { name: '05 / LIBRARY COMPLETION' }),
+    page.getByRole('heading', { name: 'LIBRARY COMPLETION' }),
   ).toBeVisible();
   mkdirSync('.local/statistics-ui', { recursive: true });
   await page
@@ -274,7 +279,7 @@ test('statistics shows the youtwitch panels with all media, source filters and k
     )
     .toEqual([]);
   await expect(
-    page.getByRole('heading', { name: '01 / DAILY ACTIVITY' }),
+    page.getByRole('heading', { name: 'DAILY ACTIVITY' }),
   ).toBeVisible();
   expect(
     await page.evaluate(
@@ -329,15 +334,15 @@ test('administrators can aggregate or select a user without stale responses repl
   await expect.poll(() => Boolean(held)).toBe(true);
   await platforms.getByRole('button', { name: 'Music', exact: true }).click();
   await expect(
-    page.getByRole('heading', { name: '05 / MUSIC LIBRARY' }),
+    page.getByRole('heading', { name: 'MUSIC LIBRARY' }),
   ).toBeVisible();
   await held!.fulfill({ json: overview('movies') });
   await expect(
-    page.getByRole('heading', { name: '05 / MUSIC LIBRARY' }),
+    page.getByRole('heading', { name: 'MUSIC LIBRARY' }),
   ).toBeVisible();
-  await expect(
-    page.getByRole('heading', { name: '05 / FILM LIBRARY' }),
-  ).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'FILM LIBRARY' })).toHaveCount(
+    0,
+  );
   await scope.selectOption('mine');
   await expect
     .poll(() => state.queries.at(-1)?.pathname)
@@ -384,7 +389,7 @@ test('history ignores stale responses when the administrator scope changes', asy
   ).toBeVisible();
 });
 
-test('statistics failures can be retried and older time attribution is explained', async ({
+test('statistics failures can be retried without showing older time attribution', async ({
   page,
 }) => {
   const state = await fixture(page);
@@ -403,8 +408,8 @@ test('statistics failures can be retried and older time attribution is explained
   );
   await page.getByRole('button', { name: 'Retry', exact: true }).click();
   await expect(
-    page.getByText('2m from earlier sessions is included.', { exact: false }),
-  ).toBeVisible();
+    page.getByText('from earlier sessions', { exact: false }),
+  ).toHaveCount(0);
   await expect(page.getByRole('alert')).toHaveCount(0);
   state.setOverride((route) => route.fulfill({ json: overview('all', 0) }));
   await page.getByRole('button', { name: 'Refresh statistics' }).click();

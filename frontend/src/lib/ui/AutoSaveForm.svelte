@@ -52,13 +52,9 @@
   <fieldset disabled={disabled || busy} class={['min-w-0', className]}>
     {@render children(submit)}
   </fieldset>
-  <p class="mt-2 text-xs text-muted" role="status">
-    {busy
-      ? 'Saving…'
-      : saved
-        ? 'Saved'
-        : 'Changes save automatically. Text fields save when you leave them.'}
-  </p>
+  {#if busy || saved}<p class="mt-2 text-xs text-muted" role="status">
+      {busy ? 'Saving…' : 'Saved'}
+    </p>{/if}
   {#if error}
     <div class={errorClass} role="alert">
       <p>Your changes could not be saved: {error}</p>

@@ -105,10 +105,7 @@ export function chartTooltipPosition(
   return { left, top: above >= 10 ? above : clientY + 16 };
 }
 
-export function statisticsPlatformMetrics(
-  overview: StatisticsOverview | null,
-  selected: StatisticsPlatform,
-) {
+export function statisticsPlatformMetrics(overview: StatisticsOverview | null) {
   const metrics: Record<StatisticsSource, { seconds: number; share: number }> =
     {
       youtube: { seconds: 0, share: 0 },
@@ -125,25 +122,9 @@ export function statisticsPlatformMetrics(
     metrics[platform].share =
       overview && overview.totalActiveSeconds > 0
         ? (metrics[platform].seconds / overview.totalActiveSeconds) * 100
-        : selected === platform
-          ? 100
-          : 0;
+        : 0;
   }
   return metrics;
-}
-
-export function statisticsDonut(
-  metrics: ReturnType<typeof statisticsPlatformMetrics>,
-) {
-  let previous = 0;
-  const stops = sources.map((source) => {
-    const start = previous;
-    previous += metrics[source.value].share;
-    return `${source.color} ${start}% ${previous}%`;
-  });
-  return previous > 0
-    ? `conic-gradient(${stops.join(',')})`
-    : 'var(--surface-soft)';
 }
 
 export function completionDetails(

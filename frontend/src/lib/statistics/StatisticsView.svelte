@@ -1,19 +1,17 @@
 <script lang="ts">
   import { eyebrowTextClass } from '../ui/styles';
-  import { sources, completionDetails, statisticsDonut } from './helpers';
+  import { sources, completionDetails } from './helpers';
   import { statisticsPlatformMetrics } from './helpers';
   import { LatestRequest } from '../providers/latest-request';
   import { onMount, untrack } from 'svelte';
   import { SvelteURLSearchParams } from 'svelte/reactivity';
   import {
     CalendarDays,
-    CircleHelp,
     Clock3,
     Eye,
     LoaderCircle,
     RefreshCw,
     Timer,
-    X,
   } from '@lucide/svelte';
   import { api, type User } from '../api';
   import { formatWatchDuration, watchedCompletionPercent } from './helpers';
@@ -52,22 +50,15 @@
   let error = $state<string | null>(null);
   let loading = $state(true);
   let refreshing = $state(false);
-  let measureDialog = $state<HTMLDialogElement | null>(null);
   const requests = new LatestRequest();
   const channelListKey = $derived(`${range}:${platform}:${scope}:${user.id}`);
 
-  const platformMetrics = $derived(
-    statisticsPlatformMetrics(overview, platform),
-  );
-  const dominantPlatform = $derived(
-    sources
-      .map((source) => ({
-        name: source.label,
-        seconds: platformMetrics[source.value].seconds,
-      }))
-      .reduce((largest, item) =>
-        item.seconds > largest.seconds ? item : largest,
-      ).name,
+  const platformMetrics = $derived(statisticsPlatformMetrics(overview));
+  const platformGraphSources = $derived(
+    sources.filter(
+      (source) =>
+        platformMetrics[source.value].seconds > 0 || platform === source.value,
+    ),
   );
   const completion = $derived(completionDetails(overview, platform));
   const completionPercent = $derived(
@@ -159,7 +150,7 @@
   }
 
   function contentSummary() {
-    if (!overview) return { label: 'Content watched', value: '—', note: '' };
+    if (!overview) return { label: 'Media consumed', value: '—' };
     if (platform === 'twitch' || platform === 'kick') {
       return {
         label: 'Channels watched',
@@ -168,65 +159,43 @@
             ? overview.twitchChannelsWatched
             : overview.kickChannelsWatched,
         ),
-        note: 'With active playback in this period',
       };
     }
-    const streamNotes =
-      platform === 'all'
-        ? [
-            overview.twitchChannelsWatched > 0
-              ? `${overview.twitchChannelsWatched} Twitch channels`
-              : '',
-            overview.kickChannelsWatched > 0
-              ? `${overview.kickChannelsWatched} Kick channels`
-              : '',
-          ].filter(Boolean)
-        : [];
-    const streamNote =
-      streamNotes.length > 0 ? ` · ${streamNotes.join(' · ')}` : '';
     return {
       label:
-        platform === 'music'
-          ? 'Tracks completed'
-          : completion.label === 'items'
-            ? 'Content completed'
-            : `${completion.label[0].toUpperCase()}${completion.label.slice(1)} watched`,
-      value: String(completion.watched),
-      note:
-        completion.started > 0
-          ? `${completionPercent}% of ${completion.started} started${streamNote}`
-          : `No ${completion.label} started${streamNote}`,
+        platform === 'all'
+          ? 'Media consumed'
+          : platform === 'youtube'
+            ? 'Videos watched'
+            : platform === 'movies'
+              ? 'Films watched'
+              : platform === 'shows'
+                ? 'Episodes watched'
+                : 'Tracks completed',
+      value: String(
+        completion.watched +
+          (platform === 'all'
+            ? overview.twitchChannelsWatched + overview.kickChannelsWatched
+            : 0),
+      ),
     };
-  }
-
-  function trackingDate(value?: string | null) {
-    if (!value) return null;
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return null;
-    return new Intl.DateTimeFormat(undefined, {
-      dateStyle: 'medium',
-      timeZone: timezone,
-    }).format(date);
   }
 </script>
 
 <div class="statistics grid min-w-0 grid-cols-1 gap-3">
   {#if user.role === 'admin'}
-    <div
-      data-sidebar-resize="xy"
-      class="flex flex-wrap items-end justify-between gap-3"
-    >
-      <label class="m-0 min-w-52 max-w-full"
-        >Statistics for
-        <select bind:value={scope} aria-label="Statistics user">
-          <option value="mine">My statistics</option>
-          <option value="all">All users</option>
-          {#each people as person (person.id)}<option value={person.id}
-              >{person.username}</option
-            >{/each}
-        </select>
-      </label>
-      <span class="text-[0.62rem] text-muted">Times shown in {timezone}</span>
+    <div data-sidebar-resize="xy" class="flex flex-wrap items-end gap-3">
+      <select
+        bind:value={scope}
+        aria-label="Statistics user"
+        class="w-auto min-w-52 max-w-full"
+      >
+        <option value="mine">My statistics</option>
+        <option value="all">All users</option>
+        {#each people as person (person.id)}<option value={person.id}
+            >{person.username}</option
+          >{/each}
+      </select>
     </div>
   {/if}
   <div class="flex min-w-0 flex-wrap items-center gap-2">
@@ -238,14 +207,6 @@
         onChange={(nextRange) => (range = nextRange)}
       />
     </div>
-
-    <Button
-      data-sidebar-resize="xy"
-      size="sm"
-      variant="secondary"
-      onclick={() => measureDialog?.showModal()}
-      ><CircleHelp class="size-3.5" />How this is measured</Button
-    >
 
     <div data-sidebar-resize="xy" class="ml-auto max-w-full overflow-x-auto">
       <ExclusiveChoiceGroup
@@ -313,17 +274,6 @@
       </section>
     {/if}
 
-    {#if overview.estimatedActiveSeconds > 0}
-      <p
-        data-sidebar-resize="xy"
-        class="m-0 border border-line bg-surface-soft px-4 py-3 text-[0.66rem] text-muted"
-      >
-        {formatWatchDuration(overview.estimatedActiveSeconds)} from earlier sessions
-        is included. Its day and hour placement is approximate; new activity is recorded
-        by minute.
-      </p>
-    {/if}
-
     <section
       class="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4"
       aria-label="Statistics summary"
@@ -343,9 +293,6 @@
           class="mt-3 block text-2xl leading-none font-medium tracking-[-0.055em]"
           >{formatWatchDuration(overview.totalActiveSeconds)}</strong
         >
-        <span class="mt-2 block truncate text-[0.64rem] text-muted"
-          >Active playback across devices</span
-        >
       </article>
       <article
         data-sidebar-resize="xy"
@@ -364,11 +311,6 @@
             ? ` / ${overview.periodDays}`
             : ''}</strong
         >
-        <span class="mt-2 block truncate text-[0.64rem] text-muted"
-          >{trackingDate(overview.trackingStartedAt)
-            ? `Tracking since ${trackingDate(overview.trackingStartedAt)}`
-            : 'No tracked playback yet'}</span
-        >
       </article>
       <article
         data-sidebar-resize="xy"
@@ -384,9 +326,6 @@
         <strong
           class="mt-3 block text-2xl leading-none font-medium tracking-[-0.055em]"
           >{formatWatchDuration(overview.averageActiveSecondsPerDay)}</strong
-        >
-        <span class="mt-2 block truncate text-[0.64rem] text-muted"
-          >Across days with playback</span
         >
       </article>
       <article
@@ -404,9 +343,6 @@
           class="mt-3 block text-2xl leading-none font-medium tracking-[-0.055em]"
           >{content.value}</strong
         >
-        <span class="mt-2 block truncate text-[0.64rem] text-muted"
-          >{content.note}</span
-        >
       </article>
     </section>
 
@@ -421,67 +357,40 @@
     >
       <article data-sidebar-resize="xy" class={panelClass}>
         <header class="border-b border-line pb-3">
-          <h2 class={[eyebrowTextClass, 'm-0']}>02 / PLATFORM SPLIT</h2>
+          <h2 class={[eyebrowTextClass, 'm-0']}>PLATFORM SPLIT</h2>
         </header>
         <div
-          class="grid min-h-72 place-items-center gap-5 py-4 sm:grid-cols-[minmax(8rem,0.8fr)_minmax(9rem,1fr)] xl:grid-cols-1 2xl:grid-cols-[minmax(8rem,0.8fr)_minmax(9rem,1fr)]"
+          class="grid min-h-72 content-center gap-4 py-4"
+          role="img"
+          aria-label={`Platform split: ${platformGraphSources.length > 0 ? platformGraphSources.map((source) => `${source.label} ${formatWatchDuration(platformMetrics[source.value].seconds)}, ${Math.round(platformMetrics[source.value].share)} percent`).join(', ') : 'no tracked playback'}`}
         >
-          <div
-            class="relative aspect-square w-full max-w-40 rounded-full"
-            style:background={statisticsDonut(platformMetrics)}
-            role="img"
-            aria-label={sources
-              .map(
-                (source) =>
-                  `${Math.round(platformMetrics[source.value].share)} percent ${source.label}`,
-              )
-              .join(', ')}
-          >
-            <div
-              class="absolute inset-[22%] grid place-items-center rounded-full border border-line bg-surface-strong text-center"
-            >
-              <div>
-                <strong class="block text-lg font-semibold tracking-[-0.04em]"
-                  >{formatWatchDuration(overview.totalActiveSeconds)}</strong
-                ><span
-                  class="mt-0.5 block text-[0.52rem] tracking-[0.08em] text-muted uppercase"
-                  >Total</span
+          {#each platformGraphSources as source (source.value)}
+            <div>
+              <div
+                class="flex items-center justify-between gap-3 text-[0.66rem]"
+              >
+                <span class="flex min-w-0 items-center gap-2 text-muted"
+                  ><i class="size-2 shrink-0" style:background={source.color}
+                  ></i><span class="truncate">{source.label}</span></span
+                >
+                <strong class="shrink-0 font-semibold"
+                  >{formatWatchDuration(platformMetrics[source.value].seconds)} ·
+                  {Math.round(platformMetrics[source.value].share)}%</strong
                 >
               </div>
+              <div class="mt-1.5 h-2 bg-surface-soft">
+                <i
+                  class="block h-full"
+                  style:background={source.color}
+                  style:width={`${platformMetrics[source.value].share}%`}
+                ></i>
+              </div>
             </div>
-          </div>
-          <div class="grid w-full gap-4">
-            {#each sources as source, index (source.value)}
-              {#if index < 3 || platformMetrics[source.value].seconds > 0 || platform === source.value}
-                <div>
-                  <div
-                    class="flex items-center justify-between gap-3 text-[0.66rem]"
-                  >
-                    <span class="text-muted">{source.label}</span>
-                    <strong class="font-semibold"
-                      >{formatWatchDuration(
-                        platformMetrics[source.value].seconds,
-                      )}</strong
-                    >
-                  </div>
-                  <div class="mt-1.5 h-1 bg-surface-soft">
-                    <i
-                      class="block h-full"
-                      style:background={source.color}
-                      style:width={`${platformMetrics[source.value].share}%`}
-                    ></i>
-                  </div>
-                </div>
-              {/if}
-            {/each}
-            <p
-              class="border-l-2 border-accent bg-accent-soft p-2.5 text-[0.64rem] leading-5 text-muted"
-            >
-              {overview.totalActiveSeconds > 0
-                ? `${dominantPlatform} has the largest share of tracked playback in this period.`
-                : 'No tracked playback in this period.'}
+          {:else}
+            <p class="text-sm text-muted">
+              No tracked playback in this period.
             </p>
-          </div>
+          {/each}
         </div>
       </article>
 
@@ -492,17 +401,10 @@
       class="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.9fr)]"
     >
       <article data-sidebar-resize="xy" class={panelClass}>
-        <header
-          class="flex items-start justify-between gap-4 border-b border-line pb-3"
-        >
-          <div>
-            <h2 id="top-channels-title" class={[eyebrowTextClass, 'm-0']}>
-              04 / {topLabel}
-            </h2>
-          </div>
-          <span class="text-[0.58rem] tracking-[0.08em] text-muted uppercase"
-            >{platform === 'all' ? 'All platforms' : platform}</span
-          >
+        <header class="border-b border-line pb-3">
+          <h2 id="top-channels-title" class={[eyebrowTextClass, 'm-0']}>
+            {topLabel}
+          </h2>
         </header>
         {#if overview.topChannels.length > 0}
           {#key channelListKey}
@@ -566,7 +468,7 @@
       <article data-sidebar-resize="xy" class={panelClass}>
         <header class="border-b border-line pb-3">
           <h2 class={[eyebrowTextClass, 'm-0']}>
-            05 / {platform === 'twitch'
+            {platform === 'twitch'
               ? 'TWITCH HISTORY'
               : platform === 'kick'
                 ? 'KICK HISTORY'
@@ -661,82 +563,3 @@
   {/if}
   <History {user} {scope} {range} {platform} />
 </div>
-
-<dialog
-  bind:this={measureDialog}
-  class="panel m-auto max-h-[calc(100vh-3rem)] w-[min(48rem,calc(100vw-2rem))] overflow-y-auto border border-line-strong bg-surface-strong p-0 text-foreground shadow-[0_28px_100px_rgba(0,0,0,0.7)] backdrop:bg-black/65 backdrop:backdrop-blur-sm"
-  aria-labelledby="statistics-measure-title"
->
-  <header
-    class="sticky top-0 z-1 flex items-start justify-between gap-4 border-b border-line bg-surface-strong p-5"
-  >
-    <div>
-      <p class={[eyebrowTextClass, 'm-0']}>DATA / YOUR PLAYBACK</p>
-      <h2 id="statistics-measure-title" class="mt-1 text-lg tracking-[-0.03em]">
-        How statistics are measured
-      </h2>
-    </div>
-    <Button
-      size="icon"
-      variant="ghost"
-      aria-label="Close"
-      onclick={() => measureDialog?.close()}><X class="size-4" /></Button
-    >
-  </header>
-  <div class="grid gap-3 p-5 md:grid-cols-2">
-    <section class="panel border-t-2 border-success bg-surface p-4">
-      <p class={[eyebrowTextClass, 'm-0']}>ACTIVE TIME</p>
-      <h3 class="mt-1 text-sm font-semibold">The player clock</h3>
-      <p class="mt-3 text-[0.68rem] leading-5 text-muted">
-        Web, music and native players count active wall time. Pauses, buffering,
-        seeks and leaving the app open add nothing. Compatibility clients use
-        conservative estimates from their progress reports. Playback on multiple
-        devices is added together.
-      </p>
-    </section>
-    <section class="panel border-t-2 border-accent bg-surface p-4">
-      <p class={[eyebrowTextClass, 'm-0']}>SMALL ROLLUPS</p>
-      <h3 class="mt-1 text-sm font-semibold">One row per minute</h3>
-      <p class="mt-3 text-[0.68rem] leading-5 text-muted">
-        Time is added to minute buckets by platform and media item. This keeps
-        long-term charts small and lets local-time days and hours stay accurate.
-      </p>
-    </section>
-    <section class="panel border-t-2 border-[#ff747b] bg-surface p-4">
-      <p class={[eyebrowTextClass, 'm-0']}>YOUTUBE</p>
-      <h3 class="mt-1 text-sm font-semibold">Progress and completion</h3>
-      <p class="mt-3 text-[0.68rem] leading-5 text-muted">
-        Video, channel, duration, type, first-played, and completion data supply
-        library and channel statistics.
-      </p>
-    </section>
-    <section class="panel border-t-2 border-[#b9a4ff] bg-surface p-4">
-      <p class={[eyebrowTextClass, 'm-0']}>TWITCH</p>
-      <h3 class="mt-1 text-sm font-semibold">Channel snapshots</h3>
-      <p class="mt-3 text-[0.68rem] leading-5 text-muted">
-        New activity rows keep the channel name, stream title, and game that
-        were current while you watched.
-      </p>
-    </section>
-    <section class="panel border-t-2 border-[#53fc18] bg-surface p-4">
-      <p class={[eyebrowTextClass, 'm-0']}>KICK</p>
-      <h3 class="mt-1 text-sm font-semibold">Tracked channel totals</h3>
-      <p class="mt-3 text-[0.68rem] leading-5 text-muted">
-        New activity rows use the channel slug and keep the available stream
-        title and category. Disconnecting an account keeps its history; deleting
-        its data removes that user's statistics too.
-      </p>
-    </section>
-    <section class="panel border-t-2 border-[#65bfff] bg-surface p-4">
-      <p class={[eyebrowTextClass, 'm-0']}>FILMS / SHOWS / MUSIC</p>
-      <h3 class="mt-1 text-sm font-semibold">Your library history</h3>
-      <p class="mt-3 text-[0.68rem] leading-5 text-muted">
-        Films, episodes, shows, tracks, artists and albums are tracked per user.
-        YouTube completion follows videos first started in the selected period;
-        library totals cover items played in that period. Completion uses the
-        current watched flag. Times follow your display timezone ({timezone}).
-        Admins can inspect one user or aggregate everyone.
-      </p>
-    </section>
-  </div>
-</dialog>

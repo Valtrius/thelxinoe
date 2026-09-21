@@ -137,33 +137,76 @@
       onclick={() => void load()}>Refresh</Button
     >
   </div>
-  <p class="text-muted">Times shown in {user.timezone}.</p>
-  {#each result?.items ?? [] as row (`${row.kind ?? 'audit'}:${row.id}`)}<div
-      class={rowClass}
-    >
-      <div>
-        <strong>{audit ? row.action : row.title}</strong><small
-          >{date(audit ? row.created_at : row.started_at)}{audit
-            ? ` · ${row.actor ?? 'Deleted user'}`
-            : scope !== 'mine'
-              ? ` · ${row.username}`
-              : ''}</small
-        ><small
-          >{audit
-            ? row.target
-            : `${kind(row.kind)} · ${row.device} · ${row.edition || 'Original edition'}`}</small
+  {#if audit}<p class="text-muted">Times shown in {user.timezone}.</p>{/if}
+  {#if (result?.items.length ?? 0) > 0}
+    {#if audit}
+      {#each result?.items ?? [] as row (`audit:${row.id}`)}<div
+          class={rowClass}
         >
+          <div>
+            <strong>{row.action}</strong><small
+              >{date(row.created_at)} · {row.actor ?? 'Deleted user'}</small
+            ><small>{row.target}</small>
+          </div>
+        </div>{/each}
+    {:else}
+      <div class="min-w-0 overflow-x-auto">
+        <table class="w-full min-w-[56rem] border-collapse text-left text-xs">
+          <caption class="sr-only">Playback history</caption>
+          <thead
+            class="border-b border-line bg-surface-soft text-[0.62rem] text-muted"
+          >
+            <tr>
+              <th scope="col" class="px-3 py-2 font-medium">Title</th>
+              {#if scope !== 'mine'}
+                <th scope="col" class="px-3 py-2 font-medium">User</th>
+              {/if}
+              <th scope="col" class="px-3 py-2 font-medium">Started</th>
+              <th scope="col" class="px-3 py-2 font-medium">Type</th>
+              <th scope="col" class="px-3 py-2 font-medium">Device</th>
+              <th scope="col" class="px-3 py-2 font-medium">Edition</th>
+              <th scope="col" class="px-3 py-2 font-medium">Progress</th>
+              <th scope="col" class="px-3 py-2 font-medium">Played</th>
+              <th scope="col" class="px-3 py-2 font-medium">State</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each result?.items ?? [] as row (`${row.kind ?? 'media'}:${row.id}`)}
+              <tr class="border-b border-line last:border-b-0">
+                <td class="max-w-72 px-3 py-3 font-medium wrap-anywhere">
+                  {row.title}
+                </td>
+                {#if scope !== 'mine'}
+                  <td class="px-3 py-3 whitespace-nowrap">{row.username}</td>
+                {/if}
+                <td class="px-3 py-3 whitespace-nowrap">
+                  {date(row.started_at)}
+                </td>
+                <td class="px-3 py-3 whitespace-nowrap">{kind(row.kind)}</td>
+                <td class="px-3 py-3 whitespace-nowrap">{row.device}</td>
+                <td class="px-3 py-3 whitespace-nowrap">
+                  {row.edition || 'Original edition'}
+                </td>
+                <td class="px-3 py-3 whitespace-nowrap tabular-nums">
+                  {#if (row.duration ?? 0) > 0}
+                    {time(row.position ?? 0)} / {time(row.duration ?? 0)}
+                  {:else}
+                    {time(row.played_seconds ?? 0)}
+                  {/if}
+                </td>
+                <td class="px-3 py-3 whitespace-nowrap tabular-nums">
+                  {time(row.played_seconds ?? 0)}
+                </td>
+                <td class="px-3 py-3 whitespace-nowrap">{row.state}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
       </div>
-      {#if !audit}<span>
-          {#if (row.duration ?? 0) > 0}
-            {time(row.position ?? 0)} / {time(row.duration ?? 0)}
-          {:else}
-            {time(row.played_seconds ?? 0)}
-          {/if}
-        </span><small
-          >{time(row.played_seconds ?? 0)} played · {row.state}</small
-        >{/if}
-    </div>{:else}<p class="text-muted">No activity in this view yet.</p>{/each}
+    {/if}
+  {:else}
+    <p class="text-muted">No activity in this view yet.</p>
+  {/if}
   {#if result?.next_before}<Button
       variant="secondary"
       size="form"

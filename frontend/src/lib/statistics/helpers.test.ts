@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   selectedStatisticsSeconds,
   statisticsPlatformMetrics,
-  statisticsDonut,
   gridNavigationTarget,
   completionDetails,
 } from './helpers';
@@ -20,9 +19,8 @@ describe('statistics presentation', () => {
     expect(selectedStatisticsSeconds(sample, 'all')).toBe(210);
     expect(selectedStatisticsSeconds(sample, 'music')).toBe(60);
     expect(selectedStatisticsSeconds(sample, 'shows')).toBe(50);
-    const empty = statisticsPlatformMetrics(null, 'all');
-    expect(statisticsDonut(empty)).toBe('var(--surface-soft)');
-    expect(statisticsPlatformMetrics(null, 'movies').movies.share).toBe(100);
+    const empty = statisticsPlatformMetrics(null);
+    expect(empty.movies.share).toBe(0);
   });
   it('bounds arrow navigation and keeps Home and End in the same rhythm row', () => {
     expect(gridNavigationTarget(0, 'ArrowLeft', 7, 24)).toBe(0);

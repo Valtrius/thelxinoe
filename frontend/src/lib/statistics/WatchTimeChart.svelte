@@ -84,7 +84,7 @@
     class="flex min-w-0 items-start justify-between gap-4 border-b border-line pb-3"
   >
     <div class="min-w-0">
-      <h2 class={[eyebrowTextClass, 'm-0']}>01 / DAILY ACTIVITY</h2>
+      <h2 class={[eyebrowTextClass, 'm-0']}>DAILY ACTIVITY</h2>
     </div>
     <div class="flex flex-wrap justify-end gap-3 text-[0.6rem] text-muted">
       {#each visibleSources(platform) as source (source.value)}
@@ -179,10 +179,6 @@
       {/each}
     </tbody>
   </table>
-  <p class="mt-2 text-[0.62rem] text-muted">
-    Counts active playback across your devices. Pauses, buffering, seeking and
-    idle players do not add time.
-  </p>
 </section>
 
 {#if tooltip}
