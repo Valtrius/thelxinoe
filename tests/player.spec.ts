@@ -250,6 +250,9 @@ async function insidePlayer(page: Page) {
   for (const locator of [
     page.getByRole('heading', { name: title }),
     page.locator('.control-row'),
+    page.getByRole('combobox', { name: 'Quality', exact: true }),
+    page.getByRole('combobox', { name: 'Audio', exact: true }),
+    page.getByRole('combobox', { name: 'Subtitles', exact: true }),
     page.getByRole('button', { name: 'Close player' }),
   ]) {
     const box = (await locator.boundingBox())!;
@@ -335,9 +338,6 @@ test('controls hide, recover with keyboard, retain volume, seek, and stay inside
   await page.screenshot({ path: '.local/player-ui/fullscreen.png' });
   await page.getByRole('button', { name: 'Exit fullscreen' }).click();
   await page
-    .getByRole('button', { name: 'Playback settings', exact: true })
-    .click();
-  await page
     .getByRole('combobox', { name: 'Quality', exact: true })
     .selectOption('original');
   await expect.poll(() => state.starts.length).toBe(2);
@@ -346,10 +346,9 @@ test('controls hide, recover with keyboard, retain volume, seek, and stay inside
   await decoded(page);
   await expect(volume).toHaveValue('0.23');
   await page.screenshot({ path: '.local/player-ui/settings.png' });
-  await page.keyboard.press('Escape');
   await expect(
     page.getByRole('group', { name: 'Playback settings' }),
-  ).toHaveCount(0);
+  ).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
   await insidePlayer(page);
   await page.getByRole('button', { name: 'Pause', exact: true }).click();

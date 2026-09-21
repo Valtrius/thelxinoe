@@ -8,7 +8,6 @@
     Minimize,
     Pause,
     Play,
-    Settings2,
     Volume2,
     VolumeX,
     X,
@@ -44,20 +43,14 @@
     audio = $state<number | null>(null),
     subtitle = $state('off'),
     controlsVisible = $state(true),
-    settingsOpen = $state(false),
-    keyboardFocus = $state(false),
+    controlFocused = $state(false),
     fullscreen = $state(false),
     muted = $state(false);
   let hideTimer: ReturnType<typeof setTimeout> | undefined;
   let audibleVolume = 1;
   const loading = $derived(!error && (busy || buffering));
   const controlsShown = $derived(
-    controlsVisible ||
-      paused ||
-      loading ||
-      !!error ||
-      settingsOpen ||
-      keyboardFocus,
+    controlsVisible || paused || loading || !!error || controlFocused,
   );
   let hls: Hls | undefined,
     sequence = 0,
@@ -76,7 +69,7 @@
   });
   $effect(() => {
     // Restart the idle delay when playback resumes or a blocking overlay closes.
-    if (!paused && !loading && !settingsOpen && !keyboardFocus && !error)
+    if (!paused && !loading && !controlFocused && !error)
       untrack(revealControls);
   });
   function revealControls() {
@@ -125,7 +118,6 @@
     const revision = ++generation;
     busy = true;
     buffering = true;
-    settingsOpen = false;
     info = null;
     error = '';
     await stop();
@@ -385,7 +377,6 @@
   onkeydown={(event) => {
     if (!container?.contains(event.target as Node | null)) return;
     revealControls();
-    if (event.key === 'Escape') settingsOpen = false;
   }}
 />
 
@@ -396,23 +387,18 @@
   aria-label="Media player"
   onpointermove={revealControls}
   onpointerdown={(event) => {
-    keyboardFocus = false;
-    if (
-      event.target instanceof Element &&
-      !event.target.closest('.player-options, .settings-toggle')
-    )
-      settingsOpen = false;
+    controlFocused = event.target instanceof HTMLSelectElement;
     revealControls();
   }}
   onfocusin={(event) => {
-    keyboardFocus =
+    controlFocused =
       event.target instanceof HTMLElement &&
-      event.target.matches(':focus-visible');
+      event.target.matches(':focus-visible, select');
     revealControls();
   }}
   onfocusout={(event) => {
     if (!container.contains(event.relatedTarget as Node | null))
-      keyboardFocus = false;
+      controlFocused = false;
   }}
 >
   <video
@@ -499,66 +485,6 @@
     </div>
   {/if}
 
-  {#if settingsOpen}
-    <div class="player-options" role="group" aria-label="Playback settings">
-      <div class="options-heading">
-        <h3>Playback settings</h3>
-        <button
-          class="player-button"
-          aria-label="Close playback settings"
-          onclick={() => (settingsOpen = false)}><X size={16} /></button
-        >
-      </div>
-      <label
-        >Quality<select
-          bind:value={quality}
-          onchange={() => void changeOptions()}
-          disabled={busy || !active}
-        >
-          <option value="auto">Auto</option><option value="original"
-            >Original</option
-          >
-          {#each [2, 4, 8, 20] as rate (rate)}<option value={`${rate}mbps`}
-              >{rate} Mbps</option
-            >{/each}
-        </select></label
-      >
-      <label
-        >Audio<select
-          bind:value={audio}
-          onchange={() => void changeOptions()}
-          disabled={busy || !active}
-        >
-          <option value={null}>Default</option>
-          {#each active?.tracks.filter((t) => t.kind === 'audio') ?? [] as track (track.id)}
-            <option value={track.index}
-              >{track.language} {track.title} ({track.codec})</option
-            >
-          {/each}
-        </select></label
-      >
-      <label
-        >Subtitles<select
-          bind:value={subtitle}
-          onchange={selectSubtitle}
-          disabled={busy || !active}
-        >
-          <option value="off">Off</option>
-          {#each active?.subtitles ?? [] as track (track.id)}<option
-              value={track.id}>{track.language} {track.title}</option
-            >{/each}
-        </select></label
-      >
-      {#if active}<span class="playback-mode"
-          >{active.mode === 'direct'
-            ? 'Original file'
-            : active.mode === 'remux'
-              ? 'Original codecs'
-              : 'Converted'}{info?.watched ? ' · Watched' : ''}</span
-        >{/if}
-    </div>
-  {/if}
-
   <div class="player-controls">
     {#if !active?.live}
       <input
@@ -610,21 +536,63 @@
           oninput={(event) => changeVolume(Number(event.currentTarget.value))}
         />
       </div>
-      <span class="playback-time" aria-live="off">
-        {#if active?.live}<span class="live-dot"></span>Live{:else}{time(
-            position,
-          )} / {time(active?.duration ?? 0)}{/if}
-      </span>
+      <div class="playback-details">
+        <span class="playback-time" aria-live="off">
+          {#if active?.live}<span class="live-dot"></span>Live{:else}{time(
+              position,
+            )} / {time(active?.duration ?? 0)}{/if}
+        </span>
+        {#if active}<span class="playback-mode"
+            >{active.mode === 'direct'
+              ? 'Original file'
+              : active.mode === 'remux'
+                ? 'Original codecs'
+                : 'Converted'}{info?.watched ? ' · Watched' : ''}</span
+          >{/if}
+      </div>
       <div class="control-spacer"></div>
-      <button
-        class="player-button settings-toggle"
-        aria-label="Playback settings"
-        title="Playback settings"
-        aria-expanded={settingsOpen}
-        onclick={() => (settingsOpen = !settingsOpen)}
-      >
-        <Settings2 size={20} />
-      </button>
+      <div class="player-options" role="group" aria-label="Playback settings">
+        <label
+          >Quality<select
+            bind:value={quality}
+            onchange={() => void changeOptions()}
+            disabled={busy || !active}
+          >
+            <option value="auto">Auto</option><option value="original"
+              >Original</option
+            >
+            {#each [2, 4, 8, 20] as rate (rate)}<option value={`${rate}mbps`}
+                >{rate} Mbps</option
+              >{/each}
+          </select></label
+        >
+        <label
+          >Audio<select
+            bind:value={audio}
+            onchange={() => void changeOptions()}
+            disabled={busy || !active}
+          >
+            <option value={null}>Default</option>
+            {#each active?.tracks.filter((t) => t.kind === 'audio') ?? [] as track (track.id)}
+              <option value={track.index}
+                >{track.language} {track.title} ({track.codec})</option
+              >
+            {/each}
+          </select></label
+        >
+        <label
+          >Subtitles<select
+            bind:value={subtitle}
+            onchange={selectSubtitle}
+            disabled={busy || !active}
+          >
+            <option value="off">Off</option>
+            {#each active?.subtitles ?? [] as track (track.id)}<option
+                value={track.id}>{track.language} {track.title}</option
+              >{/each}
+          </select></label
+        >
+      </div>
       <button
         class="player-button"
         aria-label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
@@ -641,6 +609,7 @@
   .player {
     position: relative;
     isolation: isolate;
+    container-type: inline-size;
     width: 100%;
     aspect-ratio: 16 / 9;
     max-height: 60vh;
@@ -704,8 +673,7 @@
     background: transparent;
     transition: background 150ms;
   }
-  .player-button:hover,
-  .player-button[aria-expanded='true'] {
+  .player-button:hover {
     background: #ffffff24;
   }
   :is(button, input, select):focus-visible {
@@ -744,11 +712,16 @@
   .volume-controls input {
     width: 76px;
   }
+  .playback-details {
+    display: grid;
+    flex-shrink: 0;
+    gap: 2px;
+    margin-left: 8px;
+  }
   .playback-time {
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    margin-left: 8px;
     font-size: 12px;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
@@ -802,36 +775,28 @@
     bottom: 110px;
   }
   .player-options {
-    position: absolute;
-    right: 16px;
-    bottom: 96px;
-    z-index: 3;
-    width: 290px;
-    max-width: calc(100% - 32px);
-    max-height: calc(100% - 116px);
-    padding: 12px 16px 16px;
-    overflow: auto;
-    border: 1px solid #ffffff24;
-    background: #15191bf5;
-    box-shadow: 0 8px 28px #0005;
-  }
-  .options-heading {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 8px;
-  }
-  .options-heading h3 {
-    margin: 0;
-    font-size: 13px;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    flex: 0 1 380px;
+    min-width: 0;
+    gap: 10px;
   }
   .player-options label {
-    margin-bottom: 12px;
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+    margin: 0;
     color: #d5d9dc;
+    font-size: 10px;
   }
   .player-options select {
+    width: 100%;
+    min-width: 0;
+    height: 28px;
+    padding: 2px 6px;
     color: #f5f6f7;
-    background: #242a2e;
+    font-size: 12px;
+    background: #242a2eaa;
     border-color: #ffffff30;
   }
   .playback-mode {
@@ -844,6 +809,9 @@
     }
   }
   @media (max-width: 600px) {
+    .player {
+      min-height: 260px;
+    }
     .player-header {
       padding: 8px 8px 28px;
     }
@@ -860,12 +828,27 @@
     .volume-controls input {
       width: 50px;
     }
-    .playback-time {
+    .playback-details {
       margin-left: 4px;
+    }
+    .playback-time {
       font-size: 11px;
     }
+  }
+  @container (max-width: 700px) {
+    .control-row {
+      flex-wrap: wrap;
+      row-gap: 8px;
+    }
     .player-options {
-      right: 8px;
+      flex-basis: 100%;
+      order: 1;
+    }
+    .segment-prompt {
+      bottom: 160px;
+    }
+    .player-status {
+      inset: 52px 20px 140px;
     }
   }
   @media (prefers-reduced-motion: reduce) {
