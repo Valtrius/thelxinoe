@@ -5,6 +5,7 @@
   import { api } from './api';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
+  import AutoSaveForm from './ui/AutoSaveForm.svelte';
   let { admin = false } = $props<{ admin?: boolean }>();
   const kinds = ['Intro', 'Recap', 'Credits', 'Preview'];
   const choices = ['Ask', 'Auto', 'Ignore'].map((value) => ({
@@ -47,7 +48,7 @@
     }
   }
   onMount(() => {
-    void work(refresh);
+    void work(async () => {});
   });
 </script>
 
@@ -58,29 +59,32 @@
       Ask shows a skip button. Auto seeks past the segment while playing. Ignore
       leaves it untouched. Jellyfin clients use their own skip preferences.
     </p>
-    <div class="grid justify-items-start gap-4">
-      {#each kinds as kind (kind)}
-        <div
-          class="grid grid-cols-[4rem_max-content] items-center gap-2 text-[0.8rem]"
-        >
-          <span>{kind}</span>
-          <ExclusiveChoiceGroup
-            {choices}
-            value={preferences[kind]}
-            ariaLabel={`${kind} skipping`}
-            disabled={busy}
-            onChange={(value) => (preferences[kind] = value)}
-          />
-        </div>
-      {/each}
-    </div>
-    <Button
-      size="form"
-      class="justify-self-start"
-      disabled={busy}
-      onclick={() => work(() => api('/me/segments', 'PUT', preferences))}
-      >Save skip preferences</Button
+    <AutoSaveForm
+      label="Skipping preferences"
+      class="grid justify-items-start gap-4"
+      onsave={() => api('/me/segments', 'PUT', preferences)}
+      disabled={busy || Boolean(message)}
     >
+      {#snippet children(save)}
+        {#each kinds as kind (kind)}
+          <div
+            class="grid grid-cols-[4rem_max-content] items-center gap-2 text-[0.8rem]"
+          >
+            <span>{kind}</span>
+            <ExclusiveChoiceGroup
+              {choices}
+              value={preferences[kind]}
+              ariaLabel={`${kind} skipping`}
+              disabled={busy}
+              onChange={(value) => {
+                preferences[kind] = value;
+                void save();
+              }}
+            />
+          </div>
+        {/each}
+      {/snippet}
+    </AutoSaveForm>
   {:else}<h2>Episode analysis</h2>
     <Switch bind:checked={config.local} disabled={busy}
       >Detect recurring intro and credit audio locally</Switch

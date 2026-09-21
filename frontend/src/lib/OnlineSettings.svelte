@@ -6,6 +6,7 @@
   import KickSettings from './KickSettings.svelte';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
+  import AutoSaveForm from './ui/AutoSaveForm.svelte';
   import { inlineFormClass } from './ui/styles';
   type Configuration = {
     google_configured: boolean;
@@ -20,6 +21,7 @@
     downloads = $state(false),
     budget = $state(10000),
     busy = $state(false),
+    savingPreferences = $state(false),
     message = $state('');
   async function load() {
     config = await api<Configuration>('/admin/online');
@@ -90,6 +92,7 @@
     <label
       >Google client ID<input
         bind:value={clientId}
+        required
         autocomplete="off"
         placeholder={config?.google_configured
           ? 'Configured — enter credentials to replace it'
@@ -100,10 +103,29 @@
       >Google client secret<input
         type="password"
         bind:value={clientSecret}
+        required
         autocomplete="new-password"
         placeholder="Enter with the client ID"
       /></label
     >
+    <Button
+      type="submit"
+      size="form"
+      disabled={busy || savingPreferences || !config}
+      >Apply Google application</Button
+    >
+  </form>
+  <AutoSaveForm
+    label="YouTube preferences"
+    class={inlineFormClass}
+    bind:busy={savingPreferences}
+    disabled={busy || !config}
+    onsave={() =>
+      api('/admin/online', 'PUT', {
+        youtube_downloads: downloads,
+        youtube_daily_quota: budget,
+      })}
+  >
     <label
       >Daily API budget<input
         type="number"
@@ -114,10 +136,7 @@
       /></label
     >
     <Switch bind:checked={downloads}>Allow YouTube downloads</Switch>
-    <Button type="submit" size="form" disabled={busy || !config}
-      >Save YouTube settings</Button
-    >
-  </form>
+  </AutoSaveForm>
   {#if config}<p class="text-muted">
       {config.quota.used.toLocaleString()} API units used today. The shared budget
       resets at midnight Pacific time.{config.quota.blocked

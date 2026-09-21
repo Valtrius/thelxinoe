@@ -1,7 +1,8 @@
 <script lang="ts">
   import { api, type User } from './api';
   import TimezoneSelect from './TimezoneSelect.svelte';
-  import Button from './ui/Button.svelte';
+  import { onDestroy } from 'svelte';
+  import AutoSaveForm from './ui/AutoSaveForm.svelte';
   import Panel from './ui/Panel.svelte';
   import { errorClass, inlineFormClass } from './ui/styles';
   let {
@@ -22,8 +23,9 @@
   let timezone = $state(''),
     serverTimezone = $state('UTC'),
     busy = $state(true),
-    error = $state(''),
-    saved = $state(false);
+    error = $state('');
+  let active = true;
+  onDestroy(() => (active = false));
   $effect(() => {
     void userId;
     void revision;
@@ -48,33 +50,23 @@
     };
   });
   async function save() {
-    error = '';
-    saved = false;
-    busy = true;
-    try {
-      const value = await api<Preferences>('/me/preferences', 'PUT', {
-        timezone: timezone || null,
-      });
-      timezone = value.timezone_override ?? '';
-      serverTimezone = value.server_timezone;
-      changed(value.timezone);
-      saved = true;
-    } catch (e) {
-      error = String(e);
-    } finally {
-      busy = false;
-    }
+    const value = await api<Preferences>('/me/preferences', 'PUT', {
+      timezone: timezone || null,
+    });
+    if (!active) return;
+    timezone = value.timezone_override ?? '';
+    serverTimezone = value.server_timezone;
+    changed(value.timezone);
   }
 </script>
 
 <Panel>
   <h2>Your display preferences</h2>
-  <form
+  <AutoSaveForm
+    label="Display preferences"
     class={inlineFormClass}
-    onsubmit={(e) => {
-      e.preventDefault();
-      void save();
-    }}
+    onsave={save}
+    disabled={busy || Boolean(error)}
   >
     <TimezoneSelect
       label="Display timezone"
@@ -82,17 +74,10 @@
       defaultTimezone={serverTimezone}
       disabled={busy}
     />
-    <Button type="submit" size="form" disabled={busy}
-      >Save display preferences</Button
-    >
-  </form>
+  </AutoSaveForm>
   <p class="text-muted">
     Use the server default or choose your own timezone. Regional timezones
     adjust automatically for daylight saving time.
   </p>
-  {#if error}<p role="alert" class={errorClass}>{error}</p>{/if}{#if saved}<p
-      role="status"
-    >
-      Display preferences saved.
-    </p>{/if}
+  {#if error}<p role="alert" class={errorClass}>{error}</p>{/if}
 </Panel>

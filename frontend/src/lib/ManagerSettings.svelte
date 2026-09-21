@@ -4,6 +4,7 @@
   import { api } from './api';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
+  import AutoSaveForm from './ui/AutoSaveForm.svelte';
   import { inlineFormClass, panelClass } from './ui/styles';
   type Container = {
     id: string;
@@ -83,7 +84,7 @@
   async function edit(s: Service) {
     selected = s;
     options = await api<Options>(`/admin/managers/${s.id}/options`);
-    root = options.roots[0]?.path ?? '';
+    root = s.defaults.root_folder ?? options.roots[0]?.path ?? '';
     profile = s.defaults.quality_profile ?? options.profiles[0]?.id ?? 0;
     metadata =
       s.defaults.metadata_profile ?? options.metadata_profiles[0]?.id ?? null;
@@ -97,8 +98,12 @@
       metadata_profile: metadata,
       monitored,
     });
-    selected = null;
-    await load();
+    selected.defaults = {
+      root_folder: root,
+      quality_profile: profile,
+      metadata_profile: metadata,
+      monitored,
+    };
     message = 'Acquisition defaults saved.';
   }
   onMount(() => {
@@ -209,12 +214,12 @@
           })}>Test {service.name}</Button
       >
     </article>{/each}
-  {#if selected && options}<form
+  {#if selected && options}<AutoSaveForm
+      label="Acquisition defaults"
       class={panelClass}
-      onsubmit={(e) => {
-        e.preventDefault();
-        void act(save);
-      }}
+      onsave={save}
+      bind:busy
+      disabled={!root || !profile}
     >
       <h3>Defaults for {selected.name}</h3>
       {#if !options.roots.length}<p>
@@ -222,7 +227,7 @@
         </p>{/if}
       <label>Acquisition root folder<input value={root} readonly /></label>
       {#if options.roots[0]?.id === 0}<p>
-          This folder will be created when you save.
+          This folder will be created when you change the acquisition defaults.
         </p>{/if}
       <label
         >Acquisition quality profile<select bind:value={profile} required
@@ -240,8 +245,6 @@
         >{/if}
       <Switch bind:checked={monitored}
         >Monitor and search approved requests</Switch
-      ><Button type="submit" size="form" disabled={busy || !root || !profile}
-        >Save acquisition defaults</Button
       >
-    </form>{/if}
+    </AutoSaveForm>{/if}
 </Panel>

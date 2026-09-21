@@ -212,7 +212,7 @@ test('mobile settings use a horizontal menu at the existing breakpoint', async (
   expect(fixture.unexpected).toEqual([]);
 });
 
-test('shared controls preserve form submission, choices and switch behavior', async ({
+test('display, playback and skipping preferences save automatically', async ({
   page,
 }) => {
   const fixture = await installUiFixture(page);
@@ -220,10 +220,9 @@ test('shared controls preserve form submission, choices and switch behavior', as
   await page
     .getByRole('combobox', { name: 'Display timezone', exact: true })
     .selectOption('Europe/Paris');
-  await page.getByRole('button', { name: 'Save display preferences' }).click();
   await expect(
-    page.getByText('Display preferences saved.', { exact: true }),
-  ).toBeVisible();
+    page.getByRole('form', { name: 'Display preferences' }).getByRole('status'),
+  ).toHaveText('Saved');
   expect(fixture.writes).toContainEqual({
     path: '/me/preferences',
     method: 'PUT',
@@ -253,18 +252,68 @@ test('shared controls preserve form submission, choices and switch behavior', as
   await expect(
     choices.getByRole('button', { name: 'Ignore', exact: true }),
   ).toHaveAttribute('aria-pressed', 'true');
-  expect(
-    fixture.writes.filter((write) => write.path === '/me/segments'),
-  ).toHaveLength(0);
-  await page
-    .getByRole('button', { name: 'Save skip preferences', exact: true })
-    .click();
   await expect
     .poll(() => fixture.writes.filter((write) => write.path === '/me/segments'))
     .toHaveLength(1);
   expect(
     fixture.writes.find((write) => write.path === '/me/segments')?.body,
   ).toEqual({ Intro: 'Ignore', Recap: 'Ask', Credits: 'Ask', Preview: 'Ask' });
+  await page.getByLabel('Default quality').selectOption('original');
+  await expect(
+    page
+      .getByRole('form', { name: 'Playback preferences' })
+      .getByRole('status'),
+  ).toHaveText('Saved');
+  await page.getByLabel('Audio language').fill('fra');
+  await page.getByLabel('Audio language').press('Tab');
+  await expect
+    .poll(() =>
+      fixture.writes.filter((write) => write.path === '/playback/preferences'),
+    )
+    .toHaveLength(2);
+  expect(
+    fixture.writes
+      .filter((write) => write.path === '/playback/preferences')
+      .at(-1)?.body,
+  ).toMatchObject({ quality: 'original', audio_language: 'fra' });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('failed automatic saves retain edits and can be retried', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page);
+  let fail = true;
+  await page.route('**/api/v1/me/preferences', async (route) => {
+    if (route.request().method() !== 'PUT' || !fail) return route.fallback();
+    fail = false;
+    await route.fulfill({
+      status: 503,
+      json: {
+        error: { code: 'unavailable', message: 'Temporary connection failure' },
+      },
+    });
+  });
+  await page.goto('/');
+  await page
+    .getByRole('combobox', { name: 'Display timezone', exact: true })
+    .selectOption('Europe/Paris');
+  await expect(page.getByRole('alert')).toContainText(
+    'Temporary connection failure',
+  );
+  await expect(
+    page.getByRole('combobox', { name: 'Display timezone', exact: true }),
+  ).toHaveValue('Europe/Paris');
+  await page.getByRole('button', { name: 'Retry saving' }).click();
+  await expect(
+    page.getByRole('form', { name: 'Display preferences' }).getByRole('status'),
+  ).toHaveText('Saved');
+  expect(fixture.writes).toContainEqual({
+    path: '/me/preferences',
+    method: 'PUT',
+    body: { timezone: 'Europe/Paris' },
+  });
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });

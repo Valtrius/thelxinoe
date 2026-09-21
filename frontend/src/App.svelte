@@ -85,6 +85,7 @@
   import Playlists from './lib/Playlists.svelte';
   import History from './lib/History.svelte';
   import UserPreferences from './lib/UserPreferences.svelte';
+  import AutoSaveForm from './lib/ui/AutoSaveForm.svelte';
   import PasswordSettings from './lib/PasswordSettings.svelte';
   import ProfilePicture from './lib/ProfilePicture.svelte';
   import QuickConnect from './lib/QuickConnect.svelte';
@@ -825,27 +826,18 @@
                       ><small>Cache space available</small>
                     </div>
                   </div>
-                  <form
+                  <AutoSaveForm
+                    label="Server timezone"
                     class={inlineFormClass}
-                    onsubmit={(e) => {
-                      e.preventDefault();
-                      void act(async () => {
-                        await api('/admin/settings', 'PUT', { timezone });
-                      });
-                    }}
+                    disabled={busy}
+                    onsave={() => api('/admin/settings', 'PUT', { timezone })}
                   >
                     <TimezoneSelect
                       label="Server default timezone"
                       bind:value={timezone}
                       disabled={busy}
                     />
-                    <Button
-                      size="form"
-                      variant="secondary"
-                      type="submit"
-                      disabled={busy}>Save</Button
-                    >
-                  </form>
+                  </AutoSaveForm>
                   <p class="text-muted">
                     Controls server maintenance windows and server activity
                     times. Also used for display by everyone who has not chosen

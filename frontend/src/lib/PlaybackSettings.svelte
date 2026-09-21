@@ -2,36 +2,25 @@
   import { onMount } from 'svelte';
   import { api } from './api';
   import type { Preferences } from './playback';
-  import Button from './ui/Button.svelte';
+  import AutoSaveForm from './ui/AutoSaveForm.svelte';
   import Panel from './ui/Panel.svelte';
   import { errorClass, inlineFormClass } from './ui/styles';
   let value = $state<Preferences | null>(null),
-    error = $state(''),
-    saved = $state(false);
+    error = $state('');
   onMount(() => {
     api<Preferences>('/playback/preferences')
       .then((v) => (value = v))
       .catch((e) => (error = String(e)));
   });
-  async function save() {
-    try {
-      await api('/playback/preferences', 'PUT', value);
-      saved = true;
-    } catch (e) {
-      error = String(e);
-    }
-  }
 </script>
 
 <Panel>
   <h2>Playback</h2>
   {#if error}<p role="alert" class={errorClass}>{error}</p>{/if}
-  {#if value}<form
+  {#if value}<AutoSaveForm
+      label="Playback preferences"
       class={inlineFormClass}
-      onsubmit={(e) => {
-        e.preventDefault();
-        void save();
-      }}
+      onsave={() => api('/playback/preferences', 'PUT', value)}
     >
       <label
         >Default quality<select bind:value={value.quality}
@@ -70,8 +59,5 @@
           ><option value="off">Off</option></select
         ></label
       >
-      <Button type="submit" variant="secondary" size="form"
-        >Save playback preferences</Button
-      >{#if saved}<span role="status">Saved</span>{/if}
-    </form>{/if}
+    </AutoSaveForm>{/if}
 </Panel>
