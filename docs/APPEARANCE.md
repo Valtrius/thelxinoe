@@ -8,6 +8,8 @@ Media grids use 320-pixel logical cards, 12-pixel gaps, Ctrl+wheel density contr
 
 Movies and shows use posters, music uses square artwork, and online streams use landscape previews. Home and child items inherit cached artwork from their show or album when they have none of their own. Artwork remains protected by session-bound grants. Live previews use public image addresses returned by the providers; provider credentials stay on the server.
 
+The web video player appears immediately with its title and a loading indicator while the server prepares the stream. The title and playback controls overlay the video and fade after inactivity; moving the pointer or focusing a control reveals them. Pausing, loading and errors keep them visible. Quality, audio and subtitle choices open inside the player. Fullscreen includes the entire player, so its controls, settings and segment prompts remain available. Buffering feedback follows media readiness, including after a seek, and reduced-motion preferences disable the spinner animation and overlay transitions.
+
 Settings has a separate navigation column. MPV and server connection settings appear only on Windows. Playback tools are server dependencies and have no web or desktop tool menu; the server queues verified installation when YouTube playback first needs them. Administrative settings appear only for administrators. Statistics uses actual playback history, including daily watch time and most-watched titles, with the same user/date scope as history.
 
 The desktop updater has an empty bootstrap configuration so ordinary builds start without a release channel. Download endpoints and artifact keys are supplied only after verification of the signed product release manifest.

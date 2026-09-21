@@ -249,3 +249,7 @@ npx playwright test --workers=1
 These tests create a synthetic administrator and watchlist. They use real sessions, preferences, watchlist writes and WebSocket delivery, with fixture provider metadata/playback. They check two-client filter/order synchronization, immediate drag ordering during delayed saves, rollback/error display, card clicks, volume persistence, navigation and shared switches. Never point them at a personal instance.
 
 The Windows MPV manager has version, archive, update, configuration and plugin tests. To qualify real upstream MPV/uosc/thumbfast/sub-select packages in a temporary directory, run `cargo test -p thelxinoe-desktop qualify_upstream_packages -- --ignored --nocapture`. This downloads and starts MPV, checks its option schema and validates both managed and clean configurations. It does not alter the user's tool profile.
+
+## Web player controls and loading
+
+Run `npm run test:player` with FFmpeg and Playwright Chromium installed. This starts an isolated Vite server on port 18487 and uses generated video plus controlled API responses; it needs no running backend or account credentials. It checks immediate rendering during delayed metadata and stream preparation, buffering until frames decode, controls that hide and remain keyboard accessible, volume persistence, direct and HLS seeking, live pause/resume, fullscreen, mobile layout, quality changes, retry and closing during preparation. Screenshots are saved under `.local/player-ui`.
