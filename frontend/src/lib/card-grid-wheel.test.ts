@@ -13,7 +13,12 @@ describe('shared card wheel transaction', () => {
   beforeEach(() => vi.clearAllMocks());
 
   function fixture(columns = 6) {
-    const root = { querySelector: () => ({}), isConnected: true };
+    const viewport = {};
+    const root = {
+      querySelector: () => ({}),
+      closest: () => viewport,
+      isConnected: true,
+    };
     const motion = { capture: vi.fn(() => null), play: vi.fn() };
     const setColumns = vi.fn((next: number) => {
       columns = next;
@@ -32,6 +37,7 @@ describe('shared card wheel transaction', () => {
     };
     return {
       root,
+      viewport,
       motion,
       setColumns,
       event,
@@ -46,18 +52,22 @@ describe('shared card wheel transaction', () => {
         finishTick = resolve;
       }),
     );
-    const { root, motion, setColumns, handle } = fixture();
+    const { viewport, motion, setColumns, handle } = fixture();
     const pending = handle();
     expect(setColumns).toHaveBeenCalledWith(7);
-    expect(captureScrollAnchor).toHaveBeenCalledWith(root, 'data-video-id');
+    expect(captureScrollAnchor).toHaveBeenCalledWith(viewport, 'data-video-id');
     expect(restoreScrollAnchor).not.toHaveBeenCalled();
     expect(motion.play).not.toHaveBeenCalled();
     finishTick();
     await pending;
-    expect(restoreScrollAnchor).toHaveBeenCalledWith(root, 'data-video-id', {
-      id: 'visible-video',
-      offset: -12,
-    });
+    expect(restoreScrollAnchor).toHaveBeenCalledWith(
+      viewport,
+      'data-video-id',
+      {
+        id: 'visible-video',
+        offset: -12,
+      },
+    );
     expect(motion.play).toHaveBeenCalledOnce();
   });
 

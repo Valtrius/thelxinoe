@@ -66,7 +66,10 @@
   let observedDataRevision = $state<number | null>(null);
   let feedScroll = $state<HTMLElement | null>(null);
   const layoutMotion = createLayoutMotion();
-  const connectLayoutMotion = layoutMotion.connect;
+  function connectLayoutMotion(node: HTMLElement) {
+    feedScroll = node.closest<HTMLElement>('[data-feed-scroll]');
+    return layoutMotion.connect(node);
+  }
   const pendingChannelLogins = new SvelteSet<string>();
   const requests = new LatestRequest();
   const playbackReady = $derived(
@@ -274,7 +277,7 @@
   });
 </script>
 
-<div class="flex h-full min-h-0 flex-col">
+<div class="flex flex-col">
   {#if account}
     <div
       class="mr-3 flex shrink-0 flex-wrap items-center gap-2 border-b border-(--line) pb-2"
@@ -297,13 +300,12 @@
   {/if}
 
   <div
-    bind:this={feedScroll}
     use:connectLayoutMotion
     use:scaleCardScope={cardColumns}
     onwheel={handleCardGridWheel}
     data-sidebar-resize="x"
-    class={`relative min-h-0 flex-1 [scrollbar-color:var(--line-strong)_transparent] scrollbar-gutter-stable overflow-x-hidden overflow-y-auto ${account ? 'pt-3 pr-1' : 'pr-3'}`}
-    data-feed-scroll
+    class={`relative ${account ? 'pt-3 pr-1' : 'pr-3'}`}
+    data-feed-content
   >
     {#if !account}
       {#if authState.status === 'pending'}

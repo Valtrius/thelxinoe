@@ -83,7 +83,9 @@
 
     function update() {
       frame = null;
-      const rootTop = scrollRoot.getBoundingClientRect().top;
+      const rootTop =
+        scrollRoot.getBoundingClientRect().top +
+        (Number.parseFloat(getComputedStyle(scrollRoot).paddingTop) || 0);
       const headerTop = node.getBoundingClientRect().top;
       const sectionTop = groupSection.getBoundingClientRect().top;
       node.toggleAttribute(

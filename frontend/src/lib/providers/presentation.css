@@ -6,11 +6,6 @@
   }
   .workspace-scroll.provider-workspace {
     padding: 12px 0 0 12px;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-  }
-  .provider-workspace > .provider-surface {
-    flex: 1;
+    scrollbar-gutter: stable;
   }
 }

@@ -612,6 +612,7 @@
       overflow-x: hidden;
       padding: 24px;
       position: relative;
+      overflow-anchor: none;
     }
     .connection {
       display: inline-flex;
@@ -823,16 +824,16 @@
     }
     .settings-workspace {
       padding: 0;
-      overflow: hidden;
-      display: flex;
-      flex-direction: column;
     }
     .settings-layout {
       display: flex;
-      flex: 1;
-      min-height: 0;
+      align-items: flex-start;
     }
     .settings-navigation {
+      position: sticky;
+      top: 0;
+      max-height: var(--workspace-height);
+      z-index: 1;
       width: 190px;
       flex-shrink: 0;
       display: flex;
@@ -877,7 +878,6 @@
     .settings-content {
       flex: 1;
       min-width: 0;
-      overflow: auto;
       padding: 24px;
     }
     .settings-panels {
@@ -1214,6 +1214,7 @@
     }
     .settings-content {
       min-height: 0;
+      width: 100%;
     }
     .panel {
       padding: 16px;

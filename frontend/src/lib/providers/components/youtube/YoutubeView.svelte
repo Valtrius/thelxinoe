@@ -142,7 +142,10 @@
   let missingProgressFingerprint = $state<string | null>(null);
   let feedScroll = $state<HTMLElement | null>(null);
   const layoutMotion = createLayoutMotion();
-  const connectLayoutMotion = layoutMotion.connect;
+  function connectLayoutMotion(node: HTMLElement) {
+    feedScroll = node.closest<HTMLElement>('[data-feed-scroll]');
+    return layoutMotion.connect(node);
+  }
   const pendingVideoIds = new SvelteSet<string>();
 
   const downloadProgress = new SvelteMap<string, YoutubeDownloadEvent>();
@@ -855,7 +858,7 @@
   }
 </script>
 
-<div class="flex h-full min-h-0 flex-col">
+<div class="flex flex-col">
   {#if account}
     <YoutubeFeedToolbar
       bind:filters
@@ -886,13 +889,12 @@
     class="flex min-h-0 min-w-0 flex-1"
   >
     <div
-      bind:this={feedScroll}
       use:connectLayoutMotion
       onwheel={handleCardGridWheel}
       data-sidebar-resize="x"
-      class="relative min-h-0 min-w-0 flex-1 [scrollbar-color:var(--line-strong)_transparent] scrollbar-gutter-stable overflow-x-hidden overflow-y-auto"
+      class="relative min-w-0 flex-1"
       class:pr-3={!account}
-      data-feed-scroll
+      data-feed-content
     >
       {#if !account}
         {#if authState.status === 'pending'}
@@ -1045,7 +1047,7 @@
     {#if account}
       <div
         data-youtube-watchlist-frame
-        class={`relative z-20 min-h-0 shrink-0 overflow-visible ${watchlistSidebarOpen ? '' : 'pointer-events-none'}`}
+        class={`sticky top-0 z-20 shrink-0 self-start overflow-visible ${watchlistSidebarOpen ? '' : 'pointer-events-none'}`}
         aria-hidden={!watchlistSidebarOpen}
       >
         <div

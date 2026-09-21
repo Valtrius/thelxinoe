@@ -17,6 +17,7 @@
   import { syncMediaLayouts } from './lib/card-grid-zoom';
   import { createLayoutMotion, settleLayoutMotions } from './lib/layout-motion';
   import { createCardGridWheelHandler } from './lib/card-grid-wheel';
+  import { prefersReducedMotion } from './lib/layout-animation';
   import { get } from 'svelte/store';
   const mediaMotion = createLayoutMotion();
   function zoomWheel(node: HTMLElement) {
@@ -34,6 +35,8 @@
   }
   let shell = $state<HTMLDivElement | null>(null);
   let main = $state<HTMLElement | null>(null);
+  let workspace = $state<HTMLElement | null>(null);
+  let workspaceHeight = $state(0);
   let compact = $state(false),
     mobileNavOpen = $state(false);
   let settingsSection = $state('account');
@@ -417,6 +420,13 @@
   async function playMedia(choice: MediaChoice) {
     await act(async () => {
       playing = await persistQueue(choice);
+      if (!desktop) {
+        await tick();
+        workspace?.scrollTo({
+          top: 0,
+          behavior: prefersReducedMotion() ? 'instant' : 'smooth',
+        });
+      }
     });
   }
   async function createUser() {
@@ -596,9 +606,12 @@
       </header>
       <div
         class="workspace-scroll"
+        bind:this={workspace}
+        bind:clientHeight={workspaceHeight}
+        style:--workspace-height={`${workspaceHeight}px`}
         class:provider-workspace={providerPage}
         class:settings-workspace={section === 'Settings'}
-        data-feed-scroll={providerPage ? undefined : true}
+        data-feed-scroll
         data-sidebar-resize={providerPage ? undefined : 'xy'}
         data-sidebar-resize-origin={providerPage ? undefined : true}
         use:mediaMotion.connect

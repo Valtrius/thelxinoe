@@ -271,7 +271,7 @@
   }
 </script>
 
-<div class="flex h-full min-h-0 flex-col">
+<div class="flex flex-col">
   <div
     class="relative mr-3 flex shrink-0 flex-wrap items-center gap-2 border-b border-transparent pb-2"
   >
@@ -410,7 +410,8 @@
     use:scaleCardScope={cardColumns}
     onwheel={handleCardGridWheel}
     data-sidebar-resize="x"
-    class="relative min-h-0 flex-1 [scrollbar-color:var(--line-strong)_transparent] scrollbar-gutter-stable overflow-x-hidden overflow-y-auto pt-3 pr-3"
+    class="relative pt-3 pr-3"
+    data-feed-content
   >
     {#if loading}
       <EmptyState

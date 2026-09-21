@@ -324,7 +324,7 @@ export function scaleYoutubeMediaScope(
     headers = [
       ...node.querySelectorAll<HTMLElement>('[data-card-group-header]'),
     ];
-    feed = node.querySelector<HTMLElement>('[data-feed-scroll]');
+    feed = node.querySelector<HTMLElement>('[data-feed-content]');
     sidebarFrame = node.querySelector<HTMLElement>(
       '[data-youtube-watchlist-frame]',
     );
@@ -383,6 +383,7 @@ export function scaleYoutubeMediaScope(
 
     if (sidebarFrame) {
       sidebarFrame.style.width = `${metrics.sidebarWidth}px`;
+      sidebarFrame.style.height = `max(0px, calc(var(--workspace-height, ${height}px) - 12px))`;
     }
     if (sidebarScale) {
       sidebarScale.style.visibility =
@@ -390,7 +391,7 @@ export function scaleYoutubeMediaScope(
           ? 'visible'
           : 'hidden';
       sidebarScale.style.width = `${YOUTUBE_SIDEBAR_LOGICAL_WIDTH_PX}px`;
-      sidebarScale.style.height = `${height / metrics.scale}px`;
+      sidebarScale.style.height = `max(0px, calc((var(--workspace-height, ${height}px) - 12px) / ${metrics.scale}))`;
       sidebarScale.style.zoom = String(metrics.scale);
       sidebarScale.style.transform = 'none';
       sidebarScale.style.transformOrigin = 'top left';
@@ -475,10 +476,10 @@ export function scaleYoutubeMediaScope(
       target instanceof HTMLElement &&
       (target.hasAttribute('data-card-grid') ||
         target.hasAttribute('data-card-group-header') ||
-        target.hasAttribute('data-feed-scroll') ||
+        target.hasAttribute('data-feed-content') ||
         target.hasAttribute('data-youtube-watchlist-frame') ||
         target.querySelector(
-          '[data-card-grid], [data-card-group-header], [data-feed-scroll], [data-youtube-watchlist-frame]',
+          '[data-card-grid], [data-card-group-header], [data-feed-content], [data-youtube-watchlist-frame]',
         ) !== null)
     );
   }
@@ -547,6 +548,7 @@ export function scaleYoutubeMediaScope(
         grid.style.removeProperty('--media-card-inverse-scale');
       }
       sidebarFrame?.style.removeProperty('width');
+      sidebarFrame?.style.removeProperty('height');
       if (sidebarScale) {
         sidebarScale.style.removeProperty('width');
         sidebarScale.style.removeProperty('height');

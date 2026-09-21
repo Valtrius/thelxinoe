@@ -23,11 +23,12 @@ export function createCardGridWheelHandler({
     const next = nextCardColumns(columns, event.deltaY);
     if (next === columns) return;
     const snapshot = motion.capture();
-    const anchor = captureScrollAnchor(root, anchorAttribute);
+    const viewport = root.closest<HTMLElement>('[data-feed-scroll]') ?? root;
+    const anchor = captureScrollAnchor(viewport, anchorAttribute);
     setColumns(next);
     await tick();
     if (!root.isConnected) return;
-    restoreScrollAnchor(root, anchorAttribute, anchor);
+    restoreScrollAnchor(viewport, anchorAttribute, anchor);
     motion.play(snapshot);
   };
 }

@@ -92,6 +92,7 @@ async function fixture(
     mode?: string;
     live?: boolean;
     fail?: boolean;
+    app?: boolean;
   } = {},
 ) {
   const metadata = gate(!!options.hold),
@@ -109,16 +110,140 @@ async function fixture(
     fail: options.fail ?? false,
   };
   page.on('pageerror', (error) => state.errors.push(error.message));
+  const videos = Array.from({ length: 80 }, (_, i) => ({
+    videoId: `video${i}`,
+    channelId: 'channel',
+    channelName: 'Fixture channel',
+    title: `Video ${i}`,
+    thumbnailUrl:
+      'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg"/%3E',
+    publishedAt: '2026-09-21T00:00:00Z',
+    durationSeconds: 60,
+    isLive: false,
+    isUpcoming: false,
+    isLiveReplay: false,
+    broadcastState: 'none',
+    positionSeconds: 0,
+    watchedPercentage: 0,
+    isWatched: false,
+  }));
   await page.route('**/api/v1/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
+    if (options.app) {
+      if (path === '/api/v1/health')
+        return route.fulfill({ json: { api_version: 1 } });
+      if (path === '/api/v1/setup')
+        return route.fulfill({ json: { setup_required: false } });
+      if (path === '/api/v1/me/notifications')
+        return route.fulfill({ json: { items: [] } });
+      if (path === '/api/v1/auth/me')
+        return route.fulfill({
+          json: {
+            user: {
+              id: 'fixture',
+              username: 'Viewer',
+              role: 'user',
+              timezone: 'UTC',
+            },
+          },
+        });
+      if (path === '/api/v1/auth/event-ticket')
+        return route.fulfill({
+          status: 503,
+          json: { error: { message: 'Events disabled in fixture' } },
+        });
+      if (path === '/api/v1/online/twitch' || path === '/api/v1/online/youtube')
+        return route.fulfill({
+          json: {
+            configured: true,
+            account: {
+              status: 'connected',
+              updated_at: 0,
+            },
+            sync: {},
+          },
+        });
+      if (path === '/api/v1/online/kick')
+        return route.fulfill({
+          json: {
+            configured: true,
+            items: videos.map((_, i) => ({
+              slug: `channel${i}`,
+              title,
+              category: 'Travel',
+              live: true,
+              viewers: 80 - i,
+              updated_at: 0,
+              error: null,
+            })),
+          },
+        });
+      if (path === '/api/v1/online/youtube/watchlists')
+        return route.fulfill({
+          json: [
+            {
+              id: 1,
+              name: 'Watch Later',
+              isDefault: true,
+              autoDownload: false,
+              autoRemoveWatched: false,
+              sortMode: 'manual',
+              sortDirection: 'desc',
+              createdAt: '',
+              updatedAt: '',
+              items: videos.map((video, manualPosition) => ({
+                video,
+                manualPosition,
+                addedAt: '',
+              })),
+            },
+          ],
+        });
+      if (path === '/api/v1/online/youtube/browse')
+        return route.fulfill({
+          json: {
+            items: videos,
+            page: 0,
+            pageSize: 80,
+            hasMore: false,
+            channels: [],
+            counts: {
+              all: 80,
+              unwatched: 80,
+              inProgress: 0,
+              watched: 0,
+              shorts: 0,
+              live: 0,
+              liveReplays: 0,
+              upcoming: 0,
+              subscribedChannelCount: 1,
+            },
+          },
+        });
+      if (path === '/api/v1/online/twitch/feed')
+        return route.fulfill({
+          json: {
+            items: Array.from({ length: 30 }, (_, i) => ({
+              id: String(i),
+              login: `channel${i}`,
+              display_name: `Channel ${i}`,
+              title,
+              category: 'Travel',
+              viewers: 30 - i,
+              started_at: '2026-09-21T00:00:00Z',
+            })),
+          },
+        });
+    }
     if (path.endsWith('/me/appearance')) {
       if (route.request().method() === 'PATCH')
-        state.savedVolume = route.request().postDataJSON().audio_volume;
+        state.savedVolume =
+          route.request().postDataJSON().audio_volume ?? state.savedVolume;
       return route.fulfill({
         json: { theme: 'dark', audio_volume: state.savedVolume },
       });
     }
-    if (path === '/api/v1/catalog/fixture/playback') {
+    if (path.startsWith('/api/v1/catalog/') && path.endsWith('/playback')) {
       await metadata.promise;
       return route.fulfill({
         json: {
@@ -211,23 +336,28 @@ async function fixture(
       });
     },
   );
-  await page.route('**/player-test', (route) =>
+  await page.route('**/player-test*', (route) =>
     route.fulfill({
       contentType: 'text/html',
-      body: `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body style="margin:0;padding:16px"><main></main>
+      body: `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body style="margin:0;padding:${options.app ? 0 : 16}px"><main id="fixture-root"></main>
       <script type="module">
         import { mount, unmount } from '/node_modules/.vite/deps/svelte.js';
         import Player from '/src/lib/Player.svelte';
+        import App from '/src/App.svelte';
         import { loadAppearance } from '/src/lib/appearance.ts';
         import '/src/app.css';
         await loadAppearance('fixture');
-        const app = mount(Player, { target: document.querySelector('main'), props: {
-          choice: { id: 'fixture', title: ${JSON.stringify(title)} }, closed: () => unmount(app)
-        }});
+        const app = ${
+          options.app
+            ? "mount(App, { target: document.querySelector('#fixture-root') })"
+            : `mount(Player, { target: document.querySelector('#fixture-root'), props: {
+          choice: { id: 'fixture', title: ${JSON.stringify(title)} }, closed: () => unmount(app, { outro: true })
+        }})`
+        };
       </script></body></html>`,
     }),
   );
-  await page.goto('/player-test');
+  await page.goto(`/player-test${options.app ? '?section=Twitch' : ''}`);
   return state;
 }
 async function decoded(page: Page) {
@@ -244,18 +374,18 @@ async function decoded(page: Page) {
   await expect(page.getByRole('status')).toHaveCount(0);
 }
 async function insidePlayer(page: Page) {
-  const player = (await page
-    .getByRole('region', { name: 'Media player' })
-    .boundingBox())!;
   for (const locator of [
     page.getByRole('heading', { name: title }),
     page.locator('.control-row'),
-    page.getByRole('combobox', { name: 'Quality', exact: true }),
-    page.getByRole('combobox', { name: 'Audio', exact: true }),
-    page.getByRole('combobox', { name: 'Subtitles', exact: true }),
+    page.getByRole('button', { name: 'Quality', exact: true }),
+    page.getByRole('button', { name: 'Audio', exact: true }),
+    page.getByRole('button', { name: 'Subtitles', exact: true }),
     page.getByRole('button', { name: 'Close player' }),
   ]) {
-    const box = (await locator.boundingBox())!;
+    const { player, box } = await locator.evaluate((element) => ({
+      player: element.closest('.player')!.getBoundingClientRect().toJSON(),
+      box: element.getBoundingClientRect().toJSON(),
+    }));
     expect(box.x).toBeGreaterThanOrEqual(player.x);
     expect(box.y).toBeGreaterThanOrEqual(player.y);
     expect(box.x + box.width).toBeLessThanOrEqual(player.x + player.width + 1);
@@ -337,15 +467,34 @@ test('controls hide, recover with keyboard, retain volume, seek, and stay inside
   await insidePlayer(page);
   await page.screenshot({ path: '.local/player-ui/fullscreen.png' });
   await page.getByRole('button', { name: 'Exit fullscreen' }).click();
+  await page.getByRole('button', { name: 'Quality', exact: true }).click();
+  await expect(page.getByRole('menu', { name: 'Quality' })).toBeVisible();
   await page
-    .getByRole('combobox', { name: 'Quality', exact: true })
-    .selectOption('original');
+    .getByRole('menuitemradio', { name: 'Original', exact: true })
+    .click();
   await expect.poll(() => state.starts.length).toBe(2);
   expect(state.starts[1].options.quality).toBe('original');
   expect(state.starts[1].position).toBeGreaterThanOrEqual(8);
   await decoded(page);
   await expect(volume).toHaveValue('0.23');
+  await page.getByRole('button', { name: 'Quality', exact: true }).click();
+  await expect(
+    page.getByRole('menuitemradio', { name: 'Original', exact: true }),
+  ).toHaveAttribute('aria-checked', 'true');
   await page.screenshot({ path: '.local/player-ui/settings.png' });
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('menu')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Audio', exact: true }).click();
+  await expect(page.getByRole('menu', { name: 'Audio' })).toBeVisible();
+  await expect(
+    page.getByRole('menuitemradio', { name: 'Default', exact: true }),
+  ).toHaveAttribute('aria-checked', 'true');
+  await page.getByRole('button', { name: 'Subtitles', exact: true }).click();
+  await expect(page.getByRole('menu', { name: 'Audio' })).toHaveCount(0);
+  await expect(
+    page.getByRole('menuitemradio', { name: 'Off', exact: true }),
+  ).toHaveAttribute('aria-checked', 'true');
+  await page.keyboard.press('Escape');
   await expect(
     page.getByRole('group', { name: 'Playback settings' }),
   ).toBeVisible();
@@ -390,6 +539,148 @@ test('transcoded seeking uses the server timeline and live playback omits seekin
   expect(live.seeks).toEqual([]);
   expect(state.errors).toEqual([]);
   expect(live.errors).toEqual([]);
+});
+
+test('the online player shares the page scrollbar and closes by sliding the feed upward', async ({
+  page,
+}) => {
+  const state = await fixture(page, { app: true });
+  await page
+    .getByRole('button', { name: 'Watch Channel 0', exact: true })
+    .waitFor();
+  const feed = page.locator('.provider-surface');
+  const closedTop = (await feed.boundingBox())!.y;
+  // Pause the real Svelte animations at creation so intermediate geometry is
+  // deterministic, including on slower CI runners.
+  await page.evaluate(() => {
+    const animate = Element.prototype.animate;
+    Element.prototype.animate = function (keyframes, options) {
+      const animation = animate.call(this, keyframes, options);
+      if (
+        this.classList.contains('player') &&
+        Number(animation.effect?.getTiming().duration) > 0
+      )
+        animation.pause();
+      return animation;
+    };
+  });
+  await page
+    .getByRole('button', { name: 'Watch Channel 0', exact: true })
+    .click();
+  const player = page.getByRole('region', { name: 'Media player' });
+  async function halfReveal() {
+    await expect
+      .poll(() =>
+        player.evaluate((element) =>
+          element
+            .getAnimations()
+            .some(
+              (animation) => Number(animation.effect?.getTiming().duration) > 0,
+            ),
+        ),
+      )
+      .toBe(true);
+    await player.evaluate((element) => {
+      const animation = element.getAnimations()[0];
+      if (!animation) throw new Error('Missing player slide animation');
+      animation.currentTime =
+        Number(animation.effect!.getTiming().duration) / 2;
+    });
+    return (await feed.boundingBox())!.y;
+  }
+  const openingTop = await halfReveal();
+  expect(openingTop).toBeGreaterThan(closedTop);
+  await page.screenshot({ path: '.local/player-ui/opening.png' });
+  await player.evaluate((element) => element.getAnimations()[0].finish());
+  await decoded(page);
+  await expect(player).toHaveCSS('transform', 'none');
+  const openTop = (await feed.boundingBox())!.y;
+  expect(openingTop).toBeLessThan(openTop);
+  const workspace = page.locator('.workspace-scroll');
+  const initial = (await player.boundingBox())!;
+  await workspace.evaluate((element) => {
+    element.scrollTop = 300;
+  });
+  await expect
+    .poll(async () => (await player.boundingBox())!.y)
+    .toBeCloseTo(initial.y - 300, 0);
+  expect(
+    await page
+      .locator('[data-feed-content]')
+      .evaluate((element) => element.scrollTop),
+  ).toBe(0);
+  await workspace.evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  await page.getByRole('button', { name: 'Close player', exact: true }).click();
+  const closingTop = await halfReveal();
+  expect(closingTop).toBeGreaterThan(closedTop);
+  expect(closingTop).toBeLessThan(openTop);
+  await page.screenshot({ path: '.local/player-ui/closing.png' });
+  await player.evaluate((element) => element.getAnimations()[0].finish());
+  await expect(player).toHaveCount(0);
+  await expect
+    .poll(() => state.progress.some((event) => event.state === 'stopped'))
+    .toBe(true);
+  await expect(
+    page.getByRole('button', { name: 'Watch Channel 0', exact: true }),
+  ).toBeVisible();
+  await page.screenshot({ path: '.local/player-ui/feed.png' });
+  expect(state.errors).toEqual([]);
+});
+
+test('YouTube and Kick use page scrolling while the watchlist stays within the viewport', async ({
+  page,
+}) => {
+  const state = await fixture(page, { app: true });
+  await page.getByRole('button', { name: 'YouTube', exact: true }).click();
+  await expect(page.locator('[data-feed-content] [data-video-id]')).toHaveCount(
+    80,
+  );
+  await page
+    .getByRole('button', { name: 'Open watchlists', exact: true })
+    .click();
+  const workspace = page.locator('.workspace-scroll');
+  const sidebar = page.locator('[data-youtube-watchlist-frame]');
+  await expect(sidebar).toHaveAttribute('aria-hidden', 'false');
+  const viewport = (await workspace.boundingBox())!;
+  const inset = await workspace.evaluate((element) =>
+    Number.parseFloat(getComputedStyle(element).paddingTop),
+  );
+  expect((await sidebar.boundingBox())!.height).toBeLessThanOrEqual(
+    viewport.height,
+  );
+  const card = page.locator('[data-feed-content] [data-video-id]').first();
+  const before = (await card.boundingBox())!.y;
+  await workspace.evaluate((element) => {
+    element.scrollTop = 350;
+  });
+  await expect
+    .poll(async () => (await card.boundingBox())!.y)
+    .toBeCloseTo(before - 350, 0);
+  await expect
+    .poll(async () => (await sidebar.boundingBox())!.y)
+    .toBeCloseTo(viewport.y + inset, 0);
+  await expect(
+    page.locator('[data-card-group-header][data-stuck]'),
+  ).toHaveCount(1);
+  await page.screenshot({ path: '.local/player-ui/youtube-scroll.png' });
+  await page.getByRole('button', { name: 'Kick', exact: true }).click();
+  await expect(
+    page.locator('[data-feed-content] [data-card-grid] > *'),
+  ).toHaveCount(80);
+  await workspace.evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  const feed = page.locator('[data-feed-content]');
+  const initial = (await feed.boundingBox())!.y;
+  await workspace.evaluate((element) => {
+    element.scrollTop = 350;
+  });
+  await expect
+    .poll(async () => (await feed.boundingBox())!.y)
+    .toBeCloseTo(initial - 350, 0);
+  expect(state.errors).toEqual([]);
 });
 
 test('failed streams can retry and closing during preparation stops a late session', async ({

@@ -276,7 +276,7 @@
   }
 </script>
 
-<div class="provider-surface h-full min-h-0 min-w-0">
+<div class="provider-surface min-w-0">
   {#if platform === 'youtube'}
     <YoutubeView
       {account}

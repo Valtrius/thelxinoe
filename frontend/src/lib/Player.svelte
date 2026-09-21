@@ -3,6 +3,9 @@
   import Hls from 'hls.js';
   import {
     AlertCircle,
+    AudioLines,
+    Captions,
+    Settings2,
     LoaderCircle,
     Maximize,
     Minimize,
@@ -13,6 +16,8 @@
     X,
   } from '@lucide/svelte';
   import SegmentSkip from './SegmentSkip.svelte';
+  import PlayerOption from './PlayerOption.svelte';
+  import { playerReveal } from './player-reveal';
   import { api } from './api';
   import { appearance, updateAppearance } from './appearance';
   import {
@@ -44,13 +49,20 @@
     subtitle = $state('off'),
     controlsVisible = $state(true),
     controlFocused = $state(false),
+    optionMenu = $state<string | null>(null),
+    playerHeight = $state(0),
     fullscreen = $state(false),
     muted = $state(false);
   let hideTimer: ReturnType<typeof setTimeout> | undefined;
   let audibleVolume = 1;
   const loading = $derived(!error && (busy || buffering));
   const controlsShown = $derived(
-    controlsVisible || paused || loading || !!error || controlFocused,
+    controlsVisible ||
+      paused ||
+      loading ||
+      !!error ||
+      controlFocused ||
+      !!optionMenu,
   );
   let hls: Hls | undefined,
     sequence = 0,
@@ -69,7 +81,7 @@
   });
   $effect(() => {
     // Restart the idle delay when playback resumes or a blocking overlay closes.
-    if (!paused && !loading && !controlFocused && !error)
+    if (!paused && !loading && !controlFocused && !optionMenu && !error)
       untrack(revealControls);
   });
   function revealControls() {
@@ -118,6 +130,7 @@
     const revision = ++generation;
     busy = true;
     buffering = true;
+    optionMenu = null;
     info = null;
     error = '';
     await stop();
@@ -382,18 +395,25 @@
 
 <section
   bind:this={container}
+  bind:clientHeight={playerHeight}
+  style:--player-height={`${playerHeight}px`}
+  transition:playerReveal|global
+  onoutrostart={() => {
+    generation++;
+    player?.pause();
+  }}
   class="player"
   class:controls-hidden={!controlsShown}
   aria-label="Media player"
   onpointermove={revealControls}
-  onpointerdown={(event) => {
-    controlFocused = event.target instanceof HTMLSelectElement;
+  onpointerdown={() => {
+    controlFocused = false;
     revealControls();
   }}
   onfocusin={(event) => {
     controlFocused =
       event.target instanceof HTMLElement &&
-      event.target.matches(':focus-visible, select');
+      event.target.matches(':focus-visible');
     revealControls();
   }}
   onfocusout={(event) => {
@@ -552,46 +572,72 @@
       </div>
       <div class="control-spacer"></div>
       <div class="player-options" role="group" aria-label="Playback settings">
-        <label
-          >Quality<select
-            bind:value={quality}
-            onchange={() => void changeOptions()}
-            disabled={busy || !active}
-          >
-            <option value="auto">Auto</option><option value="original"
-              >Original</option
-            >
-            {#each [2, 4, 8, 20] as rate (rate)}<option value={`${rate}mbps`}
-                >{rate} Mbps</option
-              >{/each}
-          </select></label
+        <PlayerOption
+          label="Quality"
+          value={quality}
+          options={[
+            { value: 'auto', label: 'Auto' },
+            { value: 'original', label: 'Original' },
+            ...[2, 4, 8, 20].map((rate) => ({
+              value: `${rate}mbps`,
+              label: `${rate} Mbps`,
+            })),
+          ]}
+          disabled={busy || !active}
+          open={optionMenu === 'quality'}
+          setOpen={(open) => (optionMenu = open ? 'quality' : null)}
+          select={(value) => {
+            quality = value;
+            void changeOptions();
+          }}
         >
-        <label
-          >Audio<select
-            bind:value={audio}
-            onchange={() => void changeOptions()}
-            disabled={busy || !active}
-          >
-            <option value={null}>Default</option>
-            {#each active?.tracks.filter((t) => t.kind === 'audio') ?? [] as track (track.id)}
-              <option value={track.index}
-                >{track.language} {track.title} ({track.codec})</option
-              >
-            {/each}
-          </select></label
+          {#snippet icon()}<Settings2 size={20} />{/snippet}
+        </PlayerOption>
+        <PlayerOption
+          label="Audio"
+          value={audio === null ? 'default' : String(audio)}
+          options={[
+            { value: 'default', label: 'Default' },
+            ...(
+              active?.tracks.filter((track) => track.kind === 'audio') ?? []
+            ).map((track) => ({
+              value: String(track.index),
+              label:
+                `${track.language ?? ''} ${track.title ?? ''} (${track.codec})`.trim(),
+            })),
+          ]}
+          disabled={busy || !active}
+          open={optionMenu === 'audio'}
+          setOpen={(open) => (optionMenu = open ? 'audio' : null)}
+          select={(value) => {
+            audio = value === 'default' ? null : Number(value);
+            void changeOptions();
+          }}
         >
-        <label
-          >Subtitles<select
-            bind:value={subtitle}
-            onchange={selectSubtitle}
-            disabled={busy || !active}
-          >
-            <option value="off">Off</option>
-            {#each active?.subtitles ?? [] as track (track.id)}<option
-                value={track.id}>{track.language} {track.title}</option
-              >{/each}
-          </select></label
+          {#snippet icon()}<AudioLines size={20} />{/snippet}
+        </PlayerOption>
+        <PlayerOption
+          label="Subtitles"
+          value={subtitle}
+          options={[
+            { value: 'off', label: 'Off' },
+            ...(active?.subtitles ?? []).map((track) => ({
+              value: track.id,
+              label:
+                `${track.language ?? ''} ${track.title ?? ''}`.trim() ||
+                'Subtitles',
+            })),
+          ]}
+          disabled={busy || !active}
+          open={optionMenu === 'subtitles'}
+          setOpen={(open) => (optionMenu = open ? 'subtitles' : null)}
+          select={(value) => {
+            subtitle = value;
+            selectSubtitle();
+          }}
         >
+          {#snippet icon()}<Captions size={20} />{/snippet}
+        </PlayerOption>
       </div>
       <button
         class="player-button"
@@ -676,7 +722,7 @@
   .player-button:hover {
     background: #ffffff24;
   }
-  :is(button, input, select):focus-visible {
+  :is(button, input):focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
   }
@@ -775,29 +821,9 @@
     bottom: 110px;
   }
   .player-options {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    flex: 0 1 380px;
-    min-width: 0;
-    gap: 10px;
-  }
-  .player-options label {
-    display: grid;
-    min-width: 0;
-    gap: 3px;
-    margin: 0;
-    color: #d5d9dc;
-    font-size: 10px;
-  }
-  .player-options select {
-    width: 100%;
-    min-width: 0;
-    height: 28px;
-    padding: 2px 6px;
-    color: #f5f6f7;
-    font-size: 12px;
-    background: #242a2eaa;
-    border-color: #ffffff30;
+    display: flex;
+    flex-shrink: 0;
+    gap: 2px;
   }
   .playback-mode {
     color: #acb4ba;
@@ -809,9 +835,6 @@
     }
   }
   @media (max-width: 600px) {
-    .player {
-      min-height: 260px;
-    }
     .player-header {
       padding: 8px 8px 28px;
     }
@@ -826,7 +849,7 @@
       gap: 2px;
     }
     .volume-controls input {
-      width: 50px;
+      width: 40px;
     }
     .playback-details {
       margin-left: 4px;
@@ -835,20 +858,12 @@
       font-size: 11px;
     }
   }
-  @container (max-width: 700px) {
-    .control-row {
-      flex-wrap: wrap;
-      row-gap: 8px;
+  @container (max-width: 380px) {
+    .volume-controls input {
+      display: none;
     }
-    .player-options {
-      flex-basis: 100%;
-      order: 1;
-    }
-    .segment-prompt {
-      bottom: 160px;
-    }
-    .player-status {
-      inset: 52px 20px 140px;
+    .playback-mode {
+      display: none;
     }
   }
   @media (prefers-reduced-motion: reduce) {
