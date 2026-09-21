@@ -571,6 +571,25 @@ async fn provisioning_is_admin_only_durable_and_never_puts_credentials_in_jobs()
     let admin = format!("thelxinoe_session={token}");
     let input =
         json!({"kind":"radarr","host_port":37878,"native_url":"https://radarr.example.test"});
+    for (path, payload) in [
+        (
+            "/api/v1/admin/stack/adopt/preview".to_owned(),
+            json!({"service_id":"fixture"}),
+        ),
+        (
+            "/api/v1/admin/stack/adopt".to_owned(),
+            json!({"service_id":"fixture","review_id":id(),"released_compose":true}),
+        ),
+        (
+            format!("/api/v1/admin/stack/{}/restore-original", id()),
+            json!({}),
+        ),
+    ] {
+        assert_eq!(
+            call(&state, &path, "POST", payload, &alice).await.0,
+            StatusCode::FORBIDDEN
+        );
+    }
     assert_eq!(
         call(
             &state,

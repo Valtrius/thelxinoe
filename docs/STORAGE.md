@@ -47,9 +47,9 @@ networks:
 
 Use the actual network name from the existing services; another Compose project may prefix it. The controller stays on `network_mode: none` and communicates through its private Unix socket.
 
-An API connection leaves Docker lifecycle ownership with the original Compose project. Adoption is separate and requires removing competing orchestrator ownership. Neither operation moves library files automatically.
+An API connection leaves Docker lifecycle ownership with the original Compose project. To transfer ownership later, use **Settings → Media services → Managed services → Review ownership transfer**. Thelxinoe copies appdata into its managed storage and preserves the original config; media files stay in place. Disable the service in its old Compose project before confirming. See the [transfer and recovery steps](MANAGED-STACK.md#taking-ownership-of-an-existing-service).
 
-The server and newly managed services use UID/GID `10001:10001`. Create the host directories and grant appropriate NAS permissions or ACLs. External services may use another user if their permissions allow access to the same files.
+The server and newly installed managed services use UID/GID `10001:10001`. Create the host directories and grant appropriate NAS permissions or ACLs. External services may use another user if their permissions allow access to the same files. Ownership transfer preserves that service's existing UID/GID and copies its appdata permissions.
 
 ## Managed services and state
 

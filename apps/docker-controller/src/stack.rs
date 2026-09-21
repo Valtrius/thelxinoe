@@ -12,6 +12,8 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
+#[path = "adoption.rs"]
+mod adoption;
 #[path = "backups.rs"]
 mod backups;
 #[path = "product.rs"]
@@ -126,7 +128,10 @@ fn services() -> Result<Vec<Managed>> {
         let name = entry.file_name().to_string_lossy().into_owned();
         id(&name)?;
         if entry.path().join("service.json").exists() {
-            rows.push(load(&name)?);
+            let service = load(&name)?;
+            if service.phase != "returned" {
+                rows.push(service);
+            }
         }
     }
     Ok(rows)
@@ -340,21 +345,32 @@ pub fn router() -> Router {
         .route("/stack/updates/{id}/activate", post(updates::activate))
         .route("/stack/updates/{id}/recover", post(updates::recover))
         .route("/stack/releases", get(releases))
-        .route("/stack/adopt", post(adopt))
+        .route("/stack/adopt/preview", post(adoption::preview))
+        .route("/stack/adopt/check", post(adoption::check))
+        .route("/stack/adopt", post(adoption::adopt))
         .route("/stack/{id}/action", post(action))
         .with_state(Runtime(Arc::new(tokio::sync::Mutex::new(()))))
 }
 async fn list(State(runtime): State<Runtime>) -> Result<Json<Value>> {
-    let _guard = runtime.0.lock().await;
-    let d = bootstrap().await?;
+    let d = if store::root().join("desired-state.json").exists() {
+        bootstrap().await?
+    } else {
+        let _guard = runtime.0.lock().await;
+        bootstrap().await?
+    };
     let mut result = Vec::new();
     for s in services()? {
-        let live = engine(&format!("/containers/{}/json", s.container)).await;
-        let drift = live
-            .as_ref()
-            .map(|v| policy::fingerprint(v) != s.expected)
-            .unwrap_or(true);
-        result.push(json!({"id":s.id,"kind":s.kind,"container_id":s.container,"name":s.name,"image":s.image,"phase":s.phase,"error":s.error,"drift":drift,"running":live.ok().map(|v|v["State"]["Running"].clone())}));
+        let live = if s.container.is_empty() {
+            Err(unavailable())
+        } else {
+            engine(&format!("/containers/{}/json", s.container)).await
+        };
+        let drift = !s.expected.is_null()
+            && live
+                .as_ref()
+                .map(|v| policy::fingerprint(v) != s.expected)
+                .unwrap_or(true);
+        result.push(json!({"id":s.id,"kind":s.kind,"container_id":s.container,"name":s.name,"image":s.image,"phase":s.phase,"error":s.error,"drift":drift,"running":live.ok().map(|v|v["State"]["Running"].clone()),"transfer_pending":adoption::pending(&s)}));
     }
     Ok(Json(
         json!({"deployment_id":d.id,"generation":d.generation,"items":result}),
@@ -499,133 +515,6 @@ async fn install(
     ))
 }
 #[derive(Deserialize)]
-struct Adopt {
-    operation_id: String,
-    kind: String,
-    container_id: String,
-}
-async fn adopt(State(runtime): State<Runtime>, Json(input): Json<Adopt>) -> Result<Json<Value>> {
-    let _guard = runtime.0.lock().await;
-    let t = templates::find(&input.kind).ok_or_else(|| bad("Unknown curated service"))?;
-    if input.container_id.len() != 64 || !input.container_id.bytes().all(|b| b.is_ascii_hexdigit())
-    {
-        return Err(bad("Use the full Docker container ID"));
-    }
-    let d = bootstrap().await?;
-    let raw = engine(&format!("/containers/{}/json", input.container_id)).await?;
-    let image = engine(&format!(
-        "/images/{}/json",
-        raw["Image"].as_str().ok_or_else(unavailable)?
-    ))
-    .await?;
-    policy::validate_adoption(&raw, &image, t, &d.network, &d.media_source).map_err(conflict)?;
-    if services()?.iter().any(|s| s.kind == input.kind) {
-        return Err(conflict("This service already has a managed installation"));
-    }
-    id(&input.operation_id)?;
-    let key = input.operation_id.clone();
-    if service_path(&key).exists() {
-        return Err(conflict("Provisioning identity already exists"));
-    }
-    let name = choose_service_name(
-        t.kind,
-        &key,
-        &engine("/containers/json?all=true").await?,
-        Some(&input.container_id),
-    )?;
-    let mut spec = raw["Config"].clone();
-    spec["Image"] = json!(format!("{}@{}", t.repository, t.digest));
-    spec.as_object_mut()
-        .ok_or_else(unavailable)?
-        .remove("Hostname");
-    spec["Labels"]["app.thelxinoe.managed-id"] = json!(key);
-    spec["Labels"]["app.thelxinoe.deployment"] = json!(d.id);
-    spec["Labels"]["app.thelxinoe.kind"] = json!(t.kind);
-    spec["HostConfig"] = raw["HostConfig"].clone();
-    spec["NetworkingConfig"] =
-        json!({"EndpointsConfig":{d.network.clone():{"Aliases":[format!("thelxinoe-{}",t.kind)]}}});
-    let mut managed = Managed {
-        id: key.clone(),
-        kind: input.kind,
-        container: String::new(),
-        name: name.clone(),
-        image: format!("{}@{}", t.repository, t.digest),
-        phase: "adopting".into(),
-        active_update: None,
-        spec: spec.clone(),
-        expected: Value::Null,
-        error: None,
-    };
-    persisted(store::write_json(
-        &store::root()
-            .join("services")
-            .join(&key)
-            .join("prior-container.json"),
-        &raw,
-    ))?;
-    save(&managed)?;
-    let current = engine(&format!("/containers/{}/json", input.container_id)).await?;
-    if policy::fingerprint(&current) != policy::fingerprint(&raw) {
-        return Err(conflict("Container changed during adoption"));
-    }
-    request(
-        reqwest::Method::POST,
-        &format!("/containers/{}/stop?t=30", input.container_id),
-        None,
-    )
-    .await?;
-    request(
-        reqwest::Method::POST,
-        &format!(
-            "/containers/{}/rename?name={name}-prior-{}",
-            input.container_id,
-            &key[..8]
-        ),
-        None,
-    )
-    .await?;
-    let outcome = async {
-        let created = request(
-            reqwest::Method::POST,
-            &format!("/containers/create?name={name}"),
-            Some(spec),
-        )
-        .await?;
-        managed.container = created["Id"].as_str().ok_or_else(unavailable)?.into();
-        save(&managed)?;
-        if raw["State"]["Running"] == true {
-            request(
-                reqwest::Method::POST,
-                &format!("/containers/{}/start", managed.container),
-                None,
-            )
-            .await?;
-        }
-        let accepted = engine(&format!("/containers/{}/json", managed.container)).await?;
-        managed.expected = policy::fingerprint(&accepted);
-        managed.phase = "active".into();
-        save(&managed)?;
-        Ok::<_, (StatusCode, &'static str)>(())
-    }
-    .await;
-    if outcome.is_err() {
-        // Leave a durable recovery record. Never guess whether a timed-out Docker create completed.
-        managed.phase = "uncertain".into();
-        managed.error = Some(
-            "Adoption interrupted; original stopped container and recorded spec are retained"
-                .into(),
-        );
-        save(&managed)?;
-        return Err(conflict(
-            "Adoption interrupted; original container retained for recovery",
-        ));
-    }
-    // Retain the stopped original until explicit recovery cleanup; it cannot act as a second writer.
-    Ok(Json(
-        json!({"id":managed.id,"kind":managed.kind,"container_id":managed.container,"port":t.port,"prior_container":input.container_id}),
-    ))
-}
-#[derive(Deserialize)]
 struct Action {
     action: String,
 }
@@ -636,8 +525,21 @@ async fn action(
 ) -> Result<Json<Value>> {
     let _guard = runtime.0.lock().await;
     let d = bootstrap().await?;
+    id(&key)?;
+    if input.action == "restore_original" && !service_path(&key).exists() {
+        return adoption::cancel_unsubmitted(&d, &key).await;
+    }
     let mut s = load(&key)?;
+    if input.action == "complete_adoption" {
+        return adoption::complete(&d, &mut s).await;
+    }
+    if input.action == "restore_original" {
+        return adoption::restore(&d, &mut s).await;
+    }
     if input.action == "reconcile" {
+        if adoption::pending(&s) {
+            return adoption::reconcile(&d, &mut s).await;
+        }
         return reconcile(&d, &mut s).await;
     }
     if s.phase != "active" {
@@ -651,34 +553,6 @@ async fn action(
         || policy::fingerprint(&raw) != s.expected
     {
         return Err(conflict("Docker configuration drift blocks this action"));
-    }
-    if input.action == "retire_original" {
-        let path = store::root()
-            .join("services")
-            .join(&s.id)
-            .join("prior-container.json");
-        let prior: Value = persisted(store::read(&path))?;
-        let prior_id = prior["Id"].as_str().ok_or_else(unavailable)?;
-        match engine(&format!("/containers/{prior_id}/json")).await {
-            Ok(live) => {
-                if live["State"]["Running"] == true
-                    || policy::fingerprint(&live) != policy::fingerprint(&prior)
-                {
-                    return Err(conflict(
-                        "Original container changed before adoption completed",
-                    ));
-                }
-                request(
-                    reqwest::Method::DELETE,
-                    &format!("/containers/{prior_id}?v=false"),
-                    None,
-                )
-                .await?;
-            }
-            Err((StatusCode::NOT_FOUND, _)) => {}
-            Err(error) => return Err(error),
-        }
-        return Ok(Json(json!({"accepted":true})));
     }
     let endpoint = match input.action.as_str() {
         "start" => "start",

@@ -7,6 +7,11 @@ pub(super) fn router() -> Router<AppState> {
         .route("/api/v1/admin/stack/releases", get(releases))
         .route("/api/v1/admin/stack/install", post(install))
         .route("/api/v1/admin/stack/adopt", post(adopt))
+        .route("/api/v1/admin/stack/adopt/preview", post(adopt_preview))
+        .route(
+            "/api/v1/admin/stack/{id}/restore-original",
+            post(restore_original),
+        )
         .route("/api/v1/admin/stack/wire", post(wire))
         .route("/api/v1/admin/stack/{id}/action", post(action))
         .route("/api/v1/admin/stack/{id}/retry", post(retry))
@@ -18,7 +23,7 @@ pub(crate) async fn controller(state: &AppState, path: &str, body: Option<Value>
             .unix_socket(state.config.controller_socket.clone())
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
-            .timeout(std::time::Duration::from_secs(240))
+            .timeout(std::time::Duration::from_secs(900))
             .build()
             .map_err(|_| unavailable())?;
         let mut request = client.request(
@@ -63,7 +68,7 @@ async fn templates(State(state): State<AppState>, headers: HeaderMap) -> Result<
 async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
     let mut value = controller(&state, "", None).await?;
-    value["provisions"]=state.db.call(|db|Ok(json!(db.prepare("SELECT id,kind,state,host_port,container_id,service_id,error,native_url FROM stack_provisions ORDER BY created_at")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"kind":r.get::<_,String>(1)?,"state":r.get::<_,String>(2)?,"host_port":r.get::<_,u16>(3)?,"container_id":r.get::<_,Option<String>>(4)?,"service_id":r.get::<_,Option<String>>(5)?,"error":r.get::<_,Option<String>>(6)?,"native_url":r.get::<_,String>(7)?})))?.collect::<rusqlite::Result<Vec<_>>>()?))).await?;
+    value["provisions"]=state.db.call(|db|Ok(json!(db.prepare("SELECT id,kind,state,host_port,container_id,service_id,error,native_url,origin FROM stack_provisions ORDER BY created_at")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"kind":r.get::<_,String>(1)?,"state":r.get::<_,String>(2)?,"host_port":r.get::<_,u16>(3)?,"container_id":r.get::<_,Option<String>>(4)?,"service_id":r.get::<_,Option<String>>(5)?,"error":r.get::<_,Option<String>>(6)?,"native_url":r.get::<_,String>(7)?,"origin":r.get::<_,String>(8)?})))?.collect::<rusqlite::Result<Vec<_>>>()?))).await?;
     Ok(Json(value))
 }
 #[derive(Deserialize)]
@@ -235,21 +240,22 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
     let result=async {
   let templates=controller(state,"/templates",None).await?;let template=templates["items"].as_array().into_iter().flatten().find(|t|t["kind"]==row.0).cloned().ok_or_else(unavailable)?;
   let current=controller(state,"",None).await?["items"].as_array().into_iter().flatten().find(|s|s["id"]==key).cloned();
-  let installed=if let Some(current)=current{if current["phase"]!="active"||current["drift"]==true{return Err(ApiError::conflict("Interrupted installation requires controller reconciliation"));}current}else{
+  let installed=if let Some(current)=current{if (current["phase"]!="active" && !(row.7=="adopted" && current["phase"]=="connecting"))||current["drift"]==true{return Err(ApiError::conflict("Interrupted installation requires controller reconciliation"));}current}else{
    if row.4!="queued"{return Err(ApiError::conflict("Interrupted Docker submission requires review before retry"));}
    progress(state,&key,"installing",None,None).await?;
    if row.7=="adopted" {
        let _lease=state.media_operations.write().await;let _guard=state.managers.guard.lock().await;
        if matches!(row.0.as_str(),"radarr"|"sonarr"|"lidarr"){operations::ensure_idle(state,row.6.as_deref().ok_or_else(unavailable)?).await?;}
-       controller(state,"/adopt",Some(json!({"operation_id":key,"kind":row.0,"container_id":row.5}))).await?
+       controller(state,"/adopt",Some(json!({"operation_id":key,"kind":row.0,"container_id":row.5,"released_compose":true}))).await?
    } else {controller(state,"/install",Some(json!({"operation_id":key,"kind":row.0,"host_port":row.2,"username":"thelxinoe","secret":secret}))).await?}
   };
   let container=installed["container_id"].as_str().ok_or_else(unavailable)?.to_owned();progress(state,&key,"connecting",Some(container.clone()),None).await?;
   if row.7=="adopted" {let service_id=row.6.clone().ok_or_else(unavailable)?;let container=container.clone();let kind=row.0.clone();state.db.call(move|db|{let table=if matches!(kind.as_str(),"radarr"|"sonarr"|"lidarr"){"manager_services"}else{"support_services"};db.execute(&format!("UPDATE {table} SET container_id=?1,generation=?2 WHERE id=?3"),params![container,id(),service_id])?;Ok(())}).await?;}
   let mut last=None;let mut registered=None;
+  let service_name=if row.7=="adopted" {let integration=row.6.clone().ok_or_else(unavailable)?;state.db.call(move|db|Ok(db.query_row("SELECT name FROM manager_services WHERE id=?1 UNION ALL SELECT name FROM support_services WHERE id=?1",[integration],|r|r.get::<_,String>(0))?)).await?}else{format!("Managed {}",row.0)};
   for _ in 0..60 {
-   let registration=if matches!(row.0.as_str(),"radarr"|"sonarr"|"lidarr") {super::register_with_actor(state.clone(),super::Register{name:format!("Managed {}",row.0),kind:row.0.clone(),container_id:container.clone(),port:template["port"].as_u64().ok_or_else(unavailable)? as u16,api_key:secret.clone()},row.1.clone()).await}
-   else {support::provision(state.clone(),row.1.clone(),json!({"name":format!("Managed {}",row.0),"kind":row.0,"container_id":container,"port":template["port"],"credentials":{"username":credentials.username,"secret":secret},"native_url":row.8})).await};
+   let registration=if matches!(row.0.as_str(),"radarr"|"sonarr"|"lidarr") {super::register_with_actor(state.clone(),super::Register{name:service_name.clone(),kind:row.0.clone(),container_id:container.clone(),port:template["port"].as_u64().ok_or_else(unavailable)? as u16,api_key:secret.clone()},row.1.clone()).await}
+   else {support::provision(state.clone(),row.1.clone(),json!({"name":service_name,"kind":row.0,"container_id":container,"port":template["port"],"credentials":{"username":credentials.username,"secret":secret},"native_url":row.8})).await};
    match registration {Ok(Json(value))=>{registered=Some(value);break;},Err(error)=>last=Some(error)};
    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
   }
@@ -273,7 +279,7 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
         if let Err(error) = controller(
             state,
             &format!("/{key}/action"),
-            Some(json!({"action":"retire_original"})),
+            Some(json!({"action":"complete_adoption"})),
         )
         .await
         {
@@ -297,8 +303,95 @@ async fn wire(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<
 }
 
 #[derive(Deserialize)]
+struct AdoptPreview {
+    service_id: String,
+}
+async fn adopt_preview(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<AdoptPreview>,
+) -> Result<Json<Value>> {
+    security::require(&state, &headers, Capability::ManageServer).await?;
+    let key = input.service_id.clone();
+    let (kind,container,port)=state.db.call(move|db|Ok(db.query_row("SELECT kind,container_id,port FROM manager_services WHERE id=?1 UNION ALL SELECT kind,container_id,port FROM support_services WHERE id=?1",[key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,u16>(2)?))).optional()?)).await?.ok_or_else(ApiError::not_found)?;
+    let templates = controller(&state, "/templates", None).await?;
+    if !templates["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|t| t["kind"] == kind && t["port"] == port)
+    {
+        return Err(ApiError::conflict(
+            "Restore the service's standard HTTP port before transferring ownership",
+        ));
+    }
+    if matches!(kind.as_str(), "radarr" | "sonarr" | "lidarr") {
+        let s = service(&state, &input.service_id).await?;
+        let status = Connection::open(&state, &s)
+            .await?
+            .get("system/status")
+            .await?;
+        if status["branch"]
+            .as_str()
+            .is_some_and(|branch| !matches!(branch, "master" | "main" | "stable"))
+        {
+            return Err(ApiError::conflict(
+                "Only stable service releases can become managed services",
+            ));
+        }
+    }
+    Ok(Json(
+        controller(
+            &state,
+            "/adopt/preview",
+            Some(json!({"kind":kind,"container_id":container})),
+        )
+        .await?,
+    ))
+}
+async fn restore_original(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+) -> Result<Json<Value>> {
+    let actor = security::require(&state, &headers, Capability::ManageServer).await?;
+    if uuid::Uuid::parse_str(&key).is_err() {
+        return Err(ApiError::bad("Invalid transfer identity"));
+    }
+    let _lease = state.media_operations.write().await;
+    let _guard = state.managers.guard.lock().await;
+    let lookup = key.clone();
+    let (kind,integration)=state.db.call(move|db|Ok(db.query_row("SELECT p.kind,p.service_id FROM stack_provisions p WHERE p.id=?1 AND p.origin='adopted' AND p.state='blocked' AND EXISTS(SELECT 1 FROM jobs j WHERE j.kind='stack.install' AND json_extract(j.payload,'$.id')=p.id AND j.state='failed')",[lookup],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?)).await?.ok_or_else(||ApiError::conflict("Only a finished, blocked transfer can restore the original"))?;
+    let result = controller(
+        &state,
+        &format!("/{key}/action"),
+        Some(json!({"action":"restore_original"})),
+    )
+    .await?;
+    let container = result["container_id"]
+        .as_str()
+        .ok_or_else(unavailable)?
+        .to_owned();
+    state.db.call(move|db|{
+        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let table=if matches!(kind.as_str(),"radarr"|"sonarr"|"lidarr"){"manager_services"}else{"support_services"};
+        tx.execute(&format!("UPDATE {table} SET container_id=?1,generation=?2 WHERE id=?3"),params![container,id(),integration])?;
+        tx.execute("UPDATE jobs SET state='complete',error=NULL WHERE kind='stack.install' AND json_extract(payload,'$.id')=?1",[&key])?;
+        tx.execute("DELETE FROM stack_provisions WHERE id=?1",[&key])?;
+        tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'stack.restore-original',?2,?3)",params![actor.user.id,key,now()])?;
+        tx.commit()?;Ok(())
+    }).await?;
+    state
+        .emit(None, "stack.changed", json!({"restored":true}))
+        .await?;
+    Ok(Json(result))
+}
+#[derive(Deserialize)]
 struct Adopt {
     service_id: String,
+    review_id: String,
+    #[serde(default)]
+    released_compose: bool,
 }
 async fn adopt(
     State(state): State<AppState>,
@@ -322,22 +415,24 @@ async fn adopt(
     } else {
         support::load(&state, &input.service_id).await?.credentials
     };
-    let evidence = docker(&state, &format!("containers/{}", item.1)).await?;
-    if evidence["compose_project"]
-        .as_str()
-        .is_some_and(|v| !v.is_empty())
-    {
-        return Err(ApiError::conflict(
-            "Remove the existing Compose owner before adopting this container",
+    if uuid::Uuid::parse_str(&input.review_id).is_err() {
+        return Err(ApiError::bad(
+            "Review this service before transferring ownership",
         ));
     }
-    let key = id();
+    controller(&state,"/adopt/check",Some(json!({"operation_id":input.review_id,"kind":item.0,"container_id":item.1,"released_compose":input.released_compose}))).await?;
+    let key = input.review_id;
     let returned = key.clone();
     let credential = state.secrets.encrypt(
         &format!("provision:{key}"),
         &serde_json::to_vec(&credentials).map_err(|_| unavailable())?,
     )?;
-    state.db.call(move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;tx.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,container_id,service_id,origin,created_at,updated_at,native_url) VALUES (?1,?2,?3,0,?4,'queued',?5,?6,'adopted',?7,?7,?8)",params![key,item.0,p.user.id,credential,item.1,input.service_id,now(),item.2])?;tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'stack.install',?2,?3,'queued',?4,?4)",params![id(),json!({"id":key}).to_string(),format!("stack:{key}"),now()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'stack.adopt',?2,?3)",params![p.user.id,key,now()])?;tx.commit()?;Ok(())}).await?;
+    let inserted=state.db.call(move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;if tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE kind=?1)",[&item.0],|r|r.get::<_,bool>(0))?{return Ok(false);}tx.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,container_id,service_id,origin,created_at,updated_at,native_url) VALUES (?1,?2,?3,0,?4,'queued',?5,?6,'adopted',?7,?7,?8)",params![key,item.0,p.user.id,credential,item.1,input.service_id,now(),item.2])?;tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'stack.install',?2,?3,'queued',?4,?4)",params![id(),json!({"id":key}).to_string(),format!("stack:{key}"),now()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'stack.adopt',?2,?3)",params![p.user.id,key,now()])?;tx.commit()?;Ok(true)}).await?;
+    if !inserted {
+        return Err(ApiError::conflict(
+            "This service already has a provisioning record",
+        ));
+    }
     Ok(Json(json!({"id":returned,"state":"queued"})))
 }
 
@@ -361,7 +456,8 @@ async fn retry(
         .into_iter()
         .flatten()
         .find(|s| s["id"] == key)
-        && (service["phase"] != "active" || service["drift"] == true)
+        && (!matches!(service["phase"].as_str(), Some("active" | "connecting"))
+            || service["drift"] == true)
     {
         return Err(ApiError::conflict(
             "Reconcile the controller operation before retrying API connection",

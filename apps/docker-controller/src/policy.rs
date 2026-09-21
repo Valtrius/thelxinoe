@@ -1,4 +1,4 @@
-//! Validate standalone adoption and compare only stable Docker configuration.
+//! Validate service ownership transfers and compare stable Docker configuration.
 use crate::templates::Template;
 use serde_json::{Value, json};
 pub fn orchestrated(container: &Value) -> bool {
@@ -99,24 +99,13 @@ pub fn validate_adoption(
     t: Template,
     network: &str,
     media_source: &str,
+    released_compose: bool,
 ) -> Result<(), &'static str> {
     if image["Architecture"] != "amd64" || image["Os"] != "linux" {
         return Err("Adoption requires the supported Linux x86-64 image");
     }
-    if orchestrated(container) {
-        return Err(
-            "Remove competing Compose or orchestrator ownership before adopting this container",
-        );
-    }
-    if !image["RepoDigests"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .any(|d| d == format!("{}@{}", t.repository, t.digest))
-    {
-        return Err("Adoption requires the tested immutable image from this service template");
-    }
+    transfer_owner(container, released_compose)?;
+    adoption_image(container, image, t)?;
     let host = &container["HostConfig"];
     if host["Privileged"] == true || host["ReadonlyRootfs"] == true {
         return Err("Unsupported privilege or filesystem configuration");
@@ -184,8 +173,12 @@ pub fn validate_adoption(
         {
             return Err("Unsupported application environment overrides");
         }
-        if matches!(key, "PUID" | "PGID") && value != "10001" {
-            return Err("Adoption requires PUID and PGID 10001");
+        if matches!(key, "PUID" | "PGID")
+            && !value
+                .parse::<u32>()
+                .is_ok_and(|id| id > 0 && id < i32::MAX as u32)
+        {
+            return Err("Adoption requires non-root numeric PUID and PGID values");
         }
     }
     let mounts = container["Mounts"]
@@ -212,6 +205,74 @@ pub fn validate_adoption(
         }
     }
     Ok(())
+}
+pub fn transfer_owner(container: &Value, released_compose: bool) -> Result<(), &'static str> {
+    let mut standalone = container.clone();
+    if let Some(labels) = standalone["Config"]["Labels"].as_object_mut() {
+        let compose = labels
+            .keys()
+            .any(|key| key.starts_with("com.docker.compose."));
+        if compose && !released_compose {
+            return Err(
+                "Disable the service in its old Compose project and confirm the ownership transfer",
+            );
+        }
+        labels.retain(|key, _| !key.starts_with("com.docker.compose."));
+    }
+    if orchestrated(&standalone) {
+        return Err("Services managed by another controller or cluster cannot be transferred");
+    }
+    Ok(())
+}
+/// Keep the exact installed stable upstream image: ownership transfer is not an upgrade.
+pub fn adoption_image(
+    container: &Value,
+    image: &Value,
+    t: Template,
+) -> Result<String, &'static str> {
+    let short = t
+        .repository
+        .strip_prefix("lscr.io/")
+        .unwrap_or(t.repository);
+    let allowed = [
+        t.repository.to_owned(),
+        short.to_owned(),
+        format!("docker.io/{short}"),
+        format!("ghcr.io/{short}"),
+    ];
+    let reference = container["Config"]["Image"].as_str().unwrap_or("");
+    let (repository, version) = reference
+        .split_once('@')
+        .or_else(|| reference.rsplit_once(':'))
+        .unwrap_or((reference, "latest"));
+    let stable = version == "latest"
+        || version.starts_with("sha256:")
+        || (version.as_bytes().first().is_some_and(u8::is_ascii_digit)
+            && !["develop", "nightly", "beta", "alpha", "preview", "rc"]
+                .iter()
+                .any(|label| version.to_ascii_lowercase().contains(label)));
+    if !allowed.iter().any(|item| item == repository) || !stable {
+        return Err(
+            "Transfer requires a stable LinuxServer image (latest, stable version or immutable digest)",
+        );
+    }
+    image["RepoDigests"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .find(|reference| {
+            reference
+                .split_once('@')
+                .is_some_and(|(repository, digest)| {
+                    allowed.iter().any(|item| item == repository)
+                        && digest.starts_with("sha256:")
+                        && digest.len() == 71
+                        && digest[7..].bytes().all(|b| b.is_ascii_hexdigit())
+                })
+        })
+        .map(str::to_owned)
+        .ok_or("The installed service image must have a verified upstream repository digest")
 }
 pub fn appdata_isolated(source: &str, media: &str) -> bool {
     let (Some(source), Some(media)) = (host_path(source), host_path(media)) else {
@@ -355,6 +416,55 @@ mod tests {
         assert!(!orchestrated(
             &json!({"Config":{"Labels":{"maintainer":"upstream"}}})
         ));
+    }
+    #[test]
+    fn compose_transfer_requires_release_and_never_accepts_a_cluster_owner() {
+        let mut c = json!({"Config":{"Labels":{"com.docker.compose.project":"nas","com.docker.compose.service":"radarr"}}});
+        assert!(transfer_owner(&c, false).is_err());
+        assert!(transfer_owner(&c, true).is_ok());
+        for owner in [
+            "com.docker.swarm.service.id",
+            "io.kubernetes.pod.name",
+            "app.thelxinoe.managed-id",
+        ] {
+            c["Config"]["Labels"][owner] = json!("other");
+            assert!(transfer_owner(&c, true).is_err());
+            c["Config"]["Labels"].as_object_mut().unwrap().remove(owner);
+        }
+    }
+    #[test]
+    fn ownership_transfer_pins_the_installed_image_and_rejects_untrusted_or_unstable_sources() {
+        let template = crate::templates::find("radarr").unwrap();
+        let digest = format!("lscr.io/linuxserver/radarr@sha256:{}", "a".repeat(64));
+        let image = json!({"RepoDigests":[digest]});
+        for reference in [
+            "lscr.io/linuxserver/radarr:latest",
+            "linuxserver/radarr:6.1.0",
+            digest.as_str(),
+        ] {
+            let container = json!({"Config":{"Image":reference}});
+            assert_eq!(
+                adoption_image(&container, &image, template).unwrap(),
+                digest
+            );
+        }
+        for reference in [
+            "untrusted/radarr:latest",
+            "linuxserver/radarr:develop",
+            "linuxserver/radarr:6.2.0-beta",
+        ] {
+            assert!(
+                adoption_image(&json!({"Config":{"Image":reference}}), &image, template).is_err()
+            );
+        }
+        assert!(
+            adoption_image(
+                &json!({"Config":{"Image":"linuxserver/radarr:latest"}}),
+                &json!({"RepoDigests":[]}),
+                template
+            )
+            .is_err()
+        );
     }
     #[test]
     fn drift_includes_dangerous_configuration_but_ignores_runtime_addresses() {

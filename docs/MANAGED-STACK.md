@@ -4,7 +4,19 @@ Administrators can install Radarr, Sonarr, Lidarr, Bazarr, Prowlarr and NZBGet f
 
 Installation records an encrypted credential and durable job before submitting Docker work. The controller journals container creation before issuing it. Interrupted or uncertain mutations require reconciliation; retries never silently accept configuration drift. Installed services connect to NZBGet, Prowlarr and Bazarr automatically. Choose acquisition profiles and canonical library folders in manager settings, then configure indexers, subtitle providers and a news server using the services' own advanced settings.
 
-Adoption starts with an existing API integration. It accepts compatible standalone containers using the tested image and supported mounts/runtime configuration on the server network. Compose, Swarm, Kubernetes, Podman Compose and Nomad ownership labels block adoption. The original stops and is retained during replacement; appdata and the integration ID remain unchanged. The original is retired only after the replacement API connection succeeds. Custom commands, privileged devices and unsupported network configuration are rejected.
+Ownership transfer starts with an existing API integration. It copies the service's appdata into Thelxinoe's deployment storage and creates a managed replacement using the exact installed stable LinuxServer image. Application settings, API credentials, library records and the integration ID are preserved. The original container remains stopped with automatic restart disabled; its config folder is retained. Custom commands, privileged devices, cluster ownership and unsupported mounts or network configuration are rejected.
+
+## Taking ownership of an existing service
+
+1. Connect the existing service first, following the [shared media and network requirements](STORAGE.md). Transfer requires one shared Docker network, writable bind mounts at `/config` and `/media` (only `/config` for Prowlarr), and the standard internal service port. Appdata must be outside both media and Thelxinoe's deployment directory. Symlinks, hard-linked appdata files and special files are not supported by the configuration copier.
+2. Open **Settings → Media services → Managed services**, choose the connected service, and click **Review ownership transfer**. The review shows the current container, retained image, source config directory and managed destination. It does not stop the service.
+3. For a Compose service, remove its definition from the original Compose file or assign a profile that you leave disabled. Save that edit without redeploying yet, and confirm it in the review. Disable external updaters or recreation scripts for the service too. Thelxinoe cannot edit your NAS Compose files or prevent you from explicitly starting the old service later.
+4. Click **Stop, copy and take ownership**. Thelxinoe checks the reviewed Docker configuration again, checks that media-manager activity is idle, disables the original container's restart policy, stops it and copies its config into `deployment/services/<installation-id>/appdata`. The replacement keeps its image version, UID/GID, timezone, API credentials, published ports and network aliases. Application settings are not regenerated or automatically rewired.
+5. After the replacement's API connection succeeds, its lifecycle, backups and update policy become available through Thelxinoe. No application version update is performed during the transfer. Subsequent updates use the normal isolated compatibility checks.
+
+Do not restart the retained original alongside the managed replacement: both still use the shared media directory. Avoid Compose `--remove-orphans` while you want to retain the original container as a recovery aid. After verifying the managed service, you can remove the old stopped container yourself and archive its original config.
+
+An interrupted transfer retains its journal and copied data. **Retry setup** retries API connection; **reconcile** verifies a recorded replacement after an interrupted Docker operation. If copying failed or the replacement cannot be accepted, **Restore original service** removes only the transfer's replacement/workers, restores the original restart policy and running state, and reconnects the original integration. The copied config remains on disk for inspection; changes made there are not merged back. Once transfer completes, use managed backups and update recovery instead.
 
 Managed configuration is fingerprinted separately from runtime addresses. External changes block lifecycle mutations. Reconciliation can complete an interrupted recorded operation, but cannot bless arbitrary new configuration.
 
@@ -32,9 +44,17 @@ node scripts/test-deployment-compose.mjs
 
 The installation proof creates all six services, validates their real API connections, and records only sanitized IDs. Wiring checks inspect all three download clients, Prowlarr's three applications and Bazarr's manager connections. The browser proof saves canonical roots and demonstrates that changing a test container's restart policy blocks lifecycle actions, then restores that policy. The Compose proof verifies both accepted image pins and precedence over a stale bootstrap file.
 
-`compose.adoption.test.yaml` and `scripts/test-managed-adoption.mjs` use another isolated deployment on HTTPS port 25443. The test rejects foreign Compose ownership, adopts standalone Radarr, verifies a retained appdata sentinel and integration identity, and verifies retirement of the original. It intentionally refuses to recreate a previously used fixture. A blocked setup can be retried through the authenticated first-party retry action after correcting the cause.
+`compose.adoption.test.yaml` and `scripts/test-managed-adoption.mjs` use an isolated deployment on HTTPS port 25443. The script creates a fresh project and storage directory, and cleans up its containers, network and volumes in `finally`:
 
-Sanitized local results: `.local/managed-install-result.json`, `.local/managed-wiring-result.json`, `.local/managed-ui-result.json`, `.local/adoption-result.json`. Unit tests cover privilege boundaries, encrypted job credentials, foreign ownership, configuration drift and atomic generation commits. Linux controller/server tests and Windows production installer builds are part of the validation gates.
+```sh
+docker build --target server -t thelxinoe-takeover-server:local .
+docker build --target controller -t thelxinoe-takeover-controller:local .
+node scripts/test-managed-adoption.mjs
+```
+
+The proof transfers a real Compose-managed Radarr through the UI. It rejects missing ownership confirmation and stale reviews, forces a copy failure and restores the original after a controller restart, then verifies separate managed appdata, retained settings/version/permissions/ports, the integration identity, managed restart and a real isolated update preflight. Results and browser screenshots remain in `.local/ownership-test-<run>/`.
+
+Other sanitized local results: `.local/managed-install-result.json`, `.local/managed-wiring-result.json`, `.local/managed-ui-result.json`. Unit tests cover privilege boundaries, encrypted job credentials, foreign ownership, configuration drift and atomic generation commits. Linux controller/server tests and Windows production installer builds are part of the validation gates.
 
 ## Managed Docker stack
 
@@ -46,7 +66,7 @@ Thelxinoe-created services use curated images and templates. Installed versions 
 
 The controller owns Docker-level configuration such as image, mounts, networks, ports, environment, restart policy, labels, and lifecycle. Each service owns its application-level configuration.
 
-Docker-level ownership is exclusive. Adoption means Thelxinoe becomes the only orchestrator that is allowed to recreate or mutate that container's Docker configuration. Containers still belonging to another Compose project or another detected orchestrator cannot be adopted until the administrator removes that competing ownership. For an adopted standalone container, Thelxinoe captures and validates the supported parts of its current spec, records the new desired spec under Thelxinoe ownership, and only then manages lifecycle/update operations. Drift detection reports outside mutations instead of silently accepting a second owner.
+Docker-level ownership is exclusive. The administrator releases the previous Compose definition before transfer; the replacement carries only its new Thelxinoe ownership. Swarm, Kubernetes, Podman Compose, Nomad and another Thelxinoe deployment remain unsupported transfer sources. The controller records the supported configuration and immutable image before taking ownership. Drift detection reports outside mutations instead of accepting a second owner.
 
 Thelxinoe automatically wires mechanical relationships where APIs allow it, including Prowlarr to the media managers, NZBGet as download client, Bazarr to Sonarr/Radarr, categories, and canonical paths. Real administrator choices remain explicit.
 

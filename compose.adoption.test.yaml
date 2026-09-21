@@ -1,7 +1,7 @@
 name: thelxinoe-adoption
 services:
   controller:
-    image: thelxinoe-controller:0.1.0
+    image: thelxinoe-takeover-controller:local
     network_mode: none
     volumes:
       - runtime:/run/thelxinoe
@@ -11,20 +11,30 @@ services:
     cap_drop: [ALL]
     labels: {app.thelxinoe.component: controller}
   server:
-    image: thelxinoe-server:0.1.0
+    image: thelxinoe-takeover-server:local
     ports: ["127.0.0.1:19191:8484"]
     environment:
       THELXINOE_PUBLIC_URL: https://localhost:25443
       THELXINOE_TRUSTED_PROXIES: 172.31.245.0/24
     volumes:
-      - ./.local/adoption/server:/var/lib/thelxinoe
-      - ./.local/adoption/cache:/var/cache/thelxinoe
-      - ./.local/adoption/data:/media
+      - ${THELXINOE_ADOPTION_ROOT:?Run scripts/test-managed-adoption.mjs}/server:/var/lib/thelxinoe
+      - ${THELXINOE_ADOPTION_ROOT}/cache:/var/cache/thelxinoe
+      - ${THELXINOE_ADOPTION_ROOT}/media:/media
       - runtime:/run/thelxinoe:ro
     networks: [test]
     depends_on:
       controller: {condition: service_healthy}
     labels: {app.thelxinoe.component: server}
+  radarr:
+    image: lscr.io/linuxserver/radarr@sha256:c960f2b52ec6542dbe6707c5a21e696a7c74fd8b17997454f4d10a55dacee133
+    profiles: [external]
+    environment: [PUID=1000, PGID=1000, TZ=Europe/Paris]
+    volumes:
+      - ${THELXINOE_ADOPTION_ROOT}/radarr:/config
+      - ${THELXINOE_ADOPTION_ROOT}/media:/media
+    ports: ["127.0.0.1:47878:7878"]
+    networks: [test]
+    restart: unless-stopped
   proxy:
     image: caddy:2
     ports: ["127.0.0.1:25443:9443"]
@@ -39,4 +49,3 @@ networks:
 volumes:
   runtime:
   deployment:
-

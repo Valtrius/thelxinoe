@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api } from './api';
   import { onMount } from 'svelte';
+  import Switch from './providers/components/ui/Switch.svelte';
   type Service = {
     id: string;
     kind: string;
@@ -10,6 +11,7 @@
     drift: boolean;
     running: boolean;
     error: string | null;
+    transfer_pending: boolean;
   };
   type Provision = {
     id: string;
@@ -17,12 +19,24 @@
     state: string;
     host_port: number;
     native_url: string;
+    origin: string;
     service_id: string | null;
     error: string | null;
   };
   let nativeUrl = $state(''),
     adoptId = $state(''),
     available = $state<{ id: string; name: string }[]>([]);
+  type TransferReview = {
+    review_id: string;
+    name: string;
+    image: string;
+    source_config: string;
+    managed_config: string;
+    compose_project: string | null;
+    compose_service: string | null;
+  };
+  let transferReview = $state<TransferReview | null>(null);
+  let releasedCompose = $state(false);
   let releases = $state<
     { kind: string; image: string | null; tested_image: string }[]
   >([]);
@@ -177,13 +191,23 @@
       onsubmit={(event) => {
         event.preventDefault();
         void act(async () => {
-          await api('/admin/stack/adopt', 'POST', { service_id: adoptId });
-          await refresh();
+          transferReview = await api<TransferReview>(
+            '/admin/stack/adopt/preview',
+            'POST',
+            { service_id: adoptId },
+          );
+          releasedCompose = false;
         });
       }}
     >
       <label
-        >Existing connected service<select bind:value={adoptId} required
+        >Existing connected service<select
+          bind:value={adoptId}
+          required
+          onchange={() => {
+            transferReview = null;
+            releasedCompose = false;
+          }}
           ><option value="">Select a service</option
           >{#each available as service (service.id)}<option value={service.id}
               >{service.name}</option
@@ -191,14 +215,74 @@
         ></label
       >
       <p>
-        Adoption transfers Docker configuration ownership to Thelxinoe. The
-        container must be standalone, use a supported image and share the media
-        network.
+        Take ownership of an existing service on this Docker server. Thelxinoe
+        stops it, copies its configuration into managed storage and connects the
+        replacement. Its settings, library and current version are preserved.
       </p>
       <button class="secondary" disabled={busy || !adoptId}
-        >Adopt service</button
+        >Review ownership transfer</button
       >
     </form>
+    {#if transferReview}
+      <section class="panel" aria-label="Ownership transfer review">
+        <h3>Take ownership of {transferReview.name}</h3>
+        <p>
+          Copy configuration from <code>{transferReview.source_config}</code> to
+          <code>{transferReview.managed_config}</code>.
+        </p>
+        <p>
+          The service will be unavailable during the copy and restart. The
+          original container stays stopped with automatic restart disabled, and
+          its config folder is retained. The replacement keeps its API key, user
+          and group, network aliases and published ports.
+        </p>
+        <details>
+          <summary>Version retained during transfer</summary><code
+            >{transferReview.image}</code
+          >
+        </details>
+        {#if transferReview.compose_project}
+          <p>
+            In Compose project <strong>{transferReview.compose_project}</strong
+            >, disable service <strong>{transferReview.compose_service}</strong> by
+            removing its definition or assigning a profile you leave disabled. Save
+            the file without redeploying it yet. Also disable any external updater
+            for this service.
+          </p>
+          <Switch bind:checked={releasedCompose}
+            >I disabled this service in its previous Compose project.</Switch
+          >
+        {:else}
+          <p>
+            Disable any script or external updater that recreates this container
+            before transferring it.
+          </p>
+        {/if}
+        <button
+          class="secondary"
+          disabled={busy ||
+            (!!transferReview.compose_project && !releasedCompose)}
+          onclick={() =>
+            void act(async () => {
+              await api('/admin/stack/adopt', 'POST', {
+                service_id: adoptId,
+                review_id: transferReview!.review_id,
+                released_compose: releasedCompose,
+              });
+              transferReview = null;
+              adoptId = '';
+              await refresh();
+            })}>Stop, copy and take ownership</button
+        >
+        <button
+          class="secondary"
+          disabled={busy}
+          onclick={() => {
+            transferReview = null;
+          }}>Cancel</button
+        >
+      </section>
+    {/if}
     {#each provisions as provision (provision.id)}<p>
         {provision.kind}: {provision.state}
         {#if provision.state === 'blocked'}<button
@@ -209,7 +293,27 @@
                 await api(`/admin/stack/${provision.id}/retry`, 'POST', {});
                 await refresh();
               })}>Retry setup</button
-          >{/if}
+          >
+          {#if provision.origin === 'adopted' && !services.some((service) => service.id === provision.id && !service.transfer_pending)}
+            <button
+              class="secondary"
+              disabled={busy}
+              onclick={() =>
+                void act(async () => {
+                  await api(
+                    `/admin/stack/${provision.id}/restore-original`,
+                    'POST',
+                    {},
+                  );
+                  await refresh();
+                })}>Restore original service</button
+            >
+            <span
+              >The original config will be used; changes made in the copied
+              config are not merged.</span
+            >
+          {/if}
+        {/if}
         {#if provision.native_url}<a
             href={provision.native_url}
             target="_blank"
@@ -234,6 +338,11 @@
         {#each ['start', 'stop', 'restart', 'reconcile'] as action (action)}<button
             class="secondary"
             disabled={busy ||
+              provisions.some(
+                (p) =>
+                  p.id === service.id &&
+                  ['queued', 'installing', 'connecting'].includes(p.state),
+              ) ||
               (action !== 'reconcile' &&
                 (service.drift || service.phase !== 'active'))}
             onclick={() =>

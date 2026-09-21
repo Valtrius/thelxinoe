@@ -87,7 +87,7 @@ The current direction is:
 - Keep yt-dlp and Streamlink independently updateable on the backend while slower-moving native media tooling ships with the server image.
 - Reuse the YouTwitch desktop tool-management work as an MPV-only Tauri tool manager; yt-dlp, Streamlink, and FFmpeg no longer need desktop management.
 - Automatically wire Thelxinoe-created Radarr/Sonarr/Lidarr/Bazarr/Prowlarr/NZBGet instances together where their APIs allow it. Every managed service remains optional.
-- For Thelxinoe-created services, keep managed service appdata below the configured Thelxinoe state root. Adopted containers may retain existing appdata locations.
+- Keep managed service appdata below the configured Thelxinoe state root. Ownership transfer copies existing appdata there, preserving configuration and retaining the stopped original and its config for recovery.
 - Keep v1 English-only. Do not add localization/i18n complexity until there is a concrete second-language requirement.
 - Bootstrap the server with Docker Compose using two Thelxinoe containers: the main server (which also serves the web frontend) and the constrained Docker controller.
 - Configure host-side persistent paths in Compose/`.env` before first launch. The first-run wizard configures logical application settings inside those mounted paths rather than choosing where the running containers are mounted on the host.

@@ -55,7 +55,8 @@ Deliver:
 - curated service templates;
 - install supported service;
 - adopt compatible existing container;
-- exclusive Docker-ownership checks for adoption, including blocking adoption while a container still belongs to another detected Compose/orchestrator project;
+- exclusive Docker-ownership checks for adoption, requiring release of the old Compose service definition and rejecting other detected orchestrators;
+- copying existing config into managed storage, retaining the exact image and integration identity, with original-service recovery after a failed transfer;
 - labels/stable managed-service IDs;
 - canonical `/media/...` mounts for created services;
 - appdata under state root;

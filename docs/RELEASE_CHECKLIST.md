@@ -31,7 +31,7 @@ Private evidence lives in `.local` and is excluded from source control. The scri
 | Jellyfin clients and credentials    | `scripts/test-jellyfin.mjs`, `jellyfin-result.json`, TV screenshots/history and [client matrix](JELLYFIN.md)                                               |
 | Real online providers               | `youtube-live-result.json`, `youtube-refresh-result.json`, `youtube-native-stream-result.json`, `twitch-playback-result.json`, `kick-playback-result.json` |
 | Acquisition and service integration | `acquisition-downloads-result.json`, `manager-files-result.json`, `manager-tv-music-result.json`, `support-actions-result.json`                            |
-| Managed lifecycle and updates       | `managed-install-result.json`, `adoption-result.json`, `service-update-result.json`, `service-rollback-result.json`                                        |
+| Managed lifecycle and updates       | `managed-install-result.json`, `ownership-test-*/result.json`, `service-update-result.json`, `service-rollback-result.json`                                |
 | Destructive retention and segments  | `retention-result.json`, `segments-result.json`, `segments-external-result.json`, Rust ownership/retention tests                                           |
 | Administration and backups          | `operations-result.json`, `backup-interruption-result.json`, `admin-ui-result.json`                                                                        |
 | Product upgrade and recovery        | `scripts/test-product-release.mjs`, `test-release-interruption.mjs`, `test-release-recreation.mjs`, `product-release-result.json`                          |
