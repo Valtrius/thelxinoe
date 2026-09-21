@@ -53,8 +53,19 @@
       : Math.max(minimumHeight, Math.min(maximumHeight, resizedHeight)),
   );
   let drag: { pointer: number; y: number; height: number } | undefined;
-  function resizeBy(height: number) {
-    resizedHeight = Math.max(minimumHeight, Math.min(maximumHeight, height));
+  function resizeBy(height: number, persist = false) {
+    const next = Math.max(minimumHeight, Math.min(maximumHeight, height));
+    resizedHeight = next;
+    if (persist) updateAppearance({ player_height: next });
+  }
+  function resetHeight() {
+    resizedHeight = null;
+    updateAppearance({ player_height: null });
+  }
+  function finishResize() {
+    if (!drag) return;
+    drag = undefined;
+    updateAppearance({ player_height: resizedHeight });
   }
   let player = $state<HTMLVideoElement>() as HTMLVideoElement;
   let container = $state<HTMLElement>() as HTMLElement;
@@ -76,6 +87,10 @@
     muted = $state(false);
   let hideTimer: ReturnType<typeof setTimeout> | undefined;
   let audibleVolume = 1;
+  $effect.pre(() => {
+    const savedHeight = $appearance.player_height;
+    if (resizable && !drag) resizedHeight = savedHeight;
+  });
   const loading = $derived(!error && (busy || buffering));
   const controlsShown = $derived(
     controlsVisible ||
@@ -796,20 +811,20 @@
     }}
     onpointerup={(event) => {
       if (drag?.pointer === event.pointerId) {
-        drag = undefined;
+        finishResize();
         event.currentTarget.releasePointerCapture(event.pointerId);
       }
     }}
-    onlostpointercapture={() => (drag = undefined)}
-    onpointercancel={() => (drag = undefined)}
-    ondblclick={() => (resizedHeight = null)}
+    onlostpointercapture={finishResize}
+    onpointercancel={finishResize}
+    ondblclick={resetHeight}
     onkeydown={(event) => {
       const step = event.shiftKey ? 50 : 10;
-      if (event.key === 'ArrowUp') resizeBy(playerHeight - step);
-      else if (event.key === 'ArrowDown') resizeBy(playerHeight + step);
-      else if (event.key === 'Home') resizeBy(minimumHeight);
-      else if (event.key === 'End') resizeBy(maximumHeight);
-      else if (event.key === 'Enter') resizedHeight = null;
+      if (event.key === 'ArrowUp') resizeBy(playerHeight - step, true);
+      else if (event.key === 'ArrowDown') resizeBy(playerHeight + step, true);
+      else if (event.key === 'Home') resizeBy(minimumHeight, true);
+      else if (event.key === 'End') resizeBy(maximumHeight, true);
+      else if (event.key === 'Enter') resetHeight();
       else return;
       event.preventDefault();
     }}

@@ -5,6 +5,7 @@ export type Theme = 'light' | 'system' | 'dark';
 export type Appearance = {
   provider_preferences: Record<string, string>;
   audio_volume: number;
+  player_height: number | null;
   youtube_card_shortcuts: YoutubeCardShortcut[];
   theme: Theme;
   sidebar_collapsed: boolean;
@@ -15,6 +16,7 @@ export type Appearance = {
 const defaults: Appearance = {
   provider_preferences: {},
   audio_volume: 1,
+  player_height: null,
   youtube_card_shortcuts: [],
   theme: 'system',
   sidebar_collapsed: false,
@@ -32,6 +34,7 @@ export const appearance = writable<Appearance>({
 export const appearanceError = writable('');
 let owner = '';
 let generation = 0;
+let acceptedRevision = 0;
 let pending = Promise.resolve();
 const localChanges = new Map<number, Partial<Appearance>>();
 let changeId = 0;
@@ -46,6 +49,7 @@ function merge(value: Appearance, change: Partial<Appearance>): Appearance {
   };
 }
 export function acceptAppearance(value: Appearance) {
+  acceptedRevision++;
   let next = { ...defaults, ...value };
   for (const change of localChanges.values()) next = merge(next, change);
   appearance.set(next);
@@ -83,6 +87,25 @@ export async function loadAppearance(userId: string) {
       appearance.set({ ...defaults, theme: get(appearance).theme });
       appearanceError.set('Appearance preferences could not be loaded.');
     }
+  }
+}
+export async function refreshAppearance(userId: string) {
+  if (owner !== userId) return;
+  const current = generation;
+  const revision = acceptedRevision;
+  try {
+    const value = await api<Appearance>('/me/appearance');
+    if (
+      current === generation &&
+      owner === userId &&
+      revision === acceptedRevision
+    ) {
+      acceptAppearance(value);
+      appearanceError.set('');
+    }
+  } catch {
+    if (current === generation && owner === userId)
+      appearanceError.set('Appearance preferences could not be loaded.');
   }
 }
 export function resetAppearance() {

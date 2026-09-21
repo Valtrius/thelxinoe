@@ -93,6 +93,7 @@ async function fixture(
     live?: boolean;
     fail?: boolean;
     app?: boolean;
+    playerHeight?: number | null;
   } = {},
 ) {
   const metadata = gate(!!options.hold),
@@ -111,6 +112,7 @@ async function fixture(
     }[],
     errors: [] as string[],
     savedVolume: 0.31,
+    savedHeight: options.playerHeight ?? null,
     fail: options.fail ?? false,
   };
   page.on('pageerror', (error) => state.errors.push(error.message));
@@ -240,11 +242,17 @@ async function fixture(
         });
     }
     if (path.endsWith('/me/appearance')) {
-      if (route.request().method() === 'PATCH')
-        state.savedVolume =
-          route.request().postDataJSON().audio_volume ?? state.savedVolume;
+      if (route.request().method() === 'PATCH') {
+        const change = route.request().postDataJSON();
+        state.savedVolume = change.audio_volume ?? state.savedVolume;
+        if ('player_height' in change) state.savedHeight = change.player_height;
+      }
       return route.fulfill({
-        json: { theme: 'dark', audio_volume: state.savedVolume },
+        json: {
+          theme: 'dark',
+          audio_volume: state.savedVolume,
+          player_height: state.savedHeight,
+        },
       });
     }
     if (path.startsWith('/api/v1/catalog/') && path.endsWith('/playback')) {
@@ -348,9 +356,10 @@ async function fixture(
         import { mount, unmount } from '/node_modules/.vite/deps/svelte.js';
         import Player from '/src/lib/Player.svelte';
         import App from '/src/App.svelte';
-        import { loadAppearance } from '/src/lib/appearance.ts';
+        import { loadAppearance, acceptAppearance } from '/src/lib/appearance.ts';
         import '/src/app.css';
         await loadAppearance('fixture');
+        globalThis.__acceptAppearance = acceptAppearance;
         const app = ${
           options.app
             ? "mount(App, { target: document.querySelector('#fixture-root') })"
@@ -413,7 +422,7 @@ test('web playback records active time but excludes paused time and seeking', as
 test('web player fills the workspace edges and resizes by pointer and keyboard', async ({
   page,
 }) => {
-  const state = await fixture(page, { app: true });
+  const state = await fixture(page, { app: true, playerHeight: 330 });
   await page
     .getByRole('button', { name: 'Watch Channel 0', exact: true })
     .click();
@@ -435,6 +444,7 @@ test('web player fills the workspace edges and resizes by pointer and keyboard',
   expect(Math.abs(edges.top)).toBeLessThanOrEqual(1);
   expect(Math.abs(edges.right)).toBeLessThanOrEqual(1);
   const initial = (await player.boundingBox())!.height;
+  expect(initial).toBeCloseTo(330, 0);
   const grip = (await handle.boundingBox())!;
   await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
   await page.mouse.down();
@@ -447,17 +457,72 @@ test('web player fills the workspace edges and resizes by pointer and keyboard',
   await expect
     .poll(async () => (await player.boundingBox())!.height)
     .toBeCloseTo(initial - 100, 0);
+  await expect.poll(() => state.savedHeight).toBeCloseTo(initial - 100, 0);
   await handle.focus();
   await page.keyboard.press('ArrowDown');
   await expect
     .poll(async () => (await player.boundingBox())!.height)
     .toBeCloseTo(initial - 90, 0);
+  await expect.poll(() => state.savedHeight).toBeCloseTo(initial - 90, 0);
   await page.keyboard.press('Home');
   await expect(player).toHaveCSS('height', '210px');
+  await expect.poll(() => state.savedHeight).toBe(210);
   await page.keyboard.press('Enter');
   await expect
+    .poll(() => player.evaluate((element) => element.style.height))
+    .toBe('');
+  await expect.poll(() => state.savedHeight).toBeNull();
+  expect(state.errors).toEqual([]);
+});
+
+test('open web player follows remote per-user height changes', async ({
+  page,
+}) => {
+  const state = await fixture(page, { app: true, playerHeight: 330 });
+  await page
+    .getByRole('button', { name: 'Watch Channel 0', exact: true })
+    .click();
+  await decoded(page);
+  const player = page.getByRole('region', { name: 'Media player' });
+  await expect
     .poll(async () => (await player.boundingBox())!.height)
-    .toBeCloseTo(initial, 0);
+    .toBeCloseTo(330, 0);
+  await page.evaluate(() => {
+    (
+      globalThis as typeof globalThis & {
+        __acceptAppearance: (value: { player_height: number | null }) => void;
+      }
+    ).__acceptAppearance({ player_height: 280 });
+  });
+  await expect
+    .poll(async () => (await player.boundingBox())!.height)
+    .toBeCloseTo(280, 0);
+  await page.evaluate(() => {
+    (
+      globalThis as typeof globalThis & {
+        __acceptAppearance: (value: { player_height: number | null }) => void;
+      }
+    ).__acceptAppearance({ player_height: null });
+  });
+  await expect
+    .poll(() => player.evaluate((element) => element.style.height))
+    .toBe('');
+  expect(state.errors).toEqual([]);
+});
+
+test('saved height does not resize fixed player instances', async ({
+  page,
+}) => {
+  const state = await fixture(page, { playerHeight: 330 });
+  await decoded(page);
+  const player = page.getByRole('region', { name: 'Media player' });
+  await expect
+    .poll(() => player.evaluate((element) => element.style.height))
+    .toBe('');
+  await expect(
+    page.getByRole('slider', { name: 'Resize player height' }),
+  ).toHaveCount(0);
+  expect(state.savedHeight).toBe(330);
   expect(state.errors).toEqual([]);
 });
 

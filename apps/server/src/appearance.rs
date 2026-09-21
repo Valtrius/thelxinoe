@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 pub struct Appearance {
     provider_preferences: std::collections::BTreeMap<String, String>,
     audio_volume: f64,
+    player_height: Option<f64>,
     youtube_card_shortcuts: Vec<String>,
     theme: String,
     sidebar_collapsed: bool,
@@ -25,6 +26,7 @@ impl Default for Appearance {
         Self {
             provider_preferences: Default::default(),
             audio_volume: 1.0,
+            player_height: None,
             youtube_card_shortcuts: vec![],
             theme: "system".into(),
             sidebar_collapsed: false,
@@ -39,12 +41,22 @@ impl Default for Appearance {
 pub struct Change {
     provider_preferences: Option<std::collections::BTreeMap<String, String>>,
     audio_volume: Option<f64>,
+    #[serde(default, deserialize_with = "optional_player_height")]
+    player_height: Option<Option<f64>>,
     youtube_card_shortcuts: Option<Vec<String>>,
     theme: Option<String>,
     sidebar_collapsed: Option<bool>,
     card_columns: Option<u8>,
     fade_watched: Option<bool>,
     thumbnail_fit: Option<String>,
+}
+fn optional_player_height<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<Option<f64>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<f64>::deserialize(deserializer).map(Some)
 }
 fn read(db: &rusqlite::Connection, user: &str) -> anyhow::Result<Appearance> {
     Ok(db
@@ -68,10 +80,13 @@ pub async fn update(
     Json(change): Json<Change>,
 ) -> Result<Json<Appearance>> {
     let p = security::principal(&state, &headers).await?;
-    let recipient = p.user.id.clone();
     if change
         .audio_volume
         .is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v))
+        || change
+            .player_height
+            .flatten()
+            .is_some_and(|v| !v.is_finite() || v < 210.0)
         || change.provider_preferences.as_ref().is_some_and(|v| {
             v.iter().any(|(key, value)| {
                 ![
@@ -124,6 +139,7 @@ pub async fn update(
         let mut value = read(&tx, &p.user.id)?;
         if let Some(v) = change.provider_preferences { value.provider_preferences.extend(v); }
         if let Some(v) = change.audio_volume { value.audio_volume = v; }
+        if let Some(v) = change.player_height { value.player_height = v; }
         if let Some(v) = change.youtube_card_shortcuts { value.youtube_card_shortcuts = v; }
         if let Some(v) = change.theme { value.theme = v; }
         if let Some(v) = change.sidebar_collapsed { value.sidebar_collapsed = v; }
@@ -131,16 +147,14 @@ pub async fn update(
         if let Some(v) = change.fade_watched { value.fade_watched = v; }
         if let Some(v) = change.thumbnail_fit { value.thumbnail_fit = v; }
         tx.execute("INSERT INTO ui_preferences VALUES (?1,?2) ON CONFLICT(user_id) DO UPDATE SET value=excluded.value", params![p.user.id, serde_json::to_string(&value)?])?;
+        tx.execute(
+            "INSERT INTO events(user_id,kind,payload,created_at) VALUES (?1,'appearance.changed',?2,?3)",
+            params![p.user.id, serde_json::json!({"appearance":&value}).to_string(), thelxinoe_core::now()],
+        )?;
         tx.commit()?;
         Ok(value)
     }).await?;
-    state
-        .emit(
-            Some(recipient),
-            "appearance.changed",
-            serde_json::json!({"appearance":value}),
-        )
-        .await?;
+    let _ = state.events.send(());
     Ok(Json(value))
 }
 
@@ -179,12 +193,47 @@ mod tests {
         .await
         .2;
         assert_eq!(saved["audio_volume"], 0.27);
+        assert_eq!(saved["player_height"], Value::Null);
         assert_eq!(
             saved["provider_preferences"]["youtube-feed-layout"],
             "{\"showLive\":true}"
         );
+        let saved = call(
+            &state,
+            "/api/v1/me/appearance",
+            "PATCH",
+            json!({"player_height":420}),
+            &alice,
+        )
+        .await
+        .2;
+        assert_eq!(saved["player_height"], 420.0);
+        assert_eq!(
+            call(
+                &state,
+                "/api/v1/me/appearance",
+                "PATCH",
+                json!({"player_height":209}),
+                &alice
+            )
+            .await
+            .0,
+            axum::http::StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            call(
+                &state,
+                "/api/v1/me/appearance",
+                "PATCH",
+                json!({"player_height":null}),
+                &alice
+            )
+            .await
+            .2["player_height"],
+            Value::Null
+        );
         state.db.call(|db| {
-            assert_eq!(db.query_row("SELECT COUNT(*) FROM events WHERE kind='appearance.changed' AND user_id='alice'", [], |r|r.get::<_,i64>(0))?, 3);
+            assert_eq!(db.query_row("SELECT COUNT(*) FROM events WHERE kind='appearance.changed' AND user_id='alice'", [], |r|r.get::<_,i64>(0))?, 5);
             assert_eq!(db.query_row("SELECT COUNT(*) FROM events WHERE kind='appearance.changed' AND (user_id IS NULL OR user_id<>'alice')", [], |r|r.get::<_,i64>(0))?, 0);
             Ok(())
         }).await.unwrap();

@@ -25,6 +25,7 @@ export async function installUiFixture(
   let appearance = {
     provider_preferences: {},
     audio_volume: 1,
+    player_height: null as number | null,
     youtube_card_shortcuts: [],
     theme: 'light',
     sidebar_collapsed: false,

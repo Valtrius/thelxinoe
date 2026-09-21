@@ -20,6 +20,7 @@
     appearance,
     appearanceError,
     loadAppearance,
+    refreshAppearance,
     updateAppearance,
     resetAppearance,
     acceptAppearance,
@@ -365,7 +366,10 @@
           settingsTimer = setTimeout(() => void loadSettings(), 250);
         }
       },
-      (value) => (connected = value),
+      (value) => {
+        connected = value;
+        if (value && user) void refreshAppearance(user.id);
+      },
     );
     events.connect();
   }
