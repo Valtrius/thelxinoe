@@ -1,19 +1,22 @@
 <script lang="ts">
   import { api, type User } from './api';
+  import { Accordion } from 'bits-ui';
+  import { ChevronDown } from '@lucide/svelte';
   import Button from './ui/Button.svelte';
-  import { rowClass } from './ui/styles';
-  let { person, currentId, changed } = $props<{
+  import { badgeClass, errorClass } from './ui/styles';
+  let { person, currentId, changed, close } = $props<{
     person: User;
     currentId: string;
     changed: () => Promise<void>;
+    close: () => void;
   }>();
-  let expanded = $state(false),
-    role = $state<'user' | 'admin'>('user'),
+  let role = $state<'user' | 'admin'>('user'),
     password = $state(''),
     confirm = $state(''),
     error = $state(''),
     busy = $state(false);
   async function save() {
+    error = '';
     busy = true;
     try {
       await api(`/users/${person.id}`, 'PUT', {
@@ -21,7 +24,7 @@
         password: password || null,
       });
       password = '';
-      expanded = false;
+      close();
       if (person.id === currentId) location.reload();
       else await changed();
     } catch (e) {
@@ -31,6 +34,7 @@
     }
   }
   async function remove() {
+    error = '';
     busy = true;
     try {
       await api(`/users/${person.id}`, 'DELETE');
@@ -43,18 +47,29 @@
   }
 </script>
 
-<div class="person">
-  <div class={rowClass}>
-    <strong>{person.username}</strong><span>{person.role}</span><Button
-      variant="secondary"
-      size="form"
+<Accordion.Item value={person.id} class="person border-b border-line">
+  <Accordion.Header>
+    <Accordion.Trigger
+      class="group flex w-full items-center gap-3 py-4 text-left hover:text-accent"
+      disabled={busy}
       onclick={() => {
         role = person.role;
-        expanded = !expanded;
-      }}>Manage user</Button
+        error = '';
+      }}
+      ><strong class="min-w-0 flex-1 truncate">{person.username}</strong>
+      <span class={badgeClass}>{person.role}</span>
+      <ChevronDown
+        class="size-4 shrink-0 text-muted transition-transform group-data-[state=open]:rotate-180"
+      /></Accordion.Trigger
     >
-  </div>
-  {#if expanded}<div class="border border-line p-4">
+  </Accordion.Header>
+  <Accordion.Content class="overflow-hidden pb-4">
+    <form
+      onsubmit={(event) => {
+        event.preventDefault();
+        void save();
+      }}
+    >
       <p>
         Saving revokes this user's devices. Deleting removes their personal
         state, playlists and linked credentials. Shared media remains in the
@@ -75,23 +90,21 @@
           bind:value={password}
         /></label
       >
-      <Button
+      <Button variant="secondary" size="form" type="submit" disabled={busy}
+        >Save user</Button
+      >
+    </form>
+    {#if person.id !== currentId}<label class="my-4 block max-w-120"
+        >Type {person.username} to confirm deletion<input
+          bind:value={confirm}
+          autocomplete="off"
+        /></label
+      ><Button
         variant="secondary"
         size="form"
-        disabled={busy}
-        onclick={() => void save()}>Save user</Button
-      >
-      {#if person.id !== currentId}<label class="my-4 block max-w-120"
-          >Type {person.username} to confirm deletion<input
-            bind:value={confirm}
-            autocomplete="off"
-          /></label
-        ><Button
-          variant="secondary"
-          size="form"
-          disabled={busy || confirm !== person.username}
-          onclick={() => void remove()}>Delete user and personal data</Button
-        >{/if}
-      {#if error}<p role="alert">{error}</p>{/if}
-    </div>{/if}
-</div>
+        disabled={busy || confirm !== person.username}
+        onclick={() => void remove()}>Delete user and personal data</Button
+      >{/if}
+    {#if error}<p class={errorClass} role="alert">{error}</p>{/if}
+  </Accordion.Content>
+</Accordion.Item>

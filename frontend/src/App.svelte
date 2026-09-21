@@ -11,6 +11,7 @@
     statsClass,
   } from './lib/ui/styles';
   import { onMount, tick } from 'svelte';
+  import { Accordion } from 'bits-ui';
   import Sidebar from './lib/ui/Sidebar.svelte';
   import SettingsLayout from './lib/ui/SettingsLayout.svelte';
   import WindowTitlebar from './lib/ui/WindowTitlebar.svelte';
@@ -155,6 +156,7 @@
   let newUsername = $state(''),
     newPassword = $state(''),
     newRole = $state<'admin' | 'user'>('user');
+  let expandedUser = $state('');
   let preferencesRevision = $state(0);
   let timezone = $state('UTC'),
     health = $state<{
@@ -827,13 +829,9 @@
               {/if}
               {#if settingsSection === 'people'}<Panel>
                   <h2>People</h2>
-                  {#each users as person (person.id)}<UserAdministration
-                      {person}
-                      currentId={user.id}
-                      changed={loadSettings}
-                    />{/each}
                   <form
                     class={inlineFormClass}
+                    aria-label="Create user"
                     onsubmit={(e) => {
                       e.preventDefault();
                       void createUser();
@@ -863,6 +861,14 @@
                       >Add user</Button
                     >
                   </form>
+                  <Accordion.Root type="single" bind:value={expandedUser}>
+                    {#each users as person (person.id)}<UserAdministration
+                        {person}
+                        currentId={user.id}
+                        changed={loadSettings}
+                        close={() => (expandedUser = '')}
+                      />{/each}
+                  </Accordion.Root>
                 </Panel>
               {/if}
               {#if settingsSection === 'audit'}<History {user} audit />{/if}
