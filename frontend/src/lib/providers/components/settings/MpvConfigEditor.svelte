@@ -1,7 +1,7 @@
 <script lang="ts">
-  import Button from '../ui/Button.svelte';
+  import Button from '../../../ui/Button.svelte';
   import ConfirmDialog from '../ui/ConfirmDialog.svelte';
-  import Switch from '../ui/Switch.svelte';
+  import Switch from '../../../ui/Switch.svelte';
   import { onDestroy, untrack } from 'svelte';
   import { open } from '@tauri-apps/plugin-dialog';
   import { normalizeError } from '../../api';
@@ -344,8 +344,8 @@
       (reading ? 'Reading configuration...' : '')}
   </p>
   {#if preferences.source === 'managed'}
-    <details class="shrink-0 border-t border-(--line) pt-2">
-      <summary class="cursor-pointer text-xs font-medium text-(--muted)"
+    <details class="shrink-0 border-t border-line pt-2">
+      <summary class="cursor-pointer text-xs font-medium text-muted"
         >Copy files and restore backups</summary
       >
       <div class="mt-3 flex flex-wrap gap-2">
@@ -411,9 +411,7 @@
     >
   </div>
   {#if preferences.source === 'managed'}
-    <div
-      class="flex min-h-64 flex-1 flex-col gap-2 border-t border-(--line) pt-3"
-    >
+    <div class="flex min-h-64 flex-1 flex-col gap-2 border-t border-line pt-3">
       <div class="flex flex-wrap items-end gap-2">
         <label class="grid w-full max-w-sm gap-1 text-xs"
           ><span class="sr-only">File</span><select
@@ -456,9 +454,7 @@
         >
       </div>
       {#if conflict && document}
-        <div
-          class="grid gap-2 rounded-md border border-(--warning) p-3 text-xs"
-        >
+        <div class="grid gap-2 rounded-md border border-warning p-3 text-xs">
           <p>
             The file changed on disk. Your draft is still in the editor. Compare
             the disk version below, then merge it into your draft, save your
@@ -485,7 +481,7 @@
           >
         </div>
       {/if}
-      {#if dirty}<p class="text-xs text-(--warning)">
+      {#if dirty}<p class="text-xs text-warning">
           Unsaved changes. Your draft is kept while navigating settings.
         </p>
         <Button
@@ -498,7 +494,7 @@
             ? 'Discard draft and use disk version'
             : 'Discard changes'}</Button
         >{/if}
-      {#if schemaError}<p class="text-xs text-(--warning)">
+      {#if schemaError}<p class="text-xs text-warning">
           {schemaError}
         </p>{/if}
       {#if name !== 'mpv.conf' || rawVisible}
@@ -511,7 +507,7 @@
             disabled={editorBusy || !document}></textarea></label
         >
       {:else}
-        {#if loading && !schema}<p class="text-xs text-(--muted)" role="status">
+        {#if loading && !schema}<p class="text-xs text-muted" role="status">
             Reading MPV options…
           </p>{/if}
         {#if schema}

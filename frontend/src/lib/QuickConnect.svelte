@@ -1,5 +1,8 @@
 <script lang="ts">
   import { api } from './api';
+  import Button from './ui/Button.svelte';
+  import Panel from './ui/Panel.svelte';
+  import { errorClass, inlineFormClass } from './ui/styles';
   let { username } = $props<{ username: string }>();
   let code = $state('');
   let device = $state<{
@@ -44,11 +47,11 @@
   }
 </script>
 
-<section class="panel" aria-label="Quick Connect">
+<Panel aria-label="Quick Connect">
   <h2>Connect a TV</h2>
   <p>Enter the Quick Connect code displayed by your media client.</p>
   <form
-    class="inline-form"
+    class={inlineFormClass}
     onsubmit={(event) => {
       event.preventDefault();
       void inspect();
@@ -68,15 +71,17 @@
         required
       /></label
     >
-    <button disabled={busy}>Find device</button>
+    <Button type="submit" variant="secondary" size="form" disabled={busy}
+      >Find device</Button
+    >
   </form>
   {#if device}<p>
       Sign in to <strong>{device.device}</strong> using {device.client}
       {device.version} as <strong>{username}</strong>.
     </p>
-    <button class="primary" disabled={busy} onclick={() => void approve()}
-      >Connect this device</button
+    <Button size="form" disabled={busy} onclick={() => void approve()}
+      >Connect this device</Button
     >{/if}
-  {#if error}<p role="alert" class="error">{error}</p>{/if}
+  {#if error}<p role="alert" class={errorClass}>{error}</p>{/if}
   {#if approved}<p role="status">Device approved. Continue on your TV.</p>{/if}
-</section>
+</Panel>

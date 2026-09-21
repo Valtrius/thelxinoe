@@ -1,6 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from './api';
+  import Button from './ui/Button.svelte';
+  import Panel from './ui/Panel.svelte';
+  import { rowClass, sectionHeadingClass, statsClass } from './ui/styles';
   type Usage = { bytes: number; free_bytes: number; partial: boolean };
   type Dashboard = {
     storage: { state: Usage; cache: Usage };
@@ -75,16 +78,19 @@
   }
 </script>
 
-<section class="panel" aria-label="Administration overview">
-  <div class="section-heading">
+<Panel aria-label="Administration overview">
+  <div class={sectionHeadingClass}>
     <h2>Administration overview</h2>
-    <button class="secondary" disabled={busy} onclick={() => void load()}
-      >Refresh health</button
+    <Button
+      variant="secondary"
+      size="form"
+      disabled={busy}
+      onclick={() => void load()}>Refresh health</Button
     >
   </div>
   {#if error}<p role="alert">{error}</p>{/if}
   {#if data}
-    <div class="stats">
+    <div class={statsClass}>
       {#each ['state', 'cache'] as key (key)}{@const usage =
           data.storage[key as 'state' | 'cache']}
         <div>
@@ -94,7 +100,7 @@
         </div>{/each}
     </div>
     <h3>Integrations</h3>
-    {#each data.services as service (service.kind)}<div class="row">
+    {#each data.services as service (service.kind)}<div class={rowClass}>
         <strong>{service.kind}</strong><span
           >{service.healthy ? 'Last check passed' : 'Needs attention'} · {new Date(
             service.checked_at * 1000,
@@ -102,7 +108,7 @@
         >
       </div>{:else}<p>No integrations configured.</p>{/each}
     <h3>Downloads and indexers</h3>
-    {#each data.support.items as service (service.id)}<div class="row">
+    {#each data.support.items as service (service.id)}<div class={rowClass}>
         <strong>{service.kind}</strong><span
           >{service.unavailable
             ? 'Unavailable'
@@ -114,34 +120,35 @@
         >
       </div>{:else}<p>No download or indexer services configured.</p>{/each}
     <h3>Active playback and transcodes</h3>
-    {#each data.playback as session (session.id)}<div class="row">
+    {#each data.playback as session (session.id)}<div class={rowClass}>
         <strong>{session.title}</strong><span
           >{session.user} · {session.mode} · {session.state}</span
         >
       </div>{:else}<p>No active playback.</p>{/each}
     <h3>Recent failures</h3>
-    {#each data.errors as item (item.id)}<div class="row">
+    {#each data.errors as item (item.id)}<div class={rowClass}>
         <strong>{item.kind}</strong><span
           >{new Date(item.at * 1000).toLocaleString()}</span
         >
       </div>{:else}<p>No failed jobs.</p>{/each}
   {/if}
-  <button class="secondary" onclick={() => void diagnostics()}
-    >Export redacted diagnostics</button
+  <Button variant="secondary" size="form" onclick={() => void diagnostics()}
+    >Export redacted diagnostics</Button
   >
-  <p class="muted">
+  <p class="text-muted">
     Diagnostics include version, database checks and job counts. Credentials,
     paths and viewing history are excluded.
   </p>
   <h3>All devices</h3>
-  {#each devices as device (device.id)}<div class="row">
+  {#each devices as device (device.id)}<div class={rowClass}>
       <div>
         <strong>{device.user} · {device.name}</strong><small
           >{device.transport}</small
         >
       </div>
-      <button
-        class="secondary"
+      <Button
+        variant="secondary"
+        size="form"
         onclick={async () => {
           try {
             await api(`/auth/sessions/${device.id}`, 'DELETE');
@@ -149,7 +156,7 @@
           } catch (e) {
             error = String(e);
           }
-        }}>Revoke access</button
+        }}>Revoke access</Button
       >
     </div>{/each}
-</section>
+</Panel>

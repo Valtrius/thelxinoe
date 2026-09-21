@@ -32,14 +32,14 @@
 
 <details bind:this={details} bind:open class="group relative inline-block">
   <summary
-    class="flex size-5 cursor-pointer list-none items-center justify-center text-(--muted) hover:text-(--foreground) [&::-webkit-details-marker]:hidden"
+    class="flex size-5 cursor-pointer list-none items-center justify-center text-muted hover:text-foreground [&::-webkit-details-marker]:hidden"
     aria-label={label}
     title={label}
   >
     <Info class="size-3.5" />
   </summary>
   <div
-    class="absolute top-full left-0 z-30 mt-1 w-72 border border-(--line-strong) bg-(--surface-strong) p-3 text-xs leading-5 text-(--muted) shadow-xl"
+    class="absolute top-full left-0 z-30 mt-1 w-72 border border-line-strong bg-surface-strong p-3 text-xs leading-5 text-muted shadow-xl"
   >
     {@render children()}
   </div>

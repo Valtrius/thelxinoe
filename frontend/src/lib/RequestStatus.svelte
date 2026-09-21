@@ -1,5 +1,7 @@
 <script lang="ts">
   import { api } from './api';
+  import Button from './ui/Button.svelte';
+  import { panelClass } from './ui/styles';
   let { id, admin } = $props<{ id: string; admin: boolean }>();
   type Status = {
     available: boolean;
@@ -44,8 +46,11 @@
   }
 </script>
 
-<button class="secondary" disabled={busy} onclick={() => void act(refresh)}
-  >Check availability</button
+<Button
+  variant="secondary"
+  size="form"
+  disabled={busy}
+  onclick={() => void act(refresh)}>Check availability</Button
 >
 {#if message}<p role="status">{message}</p>{/if}
 {#if status}
@@ -58,8 +63,9 @@
       {download.title} · {download.status} · {download.time_left ?? ''}
     </p>{/each}
   {#if admin}
-    <button
-      class="secondary"
+    <Button
+      variant="secondary"
+      size="form"
       disabled={busy}
       onclick={() =>
         void act(async () => {
@@ -67,7 +73,7 @@
             monitored: !status?.monitored,
           });
           await refresh();
-        })}>{status.monitored ? 'Unmonitor' : 'Monitor'}</button
+        })}>{status.monitored ? 'Unmonitor' : 'Monitor'}</Button
     >
     {#if status.seasons.length}
       <label
@@ -82,8 +88,9 @@
         ></label
       >
     {/if}
-    <button
-      class="secondary"
+    <Button
+      variant="secondary"
+      size="form"
       disabled={busy}
       onclick={() =>
         void act(async () => {
@@ -95,12 +102,12 @@
           if (!releases.length)
             message =
               'The manager returned no releases. Check its indexers and download settings.';
-        })}>Search releases</button
+        })}>Search releases</Button
     >
   {/if}
 {/if}
 {#each releases as release (`${release.indexer_id}:${release.guid}`)}
-  <article class="panel">
+  <article class={panelClass}>
     <strong>{release.title}</strong>
     <p>
       Manager score: {release.score ?? 'not supplied'} · {(
@@ -110,8 +117,9 @@
     {#each release.rejections ?? [] as reason, index (index)}<p>
         {reason}
       </p>{/each}
-    <button
-      class="secondary"
+    <Button
+      variant="secondary"
+      size="form"
       disabled={busy ||
         release.approved === false ||
         !!release.rejections?.length}
@@ -129,7 +137,7 @@
           releases = [];
           message = 'Release submitted to the manager.';
           await refresh();
-        })}>Grab release</button
+        })}>Grab release</Button
     >
   </article>
 {/each}

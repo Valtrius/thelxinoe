@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from './api';
+  import Button from './ui/Button.svelte';
+  import Panel from './ui/Panel.svelte';
   type Policy = {
     service_id: string;
     policy: string;
@@ -84,7 +86,9 @@
   });
 </script>
 
-<section class="panel">
+<Panel
+  class="[&_article]:border-t [&_article]:border-line [&_article]:py-4 [&_button]:my-2 [&_button]:mr-2 [&_code]:wrap-anywhere [&_p]:my-[0.6rem]"
+>
   <h2>Service updates</h2>
   <p>
     Stable releases must pass an isolated compatibility check before
@@ -93,6 +97,7 @@
   </p>
   {#if message}<p role="status">{message}</p>{/if}
   <form
+    class="my-4 grid gap-4"
     onsubmit={(event) => {
       event.preventDefault();
       void work(async () => {
@@ -141,15 +146,17 @@
       /></label
     >
     <p>Equal hours allow the full day. A window may cross midnight.</p>
-    <button class="primary" disabled={busy}>Save update policy</button>
+    <Button type="submit" size="form" disabled={busy}>Save update policy</Button
+    >
   </form>
-  <button
-    class="secondary"
+  <Button
+    variant="secondary"
+    size="form"
     disabled={busy}
     onclick={() =>
       void work(async () => {
         await api('/admin/service-updates/check', 'POST', {});
-      })}>Check stable updates</button
+      })}>Check stable updates</Button
   >
   {#each services as service (service.id)}
     <article>
@@ -160,8 +167,9 @@
           </details>{/if}
         {#if p.error}<p role="status">{p.error}</p>{/if}
       {/each}
-      <button
-        class="secondary"
+      <Button
+        variant="secondary"
+        size="form"
         disabled={busy}
         onclick={() =>
           void work(async () => {
@@ -170,10 +178,10 @@
               'POST',
               {},
             );
-          })}>Check {service.kind} compatibility</button
+          })}>Check {service.kind} compatibility</Button
       >
       {#each updates.filter((u) => u.service_id === service.id) as update (update.id)}
-        <div class="attempt">
+        <div class="mt-2 bg-surface p-[0.8rem]">
           <strong>{stages[update.state] ?? update.state}</strong>
           {#if update.classification === 'incompatible'}<p>
               Candidate did not pass compatibility checks.
@@ -183,8 +191,9 @@
           {#if update.error}<p>
               {update.error}
             </p>{/if}
-          {#if update.state === 'ready'}<button
-              class="secondary"
+          {#if update.state === 'ready'}<Button
+              variant="secondary"
+              size="form"
               disabled={busy}
               onclick={() =>
                 void work(async () => {
@@ -193,10 +202,11 @@
                     'POST',
                     {},
                   );
-                })}>Install verified update</button
+                })}>Install verified update</Button
             >{/if}
-          {#if ['blocked', 'recovery-required'].includes(update.state)}<button
-              class="secondary"
+          {#if ['blocked', 'recovery-required'].includes(update.state)}<Button
+              variant="secondary"
+              size="form"
               disabled={busy}
               onclick={() =>
                 void work(async () => {
@@ -205,7 +215,7 @@
                     'POST',
                     {},
                   );
-                })}>Recover before activation</button
+                })}>Recover before activation</Button
             >{/if}
           {#if update.state === 'runtime-failure'}<p>
               The service crossed production activation. Inspect its health
@@ -215,30 +225,4 @@
       {/each}
     </article>
   {/each}
-</section>
-
-<style>
-  form {
-    display: grid;
-    gap: 1rem;
-    margin: 1rem 0;
-  }
-  p {
-    margin: 0.6rem 0;
-  }
-  article {
-    border-top: 1px solid var(--line);
-    padding: 1rem 0;
-  }
-  button {
-    margin: 0.5rem 0.5rem 0.5rem 0;
-  }
-  .attempt {
-    padding: 0.8rem;
-    background: var(--surface);
-    margin-top: 0.5rem;
-  }
-  code {
-    overflow-wrap: anywhere;
-  }
-</style>
+</Panel>

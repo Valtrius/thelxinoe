@@ -1,6 +1,8 @@
 <script lang="ts">
   import { api } from './api';
   import { untrack } from 'svelte';
+  import Button from './ui/Button.svelte';
+  import { errorClass } from './ui/styles';
   let { id, changed } = $props<{ id: string; changed: () => void }>();
   type Episode = {
     id: string;
@@ -58,58 +60,34 @@
   }
 </script>
 
-<section class="mapping">
-  <h3>Provider episode mapping</h3>
-  <p class="muted">
+<section class="mt-5 border-t border-line pt-4.5">
+  <h3 class="text-[15px] font-[550]">Provider episode mapping</h3>
+  <p class="text-[0.75rem] text-muted">
     Select the episodes represented by this local item. Provider numbering can
     differ from your files.
   </p>
-  {#if error}<p role="alert" class="error">{error}</p>{/if}
-  <p role="status">{message}</p>
+  {#if error}<p role="alert" class={errorClass}>{error}</p>{/if}
+  <p class="text-[0.75rem]" role="status">{message}</p>
   {#if episodes.length}
-    <div class="choices">
+    <div class="my-3 max-h-60 overflow-auto">
       {#each episodes as episode (episode.id)}
         <label
-          ><input type="checkbox" value={episode.id} bind:group={chosen} />
+          class="flex-row items-center gap-2.5 py-1.75 text-xs leading-normal"
+          ><input
+            class="w-auto"
+            type="checkbox"
+            value={episode.id}
+            bind:group={chosen}
+          />
           S{episode.season}E{episode.episode} · {episode.metadata.name ??
             episode.id}</label
         >
       {/each}
     </div>
-    <button class="secondary" disabled={busy} onclick={save}
-      >Save episode mapping</button
+    <Button variant="secondary" size="form" disabled={busy} onclick={save}
+      >Save episode mapping</Button
     >
-  {:else}<p class="muted">
+  {:else}<p class="text-[0.75rem] text-muted">
       Match the parent show and refresh its metadata to load provider episodes.
     </p>{/if}
 </section>
-
-<style>
-  .mapping {
-    margin-top: 20px;
-    border-top: 1px solid var(--line);
-    padding-top: 18px;
-  }
-  h3 {
-    font-size: 15px;
-    font-weight: 550;
-  }
-  p,
-  label {
-    font-size: 12px;
-  }
-  .choices {
-    max-height: 240px;
-    overflow: auto;
-    margin: 12px 0;
-  }
-  label {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 7px 0;
-  }
-  input {
-    width: auto;
-  }
-</style>

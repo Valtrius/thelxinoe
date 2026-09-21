@@ -3,7 +3,7 @@
     captureScrollAnchor,
     restoreScrollAnchor,
     type ScrollAnchor,
-  } from '../../scroll-anchor';
+  } from '../../../scroll-anchor';
   import type { YoutubeVideoActions } from '../../youtube-video-actions';
 
   import { onDestroy, tick, untrack } from 'svelte';
@@ -14,9 +14,12 @@
   import { createYoutubeFeed } from '../../youtube-feed-controller.svelte';
   import { SvelteMap, SvelteSet } from 'svelte/reactivity';
   import { api, normalizeError, preferences } from '../../api';
-  import { createCardGridWheelHandler } from '../../card-grid-wheel';
-  import { scaleYoutubeMediaScope } from '../../card-grid-zoom';
-  import { createLayoutMotion, type LayoutSnapshot } from '../../layout-motion';
+  import { createCardGridWheelHandler } from '../../../card-grid-wheel';
+  import { scaleYoutubeMediaScope } from '../../../card-grid-zoom';
+  import {
+    createLayoutMotion,
+    type LayoutSnapshot,
+  } from '../../../layout-motion';
   import { dismissToastByKey, showToast } from '../../toasts';
   import type {
     AppError,
@@ -46,8 +49,9 @@
     parseYoutubeFeedPreferences,
   } from '../../youtube-feed-preferences';
   import { youtubeVideoIdFromInput } from '../../youtube-video-input';
-  import Button from '../ui/Button.svelte';
+  import Button from '../../../ui/Button.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
+  import { eyebrowTextClass as eyebrowClass } from '../../../ui/styles';
   import YoutubeFeedToolbar from './YoutubeFeedToolbar.svelte';
   import VideoGrid from './VideoGrid.svelte';
   import WatchlistSidebar from './WatchlistSidebar.svelte';
@@ -899,12 +903,12 @@
       {#if !account}
         {#if authState.status === 'pending'}
           <section
-            class="panel grid min-h-72 place-items-center border border-(--line) bg-(--surface) p-8 text-center"
+            class="grid min-h-72 place-items-center border border-line bg-surface p-8 text-center shadow-panel"
           >
             <div class="max-w-md">
-              <p class="eyebrow">AUTH / SYSTEM BROWSER</p>
+              <p class={eyebrowClass}>AUTH / SYSTEM BROWSER</p>
               <h2 class="mt-2 text-xl">Finish Google sign-in</h2>
-              <p class="mt-3 text-sm leading-6 text-(--muted)">
+              <p class="mt-3 text-sm leading-6 text-muted">
                 {authState.message ??
                   'Use the browser window opened by Thelxinoe. Continue signing in to your server in that browser.'}
               </p>
@@ -1083,7 +1087,7 @@
 </div>
 
 {#if actionBusy}<div
-    class="pointer-events-none fixed right-5 bottom-5 z-40 border border-(--line-strong) bg-(--surface-strong) px-3 py-2 text-xs text-(--accent)"
+    class="pointer-events-none fixed right-5 bottom-5 z-40 border border-line-strong bg-surface-strong px-3 py-2 text-xs text-accent"
   >
     Updating progress…
   </div>{/if}

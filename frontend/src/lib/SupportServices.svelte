@@ -1,7 +1,10 @@
 <script lang="ts">
-  import Switch from './providers/components/ui/Switch.svelte';
+  import Switch from './ui/Switch.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
+  import Button from './ui/Button.svelte';
+  import Panel from './ui/Panel.svelte';
+  import { inlineFormClass, panelClass } from './ui/styles';
   type Service = {
     id: string;
     name: string;
@@ -103,7 +106,7 @@
   });
 </script>
 
-<section class="panel">
+<Panel>
   <h2>Subtitles, indexers and downloads</h2>
   <p>
     Connect Bazarr, Prowlarr and NZBGet. Use their own interfaces for advanced
@@ -111,7 +114,7 @@
   </p>
   {#if message}<p role="status">{message}</p>{/if}
   <form
-    class="inline-form"
+    class={inlineFormClass}
     onsubmit={(e) => {
       e.preventDefault();
       void act(register);
@@ -168,11 +171,13 @@
         placeholder="https://service.example.com"
       /></label
     >
-    <button class="primary" disabled={busy}>Connect support service</button>
+    <Button type="submit" size="form" disabled={busy}
+      >Connect support service</Button
+    >
   </form>
   {#each services as service (service.id)}
     {@const data = snapshots[service.id]}
-    <article class="panel">
+    <article class={panelClass}>
       <h3>{service.name}</h3>
       <p>{service.kind} {service.version}</p>
       {#if service.native_url}<a
@@ -180,11 +185,12 @@
           target="_blank"
           rel="noopener noreferrer">Open {service.name}</a
         >{/if}
-      <button
-        class="secondary"
+      <Button
+        variant="secondary"
+        size="form"
         disabled={busy}
         onclick={() => void act(() => refresh(service.id))}
-        >Refresh {service.name}</button
+        >Refresh {service.name}</Button
       >
       {#if data}
         {#each data.health ?? [] as issue, index (index)}<p>
@@ -202,16 +208,18 @@
                   ? ` · unavailable until ${indexer.disabled_until}`
                   : ''}
               </p>
-              <button
-                class="secondary"
+              <Button
+                variant="secondary"
+                size="form"
                 disabled={busy}
                 onclick={() =>
                   void act(() =>
                     command(service.id, 'test', { item_id: indexer.id }),
-                  )}>Test {indexer.name}</button
+                  )}>Test {indexer.name}</Button
               >
-              <button
-                class="secondary"
+              <Button
+                variant="secondary"
+                size="form"
                 disabled={busy}
                 onclick={() =>
                   void act(() =>
@@ -221,7 +229,7 @@
                       { item_id: indexer.id },
                     ),
                   )}
-                >{indexer.enabled ? 'Disable' : 'Enable'} {indexer.name}</button
+                >{indexer.enabled ? 'Disable' : 'Enable'} {indexer.name}</Button
               >
             </article>{/each}
         {:else if service.kind === 'nzbget'}
@@ -230,8 +238,9 @@
               (data.rate ?? 0) / 1024
             ).toFixed(0)} KB/s · {((data.free_mb ?? 0) / 1024).toFixed(1)} GB free
           </p>
-          <button
-            class="secondary"
+          <Button
+            variant="secondary"
+            size="form"
             disabled={busy}
             onclick={() =>
               void act(() =>
@@ -239,7 +248,7 @@
               )}
             >{data.paused
               ? 'Resume all downloads'
-              : 'Pause all downloads'}</button
+              : 'Pause all downloads'}</Button
           >
           <label
             >Download limit (KB/s; 0 is unlimited)<input
@@ -249,41 +258,45 @@
               bind:value={limit}
             /></label
           >
-          <button
-            class="secondary"
+          <Button
+            variant="secondary"
+            size="form"
             disabled={busy}
             onclick={() =>
               void act(() => command(service.id, 'rate', { value: limit }))}
-            >Set download limit</button
+            >Set download limit</Button
           >
           {#each data.queue ?? [] as download (download.id)}<article>
               <p>
                 {download.title} · {download.status} · {download.remaining_mb} / {download.size_mb}
                 MB remaining
               </p>
-              <button
-                class="secondary"
+              <Button
+                variant="secondary"
+                size="form"
                 disabled={busy}
                 onclick={() =>
                   void act(() =>
                     command(service.id, 'pause', { item_id: download.id }),
-                  )}>Pause {download.title}</button
+                  )}>Pause {download.title}</Button
               >
-              <button
-                class="secondary"
+              <Button
+                variant="secondary"
+                size="form"
                 disabled={busy}
                 onclick={() =>
                   void act(() =>
                     command(service.id, 'resume', { item_id: download.id }),
-                  )}>Resume {download.title}</button
+                  )}>Resume {download.title}</Button
               >
-              <button
-                class="secondary"
+              <Button
+                variant="secondary"
+                size="form"
                 disabled={busy}
                 onclick={() =>
                   void act(() =>
                     command(service.id, 'remove', { item_id: download.id }),
-                  )}>Remove {download.title}</button
+                  )}>Remove {download.title}</Button
               >
             </article>{/each}
           <h4>Recent downloads</h4>
@@ -310,8 +323,9 @@
             >
               {item.title}
             </p>
-            <button
-              class="secondary"
+            <Button
+              variant="secondary"
+              size="form"
               disabled={busy}
               onclick={() =>
                 void act(() =>
@@ -322,10 +336,10 @@
                     forced,
                     hearing_impaired: hearing,
                   }),
-                )}>Find subtitles for {item.title}</button
+                )}>Find subtitles for {item.title}</Button
             >{/each}
         {/if}
       {/if}
     </article>
   {/each}
-</section>
+</Panel>

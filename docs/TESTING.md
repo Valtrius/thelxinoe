@@ -35,6 +35,15 @@ Docker Desktop may not forward Windows file notifications into Linux bind mounts
 
 For first-run checks, start `npm run dev:fresh` in a separate terminal. Set `THELXINOE_TEST_URL` to its displayed address, clear `THELXINOE_PROXY_TEST` and `THELXINOE_UI_TEST`, and run `npm run test:e2e`. The suite rejects mismatched passwords, creates a fixture administrator with matching passwords, and opens all three provider pages with no linked accounts or tracked channels.
 
+### Isolated frontend layout and playback
+
+```powershell
+npm run test:layout
+npm run test:player
+```
+
+These suites start their own frontend servers and intercept API requests in the browser. They do not require a running backend or change any server account. The layout suite covers full-height settings navigation, independent menu scrolling, mobile breakpoints, theme changes, shared form controls, keyboard sign-in and Ctrl+wheel card sizing. The player suite uses generated media to exercise playback controls, fullscreen, loading/error states, page scrolling and intermediate sidebar animation frames; FFmpeg is required.
+
 ### Appearance and media motion
 
 After creating the disposable proxy/catalog fixture above, run the appearance suite against that same explicit test URL:

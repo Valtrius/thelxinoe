@@ -1,6 +1,8 @@
 <script lang="ts">
   import { api } from './api';
   import { untrack } from 'svelte';
+  import Button from './ui/Button.svelte';
+  import { errorClass, inlineFormClass, rowClass } from './ui/styles';
   let {
     id,
     kind,
@@ -54,15 +56,16 @@
   }
 </script>
 
-<div class="metadata-editor">
-  <h3>Metadata</h3>
-  {#if error}<p class="error" role="alert">{error}</p>{/if}{#if message}<p
+<div class="mt-5 border-t border-line pt-4.5">
+  <h3 class="text-[15px] font-[550]">Metadata</h3>
+  {#if error}<p class={errorClass} role="alert">{error}</p>{/if}{#if message}<p
+      class="text-[0.75rem] text-muted"
       role="status"
     >
       {message}
     </p>{/if}
   {#if ['movie', 'show', 'artist', 'album', 'track'].includes(kind)}<form
-      class="inline-form"
+      class={inlineFormClass}
       onsubmit={(e) => {
         e.preventDefault();
         void run(async () => {
@@ -74,29 +77,33 @@
         });
       }}
     >
-      <label>Find a match<input bind:value={query} required /></label><button
-        class="secondary"
-        disabled={busy}>Search provider</button
-      ><button
+      <label>Find a match<input bind:value={query} required /></label><Button
+        type="submit"
+        variant="secondary"
+        size="form"
+        disabled={busy}>Search provider</Button
+      ><Button
         type="button"
-        class="secondary"
+        variant="secondary"
+        size="form"
         disabled={busy}
         onclick={() =>
           run(async () => {
             await api(`/catalog/${id}/refresh`, 'POST');
             message =
               'Refresh queued. Watch Background jobs in Settings for its result.';
-          })}>Refresh metadata</button
+          })}>Refresh metadata</Button
       >
     </form>
-    {#each candidates as candidate (candidate.id)}<div class="row">
+    {#each candidates as candidate (candidate.id)}<div class={rowClass}>
         <div>
           <strong>{candidate.title}</strong><small
             >{candidate.year ?? candidate.provider}</small
           >
         </div>
-        <button
-          class="secondary"
+        <Button
+          variant="secondary"
+          size="form"
           disabled={busy}
           onclick={() =>
             run(async () => {
@@ -106,11 +113,11 @@
               });
               message = 'Match queued.';
               candidates = [];
-            })}>Use this match</button
+            })}>Use this match</Button
         >
       </div>{/each}{/if}
   <form
-    class="inline-form"
+    class={inlineFormClass}
     onsubmit={(e) => {
       e.preventDefault();
       void run(async () => {
@@ -143,8 +150,11 @@
         bind:value={year}
         placeholder="Use provider year"
       /></label
-    ><button class="secondary" disabled={busy}>Save corrections</button><button
-      class="secondary"
+    ><Button type="submit" variant="secondary" size="form" disabled={busy}
+      >Save corrections</Button
+    ><Button
+      variant="secondary"
+      size="form"
       disabled={busy}
       type="button"
       onclick={() =>
@@ -155,23 +165,7 @@
           year = undefined;
           changed();
           message = 'Provider metadata restored.';
-        })}>Clear corrections</button
+        })}>Clear corrections</Button
     >
   </form>
 </div>
-
-<style>
-  .metadata-editor {
-    border-top: 1px solid var(--line);
-    padding-top: 18px;
-    margin-top: 20px;
-  }
-  h3 {
-    font-weight: 550;
-    font-size: 15px;
-  }
-  .metadata-editor > p {
-    font-size: 12px;
-    color: var(--muted);
-  }
-</style>

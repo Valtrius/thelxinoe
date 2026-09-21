@@ -1,8 +1,10 @@
 <script lang="ts">
-  import Switch from './providers/components/ui/Switch.svelte';
+  import Switch from './ui/Switch.svelte';
   import ExclusiveChoiceGroup from './ui/ExclusiveChoiceGroup.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
+  import Button from './ui/Button.svelte';
+  import Panel from './ui/Panel.svelte';
   let { admin = false } = $props<{ admin?: boolean }>();
   const kinds = ['Intro', 'Recap', 'Credits', 'Preview'];
   const choices = ['Ask', 'Auto', 'Ignore'].map((value) => ({
@@ -49,16 +51,18 @@
   });
 </script>
 
-<section class="panel segment-settings">
+<Panel class="grid gap-4">
   {#if !admin}
     <h2>Intro and credit skipping</h2>
     <p>
       Ask shows a skip button. Auto seeks past the segment while playing. Ignore
       leaves it untouched. Jellyfin clients use their own skip preferences.
     </p>
-    <div class="choices">
+    <div class="grid justify-items-start gap-4">
       {#each kinds as kind (kind)}
-        <div class="segment-choice">
+        <div
+          class="grid grid-cols-[4rem_max-content] items-center gap-2 text-[0.8rem]"
+        >
           <span>{kind}</span>
           <ExclusiveChoiceGroup
             {choices}
@@ -70,11 +74,12 @@
         </div>
       {/each}
     </div>
-    <button
-      class="primary"
+    <Button
+      size="form"
+      class="justify-self-start"
       disabled={busy}
       onclick={() => work(() => api('/me/segments', 'PUT', preferences))}
-      >Save skip preferences</button
+      >Save skip preferences</Button
     >
   {:else}<h2>Episode analysis</h2>
     <Switch bind:checked={config.local} disabled={busy}
@@ -89,14 +94,17 @@
       library work are idle. Correct timestamps from an episode's library
       details.
     </p>
-    <div class="actions">
-      <button
-        class="primary"
+    <div class="flex flex-wrap gap-4">
+      <Button
+        size="form"
         disabled={busy}
         onclick={() => work(() => api('/admin/segments', 'PUT', config))}
-        >Save analysis settings</button
-      ><button class="secondary" disabled={busy} onclick={() => work(refresh)}
-        >Refresh analysis</button
+        >Save analysis settings</Button
+      ><Button
+        variant="secondary"
+        size="form"
+        disabled={busy}
+        onclick={() => work(refresh)}>Refresh analysis</Button
       >
     </div>
     {#each items as item, i (`${item.media_id}-${i}`)}<p>
@@ -105,31 +113,4 @@
       </p>{/each}
   {/if}
   {#if message}<p role="alert">{message}</p>{/if}
-</section>
-
-<style>
-  .segment-settings {
-    display: grid;
-    gap: 1rem;
-  }
-  .choices {
-    display: grid;
-    justify-items: start;
-    gap: 1rem;
-  }
-  .actions {
-    display: flex;
-    gap: 1rem;
-    flex-wrap: wrap;
-  }
-  .segment-choice {
-    display: grid;
-    grid-template-columns: 4rem max-content;
-    align-items: center;
-    gap: 0.5rem;
-    font-size: 0.8rem;
-  }
-  button {
-    justify-self: start;
-  }
-</style>
+</Panel>

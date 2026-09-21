@@ -1,7 +1,10 @@
 <script lang="ts">
   import { api } from './api';
   import { onMount } from 'svelte';
-  import Switch from './providers/components/ui/Switch.svelte';
+  import Switch from './ui/Switch.svelte';
+  import Button from './ui/Button.svelte';
+  import Panel from './ui/Panel.svelte';
+  import { panelClass } from './ui/styles';
   type Service = {
     id: string;
     kind: string;
@@ -98,7 +101,9 @@
   });
 </script>
 
-<section class="panel">
+<Panel
+  class="[&_button]:my-1 [&_button]:mr-2 [&_code]:wrap-anywhere [&_p]:my-2.5 [&_p]:leading-[1.5]"
+>
   <h2>Managed services</h2>
   <p>
     Install optional services on this server. Choose library profiles and
@@ -106,19 +111,23 @@
     on the selected local port.
   </p>
   {#if message}<p role="status">{message}</p>{/if}
-  <button class="secondary" disabled={busy} onclick={() => void act(refresh)}
-    >Refresh managed services</button
+  <Button
+    variant="secondary"
+    size="form"
+    disabled={busy}
+    onclick={() => void act(refresh)}>Refresh managed services</Button
   >
   {#if loaded}
-    <button
-      class="secondary"
+    <Button
+      variant="secondary"
+      size="form"
       disabled={busy}
       onclick={() =>
         void act(async () => {
           releases = (
             await api<{ items: typeof releases }>('/admin/stack/releases')
           ).items;
-        })}>Discover stable releases</button
+        })}>Discover stable releases</Button
     >
     {#if releases.length}<details open>
         <summary>Stable release discovery</summary
@@ -132,16 +141,18 @@
               >{/if}
           </p>{/each}
       </details>{/if}
-    <button
-      class="secondary"
+    <Button
+      variant="secondary"
+      size="form"
       disabled={busy}
       onclick={() =>
         void act(async () => {
           await api('/admin/stack/wire', 'POST', {});
           await refresh();
-        })}>Connect installed services</button
+        })}>Connect installed services</Button
     >
     <form
+      class="my-5 grid gap-3"
       onsubmit={(event) => {
         event.preventDefault();
         void act(async () => {
@@ -181,13 +192,16 @@
           placeholder="https://radarr.example.test"
         /></label
       >
-      <button
-        class="secondary"
+      <Button
+        type="submit"
+        variant="secondary"
+        size="form"
         disabled={busy || provisions.some((p) => p.kind === kind)}
-        >Install service</button
+        >Install service</Button
       >
     </form>
     <form
+      class="my-5 grid gap-3"
       onsubmit={(event) => {
         event.preventDefault();
         void act(async () => {
@@ -219,12 +233,15 @@
         stops it, copies its configuration into managed storage and connects the
         replacement. Its settings, library and current version are preserved.
       </p>
-      <button class="secondary" disabled={busy || !adoptId}
-        >Review ownership transfer</button
+      <Button
+        type="submit"
+        variant="secondary"
+        size="form"
+        disabled={busy || !adoptId}>Review ownership transfer</Button
       >
     </form>
     {#if transferReview}
-      <section class="panel" aria-label="Ownership transfer review">
+      <Panel aria-label="Ownership transfer review">
         <h3>Take ownership of {transferReview.name}</h3>
         <p>
           Copy configuration from <code>{transferReview.source_config}</code> to
@@ -258,8 +275,9 @@
             before transferring it.
           </p>
         {/if}
-        <button
-          class="secondary"
+        <Button
+          variant="secondary"
+          size="form"
           disabled={busy ||
             (!!transferReview.compose_project && !releasedCompose)}
           onclick={() =>
@@ -272,31 +290,34 @@
               transferReview = null;
               adoptId = '';
               await refresh();
-            })}>Stop, copy and take ownership</button
+            })}>Stop, copy and take ownership</Button
         >
-        <button
-          class="secondary"
+        <Button
+          variant="secondary"
+          size="form"
           disabled={busy}
           onclick={() => {
             transferReview = null;
-          }}>Cancel</button
+          }}>Cancel</Button
         >
-      </section>
+      </Panel>
     {/if}
     {#each provisions as provision (provision.id)}<p>
         {provision.kind}: {provision.state}
-        {#if provision.state === 'blocked'}<button
-            class="secondary"
+        {#if provision.state === 'blocked'}<Button
+            variant="secondary"
+            size="form"
             disabled={busy}
             onclick={() =>
               void act(async () => {
                 await api(`/admin/stack/${provision.id}/retry`, 'POST', {});
                 await refresh();
-              })}>Retry setup</button
+              })}>Retry setup</Button
           >
           {#if provision.origin === 'adopted' && !services.some((service) => service.id === provision.id && !service.transfer_pending)}
-            <button
-              class="secondary"
+            <Button
+              variant="secondary"
+              size="form"
               disabled={busy}
               onclick={() =>
                 void act(async () => {
@@ -306,7 +327,7 @@
                     {},
                   );
                   await refresh();
-                })}>Restore original service</button
+                })}>Restore original service</Button
             >
             <span
               >The original config will be used; changes made in the copied
@@ -322,8 +343,8 @@
           · {provision.error}{/if}
       </p>{/each}
     {#each services as service (service.id)}
-      <article class="panel">
-        <h3 class="service-title">{service.kind}</h3>
+      <article class={`${panelClass} mt-4`}>
+        <h3 class="capitalize">{service.kind}</h3>
         <p>
           {service.drift
             ? 'Configuration changed outside Thelxinoe'
@@ -335,8 +356,9 @@
         <details>
           <summary>Installed image</summary><code>{service.image}</code>
         </details>
-        {#each ['start', 'stop', 'restart', 'reconcile'] as action (action)}<button
-            class="secondary"
+        {#each ['start', 'stop', 'restart', 'reconcile'] as action (action)}<Button
+            variant="secondary"
+            size="form"
             disabled={busy ||
               provisions.some(
                 (p) =>
@@ -351,33 +373,9 @@
                   action,
                 });
                 await refresh();
-              })}>{action}</button
+              })}>{action}</Button
           >{/each}
       </article>
     {/each}
   {/if}
-</section>
-
-<style>
-  form {
-    display: grid;
-    gap: 12px;
-    margin: 20px 0;
-  }
-  p {
-    margin: 10px 0;
-    line-height: 1.5;
-  }
-  button {
-    margin: 4px 8px 4px 0;
-  }
-  article {
-    margin-top: 16px;
-  }
-  code {
-    overflow-wrap: anywhere;
-  }
-  .service-title {
-    text-transform: capitalize;
-  }
-</style>
+</Panel>

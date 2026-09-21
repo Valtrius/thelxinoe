@@ -1,5 +1,7 @@
 <script lang="ts">
   import { api, type User } from './api';
+  import Button from './ui/Button.svelte';
+  import { rowClass } from './ui/styles';
   let { person, currentId, changed } = $props<{
     person: User;
     currentId: string;
@@ -42,29 +44,30 @@
 </script>
 
 <div class="person">
-  <div class="row">
-    <strong>{person.username}</strong><span>{person.role}</span><button
-      class="secondary"
+  <div class={rowClass}>
+    <strong>{person.username}</strong><span>{person.role}</span><Button
+      variant="secondary"
+      size="form"
       onclick={() => {
         role = person.role;
         expanded = !expanded;
-      }}>Manage user</button
+      }}>Manage user</Button
     >
   </div>
-  {#if expanded}<div class="editor">
+  {#if expanded}<div class="border border-line p-4">
       <p>
         Saving revokes this user's devices. Deleting removes their personal
         state, playlists and linked credentials. Shared media remains in the
         library.
       </p>
-      <label
+      <label class="my-4 block max-w-120"
         >Role<select bind:value={role}
           ><option value="user">User</option><option value="admin"
             >Administrator</option
           ></select
         ></label
       >
-      <label
+      <label class="my-4 block max-w-120"
         >New password (optional)<input
           type="password"
           autocomplete="new-password"
@@ -72,31 +75,23 @@
           bind:value={password}
         /></label
       >
-      <button class="secondary" disabled={busy} onclick={() => void save()}
-        >Save user</button
+      <Button
+        variant="secondary"
+        size="form"
+        disabled={busy}
+        onclick={() => void save()}>Save user</Button
       >
-      {#if person.id !== currentId}<label
+      {#if person.id !== currentId}<label class="my-4 block max-w-120"
           >Type {person.username} to confirm deletion<input
             bind:value={confirm}
             autocomplete="off"
           /></label
-        ><button
-          class="secondary"
+        ><Button
+          variant="secondary"
+          size="form"
           disabled={busy || confirm !== person.username}
-          onclick={() => void remove()}>Delete user and personal data</button
+          onclick={() => void remove()}>Delete user and personal data</Button
         >{/if}
       {#if error}<p role="alert">{error}</p>{/if}
     </div>{/if}
 </div>
-
-<style>
-  .editor {
-    padding: 1rem;
-    border: 1px solid var(--line);
-  }
-  label {
-    display: block;
-    margin: 1rem 0;
-    max-width: 30rem;
-  }
-</style>

@@ -109,7 +109,7 @@
   const menuViewportMargin = 8;
 
   const menuItemClass =
-    'flex h-8 w-full items-center gap-[0.55rem] whitespace-nowrap border-0 bg-transparent px-[0.55rem] py-[0.4rem] text-left text-[0.68rem] text-(--muted) enabled:hover:bg-(--accent-soft) enabled:hover:text-(--foreground) [&_svg]:size-[0.85rem] [&_svg]:shrink-0';
+    'flex h-8 w-full items-center gap-[0.55rem] whitespace-nowrap border-0 bg-transparent px-[0.55rem] py-[0.4rem] text-left text-[0.68rem] text-muted enabled:hover:bg-accent-soft enabled:hover:text-foreground [&_svg]:size-[0.85rem] [&_svg]:shrink-0';
 
   function run(action: (video: YoutubeVideo) => void) {
     onMenuToggle();
@@ -409,7 +409,7 @@
       <button
         bind:this={menuDeleteConfirmButton}
         type="button"
-        class="grid h-8 place-items-center border border-[color-mix(in_srgb,var(--success)_55%,var(--line-strong))] bg-[color-mix(in_srgb,var(--success)_12%,transparent)] text-(--success) hover:bg-[color-mix(in_srgb,var(--success)_20%,transparent)] [&_svg]:size-[0.9rem]"
+        class="grid h-8 place-items-center border border-[color-mix(in_srgb,var(--success)_55%,var(--line-strong))] bg-success/12 text-success hover:bg-success/20 [&_svg]:size-[0.9rem]"
         title={`Confirm ${label.toLowerCase()}`}
         aria-label={`Confirm ${label.toLowerCase()}`}
         onclick={confirmMenuDelete}
@@ -418,7 +418,7 @@
       </button>
       <button
         type="button"
-        class="grid h-8 place-items-center border border-[color-mix(in_srgb,var(--danger)_55%,var(--line-strong))] bg-[color-mix(in_srgb,var(--danger)_12%,transparent)] text-(--danger) hover:bg-[color-mix(in_srgb,var(--danger)_20%,transparent)] [&_svg]:size-[0.9rem]"
+        class="grid h-8 place-items-center border border-[color-mix(in_srgb,var(--danger)_55%,var(--line-strong))] bg-danger/12 text-danger hover:bg-danger/20 [&_svg]:size-[0.9rem]"
         title={`Cancel ${label.toLowerCase()}`}
         aria-label={`Cancel ${label.toLowerCase()}`}
         onclick={cancelMenuDelete}
@@ -456,7 +456,7 @@
         <button
           bind:this={shortcutDeleteCancelButton}
           type="button"
-          class="grid size-8 place-items-center border border-[color-mix(in_srgb,var(--danger)_60%,var(--line-strong))] bg-[color-mix(in_srgb,var(--danger)_14%,var(--background))] text-(--danger) hover:bg-[color-mix(in_srgb,var(--danger)_22%,var(--background))] [&_svg]:size-4"
+          class="grid size-8 place-items-center border border-[color-mix(in_srgb,var(--danger)_60%,var(--line-strong))] bg-[color-mix(in_srgb,var(--danger)_14%,var(--background))] text-danger hover:bg-[color-mix(in_srgb,var(--danger)_22%,var(--background))] [&_svg]:size-4"
           title="Cancel deleting download"
           aria-label={`Cancel deleting download: ${video.title}`}
           onclick={cancelShortcutDelete}
@@ -465,7 +465,7 @@
         </button>
         <button
           type="button"
-          class="grid size-8 place-items-center border border-[color-mix(in_srgb,var(--success)_60%,var(--line-strong))] bg-[color-mix(in_srgb,var(--success)_14%,var(--background))] text-(--success) hover:bg-[color-mix(in_srgb,var(--success)_22%,var(--background))] [&_svg]:size-4"
+          class="grid size-8 place-items-center border border-[color-mix(in_srgb,var(--success)_60%,var(--line-strong))] bg-[color-mix(in_srgb,var(--success)_14%,var(--background))] text-success hover:bg-[color-mix(in_srgb,var(--success)_22%,var(--background))] [&_svg]:size-4"
           title="Confirm deleting download"
           aria-label={`Confirm deleting download: ${video.title}`}
           onclick={confirmShortcutDelete}
@@ -500,15 +500,13 @@
       bind:this={menuElement}
       id={`video-actions-${video.videoId}`}
       popover="manual"
-      class="media-card-popover panel fixed right-auto bottom-auto m-0 grid max-h-[calc(100vh-1rem)] w-max max-w-[calc(100vw-1rem)] overflow-auto border border-(--line-strong) bg-(--surface-strong) p-1.5 shadow-2xl"
+      class="media-card-popover fixed right-auto bottom-auto m-0 grid max-h-[calc(100vh-1rem)] w-max max-w-[calc(100vw-1rem)] overflow-auto border border-line-strong bg-surface-strong p-1.5 shadow-2xl"
       style={`top:${menuTop}px;left:${menuLeft}px;visibility:${menuPlaced ? 'visible' : 'hidden'}`}
     >
       {#if choosingShortcuts}
         <div class="px-[0.55rem] pt-1 pb-2">
-          <p class="text-xs font-semibold text-(--foreground)">
-            Choose shortcuts
-          </p>
-          <p class="mt-1 text-[0.65rem] text-(--muted)">
+          <p class="text-xs font-semibold text-foreground">Choose shortcuts</p>
+          <p class="mt-1 text-[0.65rem] text-muted">
             Select up to {MAX_YOUTUBE_CARD_SHORTCUTS}. Some only appear when
             they apply.
           </p>
@@ -526,13 +524,13 @@
           >
             {@render shortcutIcon(option.id)}
             <span>{option.label}</span>
-            {#if selected}<Check class="ml-auto text-(--accent)" />{/if}
+            {#if selected}<Check class="ml-auto text-accent" />{/if}
           </button>
         {/each}
-        <span class="my-1 h-px bg-(--line)"></span>
+        <span class="my-1 h-px bg-line"></span>
         <button class={menuItemClass} type="button" onclick={saveShortcuts}>
           <Check />Done
-          <span class="ml-auto text-[0.6rem] text-(--muted)"
+          <span class="ml-auto text-[0.6rem] text-muted"
             >{draftShortcuts.length}/{MAX_YOUTUBE_CARD_SHORTCUTS}</span
           >
         </button>
@@ -555,8 +553,7 @@
             ><LogIn />Play signed in</button
           >
         {/if}
-        {#if tracksVideoProgress}<span class="my-1 h-px bg-(--line)"
-          ></span>{/if}
+        {#if tracksVideoProgress}<span class="my-1 h-px bg-line"></span>{/if}
         {#if downloadReady}
           <button
             class={menuItemClass}
@@ -632,7 +629,7 @@
           >
         {/if}
         {#if watchlists.length > 0}
-          <span class="my-1 h-px bg-(--line)"></span>
+          <span class="my-1 h-px bg-line"></span>
           {#each watchlists as watchlist (watchlist.id)}
             {@const alreadyAdded = watchlist.items.some(
               (item) => item.video.videoId === video.videoId,
@@ -664,7 +661,7 @@
             </button>
           {/each}
         {/if}
-        <span class="my-1 h-px bg-(--line)"></span>
+        <span class="my-1 h-px bg-line"></span>
         <button
           class={menuItemClass}
           type="button"
@@ -676,14 +673,14 @@
           onclick={() => run(actions.onOpen)}
           ><ExternalLink />Open in browser</button
         >
-        <span class="my-1 h-px bg-(--line)"></span>
+        <span class="my-1 h-px bg-line"></span>
         <button
           class={menuItemClass}
           type="button"
           onclick={beginChoosingShortcuts}
         >
           <Settings2 />Choose shortcuts…
-          <span class="ml-auto text-[0.6rem] text-(--muted)"
+          <span class="ml-auto text-[0.6rem] text-muted"
             >{youtubeCardShortcuts.length}/{MAX_YOUTUBE_CARD_SHORTCUTS}</span
           >
         </button>

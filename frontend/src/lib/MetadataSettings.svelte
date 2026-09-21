@@ -1,6 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from './api';
+  import Button from './ui/Button.svelte';
+  import Panel from './ui/Panel.svelte';
+  import { inlineFormClass } from './ui/styles';
   let token = $state(''),
     contact = $state(''),
     configured = $state(false),
@@ -35,14 +38,14 @@
   }
 </script>
 
-<section class="panel">
+<Panel>
   <h2>Metadata providers</h2>
-  <p class="muted">
+  <p class="text-muted">
     One configuration for everyone on this server. Movies and shows use TMDB;
     music uses MusicBrainz and Cover Art Archive.
   </p>
   <form
-    class="inline-form"
+    class={inlineFormClass}
     onsubmit={(e) => {
       e.preventDefault();
       void save();
@@ -62,19 +65,19 @@
         bind:value={contact}
         placeholder="Contact for API usage issues"
       /></label
-    ><button class="primary" disabled={busy}>Save providers</button>
+    ><Button type="submit" size="form" disabled={busy}>Save providers</Button>
   </form>
-  {#if message}<p role="status" class="muted">{message}</p>{/if}
-</section>
-<section class="panel">
+  {#if message}<p role="status" class="text-muted">{message}</p>{/if}
+</Panel>
+<Panel>
   <h2>Credits</h2>
   <a href="https://www.themoviedb.org" target="_blank" rel="noreferrer"
     ><img src="/tmdb.svg" width="120" height="16" alt="TMDB" /></a
   >
-  <p class="muted">
+  <p class="text-muted">
     This product uses the TMDB API but is not endorsed or certified by TMDB.
   </p>
-  <p class="muted">
+  <p class="text-muted">
     Music metadata is provided by <a
       href="https://musicbrainz.org"
       target="_blank"
@@ -84,4 +87,4 @@
       >Cover Art Archive</a
     >.
   </p>
-</section>
+</Panel>

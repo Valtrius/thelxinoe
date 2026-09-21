@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { MpvOption } from '../../tools-api';
   import { parseMpvConfig, setMpvOption } from '../../mpv-config';
-  import Switch from '../ui/Switch.svelte';
+  import Switch from '../../../ui/Switch.svelte';
   import MpvOptionField from './MpvOptionField.svelte';
   import { controlClass } from './settingsUi';
 
@@ -90,12 +90,12 @@
     >
   </div>
   {#if parsed.complex}
-    <p class="text-xs text-(--warning)">
+    <p class="text-xs text-warning">
       This file contains complex or unsupported syntax. Use the raw editor to
       preserve it.
     </p>
   {/if}
-  <div class="max-h-96 min-h-32 flex-1 overflow-y-auto border border-(--line)">
+  <div class="max-h-96 min-h-32 flex-1 overflow-y-auto border border-line">
     {#each filtered.slice(0, 100) as option (option.name)}
       <MpvOptionField
         {option}
@@ -106,7 +106,7 @@
       />
     {/each}
   </div>
-  {#if filtered.length > 100}<p class="text-xs text-(--muted)">
+  {#if filtered.length > 100}<p class="text-xs text-muted">
       Showing the first 100 matches. Refine your search.
     </p>{/if}
 </div>

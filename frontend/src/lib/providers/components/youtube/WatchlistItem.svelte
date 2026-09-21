@@ -125,14 +125,14 @@
   aria-disabled={!canPlay}
   data-playing={isPlaying}
   aria-label={isPlaying ? `Playing: ${video.title}` : video.title}
-  class={`group/watchlist-item relative flex cursor-default items-stretch border-b border-(--line) transition-[opacity,background-color] duration-150 hover:z-20 ${sortable ? (dragging ? 'bg-(--accent-soft) opacity-35 select-none' : 'select-none hover:bg-(--surface-soft)') : canPlay ? 'hover:bg-(--surface-soft)' : ''}`}
+  class={`group/watchlist-item relative flex cursor-default items-stretch border-b border-line transition-[opacity,background-color] duration-150 hover:z-20 ${sortable ? (dragging ? 'bg-accent-soft opacity-35 select-none' : 'select-none hover:bg-surface-soft') : canPlay ? 'hover:bg-surface-soft' : ''}`}
   onclick={clickCard}
   onkeydown={keyCard}
 >
   {#if isPlaying}
     <span
       aria-hidden="true"
-      class="pointer-events-none absolute inset-y-0 right-0 z-10 w-1 bg-(--accent)"
+      class="pointer-events-none absolute inset-y-0 right-0 z-10 w-1 bg-accent"
     ></span>
   {/if}
   <div
@@ -150,7 +150,7 @@
     {/if}
     {#if showPosition}
       <span
-        class="absolute bottom-2 left-1 border border-[color-mix(in_srgb,var(--accent)_45%,transparent)] bg-black/75 px-1.5 py-0.5 font-mono text-[0.6rem] text-(--accent)"
+        class="absolute bottom-2 left-1 border border-accent/45 bg-black/75 px-1.5 py-0.5 font-mono text-[0.6rem] text-accent"
       >
         {formatClock(video.positionSeconds)}
       </span>
@@ -165,11 +165,9 @@
       </span>
     {/if}
     {#if downloadPending && downloadPercent !== null}
-      <span
-        class="absolute right-0 bottom-1 left-0 h-1 bg-[color-mix(in_srgb,var(--success)_18%,transparent)]"
-      >
+      <span class="absolute right-0 bottom-1 left-0 h-1 bg-success/18">
         <span
-          class="block h-full bg-(--success) shadow-[0_0_12px_var(--success)] transition-[width] duration-150"
+          class="block h-full bg-success shadow-[0_0_12px_var(--success)] transition-[width] duration-150"
           style={`width:${downloadPercent}%`}
         ></span>
       </span>
@@ -177,7 +175,7 @@
     {#if tracksVideoProgress && progressPercent > 0}
       <span class="absolute right-0 bottom-0 left-0 h-1 bg-white/12">
         <span
-          class="block h-full bg-(--accent) shadow-[0_0_12px_var(--accent)]"
+          class="block h-full bg-accent shadow-accent-glow"
           style={`width:${progressPercent}%`}
         ></span>
       </span>
@@ -194,7 +192,7 @@
       </p>
       {#if titleTruncated && !dragging}
         <div
-          class="pointer-events-none absolute -top-1.5 -right-1.5 -left-1.5 z-30 translate-y-0.5 border border-(--line-strong) bg-(--surface-strong) px-2 py-1.5 text-sm leading-5 font-medium opacity-0 shadow-[0_12px_30px_var(--shadow)] transition-[opacity,translate] delay-0 duration-150 ease-out group-hover/title:translate-y-0 group-hover/title:opacity-100 group-hover/title:delay-750 motion-reduce:transition-none"
+          class="pointer-events-none absolute -top-1.5 -right-1.5 -left-1.5 z-30 translate-y-0.5 border border-line-strong bg-surface-strong px-2 py-1.5 text-sm leading-5 font-medium opacity-0 shadow-[0_12px_30px_var(--shadow)] transition-[opacity,translate] delay-0 duration-150 ease-out group-hover/title:translate-y-0 group-hover/title:opacity-100 group-hover/title:delay-750 motion-reduce:transition-none"
           aria-hidden="true"
         >
           {video.title}
@@ -202,12 +200,12 @@
       {/if}
     </div>
     <p
-      class="mt-0.5 truncate text-[0.62rem] tracking-[0.08em] text-(--muted) uppercase"
+      class="mt-0.5 truncate text-[0.62rem] tracking-[0.08em] text-muted uppercase"
     >
       {video.channelName}
     </p>
     <span
-      class={`mt-auto min-w-0 truncate pr-24 text-[0.58rem] font-bold tracking-[0.1em] uppercase ${downloadLabel && !['failed', 'interrupted'].includes(activeDownload?.status ?? '') ? 'text-(--success)' : activeDownload?.status === 'failed' ? 'text-(--danger)' : 'text-(--muted)'}`}
+      class={`mt-auto min-w-0 truncate pr-24 text-[0.58rem] font-bold tracking-[0.1em] uppercase ${downloadLabel && !['failed', 'interrupted'].includes(activeDownload?.status ?? '') ? 'text-success' : activeDownload?.status === 'failed' ? 'text-danger' : 'text-muted'}`}
     >
       {#if downloadReady && downloadLabel}
         <span class="inline-flex items-center gap-1">
@@ -230,7 +228,7 @@
   >
     <button
       type="button"
-      class="grid size-7 place-items-center text-(--muted) hover:bg-(--surface-strong) hover:text-(--text)"
+      class="grid size-7 place-items-center text-muted hover:bg-surface-strong hover:text-foreground"
       title={video.isWatched ? 'Mark unwatched' : 'Mark watched'}
       disabled={!tracksVideoProgress || isBusy}
       onclick={() =>
@@ -244,7 +242,7 @@
     {#if downloadPending}
       <button
         type="button"
-        class="grid size-7 place-items-center text-(--muted) hover:bg-(--surface-strong) hover:text-(--text)"
+        class="grid size-7 place-items-center text-muted hover:bg-surface-strong hover:text-foreground"
         title="Cancel download"
         disabled={downloadBusy}
         onclick={() => actions.onCancelDownload(video)}
@@ -253,7 +251,7 @@
     {:else if downloadReady}
       <button
         type="button"
-        class="grid size-7 place-items-center text-(--muted) hover:bg-(--surface-strong) hover:text-(--danger)"
+        class="grid size-7 place-items-center text-muted hover:bg-surface-strong hover:text-danger"
         title="Delete download"
         disabled={downloadBusy || isPlaying}
         onclick={() => actions.onDeleteDownload(video)}
@@ -262,7 +260,7 @@
     {:else}
       <button
         type="button"
-        class="grid size-7 place-items-center text-(--muted) hover:bg-(--surface-strong) hover:text-(--text)"
+        class="grid size-7 place-items-center text-muted hover:bg-surface-strong hover:text-foreground"
         title="Download"
         disabled={!canDownload}
         onclick={() => actions.onDownload(video)}
@@ -271,7 +269,7 @@
     {/if}
     <button
       type="button"
-      class="grid size-7 place-items-center text-(--muted) hover:bg-(--surface-strong) hover:text-(--danger)"
+      class="grid size-7 place-items-center text-muted hover:bg-surface-strong hover:text-danger"
       title="Remove from watchlist"
       onclick={() => onRemove(video)}><X class="size-3.5" /></button
     >

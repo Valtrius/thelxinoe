@@ -277,7 +277,7 @@
 </script>
 
 <div
-  class="provider-surface min-w-0"
+  class="provider-surface min-w-0 text-[1rem]"
   data-sidebar-resize="xy"
   data-sidebar-resize-origin
 >

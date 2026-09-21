@@ -1,4 +1,15 @@
 <script lang="ts">
+  import AuthLayout from './lib/ui/AuthLayout.svelte';
+  import Button from './lib/ui/Button.svelte';
+  import Panel from './lib/ui/Panel.svelte';
+  import {
+    inlineFormClass,
+    rowClass,
+    sectionHeadingClass,
+    badgeClass,
+    errorClass,
+    statsClass,
+  } from './lib/ui/styles';
   import { onMount, tick } from 'svelte';
   import Sidebar from './lib/ui/Sidebar.svelte';
   import SettingsLayout from './lib/ui/SettingsLayout.svelte';
@@ -475,112 +486,117 @@
 
 {#if desktop}<WindowTitlebar />{/if}
 {#if loading}
-  <main class="auth-page">
+  <AuthLayout card={false}>
     <img
-      class="brand-mark"
+      class="block size-10.5 object-contain"
       src="/icon.svg"
       alt="Thelxinoe"
       width="42"
       height="42"
     />
     <p>Connecting to your library…</p>
-  </main>
+  </AuthLayout>
 {:else if updateRequired}
-  <main class="auth-page">
-    <div class="auth-card">
-      <h1>Update required</h1>
-      <p>{updateRequired}</p>
-      {#if desktop}<DesktopUpdates /><label
-          >Server address<input bind:value={serverAddress} /></label
-        ><button
-          class="secondary"
-          onclick={() =>
-            act(async () => {
-              await changeServer(serverAddress);
-              await boot();
-            })}>Connect to server</button
-        >{:else}<button class="secondary" onclick={() => location.reload()}
-          >Reload current web app</button
-        >{/if}
-    </div>
-  </main>
+  <AuthLayout>
+    <h1>Update required</h1>
+    <p>{updateRequired}</p>
+    {#if desktop}<DesktopUpdates /><label
+        >Server address<input bind:value={serverAddress} /></label
+      ><Button
+        size="form"
+        variant="secondary"
+        type="submit"
+        onclick={() =>
+          act(async () => {
+            await changeServer(serverAddress);
+            await boot();
+          })}>Connect to server</Button
+      >{:else}<Button
+        size="form"
+        variant="secondary"
+        type="submit"
+        onclick={() => location.reload()}>Reload current web app</Button
+      >{/if}
+  </AuthLayout>
 {:else if !user}
-  <main class="auth-page">
-    <div class="auth-card">
-      <img
-        class="brand-mark"
-        src="/icon.svg"
-        alt="Thelxinoe"
-        width="42"
-        height="42"
-      />
-      <h1>{setup ? 'Welcome to Thelxinoe' : 'Welcome back'}</h1>
-      <p class="muted">
-        {setup
-          ? 'Create the administrator account for your media server.'
-          : 'Sign in to pick up where you left off.'}
-      </p>
-      {#if desktop}<label
-          >Server address<input
-            bind:value={serverAddress}
-            placeholder="https://media.example.com"
-          /></label
-        ><button
-          type="button"
-          class="secondary"
-          onclick={() =>
-            act(async () => {
-              await changeServer(serverAddress);
-              await boot();
-            })}>Connect to server</button
-        >{/if}
-      <form
-        onsubmit={(event) => {
-          event.preventDefault();
-          void authenticate();
-        }}
+  <AuthLayout>
+    <img
+      class="block size-10.5 object-contain"
+      src="/icon.svg"
+      alt="Thelxinoe"
+      width="42"
+      height="42"
+    />
+    <h1>{setup ? 'Welcome to Thelxinoe' : 'Welcome back'}</h1>
+    <p class="text-muted">
+      {setup
+        ? 'Create the administrator account for your media server.'
+        : 'Sign in to pick up where you left off.'}
+    </p>
+    {#if desktop}<label
+        >Server address<input
+          bind:value={serverAddress}
+          placeholder="https://media.example.com"
+        /></label
+      ><Button
+        size="form"
+        variant="secondary"
+        type="button"
+        onclick={() =>
+          act(async () => {
+            await changeServer(serverAddress);
+            await boot();
+          })}>Connect to server</Button
+      >{/if}
+    <form
+      onsubmit={(event) => {
+        event.preventDefault();
+        void authenticate();
+      }}
+    >
+      <label
+        >Username<input
+          bind:value={username}
+          required
+          autocomplete="username"
+        /></label
       >
-        <label
-          >Username<input
-            bind:value={username}
-            required
-            autocomplete="username"
-          /></label
-        >
-        <label
-          >Password<input
-            bind:value={password}
+      <label
+        >Password<input
+          bind:value={password}
+          type="password"
+          required
+          minlength={setup ? 12 : 1}
+          autocomplete={setup ? 'new-password' : 'current-password'}
+        /></label
+      >
+      {#if setup}<label
+          >Confirm password<input
+            bind:value={passwordConfirmation}
             type="password"
             required
-            minlength={setup ? 12 : 1}
-            autocomplete={setup ? 'new-password' : 'current-password'}
+            minlength="12"
+            autocomplete="new-password"
           /></label
         >
-        {#if setup}<label
-            >Confirm password<input
-              bind:value={passwordConfirmation}
-              type="password"
-              required
-              minlength="12"
-              autocomplete="new-password"
-            /></label
-          >
-          <p class="hint">
-            Use at least 12 characters. You can create other users after setup.
-          </p>{/if}
-        {#if error}<p role="alert" class="error">{error}</p>{/if}
-        <button class="primary" disabled={busy}
-          >{busy
-            ? 'Connecting…'
-            : setup
-              ? 'Create your server'
-              : 'Sign in'}</button
-        >
-      </form>
-    </div>
-  </main>
+        <p class="text-[11px] text-muted">
+          Use at least 12 characters. You can create other users after setup.
+        </p>{/if}
+      {#if error}<p role="alert" class={errorClass}>{error}</p>{/if}
+      <Button size="form" type="submit" class="w-full" disabled={busy}
+        >{busy
+          ? 'Connecting…'
+          : setup
+            ? 'Create your server'
+            : 'Sign in'}</Button
+      >
+    </form>
+  </AuthLayout>
 {:else}
-  <div class="app-shell" bind:this={shell}>
+  <div
+    class="app-shell flex h-dvh overflow-hidden desktop-shell:mt-8 desktop-shell:h-[calc(100dvh-32px)]"
+    bind:this={shell}
+  >
     <Sidebar
       {section}
       {collapsed}
@@ -591,25 +607,48 @@
       logout={() => void logout()}
     />
     {#if compact && mobileNavOpen}<button
-        class="sidebar-scrim"
+        class="sidebar-scrim fixed inset-0 z-60 bg-black/53"
         aria-label="Close navigation"
         onclick={() => (mobileNavOpen = false)}
       ></button>{/if}
-    <main class="content" bind:this={main}>
-      <header class="page-header">
-        <div>
-          <h1 data-sidebar-resize="x-pos">
+    <main
+      class={[
+        'content flex min-w-0 flex-1 flex-col overflow-hidden',
+        compact && mobileNavOpen && 'ml-18',
+      ]}
+      bind:this={main}
+    >
+      <header
+        class="page-header flex shrink-0 items-center gap-5 border-b border-line bg-background/88 px-6 py-2 narrow:px-4 compact:gap-2.5 compact:px-3 compact:py-4"
+      >
+        <div class="mr-auto min-w-0">
+          <h1
+            class="m-0 text-[18px] leading-6 compact:text-[17px]"
+            data-sidebar-resize="x-pos"
+          >
             {section === 'Home' ? `Good to see you, ${user.username}` : section}
           </h1>
         </div>
-        <span class="connection"
-          ><i class:online={connected}></i>{connected
-            ? 'Connected'
-            : 'Reconnecting'}</span
+        <span
+          class="connection inline-flex items-center gap-1.75 text-[10px] whitespace-nowrap text-muted compact:text-[0px]"
+          ><i
+            class={[
+              'size-1.25 rounded-full',
+              connected ? 'bg-success' : 'bg-warning',
+            ]}
+            class:online={connected}
+          ></i>{connected ? 'Connected' : 'Reconnecting'}</span
         >
       </header>
       <div
-        class="workspace-scroll"
+        class={[
+          'workspace-scroll relative min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto [overflow-anchor:none]',
+          providerPage
+            ? 'pt-3 pr-0 pb-0 pl-3 scrollbar-stable'
+            : section === 'Settings'
+              ? 'p-0'
+              : 'p-6 narrow:p-4 compact:p-3',
+        ]}
         bind:this={workspace}
         bind:clientHeight={workspaceHeight}
         style:--workspace-height={`${workspaceHeight}px`}
@@ -621,10 +660,10 @@
         use:mediaMotion.connect
         use:zoomWheel
       >
-        {#if $appearanceError}<p class="muted" role="status">
+        {#if $appearanceError}<p class="text-muted" role="status">
             {$appearanceError}
           </p>{/if}
-        {#if error}<p class="error" role="alert">{error}</p>{/if}
+        {#if error}<p class={errorClass} role="alert">{error}</p>{/if}
         {#if playing && desktop}<NativePlayer
             choice={playing}
             closed={(closedChoice) => {
@@ -663,12 +702,10 @@
             {#if desktop && settingsSection === 'mpv'}<MpvSettings />{/if}
             {#if desktop && settingsSection === 'updates'}<DesktopUpdates
               />{/if}
-            {#if desktop && settingsSection === 'connection'}<section
-                class="panel"
-              >
+            {#if desktop && settingsSection === 'connection'}<Panel>
                 <h2>Server connection</h2>
                 <form
-                  class="inline-form"
+                  class={inlineFormClass}
                   onsubmit={(e) => {
                     e.preventDefault();
                     void act(async () => {
@@ -685,17 +722,20 @@
                       bind:value={serverAddress}
                       required
                     /></label
-                  ><button class="secondary" disabled={busy}
-                    >Change server</button
+                  ><Button
+                    size="form"
+                    variant="secondary"
+                    type="submit"
+                    disabled={busy}>Change server</Button
                   >
                 </form>
-              </section>{/if}
-            {#if settingsSection === 'devices'}<section class="panel">
+              </Panel>{/if}
+            {#if settingsSection === 'devices'}<Panel>
                 <h2>Your devices</h2>
-                <p class="muted">
+                <p class="text-muted">
                   Revoke access to a browser or desktop at any time.
                 </p>
-                {#each sessions as session (session.id)}<div class="row">
+                {#each sessions as session (session.id)}<div class={rowClass}>
                     <div>
                       <strong>{session.name}</strong><small
                         >{session.transport} · {new Date(
@@ -705,8 +745,10 @@
                           : ''}</small
                       >
                     </div>
-                    <button
-                      class="secondary"
+                    <Button
+                      size="form"
+                      variant="secondary"
+                      type="submit"
                       disabled={busy}
                       onclick={() =>
                         act(async () => {
@@ -715,10 +757,10 @@
                             user = null;
                             events?.close();
                           } else await loadSettings();
-                        })}>Revoke</button
+                        })}>Revoke</Button
                     >
                   </div>{/each}
-              </section>
+              </Panel>
             {/if}
             {#if user.role === 'admin'}
               {#if settingsSection === 'server'}<AdminOperations />{/if}
@@ -733,9 +775,9 @@
               {#if settingsSection === 'services'}<ServiceUpdates />{/if}
               {#if settingsSection === 'retention'}<RetentionSettings />{/if}
               {#if settingsSection === 'services'}<SupportServices />{/if}
-              {#if settingsSection === 'server'}<section class="panel">
+              {#if settingsSection === 'server'}<Panel>
                   <h2><ShieldCheck size={20} /> Server</h2>
-                  <div class="stats">
+                  <div class={statsClass}>
                     <div>
                       <strong>{health?.version ?? '—'}</strong><small
                         >Product version</small
@@ -757,7 +799,7 @@
                     </div>
                   </div>
                   <form
-                    class="inline-form"
+                    class={inlineFormClass}
                     onsubmit={(e) => {
                       e.preventDefault();
                       void act(async () => {
@@ -770,15 +812,20 @@
                       bind:value={timezone}
                       disabled={busy}
                     />
-                    <button class="secondary" disabled={busy}>Save</button>
+                    <Button
+                      size="form"
+                      variant="secondary"
+                      type="submit"
+                      disabled={busy}>Save</Button
+                    >
                   </form>
-                  <p class="muted">
+                  <p class="text-muted">
                     Used by everyone who has not chosen a personal display
                     timezone. Stored timestamps remain in UTC.
                   </p>
-                </section>
+                </Panel>
               {/if}
-              {#if settingsSection === 'people'}<section class="panel">
+              {#if settingsSection === 'people'}<Panel>
                   <h2>People</h2>
                   {#each users as person (person.id)}<UserAdministration
                       {person}
@@ -786,7 +833,7 @@
                       changed={loadSettings}
                     />{/each}
                   <form
-                    class="inline-form"
+                    class={inlineFormClass}
                     onsubmit={(e) => {
                       e.preventDefault();
                       void createUser();
@@ -812,33 +859,37 @@
                           >Administrator</option
                         ></select
                       ></label
-                    ><button class="primary" disabled={busy}>Add user</button>
+                    ><Button size="form" type="submit" disabled={busy}
+                      >Add user</Button
+                    >
                   </form>
-                </section>
+                </Panel>
               {/if}
               {#if settingsSection === 'audit'}<History {user} audit />{/if}
-              {#if settingsSection === 'jobs'}<section class="panel">
-                  <div class="section-heading">
+              {#if settingsSection === 'jobs'}<Panel>
+                  <div class={sectionHeadingClass}>
                     <h2>Background jobs</h2>
-                    <button
-                      class="secondary"
+                    <Button
+                      size="form"
+                      variant="secondary"
+                      type="submit"
                       onclick={() =>
                         act(async () => {
                           await api('/admin/jobs', 'POST', {
                             key: crypto.randomUUID(),
                           });
                           await loadSettings();
-                        })}><RefreshCw size={15} /> Run checkpoint</button
+                        })}><RefreshCw size={15} /> Run checkpoint</Button
                     >
                   </div>
-                  {#each jobs as job (job.id)}<div class="row">
-                      <span>{job.kind}</span><span class="badge"
+                  {#each jobs as job (job.id)}<div class={rowClass}>
+                      <span>{job.kind}</span><span class={badgeClass}
                         >{job.state}</span
                       >
-                    </div>{:else}<p class="muted">
+                    </div>{:else}<p class="text-muted">
                       No background jobs yet.
                     </p>{/each}
-                </section>
+                </Panel>
               {/if}
             {/if}
           </SettingsLayout>
@@ -848,13 +899,13 @@
             open={openMedia}
             play={(choice) => void playMedia(choice)}
           />
-          <div class="section-heading">
+          <div class={sectionHeadingClass}>
             <h2>Your collections</h2>
-            <span class="muted">Built around you</span>
+            <span class="text-muted">Built around you</span>
           </div>
-          <div class="domain-grid">
+          <div class="grid grid-cols-3 gap-3 compact:grid-cols-1">
             {#each sections.slice(1, 4) as item (item.name)}<button
-                class="domain-card"
+                class="flex flex-col items-start gap-4 border border-line bg-surface p-6 text-left text-foreground transition-[transform,border-color] duration-200 hover:border-line-strong hover:[transform:translateY(-2px)] [&_svg]:text-accent [&_strong]:text-sm [&_strong]:leading-normal [&_strong]:font-[550] [&_span]:text-[11px] [&_span]:text-muted compact:flex-row compact:items-center compact:p-4 compact:[&_span]:ml-auto"
                 onclick={() => navigate(item.name)}
                 ><item.icon size={30} /><strong>{item.name}</strong><span
                   >Browse your collection →</span

@@ -402,7 +402,7 @@
     generation++;
     player?.pause();
   }}
-  class="player"
+  class="player relative isolate mb-7 aspect-video max-h-[60vh] min-h-[210px] w-full overflow-hidden bg-[#090b0c] text-[#f5f6f7] [color-scheme:dark] [container-type:inline-size] fullscreen:m-0 fullscreen:aspect-auto fullscreen:h-full fullscreen:max-h-none fullscreen:w-full"
   class:controls-hidden={!controlsShown}
   aria-label="Media player"
   onpointermove={revealControls}
@@ -422,6 +422,7 @@
   }}
 >
   <video
+    class="block h-full w-full object-contain"
     data-sidebar-resize="video"
     bind:this={player}
     playsinline
@@ -465,11 +466,19 @@
     {/each}
   </video>
 
-  <div class="player-header">
-    <h2 data-sidebar-resize="xy-pos" title={choice.title}>{choice.title}</h2>
+  <div
+    class="player-header absolute inset-x-0 top-0 z-[2] flex items-center gap-4 bg-[linear-gradient(#000b,transparent)] px-4 pt-3 pb-9 opacity-100 transition-opacity duration-[180ms] ease-[ease] motion-reduce:transition-none max-[600px]:px-2 max-[600px]:pt-2 max-[600px]:pb-7"
+  >
+    <h2
+      class="m-0 min-w-0 flex-1 overflow-hidden text-[15px] font-[550] text-ellipsis whitespace-nowrap [text-shadow:0_1px_4px_#000] max-[600px]:text-[13px]"
+      data-sidebar-resize="xy-pos"
+      title={choice.title}
+    >
+      {choice.title}
+    </h2>
     <button
       data-sidebar-resize="xy-pos"
-      class="player-button"
+      class="player-button inline-grid size-9 shrink-0 place-items-center border-0 bg-transparent p-0 text-inherit transition-[background] duration-150 hover:bg-[#ffffff24]"
       aria-label="Close player"
       title="Close player"
       onclick={closed}
@@ -480,7 +489,7 @@
 
   {#if error}
     <div
-      class="player-status"
+      class="player-status pointer-events-none absolute inset-[68px_20px_92px] flex flex-col items-center justify-center gap-3 text-center [text-shadow:0_1px_4px_#000]"
       data-sidebar-resize="xy"
       data-sidebar-resize-origin
       role="alert"
@@ -488,31 +497,45 @@
       <span class="inline-flex" data-sidebar-resize="xy-pos"
         ><AlertCircle size={28} /></span
       >
-      <p data-sidebar-resize="xy-pos">{error}</p>
+      <p
+        class="m-0 max-w-120 wrap-anywhere text-[13px]"
+        data-sidebar-resize="xy-pos"
+      >
+        {error}
+      </p>
       <button
-        class="retry-button"
+        class="retry-button pointer-events-auto border border-[#ffffff50] bg-[#15191be6] px-3 py-1.5 text-inherit"
         data-sidebar-resize="xy-pos"
         onclick={() => void open(choice)}>Retry playback</button
       >
     </div>
   {:else if loading}
     <div
-      class="player-status"
+      class="player-status pointer-events-none absolute inset-[68px_20px_92px] flex flex-col items-center justify-center gap-3 text-center [text-shadow:0_1px_4px_#000]"
       data-sidebar-resize="xy"
       data-sidebar-resize-origin
       role="status"
     >
       <span class="inline-flex" data-sidebar-resize="xy-pos"
-        ><span class="loading-spinner"><LoaderCircle size={36} /></span></span
+        ><span
+          class="loading-spinner inline-flex animate-spin text-accent motion-reduce:animate-none"
+          ><LoaderCircle size={36} /></span
+        ></span
       >
-      <p data-sidebar-resize="xy-pos">
+      <p
+        class="m-0 max-w-120 wrap-anywhere text-[13px]"
+        data-sidebar-resize="xy-pos"
+      >
         {busy ? 'Preparing playback…' : 'Buffering…'}
       </p>
     </div>
   {/if}
 
   {#if active?.file_id && active.generation}
-    <div class="segment-prompt" data-sidebar-resize="xy-pos">
+    <div
+      class="segment-prompt absolute right-4 bottom-[110px]"
+      data-sidebar-resize="xy-pos"
+    >
       <SegmentSkip
         mediaId={choice.id}
         fileId={active.file_id}
@@ -525,10 +548,12 @@
     </div>
   {/if}
 
-  <div class="player-controls">
+  <div
+    class="player-controls absolute inset-x-0 bottom-0 z-[2] bg-[linear-gradient(transparent,#000c)] px-4 pt-[30px] pb-2.5 opacity-100 transition-opacity duration-[180ms] ease-[ease] motion-reduce:transition-none max-[600px]:px-2 max-[600px]:pt-6 max-[600px]:pb-1.5"
+  >
     {#if !active?.live}
       <input
-        class="seek"
+        class="seek block h-4 w-full cursor-pointer border-0 bg-transparent p-0 accent-accent"
         data-sidebar-resize="xy"
         aria-label="Playback position"
         aria-valuetext={`${time(position)} of ${time(active?.duration ?? 0)}`}
@@ -541,10 +566,12 @@
         onchange={(event) => void seek(Number(event.currentTarget.value))}
       />
     {/if}
-    <div class="control-row">
+    <div
+      class="control-row mt-[3px] flex items-center gap-2 max-[600px]:gap-0.5"
+    >
       <button
         data-sidebar-resize="xy-pos"
-        class="player-button"
+        class="player-button inline-grid size-9 shrink-0 place-items-center border-0 bg-transparent p-0 text-inherit transition-[background] duration-150 hover:bg-[#ffffff24]"
         aria-label={paused ? 'Play' : 'Pause'}
         title={paused ? 'Play' : 'Pause'}
         disabled={busy || !active}
@@ -555,9 +582,12 @@
             fill="currentColor"
           />{/if}
       </button>
-      <div class="volume-controls" data-sidebar-resize="xy-pos">
+      <div
+        class="volume-controls flex items-center gap-2 max-[600px]:gap-0.5"
+        data-sidebar-resize="xy-pos"
+      >
         <button
-          class="player-button"
+          class="player-button inline-grid size-9 shrink-0 place-items-center border-0 bg-transparent p-0 text-inherit transition-[background] duration-150 hover:bg-[#ffffff24]"
           aria-label={muted || $appearance.audio_volume === 0
             ? 'Unmute'
             : 'Mute'}
@@ -569,6 +599,7 @@
             />{:else}<Volume2 size={20} />{/if}
         </button>
         <input
+          class="player-volume-range block h-4 w-[76px] cursor-pointer border-0 bg-transparent p-0 accent-accent max-[600px]:w-10"
           aria-label="Playback volume"
           type="range"
           min="0"
@@ -578,13 +609,21 @@
           oninput={(event) => changeVolume(Number(event.currentTarget.value))}
         />
       </div>
-      <div class="playback-details" data-sidebar-resize="xy-pos">
-        <span class="playback-time" aria-live="off">
-          {#if active?.live}<span class="live-dot"></span>Live{:else}{time(
-              position,
-            )} / {time(active?.duration ?? 0)}{/if}
+      <div
+        class="playback-details ml-2 grid shrink-0 gap-0.5 max-[600px]:ml-1"
+        data-sidebar-resize="xy-pos"
+      >
+        <span
+          class="playback-time inline-flex items-center gap-[7px] text-xs whitespace-nowrap tabular-nums max-[600px]:text-[11px]"
+          aria-live="off"
+        >
+          {#if active?.live}<span
+              class="live-dot size-1.5 rounded-full bg-accent"
+            ></span>Live{:else}{time(position)} / {time(
+              active?.duration ?? 0,
+            )}{/if}
         </span>
-        {#if active}<span class="playback-mode"
+        {#if active}<span class="playback-mode text-[11px] text-[#acb4ba]"
             >{active.mode === 'direct'
               ? 'Original file'
               : active.mode === 'remux'
@@ -592,9 +631,9 @@
                 : 'Converted'}{info?.watched ? ' · Watched' : ''}</span
           >{/if}
       </div>
-      <div class="control-spacer"></div>
+      <div class="control-spacer flex-1"></div>
       <div
-        class="player-options"
+        class="player-options flex shrink-0 gap-0.5"
         data-sidebar-resize="xy-pos"
         role="group"
         aria-label="Playback settings"
@@ -667,7 +706,7 @@
         </PlayerOption>
       </div>
       <button
-        class="player-button"
+        class="player-button inline-grid size-9 shrink-0 place-items-center border-0 bg-transparent p-0 text-inherit transition-[background] duration-150 hover:bg-[#ffffff24]"
         data-sidebar-resize="xy-pos"
         aria-label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
         title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
@@ -680,131 +719,9 @@
 </section>
 
 <style>
-  .player {
-    position: relative;
-    isolation: isolate;
-    container-type: inline-size;
-    width: 100%;
-    aspect-ratio: 16 / 9;
-    max-height: 60vh;
-    min-height: 210px;
-    margin: 0 0 28px;
-    overflow: hidden;
-    background: #090b0c;
-    color: #f5f6f7;
-    color-scheme: dark;
-  }
-  .player:fullscreen {
-    width: 100%;
-    height: 100%;
-    max-height: none;
-    margin: 0;
-    aspect-ratio: auto;
-  }
-  video {
-    display: block;
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-  }
-  .player-header,
-  .player-controls {
-    position: absolute;
-    left: 0;
-    right: 0;
-    z-index: 2;
-    opacity: 1;
-    transition: opacity 180ms ease;
-  }
-  .player-header {
-    top: 0;
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    padding: 12px 16px 36px;
-    background: linear-gradient(#000b, transparent);
-  }
-  .player-header h2 {
-    flex: 1;
-    min-width: 0;
-    margin: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    font-size: 15px;
-    font-weight: 550;
-    text-shadow: 0 1px 4px #000;
-  }
-  .player-button {
-    display: inline-grid;
-    place-items: center;
-    flex-shrink: 0;
-    width: 36px;
-    height: 36px;
-    padding: 0;
-    border: 0;
-    color: inherit;
-    background: transparent;
-    transition: background 150ms;
-  }
-  .player-button:hover {
-    background: #ffffff24;
-  }
   :is(button, input):focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
-  }
-  .player-controls {
-    bottom: 0;
-    padding: 30px 16px 10px;
-    background: linear-gradient(transparent, #000c);
-  }
-  .control-row,
-  .volume-controls {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .control-row {
-    margin-top: 3px;
-  }
-  .control-spacer {
-    flex: 1;
-  }
-  input[type='range'] {
-    display: block;
-    height: 16px;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    accent-color: var(--accent);
-    cursor: pointer;
-  }
-  .seek {
-    width: 100%;
-  }
-  .volume-controls input {
-    width: 76px;
-  }
-  .playback-details {
-    display: grid;
-    flex-shrink: 0;
-    gap: 2px;
-    margin-left: 8px;
-  }
-  .playback-time {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    font-size: 12px;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-  }
-  .live-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--accent);
   }
   .controls-hidden {
     cursor: none;
@@ -813,94 +730,12 @@
     opacity: 0;
     pointer-events: none;
   }
-  .player-status {
-    position: absolute;
-    inset: 68px 20px 92px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-direction: column;
-    gap: 12px;
-    text-align: center;
-    pointer-events: none;
-    text-shadow: 0 1px 4px #000;
-  }
-  .player-status p {
-    max-width: 480px;
-    margin: 0;
-    font-size: 13px;
-    overflow-wrap: anywhere;
-  }
-  .loading-spinner {
-    display: inline-flex;
-    color: var(--accent);
-    animation: player-spin 1s linear infinite;
-  }
-  .retry-button {
-    padding: 6px 12px;
-    border: 1px solid #ffffff50;
-    color: inherit;
-    background: #15191be6;
-    pointer-events: auto;
-  }
-  .segment-prompt {
-    position: absolute;
-    right: 16px;
-    bottom: 110px;
-  }
-  .player-options {
-    display: flex;
-    flex-shrink: 0;
-    gap: 2px;
-  }
-  .playback-mode {
-    color: #acb4ba;
-    font-size: 11px;
-  }
-  @keyframes player-spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-  @media (max-width: 600px) {
-    .player-header {
-      padding: 8px 8px 28px;
-    }
-    .player-header h2 {
-      font-size: 13px;
-    }
-    .player-controls {
-      padding: 24px 8px 6px;
-    }
-    .control-row,
-    .volume-controls {
-      gap: 2px;
-    }
-    .volume-controls input {
-      width: 40px;
-    }
-    .playback-details {
-      margin-left: 4px;
-    }
-    .playback-time {
-      font-size: 11px;
-    }
-  }
   @container (max-width: 380px) {
-    .volume-controls input {
+    .player-volume-range {
       display: none;
     }
     .playback-mode {
       display: none;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .player-header,
-    .player-controls {
-      transition: none;
-    }
-    .loading-spinner {
-      animation: none;
     }
   }
 </style>

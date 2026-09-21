@@ -10,7 +10,18 @@
   import SegmentEditor from './SegmentEditor.svelte';
   import Requests from './Requests.svelte';
   import { untrack, onDestroy } from 'svelte';
+  import { twMerge } from 'tailwind-merge';
   import type { MediaChoice } from './playback';
+  import Button from './ui/Button.svelte';
+  import Panel from './ui/Panel.svelte';
+  import {
+    emptyClass,
+    errorClass,
+    inlineFormClass,
+    panelClass,
+    rowClass,
+    sectionHeadingClass,
+  } from './ui/styles';
   let {
     domain,
     admin,
@@ -190,39 +201,46 @@
   }
 </script>
 
-<div class="section-heading">
+<div class={sectionHeadingClass}>
   <div>
-    {#if breadcrumbs.length}<button
-        class="secondary"
+    {#if breadcrumbs.length}<Button
+        variant="secondary"
+        size="form"
         onclick={() => {
           breadcrumbs = breadcrumbs.slice(0, -1);
           void load();
-        }}><ArrowLeft size={15} />{breadcrumbs.at(-1)?.title}</button
-      >{:else}<p class="muted">Your collection, in one place.</p>{/if}
+        }}><ArrowLeft size={15} />{breadcrumbs.at(-1)?.title}</Button
+      >{:else}<p class="text-muted">Your collection, in one place.</p>{/if}
   </div>
-  <button class="secondary" onclick={() => (acquisition = !acquisition)}
-    >{acquisition ? 'Hide requests' : 'Search and request'}</button
+  <Button
+    variant="secondary"
+    size="form"
+    onclick={() => (acquisition = !acquisition)}
+    >{acquisition ? 'Hide requests' : 'Search and request'}</Button
   >
-  {#if admin}<button class="secondary" onclick={() => (showAdd = !showAdd)}
-      ><Folder size={16} /> Add folder</button
+  {#if admin}<Button
+      variant="secondary"
+      size="form"
+      onclick={() => (showAdd = !showAdd)}
+      ><Folder size={16} /> Add folder</Button
     >{/if}
 </div>
-<div class="view-toolbar">
-  <label class="search-field"
+<div class="mb-5 flex flex-wrap items-center gap-3">
+  <label class="m-0 min-w-45 max-w-90 flex-1"
     >Search {domain.toLowerCase()}<input
       bind:value={search}
       oninput={searchChanged}
       placeholder={`Search your ${domain.toLowerCase()}`}
     /></label
-  ><span class="muted">{items.length} items · Ctrl + scroll to zoom</span>
+  ><span class="text-muted">{items.length} items · Ctrl + scroll to zoom</span>
 </div>
 {#if acquisition}{#key domain}<Requests
       user={{ id: userId, role: admin ? 'admin' : 'user' }}
       {domain}
     />{/key}{/if}
-{#if error}<p class="error" role="alert">{error}</p>{/if}
+{#if error}<p class={errorClass} role="alert">{error}</p>{/if}
 {#if domain === 'Movies' && collections.length}
-  <label class="collection-filter"
+  <label class="max-w-80"
     >Collection<select bind:value={collection} onchange={() => void load()}
       ><option value="">All movies</option
       >{#each collections as group (group.id)}<option value={String(group.id)}
@@ -232,7 +250,7 @@
   >
 {/if}
 {#if showAdd}<form
-    class="panel inline-form"
+    class={twMerge(panelClass, inlineFormClass)}
     onsubmit={(e) => {
       e.preventDefault();
       void add();
@@ -250,12 +268,12 @@
         required
         placeholder={`${mount}/${domain.toLowerCase()}`}
       /></label
-    ><button class="primary" disabled={busy}>Add and scan</button>
+    ><Button type="submit" size="form" disabled={busy}>Add and scan</Button>
   </form>{/if}
-{#if admin && roots.length}<details class="library-roots">
+{#if admin && roots.length}<details class="mb-5 border-b border-line">
     <summary>Library folders · {roots.length}</summary>
     <div>
-      {#each roots as root (root.id)}<div class="row">
+      {#each roots as root (root.id)}<div class={rowClass}>
           <div>
             <strong>{root.name}</strong><small
               >{scans[root.id]
@@ -266,8 +284,9 @@
                     : 'Waiting for first scan'))}</small
             >
           </div>
-          <button
-            class="secondary"
+          <Button
+            variant="secondary"
+            size="form"
             disabled={busy}
             onclick={async () => {
               try {
@@ -275,33 +294,36 @@
               } catch (e) {
                 error = String(e);
               }
-            }}><RefreshCw size={14} /> Scan</button
+            }}><RefreshCw size={14} /> Scan</Button
           >
         </div>{/each}
     </div>
   </details>{/if}
-{#if selected}<section class="panel">
-    <div class="section-heading">
+{#if selected}<Panel>
+    <div class={sectionHeadingClass}>
       <h2>{selected.title}</h2>
-      <button class="secondary" onclick={() => (selected = null)}>Close</button>
+      <Button variant="secondary" size="form" onclick={() => (selected = null)}
+        >Close</Button
+      >
     </div>
-    {#if selected.overview}<p class="muted">{selected.overview}</p>{/if}
+    {#if selected.overview}<p class="text-muted">{selected.overview}</p>{/if}
     <MediaActions id={selected.id} kind={selected.kind} {userId} />
     {#if admin}<MediaOperations
         id={selected.id}
         changed={() => void load()}
       />{/if}
-    {#if details?.local_trailers?.length}<p class="muted">
+    {#if details?.local_trailers?.length}<p class="text-muted">
         {details.local_trailers.length} local trailer(s) indexed.
       </p>{/if}
-    {#each details?.files ?? [] as file (file.id)}<div class="row">
-        <span>{file.edition || 'Original edition'}</span><span class="muted"
+    {#each details?.files ?? [] as file (file.id)}<div class={rowClass}>
+        <span>{file.edition || 'Original edition'}</span><span
+          class="text-muted"
           >{file.probe.format?.duration
             ? `${Math.round(Number(file.probe.format.duration) / 60)} minutes`
             : 'Duration unknown'}</span
         >
-        {#if file.present}<button
-            class="primary"
+        {#if file.present}<Button
+            size="form"
             onclick={() =>
               play({
                 id: selected!.id,
@@ -312,7 +334,7 @@
                   selected!.kind === 'track'
                     ? items.filter((i) => i.kind === 'track' && i.available)
                     : undefined,
-              })}>Play {file.edition || 'media'}</button
+              })}>Play {file.edition || 'media'}</Button
           >{/if}
       </div>
       {#if admin && file.present && ['movie', 'episode'].includes(selected.kind)}<SegmentEditor
@@ -332,7 +354,7 @@
           id={selected.id}
           changed={() => void load()}
         />{/if}{/if}
-  </section>{/if}
+  </Panel>{/if}
 {#if items.length}<MediaGrid
     revision={items.map((i) => i.id).join(',')}
     label={domain}
@@ -355,7 +377,7 @@
               })
           : undefined}
       />{/each}
-  </MediaGrid>{:else}<section class="empty">
+  </MediaGrid>{:else}<section class={emptyClass}>
     <Folder size={42} />
     <h2>{busy ? 'Loading your library…' : 'Your collection starts here'}</h2>
     <p>
@@ -364,13 +386,3 @@
         : 'Your administrator can add media folders to this library.'}
     </p>
   </section>{/if}
-
-<style>
-  .library-roots {
-    margin-bottom: 20px;
-    border-bottom: 1px solid var(--line);
-  }
-  .collection-filter {
-    max-width: 320px;
-  }
-</style>

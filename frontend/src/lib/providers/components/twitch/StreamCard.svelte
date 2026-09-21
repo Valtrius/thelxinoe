@@ -85,7 +85,7 @@
     </CardShortcutButton>
   {/snippet}
   {#snippet metadata()}
-    <div class="mt-3 text-[0.62rem] tracking-[0.06em] text-(--muted) uppercase">
+    <div class="mt-3 text-[0.62rem] tracking-[0.06em] text-muted uppercase">
       <span>{stream.gameName ?? 'Uncategorised'}</span>
     </div>
   {/snippet}

@@ -6,7 +6,7 @@
     executableSelectionKey,
     toolOperationActive,
   } from '../../tools-presentation';
-  import Button from '../ui/Button.svelte';
+  import Button from '../../../ui/Button.svelte';
   import InfoBubble from './InfoBubble.svelte';
   import ToolsInventory from './ToolsInventory.svelte';
   import ToolSettingsPanel from './ToolSettingsPanel.svelte';
@@ -53,7 +53,7 @@
 </script>
 
 <section aria-label="Tools settings" class="grid min-w-0 gap-3">
-  {#if $toolsState.loadError}<p class="text-xs text-(--warning)" role="alert">
+  {#if $toolsState.loadError}<p class="text-xs text-warning" role="alert">
       {$toolsState.loadError}
       <button
         class="underline"
@@ -76,7 +76,7 @@
       {#snippet detail(tool)}
         {#if $toolsState.errors[tool.id]}<p
             role="alert"
-            class="text-xs text-(--danger)"
+            class="text-xs text-danger"
           >
             {$toolsState.errors[tool.id]}
           </p>{/if}
@@ -92,7 +92,7 @@
           <div
             id="mpv-configuration"
             tabindex="-1"
-            class="border-t border-(--line) pt-4 focus:outline-none"
+            class="border-t border-line pt-4 focus:outline-none"
           >
             <div class="mb-3 flex items-center gap-1">
               <h3 class="text-sm font-semibold">
@@ -109,7 +109,7 @@
             </div>
             {#if $toolsState.errors.configuration}<p
                 role="alert"
-                class="mb-3 text-xs text-(--danger)"
+                class="mb-3 text-xs text-danger"
               >
                 {$toolsState.errors.configuration}
               </p>{/if}
@@ -135,13 +135,13 @@
       {/snippet}
     </ToolsInventory>
     {#if $toolsState.errors.updates || snapshot.catalogError}<p
-        class="text-xs text-(--warning)"
+        class="text-xs text-warning"
         role="status"
       >
         {$toolsState.errors.updates || snapshot.catalogError}
       </p>{/if}
   {:else}
-    <p class="text-xs text-(--muted)" role="status">
+    <p class="text-xs text-muted" role="status">
       Reading saved tool settings...
     </p>
     <Button

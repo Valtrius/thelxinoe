@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { api } from './api';
+  import Button from './ui/Button.svelte';
   let {
     mediaId,
     fileId,
@@ -76,9 +77,7 @@
   });
 </script>
 
-{#if current && !busy}<button
-    class="primary"
-    onclick={() => void skip(current!)}
-    >Skip {current.kind.toLowerCase()}</button
+{#if current && !busy}<Button size="form" onclick={() => void skip(current!)}
+    >Skip {current.kind.toLowerCase()}</Button
   >{/if}
 {#if error}<p role="alert">{error}</p>{/if}

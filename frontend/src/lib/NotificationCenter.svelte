@@ -3,6 +3,8 @@
   import { Bell } from '@lucide/svelte';
   import SidebarButton from './ui/SidebarButton.svelte';
   import { api } from './api';
+  import Button from './ui/Button.svelte';
+  import { sectionHeadingClass } from './ui/styles';
   let { revision = 0, collapsed = false } = $props<{
     revision?: number;
     collapsed?: boolean;
@@ -64,7 +66,7 @@
     }
   }}
 />
-<div class="notifications" bind:this={container}>
+<div class="notifications relative" bind:this={container}>
   <SidebarButton
     label={unread ? `Notifications (${unread})` : 'Notifications'}
     {collapsed}
@@ -76,70 +78,34 @@
   {#if open}<section
       bind:this={panel}
       popover="manual"
-      class="panel notices"
+      class="panel notices fixed inset-auto bottom-6 z-80 m-0 max-h-[70vh] w-[min(480px,calc(100vw-210px))] overflow-auto border border-line bg-surface-strong p-6 shadow-none compact:right-2 compact:bottom-3 compact:left-20 compact:w-auto compact:p-4"
       aria-label="Notifications"
     >
-      <div class="section-heading">
+      <div class={sectionHeadingClass}>
         <h2>Notifications</h2>
-        <button class="secondary" onclick={() => void mark('all')}
-          >Mark all read</button
+        <Button variant="secondary" size="form" onclick={() => void mark('all')}
+          >Mark all read</Button
         >
       </div>
       {#if error}<p role="alert">{error}</p>{/if}
-      {#each items as item (item.id)}<article class:unread={!item.read_at}>
-          <p>{item.message}</p>
-          <small
+      {#each items as item (item.id)}<article
+          class:unread={!item.read_at}
+          class={item.read_at
+            ? 'border-t border-line py-4'
+            : 'border-t border-l-3 border-line border-l-accent py-4 pl-4'}
+        >
+          <p class="my-[0.2rem]">{item.message}</p>
+          <small class="text-muted"
             >{item.severity} · {new Date(
               item.created_at * 1000,
             ).toLocaleString()}</small
           >
-          {#if !item.read_at}<button
-              class="secondary"
-              onclick={() => void mark(item.id)}>Mark read</button
+          {#if !item.read_at}<Button
+              variant="secondary"
+              size="form"
+              class="ml-[0.6rem]"
+              onclick={() => void mark(item.id)}>Mark read</Button
             >{/if}
         </article>{:else}<p>No notifications.</p>{/each}
     </section>{/if}
 </div>
-
-<style>
-  .notifications {
-    position: relative;
-  }
-  .notices {
-    position: fixed;
-    inset: auto;
-    bottom: 24px;
-    margin: 0;
-    width: min(480px, calc(100vw - 210px));
-    max-height: 70vh;
-    overflow: auto;
-    z-index: 80;
-    background: var(--surface-strong);
-  }
-  article {
-    padding: 1rem 0;
-    border-top: 1px solid var(--line);
-  }
-  article.unread {
-    border-left: 3px solid var(--accent);
-    padding-left: 1rem;
-  }
-  article p {
-    margin: 0.2rem 0;
-  }
-  article button {
-    margin-left: 0.6rem;
-  }
-  small {
-    color: var(--muted);
-  }
-  @media (max-width: 720px) {
-    .notices {
-      position: fixed;
-      left: 80px;
-      right: 8px;
-      bottom: 12px;
-      width: auto;
-    }
-  }
-</style>

@@ -34,7 +34,7 @@
 </script>
 
 <label
-  class={`ui-switch inline-flex w-fit items-center gap-2 text-(--muted) ${disabled ? 'cursor-not-allowed opacity-45' : 'cursor-pointer'} ${className}`}
+  class={`ui-switch inline-flex w-fit items-center gap-2 text-muted ${disabled ? 'cursor-not-allowed opacity-45' : 'cursor-pointer'} ${className}`}
 >
   <span class={`relative shrink-0 ${trackClass}`}>
     <input
@@ -46,11 +46,11 @@
       onchange={handleChange}
     />
     <span
-      class="absolute inset-0 border border-(--line-strong) bg-(--surface) transition-colors duration-200 ease-out peer-checked:bg-(--accent-soft) peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-(--accent) motion-reduce:transition-none"
+      class="absolute inset-0 border border-line-strong bg-surface transition-colors duration-200 ease-out peer-checked:bg-accent-soft peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent motion-reduce:transition-none"
       aria-hidden="true"
     ></span>
     <span
-      class={`pointer-events-none absolute bg-(--muted) transition-[translate,background-color] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-[translate] peer-checked:bg-(--accent) motion-reduce:transition-none ${knobClass}`}
+      class={`pointer-events-none absolute bg-muted transition-[translate,background-color] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-[translate] peer-checked:bg-accent motion-reduce:transition-none ${knobClass}`}
       aria-hidden="true"
     ></span>
   </span>

@@ -16,7 +16,7 @@
     pluginSelection,
     toolOperationActive,
   } from '../../tools-presentation';
-  import Button from '../ui/Button.svelte';
+  import Button from '../../../ui/Button.svelte';
   import ToolSourceChoices from './ToolSourceChoices.svelte';
   import ToolVersions from './ToolVersions.svelte';
 
@@ -87,7 +87,7 @@
 <div class="grid gap-4">
   {#if plugin}
     {#if configurationSource !== 'managed'}
-      <p class="text-xs text-(--muted)">
+      <p class="text-xs text-muted">
         MPV uses the plugins in its {configurationSource === 'native'
           ? 'normal configuration'
           : 'selected configuration folder'}. Manage a copy in Thelxinoe to
@@ -101,7 +101,7 @@
       >
     {/if}
     {#if !active && !tool.importedPaths.length && configurationSource === 'managed'}
-      <p class="text-xs text-(--muted)">
+      <p class="text-xs text-muted">
         No {toolNames[tool.id]} plugin is installed in this configuration yet. Download
         a version below or import your existing MPV configuration. Both work with
         your selected MPV executable.
@@ -129,7 +129,7 @@
           title={!active
             ? 'Download a managed version first.'
             : 'Use the version downloaded by Thelxinoe'}
-          class={`flex items-center gap-2 border px-3 py-2 text-left text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-45 ${mode === 'managed' ? 'border-(--line-strong) bg-(--accent-soft)' : 'border-(--line) bg-(--surface-soft)'}`}
+          class={`flex items-center gap-2 border px-3 py-2 text-left text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-45 ${mode === 'managed' ? 'border-line-strong bg-accent-soft' : 'border-line bg-surface-soft'}`}
           onclick={() => {
             if (mode !== 'managed')
               void toolsState.preference(tool.id, {
@@ -145,7 +145,7 @@
           title={!tool.importedPaths.length
             ? 'Copy a configuration folder or add this plugin in MPV configuration first.'
             : 'Use the imported files without managed updates'}
-          class={`flex items-center gap-2 border px-3 py-2 text-left text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-45 ${mode === 'imported' ? 'border-(--line-strong) bg-(--accent-soft)' : 'border-(--line) bg-(--surface-soft)'}`}
+          class={`flex items-center gap-2 border px-3 py-2 text-left text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-45 ${mode === 'imported' ? 'border-line-strong bg-accent-soft' : 'border-line bg-surface-soft'}`}
           onclick={() => {
             if (mode !== 'imported')
               void toolsState.preference(tool.id, {
@@ -157,7 +157,7 @@
         <button
           type="button"
           aria-pressed={mode === 'off'}
-          class={`flex items-center gap-2 border px-3 py-2 text-left text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-45 ${mode === 'off' ? 'border-(--line-strong) bg-(--accent-soft)' : 'border-(--line) bg-(--surface-soft)'}`}
+          class={`flex items-center gap-2 border px-3 py-2 text-left text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-45 ${mode === 'off' ? 'border-line-strong bg-accent-soft' : 'border-line bg-surface-soft'}`}
           onclick={() => {
             if (mode !== 'off')
               void toolsState.preference(tool.id, { enabled: false });
@@ -166,7 +166,7 @@
       </div>
       {#if mode === 'imported'}
         {#each tool.importedPaths as path (path)}<p
-            class="font-mono text-xs wrap-anywhere text-(--muted)"
+            class="font-mono text-xs wrap-anywhere text-muted"
           >
             {displayToolPath(path)}
           </p>{/each}
@@ -227,11 +227,9 @@
       disabled={preferencesDisabled}
       onChange={chooseSource}
     />
-    <div class="grid gap-2 border border-(--line) bg-(--surface-soft) p-3">
+    <div class="grid gap-2 border border-line bg-surface-soft p-3">
       <div class="flex flex-wrap items-center gap-2">
-        <p
-          class="min-w-0 flex-1 font-mono text-xs wrap-anywhere text-(--muted)"
-        >
+        <p class="min-w-0 flex-1 font-mono text-xs wrap-anywhere text-muted">
           {managed && !active
             ? 'No managed version selected.'
             : displayToolPath(tool.diagnostic?.path ?? tool.selectedPath) ||
@@ -255,10 +253,10 @@
           >
         </div>
       </div>
-      {#if tool.diagnostic?.error}<p class="text-xs text-(--warning)">
+      {#if tool.diagnostic?.error}<p class="text-xs text-warning">
           {tool.diagnostic.error.message}
         </p>{/if}
-      {#if tool.diagnostic?.warning}<p class="text-xs text-(--warning)">
+      {#if tool.diagnostic?.warning}<p class="text-xs text-warning">
           {tool.diagnostic.warning}
         </p>{/if}
     </div>

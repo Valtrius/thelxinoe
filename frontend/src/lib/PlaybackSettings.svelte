@@ -2,6 +2,9 @@
   import { onMount } from 'svelte';
   import { api } from './api';
   import type { Preferences } from './playback';
+  import Button from './ui/Button.svelte';
+  import Panel from './ui/Panel.svelte';
+  import { errorClass, inlineFormClass } from './ui/styles';
   let value = $state<Preferences | null>(null),
     error = $state(''),
     saved = $state(false);
@@ -20,11 +23,11 @@
   }
 </script>
 
-<section class="panel">
+<Panel>
   <h2>Playback</h2>
-  {#if error}<p role="alert" class="error">{error}</p>{/if}
+  {#if error}<p role="alert" class={errorClass}>{error}</p>{/if}
   {#if value}<form
-      class="inline-form"
+      class={inlineFormClass}
       onsubmit={(e) => {
         e.preventDefault();
         void save();
@@ -67,7 +70,8 @@
           ><option value="off">Off</option></select
         ></label
       >
-      <button class="secondary">Save playback preferences</button
+      <Button type="submit" variant="secondary" size="form"
+        >Save playback preferences</Button
       >{#if saved}<span role="status">Saved</span>{/if}
     </form>{/if}
-</section>
+</Panel>

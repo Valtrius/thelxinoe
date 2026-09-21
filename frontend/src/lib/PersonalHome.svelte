@@ -10,6 +10,15 @@
     type SavedQueue,
   } from './media-state';
   import { time, type MediaChoice } from './playback';
+  import Button from './ui/Button.svelte';
+  import Panel from './ui/Panel.svelte';
+  import {
+    badgeClass,
+    emptyClass,
+    errorClass,
+    rowClass,
+    sectionHeadingClass,
+  } from './ui/styles';
   let { revision, open, play } = $props<{
     revision: number;
     open: (item: Card) => void;
@@ -55,12 +64,16 @@
   ] as const;
 </script>
 
-{#if error}<p class="error" role="alert">{error}</p>{/if}
+{#if error}<p class={errorClass} role="alert">{error}</p>{/if}
 {#if home}{#each shelves.filter(([key]) => home?.[key].length) as [key, title] (key)}<section
-      class="home-shelf"
+      class="my-7"
       aria-label={title}
     >
-      <h2>{title}</h2>
+      <h2
+        class="border-b border-line pb-3.5 text-[11px] tracking-[0.1em] uppercase"
+      >
+        {title}
+      </h2>
       {#if home[key].length}<MediaGrid
           revision={home[key].map((i) => i.id).join(',')}
           label={title}
@@ -72,41 +85,42 @@
                 ? () => play(item)
                 : undefined}
             />{/each}</MediaGrid
-        >{:else}<p class="muted">
+        >{:else}<p class="text-muted">
           {key === 'continue_watching'
             ? 'Your unfinished movies and episodes will appear here.'
             : key === 'next_up'
               ? 'Continue a series or add it to your favorites to see its next episode.'
               : 'Items you save will appear here.'}
         </p>{/if}
-    </section>{:else}<section class="empty home-empty">
+    </section>{:else}<section class={`${emptyClass} home-empty`}>
       <h2>Pick up where you left off</h2>
       <p>
         Continue watching, next episodes, favorites and saved titles will appear
         here as you use your library.
       </p>
     </section>{/each}{/if}
-{#if queue?.items.length}<section class="panel" aria-label="Saved music queue">
-    <div class="section-heading">
+{#if queue?.items.length}<Panel aria-label="Saved music queue">
+    <div class={sectionHeadingClass}>
       <h2>This device’s music queue</h2>
-      <button
-        class="primary"
+      <Button
+        size="form"
         onclick={() => {
           const choice = restoreQueue(queue!);
           if (choice) play(choice);
-        }}>{queue.completed ? 'Replay queue' : 'Resume queue'}</button
+        }}>{queue.completed ? 'Replay queue' : 'Resume queue'}</Button
       >
     </div>
-    <p class="muted">
+    <p class="text-muted">
       Track {queue.current_index + 1} of {queue.items.length} · {time(
         queue.position,
       )}
     </p>
-    {#each queue.items as id, index (index)}<div class="row">
+    {#each queue.items as id, index (index)}<div class={rowClass}>
         <span
           >{index + 1}. {queue.tracks?.find((t) => t.id === id)?.title ??
             'Unavailable track'}</span
-        >{#if index === queue.current_index}<span class="badge">Current</span
+        >{#if index === queue.current_index}<span class={badgeClass}
+            >Current</span
           >{/if}
       </div>{/each}
-  </section>{/if}
+  </Panel>{/if}

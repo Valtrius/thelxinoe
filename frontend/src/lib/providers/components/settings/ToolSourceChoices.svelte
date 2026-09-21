@@ -1,7 +1,8 @@
 <script lang="ts">
   import { FolderOpen, Package } from '@lucide/svelte';
   import type { ToolSource } from '../../tools-api';
-  import Button from '../ui/Button.svelte';
+  import Button from '../../../ui/Button.svelte';
+  import { selectionButtonClass } from './settingsUi';
   let {
     value,
     label,
@@ -30,7 +31,7 @@
               : 'system';
           if (next !== value) onChange(next);
         }}
-        class={`flex cursor-pointer items-center gap-2 border px-3 py-2 text-left disabled:cursor-default disabled:opacity-45 ${choice.managed === (value === 'managed') ? 'border-(--line-strong) bg-(--accent-soft)' : 'border-(--line) bg-(--surface-soft)'}`}
+        class={selectionButtonClass(choice.managed === (value === 'managed'))}
       >
         <span class="flex items-center gap-2 text-xs font-semibold"
           ><choice.icon class="size-3.5" />{choice.name}</span

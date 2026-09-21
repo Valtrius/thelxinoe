@@ -4,7 +4,8 @@
   import { toolsApi, type MpvPreferences } from '../../tools-api';
   import { toolsState } from '../../tools-state';
   import { displayToolPath } from '../../tools-presentation';
-  import Button from '../ui/Button.svelte';
+  import Button from '../../../ui/Button.svelte';
+  import { selectionButtonClass } from './settingsUi';
 
   let {
     preferences,
@@ -63,7 +64,7 @@
             if (preferences.source !== choice.source)
               void chooseSource(choice.source);
           }}
-          class={`flex cursor-pointer items-center gap-2 border px-3 py-2 text-left disabled:cursor-default disabled:opacity-45 ${preferences.source === choice.source ? 'border-(--line-strong) bg-(--accent-soft)' : 'border-(--line) bg-(--surface-soft)'}`}
+          class={selectionButtonClass(preferences.source === choice.source)}
         >
           <span class="flex items-center gap-2 text-xs font-semibold"
             ><choice.icon class="size-3.5" />{choice.name}</span
@@ -74,7 +75,7 @@
   </fieldset>
   {#if preferences.source === 'directory'}
     <div class="flex flex-wrap items-center gap-2">
-      <p class="min-w-0 flex-1 font-mono text-xs wrap-anywhere text-(--muted)">
+      <p class="min-w-0 flex-1 font-mono text-xs wrap-anywhere text-muted">
         {displayToolPath(preferences.directory)}
       </p>
       <Button
@@ -88,9 +89,7 @@
   {#if preferences.source !== 'native'}
     <div class="flex flex-wrap items-center gap-2">
       {#if preferences.source === 'managed'}
-        <p
-          class="min-w-0 flex-1 font-mono text-xs wrap-anywhere text-(--muted)"
-        >
+        <p class="min-w-0 flex-1 font-mono text-xs wrap-anywhere text-muted">
           {displayToolPath(directory + '/config/mpv')}
         </p>
       {/if}

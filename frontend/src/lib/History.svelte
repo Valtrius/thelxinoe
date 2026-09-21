@@ -3,6 +3,16 @@
   import { SvelteURLSearchParams } from 'svelte/reactivity';
   import { api, type User } from './api';
   import { time } from './playback';
+  import { twMerge } from 'tailwind-merge';
+  import Button from './ui/Button.svelte';
+  import Panel from './ui/Panel.svelte';
+  import {
+    errorClass,
+    inlineFormClass,
+    rowClass,
+    sectionHeadingClass,
+    statsClass,
+  } from './ui/styles';
   let {
     user,
     audit = false,
@@ -100,9 +110,9 @@
   }
 </script>
 
-{#if error}<p role="alert" class="error">{error}</p>{/if}
-<section class="panel">
-  <div class="section-heading">
+{#if error}<p role="alert" class={errorClass}>{error}</p>{/if}
+<Panel>
+  <div class={sectionHeadingClass}>
     <h2>
       {audit
         ? 'Administrative activity'
@@ -110,13 +120,16 @@
           ? 'Watching statistics'
           : 'Playback history'}
     </h2>
-    <button class="secondary" disabled={busy} onclick={() => void load()}
-      >Refresh</button
+    <Button
+      variant="secondary"
+      size="form"
+      disabled={busy}
+      onclick={() => void load()}>Refresh</Button
     >
   </div>
-  <p class="muted">Times shown in {user.timezone}.</p>
+  <p class="text-muted">Times shown in {user.timezone}.</p>
   {#if !audit}<form
-      class="inline-form"
+      class={twMerge(inlineFormClass, 'my-4')}
       onsubmit={(e) => {
         e.preventDefault();
         void load();
@@ -154,9 +167,9 @@
           >{/if}{/if}
       <label>From date (UTC)<input type="date" bind:value={since} /></label
       ><label>Through date (UTC)<input type="date" bind:value={until} /></label
-      ><button class="primary" disabled={busy}>Filter history</button>
+      ><Button type="submit" size="form" disabled={busy}>Filter history</Button>
     </form>{/if}
-  {#if result?.stats}<div class="stats">
+  {#if result?.stats}<div class={statsClass}>
       <div>
         <strong>{time(result.stats.played_seconds)}</strong><small
           >Time watched</small
@@ -182,14 +195,21 @@
         ><small>Average per play</small>
       </div>
     </div>
-    <p class="muted">Playback time excludes seeks.</p>{/if}
+    <p class="text-muted">Playback time excludes seeks.</p>{/if}
   {#if statistics}
-    <section class="chart-panel" aria-label="Daily watch time">
-      <h3>Watch time by day</h3>
-      <p class="muted">Most recent 90 active days, grouped in UTC.</p>
-      {#if result?.daily?.length}<div class="watch-chart">
+    <section
+      class="mt-7 border-t border-line pt-6"
+      aria-label="Daily watch time"
+    >
+      <h3 class="mb-2">Watch time by day</h3>
+      <p class="text-[11px] text-muted">
+        Most recent 90 active days, grouped in UTC.
+      </p>
+      {#if result?.daily?.length}<div
+          class="flex h-[210px] items-stretch gap-2 overflow-x-auto pt-[15px] pb-[30px]"
+        >
           {#each [...result.daily].reverse() as day (day.date)}<div
-              class="chart-column"
+              class="group relative flex min-w-6 max-w-20 flex-1 flex-col justify-end"
               title={day.date +
                 ': ' +
                 time(day.played_seconds) +
@@ -198,7 +218,7 @@
                 ' plays'}
             >
               <div
-                class="chart-bar"
+                class="min-h-0.5 border-t-2 border-accent bg-accent-soft transition-[background] duration-200 ease-[ease] group-hover:bg-accent/35"
                 style:height={Math.max(
                   1,
                   (day.played_seconds /
@@ -206,7 +226,10 @@
                     100,
                 ) + '%'}
               ></div>
-              <span>{day.date.slice(5)}</span>
+              <span
+                class="absolute bottom-[-21px] font-mono text-[9px] leading-[normal] text-muted"
+                >{day.date.slice(5)}</span
+              >
             </div>{/each}
         </div>
         <details>
@@ -224,18 +247,24 @@
             >
           </table>
         </details>
-      {:else}<p class="empty-chart">
+      {:else}<p
+          class="grid h-[170px] place-items-center border border-dashed border-line text-[11px]"
+        >
           Play something to start your watching statistics.
         </p>{/if}
     </section>
-    <section class="chart-panel">
-      <h3>Most watched titles</h3>
-      {#each result?.top ?? [] as item, index (index)}<div class="rank-row">
-          <span class="rank">{String(index + 1).padStart(2, '0')}</span>
-          <div>
+    <section class="mt-7 border-t border-line pt-6">
+      <h3 class="mb-2">Most watched titles</h3>
+      {#each result?.top ?? [] as item, index (index)}<div
+          class="flex items-center gap-5 border-b border-line py-4.5 text-xs leading-normal"
+        >
+          <span class="font-mono text-[11px] leading-[normal] text-muted"
+            >{String(index + 1).padStart(2, '0')}</span
+          >
+          <div class="flex-1">
             <strong>{item.title}</strong><small>{item.plays} plays</small>
             <div
-              class="rank-bar"
+              class="mt-2.5 h-0.5 bg-accent"
               style:width={Math.max(
                 1,
                 (item.played_seconds /
@@ -248,17 +277,19 @@
             ></div>
           </div>
           <span>{time(item.played_seconds)}</span>
-        </div>{:else}<p class="muted">No activity in this view yet.</p>{/each}
+        </div>{:else}<p class="text-[11px] text-muted">
+          No activity in this view yet.
+        </p>{/each}
     </section>
   {/if}
   {#if all && result?.users?.length}<h3>By user</h3>
-    {#each result.users as p (p.id)}<div class="row">
+    {#each result.users as p (p.id)}<div class={rowClass}>
         <span>{p.username}</span><small
           >{p.plays} plays · {time(p.played_seconds)} played</small
         >
       </div>{/each}{/if}
   {#if !statistics}
-    {#each result?.items ?? [] as row (row.id)}<div class="row">
+    {#each result?.items ?? [] as row (row.id)}<div class={rowClass}>
         <div>
           <strong>{audit ? row.action : row.title}</strong><small
             >{date(audit ? row.created_at : row.started_at)}{audit
@@ -276,90 +307,14 @@
             >{time(row.position ?? 0)} / {time(row.duration ?? 0)}</span
           ><small>{time(row.played_seconds ?? 0)} played · {row.state}</small
           >{/if}
-      </div>{:else}<p class="muted">No activity in this view yet.</p>{/each}
-    {#if result?.next_before}<button
-        class="secondary"
+      </div>{:else}<p class="text-muted">
+        No activity in this view yet.
+      </p>{/each}
+    {#if result?.next_before}<Button
+        variant="secondary"
+        size="form"
         disabled={busy}
-        onclick={() => void load(audit, true)}>Load older activity</button
+        onclick={() => void load(audit, true)}>Load older activity</Button
       >{/if}
   {/if}
-</section>
-
-<style>
-  .chart-panel {
-    margin-top: 28px;
-    border-top: 1px solid var(--line);
-    padding-top: 24px;
-  }
-  .chart-panel h3 {
-    margin-bottom: 8px;
-  }
-  .chart-panel p {
-    font-size: 11px;
-  }
-  .watch-chart {
-    display: flex;
-    gap: 8px;
-    align-items: stretch;
-    height: 210px;
-    padding: 15px 0 30px;
-    overflow-x: auto;
-  }
-  .chart-column {
-    flex: 1;
-    min-width: 24px;
-    max-width: 80px;
-    display: flex;
-    justify-content: flex-end;
-    flex-direction: column;
-    position: relative;
-  }
-  .chart-bar {
-    background: var(--accent-soft);
-    border-top: 2px solid var(--accent);
-    min-height: 2px;
-    transition: background 0.2s;
-  }
-  .chart-column:hover .chart-bar {
-    background: color-mix(in srgb, var(--accent) 35%, transparent);
-  }
-  .chart-column span {
-    position: absolute;
-    bottom: -21px;
-    font:
-      9px ui-monospace,
-      monospace;
-    color: var(--muted);
-  }
-  .empty-chart {
-    display: grid;
-    place-items: center;
-    height: 170px;
-    border: 1px dashed var(--line);
-  }
-  .rank-row {
-    display: flex;
-    align-items: center;
-    gap: 20px;
-    padding: 18px 0;
-    border-bottom: 1px solid var(--line);
-    font-size: 12px;
-  }
-  .rank-row > div {
-    flex: 1;
-  }
-  .rank {
-    color: var(--muted);
-    font:
-      11px ui-monospace,
-      monospace;
-  }
-  .rank-bar {
-    height: 2px;
-    background: var(--accent);
-    margin-top: 10px;
-  }
-  .inline-form {
-    margin: 16px 0;
-  }
-</style>
+</Panel>

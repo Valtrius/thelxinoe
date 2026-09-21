@@ -89,9 +89,9 @@
   let thumbnailAspectRatio = $state(16 / 9);
 
   const signalBadgeClass =
-    'border border-(--line-strong) bg-[rgba(5,7,10,0.78)] px-[0.45rem] py-[0.28rem] text-[0.58rem] font-bold tracking-[0.1em] text-(--accent) uppercase';
+    'border border-line-strong bg-[rgba(5,7,10,0.78)] px-[0.45rem] py-[0.28rem] text-[0.58rem] font-bold tracking-[0.1em] text-accent uppercase';
   const downloadBadgeClass =
-    'border border-[color-mix(in_srgb,var(--success)_55%,var(--line-strong))] bg-[color-mix(in_srgb,var(--success)_12%,rgba(5,7,10,0.9))] px-[0.45rem] py-[0.28rem] text-[0.58rem] font-bold tracking-[0.1em] text-(--success) uppercase shadow-[0_0_14px_color-mix(in_srgb,var(--success)_18%,transparent)]';
+    'border border-[color-mix(in_srgb,var(--success)_55%,var(--line-strong))] bg-[color-mix(in_srgb,var(--success)_12%,rgba(5,7,10,0.9))] px-[0.45rem] py-[0.28rem] text-[0.58rem] font-bold tracking-[0.1em] text-success uppercase shadow-[0_0_14px_color-mix(in_srgb,var(--success)_18%,transparent)]';
 
   function updateThumbnailRatio(event: Event) {
     const image = event.currentTarget as HTMLImageElement;
@@ -104,12 +104,12 @@
 <article
   data-video-id={video.videoId}
   data-playing={isPlaying}
-  class={`panel group relative flex h-full flex-col overflow-hidden border bg-(--surface) shadow-[0_16px_40px_var(--shadow)] transition-[border-color,opacity,transform] ${fadeWatchedCards && video.isWatched && !isBusy ? 'opacity-55 focus-within:opacity-100 hover:opacity-100' : 'opacity-100'} ${menuOpen || shortcutDeleteConfirming ? 'z-50' : ''} ${isBusy ? 'border-(--accent)' : menuOpen || shortcutDeleteConfirming ? 'border-(--line-strong)' : 'border-(--line) hover:-translate-y-0.5 hover:border-(--line-strong)'}`}
+  class={`group relative flex h-full flex-col overflow-hidden border bg-surface shadow-card transition-[border-color,opacity,transform] ${fadeWatchedCards && video.isWatched && !isBusy ? 'opacity-55 focus-within:opacity-100 hover:opacity-100' : 'opacity-100'} ${menuOpen || shortcutDeleteConfirming ? 'z-50' : ''} ${isBusy ? 'border-accent' : menuOpen || shortcutDeleteConfirming ? 'border-line-strong' : 'border-line hover:-translate-y-0.5 hover:border-line-strong'}`}
 >
   {#if isPlaying}
     <span
       aria-hidden="true"
-      class="pointer-events-none absolute inset-0 z-20 border-3 border-(--accent)"
+      class="pointer-events-none absolute inset-0 z-20 border-3 border-accent"
     ></span>
   {/if}
   <VideoActionsMenu
@@ -168,7 +168,7 @@
     {/if}
     {#if showPosition}
       <span
-        class="absolute bottom-3 left-2 border border-[color-mix(in_srgb,var(--accent)_45%,transparent)] bg-black/75 px-2 py-1 font-mono text-[0.62rem] text-(--accent)"
+        class="absolute bottom-3 left-2 border border-accent/45 bg-black/75 px-2 py-1 font-mono text-[0.62rem] text-accent"
       >
         {formatClock(video.positionSeconds)}
       </span>
@@ -201,9 +201,9 @@
         >{downloadLabel}</span
       >{/if}
     {#if downloadPending && downloadPercent !== null}<span
-        class="absolute right-0 bottom-1 left-0 h-1 bg-[color-mix(in_srgb,var(--success)_18%,transparent)]"
+        class="absolute right-0 bottom-1 left-0 h-1 bg-success/18"
         ><i
-          class="block h-full bg-(--success) shadow-[0_0_12px_var(--success)]"
+          class="block h-full bg-success shadow-[0_0_12px_var(--success)]"
           style={`width:${downloadPercent}%`}
         ></i></span
       >{/if}
@@ -211,7 +211,7 @@
         class="absolute right-0 bottom-0 left-0 h-1 bg-white/12"
       >
         <i
-          class="block h-full bg-(--accent) shadow-[0_0_12px_var(--accent)]"
+          class="block h-full bg-accent shadow-accent-glow"
           style={`width:${video.watchedPercentage}%`}
         ></i>
       </span>{/if}
@@ -220,21 +220,21 @@
   <div class="flex flex-1 items-start gap-3 p-4 pb-5">
     {#if video.channelThumbnailUrl}
       <img
-        class="size-9 shrink-0 rounded-full border border-(--line) object-cover"
+        class="size-9 shrink-0 rounded-full border border-line object-cover"
         src={video.channelThumbnailUrl}
         alt=""
         loading="lazy"
       />
     {:else}
       <span
-        class="grid size-9 shrink-0 place-items-center rounded-full border border-(--line) bg-(--surface-soft) text-xs text-(--accent)"
+        class="grid size-9 shrink-0 place-items-center rounded-full border border-line bg-surface-soft text-xs text-accent"
       >
         {video.channelName.slice(0, 1).toUpperCase()}
       </span>
     {/if}
     <div class="min-w-0 flex-1">
       <div
-        class="mb-2 flex items-center justify-between gap-3 text-[0.62rem] tracking-[0.08em] text-(--muted) uppercase"
+        class="mb-2 flex items-center justify-between gap-3 text-[0.62rem] tracking-[0.08em] text-muted uppercase"
       >
         <span class="min-w-0 flex-1 truncate">{video.channelName}</span><time
           class="shrink-0 whitespace-nowrap"

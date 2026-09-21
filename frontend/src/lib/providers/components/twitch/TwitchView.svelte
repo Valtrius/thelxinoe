@@ -2,15 +2,15 @@
   import {
     captureScrollAnchor,
     restoreScrollAnchor,
-  } from '../../scroll-anchor';
+  } from '../../../scroll-anchor';
   import { LatestRequest } from '../../latest-request';
   import { tick, untrack } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import { Copy, ExternalLink, RefreshCw, X } from '@lucide/svelte';
   import { api, normalizeError } from '../../api';
-  import { createCardGridWheelHandler } from '../../card-grid-wheel';
-  import { scaleCardScope } from '../../card-grid-zoom';
-  import { createLayoutMotion } from '../../layout-motion';
+  import { createCardGridWheelHandler } from '../../../card-grid-wheel';
+  import { scaleCardScope } from '../../../card-grid-zoom';
+  import { createLayoutMotion } from '../../../layout-motion';
   import { dismissToastByKey, showToast } from '../../toasts';
   import type {
     AppError,
@@ -27,8 +27,9 @@
     twitchChatUrl,
     twitchUrl,
   } from '../../utils';
-  import Button from '../ui/Button.svelte';
+  import Button from '../../../ui/Button.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
+  import { eyebrowTextClass as eyebrowClass } from '../../../ui/styles';
   import StreamCard from './StreamCard.svelte';
 
   let {
@@ -280,9 +281,9 @@
 <div class="flex flex-col">
   {#if account}
     <div
-      class="mr-3 flex shrink-0 flex-wrap items-center gap-2 border-b border-(--line) pb-2"
+      class="mr-3 flex shrink-0 flex-wrap items-center gap-2 border-b border-line pb-2"
     >
-      <span class="ml-auto text-[0.65rem] text-(--muted)">
+      <span class="ml-auto text-[0.65rem] text-muted">
         {#if syncStatus.isRefreshing}{syncStatus.phase} · {syncStatus.completed}/{syncStatus.total ??
             '—'}{:else}Updated {relativeTime(syncStatus.lastSuccessAt)}{/if}
       </span>
@@ -310,25 +311,25 @@
     {#if !account}
       {#if authState.status === 'pending'}
         <section
-          class="panel border border-(--line-strong) bg-(--surface) p-6 text-center"
+          class="border border-line-strong bg-surface p-6 text-center shadow-panel"
         >
-          <p class="eyebrow">DEVICE AUTH / TWITCH</p>
+          <p class={eyebrowClass}>DEVICE AUTH / TWITCH</p>
           <h2 class="mt-2 text-xl">Enter this code in Twitch</h2>
           <button
             type="button"
-            class="mt-5 border border-(--line-strong) bg-(--accent-soft) px-8 py-4 font-mono text-3xl tracking-[0.22em] text-(--accent)"
+            class="mt-5 border border-line-strong bg-accent-soft px-8 py-4 font-mono text-3xl tracking-[0.22em] text-accent"
             aria-label="Copy Twitch device code"
             onclick={() =>
               authState.userCode &&
               navigator.clipboard.writeText(authState.userCode)}
             >{authState.userCode ?? 'WAIT'}</button
           >
-          <p class="mt-3 text-xs text-(--muted)">
+          <p class="mt-3 text-xs text-muted">
             {authState.message ??
               'Approve read-only followed-channel access in the browser.'}
           </p>
           {#if authState.verificationUri}
-            <p class="mt-2 font-mono text-[0.65rem] break-all text-(--muted)">
+            <p class="mt-2 font-mono text-[0.65rem] break-all text-muted">
               {authState.verificationUri}
             </p>
             <div class="mt-4 flex justify-center gap-2">
@@ -404,7 +405,10 @@
       {/if}
     {:else}
       <div class="pb-4" data-sidebar-resize="y">
-        <section data-card-grid class="media-card-grid grid items-stretch">
+        <section
+          data-card-grid
+          class="grid items-stretch [contain:layout_style]"
+        >
           {#each streams as stream (stream.streamId)}
             <div
               data-layout-key={`twitch-stream:${stream.streamId}`}

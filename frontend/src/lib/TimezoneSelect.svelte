@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from './api';
+  import Button from './ui/Button.svelte';
 
   let {
     label,
@@ -47,7 +48,10 @@
 </label>
 {#if error}
   <p role="alert">Could not load timezones: {error}</p>
-  <button type="button" class="secondary" onclick={() => void load()}
-    >Retry loading timezones</button
+  <Button
+    type="button"
+    variant="secondary"
+    size="form"
+    onclick={() => void load()}>Retry loading timezones</Button
   >
 {/if}

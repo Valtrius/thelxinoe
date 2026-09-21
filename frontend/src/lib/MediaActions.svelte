@@ -1,6 +1,8 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { api } from './api';
+  import Button from './ui/Button.svelte';
+  import { errorClass } from './ui/styles';
   let { id, kind, userId } = $props<{
     id: string;
     kind: string;
@@ -77,27 +79,32 @@
   }
 </script>
 
-{#if flags}<div class="actions">
-    <button
-      class="secondary"
+{#if flags}<div
+    class="mt-3 mb-5 flex flex-wrap items-end gap-2.5 [&_label]:min-w-50"
+  >
+    <Button
+      variant="secondary"
+      size="form"
       disabled={busy}
       aria-pressed={flags.favorite}
       onclick={() => void toggle('favorite')}
-      >{flags.favorite ? 'Remove favorite' : 'Favorite'}</button
+      >{flags.favorite ? 'Remove favorite' : 'Favorite'}</Button
     >
-    {#if ['movie', 'show', 'episode'].includes(kind)}<button
-        class="secondary"
+    {#if ['movie', 'show', 'episode'].includes(kind)}<Button
+        variant="secondary"
+        size="form"
         disabled={busy}
         aria-pressed={flags.watch_later}
         onclick={() => void toggle('watch_later')}
-        >{flags.watch_later ? 'Remove from Watch Later' : 'Watch Later'}</button
+        >{flags.watch_later ? 'Remove from Watch Later' : 'Watch Later'}</Button
       >{/if}
-    {#if ['movie', 'episode', 'track'].includes(kind)}<button
-        class="secondary"
+    {#if ['movie', 'episode', 'track'].includes(kind)}<Button
+        variant="secondary"
+        size="form"
         disabled={busy}
         aria-pressed={flags.watched}
         onclick={() => void toggle('watched')}
-        >{flags.watched ? 'Mark unwatched' : 'Mark watched'}</button
+        >{flags.watched ? 'Mark unwatched' : 'Mark watched'}</Button
       >{/if}
     {#if kind === 'track' && playlists.length}<label
         >Playlist<select bind:value={playlist}
@@ -105,23 +112,11 @@
           >{#each playlists as p (p.id)}<option value={p.id}>{p.name}</option
             >{/each}</select
         ></label
-      ><button
-        class="secondary"
+      ><Button
+        variant="secondary"
+        size="form"
         disabled={busy || !playlist}
-        onclick={() => void add()}>Add to playlist</button
+        onclick={() => void add()}>Add to playlist</Button
       >{/if}
   </div>{/if}
-{#if error}<p class="error" role="alert">{error}</p>{/if}
-
-<style>
-  .actions {
-    display: flex;
-    align-items: end;
-    gap: 10px;
-    flex-wrap: wrap;
-    margin: 12px 0 20px;
-  }
-  .actions label {
-    min-width: 200px;
-  }
-</style>
+{#if error}<p class={errorClass} role="alert">{error}</p>{/if}

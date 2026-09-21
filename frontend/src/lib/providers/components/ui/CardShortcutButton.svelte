@@ -31,7 +31,7 @@
 <button
   bind:this={element}
   {type}
-  class={`grid size-8 place-items-center border border-(--line-strong) bg-[color-mix(in_srgb,var(--background)_82%,transparent)] text-(--muted) [backdrop-filter:blur(5px)] disabled:cursor-not-allowed disabled:opacity-45 [&_svg]:size-4 ${platformClass[platform]} ${className}`}
+  class={`grid size-8 place-items-center border border-line-strong bg-background/82 text-muted [backdrop-filter:blur(5px)] disabled:cursor-not-allowed disabled:opacity-45 [&_svg]:size-4 ${platformClass[platform]} ${className}`}
   {...rest}
 >
   {@render children()}

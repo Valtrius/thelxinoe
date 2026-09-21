@@ -8,6 +8,7 @@
     YoutubeWatchlist,
   } from '../../types';
   import type { YoutubeVideoGroup } from '../../youtube-feed';
+  import { eyebrowTextClass as eyebrowClass } from '../../../ui/styles';
   import VideoCard from './VideoCard.svelte';
 
   let {
@@ -145,13 +146,13 @@
         data-card-group-header
         data-sidebar-resize="y-pos"
         data-layout-key={`youtube-group:${group.key}`}
-        class="sticky top-0 z-10 border-b border-(--line) bg-transparent py-2 text-xs font-semibold tracking-[0.08em] text-(--foreground) uppercase data-stuck:bg-(--background)/95 data-stuck:backdrop-blur"
+        class="sticky top-0 z-10 border-b border-line bg-transparent py-2 text-xs font-semibold tracking-[0.08em] text-foreground uppercase data-stuck:bg-background/95 data-stuck:backdrop-blur"
       >
         <span class="feed-group-label">{group.label}</span>
       </h2>
     {/if}
     <div class="pt-3" data-sidebar-resize="y">
-      <div data-card-grid class="media-card-grid grid items-stretch">
+      <div data-card-grid class="grid items-stretch [contain:layout_style]">
         {#each group.videos as video (video.videoId)}
           <div
             data-layout-key={`youtube-video:${video.videoId}`}
@@ -191,7 +192,9 @@
 
 <div bind:this={loadMoreTarget} class="h-px" aria-hidden="true"></div>
 {#if loadingMore}
-  <p class="eyebrow sticky bottom-2 mx-auto w-fit bg-(--surface) px-3 py-2">
+  <p
+    class={`${eyebrowClass} sticky bottom-2 mx-auto w-fit bg-surface px-3 py-2`}
+  >
     Loading cached feed…
   </p>
 {/if}

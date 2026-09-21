@@ -1,6 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from './api';
+  import Button from './ui/Button.svelte';
+  import Panel from './ui/Panel.svelte';
+  import { inlineFormClass } from './ui/styles';
   let configured = $state(false),
     clientId = $state(''),
     clientSecret = $state(''),
@@ -30,14 +33,14 @@
   }
 </script>
 
-<section class="panel">
+<Panel>
   <h2>Kick application</h2>
   <p>
     Optional application credentials provide live status and channel metadata.
     Regular users track public channels without signing in to Kick.
   </p>
   <form
-    class="inline-form"
+    class={inlineFormClass}
     onsubmit={(e) => {
       e.preventDefault();
       void save();
@@ -61,7 +64,8 @@
         autocomplete="new-password"
       /></label
     >
-    <button class="primary" disabled={busy}>Save Kick settings</button>
+    <Button type="submit" size="form" disabled={busy}>Save Kick settings</Button
+    >
   </form>
   {#if message}<p role="status">{message}</p>{/if}
-</section>
+</Panel>

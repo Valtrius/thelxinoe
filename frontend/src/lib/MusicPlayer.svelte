@@ -5,6 +5,9 @@
   import Player from './Player.svelte';
   import { appearance, updateAppearance } from './appearance';
   import { choiceIndex } from './media-state';
+  import Button from './ui/Button.svelte';
+  import Panel from './ui/Panel.svelte';
+  import { errorClass, sectionHeadingClass } from './ui/styles';
   let { choice, closed } = $props<{
     choice: MediaChoice;
     closed: () => void;
@@ -77,25 +80,27 @@
     choice={streamChoice}
     {closed}
     ended={nextStream}
-  />{:else}<section class="panel" aria-label="Music player">
-    <div class="section-heading">
+  />{:else}<Panel aria-label="Music player">
+    <div class={sectionHeadingClass}>
       <h2>{musicState?.title ?? choice.title}</h2>
-      <button
-        class="secondary"
+      <Button
+        variant="secondary"
+        size="form"
         onclick={async () => {
           await queue?.close();
           closed();
-        }}>Close player</button
+        }}>Close player</Button
       >
     </div>
-    {#if error}<p class="error" role="alert">{error}</p>{/if}{#if busy}<p
+    {#if error}<p class={errorClass} role="alert">{error}</p>{/if}{#if busy}<p
         role="status"
       >
         Preparing music…
       </p>{/if}
-    {#if musicState}<div class="controls">
-        <label
+    {#if musicState}<div class="flex flex-wrap items-center gap-[15px]">
+        <label class="min-w-45 flex-1"
           >Volume<input
+            class="w-full p-0"
             aria-label="Music volume"
             type="range"
             min="0"
@@ -109,13 +114,16 @@
             }}
           /></label
         >
-        <button class="primary" onclick={() => void queue?.toggle()}
-          >{musicState.paused ? 'Play' : 'Pause'}</button
-        ><button class="secondary" onclick={() => void queue?.skip()}
-          >Next track</button
+        <Button size="form" onclick={() => void queue?.toggle()}
+          >{musicState.paused ? 'Play' : 'Pause'}</Button
+        ><Button
+          variant="secondary"
+          size="form"
+          onclick={() => void queue?.skip()}>Next track</Button
         ><span>{time(musicState.position)} / {time(musicState.duration)}</span
-        ><label
+        ><label class="min-w-45 flex-1"
           >Music position<input
+            class="w-full p-0"
             aria-label="Music position"
             type="range"
             min="0"
@@ -126,27 +134,10 @@
           /></label
         >
       </div>
-      <p class="muted">
+      <p class="text-muted">
         Track {Math.min(musicState.index + 1, musicState.count)} of {musicState.count}
         · Gapless · ReplayGain {Number(
           20 * Math.log10(musicState.gain),
         ).toFixed(1)} dB
       </p>{/if}
-  </section>{/if}
-
-<style>
-  .controls {
-    display: flex;
-    align-items: center;
-    gap: 15px;
-    flex-wrap: wrap;
-  }
-  .controls label {
-    flex: 1;
-    min-width: 180px;
-  }
-  .controls input {
-    width: 100%;
-    padding: 0;
-  }
-</style>
+  </Panel>{/if}

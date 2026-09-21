@@ -48,12 +48,12 @@
   data-channel-slug={channelSlug}
   data-stream-id={streamId}
   data-playing={isPlaying}
-  class={`panel group relative flex h-full flex-col overflow-hidden border bg-(--surface) shadow-[0_16px_40px_var(--shadow)] transition-[border-color,transform] ${isBusy ? (platform === 'kick' ? 'border-[#53fc18]' : 'border-(--accent)') : 'border-(--line) hover:-translate-y-0.5 hover:border-(--line-strong)'}`}
+  class={`group relative flex h-full flex-col overflow-hidden border bg-surface shadow-card transition-[border-color,transform] ${isBusy ? (platform === 'kick' ? 'border-[#53fc18]' : 'border-accent') : 'border-line hover:-translate-y-0.5 hover:border-line-strong'}`}
 >
   {#if isPlaying}
     <span
       aria-hidden="true"
-      class={`pointer-events-none absolute inset-0 z-20 border-3 ${platform === 'kick' ? 'border-[#53fc18]' : 'border-(--accent)'}`}
+      class={`pointer-events-none absolute inset-0 z-20 border-3 ${platform === 'kick' ? 'border-[#53fc18]' : 'border-accent'}`}
     ></span>
   {/if}
   <div
@@ -100,7 +100,7 @@
         {formatViewers(statistics.viewerCount)} viewers
       </span>
       <span
-        class={`absolute bottom-2 left-2 border bg-black/75 px-2 py-1 font-mono text-[0.62rem] ${platform === 'kick' ? 'border-[#53fc18]/45 text-[#72ff43]' : 'border-[color-mix(in_srgb,var(--accent)_45%,transparent)] text-(--accent)'}`}
+        class={`absolute bottom-2 left-2 border bg-black/75 px-2 py-1 font-mono text-[0.62rem] ${platform === 'kick' ? 'border-[#53fc18]/45 text-[#72ff43]' : 'border-accent/45 text-accent'}`}
       >
         {elapsedTime(statistics.startedAt, liveNow())}
       </span>
@@ -111,21 +111,21 @@
     <div class="flex items-start gap-3">
       {#if profileImageUrl}
         <img
-          class="size-9 shrink-0 rounded-full border border-(--line) object-cover"
+          class="size-9 shrink-0 rounded-full border border-line object-cover"
           src={profileImageUrl}
           alt=""
           loading="lazy"
         />
       {:else}
         <span
-          class={`grid size-9 shrink-0 place-items-center rounded-full border border-(--line) bg-(--surface-soft) text-xs ${platform === 'kick' ? 'text-[#72ff43]' : 'text-(--accent)'}`}
+          class={`grid size-9 shrink-0 place-items-center rounded-full border border-line bg-surface-soft text-xs ${platform === 'kick' ? 'text-[#72ff43]' : 'text-accent'}`}
         >
           {displayName.slice(0, 1).toUpperCase()}
         </span>
       {/if}
       <div class="min-w-0">
         <h3 class="truncate text-sm font-semibold">{displayName}</h3>
-        <p class="mt-1 text-xs leading-5 text-(--muted)">{title}</p>
+        <p class="mt-1 text-xs leading-5 text-muted">{title}</p>
       </div>
     </div>
     {@render metadata()}

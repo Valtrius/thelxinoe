@@ -92,7 +92,7 @@
   {#snippet metadata()}
     {#if stream}
       <div
-        class="mt-3 flex flex-wrap gap-x-2 gap-y-1 text-[0.62rem] tracking-[0.06em] text-(--muted) uppercase"
+        class="mt-3 flex flex-wrap gap-x-2 gap-y-1 text-[0.62rem] tracking-[0.06em] text-muted uppercase"
       >
         <span>{stream.categoryName ?? 'Uncategorised'}</span>
         {#if stream.languageCode}<span>· {stream.languageCode}</span>{/if}

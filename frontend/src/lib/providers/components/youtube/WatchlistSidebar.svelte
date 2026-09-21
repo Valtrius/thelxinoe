@@ -21,10 +21,14 @@
     YoutubeWatchlist,
     YoutubeWatchlistUpdate,
   } from '../../types';
-  import { createLayoutMotion, type LayoutSnapshot } from '../../layout-motion';
+  import {
+    createLayoutMotion,
+    type LayoutSnapshot,
+  } from '../../../layout-motion';
   import { sortedYoutubeWatchlistItems } from '../../youtube-watchlists';
-  import Button from '../ui/Button.svelte';
-  import Switch from '../ui/Switch.svelte';
+  import Button from '../../../ui/Button.svelte';
+  import Switch from '../../../ui/Switch.svelte';
+  import { eyebrowTextClass as eyebrowClass } from '../../../ui/styles';
   import WatchlistItem from './WatchlistItem.svelte';
 
   let {
@@ -248,7 +252,7 @@
       boxShadow: '0 14px 34px var(--shadow)',
       border: '1px solid var(--line-strong)',
     });
-    preview.classList.add('provider-overlay');
+    preview.classList.add('provider-overlay', 'text-[1rem]');
     document.body.appendChild(preview);
     dragPreview = preview;
   }
@@ -362,12 +366,12 @@
 </script>
 
 <aside
-  class="flex h-full min-h-0 w-full flex-col border-l border-(--line) bg-(--surface)"
+  class="flex h-full min-h-0 w-full flex-col border-l border-line bg-surface"
 >
   <div
     data-sidebar-resize="y"
     data-sidebar-resize-zoom
-    class="flex shrink-0 items-center gap-1.5 border-b border-(--line) p-2"
+    class="flex shrink-0 items-center gap-1.5 border-b border-line p-2"
   >
     <div class="relative min-w-0 flex-1">
       <Popover.Root
@@ -382,24 +386,24 @@
       >
         <Popover.Trigger
           type="button"
-          class="flex h-9 w-full items-center gap-2 border border-(--line) px-2.5 text-left hover:border-(--line-strong)"
+          class="flex h-9 w-full items-center gap-2 border border-line px-2.5 text-left hover:border-line-strong"
         >
           <span class="min-w-0 flex-1 truncate text-sm"
             >{selected?.name ?? 'Watch Later'}</span
           >
-          <span class="font-mono text-[0.6rem] text-(--muted)"
+          <span class="font-mono text-[0.6rem] text-muted"
             >{selected?.items.length ?? 0}</span
           >
-          <ChevronDown class="size-3.5 text-(--muted)" />
+          <ChevronDown class="size-3.5 text-muted" />
         </Popover.Trigger>
         <Popover.ContentStatic
           role="dialog"
           aria-label="Watchlists"
-          class="panel absolute top-10 right-0 left-0 z-50 border border-(--line-strong) bg-(--surface-strong) p-1.5 shadow-xl"
+          class="absolute top-10 right-0 left-0 z-50 border border-line-strong bg-surface-strong p-1.5 shadow-xl"
         >
           {#each watchlists as watchlist (watchlist.id)}
             <div
-              class={`flex min-w-0 items-center ${watchlist.id === selected?.id ? 'bg-(--accent-soft) text-(--accent)' : 'hover:bg-(--surface)'}`}
+              class={`flex min-w-0 items-center ${watchlist.id === selected?.id ? 'bg-accent-soft text-accent' : 'hover:bg-surface'}`}
             >
               <button
                 type="button"
@@ -411,7 +415,7 @@
                 }}
               >
                 <span class="min-w-0 flex-1 truncate">{watchlist.name}</span>
-                <span class="ml-2 font-mono text-[0.6rem] text-(--muted)"
+                <span class="ml-2 font-mono text-[0.6rem] text-muted"
                   >{watchlist.items.length}</span
                 >
               </button>
@@ -424,7 +428,7 @@
                   >
                     <button
                       type="button"
-                      class="grid size-7 place-items-center border border-[color-mix(in_srgb,var(--success)_55%,var(--line-strong))] bg-[color-mix(in_srgb,var(--success)_12%,transparent)] text-(--success) hover:bg-[color-mix(in_srgb,var(--success)_20%,transparent)]"
+                      class="grid size-7 place-items-center border border-[color-mix(in_srgb,var(--success)_55%,var(--line-strong))] bg-success/12 text-success hover:bg-success/20"
                       title={`Confirm deleting ${watchlist.name}`}
                       aria-label={`Confirm deleting ${watchlist.name}`}
                       onclick={() => {
@@ -437,7 +441,7 @@
                     </button>
                     <button
                       type="button"
-                      class="grid size-7 place-items-center border border-[color-mix(in_srgb,var(--danger)_55%,var(--line-strong))] bg-[color-mix(in_srgb,var(--danger)_12%,transparent)] text-(--danger) hover:bg-[color-mix(in_srgb,var(--danger)_20%,transparent)]"
+                      class="grid size-7 place-items-center border border-[color-mix(in_srgb,var(--danger)_55%,var(--line-strong))] bg-danger/12 text-danger hover:bg-danger/20"
                       title={`Cancel deleting ${watchlist.name}`}
                       aria-label={`Cancel deleting ${watchlist.name}`}
                       onclick={() => (confirmingDeleteWatchlistId = null)}
@@ -448,7 +452,7 @@
                 {:else}
                   <button
                     type="button"
-                    class="mr-1 grid size-7 shrink-0 place-items-center text-(--muted) hover:bg-[color-mix(in_srgb,var(--danger)_10%,transparent)] hover:text-(--danger)"
+                    class="mr-1 grid size-7 shrink-0 place-items-center text-muted hover:bg-danger/10 hover:text-danger"
                     title={`Delete ${watchlist.name}`}
                     aria-label={`Delete ${watchlist.name}`}
                     onclick={() => (confirmingDeleteWatchlistId = watchlist.id)}
@@ -459,9 +463,9 @@
               {/if}
             </div>
           {/each}
-          <div class="mt-1 flex gap-1 border-t border-(--line) pt-1.5">
+          <div class="mt-1 flex gap-1 border-t border-line pt-1.5">
             <input
-              class="min-w-0 flex-1 border border-(--line) bg-(--background) px-2 text-xs outline-none focus:border-(--line-strong)"
+              class="min-w-0 flex-1 border border-line bg-background px-2 text-xs outline-none focus:border-line-strong"
               placeholder="New watchlist"
               bind:value={newListName}
               onkeydown={(event) => event.key === 'Enter' && void createList()}
@@ -505,26 +509,24 @@
           <Popover.ContentStatic
             role="dialog"
             aria-label="Sort watchlist"
-            class="panel absolute top-10 right-0 z-50 w-64 border border-(--line-strong) bg-(--surface-strong) p-3 shadow-xl"
+            class="absolute top-10 right-0 z-50 w-64 border border-line-strong bg-surface-strong p-3 shadow-xl"
           >
-            <p class="eyebrow mb-2">SORT BY</p>
+            <p class={`${eyebrowClass} mb-2`}>SORT BY</p>
             <div class="flex items-center gap-1 py-1.5">
               <span class="flex-1 text-sm">Manual order</span>
               <button
                 type="button"
-                class={`h-8 border px-2.5 text-xs ${selected.sortMode === 'manual' ? 'border-(--line-strong) bg-(--accent-soft) text-(--accent)' : 'border-(--line) text-(--muted) hover:text-(--foreground)'}`}
+                class={`h-8 border px-2.5 text-xs ${selected.sortMode === 'manual' ? 'border-line-strong bg-accent-soft text-accent' : 'border-line text-muted hover:text-foreground'}`}
                 aria-pressed={selected.sortMode === 'manual'}
                 onclick={() => void updateSelected({ sortMode: 'manual' })}
                 >Manual</button
               >
             </div>
-            <div
-              class="flex items-center gap-1 border-t border-(--line) py-1.5"
-            >
+            <div class="flex items-center gap-1 border-t border-line py-1.5">
               <span class="flex-1 text-sm">Date</span>
               <button
                 type="button"
-                class={`grid size-8 place-items-center border ${selected.sortMode === 'date' && selected.sortDirection === 'asc' ? 'border-(--line-strong) bg-(--accent-soft) text-(--accent)' : 'border-(--line) text-(--muted) hover:text-(--foreground)'}`}
+                class={`grid size-8 place-items-center border ${selected.sortMode === 'date' && selected.sortDirection === 'asc' ? 'border-line-strong bg-accent-soft text-accent' : 'border-line text-muted hover:text-foreground'}`}
                 aria-label="Date ascending"
                 aria-pressed={selected.sortMode === 'date' &&
                   selected.sortDirection === 'asc'}
@@ -536,7 +538,7 @@
               >
               <button
                 type="button"
-                class={`grid size-8 place-items-center border ${selected.sortMode === 'date' && selected.sortDirection === 'desc' ? 'border-(--line-strong) bg-(--accent-soft) text-(--accent)' : 'border-(--line) text-(--muted) hover:text-(--foreground)'}`}
+                class={`grid size-8 place-items-center border ${selected.sortMode === 'date' && selected.sortDirection === 'desc' ? 'border-line-strong bg-accent-soft text-accent' : 'border-line text-muted hover:text-foreground'}`}
                 aria-label="Date descending"
                 aria-pressed={selected.sortMode === 'date' &&
                   selected.sortDirection === 'desc'}
@@ -578,14 +580,14 @@
           <Popover.ContentStatic
             role="dialog"
             aria-label="Watchlist settings"
-            class="panel absolute top-10 right-0 z-50 w-72 border border-(--line-strong) bg-(--surface-strong) p-3 text-xs shadow-xl"
+            class="absolute top-10 right-0 z-50 w-72 border border-line-strong bg-surface-strong p-3 text-xs shadow-xl"
           >
-            <p class="eyebrow mb-2">WATCHLIST SETTINGS</p>
+            <p class={`${eyebrowClass} mb-2`}>WATCHLIST SETTINGS</p>
             {#if !selected.isDefault}
               <label class="mb-2 block">
-                <span class="mb-1 block text-(--muted)">Name</span>
+                <span class="mb-1 block text-muted">Name</span>
                 <input
-                  class="h-8 w-full border border-(--line) bg-(--background) px-2 outline-none focus:border-(--line-strong)"
+                  class="h-8 w-full border border-line bg-background px-2 outline-none focus:border-line-strong"
                   maxlength="80"
                   bind:value={renameValue}
                   onkeydown={(event) => {
@@ -609,7 +611,7 @@
             {/if}
             <Switch
               size="sm"
-              class="flex border-t border-(--line) py-2"
+              class="flex border-t border-line py-2"
               checked={selected.autoDownload}
               onCheckedChange={(checked) =>
                 void updateSelected({ autoDownload: checked })}
@@ -618,7 +620,7 @@
             </Switch>
             <Switch
               size="sm"
-              class="flex border-t border-(--line) py-2"
+              class="flex border-t border-line py-2"
               checked={selected.autoRemoveWatched}
               onCheckedChange={(checked) =>
                 void updateSelected({ autoRemoveWatched: checked })}
@@ -642,7 +644,7 @@
     >
       {#if items.length === 0}
         <div
-          class="grid min-h-36 place-items-center px-6 text-center text-xs leading-5 text-(--muted)"
+          class="grid min-h-36 place-items-center px-6 text-center text-xs leading-5 text-muted"
         >
           Add videos from the ⋯ menu on any YouTube card.
         </div>
@@ -662,17 +664,17 @@
             >
               {#if item.metadataPending}
                 <div
-                  class="flex items-stretch border-b border-(--line)"
+                  class="flex items-stretch border-b border-line"
                   aria-busy="true"
                 >
                   <div
                     class="grid aspect-video w-[min(10rem,42%)] shrink-0 place-items-center bg-[linear-gradient(130deg,#121923,#080b10_60%)]"
                   >
-                    <LoaderCircle class="size-5 animate-spin text-(--accent)" />
+                    <LoaderCircle class="size-5 animate-spin text-accent" />
                   </div>
                   <div class="min-w-0 flex-1 px-2.5 py-1">
                     <p class="text-sm leading-5 font-medium">Loading video…</p>
-                    <p class="mt-0.5 truncate text-[0.62rem] text-(--muted)">
+                    <p class="mt-0.5 truncate text-[0.62rem] text-muted">
                       {item.video.videoId}
                     </p>
                   </div>

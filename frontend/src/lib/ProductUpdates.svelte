@@ -1,7 +1,9 @@
 <script lang="ts">
-  import Switch from './providers/components/ui/Switch.svelte';
+  import Switch from './ui/Switch.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
+  import Button from './ui/Button.svelte';
+  import Panel from './ui/Panel.svelte';
   type Update = {
     id: string;
     version: string;
@@ -65,7 +67,7 @@
   }
 </script>
 
-<section class="panel" aria-label="Product updates">
+<Panel aria-label="Product updates" class="[&_button]:m-[0.3rem]">
   <h2>Thelxinoe updates</h2>
   <p>
     Server, controller and web share one release. Windows installs its matching
@@ -77,7 +79,7 @@
         Configure a release channel and its signing public key in the deployment
         to enable release checks.
       </p>{/if}
-    <div class="controls">
+    <div class="flex flex-wrap gap-4 [&_label]:min-w-48">
       <label
         >Update policy<select bind:value={policy}
           ><option value="notify">Notify</option><option value="automatic"
@@ -107,17 +109,19 @@
       successfully tested recovery path. Equal start and end hours allow any
       time.
     </p>
-    <button
-      class="secondary"
+    <Button
+      variant="secondary"
+      size="form"
       disabled={busy}
       onclick={() =>
         command('policy', { policy, window_start: start, window_end: end })}
-      >Save update policy</button
+      >Save update policy</Button
     >
-    <button
-      class="secondary"
+    <Button
+      variant="secondary"
+      size="form"
       disabled={busy || !status.configured}
-      onclick={() => command('check')}>Check signed releases</button
+      onclick={() => command('check')}>Check signed releases</Button
     >
     {#if status.observation?.checked_at}<p>
         Last check: {new Date(
@@ -129,22 +133,23 @@
       </p>{/if}
     {#if status.release}
       <h3>Version {status.release.version}</h3>
-      <p class="notes">{status.release.notes}</p>
+      <p class="whitespace-pre-wrap">{status.release.notes}</p>
       <p>
         Declared recovery: {status.release.migration.recovery}. Thelxinoe
         retains a full verified snapshot before activation.
       </p>
-      <button
-        class="secondary"
+      <Button
+        variant="secondary"
+        size="form"
         disabled={busy}
-        onclick={() => command('prepare')}>Prepare and test release</button
+        onclick={() => command('prepare')}>Prepare and test release</Button
       >
     {/if}
     <Switch bind:checked={confirmed}
       >I understand that installation briefly stops the server.</Switch
     >
     {#each status.controller.items as item (item.id)}
-      <div class="update">
+      <div class="border-t border-line py-4">
         <strong>{item.previous_version} → {item.version} · {item.stage}</strong>
         <p>
           Rollback snapshot: {item.snapshot_ready
@@ -154,11 +159,11 @@
             : 'not complete'}
         </p>
         {#if item.error}<p>{item.error}</p>{/if}
-        {#if item.stage === 'ready'}<button
-            class="primary"
+        {#if item.stage === 'ready'}<Button
+            size="form"
             disabled={busy || !confirmed}
             onclick={() => command(`${item.id}/activate`, { confirm: true })}
-            >Install prepared release</button
+            >Install prepared release</Button
           >{/if}
         {#if item.snapshot_ready && ['committed', 'runtime-failure', 'recovery-required'].includes(item.stage)}
           <p>
@@ -172,11 +177,12 @@
               autocomplete="off"
             /></label
           >
-          <button
-            class="secondary"
+          <Button
+            variant="secondary"
+            size="form"
             disabled={busy || restore !== 'RESTORE'}
             onclick={() => command(`${item.id}/recover`, { confirm: true })}
-            >Restore previous release and state</button
+            >Restore previous release and state</Button
           >
         {/if}
       </div>
@@ -184,25 +190,4 @@
     {#if status.controller.error}<p>{status.controller.error}</p>{/if}
   {/if}
   {#if message}<p role="status">{message}</p>{/if}
-</section>
-
-<style>
-  .controls {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 1rem;
-  }
-  .controls label {
-    min-width: 12rem;
-  }
-  .update {
-    border-top: 1px solid var(--line);
-    padding: 1rem 0;
-  }
-  .notes {
-    white-space: pre-wrap;
-  }
-  button {
-    margin: 0.3rem;
-  }
-</style>
+</Panel>

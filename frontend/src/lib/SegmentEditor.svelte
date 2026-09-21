@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { api } from './api';
+  import Button from './ui/Button.svelte';
   let { mediaId, fileId, duration, episode } = $props<{
     mediaId: string;
     fileId: string;
@@ -63,13 +64,19 @@
   }
 </script>
 
-<details class="segments">
-  <summary>Intro, recap, credits and preview timestamps</summary>
+<details
+  class="my-4 border border-line p-4 [&_label]:m-0 [&_label]:max-w-36 [&_span]:text-xs [&_span]:text-muted"
+>
+  <summary class="mb-4 font-semibold">
+    Intro, recap, credits and preview timestamps
+  </summary>
   <p>
     Times are seconds within this edition. Saving an empty list suppresses
     automatic timestamps. Corrections apply to this file version.
   </p>
-  {#each items as item (item.id)}<div class="segment-row">
+  {#each items as item (item.id)}<div
+      class="my-[0.8rem] flex flex-wrap items-center gap-[0.8rem]"
+    >
       <label
         >Type<select bind:value={item.kind}
           >{#each ['Intro', 'Recap', 'Credits', 'Preview'] as kind (kind)}<option
@@ -96,16 +103,18 @@
         /></label
       >
       <span>{item.source} · {Math.round(item.confidence * 100)}%</span>
-      <button
-        class="secondary"
+      <Button
+        variant="secondary"
+        size="form"
         disabled={busy}
         onclick={() => (items = items.filter((s) => s.id !== item.id))}
-        >Remove</button
+        >Remove</Button
       >
     </div>{/each}
-  <div class="actions">
-    <button
-      class="secondary"
+  <div class="my-[0.8rem] flex flex-wrap items-center gap-[0.8rem]">
+    <Button
+      variant="secondary"
+      size="form"
       disabled={busy || items.length >= 40}
       onclick={() =>
         (items = [
@@ -118,20 +127,22 @@
             source: 'manual',
             confidence: 1,
           },
-        ])}>Add segment</button
+        ])}>Add segment</Button
     >
-    <button
-      class="primary"
+    <Button
+      size="form"
       disabled={busy || !generation}
-      onclick={() => void save()}>Save corrections</button
+      onclick={() => void save()}>Save corrections</Button
     >
-    <button
-      class="secondary"
+    <Button
+      variant="secondary"
+      size="form"
       disabled={busy || !generation}
-      onclick={() => void save(true)}>Use automatic timestamps</button
+      onclick={() => void save(true)}>Use automatic timestamps</Button
     >
-    {#if episode}<button
-        class="secondary"
+    {#if episode}<Button
+        variant="secondary"
+        size="form"
         disabled={busy}
         onclick={async () => {
           try {
@@ -143,42 +154,14 @@
           } catch (e) {
             message = String(e);
           }
-        }}>Reanalyze episode</button
+        }}>Reanalyze episode</Button
       >{/if}
-    <button
-      class="secondary"
+    <Button
+      variant="secondary"
+      size="form"
       disabled={busy}
-      onclick={() => void load([mediaId, fileId])}>Refresh segments</button
+      onclick={() => void load([mediaId, fileId])}>Refresh segments</Button
     >
   </div>
   {#if message}<p role="status">{message}</p>{/if}
 </details>
-
-<style>
-  .segments {
-    margin: 1rem 0;
-    padding: 1rem;
-    border: 1px solid var(--line);
-  }
-  summary {
-    cursor: pointer;
-    font-weight: 600;
-    margin-bottom: 1rem;
-  }
-  .segment-row,
-  .actions {
-    display: flex;
-    align-items: center;
-    gap: 0.8rem;
-    flex-wrap: wrap;
-    margin: 0.8rem 0;
-  }
-  label {
-    margin: 0;
-    max-width: 9rem;
-  }
-  span {
-    font-size: 12px;
-    color: var(--muted);
-  }
-</style>

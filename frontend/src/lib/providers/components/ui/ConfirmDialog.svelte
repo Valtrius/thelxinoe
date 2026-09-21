@@ -1,6 +1,7 @@
 <script lang="ts">
   import { TriangleAlert, X } from '@lucide/svelte';
-  import Button from './Button.svelte';
+  import Button from '../../../ui/Button.svelte';
+  import { eyebrowTextClass as eyebrowClass } from '../../../ui/styles';
 
   let {
     open,
@@ -36,7 +37,7 @@
 
 <dialog
   bind:this={dialog}
-  class="m-0 h-full max-h-none w-full max-w-none border-0 bg-transparent p-0 text-(--foreground) backdrop:bg-black/65 backdrop:backdrop-blur-[2px]"
+  class="m-0 h-full max-h-none w-full max-w-none border-0 bg-transparent p-0 text-foreground backdrop:bg-black/65 backdrop:backdrop-blur-[2px]"
   aria-labelledby={id + '-title'}
   aria-describedby={id + '-description'}
   aria-busy={busy}
@@ -51,22 +52,19 @@
 >
   <div class="grid min-h-full place-items-center p-5">
     <section
-      class="panel relative z-10 w-full max-w-md border border-(--line-strong) bg-(--surface-strong) p-5 shadow-2xl"
+      class="relative z-10 w-full max-w-md border border-line-strong bg-surface-strong p-5 shadow-2xl"
     >
       <div class="flex items-start gap-3">
         <TriangleAlert
-          class={`mt-1 size-5 shrink-0 ${danger ? 'text-(--danger)' : 'text-(--warning)'}`}
+          class={`mt-1 size-5 shrink-0 ${danger ? 'text-danger' : 'text-warning'}`}
         />
         <div class="min-w-0 flex-1">
-          <p class="eyebrow">{eyebrow}</p>
+          <p class={eyebrowClass}>{eyebrow}</p>
           <h2 id={id + '-title'} class="mt-2 text-lg">{title}</h2>
-          <p
-            id={id + '-description'}
-            class="mt-2 text-sm leading-6 text-(--muted)"
-          >
+          <p id={id + '-description'} class="mt-2 text-sm leading-6 text-muted">
             {message}
           </p>
-          {#if error}<p class="mt-3 text-sm text-(--danger)" role="alert">
+          {#if error}<p class="mt-3 text-sm text-danger" role="alert">
               {error}
             </p>{/if}
         </div>

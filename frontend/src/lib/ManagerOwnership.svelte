@@ -1,5 +1,7 @@
 <script lang="ts">
   import { api } from './api';
+  import Button from './ui/Button.svelte';
+  import Panel from './ui/Panel.svelte';
   type File = {
     id: string;
     path: string;
@@ -40,19 +42,22 @@
   }
 </script>
 
-<section class="panel">
+<Panel>
   <h2>Media ownership and operations</h2>
   <p>
     Refresh ownership after a manager import or configuration change. Unresolved
     and ambiguous files cannot be deleted.
   </p>
-  <button class="secondary" disabled={busy} onclick={() => void refresh()}
-    >Reconcile file ownership</button
+  <Button
+    variant="secondary"
+    size="form"
+    disabled={busy}
+    onclick={() => void refresh()}>Reconcile file ownership</Button
   >
   {#if message}<p role="status">{message}</p>{/if}
   {#each files as file (file.id)}<article>
       <p>{file.path} · <strong>{file.ownership}</strong></p>
-      {#each file.bindings as binding (binding.service)}<p class="muted">
+      {#each file.bindings as binding (binding.service)}<p class="text-muted">
           {binding.service} · file {binding.file_id} · media {binding.entity_id}{binding
             .members.length
             ? ` · episode/track IDs ${binding.members.join(', ')}`
@@ -67,4 +72,4 @@
       </p>
       {#if operation.error}<p>{operation.error}</p>{/if}
     </article>{/each}
-</section>
+</Panel>

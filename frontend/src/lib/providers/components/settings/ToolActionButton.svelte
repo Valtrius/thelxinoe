@@ -2,7 +2,7 @@
   import type { ToolOperation } from '../../tools-api';
   import { toolOperationActive } from '../../tools-presentation';
   import { formatBytes } from '../../utils';
-  import Button from '../ui/Button.svelte';
+  import Button from '../../../ui/Button.svelte';
 
   let {
     label,
@@ -51,7 +51,7 @@
 >
   {#if working}
     <span
-      class={`pointer-events-none absolute inset-y-0 left-0 bg-(--accent-soft) transition-[width] duration-150 ${percent === undefined ? 'animate-pulse motion-reduce:animate-none' : ''}`}
+      class={`pointer-events-none absolute inset-y-0 left-0 bg-accent-soft transition-[width] duration-150 ${percent === undefined ? 'animate-pulse motion-reduce:animate-none' : ''}`}
       style:width={`${percent ?? 100}%`}
       aria-hidden="true"
     ></span>

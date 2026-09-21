@@ -2,6 +2,8 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import Button from './ui/Button.svelte';
+  import Panel from './ui/Panel.svelte';
   let installed = $state(''),
     release = $state<{ version: string; notes: string; bytes: number } | null>(
       null,
@@ -53,11 +55,11 @@
   });
 </script>
 
-<section class="panel" aria-label="Desktop updates">
+<Panel aria-label="Desktop updates">
   <h2>Windows updates</h2>
   {#if installed}<p>Installed desktop: {installed}</p>{/if}
-  <button class="secondary" disabled={busy} onclick={check}
-    >Check desktop release</button
+  <Button variant="secondary" size="form" disabled={busy} onclick={check}
+    >Check desktop release</Button
   >
   {#if release}<h3>Version {release.version}</h3>
     <p>{release.notes}</p>
@@ -65,8 +67,8 @@
       Installation closes Thelxinoe and stops desktop playback, then reopens the
       updated application.
     </p>
-    <button class="primary" disabled={busy} onclick={install}
-      >Download and install desktop update</button
+    <Button size="form" disabled={busy} onclick={install}
+      >Download and install desktop update</Button
     >{/if}
   {#if busy && progress > 0}<progress
       value={progress}
@@ -74,4 +76,4 @@
       aria-label="Desktop update download"
     ></progress>{/if}
   {#if message}<p role="status">{message}</p>{/if}
-</section>
+</Panel>

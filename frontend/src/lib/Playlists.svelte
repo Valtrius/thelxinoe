@@ -3,6 +3,14 @@
   import { api } from './api';
   import type { Card } from './media-state';
   import type { MediaChoice } from './playback';
+  import Button from './ui/Button.svelte';
+  import Panel from './ui/Panel.svelte';
+  import {
+    errorClass,
+    inlineFormClass,
+    rowClass,
+    sectionHeadingClass,
+  } from './ui/styles';
   type Playlist = {
     id: string;
     name: string;
@@ -129,12 +137,12 @@
   const editable = $derived(creating || selected?.owner_id === userId);
 </script>
 
-<div class="section-heading">
-  <p class="muted">
+<div class={sectionHeadingClass}>
+  <p class="text-muted">
     Everyone can play and favorite a playlist. Its owner controls the tracks.
   </p>
-  <button
-    class="primary"
+  <Button
+    size="form"
     onclick={() => {
       creating = true;
       selected = null;
@@ -142,22 +150,24 @@
       description = '';
       tracks = [];
       results = [];
-    }}>New playlist</button
+    }}>New playlist</Button
   >
 </div>
-{#if error}<p role="alert" class="error">{error}</p>{/if}
-{#if creating || selected}<section class="panel" aria-label="Playlist details">
-    <div class="section-heading">
+{#if error}<p role="alert" class={errorClass}>{error}</p>{/if}
+{#if creating || selected}<Panel aria-label="Playlist details">
+    <div class={sectionHeadingClass}>
       <h2>{creating ? 'Create playlist' : selected?.name}</h2>
-      <button
-        class="secondary"
+      <Button
+        variant="secondary"
+        size="form"
         onclick={() => {
           creating = false;
           selected = null;
-        }}>Close playlist</button
+        }}>Close playlist</Button
       >
     </div>
     {#if editable}<form
+        class="my-4 grid gap-3 [&_button]:justify-self-start"
         onsubmit={(e) => {
           e.preventDefault();
           void save();
@@ -172,102 +182,95 @@
         ><label
           >Description<textarea bind:value={description} maxlength="2000"
           ></textarea></label
-        ><button class="primary" disabled={busy}>Save playlist</button>
+        ><Button type="submit" size="form" disabled={busy}>Save playlist</Button
+        >
       </form>{:else}<p>{selected?.description}</p>
       <small>Owned by {selected?.owner}</small>{/if}
-    <div class="section-heading">
+    <div class={sectionHeadingClass}>
       <h3>{tracks.length} tracks</h3>
-      <button
-        class="primary"
+      <Button
+        size="form"
         disabled={!tracks.some((t) => t.available)}
-        onclick={() => start()}>Play playlist</button
+        onclick={() => start()}>Play playlist</Button
       >
     </div>
-    {#each tracks as track, index (index)}<div class="row">
+    {#each tracks as track, index (index)}<div class={rowClass}>
         <span
           >{index + 1}. {track.title}{!track.available
             ? ' · Unavailable'
             : ''}</span
         >
-        <div class="track-actions">
-          <button
-            class="secondary"
+        <div class="flex flex-wrap gap-2">
+          <Button
+            variant="secondary"
+            size="form"
             disabled={!track.available}
-            onclick={() => start(index)}>Play track {index + 1}</button
-          >{#if editable}<button
-              class="secondary"
+            onclick={() => start(index)}>Play track {index + 1}</Button
+          >{#if editable}<Button
+              variant="secondary"
+              size="form"
               aria-label={`Move track ${index + 1} up`}
               disabled={index === 0}
-              onclick={() => move(index, -1)}>↑</button
-            ><button
-              class="secondary"
+              onclick={() => move(index, -1)}>↑</Button
+            ><Button
+              variant="secondary"
+              size="form"
               aria-label={`Move track ${index + 1} down`}
               disabled={index === tracks.length - 1}
-              onclick={() => move(index, 1)}>↓</button
-            ><button
-              class="secondary"
+              onclick={() => move(index, 1)}>↓</Button
+            ><Button
+              variant="secondary"
+              size="form"
               onclick={() => (tracks = tracks.filter((_, i) => i !== index))}
-              >Remove track {index + 1}</button
+              >Remove track {index + 1}</Button
             >{/if}
         </div>
       </div>{/each}
     {#if editable}<form
-        class="inline-form"
+        class={inlineFormClass}
         onsubmit={(e) => {
           e.preventDefault();
           void search();
         }}
       >
-        <label>Find tracks<input bind:value={query} /></label><button
-          class="secondary">Search tracks</button
+        <label>Find tracks<input bind:value={query} /></label><Button
+          type="submit"
+          variant="secondary"
+          size="form">Search tracks</Button
         >
       </form>
-      {#each results as track (track.id)}<div class="row">
-          <span>{track.title}</span><button
-            class="secondary"
+      {#each results as track (track.id)}<div class={rowClass}>
+          <span>{track.title}</span><Button
+            variant="secondary"
+            size="form"
             disabled={tracks.length >= 500}
             onclick={() => (tracks = [...tracks, track])}
-            >Add {track.title}</button
+            >Add {track.title}</Button
           >
         </div>{/each}{/if}
-    {#if selected && editable}<details>
+    {#if selected && editable}<details class="mt-5">
         <summary>Delete playlist</summary>
         <p>Remove this playlist and its favorites for all users.</p>
-        <button class="danger" disabled={busy} onclick={() => void remove()}
-          >Delete this playlist</button
+        <Button
+          variant="danger"
+          size="form"
+          disabled={busy}
+          onclick={() => void remove()}>Delete this playlist</Button
         >
       </details>{/if}
-  </section>{/if}
-{#each items as item (item.id)}<section class="panel">
-    <div class="row">
-      <button class="secondary" onclick={() => void open(item.id)}
-        >{item.name}</button
-      ><small>{item.owner} · {item.count} tracks</small><button
-        class="secondary"
+  </Panel>{/if}
+{#each items as item (item.id)}<Panel>
+    <div class={rowClass}>
+      <Button variant="secondary" size="form" onclick={() => void open(item.id)}
+        >{item.name}</Button
+      ><small>{item.owner} · {item.count} tracks</small><Button
+        variant="secondary"
+        size="form"
         aria-pressed={item.favorite}
         onclick={() => void favorite(item)}
-        >{item.favorite ? 'Unfavorite playlist' : 'Favorite playlist'}</button
+        >{item.favorite ? 'Unfavorite playlist' : 'Favorite playlist'}</Button
       >
     </div>
-  </section>{:else}<p class="muted">
+  </Panel>{:else}<p class="text-muted">
     Create a playlist or save tracks from Music.
   </p>{/each}
-
-<style>
-  .track-actions {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-  form {
-    display: grid;
-    gap: 12px;
-    margin: 16px 0;
-  }
-  form button {
-    justify-self: start;
-  }
-  details {
-    margin-top: 20px;
-  }
-</style>

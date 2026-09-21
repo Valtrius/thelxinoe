@@ -8,18 +8,20 @@
     variants: {
       variant: {
         default:
-          'border-(--line-strong) bg-(--accent-soft) text-(--accent) hover:bg-[color-mix(in_srgb,var(--accent)_16%,transparent)]',
+          'border-line-strong bg-accent-soft text-accent hover:bg-accent/16',
         secondary:
-          'border-(--line) bg-(--surface-soft) text-(--foreground) hover:border-(--line-strong) hover:text-(--accent)',
+          'border-line bg-surface-soft text-foreground hover:border-line-strong hover:text-accent',
         ghost:
-          'border-transparent bg-transparent text-(--muted) hover:bg-(--surface-soft) hover:text-(--foreground)',
-        danger:
-          'border-[color-mix(in_srgb,var(--danger)_45%,transparent)] bg-[color-mix(in_srgb,var(--danger)_9%,transparent)] text-(--danger) hover:bg-[color-mix(in_srgb,var(--danger)_16%,transparent)]',
+          'border-transparent bg-transparent text-muted hover:bg-surface-soft hover:text-foreground',
+        danger: 'border-danger/45 bg-danger/9 text-danger hover:bg-danger/16',
       },
       size: {
         default: 'h-9 px-3.5',
         sm: 'h-8 px-2.5 text-[0.62rem]',
         icon: 'size-9 p-0',
+        form: 'min-h-8.5 px-3.25 py-2 disabled:pointer-events-auto disabled:opacity-46',
+        'compact-icon':
+          'inline-grid size-7.5 shrink-0 place-items-center border-0 p-0 disabled:pointer-events-auto disabled:opacity-46',
       },
     },
     defaultVariants: { variant: 'default', size: 'default' },

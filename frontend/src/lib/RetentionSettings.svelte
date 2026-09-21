@@ -1,7 +1,9 @@
 <script lang="ts">
-  import Switch from './providers/components/ui/Switch.svelte';
+  import Switch from './ui/Switch.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
+  import Button from './ui/Button.svelte';
+  import Panel from './ui/Panel.svelte';
   type Policy = {
     domain: string;
     enabled: boolean;
@@ -54,7 +56,7 @@
   });
 </script>
 
-<section class="panel retention">
+<Panel class="grid gap-4">
   <h2>Watched media retention</h2>
   <p>
     Choose whose watched status can start a grace period. A TV season requires
@@ -63,11 +65,12 @@
     deletion.
   </p>
   {#each policies as policy (policy.domain)}
-    <fieldset disabled={busy}>
+    <fieldset class="grid gap-[0.7rem] border border-line p-4" disabled={busy}>
       <legend>{policy.domain === 'movies' ? 'Movies' : 'TV seasons'}</legend>
       <Switch bind:checked={policy.enabled}>Enable retention</Switch>
-      <label
+      <label class="m-0 flex-row items-center gap-2"
         >Grace period (hours)<input
+          class="w-28"
           type="number"
           min="0"
           max="8760"
@@ -91,11 +94,14 @@
         >
           {user.username}</Switch
         >{/each}
-      <button
+      <Button
+        variant="secondary"
+        size="form"
+        class="justify-self-start px-4 py-[0.7rem] text-[13px]"
         onclick={() =>
           work(() =>
             api(`/admin/retention/policy/${policy.domain}`, 'POST', policy),
-          )}>Save {policy.domain === 'movies' ? 'movie' : 'TV'} policy</button
+          )}>Save {policy.domain === 'movies' ? 'movie' : 'TV'} policy</Button
       >
     </fieldset>
   {/each}
@@ -116,19 +122,26 @@
     >
       Allow automatic deletion in {root.name}</Switch
     >{/each}
-  <div class="actions">
-    <button
+  <div class="flex flex-wrap gap-2">
+    <Button
+      variant="secondary"
+      size="form"
+      class="justify-self-start px-4 py-[0.7rem] text-[13px]"
       disabled={busy}
       onclick={() => work(() => api('/admin/retention/evaluate', 'POST'))}
-      >Evaluate watched media</button
-    ><button class="secondary" disabled={busy} onclick={() => work(refresh)}
-      >Refresh</button
+      >Evaluate watched media</Button
+    ><Button
+      variant="secondary"
+      size="form"
+      class="justify-self-start px-4 py-[0.7rem] text-[13px]"
+      disabled={busy}
+      onclick={() => work(refresh)}>Refresh</Button
     >
   </div>
   {#if message}<p role="alert">{message}</p>{/if}
   <h3>Retention queue</h3>
   {#each items as item (item.id)}
-    <article>
+    <article class="border-t border-line pt-4">
       <strong>{item.title}</strong>
       <p>
         {item.state} · {item.trigger_user ?? 'Removed user'} · Due {new Date(
@@ -136,22 +149,29 @@
         ).toLocaleString()}
       </p>
       {#if item.error}<p>{item.error}</p>{/if}
-      {#if item.state === 'pending'}<div class="actions">
-          <button
+      {#if item.state === 'pending'}<div class="flex flex-wrap gap-2">
+          <Button
+            variant="secondary"
+            size="form"
+            class="justify-self-start px-4 py-[0.7rem] text-[13px]"
             disabled={busy}
             onclick={() =>
               work(() => api(`/admin/retention/${item.id}/keep`, 'POST'))}
-            >Keep</button
+            >Keep</Button
           >
-          <button
-            class="secondary"
+          <Button
+            variant="secondary"
+            size="form"
+            class="justify-self-start px-4 py-[0.7rem] text-[13px]"
             disabled={busy}
             onclick={() =>
               work(() => api(`/admin/retention/${item.id}/cancel`, 'POST'))}
-            >Cancel</button
+            >Cancel</Button
           >
-          <button
-            class="danger"
+          <Button
+            variant="danger"
+            size="form"
+            class="justify-self-start px-4 py-[0.7rem] text-[13px]"
             disabled={busy}
             onclick={() => {
               if (
@@ -162,53 +182,9 @@
                 void work(() =>
                   api(`/admin/retention/${item.id}/delete`, 'POST'),
                 );
-            }}>Delete now</button
+            }}>Delete now</Button
           >
         </div>{/if}
     </article>
   {:else}<p>No retention candidates.</p>{/each}
-</section>
-
-<style>
-  .retention {
-    display: grid;
-    gap: 1rem;
-  }
-  fieldset {
-    display: grid;
-    gap: 0.7rem;
-    border: 1px solid var(--line);
-    padding: 1rem;
-  }
-  label {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    gap: 0.5rem;
-    margin: 0;
-  }
-  button {
-    padding: 0.7rem 1rem;
-    background: var(--surface-soft);
-    color: var(--foreground);
-    justify-self: start;
-    font-weight: 600;
-    font-size: 13px;
-  }
-  button.danger {
-    background: color-mix(in srgb, var(--danger) 25%, var(--surface));
-    color: white;
-  }
-  input[type='number'] {
-    width: 7rem;
-  }
-  .actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-  }
-  article {
-    border-top: 1px solid var(--line);
-    padding-top: 1rem;
-  }
-</style>
+</Panel>

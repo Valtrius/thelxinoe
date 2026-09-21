@@ -4,9 +4,9 @@
   import { Plus, RefreshCw, Settings2, Trash2 } from '@lucide/svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import { api, normalizeError } from '../../api';
-  import { createCardGridWheelHandler } from '../../card-grid-wheel';
-  import { scaleCardScope } from '../../card-grid-zoom';
-  import { createLayoutMotion } from '../../layout-motion';
+  import { createCardGridWheelHandler } from '../../../card-grid-wheel';
+  import { scaleCardScope } from '../../../card-grid-zoom';
+  import { createLayoutMotion } from '../../../layout-motion';
   import { dismissToastByKey, showToast } from '../../toasts';
   import type {
     AppError,
@@ -16,9 +16,10 @@
     SyncStatus,
   } from '../../types';
   import { isPlaybackLaunching, kickUrl, relativeTime } from '../../utils';
-  import Button from '../ui/Button.svelte';
+  import Button from '../../../ui/Button.svelte';
   import ConfirmDialog from '../ui/ConfirmDialog.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
+  import { eyebrowTextClass as eyebrowClass } from '../../../ui/styles';
   import KickCard from './KickCard.svelte';
 
   let {
@@ -278,7 +279,7 @@
     <span
       data-sidebar-resize="xy"
       aria-hidden="true"
-      class="pointer-events-none absolute right-0 -bottom-px left-0 h-px bg-(--line)"
+      class="pointer-events-none absolute right-0 -bottom-px left-0 h-px bg-line"
     ></span>
     <Button
       data-sidebar-resize="xy"
@@ -289,13 +290,10 @@
     >
       <Settings2 class="size-3.5" />Manage channels
     </Button>
-    <span data-sidebar-resize="xy" class="text-[0.65rem] text-(--muted)">
+    <span data-sidebar-resize="xy" class="text-[0.65rem] text-muted">
       {channels.length} tracked
     </span>
-    <span
-      data-sidebar-resize="xy"
-      class="ml-auto text-[0.65rem] text-(--muted)"
-    >
+    <span data-sidebar-resize="xy" class="ml-auto text-[0.65rem] text-muted">
       {#if syncStatus.isRefreshing}{syncStatus.phase} · {syncStatus.completed}/{syncStatus.total ??
           '—'}{:else if metadataConfigured}Metadata updated {relativeTime(
           syncStatus.lastSuccessAt,
@@ -322,13 +320,13 @@
   {#if managerOpen}
     <section
       data-sidebar-resize="x"
-      class="panel mt-3 mr-3 shrink-0 border border-(--line) bg-(--surface-soft) p-3"
+      class="mt-3 mr-3 shrink-0 border border-line bg-surface-soft p-3 shadow-panel"
       aria-label="Tracked Kick channels"
     >
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p class="eyebrow">TRACKED CHANNELS / KICK</p>
-          <p class="mt-1 max-w-2xl text-xs leading-5 text-(--muted)">
+          <p class={eyebrowClass}>TRACKED CHANNELS / KICK</p>
+          <p class="mt-1 max-w-2xl text-xs leading-5 text-muted">
             This private list does not need a Kick sign-in or API client. Add
             each channel once by slug or <span class="font-mono"
               >https://kick.com/&lt;channel&gt;</span
@@ -342,7 +340,7 @@
           <label class="sr-only" for="kick-channel-input">Kick channel</label>
           <input
             id="kick-channel-input"
-            class="min-h-9 min-w-0 flex-1 border border-(--line) bg-(--surface) px-3 text-xs text-(--foreground) focus:border-(--line-strong)"
+            class="min-h-9 min-w-0 flex-1 border border-line bg-surface px-3 text-xs text-foreground focus:border-line-strong"
             type="text"
             placeholder="Channel slug or Kick URL"
             autocomplete="off"
@@ -363,7 +361,7 @@
         <ul class="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
           {#each channels as channel (channel.slug)}
             <li
-              class="flex min-w-0 items-center gap-2 border border-(--line) bg-(--surface) p-2"
+              class="flex min-w-0 items-center gap-2 border border-line bg-surface p-2"
             >
               {#if channel.profilePictureUrl}
                 <img
@@ -374,7 +372,7 @@
                 />
               {:else}
                 <span
-                  class="grid size-8 shrink-0 place-items-center rounded-full border border-(--line) text-xs text-[#72ff43]"
+                  class="grid size-8 shrink-0 place-items-center rounded-full border border-line text-xs text-[#72ff43]"
                   >{channel.displayName.slice(0, 1).toUpperCase()}</span
                 >
               {/if}
@@ -382,8 +380,7 @@
                 <strong class="block truncate text-xs"
                   >{channel.displayName}</strong
                 >
-                <span
-                  class="block truncate font-mono text-[0.6rem] text-(--muted)"
+                <span class="block truncate font-mono text-[0.6rem] text-muted"
                   >kick.com/{channel.slug}</span
                 >
               </span>
@@ -438,7 +435,7 @@
     {:else}
       {#if !metadataConfigured}
         <div
-          class="mb-3 flex flex-wrap items-center justify-between gap-2 border border-(--line) bg-(--surface-soft) px-3 py-2 text-xs text-(--muted)"
+          class="mb-3 flex flex-wrap items-center justify-between gap-2 border border-line bg-surface-soft px-3 py-2 text-xs text-muted"
         >
           <span
             >Direct playback works now. Add an API client only if you want live
@@ -454,7 +451,7 @@
       <div class="pb-4" data-sidebar-resize="y">
         <section
           data-card-grid
-          class="media-card-grid grid items-stretch"
+          class="grid items-stretch [contain:layout_style]"
           aria-label="Tracked Kick channels"
         >
           {#each displayedChannels as channel (channel.slug)}

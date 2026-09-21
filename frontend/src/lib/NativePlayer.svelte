@@ -3,6 +3,9 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { time, type MediaChoice } from './playback';
+  import Button from './ui/Button.svelte';
+  import Panel from './ui/Panel.svelte';
+  import { errorClass, sectionHeadingClass } from './ui/styles';
   type View = {
     file_id: string;
     generation: string;
@@ -76,37 +79,41 @@
   });
 </script>
 
-{#if choice.kind === 'track'}<section class="panel" aria-label="Native player">
-    <div class="section-heading">
+{#if choice.kind === 'track'}<Panel aria-label="Native player">
+    <div class={sectionHeadingClass}>
       <h2>{view?.title ?? choice.title}</h2>
-      <button
-        class="secondary"
+      <Button
+        variant="secondary"
+        size="form"
         onclick={async () => {
           const closing = choice;
           await command('stop');
           closed(closing);
-        }}>Close player</button
+        }}>Close player</Button
       >
     </div>
-    {#if error}<p class="error" role="alert">{error}</p>{/if}{#if busy}<p
+    {#if error}<p class={errorClass} role="alert">{error}</p>{/if}{#if busy}<p
         role="status"
       >
         Opening MPV…
       </p>{/if}
-    {#if view}<p class="muted">
+    {#if view}<p class="text-muted">
         {view.music
           ? 'Music plays through MPV.'
           : 'Video plays in its MPV window.'} · {view.status}
       </p>
-      <div class="controls">
-        <button
-          class="primary"
+      <div
+        class="flex flex-wrap items-center gap-[15px] [&_input]:w-full [&_input]:p-0 [&_label]:min-w-40 [&_label]:flex-1"
+      >
+        <Button
+          size="form"
           disabled={busy || view.status === 'stopped'}
           onclick={() => void command('pause')}
-          >{view.paused ? 'Play' : 'Pause'}</button
-        >{#if view.music}<button
-            class="secondary"
-            onclick={() => void command('next')}>Next track</button
+          >{view.paused ? 'Play' : 'Pause'}</Button
+        >{#if view.music}<Button
+            variant="secondary"
+            size="form"
+            onclick={() => void command('next')}>Next track</Button
           >{/if}<span
           >{view.duration === 0
             ? 'Live'
@@ -135,24 +142,7 @@
           /></label
         >
       </div>
-      {#if view.count > 1}<p class="muted">
+      {#if view.count > 1}<p class="text-muted">
           Track {view.index + 1} of {view.count}
         </p>{/if}{/if}
-  </section>{:else if error}<p class="error" role="alert">{error}</p>{/if}
-
-<style>
-  .controls {
-    display: flex;
-    align-items: center;
-    gap: 15px;
-    flex-wrap: wrap;
-  }
-  .controls label {
-    flex: 1;
-    min-width: 160px;
-  }
-  .controls input {
-    padding: 0;
-    width: 100%;
-  }
-</style>
+  </Panel>{:else if error}<p class={errorClass} role="alert">{error}</p>{/if}

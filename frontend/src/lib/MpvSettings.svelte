@@ -3,8 +3,8 @@
   let notice = $state('');
 </script>
 
-<div class="provider-surface min-w-0">
-  {#if notice}<p class="mb-3 text-xs text-(--muted)" role="status">
+<div class="provider-surface min-w-0 text-[1rem]">
+  {#if notice}<p class="mb-3 text-xs text-muted" role="status">
       {notice}
     </p>{/if}
   <ToolsSettings onNotice={(message) => (notice = message)} />

@@ -1,7 +1,10 @@
 <script lang="ts">
-  import Switch from './providers/components/ui/Switch.svelte';
+  import Switch from './ui/Switch.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
+  import Button from './ui/Button.svelte';
+  import Panel from './ui/Panel.svelte';
+  import { inlineFormClass, panelClass } from './ui/styles';
   type Container = {
     id: string;
     names: string[];
@@ -103,7 +106,7 @@
   });
 </script>
 
-<section class="panel">
+<Panel>
   <h2>Acquisition managers</h2>
   <p>
     Connect local Radarr, Sonarr and Lidarr containers. The controller verifies
@@ -134,7 +137,7 @@
     >
   {/each}
   <form
-    class="inline-form"
+    class={inlineFormClass}
     onsubmit={(e) => {
       e.preventDefault();
       void act(register);
@@ -178,31 +181,36 @@
         autocomplete="new-password"
       /></label
     >
-    <button class="primary" disabled={busy}>Connect manager</button>
+    <Button type="submit" size="form" disabled={busy}>Connect manager</Button>
   </form>
-  <button class="secondary" disabled={busy} onclick={() => void act(load)}
-    >Refresh containers</button
+  <Button
+    variant="secondary"
+    size="form"
+    disabled={busy}
+    onclick={() => void act(load)}>Refresh containers</Button
   >
-  {#each services as service (service.id)}<article class="panel">
+  {#each services as service (service.id)}<article class={panelClass}>
       <h3>{service.name}</h3>
       <p>{service.kind} {service.version}</p>
-      {#if service.error}<p role="status">{service.error}</p>{/if}<button
-        class="secondary"
+      {#if service.error}<p role="status">{service.error}</p>{/if}<Button
+        variant="secondary"
+        size="form"
         disabled={busy}
         onclick={() => void act(() => edit(service))}
-        >Defaults for {service.name}</button
-      ><button
-        class="secondary"
+        >Defaults for {service.name}</Button
+      ><Button
+        variant="secondary"
+        size="form"
         disabled={busy}
         onclick={() =>
           void act(async () => {
             await api(`/admin/managers/${service.id}/test`, 'POST');
             message = 'Connection and mount checks passed.';
-          })}>Test {service.name}</button
+          })}>Test {service.name}</Button
       >
     </article>{/each}
   {#if selected && options}<form
-      class="panel"
+      class={panelClass}
       onsubmit={(e) => {
         e.preventDefault();
         void act(save);
@@ -232,8 +240,8 @@
         >{/if}
       <Switch bind:checked={monitored}
         >Monitor and search approved requests</Switch
-      ><button class="primary" disabled={busy || !root || !profile}
-        >Save acquisition defaults</button
+      ><Button type="submit" size="form" disabled={busy || !root || !profile}
+        >Save acquisition defaults</Button
       >
     </form>{/if}
-</section>
+</Panel>

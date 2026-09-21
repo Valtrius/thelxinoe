@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { Copy, Minus, Monitor, Moon, Square, Sun, X } from '@lucide/svelte';
+  import { Copy, Minus, Square, X } from '@lucide/svelte';
   import { getVersion } from '@tauri-apps/api/app';
   import { isTauri } from '@tauri-apps/api/core';
   import {
@@ -8,14 +8,7 @@
     type Window as TauriWindow,
   } from '@tauri-apps/api/window';
   const appIconUrl = '/icon.svg';
-  import { appearance, updateAppearance } from '../appearance';
-  import ExclusiveChoiceGroup from './ExclusiveChoiceGroup.svelte';
-
-  const themeChoices = [
-    { value: 'light', label: 'Light theme', icon: Sun },
-    { value: 'system', label: 'System theme', icon: Monitor },
-    { value: 'dark', label: 'Dark theme', icon: Moon },
-  ] as const;
+  import ThemeControls from './ThemeControls.svelte';
 
   let maximized = $state(false);
   let appVersion = $state<string | null>(null);
@@ -81,7 +74,7 @@
   data-window-titlebar
   data-tauri-drag-region
   use:draggable
-  class="fixed inset-x-0 top-0 z-200 flex h-8 items-center border-b border-(--line) bg-[color-mix(in_srgb,var(--background)_94%,transparent)] pl-3 backdrop-blur-xl select-none"
+  class="fixed inset-x-0 top-0 z-200 flex h-8 items-center border-b border-line bg-background/94 pl-3 backdrop-blur-xl select-none [&_button]:focus-visible:-outline-offset-3"
 >
   <div
     data-tauri-drag-region
@@ -89,7 +82,7 @@
   >
     <img class="size-4 shrink-0" src={appIconUrl} alt="" aria-hidden="true" />
     <span
-      class="truncate text-[0.62rem] font-semibold tracking-[0.15em] text-(--muted) uppercase"
+      class="truncate text-[0.62rem] font-semibold tracking-[0.15em] text-muted uppercase"
       >Thelxinoe
       {#if appVersion}
         · {appVersion}
@@ -97,24 +90,18 @@
     </span>
   </div>
   <div class="ml-auto flex h-full shrink-0 items-center">
-    <ExclusiveChoiceGroup
-      choices={themeChoices}
-      value={$appearance.theme}
-      ariaLabel="Theme"
-      compact
-      onChange={(theme) => updateAppearance({ theme })}
-    />
-    <span aria-hidden="true" class="mx-2 h-4 w-px bg-(--line)"></span>
+    <ThemeControls />
+    <span aria-hidden="true" class="mx-2 h-4 w-px bg-line"></span>
     <div class="flex h-full" aria-label="Window controls">
       <button
         type="button"
-        class="grid h-full w-11 place-items-center text-(--muted) hover:bg-(--surface-soft) hover:text-(--foreground)"
+        class="grid h-full w-11 place-items-center text-muted hover:bg-surface-soft hover:text-foreground"
         aria-label="Minimize window"
         onclick={minimize}><Minus class="size-3.5" /></button
       >
       <button
         type="button"
-        class="grid h-full w-11 place-items-center text-(--muted) hover:bg-(--surface-soft) hover:text-(--foreground)"
+        class="grid h-full w-11 place-items-center text-muted hover:bg-surface-soft hover:text-foreground"
         aria-label={maximized ? 'Restore window' : 'Maximize window'}
         onclick={toggleMaximize}
         >{#if maximized}<Copy class="size-3" />{:else}<Square
@@ -123,16 +110,10 @@
       >
       <button
         type="button"
-        class="grid h-full w-11 place-items-center text-(--muted) hover:bg-(--danger) hover:text-white"
+        class="grid h-full w-11 place-items-center text-muted hover:bg-danger hover:text-white"
         aria-label="Close window"
         onclick={close}><X class="size-3.5" /></button
       >
     </div>
   </div>
 </header>
-
-<style>
-  button:focus-visible {
-    outline-offset: -3px;
-  }
-</style>

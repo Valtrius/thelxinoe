@@ -12,11 +12,11 @@
   import { Bell, Download, RefreshCw } from '@lucide/svelte';
   import { toolsState } from '../../tools-state';
   import { formatBytes } from '../../utils';
-  import Button from '../ui/Button.svelte';
-  import Switch from '../ui/Switch.svelte';
+  import Button from '../../../ui/Button.svelte';
+  import Switch from '../../../ui/Switch.svelte';
   import InfoBubble from './InfoBubble.svelte';
   import ToolActionButton from './ToolActionButton.svelte';
-  import { controlClass } from './settingsUi';
+  import { controlClass, selectionButtonClass } from './settingsUi';
 
   let {
     tool,
@@ -147,7 +147,9 @@
                     updatePolicy: policy.value,
                   });
               }}
-              class={`flex cursor-pointer items-center gap-2 border px-3 py-2 text-left disabled:cursor-default disabled:opacity-45 ${tool.preference.updatePolicy === policy.value ? 'border-(--line-strong) bg-(--accent-soft)' : 'border-(--line) bg-(--surface-soft)'}`}
+              class={selectionButtonClass(
+                tool.preference.updatePolicy === policy.value,
+              )}
             >
               <span class="flex items-center gap-2 text-xs font-semibold"
                 ><policy.icon class="size-3.5" />{policy.name}</span
@@ -168,8 +170,8 @@
     {/if}
   {/if}
   {#if tool.installed.length}
-    <details class="border-t border-(--line) pt-3">
-      <summary class="cursor-pointer text-xs text-(--muted)"
+    <details class="border-t border-line pt-3">
+      <summary class="cursor-pointer text-xs text-muted"
         >Maintenance and downloaded versions · {tool.installed.length}</summary
       >
       <div class="mt-3 grid gap-3">
@@ -179,11 +181,11 @@
             item.package.id === tool.preference.active ||
             item.package.id === tool.preference.previous}
           <div
-            class="flex flex-wrap items-center justify-between gap-2 border-t border-(--line) pt-3 text-xs"
+            class="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3 text-xs"
           >
             <div>
               <span class="font-mono">{item.package.version}</span><span
-                class="ml-2 text-(--muted)"
+                class="ml-2 text-muted"
                 >{item.package.id === tool.preference.active
                   ? managed
                     ? 'Selected'

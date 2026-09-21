@@ -2,6 +2,9 @@
   import { onMount } from 'svelte';
   import { api, type User } from './api';
   import RequestStatus from './RequestStatus.svelte';
+  import Button from './ui/Button.svelte';
+  import Panel from './ui/Panel.svelte';
+  import { inlineFormClass, panelClass } from './ui/styles';
   let { user, domain } = $props<{
     user: Pick<User, 'id' | 'role'>;
     domain?: string;
@@ -106,7 +109,7 @@
   });
 </script>
 
-<section class="panel">
+<Panel>
   <h2>Requests</h2>
   <p>
     Search your library and the connected acquisition services. Requests need
@@ -119,7 +122,7 @@
       An administrator must connect an acquisition manager in Settings.
     </p>{:else}
     <form
-      class="inline-form"
+      class={inlineFormClass}
       onsubmit={(e) => {
         e.preventDefault();
         void act(search);
@@ -143,11 +146,11 @@
           minlength="2"
           maxlength="200"
         /></label
-      ><button class="primary" disabled={busy}>Search media</button>
+      ><Button type="submit" size="form" disabled={busy}>Search media</Button>
     </form>
   {/if}
-</section>
-{#if local.length}<section class="panel">
+</Panel>
+{#if local.length}<Panel>
     <h3>In your library</h3>
     {#each local as item (item.id)}<p>
         {item.title}
@@ -155,23 +158,24 @@
           ? 'Available'
           : 'Not currently available'}
       </p>{/each}
-  </section>{/if}
+  </Panel>{/if}
 <section aria-label="Acquisition search results">
-  {#each items as item (item.external_id)}<article class="panel">
+  {#each items as item (item.external_id)}<article class={panelClass}>
       <h3>{item.title} {item.year ?? ''}</h3>
       {#if item.artist}<p>{item.artist}</p>{/if}
-      <p class="muted">{item.overview}</p>
-      <button
+      <p class="text-muted">{item.overview}</p>
+      <Button
+        variant="secondary"
+        size="form"
         disabled={busy || !services.find((s) => s.id === selected)?.ready}
         aria-label={`Request ${item.title}`}
-        class="secondary"
-        onclick={() => void act(() => request(item))}>Request</button
+        onclick={() => void act(() => request(item))}>Request</Button
       >
     </article>{/each}
 </section>
 <section aria-label="Media requests">
   <h2>{user.role === 'admin' ? 'All requests' : 'Your requests'}</h2>
-  {#each requests as request (request.id)}<article class="panel">
+  {#each requests as request (request.id)}<article class={panelClass}>
       <h3>{request.title}</h3>
       <p>
         {request.state} · {request.service}{user.role === 'admin'
@@ -182,27 +186,35 @@
       {#if ['requested', 'available'].includes(request.state)}<RequestStatus
           id={request.id}
           admin={user.role === 'admin'}
-        /><button
+        /><Button
+          variant="secondary"
+          size="form"
           disabled={busy}
           onclick={() => void act(() => decide(request.id, 'reacquire'))}
-          >Request again</button
+          >Request again</Button
         >{/if}
       {#if ['pending', 'failed', 'uncertain'].includes(request.state)}
-        {#if user.role === 'admin'}<button
+        {#if user.role === 'admin'}<Button
+            variant="secondary"
+            size="form"
             disabled={busy}
             onclick={() => void act(() => decide(request.id, 'approve'))}
             >{request.state === 'pending'
               ? 'Approve'
-              : 'Retry after review'}</button
-          ><button
+              : 'Retry after review'}</Button
+          ><Button
+            variant="secondary"
+            size="form"
             disabled={busy}
             onclick={() => void act(() => decide(request.id, 'deny'))}
-            >Deny</button
+            >Deny</Button
           >{/if}
-        {#if request.user_id === user.id}<button
+        {#if request.user_id === user.id}<Button
+            variant="secondary"
+            size="form"
             disabled={busy}
             onclick={() => void act(() => decide(request.id, 'cancel'))}
-            >Cancel request</button
+            >Cancel request</Button
           >{/if}
       {/if}
     </article>{/each}

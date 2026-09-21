@@ -1,7 +1,7 @@
 <script lang="ts">
   import { RotateCcw } from '@lucide/svelte';
   import type { MpvOption } from '../../tools-api';
-  import Button from '../ui/Button.svelte';
+  import Button from '../../../ui/Button.svelte';
   import { twMerge } from 'tailwind-merge';
   import { controlClass } from './settingsUi';
 
@@ -35,16 +35,16 @@
 </script>
 
 <div
-  class="grid grid-cols-[minmax(0,1fr)_minmax(8rem,1fr)_auto] items-center gap-2 border-b border-(--line) px-2 py-1.5 last:border-b-0"
+  class="grid grid-cols-[minmax(0,1fr)_minmax(8rem,1fr)_auto] items-center gap-2 border-b border-line px-2 py-1.5 last:border-b-0"
 >
   <label for={id} class="text-[0.68rem] wrap-anywhere">
     <span class="font-mono">{option.name}</span>
-    <span class="mt-0.5 block text-[0.6rem] text-(--muted)">
+    <span class="mt-0.5 block text-[0.6rem] text-muted">
       {option.type}{option.min !== undefined
         ? ` · min ${option.min}`
         : ''}{option.max !== undefined ? ` · max ${option.max}` : ''}
     </span>
-    {#if requiresRaw && !disabled}<span class="text-(--warning)"
+    {#if requiresRaw && !disabled}<span class="text-warning"
         >Edit in raw mode</span
       >{/if}
   </label>

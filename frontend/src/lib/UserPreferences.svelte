@@ -1,6 +1,9 @@
 <script lang="ts">
   import { api, type User } from './api';
   import TimezoneSelect from './TimezoneSelect.svelte';
+  import Button from './ui/Button.svelte';
+  import Panel from './ui/Panel.svelte';
+  import { errorClass, inlineFormClass } from './ui/styles';
   let {
     user,
     changed,
@@ -64,10 +67,10 @@
   }
 </script>
 
-<section class="panel">
+<Panel>
   <h2>Your display preferences</h2>
   <form
-    class="inline-form"
+    class={inlineFormClass}
     onsubmit={(e) => {
       e.preventDefault();
       void save();
@@ -79,15 +82,17 @@
       defaultTimezone={serverTimezone}
       disabled={busy}
     />
-    <button class="primary" disabled={busy}>Save display preferences</button>
+    <Button type="submit" size="form" disabled={busy}
+      >Save display preferences</Button
+    >
   </form>
-  <p class="muted">
+  <p class="text-muted">
     Use the server default or choose your own timezone. Regional timezones
     adjust automatically for daylight saving time.
   </p>
-  {#if error}<p role="alert" class="error">{error}</p>{/if}{#if saved}<p
+  {#if error}<p role="alert" class={errorClass}>{error}</p>{/if}{#if saved}<p
       role="status"
     >
       Display preferences saved.
     </p>{/if}
-</section>
+</Panel>

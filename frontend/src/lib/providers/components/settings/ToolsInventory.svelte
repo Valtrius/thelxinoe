@@ -14,7 +14,7 @@
     toolOperationActive,
   } from '../../tools-presentation';
   import type { ToolsState } from '../../tools-state';
-  import Button from '../ui/Button.svelte';
+  import Button from '../../../ui/Button.svelte';
   import ToolActionButton from './ToolActionButton.svelte';
 
   let {
@@ -58,7 +58,7 @@
       >Tools and optional MPV plugins. Expand a row to change its settings.</caption
     >
     <thead
-      class="border-b border-(--line) bg-(--surface-soft) text-[0.62rem] text-(--muted)"
+      class="border-b border-line bg-surface-soft text-[0.62rem] text-muted"
     >
       <tr>
         <th scope="col" class="w-1/4 px-3 py-2 font-medium">Tool</th>
@@ -108,11 +108,11 @@
     </thead>
     {#each [false, true] as plugins (plugins)}
       <tbody>
-        <tr class="border-y border-(--line) bg-(--surface-soft)">
+        <tr class="border-y border-line bg-surface-soft">
           <th
             colspan="5"
             scope="colgroup"
-            class="px-3 py-2 text-[0.62rem] font-medium text-(--muted)"
+            class="px-3 py-2 text-[0.62rem] font-medium text-muted"
             >{plugins ? 'Optional MPV plugins' : 'MPV player'}</th
           >
         </tr>
@@ -128,7 +128,7 @@
             )}
           {@const isChecking = checking.includes(tool.id)}
           <tr
-            class={`cursor-default border-b border-(--line) ${expanded === tool.id ? 'bg-(--accent-soft)' : 'hover:bg-(--surface-soft)'}`}
+            class={`cursor-default border-b border-line ${expanded === tool.id ? 'bg-accent-soft' : 'hover:bg-surface-soft'}`}
             onclick={(event) => toggleRow(event, tool.id)}
           >
             <th scope="row" class="px-3 py-3 font-normal">
@@ -146,17 +146,17 @@
                 <span class="min-w-0">
                   <span class="block font-semibold">{toolNames[tool.id]}</span>
                   {#if errors[tool.id] || (tool.id === 'mpv' && errors.configuration)}<span
-                      class="mt-1 block text-[0.62rem] text-(--danger)"
+                      class="mt-1 block text-[0.62rem] text-danger"
                       >Action failed. Expand for details.</span
                     >{/if}
                   <span
-                    class="mt-1 block text-[0.62rem] text-(--muted) @min-[46rem]:hidden"
+                    class="mt-1 block text-[0.62rem] text-muted @min-[46rem]:hidden"
                     >{summary.source}</span
                   >
                 </span>
               </button>
             </th>
-            <td class="hidden px-3 py-3 text-(--muted) @min-[46rem]:table-cell"
+            <td class="hidden px-3 py-3 text-muted @min-[46rem]:table-cell"
               >{summary.source}</td
             >
             <td class="px-3 py-3"
@@ -164,21 +164,21 @@
                 class="block truncate font-mono text-[0.65rem]"
                 title={summary.version}>{summary.version}</span
               >{#if update}<span
-                  class="mt-1 block truncate text-[0.62rem] text-(--accent)"
+                  class="mt-1 block truncate text-[0.62rem] text-accent"
                   title={`Available: ${update.version}`}
                   >New: {update.version}</span
                 >{/if}</td
             >
             <td class="px-3 py-3">
               <span
-                class={`inline-flex items-center gap-1.5 rounded-sm px-2 py-1 text-[0.62rem] ${isChecking || summary.tone === 'muted' ? 'bg-(--surface-soft) text-(--muted)' : summary.tone === 'warning' ? 'bg-[color-mix(in_srgb,var(--warning)_10%,transparent)] text-(--warning)' : 'bg-[color-mix(in_srgb,var(--success)_10%,transparent)] text-(--success)'}`}
+                class={`inline-flex items-center gap-1.5 rounded-sm px-2 py-1 text-[0.62rem] ${isChecking || summary.tone === 'muted' ? 'bg-surface-soft text-muted' : summary.tone === 'warning' ? 'bg-warning/10 text-warning' : 'bg-success/10 text-success'}`}
               >
                 {#if isChecking}<RefreshCw
                     class="size-3 shrink-0 animate-spin motion-reduce:animate-none"
                   />{/if}{isChecking ? 'Checking...' : summary.status}
               </span>
             </td>
-            <td class="px-3 py-3 text-(--muted)">
+            <td class="px-3 py-3 text-muted">
               {#if update || installing}
                 <ToolActionButton
                   label={update ? 'Update' : 'Install'}
@@ -194,7 +194,7 @@
           </tr>
           {#if expanded === tool.id}
             <tr
-              ><td colspan="5" class="border-b border-(--line) bg-(--surface)">
+              ><td colspan="5" class="border-b border-line bg-surface">
                 <section
                   id={'tool-panel-' + tool.id}
                   aria-labelledby={'tool-trigger-' + tool.id}

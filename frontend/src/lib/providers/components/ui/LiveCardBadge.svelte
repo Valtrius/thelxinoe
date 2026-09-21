@@ -12,12 +12,10 @@
   } = $props();
 
   const tones = {
-    twitch:
-      'border-[color-mix(in_srgb,var(--danger)_55%,transparent)] text-[#ff8b91]',
+    twitch: 'border-danger/55 text-[#ff8b91]',
     kick: 'border-[#53fc18]/55 text-[#72ff43]',
     neutral: 'border-white/20 text-white/75',
-    playing:
-      'border-[color-mix(in_srgb,var(--accent)_55%,transparent)] text-(--accent)',
+    playing: 'border-accent/55 text-accent',
   };
 </script>
 

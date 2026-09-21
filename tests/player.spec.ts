@@ -420,7 +420,7 @@ test('sidebar controls stay aligned through collapse, expansion, and reversal', 
       const selected = element.querySelector(
         '.primary-navigation [aria-current="page"]',
       )!;
-      const rail = selected.querySelector('span.bg-\\(--accent\\)')!;
+      const rail = selected.querySelector('[data-nav-accent]')!;
       const railBox = box(rail);
       return {
         surface: box(element.querySelector('.sidebar-surface')!),

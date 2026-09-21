@@ -1,9 +1,12 @@
 <script lang="ts">
-  import Switch from './providers/components/ui/Switch.svelte';
+  import Switch from './ui/Switch.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
   import TwitchSettings from './TwitchSettings.svelte';
   import KickSettings from './KickSettings.svelte';
+  import Button from './ui/Button.svelte';
+  import Panel from './ui/Panel.svelte';
+  import { inlineFormClass } from './ui/styles';
   type Configuration = {
     google_configured: boolean;
     redirect_uri: string | null;
@@ -54,9 +57,9 @@
   }
 </script>
 
-<section class="panel">
+<Panel>
   <h2>YouTube application</h2>
-  <p class="muted">
+  <p class="text-muted">
     Configure one Google Web application for this server. Each person connects
     their own YouTube account. Replacing the application credentials requires
     everyone to reconnect.
@@ -68,7 +71,7 @@
         value={config.redirect_uri}
       /></label
     >
-    <p class="muted">
+    <p class="text-muted">
       Add this exact address to the Web application in Google Cloud, enable the
       YouTube Data API v3, and grant your test users access while the
       application is in testing.
@@ -78,7 +81,7 @@
       localhost is supported for development.
     </p>{/if}
   <form
-    class="inline-form"
+    class={inlineFormClass}
     onsubmit={(e) => {
       e.preventDefault();
       void save();
@@ -111,17 +114,17 @@
       /></label
     >
     <Switch bind:checked={downloads}>Allow YouTube downloads</Switch>
-    <button class="primary" disabled={busy || !config}
-      >Save YouTube settings</button
+    <Button type="submit" size="form" disabled={busy || !config}
+      >Save YouTube settings</Button
     >
   </form>
-  {#if config}<p class="muted">
+  {#if config}<p class="text-muted">
       {config.quota.used.toLocaleString()} API units used today. The shared budget
       resets at midnight Pacific time.{config.quota.blocked
         ? ' YouTube has paused requests for today.'
         : ''}
     </p>{/if}
   {#if message}<p role="status">{message}</p>{/if}
-</section>
+</Panel>
 <TwitchSettings />
 <KickSettings />

@@ -39,11 +39,15 @@
 
 <div
   bind:this={root}
-  class="media-scope"
+  class="media-scope w-full min-w-0"
   use:scaleCardScope={columns}
   use:motion.connect
 >
-  <div class={`media-card-grid ${className}`} data-card-grid aria-label={label}>
+  <div
+    class={`media-card-grid mb-6 grid grid-cols-6 items-stretch gap-3 [contain:layout_style] ${className}`}
+    data-card-grid
+    aria-label={label}
+  >
     {@render children()}
   </div>
 </div>

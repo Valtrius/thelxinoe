@@ -1,16 +1,13 @@
 <script lang="ts">
   import { CircleCheck, CircleX, Info, TriangleAlert, X } from '@lucide/svelte';
   import { dismissToast, toasts } from '../../toasts';
-  import Button from './Button.svelte';
+  import Button from '../../../ui/Button.svelte';
 
   const toneClass: Record<string, string> = {
-    info: 'text-(--accent) border-(--line-strong)',
-    success:
-      'text-(--success) border-[color-mix(in_srgb,var(--success)_35%,transparent)]',
-    warning:
-      'text-(--warning) border-[color-mix(in_srgb,var(--warning)_35%,transparent)]',
-    error:
-      'text-(--danger) border-[color-mix(in_srgb,var(--danger)_40%,transparent)]',
+    info: 'text-accent border-line-strong',
+    success: 'text-success border-success/35',
+    warning: 'text-warning border-warning/35',
+    error: 'text-danger border-danger/40',
   };
 </script>
 
@@ -20,7 +17,7 @@
 >
   {#each $toasts as toast (toast.id)}
     <section
-      class={`panel pointer-events-auto flex max-w-full min-w-0 items-start gap-3 border bg-(--surface-strong) p-3 shadow-2xl ${toneClass[toast.tone]}`}
+      class={`pointer-events-auto flex max-w-full min-w-0 items-start gap-3 border bg-surface-strong p-3 shadow-2xl ${toneClass[toast.tone]}`}
       role={toast.tone === 'error' || toast.tone === 'warning'
         ? 'alert'
         : 'status'}
@@ -38,12 +35,12 @@
         <h2 class="text-xs font-semibold tracking-[0.08em] uppercase">
           {toast.title}
         </h2>
-        <p class="mt-1 text-xs leading-5 wrap-anywhere text-(--muted)">
+        <p class="mt-1 text-xs leading-5 wrap-anywhere text-muted">
           {toast.message}
         </p>
         {#if toast.detail}
           <details
-            class="mt-2 max-w-full min-w-0 overflow-hidden text-[0.68rem] text-(--muted)"
+            class="mt-2 max-w-full min-w-0 overflow-hidden text-[0.68rem] text-muted"
           >
             <summary class="cursor-pointer">Technical details</summary>
             <p
@@ -66,10 +63,10 @@
           </div>
         {/if}
         {#if toast.progress}
-          <label class="mt-2 grid gap-1 text-xs text-(--muted)">
+          <label class="mt-2 grid gap-1 text-xs text-muted">
             {toast.progress.label}
             <progress
-              class="h-2 w-full accent-(--accent)"
+              class="h-2 w-full accent-accent"
               value={toast.progress.value}
               max={toast.progress.max}
             ></progress>
@@ -78,7 +75,7 @@
       </div>
       <button
         type="button"
-        class="grid size-7 shrink-0 place-items-center text-(--muted) hover:bg-(--surface-soft) hover:text-(--foreground)"
+        class="grid size-7 shrink-0 place-items-center text-muted hover:bg-surface-soft hover:text-foreground"
         aria-label={`Close ${toast.title} notification`}
         disabled={toast.busy}
         onclick={() => dismissToast(toast.id)}

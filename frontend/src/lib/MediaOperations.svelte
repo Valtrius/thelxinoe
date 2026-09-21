@@ -1,5 +1,7 @@
 <script lang="ts">
   import { api } from './api';
+  import Button from './ui/Button.svelte';
+  import Panel from './ui/Panel.svelte';
   let { id, changed } = $props<{ id: string; changed: () => void }>();
   let busy = $state(false),
     message = $state(''),
@@ -28,48 +30,54 @@
   }
 </script>
 
-<section class="panel">
+<Panel>
   <h3>Manage media</h3>
-  <button
-    class="secondary"
+  <Button
+    variant="secondary"
+    size="form"
     disabled={busy}
     onclick={() =>
       void act(async () => {
         await api(`/admin/media/${id}/keep`, 'PUT', { keep: true });
         message = 'Keep protection enabled.';
-      })}>Keep media</button
+      })}>Keep media</Button
   >
-  <button
-    class="secondary"
+  <Button
+    variant="secondary"
+    size="form"
     disabled={busy}
     onclick={() =>
       void act(async () => {
         await api(`/admin/media/${id}/keep`, 'PUT', { keep: false });
         message = 'Keep protection removed.';
-      })}>Remove Keep</button
+      })}>Remove Keep</Button
   >
-  <button
-    class="secondary"
+  <Button
+    variant="secondary"
+    size="form"
     disabled={busy}
-    onclick={() => void act(() => prepare('monitor'))}>Monitor files</button
+    onclick={() => void act(() => prepare('monitor'))}>Monitor files</Button
   >
-  <button
-    class="secondary"
+  <Button
+    variant="secondary"
+    size="form"
     disabled={busy}
-    onclick={() => void act(() => prepare('unmonitor'))}>Unmonitor files</button
+    onclick={() => void act(() => prepare('unmonitor'))}>Unmonitor files</Button
   >
-  <button
-    class="secondary"
+  <Button
+    variant="secondary"
+    size="form"
     disabled={busy}
     onclick={() => void act(() => prepare('delete'))}
-    >Prepare file deletion</button
+    >Prepare file deletion</Button
   >
   {#if pending}<p>
       {pending.action} · {pending.files} file(s). Ownership and protection will be
       checked again before this runs.
     </p>
-    <button
-      class="secondary"
+    <Button
+      variant="secondary"
+      size="form"
       disabled={busy}
       onclick={() =>
         void act(async () => {
@@ -79,11 +87,14 @@
           await api(`/admin/media/operations/${operation.id}/execute`, 'POST');
           message = 'Operation completed.';
           changed();
-        })}>Confirm {pending.action}</button
+        })}>Confirm {pending.action}</Button
     >
-    <button class="secondary" disabled={busy} onclick={() => (pending = null)}
-      >Cancel</button
+    <Button
+      variant="secondary"
+      size="form"
+      disabled={busy}
+      onclick={() => (pending = null)}>Cancel</Button
     >
   {/if}
   {#if message}<p role="status">{message}</p>{/if}
-</section>
+</Panel>
