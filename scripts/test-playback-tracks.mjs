@@ -82,6 +82,10 @@ try {
       'error',
       '-i',
       '.local/selected-audio.ts',
+      // Skip AAC priming samples: their near-silent ringing adds zero crossings
+      // that do not represent the selected track's steady tone.
+      '-ss',
+      '0.25',
       '-vn',
       '-t',
       '1',
@@ -94,6 +98,11 @@ try {
       'pipe:1',
     ],
     { windowsHide: true, maxBuffer: 1024 * 1024 },
+  );
+  assert.equal(
+    pcm.length,
+    48000 * 4,
+    'Expected one full second of float32 audio',
   );
   let crossings = 0;
   for (let i = 4; i < pcm.length; i += 4)
