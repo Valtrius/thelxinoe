@@ -422,6 +422,7 @@
   }}
 >
   <video
+    data-sidebar-resize="video"
     bind:this={player}
     playsinline
     ontimeupdate={update}
@@ -465,8 +466,9 @@
   </video>
 
   <div class="player-header">
-    <h2 title={choice.title}>{choice.title}</h2>
+    <h2 data-sidebar-resize="xy-pos" title={choice.title}>{choice.title}</h2>
     <button
+      data-sidebar-resize="xy-pos"
       class="player-button"
       aria-label="Close player"
       title="Close player"
@@ -477,7 +479,7 @@
   </div>
 
   {#if error}
-    <div class="player-status" role="alert">
+    <div class="player-status" data-sidebar-resize="xy-pos" role="alert">
       <AlertCircle size={28} />
       <p>{error}</p>
       <button class="retry-button" onclick={() => void open(choice)}
@@ -485,14 +487,14 @@
       >
     </div>
   {:else if loading}
-    <div class="player-status" role="status">
+    <div class="player-status" data-sidebar-resize="xy-pos" role="status">
       <span class="loading-spinner"><LoaderCircle size={36} /></span>
       <p>{busy ? 'Preparing playback…' : 'Buffering…'}</p>
     </div>
   {/if}
 
   {#if active?.file_id && active.generation}
-    <div class="segment-prompt">
+    <div class="segment-prompt" data-sidebar-resize="xy-pos">
       <SegmentSkip
         mediaId={choice.id}
         fileId={active.file_id}
@@ -509,6 +511,7 @@
     {#if !active?.live}
       <input
         class="seek"
+        data-sidebar-resize="xy"
         aria-label="Playback position"
         aria-valuetext={`${time(position)} of ${time(active?.duration ?? 0)}`}
         type="range"
@@ -522,6 +525,7 @@
     {/if}
     <div class="control-row">
       <button
+        data-sidebar-resize="xy-pos"
         class="player-button"
         aria-label={paused ? 'Play' : 'Pause'}
         title={paused ? 'Play' : 'Pause'}
@@ -533,7 +537,7 @@
             fill="currentColor"
           />{/if}
       </button>
-      <div class="volume-controls">
+      <div class="volume-controls" data-sidebar-resize="xy-pos">
         <button
           class="player-button"
           aria-label={muted || $appearance.audio_volume === 0
@@ -556,7 +560,7 @@
           oninput={(event) => changeVolume(Number(event.currentTarget.value))}
         />
       </div>
-      <div class="playback-details">
+      <div class="playback-details" data-sidebar-resize="xy-pos">
         <span class="playback-time" aria-live="off">
           {#if active?.live}<span class="live-dot"></span>Live{:else}{time(
               position,
@@ -571,7 +575,12 @@
           >{/if}
       </div>
       <div class="control-spacer"></div>
-      <div class="player-options" role="group" aria-label="Playback settings">
+      <div
+        class="player-options"
+        data-sidebar-resize="xy-pos"
+        role="group"
+        aria-label="Playback settings"
+      >
         <PlayerOption
           label="Quality"
           value={quality}
@@ -641,6 +650,7 @@
       </div>
       <button
         class="player-button"
+        data-sidebar-resize="xy-pos"
         aria-label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
         title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
         onclick={() => void toggleFullscreen()}

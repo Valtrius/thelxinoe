@@ -616,8 +616,8 @@
         class:provider-workspace={providerPage}
         class:settings-workspace={section === 'Settings'}
         data-feed-scroll
-        data-sidebar-resize={providerPage ? undefined : 'xy'}
-        data-sidebar-resize-origin={providerPage ? undefined : true}
+        data-sidebar-resize="xy"
+        data-sidebar-resize-origin
         use:mediaMotion.connect
         use:zoomWheel
       >
@@ -633,10 +633,13 @@
           />{:else if playing && playing.kind === 'track'}<MusicPlayer
             choice={playing}
             closed={() => (playing = null)}
-          />{:else if playing}<Player
-            choice={playing}
-            closed={() => (playing = null)}
-          />{/if}
+          />{:else if playing}<div
+            class="player-frame"
+            data-sidebar-resize="xy"
+            data-sidebar-resize-origin
+          >
+            <Player choice={playing} closed={() => (playing = null)} />
+          </div>{/if}
         {#if section === 'Settings'}
           <SettingsLayout {user} bind:active={settingsSection}>
             {#if settingsSection === 'account'}

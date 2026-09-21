@@ -417,6 +417,11 @@ test('sidebar controls stay aligned through collapse, expansion, and reversal', 
     return sidebar.evaluate((element) => {
       const box = (e: Element) => e.getBoundingClientRect().toJSON();
       const label = element.querySelector('.profile-label')!;
+      const selected = element.querySelector(
+        '.primary-navigation [aria-current="page"]',
+      )!;
+      const rail = selected.querySelector('span.bg-\\(--accent\\)')!;
+      const railBox = box(rail);
       return {
         surface: box(element.querySelector('.sidebar-surface')!),
         group: box(
@@ -424,6 +429,13 @@ test('sidebar controls stay aligned through collapse, expansion, and reversal', 
         ),
         label: box(label),
         opacity: Number(getComputedStyle(label).opacity),
+        rail: railBox,
+        railVisible: document
+          .elementsFromPoint(
+            railBox.x + railBox.width / 2,
+            railBox.y + railBox.height / 2,
+          )
+          .includes(selected),
         themes: [...element.querySelectorAll('.web-theme-controls button')].map(
           (button) => ({
             button: box(button),
@@ -437,6 +449,9 @@ test('sidebar controls stay aligned through collapse, expansion, and reversal', 
   function aligned(frame: Awaited<ReturnType<typeof snapshot>>) {
     // Check painted controls and their hit areas together, not just endpoints.
     expect(frame.label).toEqual(expanded.label);
+    expect(frame.rail.right).toBeCloseTo(frame.surface.right, 1);
+    expect(frame.rail.width).toBeCloseTo(expanded.rail.width, 1);
+    expect(frame.railVisible).toBe(true);
     expect(frame.group.x + frame.group.width / 2).toBeCloseTo(
       frame.surface.width / 2,
       1,
@@ -500,6 +515,26 @@ test('sidebar controls stay aligned through collapse, expansion, and reversal', 
   await expect(
     page.getByRole('button', { name: 'Light theme' }),
   ).toHaveAttribute('aria-pressed', 'true');
+  // Preserve scrolling on shorter windows while the navigation clip resizes.
+  await page.setViewportSize({ width: 1000, height: 520 });
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  const navigation = page.getByRole('navigation', { name: 'Main navigation' });
+  const scrollTop = await navigation.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    return element.scrollTop;
+  });
+  expect(scrollTop).toBeGreaterThan(0);
+  await toggle('Expand sidebar');
+  for (const time of [0, 50, 100, 200]) {
+    await seek(time);
+    const frame = await snapshot();
+    expect(frame.rail.right).toBeCloseTo(frame.surface.right, 1);
+    expect(frame.railVisible).toBe(true);
+    expect(await navigation.evaluate((element) => element.scrollTop)).toBe(
+      scrollTop,
+    );
+  }
+  await finish();
   expect(state.errors).toEqual([]);
 });
 async function insidePlayer(page: Page) {
@@ -668,6 +703,159 @@ test('transcoded seeking uses the server timeline and live playback omits seekin
   expect(live.seeks).toEqual([]);
   expect(state.errors).toEqual([]);
   expect(live.errors).toEqual([]);
+});
+
+test('the player and its controls follow sidebar resizing without clipping or stretching controls', async ({
+  page,
+}) => {
+  const state = await fixture(page, { app: true });
+  await page
+    .getByRole('button', { name: 'Watch Channel 0', exact: true })
+    .click();
+  await decoded(page);
+  await expect(page.locator('.player')).toHaveCSS('transform', 'none');
+  await page.evaluate(() => {
+    const animate = Element.prototype.animate;
+    Element.prototype.animate = function (keyframes, options) {
+      const animation = animate.call(this, keyframes, options);
+      if (this.hasAttribute('data-sidebar-resize')) animation.pause();
+      return animation;
+    };
+  });
+  async function sample(time?: number) {
+    return page.evaluate((time) => {
+      if (time !== undefined) {
+        const animations = Reflect.get(
+          window,
+          'sidebarTestAnimations',
+        ) as Animation[];
+        for (const animation of animations) animation.currentTime = time;
+      }
+      const box = (element: Element) =>
+        element.getBoundingClientRect().toJSON();
+      const player = document.querySelector('.player')!;
+      const bounds = box(player);
+      const close = player.querySelector('[aria-label="Close player"]')!;
+      const button = box(close);
+      const video = player.querySelector('video')!;
+      const videoBox = box(video);
+      const videoStyle = getComputedStyle(video);
+      return {
+        player: bounds,
+        feed: box(document.querySelector('.provider-surface')!),
+        card: box(
+          document.querySelector(
+            '[data-feed-content] [data-card-grid] [data-layout-key]',
+          )!,
+        ),
+        sidebar: box(document.querySelector('.sidebar-surface')!),
+        close: button,
+        videoScaleX: videoBox.width / parseFloat(videoStyle.width),
+        videoScaleY: videoBox.height / parseFloat(videoStyle.height),
+        closeVisible: document
+          .elementsFromPoint(
+            button.x + button.width / 2,
+            button.y + button.height / 2,
+          )
+          .some((e) => close.contains(e)),
+        leftVisible: document
+          .elementsFromPoint(bounds.x + 2, bounds.y + bounds.height / 2)
+          .some((e) => player.contains(e)),
+        controls: [
+          ...player.querySelectorAll('.player-button, .option-button'),
+        ].map(box),
+      };
+    }, time);
+  }
+  for (const [width, section] of [
+    [1280, 'Twitch'],
+    [1000, 'Twitch'],
+    [1280, 'YouTube'],
+    [1280, 'Kick'],
+  ] as const) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.getByRole('button', { name: section, exact: true }).click();
+    if (section === 'YouTube')
+      await page
+        .getByRole('button', { name: 'Open watchlists', exact: true })
+        .click();
+    await page
+      .locator('[data-feed-content] [data-layout-key]')
+      .first()
+      .waitFor();
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+    for (const direction of ['Collapse', 'Expand']) {
+      const before = await sample();
+      await page.getByRole('button', { name: `${direction} sidebar` }).click();
+      await page.evaluate(() => {
+        Reflect.set(
+          window,
+          'sidebarTestAnimations',
+          document
+            .getAnimations()
+            .filter((a) =>
+              (a.effect as KeyframeEffect).target?.hasAttribute(
+                'data-sidebar-resize',
+              ),
+            ),
+        );
+      });
+      const after = await sample(200);
+      expect(Math.abs(after.player.x - before.player.x)).toBeCloseTo(108, 1);
+      for (const time of [0, 25, 50, 100, 150]) {
+        const frame = await sample(time);
+        const progress =
+          (frame.sidebar.width - before.sidebar.width) /
+          (after.sidebar.width - before.sidebar.width);
+        for (const axis of ['x', 'y', 'width', 'height']) {
+          expect(
+            frame.player[axis],
+            `${direction} at ${width}px, ${time}ms: player ${axis}`,
+          ).toBeCloseTo(
+            before.player[axis] +
+              (after.player[axis] - before.player[axis]) * progress,
+            0,
+          );
+          for (const part of ['feed', 'card'] as const) {
+            const expected =
+              before[part][axis] +
+              (after[part][axis] - before[part][axis]) * progress;
+            expect(
+              Math.abs(frame[part][axis] - expected),
+              `${section} ${direction} at ${width}px, ${time}ms: ${part} ${axis}`,
+            ).toBeLessThan(
+              // Card grids also interpolate their fixed padding and gaps.
+              part === 'card' ? 2 : 0.5,
+            );
+          }
+        }
+        for (const control of frame.controls) {
+          expect(control.width).toBeCloseTo(36, 0);
+          expect(control.height).toBeCloseTo(36, 0);
+        }
+        expect(frame.videoScaleX).toBeCloseTo(frame.videoScaleY, 3);
+        expect(frame.closeVisible).toBe(true);
+        expect(frame.leftVisible).toBe(true);
+        if (time === 50)
+          await page.screenshot({
+            path: `.local/player-ui/player-sidebar-${section}-${width}-${direction.toLowerCase()}.png`,
+          });
+      }
+      await page.evaluate(() => {
+        for (const animation of Reflect.get(
+          window,
+          'sidebarTestAnimations',
+        ) as Animation[])
+          animation.finish();
+      });
+    }
+  }
+  expect(state.errors).toEqual([]);
 });
 
 test('the online player shares the page scrollbar and closes by sliding the feed upward', async ({

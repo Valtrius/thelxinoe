@@ -30,12 +30,17 @@ export function captureSidebarResize(
   const elements = [
     ...root.querySelectorAll<HTMLElement>('[data-sidebar-resize]'),
   ];
+  const animatedElements = new Set(elements);
   const origins = new Map<HTMLElement, SidebarOrigin>();
   const snapshots = enabled
     ? elements.map((element) => {
-        const originElement = element.parentElement?.closest<HTMLElement>(
+        const candidate = element.parentElement?.closest<HTMLElement>(
           '[data-sidebar-resize-origin]',
         );
+        // Local grid/watchlist zooms must not counter a surrounding viewport
+        // that is outside this animation and is not moving with them.
+        const originElement =
+          candidate && animatedElements.has(candidate) ? candidate : undefined;
         if (originElement && !origins.has(originElement)) {
           origins.set(originElement, {
             element: originElement,
@@ -65,8 +70,8 @@ export function sidebarResizeTransform(
   finalScrollTop: number,
 ): LayoutTransform {
   const transform = rectTransform(previous, final, zoom);
-  if (!['x', 'xy', 'x-pos'].includes(mode)) transform.x = 0;
-  if (!['y', 'xy', 'y-pos'].includes(mode)) transform.y = 0;
+  if (!['x', 'xy', 'x-pos', 'xy-pos'].includes(mode)) transform.x = 0;
+  if (!['y', 'xy', 'y-pos', 'xy-pos'].includes(mode)) transform.y = 0;
   if (!['x', 'xy'].includes(mode)) transform.scaleX = 1;
   if (!['y', 'xy', 'y-scale', 'y-scale-scroll'].includes(mode))
     transform.scaleY = 1;
@@ -82,6 +87,7 @@ function originKeyframes(
   origin: LayoutRect,
   originTransform: LayoutTransform,
   zoom: number,
+  mode: string,
 ): Keyframe[] {
   const left = final.left - origin.left;
   const top = final.top - origin.top;
@@ -105,6 +111,26 @@ function originKeyframes(
       scaleX: (1 + (transform.scaleX - 1) * remaining) / scaleX,
       scaleY: (1 + (transform.scaleY - 1) * remaining) / scaleY,
     };
+    // A one-axis child keeps the other axis supplied by its moving viewport.
+    // Countering both axes would pin vertical-only feed rows to their final X.
+    if (!['x', 'xy', 'x-pos', 'xy-pos', 'video'].includes(mode)) {
+      relative.x = 0;
+      relative.scaleX = 1;
+    }
+    if (
+      ![
+        'y',
+        'xy',
+        'y-pos',
+        'xy-pos',
+        'y-scale',
+        'y-scale-scroll',
+        'video',
+      ].includes(mode)
+    ) {
+      relative.y = 0;
+      relative.scaleY = 1;
+    }
     return { ...transformKeyframes(relative)[0], offset };
   });
 }
@@ -119,6 +145,19 @@ export function sidebarResizePlans(
   for (const { element, rect, mode, scrollTop, origin } of snapshots) {
     const final = element.getBoundingClientRect();
     if (final.width <= 0 || final.height <= 0) continue;
+    // Resize a scrolling navigation viewport in layout: its buttons and rail
+    // then stay inside the moving clip without scaling icons or labels.
+    if (mode === 'width') {
+      if (Math.abs(rect.width - final.width) >= 0.5)
+        plans.push({
+          element,
+          keyframes: [
+            { width: `${rect.width}px` },
+            { width: `${final.width}px` },
+          ],
+        });
+      continue;
+    }
     let zoom = 1;
     if (element.hasAttribute('data-sidebar-resize-zoom')) {
       const owner =
@@ -134,6 +173,28 @@ export function sidebarResizePlans(
       scrollTop,
       element.parentElement?.scrollTop ?? 0,
     );
+    if (mode === 'video') {
+      const video = element as HTMLVideoElement;
+      const aspect =
+        video.videoWidth / video.videoHeight || final.width / final.height;
+      const scale =
+        Math.min(rect.width / aspect, rect.height) /
+        Math.min(final.width / aspect, final.height);
+      // Keep the decoded picture proportional and centered while letterboxing
+      // changes. Scaling the player itself would otherwise stretch the video.
+      transform.x =
+        rect.left +
+        rect.width / 2 -
+        (final.left + final.width / 2) +
+        (final.width * (1 - scale)) / 2;
+      transform.y =
+        rect.top +
+        rect.height / 2 -
+        (final.top + final.height / 2) +
+        (final.height * (1 - scale)) / 2;
+      transform.scaleX = scale;
+      transform.scaleY = scale;
+    }
     if (origin) {
       if (!origins.has(origin.element)) {
         origins.set(origin.element, origin.element.getBoundingClientRect());
@@ -156,6 +217,7 @@ export function sidebarResizePlans(
           finalOrigin,
           originTransform,
           zoom,
+          mode,
         ),
       });
     } else if (!hasTransform(transform)) continue;

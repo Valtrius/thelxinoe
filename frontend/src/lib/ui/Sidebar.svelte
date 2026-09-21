@@ -68,9 +68,14 @@
         height="30"
       /><span class="brand-label">Thelxinoe</span></a
     >
-    <nav class="primary-navigation" aria-label="Main navigation">
+    <nav
+      class="primary-navigation"
+      aria-label="Main navigation"
+      data-sidebar-resize="width"
+    >
       {#each library as item (item.name)}<SidebarButton
           label={item.name}
+          resizeWithSidebar={false}
           {collapsed}
           title={collapsed ? item.name : undefined}
           aria-label={item.name}
@@ -78,9 +83,10 @@
           onclick={() => navigate(item.name)}
           ><item.icon class="size-5 shrink-0" /></SidebarButton
         >{/each}
-      <div class="sidebar-divider" data-sidebar-resize="x"></div>
+      <div class="sidebar-divider"></div>
       {#each providers as item (item.name)}<SidebarButton
           label={item.name}
+          resizeWithSidebar={false}
           {collapsed}
           title={collapsed ? item.name : undefined}
           aria-label={item.name}
@@ -91,9 +97,10 @@
             class="size-5 shrink-0"
           /></SidebarButton
         >{/each}
-      <div class="sidebar-divider" data-sidebar-resize="x"></div>
+      <div class="sidebar-divider"></div>
       <SidebarButton
         label="Requests"
+        resizeWithSidebar={false}
         {collapsed}
         aria-label="Requests"
         title={collapsed ? 'Requests' : undefined}

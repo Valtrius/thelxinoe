@@ -37,6 +37,7 @@
       label: string;
       active?: boolean;
       collapsed?: boolean;
+      resizeWithSidebar?: boolean;
       class?: string;
     };
 
@@ -45,6 +46,7 @@
     label,
     active = false,
     collapsed = false,
+    resizeWithSidebar = true,
     size = 'default',
     class: className,
     type = 'button',
@@ -53,7 +55,7 @@
 </script>
 
 <NavigationItem
-  resizeWithSidebar
+  {resizeWithSidebar}
   {type}
   {active}
   class={styles({ size, class: className })}

@@ -276,7 +276,11 @@
   }
 </script>
 
-<div class="provider-surface min-w-0">
+<div
+  class="provider-surface min-w-0"
+  data-sidebar-resize="xy"
+  data-sidebar-resize-origin
+>
   {#if platform === 'youtube'}
     <YoutubeView
       {account}
