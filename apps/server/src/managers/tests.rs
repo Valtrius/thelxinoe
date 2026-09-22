@@ -819,7 +819,7 @@ async fn provisioning_is_admin_only_durable_and_never_puts_credentials_in_jobs()
     assert_eq!(
         call(
             &state,
-            "/api/v1/admin/service-updates/policy/default",
+            "/api/v1/admin/product-update/policy",
             "POST",
             policy.clone(),
             &alice
@@ -831,7 +831,7 @@ async fn provisioning_is_admin_only_durable_and_never_puts_credentials_in_jobs()
     assert_eq!(
         call(
             &state,
-            "/api/v1/admin/service-updates/policy/default",
+            "/api/v1/admin/product-update/policy",
             "POST",
             policy,
             &admin
@@ -840,20 +840,40 @@ async fn provisioning_is_admin_only_durable_and_never_puts_credentials_in_jobs()
         .0,
         StatusCode::OK
     );
+    let provision = key.clone();
+    state.db.call(move|db|{db.execute("UPDATE stack_provisions SET state='complete',service_id='fixture-integration' WHERE id=?1",[provision])?;Ok(())}).await.unwrap();
+    let update_settings = call(
+        &state,
+        "/api/v1/admin/service-updates",
+        "GET",
+        Value::Null,
+        &admin,
+    )
+    .await;
+    assert_eq!(update_settings.0, StatusCode::OK);
+    assert_eq!(
+        update_settings.2["server_policy"],
+        json!({"policy":"automatic","window_start":22,"window_end":3})
+    );
+    assert!(
+        update_settings.2["policies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["service_id"] != "default")
+    );
     assert_eq!(
         call(
             &state,
-            "/api/v1/admin/service-updates/policy/default",
+            &format!("/api/v1/admin/service-updates/policy/{key}"),
             "POST",
             json!({"policy":"inherit","window_start":0,"window_end":0}),
             &admin
         )
         .await
         .0,
-        StatusCode::BAD_REQUEST
+        StatusCode::OK
     );
-    let provision = key.clone();
-    state.db.call(move|db|{db.execute("UPDATE stack_provisions SET state='complete',service_id='fixture-integration' WHERE id=?1",[provision])?;Ok(())}).await.unwrap();
     let mut attempts = tokio::task::JoinSet::new();
     for _ in 0..8 {
         let state = state.clone();

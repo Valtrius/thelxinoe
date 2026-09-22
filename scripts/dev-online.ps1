@@ -20,11 +20,31 @@ else {
 }
 $stateRoot = Join-Path $onlineRoot 'server'
 $cacheRoot = Join-Path $onlineRoot 'cache'
+$mediaRoot = Join-Path $onlineRoot 'media'
 $databasePath = Join-Path $stateRoot 'thelxinoe.sqlite3'
 $masterKeyPath = Join-Path $stateRoot 'secrets/master.key'
+$pathSeparators = [char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+$profileIdentity = $onlineRoot.TrimEnd($pathSeparators).ToLowerInvariant()
+$defaultOnlineRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot './.local/online'))
+$defaultProfileIdentity = $defaultOnlineRoot.TrimEnd($pathSeparators).ToLowerInvariant()
+if ($profileIdentity -eq $defaultProfileIdentity) {
+    $volumePrefix = 'thelxinoe-online'
+}
+else {
+    $profileHashAlgorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        $profileHashBytes = $profileHashAlgorithm.ComputeHash([Text.Encoding]::UTF8.GetBytes($profileIdentity))
+    }
+    finally {
+        $profileHashAlgorithm.Dispose()
+    }
+    $profileHash = -join ($profileHashBytes[0..7] | ForEach-Object { $_.ToString('x2') })
+    $volumePrefix = "thelxinoe-online-$profileHash"
+}
 
 New-Item -ItemType Directory -Path $stateRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $cacheRoot -Force | Out-Null
+New-Item -ItemType Directory -Path $mediaRoot -Force | Out-Null
 
 $databaseExists = Test-Path -LiteralPath $databasePath -PathType Leaf
 $masterKeyExists = Test-Path -LiteralPath $masterKeyPath -PathType Leaf
@@ -40,6 +60,7 @@ $runEnvironment = @{
     THELXINOE_TEST_HTTPS_PORT = '22443'
     THELXINOE_TEST_SUBNET = '172.31.254.0/24'
     THELXINOE_ONLINE_ROOT = $onlineRootValue
+    THELXINOE_ONLINE_VOLUME_PREFIX = $volumePrefix
 }
 $previousEnvironment = @{}
 foreach ($name in $runEnvironment.Keys) {
@@ -57,9 +78,13 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw "Server image build failed (exit $LASTEXITCODE)."
         }
+        & $dockerCommand build --target controller -t "thelxinoe-controller:$version" .
+        if ($LASTEXITCODE -ne 0) {
+            throw "Controller image build failed (exit $LASTEXITCODE)."
+        }
     }
 
-    & $dockerCommand compose -p thelxinoe-online -f compose.test.yaml -f compose.online.yaml up -d --wait
+    & $dockerCommand compose -p thelxinoe-online -f compose.test.yaml -f compose.online.yaml up -d --wait --force-recreate
     if ($LASTEXITCODE -ne 0) {
         throw "Online development startup failed (exit $LASTEXITCODE)."
     }

@@ -357,24 +357,28 @@ pub async fn create_user(
 }
 pub async fn settings(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
-    let timezone = state
+    let (timezone, time_format) = state
         .db
         .call(|db| {
-            Ok(db
-                .query_row("SELECT value FROM settings WHERE key='timezone'", [], |r| {
-                    r.get::<_, String>(0)
-                })
-                .optional()?
-                .unwrap_or("UTC".into()))
+            let setting = |key: &str, default: &str| -> anyhow::Result<String> {
+                Ok(db
+                    .query_row("SELECT value FROM settings WHERE key=?1", [key], |r| {
+                        r.get::<_, String>(0)
+                    })
+                    .optional()?
+                    .unwrap_or_else(|| default.into()))
+            };
+            Ok((setting("timezone", "UTC")?, setting("time_format", "24h")?))
         })
         .await?;
     Ok(Json(
-        json!({"timezone":timezone,"public_url":state.config.public_url.as_ref().map(ToString::to_string),"trusted_proxies":state.config.trusted_proxies.iter().map(ToString::to_string).collect::<Vec<_>>()}),
+        json!({"timezone":timezone,"time_format":time_format,"public_url":state.config.public_url.as_ref().map(ToString::to_string),"trusted_proxies":state.config.trusted_proxies.iter().map(ToString::to_string).collect::<Vec<_>>()}),
     ))
 }
 #[derive(Deserialize)]
 pub struct Settings {
     timezone: String,
+    time_format: Option<String>,
 }
 pub async fn save_settings(
     State(state): State<AppState>,
@@ -386,14 +390,32 @@ pub async fn save_settings(
         .timezone
         .parse::<chrono_tz::Tz>()
         .map_err(|_| ApiError::bad("Unknown timezone"))?;
+    if let Some(format) = &settings.time_format
+        && !matches!(format.as_str(), "12h" | "24h")
+    {
+        return Err(ApiError::bad("Unknown time format"));
+    }
     let timezone = settings.timezone.clone();
-    state.db.call(move |db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;tx.execute("INSERT INTO settings VALUES ('timezone',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[settings.timezone])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'settings.update','server',?2)",params![p.user.id,now()])?;tx.commit()?;Ok(())}).await?;
+    let time_format = settings.time_format.clone();
+    let effective_time_format = state.db.call(move |db|{
+        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute("INSERT INTO settings VALUES ('timezone',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[settings.timezone])?;
+        if let Some(format)=settings.time_format {
+            tx.execute("INSERT INTO settings VALUES ('time_format',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[format])?;
+        }
+        let current=tx.query_row("SELECT value FROM settings WHERE key='time_format'",[],|r|r.get::<_,String>(0)).optional()?.unwrap_or("24h".into());
+        tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'settings.update','server',?2)",params![p.user.id,now()])?;
+        tx.commit()?;
+        Ok(current)
+    }).await?;
     state
         .emit(
             None,
             "server.settings.changed",
-            json!({"timezone":timezone}),
+            json!({"timezone":timezone,"time_format":effective_time_format}),
         )
         .await?;
-    Ok(Json(json!({"ok":true})))
+    Ok(Json(
+        json!({"ok":true,"timezone":timezone,"time_format":time_format.unwrap_or(effective_time_format)}),
+    ))
 }

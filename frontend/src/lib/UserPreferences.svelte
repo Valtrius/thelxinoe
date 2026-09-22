@@ -19,11 +19,14 @@
     timezone_override: string | null;
     server_timezone: string;
     time_format: '12h' | '24h';
+    time_format_override: '12h' | '24h' | null;
+    server_time_format: '12h' | '24h';
   };
   const userId = $derived(user.id);
   let timezone = $state(''),
     serverTimezone = $state('UTC'),
-    timeFormat = $state<'12h' | '24h'>('24h'),
+    timeFormat = $state<'' | '12h' | '24h'>(''),
+    serverTimeFormat = $state<'12h' | '24h'>('24h'),
     busy = $state(true),
     error = $state('');
   let active = true;
@@ -39,7 +42,8 @@
         if (!active) return;
         timezone = value.timezone_override ?? '';
         serverTimezone = value.server_timezone;
-        timeFormat = value.time_format;
+        timeFormat = value.time_format_override ?? '';
+        serverTimeFormat = value.server_time_format;
         changed(value.timezone, value.time_format);
       })
       .catch((e) => {
@@ -55,12 +59,13 @@
   async function save() {
     const value = await api<Preferences>('/me/preferences', 'PUT', {
       timezone: timezone || null,
-      time_format: timeFormat,
+      time_format: timeFormat || null,
     });
     if (!active) return;
     timezone = value.timezone_override ?? '';
     serverTimezone = value.server_timezone;
-    timeFormat = value.time_format;
+    timeFormat = value.time_format_override ?? '';
+    serverTimeFormat = value.server_time_format;
     changed(value.timezone, value.time_format);
   }
 </script>
@@ -80,7 +85,11 @@
       disabled={busy}
     />
     <label
-      >Time format<select bind:value={timeFormat} disabled={busy}
+      >Display time format<select bind:value={timeFormat} disabled={busy}
+        ><option value=""
+          >Use server default ({serverTimeFormat === '12h'
+            ? '12-hour'
+            : '24-hour'})</option
         ><option value="24h">24-hour</option><option value="12h">12-hour</option
         ></select
       ></label

@@ -11,6 +11,10 @@ test('profile pictures are cropped, resized, saved and removable', async ({
     await route.fulfill({ json: { avatar: saved } });
   });
   await page.goto('/');
+  await page.screenshot({
+    path: 'test-results/server-settings-review.png',
+    fullPage: true,
+  });
   const data = await page.evaluate(() => {
     const canvas = document.createElement('canvas');
     canvas.width = 512;
@@ -188,6 +192,291 @@ test('long admin navigation scrolls independently and keeps its last item reacha
   expect(fixture.unexpected).toEqual([]);
 });
 
+test('server settings contain display defaults and server updates', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'server',
+  });
+  await page.goto('/');
+  await page.screenshot({
+    path: 'test-results/media-services-review.png',
+    fullPage: true,
+  });
+  const nav = page.getByRole('navigation', { name: 'Settings navigation' });
+  await expect(
+    nav.getByRole('button', { name: 'Server updates', exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('combobox', {
+      name: 'Server default timezone',
+      exact: true,
+    }),
+  ).toHaveValue('UTC');
+  await expect(
+    page.getByRole('combobox', {
+      name: 'Server default time format',
+      exact: true,
+    }),
+  ).toHaveValue('24h');
+  await expect(
+    page.getByRole('heading', { name: 'Server updates', exact: true }),
+  ).toBeVisible();
+  for (const text of [
+    'Controls server maintenance windows and server activity times.',
+    'Server, controller and web share one release.',
+    'Installed version 0.1.0',
+    'Configure a release channel and its signing public key',
+    'Automatic updates wait for idle playback and background work',
+    'I understand that installation briefly stops the server.',
+  ]) {
+    await expect(page.getByText(text, { exact: false })).toHaveCount(0);
+  }
+  await page
+    .getByRole('combobox', {
+      name: 'Server default time format',
+      exact: true,
+    })
+    .selectOption('12h');
+  await expect(
+    page
+      .getByRole('form', { name: 'Server display defaults' })
+      .getByRole('status'),
+  ).toHaveText('Saved');
+  expect(fixture.writes).toContainEqual({
+    path: '/admin/settings',
+    method: 'PUT',
+    body: { timezone: 'UTC', time_format: '12h' },
+  });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('media services group singleton settings by service', async ({ page }) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+  });
+  await page.goto('/');
+  await expect(
+    page.getByRole('heading', { name: 'Media services', exact: true }),
+  ).toBeVisible();
+  for (const name of [
+    'Radarr',
+    'Sonarr',
+    'Lidarr',
+    'Bazarr',
+    'Prowlarr',
+    'NZBGet',
+  ]) {
+    await expect(
+      page.getByRole('article', { name: `${name} service` }),
+    ).toBeVisible();
+  }
+  await expect(
+    page.getByRole('heading', { name: 'Automatic request approval' }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('form', { name: 'Default service update policy' }),
+  ).toHaveCount(0);
+  const radarr = page.getByRole('article', { name: 'Radarr service' });
+  const radarrDetails = radarr.locator(':scope > details');
+  await expect(radarrDetails).not.toHaveAttribute('open', '');
+  await expect(
+    radarr.getByText('Managed, running', { exact: true }),
+  ).toBeVisible();
+  await radarr.locator(':scope > details > summary').click();
+  await radarr.getByText('Updates', { exact: true }).click();
+  await expect(
+    radarr.getByRole('combobox', { name: 'Update policy', exact: true }),
+  ).toHaveValue('inherit');
+  await expect(
+    radarr.getByText('Uses the Server update policy', { exact: false }),
+  ).toBeVisible();
+  await expect(
+    radarr.getByText('Stable candidate:', { exact: false }),
+  ).toContainText('ghcr.io/example/radarr:new');
+  await radarr
+    .getByRole('combobox', { name: 'Update policy', exact: true })
+    .selectOption('notify');
+  await radarr
+    .getByRole('button', { name: 'Save update policy', exact: true })
+    .click();
+  await expect
+    .poll(() =>
+      fixture.writes.some(
+        (write) =>
+          write.path === '/admin/service-updates/policy/managed-radarr' &&
+          JSON.stringify(write.body) ===
+            '{"policy":"notify","window_start":3,"window_end":5}',
+      ),
+    )
+    .toBe(true);
+
+  const sonarr = page.getByRole('article', { name: 'Sonarr service' });
+  await expect(
+    sonarr.getByText('Not connected', { exact: true }),
+  ).toBeVisible();
+  await expect(
+    sonarr.getByRole('button', { name: 'Install Sonarr', exact: true }),
+  ).not.toBeVisible();
+  await expect(
+    sonarr.locator('summary').filter({ hasText: 'Connect Sonarr' }),
+  ).not.toBeVisible();
+  await sonarr.locator(':scope > details > summary').click();
+  await expect(
+    sonarr.locator('summary').filter({ hasText: 'Connect Sonarr' }),
+  ).toBeVisible();
+
+  const prowlarr = page.getByRole('article', { name: 'Prowlarr service' });
+  await expect(prowlarr.getByText('Connected', { exact: true })).toBeVisible();
+  await expect(
+    prowlarr.getByText('Ownership', { exact: true }),
+  ).not.toBeVisible();
+  await prowlarr.locator(':scope > details > summary').click();
+  await expect(prowlarr.getByText('Ownership', { exact: true })).toBeVisible();
+
+  const bazarr = page.getByRole('article', { name: 'Bazarr service' });
+  await expect(
+    bazarr.getByText('Managed, running', { exact: true }),
+  ).toBeVisible();
+  await expect(
+    bazarr.locator('summary').filter({ hasText: 'Connect Bazarr' }),
+  ).toHaveCount(0);
+
+  await expect(
+    page.getByRole('heading', { name: 'Acquisition managers', exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('heading', { name: 'Service updates', exact: true }),
+  ).toHaveCount(0);
+  const radarrBounds = (await radarr.boundingBox())!;
+  const sonarrBounds = (await sonarr.boundingBox())!;
+  expect(sonarrBounds.x).toBeCloseTo(radarrBounds.x, 0);
+  expect(sonarrBounds.width).toBeCloseTo(radarrBounds.width, 0);
+  expect(sonarrBounds.y).toBeGreaterThan(radarrBounds.y);
+  await page.setViewportSize({ width: 720, height: 850 });
+  await expect(
+    page.getByRole('article', { name: 'NZBGet service' }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+for (const scenario of [
+  {
+    endpoint: '/admin/managers',
+    label: 'Acquisition managers',
+    unaffectedService: 'Prowlarr',
+    unaffectedVersion: '2.0.0',
+  },
+  {
+    endpoint: '/admin/support',
+    label: 'Support services',
+    unaffectedService: 'Radarr',
+    unaffectedVersion: '6.0.0',
+  },
+  {
+    endpoint: '/admin/acquisition/users',
+    label: 'Request approval settings',
+    unaffectedService: 'Radarr',
+    unaffectedVersion: '6.0.0',
+  },
+  {
+    endpoint: '/admin/service-updates',
+    label: 'Service updates',
+    unaffectedService: 'Radarr',
+    unaffectedVersion: '6.0.0',
+  },
+  {
+    endpoint: '/admin/managers/containers',
+    label: 'Docker container discovery',
+    unaffectedService: 'Radarr',
+    unaffectedVersion: '6.0.0',
+  },
+  {
+    endpoint: '/admin/stack',
+    label: 'Managed service runtime',
+    unaffectedService: 'Radarr',
+    unaffectedVersion: '6.0.0',
+  },
+]) {
+  test(`media services isolate ${scenario.label.toLowerCase()} load failures`, async ({
+    page,
+  }) => {
+    const failure = `Fixture ${scenario.label} failure`;
+    const fixture = await installUiFixture(page, {
+      role: 'admin',
+      settingsSection: 'services',
+      endpointFailures: { [scenario.endpoint]: failure },
+    });
+    await page.goto('/');
+
+    const banner = page.getByRole('alert', {
+      name: `${scenario.label} load error`,
+    });
+    await expect(banner).toContainText(`Failed to load ${scenario.label}`);
+    await expect(banner).toContainText(failure);
+    await expect(banner).toHaveClass(/border-danger/);
+    await expect(banner).toHaveClass(/bg-danger\/12/);
+    await expect(banner).toHaveClass(/text-danger/);
+    await expect(banner.locator('svg')).toBeVisible();
+
+    await expect(
+      page.getByRole('article', {
+        name: `${scenario.unaffectedService} service`,
+      }),
+    ).toContainText(scenario.unaffectedVersion);
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.unexpected).toEqual([]);
+  });
+}
+
+for (const state of ['connecting', 'blocked']) {
+  test(`media service status prioritizes ${state} provisioning over runtime`, async ({
+    page,
+  }) => {
+    const fixture = await installUiFixture(page, {
+      role: 'admin',
+      settingsSection: 'services',
+      stackProvisionState: state,
+    });
+    await page.goto('/');
+    const radarr = page.getByRole('article', { name: 'Radarr service' });
+    await expect(
+      radarr.getByText(`Setup ${state}`, { exact: true }),
+    ).toBeVisible();
+    await expect(
+      radarr.getByText('Managed, running', { exact: true }),
+    ).toHaveCount(0);
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.unexpected).toEqual([]);
+  });
+}
+
+test('media services show request approval only for regular users', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+    approvalUsers: [{ id: 'member', username: 'Member', enabled: false }],
+  });
+  await page.goto('/');
+  await expect(
+    page.getByRole('heading', { name: 'Automatic request approval' }),
+  ).toBeVisible();
+  await expect(page.getByRole('switch', { name: 'Member' })).toBeVisible();
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 test('mobile settings use a horizontal menu at the existing breakpoint', async ({
   page,
 }) => {
@@ -235,10 +524,10 @@ test('display, playback and skipping preferences save automatically', async ({
   expect(fixture.writes).toContainEqual({
     path: '/me/preferences',
     method: 'PUT',
-    body: { timezone: 'Europe/Paris', time_format: '24h' },
+    body: { timezone: 'Europe/Paris', time_format: null },
   });
   await page
-    .getByRole('combobox', { name: 'Time format', exact: true })
+    .getByRole('combobox', { name: 'Display time format', exact: true })
     .selectOption('12h');
   await expect(
     page.getByRole('form', { name: 'Display preferences' }).getByRole('status'),
@@ -332,7 +621,7 @@ test('failed automatic saves retain edits and can be retried', async ({
   expect(fixture.writes).toContainEqual({
     path: '/me/preferences',
     method: 'PUT',
-    body: { timezone: 'Europe/Paris', time_format: '24h' },
+    body: { timezone: 'Europe/Paris', time_format: null },
   });
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);

@@ -618,22 +618,7 @@ async fn handoff(u: &mut Update) -> Result<()> {
         u.next_server.as_deref().unwrap()
     ))
     .await?;
-    // Docker fills these defaults only when a created container first starts.
-    // Resolve them before accepting the stopped successor, so runtime startup
-    // does not look like an outside configuration change.
-    if d.server["HostConfig"]["OomKillDisable"].is_null() {
-        d.server["HostConfig"]["OomKillDisable"] = json!(false);
-    }
-    let network_names = d.server["NetworkSettings"]["Networks"]
-        .as_object()
-        .ok_or_else(unavailable)?
-        .keys()
-        .cloned()
-        .collect::<Vec<_>>();
-    for network in network_names {
-        let raw = engine(&format!("/networks/{network}")).await?;
-        d.server["NetworkSettings"]["Networks"][&network]["NetworkID"] = raw["Id"].clone();
-    }
+    normalize_stopped_server(&mut d.server).await?;
     d.controller = engine(&format!(
         "/containers/{}/json",
         u.next_controller.as_deref().unwrap()
@@ -823,30 +808,80 @@ pub(crate) async fn accepted_writer() -> anyhow::Result<bool> {
     let controller = engine(&format!("/containers/{own}/json"))
         .await
         .map_err(|(_, e)| anyhow::anyhow!(e))?;
-    if !equivalent(&d.controller, &controller) {
+    let allow_rebuilt_image =
+        std::env::var("THELXINOE_DEV_COMPOSE_REBUILD").is_ok_and(|value| value == "1");
+    if !equivalent(&d.controller, &controller, allow_rebuilt_image) {
         return Ok(false);
     }
     let server_name = name(&d.server).map_err(|(_, e)| anyhow::anyhow!(e))?;
-    let server = engine(&format!("/containers/{server_name}/json"))
+    let mut server = engine(&format!("/containers/{server_name}/json"))
         .await
         .map_err(|(_, e)| anyhow::anyhow!(e))?;
-    if !equivalent(&d.server, &server) {
+    if !equivalent(&d.server, &server, allow_rebuilt_image) {
         return Ok(false);
     }
+    normalize_stopped_server(&mut server)
+        .await
+        .map_err(|(_, e)| anyhow::anyhow!(e))?;
     d.controller = controller;
     d.server = server;
     d.generation = next_generation().map_err(|(_, e)| anyhow::anyhow!(e))?;
     commit(&d).map_err(|(_, e)| anyhow::anyhow!(e))?;
     Ok(true)
 }
-fn equivalent(expected: &Value, actual: &Value) -> bool {
-    if expected["Image"] != actual["Image"] || expected["Name"] != actual["Name"] {
+async fn normalize_stopped_server(server: &mut Value) -> Result<()> {
+    if server["State"]["Running"] == true {
+        return Ok(());
+    }
+    // Docker fills these defaults only when a created container first starts.
+    // Resolve them before accepting the stopped successor, so runtime startup
+    // does not look like an outside configuration change.
+    normalize_stopped_server_defaults(server);
+    let network_names = server["NetworkSettings"]["Networks"]
+        .as_object()
+        .ok_or_else(unavailable)?
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    for network in network_names {
+        let raw = engine(&format!("/networks/{network}")).await?;
+        server["NetworkSettings"]["Networks"][&network]["NetworkID"] = raw["Id"].clone();
+    }
+    Ok(())
+}
+fn normalize_stopped_server_defaults(server: &mut Value) {
+    if server["HostConfig"]["OomKillDisable"].is_null() {
+        server["HostConfig"]["OomKillDisable"] = json!(false);
+    }
+}
+fn same_image_identity(expected: &Value, actual: &Value) -> bool {
+    match (
+        expected["ImageManifestDescriptor"]["digest"].as_str(),
+        actual["ImageManifestDescriptor"]["digest"].as_str(),
+    ) {
+        (Some(expected), Some(actual)) => expected == actual,
+        _ => {
+            expected["Image"].as_str().is_some()
+                && expected["Image"].as_str() == actual["Image"].as_str()
+        }
+    }
+}
+fn equivalent(expected: &Value, actual: &Value, allow_rebuilt_image: bool) -> bool {
+    let same_image = same_image_identity(expected, actual);
+    let same_configured_image = expected["Config"]["Image"].is_string()
+        && expected["Config"]["Image"] == actual["Config"]["Image"];
+    if (!same_image && !(allow_rebuilt_image && same_configured_image))
+        || expected["Name"] != actual["Name"]
+    {
         return false;
     }
     let env = |c: &Value| -> Option<std::collections::BTreeMap<String, String>> {
         let mut result = std::collections::BTreeMap::new();
         for item in c["Config"]["Env"].as_array()? {
             let (key, value) = item.as_str()?.split_once('=')?;
+            if allow_rebuilt_image && key == "THELXINOE_DEV_COMPOSE_REBUILD" {
+                continue;
+            }
             if result.insert(key.into(), value.into()).is_some() {
                 return None;
             }
@@ -1050,31 +1085,62 @@ mod tests {
     }
     #[test]
     fn recreated_generation_requires_exact_image_and_host_access() {
-        let expected = json!({"Image":"sha256:accepted","Name":"/controller","Config":{"Env":["SAFE=1"],"User":"0:10001"},"HostConfig":{"Privileged":false,"ReadonlyRootfs":true,"CapDrop":["ALL"]},"Mounts":[{"Destination":"/state","Source":"/srv/thelxinoe","RW":true}],"NetworkSettings":{"Networks":{"none":{}}}});
-        assert!(equivalent(&expected, &expected));
-        for (field, value) in [
-            ("Image", json!("sha256:stale")),
-            ("Name", json!("/retired")),
-        ] {
+        let expected = json!({"Image":"sha256:accepted","ImageManifestDescriptor":{"digest":"sha256:manifest"},"Name":"/controller","Config":{"Image":"thelxinoe-controller:dev","Env":["SAFE=1"],"User":"0:10001"},"HostConfig":{"Privileged":false,"ReadonlyRootfs":true,"CapDrop":["ALL"]},"Mounts":[{"Destination":"/state","Source":"/srv/thelxinoe","RW":true}],"NetworkSettings":{"Networks":{"none":{}}}});
+        assert!(equivalent(&expected, &expected, false));
+        let mut platform_alias = expected.clone();
+        platform_alias["Image"] = json!("sha256:platform-image");
+        assert!(equivalent(&expected, &platform_alias, false));
+        let mut no_manifest = expected.clone();
+        no_manifest
+            .as_object_mut()
+            .unwrap()
+            .remove("ImageManifestDescriptor");
+        assert!(equivalent(&expected, &no_manifest, false));
+        let mut different_image_without_manifest = no_manifest.clone();
+        different_image_without_manifest["Image"] = json!("sha256:different-image");
+        assert!(!equivalent(
+            &expected,
+            &different_image_without_manifest,
+            false
+        ));
+        for (field, value) in [("Name", json!("/retired"))] {
             let mut changed = expected.clone();
             changed[field] = value;
-            assert!(!equivalent(&expected, &changed));
+            assert!(!equivalent(&expected, &changed, false));
         }
         let mut changed = expected.clone();
+        changed["ImageManifestDescriptor"]["digest"] = json!("sha256:new-manifest");
+        changed["Image"] = json!("sha256:new-image");
+        assert!(!equivalent(&expected, &changed, false));
+        assert!(equivalent(&expected, &changed, true));
+        changed["Config"]["Image"] = json!("other-controller:dev");
+        assert!(!equivalent(&expected, &changed, true));
+        let mut changed = expected.clone();
         changed["HostConfig"]["Privileged"] = json!(true);
-        assert!(!equivalent(&expected, &changed));
+        assert!(!equivalent(&expected, &changed, false));
         let mut changed = expected.clone();
         changed["Mounts"][0]["Source"] = json!("/etc");
-        assert!(!equivalent(&expected, &changed));
+        assert!(!equivalent(&expected, &changed, false));
         let mut changed = expected.clone();
         changed["Config"]["Env"] = json!(["SAFE=0"]);
-        assert!(!equivalent(&expected, &changed));
+        assert!(!equivalent(&expected, &changed, false));
         let mut ordered = expected.clone();
         ordered["Config"]["Env"] = json!(["A=1", "B=2"]);
         let mut reordered = ordered.clone();
         reordered["Config"]["Env"] = json!(["B=2", "A=1"]);
-        assert!(equivalent(&ordered, &reordered));
+        assert!(equivalent(&ordered, &reordered, false));
         reordered["Config"]["Env"] = json!(["A=1", "B=2", "A=3"]);
-        assert!(!equivalent(&ordered, &reordered));
+        assert!(!equivalent(&ordered, &reordered, false));
+    }
+
+    #[test]
+    fn stopped_server_defaults_are_normalized_before_commit() {
+        let mut server = json!({"HostConfig":{"OomKillDisable":null}});
+        normalize_stopped_server_defaults(&mut server);
+        assert_eq!(server["HostConfig"]["OomKillDisable"], json!(false));
+
+        server["HostConfig"]["OomKillDisable"] = json!(true);
+        normalize_stopped_server_defaults(&mut server);
+        assert_eq!(server["HostConfig"]["OomKillDisable"], json!(true));
     }
 }

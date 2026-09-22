@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-pub const SCHEMA_VERSION: u32 = 38;
+pub const SCHEMA_VERSION: u32 = 39;
 
 /// Inspect a quiesced database without applying migrations or creating missing files.
 pub fn verify_snapshot(path: &Path) -> Result<u32> {
@@ -97,6 +97,7 @@ impl Database {
             include_str!("../migrations/036.sql"),
             include_str!("../migrations/037.sql"),
             include_str!("../migrations/038.sql"),
+            include_str!("../migrations/039.sql"),
         ];
         if version > migrations.len() as i64 {
             anyhow::bail!("Database is newer than this server; use the matching release");
@@ -325,6 +326,51 @@ mod tests {
             [],
         )?;
         assert_eq!(profile("new")?, ("America/New_York".into(), None));
+        Ok(())
+    }
+    #[test]
+    fn time_format_migration_preserves_12h_overrides_and_inherits_24h_defaults() -> Result<()> {
+        let db = Connection::open_in_memory()?;
+        for version in 1..=38 {
+            let path =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("migrations/{version:03}.sql"));
+            db.execute_batch(&std::fs::read_to_string(path)?)?;
+        }
+        db.execute_batch(
+            "INSERT INTO settings VALUES ('time_format','12h');
+             INSERT INTO users(id,username,password_hash,role,timezone,created_at,time_format)
+              VALUES ('default','default','unused','user','UTC',1,'24h');
+             INSERT INTO users(id,username,password_hash,role,timezone,created_at,time_format)
+              VALUES ('personal','personal','unused','user','UTC',1,'12h');",
+        )?;
+        db.execute_batch(include_str!("../migrations/039.sql"))?;
+        let profile = |user: &str| {
+            db.query_row(
+                "SELECT time_format,time_format_override,server_time_format FROM user_profiles WHERE id=?1",
+                [user],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                },
+            )
+        };
+        assert_eq!(profile("default")?, ("12h".into(), None, "12h".into()));
+        assert_eq!(
+            profile("personal")?,
+            ("12h".into(), Some("12h".into()), "12h".into())
+        );
+        db.execute(
+            "UPDATE settings SET value='24h' WHERE key='time_format'",
+            [],
+        )?;
+        assert_eq!(profile("default")?, ("24h".into(), None, "24h".into()));
+        assert_eq!(
+            profile("personal")?,
+            ("12h".into(), Some("12h".into()), "24h".into())
+        );
         Ok(())
     }
     #[test]

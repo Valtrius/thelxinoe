@@ -93,11 +93,8 @@
   import OnlineAccounts from './lib/OnlineAccounts.svelte';
   import OnlineSettings from './lib/OnlineSettings.svelte';
   import ProviderView from './lib/providers/ProviderView.svelte';
-  import ManagerSettings from './lib/ManagerSettings.svelte';
+  import ServicesSettings from './lib/ServicesSettings.svelte';
   import ManagerOwnership from './lib/ManagerOwnership.svelte';
-  import SupportServices from './lib/SupportServices.svelte';
-  import ManagedStack from './lib/ManagedStack.svelte';
-  import ServiceUpdates from './lib/ServiceUpdates.svelte';
   import RetentionSettings from './lib/RetentionSettings.svelte';
   import Requests from './lib/Requests.svelte';
   import { persistQueue, type Card } from './lib/media-state';
@@ -163,6 +160,7 @@
   let expandedUser = $state('');
   let preferencesRevision = $state(0);
   let timeFormat = $state<'12h' | '24h'>('24h'),
+    serverTimeFormat = $state<'12h' | '24h'>('24h'),
     timezone = $state('UTC'),
     health = $state<{
       version: string;
@@ -204,10 +202,11 @@
       if (typeof saved?.settingsSection === 'string')
         settingsSection = saved.settingsSection;
       if (settingsSection === 'library') settingsSection = 'services';
+      if (settingsSection === 'server-updates') settingsSection = 'server';
       if (!desktop && ['mpv', 'connection'].includes(settingsSection))
         settingsSection = 'account';
       if (!desktop && settingsSection === 'updates')
-        settingsSection = user.role === 'admin' ? 'server-updates' : 'account';
+        settingsSection = user.role === 'admin' ? 'server' : 'account';
     } catch {
       /* Ignore an obsolete device preference. */
     }
@@ -343,8 +342,15 @@
             timeFormat = preference.time_format;
             if (user) user = { ...user, timezone: preference.timezone };
           }
-          if (event.kind === 'server.settings.changed')
-            timezone = (event.payload as { timezone: string }).timezone;
+          if (event.kind === 'server.settings.changed') {
+            const settings = event.payload as {
+              timezone: string;
+              time_format: '12h' | '24h';
+            };
+            timezone = settings.timezone;
+            serverTimeFormat = settings.time_format;
+            void loadDisplayPreferences().catch((e) => (error = String(e)));
+          }
           const userId = user?.id;
           void api<{ user: User }>('/auth/me')
             .then((result) => {
@@ -434,8 +440,12 @@
           users = (await api<{ items: User[] }>('/users')).items;
           jobs = (await api<{ items: Job[] }>('/admin/jobs')).items;
           health = await api('/admin/health');
-          timezone = (await api<{ timezone: string }>('/admin/settings'))
-            .timezone;
+          const settings = await api<{
+            timezone: string;
+            time_format: '12h' | '24h';
+          }>('/admin/settings');
+          timezone = settings.timezone;
+          serverTimeFormat = settings.time_format;
         }
       });
     } finally {
@@ -815,24 +825,18 @@
               </Panel>
             {/if}
             {#if user.role === 'admin'}
-              {#if settingsSection === 'server-updates'}<ProductUpdates
-                  {timeFormat}
-                />{/if}
               {#if settingsSection === 'analysis'}<SegmentSettings admin />{/if}
               {#if settingsSection === 'backups'}<BackupSettings
                   {timezone}
                   {timeFormat}
                 />{/if}
               {#if settingsSection === 'providers'}<OnlineSettings />{/if}
-              {#if settingsSection === 'services'}<ManagerSettings />{/if}
+              {#if settingsSection === 'services'}<ServicesSettings />{/if}
               {#if settingsSection === 'services'}<ManagerOwnership />{/if}
-              {#if settingsSection === 'services'}<ManagedStack />{/if}
-              {#if settingsSection === 'services'}<ServiceUpdates />{/if}
               {#if settingsSection === 'retention'}<RetentionSettings
                   {timezone}
                   {timeFormat}
                 />{/if}
-              {#if settingsSection === 'services'}<SupportServices />{/if}
               {#if settingsSection === 'server'}<Panel>
                   <h2><ShieldCheck size={20} /> Server</h2>
                   <div class={statsClass}>
@@ -857,23 +861,31 @@
                     </div>
                   </div>
                   <AutoSaveForm
-                    label="Server timezone"
+                    label="Server display defaults"
                     class={inlineFormClass}
                     disabled={busy}
-                    onsave={() => api('/admin/settings', 'PUT', { timezone })}
+                    onsave={() =>
+                      api('/admin/settings', 'PUT', {
+                        timezone,
+                        time_format: serverTimeFormat,
+                      })}
                   >
                     <TimezoneSelect
                       label="Server default timezone"
                       bind:value={timezone}
                       disabled={busy}
                     />
+                    <label
+                      >Server default time format<select
+                        bind:value={serverTimeFormat}
+                        disabled={busy}
+                        ><option value="24h">24-hour</option><option value="12h"
+                          >12-hour</option
+                        ></select
+                      ></label
+                    >
                   </AutoSaveForm>
-                  <p class="text-muted">
-                    Controls server maintenance windows and server activity
-                    times. Also used for display by everyone who has not chosen
-                    a personal timezone. Regional zones follow daylight-saving
-                    changes automatically.
-                  </p>
+                  <ProductUpdates {timeFormat} />
                 </Panel>
                 <AdminOperations {timezone} {timeFormat} />
               {/if}

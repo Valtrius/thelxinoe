@@ -122,7 +122,7 @@ async fn timezone_defaults_follow_server_changes_until_explicitly_overridden() {
     let initial = ok(&state, &alice, "/me/preferences", "GET", Value::Null).await;
     assert_eq!(
         initial,
-        json!({"timezone":"UTC","timezone_override":null,"server_timezone":"UTC","time_format":"24h"})
+        json!({"timezone":"UTC","timezone_override":null,"server_timezone":"UTC","time_format":"24h","time_format_override":null,"server_time_format":"24h"})
     );
 
     // Explicitly choosing UTC must remain distinct from leaving the default.
@@ -152,7 +152,7 @@ async fn timezone_defaults_follow_server_changes_until_explicitly_overridden() {
     );
     assert_eq!(
         ok(&state, &alice, "/me/preferences", "GET", Value::Null).await,
-        json!({"timezone":"Europe/Paris","timezone_override":null,"server_timezone":"Europe/Paris","time_format":"24h"})
+        json!({"timezone":"Europe/Paris","timezone_override":null,"server_timezone":"Europe/Paris","time_format":"24h","time_format_override":null,"server_time_format":"24h"})
     );
 
     // New accounts and their initial login use the current server default.
@@ -212,7 +212,7 @@ async fn timezone_defaults_follow_server_changes_until_explicitly_overridden() {
             json!({"timezone":null})
         )
         .await,
-        json!({"timezone":"America/New_York","timezone_override":null,"server_timezone":"America/New_York","time_format":"24h"})
+        json!({"timezone":"America/New_York","timezone_override":null,"server_timezone":"America/New_York","time_format":"24h","time_format_override":null,"server_time_format":"24h"})
     );
     let users = ok(&state, &admin, "/users", "GET", Value::Null).await;
     assert!(
@@ -287,28 +287,82 @@ async fn timezone_defaults_follow_server_changes_until_explicitly_overridden() {
 }
 
 #[tokio::test]
-async fn time_format_is_saved_per_user_and_validated() {
+async fn time_format_follows_server_until_explicitly_overridden() {
     let (_temp, state) = fixture().await;
     let (alice, _) = login(&state, "alice").await;
     let (bob, _) = login(&state, "bob").await;
+    let (admin, _) = login(&state, "admin").await;
 
+    let initial = ok(&state, &alice, "/me/preferences", "GET", Value::Null).await;
+    assert_eq!(initial["time_format"], "24h");
+    assert_eq!(initial["time_format_override"], Value::Null);
+    assert_eq!(initial["server_time_format"], "24h");
+
+    ok(
+        &state,
+        &admin,
+        "/admin/settings",
+        "PUT",
+        json!({"timezone":"UTC","time_format":"12h"}),
+    )
+    .await;
     assert_eq!(
         ok(&state, &alice, "/me/preferences", "GET", Value::Null).await["time_format"],
-        "24h"
+        "12h"
     );
-    let updated = ok(
+    assert_eq!(
+        ok(&state, &bob, "/me/preferences", "GET", Value::Null).await["time_format"],
+        "12h"
+    );
+
+    let overridden = ok(
         &state,
         &alice,
         "/me/preferences",
         "PUT",
-        json!({"timezone":null,"time_format":"12h"}),
+        json!({"timezone":null,"time_format":"24h"}),
     )
     .await;
-    assert_eq!(updated["time_format"], "12h");
+    assert_eq!(overridden["time_format"], "24h");
+    assert_eq!(overridden["time_format_override"], "24h");
+    assert_eq!(overridden["server_time_format"], "12h");
+
+    ok(
+        &state,
+        &admin,
+        "/admin/settings",
+        "PUT",
+        json!({"timezone":"UTC","time_format":"24h"}),
+    )
+    .await;
+    ok(
+        &state,
+        &admin,
+        "/admin/settings",
+        "PUT",
+        json!({"timezone":"UTC","time_format":"12h"}),
+    )
+    .await;
     assert_eq!(
         ok(&state, &bob, "/me/preferences", "GET", Value::Null).await["time_format"],
+        "12h"
+    );
+    assert_eq!(
+        ok(&state, &alice, "/me/preferences", "GET", Value::Null).await["time_format"],
         "24h"
     );
+
+    let inherited = ok(
+        &state,
+        &alice,
+        "/me/preferences",
+        "PUT",
+        json!({"timezone":null,"time_format":null}),
+    )
+    .await;
+    assert_eq!(inherited["time_format"], "12h");
+    assert_eq!(inherited["time_format_override"], Value::Null);
+
     assert_eq!(
         call(
             &state,
@@ -322,9 +376,82 @@ async fn time_format_is_saved_per_user_and_validated() {
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
+        call(
+            &state,
+            &admin,
+            "/admin/settings",
+            "PUT",
+            json!({"timezone":"UTC","time_format":"system"})
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
         ok(&state, &alice, "/me/preferences", "GET", Value::Null).await["time_format"],
         "12h"
     );
+}
+
+#[tokio::test]
+async fn time_format_update_distinguishes_omitted_null_and_override() {
+    let (_temp, state) = fixture().await;
+    let (alice, _) = login(&state, "alice").await;
+    let (admin, _) = login(&state, "admin").await;
+
+    ok(
+        &state,
+        &admin,
+        "/admin/settings",
+        "PUT",
+        json!({"timezone":"UTC","time_format":"12h"}),
+    )
+    .await;
+    let overridden = ok(
+        &state,
+        &alice,
+        "/me/preferences",
+        "PUT",
+        json!({"timezone":null,"time_format":"24h"}),
+    )
+    .await;
+    assert_eq!(overridden["time_format"], "24h");
+    assert_eq!(overridden["time_format_override"], "24h");
+
+    let omitted = ok(
+        &state,
+        &alice,
+        "/me/preferences",
+        "PUT",
+        json!({"timezone":"Europe/Paris"}),
+    )
+    .await;
+    assert_eq!(omitted["timezone_override"], "Europe/Paris");
+    assert_eq!(omitted["time_format"], "24h");
+    assert_eq!(omitted["time_format_override"], "24h");
+    assert_eq!(omitted["server_time_format"], "12h");
+
+    let inherited = ok(
+        &state,
+        &alice,
+        "/me/preferences",
+        "PUT",
+        json!({"timezone":"Europe/Paris","time_format":null}),
+    )
+    .await;
+    assert_eq!(inherited["time_format"], "12h");
+    assert_eq!(inherited["time_format_override"], Value::Null);
+
+    let explicit = ok(
+        &state,
+        &alice,
+        "/me/preferences",
+        "PUT",
+        json!({"timezone":"Europe/Paris","time_format":"24h"}),
+    )
+    .await;
+    assert_eq!(explicit["time_format"], "24h");
+    assert_eq!(explicit["time_format_override"], "24h");
 }
 
 #[tokio::test]

@@ -167,6 +167,10 @@ fn mount<'a>(c: &'a Value, destination: &str) -> Result<&'a Value> {
         .find(|m| m["Destination"] == destination)
         .ok_or_else(|| conflict("Required first-party mount is missing"))
 }
+fn bootstrap_server_candidate(container: &Value, runtime: &Value) -> bool {
+    container["State"]["Running"] == true
+        && mount(container, "/run/thelxinoe").is_ok_and(|m| m["Source"] == *runtime)
+}
 fn immutable(c: &Value) -> Result<String> {
     let value = c["Image"].as_str().ok_or_else(unavailable)?;
     if value.len() != 71 || !value.starts_with("sha256:") {
@@ -288,7 +292,7 @@ async fn bootstrap() -> Result<Deployment> {
             c["Id"].as_str().ok_or_else(unavailable)?
         ))
         .await?;
-        if mount(&raw, "/run/thelxinoe").is_ok_and(|m| m["Source"] == runtime) {
+        if bootstrap_server_candidate(&raw, &runtime) {
             candidates.push(raw);
         }
     }
@@ -721,5 +725,28 @@ mod naming_tests {
         ]);
         assert!(deployment_has_kind(&containers, "current", "radarr").unwrap());
         assert!(!deployment_has_kind(&containers, "current", "sonarr").unwrap());
+    }
+
+    #[test]
+    fn bootstrap_ignores_stopped_servers_sharing_the_controller_runtime() {
+        let runtime = json!("controller-runtime");
+        let server = |running: bool, source: &str| {
+            json!({
+                "State":{"Running":running},
+                "Mounts":[{"Source":source,"Destination":"/run/thelxinoe"}]
+            })
+        };
+        assert!(bootstrap_server_candidate(
+            &server(true, "controller-runtime"),
+            &runtime
+        ));
+        assert!(!bootstrap_server_candidate(
+            &server(false, "controller-runtime"),
+            &runtime
+        ));
+        assert!(!bootstrap_server_candidate(
+            &server(true, "other-runtime"),
+            &runtime
+        ));
     }
 }

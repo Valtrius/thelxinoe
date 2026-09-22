@@ -8,6 +8,9 @@ export async function installUiFixture(
     section?: string;
     settingsSection?: string;
     signedIn?: boolean;
+    approvalUsers?: { id: string; username: string; enabled: boolean }[];
+    endpointFailures?: Record<string, string>;
+    stackProvisionState?: string;
   } = {},
 ) {
   const user = {
@@ -22,6 +25,21 @@ export async function installUiFixture(
     timezone_override: null as string | null,
     server_timezone: 'UTC',
     time_format: '24h' as '12h' | '24h',
+    time_format_override: null as '12h' | '24h' | null,
+    server_time_format: '24h' as '12h' | '24h',
+  };
+  let serverSettings = {
+    timezone: 'UTC',
+    time_format: '24h' as '12h' | '24h',
+  };
+  let productUpdate = {
+    version: '0.1.0',
+    timezone: 'UTC',
+    configured: false,
+    policy: { policy: 'notify', window_start: 3, window_end: 5 },
+    release: null,
+    observation: null,
+    controller: { items: [] },
   };
   let appearance = {
     provider_preferences: {},
@@ -78,18 +96,34 @@ export async function installUiFixture(
         status: 503,
         json: { error: { message: 'Events disabled in fixture' } },
       });
+    if (method === 'GET' && options.endpointFailures?.[path])
+      return route.fulfill({
+        status: 503,
+        json: {
+          error: {
+            code: 'unavailable',
+            message: options.endpointFailures[path],
+          },
+        },
+      });
     if (path === '/me/appearance') {
       if (method === 'PATCH') appearance = { ...appearance, ...body };
       return json(appearance);
     }
     if (path === '/me/preferences') {
-      if (method === 'PUT')
-        preferences = {
+      if (method === 'PUT') {
+        const nextPreferences = {
           ...preferences,
-          timezone_override: body.timezone,
-          timezone: body.timezone ?? 'UTC',
-          time_format: body.time_format ?? preferences.time_format,
+          timezone_override: body.timezone ?? null,
+          timezone: body.timezone ?? preferences.server_timezone,
         };
+        if (Object.prototype.hasOwnProperty.call(body, 'time_format')) {
+          nextPreferences.time_format_override = body.time_format;
+          nextPreferences.time_format =
+            body.time_format ?? preferences.server_time_format;
+        }
+        preferences = nextPreferences;
+      }
       return json(preferences);
     }
     if (path === '/timezones')
@@ -120,7 +154,153 @@ export async function installUiFixture(
         controller: true,
         cache_free_bytes: 1024 ** 3,
       });
-    if (path === '/admin/settings') return json({ timezone: 'UTC' });
+    if (path === '/admin/operations')
+      return json({
+        storage: {
+          state: { bytes: 0, free_bytes: 1024 ** 3, partial: false },
+          cache: { bytes: 0, free_bytes: 1024 ** 3, partial: false },
+        },
+        support: { items: [] },
+        playback: [],
+        errors: [],
+        services: [],
+      });
+    if (path === '/admin/devices') return json({ items: [] });
+    if (path === '/admin/settings') {
+      if (method === 'PUT') {
+        serverSettings = { ...serverSettings, ...body };
+        preferences.server_timezone = serverSettings.timezone;
+        preferences.server_time_format = serverSettings.time_format;
+        if (preferences.timezone_override === null)
+          preferences.timezone = serverSettings.timezone;
+        if (preferences.time_format_override === null)
+          preferences.time_format = serverSettings.time_format;
+        productUpdate.timezone = serverSettings.timezone;
+      }
+      return json(serverSettings);
+    }
+    if (path === '/admin/product-update') return json(productUpdate);
+    if (path === '/admin/product-update/policy') {
+      if (method === 'POST')
+        productUpdate = {
+          ...productUpdate,
+          policy: body,
+        };
+      return json({ saved: true });
+    }
+    if (path === '/admin/acquisition/users')
+      return json({
+        items: options.approvalUsers ?? [],
+      });
+    if (path === '/admin/managers')
+      return json({
+        items: [
+          {
+            id: 'manager-radarr',
+            name: 'Radarr',
+            kind: 'radarr',
+            container_id: 'container-radarr',
+            port: 7878,
+            version: '6.0.0',
+            defaults: {
+              root_folder: '/media/movies',
+              quality_profile: 1,
+              metadata_profile: null,
+              monitored: true,
+            },
+            checked_at: 1789984800,
+            error: null,
+          },
+        ],
+      });
+    if (path === '/admin/support')
+      return json({
+        items: [
+          {
+            id: 'support-prowlarr',
+            name: 'Prowlarr',
+            kind: 'prowlarr',
+            version: '2.0.0',
+            native_url: 'https://prowlarr.example.test',
+            checked_at: 1789984800,
+            error: null,
+          },
+        ],
+      });
+    if (path === '/admin/managers/containers')
+      return json({
+        items: [
+          {
+            id: 'container-sonarr',
+            names: ['sonarr'],
+            image: 'linuxserver/sonarr',
+            state: 'running',
+          },
+        ],
+      });
+    if (path === '/admin/stack')
+      return json({
+        items: [
+          {
+            id: 'managed-radarr',
+            kind: 'radarr',
+            name: 'Managed Radarr',
+            phase: 'active',
+            image: 'ghcr.io/example/radarr:stable',
+            drift: false,
+            running: true,
+            error: null,
+            transfer_pending: false,
+          },
+          {
+            id: 'controller-bazarr',
+            kind: 'bazarr',
+            name: 'Managed Bazarr',
+            phase: 'active',
+            image: 'ghcr.io/example/bazarr:stable',
+            drift: false,
+            running: true,
+            error: null,
+            transfer_pending: false,
+          },
+        ],
+        provisions: [
+          {
+            id: 'managed-radarr',
+            kind: 'radarr',
+            state: options.stackProvisionState ?? 'complete',
+            host_port: 17878,
+            container_id: 'container-radarr',
+            service_id: 'manager-radarr',
+            error: null,
+            native_url: '',
+            origin: 'installed',
+          },
+        ],
+      });
+    if (path === '/admin/service-updates')
+      return json({
+        policies: [
+          {
+            service_id: 'managed-radarr',
+            policy: 'inherit',
+            window_start: 0,
+            window_end: 0,
+            candidate: 'ghcr.io/example/radarr:new',
+            error: null,
+          },
+        ],
+        timezone: 'UTC',
+        items: [],
+        services: [{ id: 'managed-radarr', kind: 'radarr' }],
+        server_policy: {
+          policy: productUpdate.policy.policy,
+          window_start: productUpdate.policy.window_start,
+          window_end: productUpdate.policy.window_end,
+        },
+      });
+    if (path === '/admin/service-updates/policy/managed-radarr')
+      return json({ saved: true });
     if (path === '/playback/preferences')
       return json({
         quality: 'auto',

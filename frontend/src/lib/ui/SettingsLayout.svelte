@@ -20,7 +20,6 @@
   ];
   const admin = [
     ['server', 'Server'],
-    ['server-updates', 'Server updates'],
     ['analysis', 'Episode analysis'],
     ['providers', 'Provider applications'],
     ['services', 'Media services'],

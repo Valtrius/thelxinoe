@@ -26,9 +26,8 @@ async fn policy(
     Json(input): Json<Policy>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
-    if (key != "default" && uuid::Uuid::parse_str(&key).is_err())
+    if uuid::Uuid::parse_str(&key).is_err()
         || !["automatic", "notify", "manual", "inherit"].contains(&input.policy.as_str())
-        || (key == "default" && input.policy == "inherit")
         || input.window_start > 23
         || input.window_end > 23
     {
@@ -39,12 +38,14 @@ async fn policy(
 }
 async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
+    let server_policy = crate::product::configured_policy(&state).await?;
     let mut value=state.db.call(|db|{
-        let policies=db.prepare("SELECT service_id,policy,window_start,window_end,candidate,error,checked_at FROM service_update_policy")?.query_map([],|r|Ok(json!({"service_id":r.get::<_,String>(0)?,"policy":r.get::<_,String>(1)?,"window_start":r.get::<_,u8>(2)?,"window_end":r.get::<_,u8>(3)?,"candidate":r.get::<_,Option<String>>(4)?,"error":r.get::<_,Option<String>>(5)?,"checked_at":r.get::<_,i64>(6)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let policies=db.prepare("SELECT service_id,policy,window_start,window_end,candidate,error,checked_at FROM service_update_policy WHERE service_id<>'default'")?.query_map([],|r|Ok(json!({"service_id":r.get::<_,String>(0)?,"policy":r.get::<_,String>(1)?,"window_start":r.get::<_,u8>(2)?,"window_end":r.get::<_,u8>(3)?,"candidate":r.get::<_,Option<String>>(4)?,"error":r.get::<_,Option<String>>(5)?,"checked_at":r.get::<_,i64>(6)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let items=db.prepare("SELECT id,service_id,state,candidate,error,created_at FROM service_updates ORDER BY created_at DESC LIMIT 100")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"service_id":r.get::<_,String>(1)?,"state":r.get::<_,String>(2)?,"candidate":r.get::<_,Option<String>>(3)?,"error":r.get::<_,Option<String>>(4)?,"created_at":r.get::<_,i64>(5)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let services=db.prepare("SELECT id,kind FROM stack_provisions WHERE state='complete'")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"kind":r.get::<_,String>(1)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(json!({"policies":policies,"items":items,"services":services,"timezone":crate::timezones::server_zone(db)?.name()}))
     }).await?;
+    value["server_policy"] = json!(server_policy);
     if let Ok(observed) = controller(&state, "/updates", None).await {
         for item in value["items"].as_array_mut().ok_or_else(unavailable)? {
             if let Some(current) = observed["items"]
@@ -171,13 +172,38 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
     let _lease = state.media_operations.write().await;
     let _guard = state.managers.guard.lock().await;
     let lookup = key.to_owned();
-    let automatic=state.db.call(move|db|Ok(db.query_row("SELECT u.automatic,u.service_id,COALESCE(NULLIF(p.policy,'inherit'),d.policy),CASE WHEN p.policy IS NULL OR p.policy='inherit' THEN d.window_start ELSE p.window_start END,CASE WHEN p.policy IS NULL OR p.policy='inherit' THEN d.window_end ELSE p.window_end END,u.state FROM service_updates u JOIN service_update_policy d ON d.service_id='default' LEFT JOIN service_update_policy p ON p.service_id=u.service_id WHERE u.id=?1",[lookup],|r|Ok((r.get::<_,bool>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,u32>(3)?,r.get::<_,u32>(4)?,r.get::<_,String>(5)?)))?)).await?;
+    let server_policy = crate::product::configured_policy(state)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e.2))?;
+    let automatic=state.db.call(move|db|Ok(db.query_row("SELECT u.automatic,u.service_id,p.policy,p.window_start,p.window_end,u.state FROM service_updates u LEFT JOIN service_update_policy p ON p.service_id=u.service_id WHERE u.id=?1",[lookup],|r|Ok((r.get::<_,bool>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,Option<u32>>(3)?,r.get::<_,Option<u32>>(4)?,r.get::<_,String>(5)?)))?)).await?;
+    let inherited = automatic
+        .2
+        .as_deref()
+        .is_none_or(|policy| policy == "inherit");
+    let mode = if inherited {
+        server_policy.policy.clone()
+    } else {
+        automatic
+            .2
+            .clone()
+            .unwrap_or_else(|| server_policy.policy.clone())
+    };
+    let start = if inherited {
+        server_policy.window_start as u32
+    } else {
+        automatic.3.unwrap_or(server_policy.window_start as u32)
+    };
+    let end = if inherited {
+        server_policy.window_end as u32
+    } else {
+        automatic.4.unwrap_or(server_policy.window_end as u32)
+    };
     if automatic.0
         && ["queued", "queued-activate"].contains(&automatic.5.as_str())
         && action != "recover"
     {
-        let wait = automatic.2 != "automatic"
-            || !crate::timezones::in_server_window(state, automatic.3, automatic.4).await?
+        let wait = mode != "automatic"
+            || !crate::timezones::in_server_window(state, start, end).await?
             || idle(state, &automatic.1).await.is_err();
         if wait {
             let job_id = job.id.clone();
@@ -326,7 +352,30 @@ async fn reconnect(state: &AppState, provision: &str, container: &str) -> Result
     Ok(())
 }
 async fn check_releases(state: &AppState, force: bool) -> Result<()> {
-    let rows=state.db.call(|db|Ok(db.prepare("SELECT s.id,s.kind,COALESCE(NULLIF(p.policy,'inherit'),d.policy),CASE WHEN p.policy IS NULL OR p.policy='inherit' THEN d.window_start ELSE p.window_start END,CASE WHEN p.policy IS NULL OR p.policy='inherit' THEN d.window_end ELSE p.window_end END,COALESCE(p.checked_at,0) FROM stack_provisions s JOIN service_update_policy d ON d.service_id='default' LEFT JOIN service_update_policy p ON p.service_id=s.id WHERE s.state='complete'")?.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,u32>(3)?,r.get::<_,u32>(4)?,r.get::<_,i64>(5)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
+    let server_policy = crate::product::configured_policy(state).await?;
+    let raw=state.db.call(|db|Ok(db.prepare("SELECT s.id,s.kind,p.policy,p.window_start,p.window_end,COALESCE(p.checked_at,0) FROM stack_provisions s LEFT JOIN service_update_policy p ON p.service_id=s.id WHERE s.state='complete'")?.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,Option<u32>>(3)?,r.get::<_,Option<u32>>(4)?,r.get::<_,i64>(5)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
+    let rows = raw
+        .into_iter()
+        .map(|(id, kind, policy, start, end, checked)| {
+            let inherited = policy.as_deref().is_none_or(|value| value == "inherit");
+            let mode = if inherited {
+                server_policy.policy.clone()
+            } else {
+                policy.unwrap_or_else(|| server_policy.policy.clone())
+            };
+            let start = if inherited {
+                server_policy.window_start as u32
+            } else {
+                start.unwrap_or(server_policy.window_start as u32)
+            };
+            let end = if inherited {
+                server_policy.window_end as u32
+            } else {
+                end.unwrap_or(server_policy.window_end as u32)
+            };
+            (id, kind, mode, start, end, checked)
+        })
+        .collect::<Vec<_>>();
     let pending: Vec<_> = rows
         .into_iter()
         .filter(|r| force || (r.2 != "manual" && now() - r.5 >= 21600))
@@ -376,8 +425,30 @@ pub(crate) async fn run(state: AppState) -> anyhow::Result<()> {
     loop {
         // Failures remain visible in policy/update state; they never terminate the server.
         let _ = check_releases(&state, false).await;
-        let ready=state.db.call(|db|Ok(db.prepare("SELECT u.id,CASE WHEN p.policy IS NULL OR p.policy='inherit' THEN d.window_start ELSE p.window_start END,CASE WHEN p.policy IS NULL OR p.policy='inherit' THEN d.window_end ELSE p.window_end END FROM service_updates u JOIN service_update_policy d ON d.service_id='default' LEFT JOIN service_update_policy p ON p.service_id=u.service_id WHERE u.state='ready' AND COALESCE(NULLIF(p.policy,'inherit'),d.policy)='automatic'")?.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,u32>(1)?,r.get::<_,u32>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
-        for (key, start, end) in ready {
+        let server_policy = crate::product::configured_policy(&state)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e.2))?;
+        let raw=state.db.call(|db|Ok(db.prepare("SELECT u.id,p.policy,p.window_start,p.window_end FROM service_updates u LEFT JOIN service_update_policy p ON p.service_id=u.service_id WHERE u.state='ready'")?.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,Option<u32>>(2)?,r.get::<_,Option<u32>>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
+        for (key, policy, start, end) in raw {
+            let inherited = policy.as_deref().is_none_or(|value| value == "inherit");
+            let mode = if inherited {
+                server_policy.policy.as_str()
+            } else {
+                policy.as_deref().unwrap_or(server_policy.policy.as_str())
+            };
+            if mode != "automatic" {
+                continue;
+            }
+            let start = if inherited {
+                server_policy.window_start as u32
+            } else {
+                start.unwrap_or(server_policy.window_start as u32)
+            };
+            let end = if inherited {
+                server_policy.window_end as u32
+            } else {
+                end.unwrap_or(server_policy.window_end as u32)
+            };
             if crate::timezones::in_server_window(&state, start, end).await? {
                 let _ = queue_action(&state, key, "activate".into(), None).await;
             }

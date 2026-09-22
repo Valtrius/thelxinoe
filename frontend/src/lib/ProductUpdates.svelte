@@ -1,9 +1,7 @@
 <script lang="ts">
-  import Switch from './ui/Switch.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
   import Button from './ui/Button.svelte';
-  import Panel from './ui/Panel.svelte';
   let { timeFormat } = $props<{ timeFormat: '12h' | '24h' }>();
   type Update = {
     id: string;
@@ -31,7 +29,6 @@
   let status = $state<Status | null>(null),
     message = $state(''),
     busy = $state(false),
-    confirmed = $state(false),
     restore = $state('');
   let policy = $state('notify'),
     start = $state(3),
@@ -69,18 +66,12 @@
   }
 </script>
 
-<Panel aria-label="Product updates" class="[&_button]:m-[0.3rem]">
-  <h2>Thelxinoe updates</h2>
-  <p>
-    Server, controller and web share one release. Windows installs its matching
-    desktop update separately.
-  </p>
+<section
+  aria-label="Product updates"
+  class="mt-6 border-t border-line pt-5 [&_button]:m-[0.3rem]"
+>
+  <h3>Server updates</h3>
   {#if status}
-    <p>Installed version {status.version}</p>
-    {#if !status.configured}<p>
-        Configure a release channel and its signing public key in the deployment
-        to enable release checks.
-      </p>{/if}
     <div class="flex flex-wrap gap-4 [&_label]:min-w-48">
       <label
         >Update policy<select bind:value={policy}
@@ -106,11 +97,6 @@
         /></label
       >
     </div>
-    <p>
-      Automatic updates wait for idle playback and background work and require a
-      successfully tested recovery path. Equal start and end hours allow any
-      time. Hours follow the server timezone, including daylight-saving changes.
-    </p>
     <Button
       variant="secondary"
       size="form"
@@ -150,9 +136,6 @@
         onclick={() => command('prepare')}>Prepare and test release</Button
       >
     {/if}
-    <Switch bind:checked={confirmed}
-      >I understand that installation briefly stops the server.</Switch
-    >
     {#each status.controller.items as item (item.id)}
       <div class="border-t border-line py-4">
         <strong>{item.previous_version} → {item.version} · {item.stage}</strong>
@@ -166,7 +149,7 @@
         {#if item.error}<p>{item.error}</p>{/if}
         {#if item.stage === 'ready'}<Button
             size="form"
-            disabled={busy || !confirmed}
+            disabled={busy}
             onclick={() => command(`${item.id}/activate`, { confirm: true })}
             >Install prepared release</Button
           >{/if}
@@ -195,4 +178,4 @@
     {#if status.controller.error}<p>{status.controller.error}</p>{/if}
   {/if}
   {#if message}<p role="status">{message}</p>{/if}
-</Panel>
+</section>

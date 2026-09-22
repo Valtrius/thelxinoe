@@ -26,10 +26,10 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/api/v1/release", get(release))
 }
 #[derive(Clone, Serialize, Deserialize)]
-struct Policy {
-    policy: String,
-    window_start: u8,
-    window_end: u8,
+pub(crate) struct Policy {
+    pub(crate) policy: String,
+    pub(crate) window_start: u8,
+    pub(crate) window_end: u8,
 }
 impl Default for Policy {
     fn default() -> Self {
@@ -60,7 +60,7 @@ async fn save(state: &AppState, key: &str, value: Value) -> Result<()> {
     state.db.call(move|db|{db.execute("INSERT INTO settings VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,value.to_string()])?;Ok(())}).await?;
     Ok(())
 }
-async fn configured_policy(state: &AppState) -> Result<Policy> {
+pub(crate) async fn configured_policy(state: &AppState) -> Result<Policy> {
     Ok(setting(state, "product.policy")
         .await?
         .and_then(|v| serde_json::from_value(v).ok())

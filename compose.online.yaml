@@ -1,5 +1,18 @@
 services:
+  controller:
+    environment:
+      THELXINOE_DEV_COMPOSE_REBUILD: "1"
+    labels:
+      app.thelxinoe.component: controller
   server:
+    labels:
+      app.thelxinoe.component: server
     volumes:
       - "${THELXINOE_ONLINE_ROOT:-./.local/online}/server:/var/lib/thelxinoe"
       - "${THELXINOE_ONLINE_ROOT:-./.local/online}/cache:/var/cache/thelxinoe"
+      - "${THELXINOE_ONLINE_ROOT:-./.local/online}/media:/media"
+volumes:
+  controller-state:
+    name: "${THELXINOE_ONLINE_VOLUME_PREFIX:-thelxinoe-online}_controller-state"
+  runtime:
+    name: "${THELXINOE_ONLINE_VOLUME_PREFIX:-thelxinoe-online}_runtime"
