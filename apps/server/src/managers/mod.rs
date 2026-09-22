@@ -225,7 +225,7 @@ async fn evidence_for(
     };
     let server = docker(state, &format!("containers/{own}")).await?;
     let manager = docker(state, &format!("containers/{container}")).await?;
-    if manager["running"] != true || !manager["id"].as_str().is_some_and(|id| id == container) {
+    if manager["running"] != true || manager["id"].as_str().is_none_or(|id| id != container) {
         return Err(unavailable());
     }
     let networks = server["networks"].as_array().ok_or_else(unavailable)?;

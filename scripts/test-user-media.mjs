@@ -155,12 +155,9 @@ try {
   await page
     .getByRole('combobox', { name: 'Display timezone', exact: true })
     .selectOption('Europe/Paris');
-  await page
-    .getByRole('button', { name: 'Save display preferences', exact: true })
-    .click();
   await expect(
-    page.getByText('Display preferences saved.', { exact: true }),
-  ).toBeVisible();
+    page.getByRole('form', { name: 'Display preferences' }).getByRole('status'),
+  ).toHaveText('Saved');
   await page.getByRole('button', { name: 'History', exact: true }).click();
   await expect(
     page.getByText('Times shown in Europe/Paris.', { exact: true }),

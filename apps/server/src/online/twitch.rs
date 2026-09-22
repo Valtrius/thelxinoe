@@ -536,7 +536,7 @@ async fn sync_step(state: &AppState, t: &Turn) -> Result<()> {
             || !r["title"].is_string()
             || !r["game_name"].is_string()
             || !r["started_at"].is_string()
-            || !r["viewer_count"].as_i64().is_some_and(|v| v >= 0)
+            || r["viewer_count"].as_i64().is_none_or(|v| v < 0)
         {
             return Err(provider_error());
         }

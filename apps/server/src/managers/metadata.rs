@@ -490,17 +490,29 @@ async fn cache_manager_artwork(
     Ok(true)
 }
 
+struct MetadataUpdate<'a> {
+    media_id: &'a str,
+    kind: &'a str,
+    external: &'a str,
+    row: &'a Value,
+    refreshed_at: i64,
+    actor: Option<&'a str>,
+}
+
 async fn update_metadata(
     state: &AppState,
     service: &Service,
     connection: &Connection<'_>,
-    media_id: &str,
-    kind: &str,
-    external: &str,
-    row: &Value,
-    refreshed_at: i64,
-    actor: Option<&str>,
+    update: MetadataUpdate<'_>,
 ) -> anyhow::Result<()> {
+    let MetadataUpdate {
+        media_id,
+        kind,
+        external,
+        row,
+        refreshed_at,
+        actor,
+    } = update;
     let identity_media = media_id.to_owned();
     let identity_service = service.id.clone();
     let identity_generation = service.generation.clone();
@@ -590,10 +602,10 @@ async fn update_show(
         };
         let entry = seasons.entry(season).or_default();
         entry.0 += 1;
-        if let Some(date) = episode["airDate"].as_str() {
-            if entry.1.as_deref().is_none_or(|current| date < current) {
-                entry.1 = Some(date.to_owned());
-            }
+        if let Some(date) = episode["airDate"].as_str()
+            && entry.1.as_deref().is_none_or(|current| date < current)
+        {
+            entry.1 = Some(date.to_owned());
         }
     }
     row["seasons"] = json!(
@@ -610,12 +622,14 @@ async fn update_show(
         state,
         service,
         connection,
-        media_id,
-        "show",
-        external,
-        &row,
-        refreshed_at,
-        actor,
+        MetadataUpdate {
+            media_id,
+            kind: "show",
+            external,
+            row: &row,
+            refreshed_at,
+            actor,
+        },
     )
     .await?;
     let service_id = service.id.clone();
@@ -791,12 +805,14 @@ async fn update_album_parent(
         state,
         service,
         connection,
-        &parent,
-        "artist",
-        artist_external,
-        &artist,
-        now(),
-        actor,
+        MetadataUpdate {
+            media_id: &parent,
+            kind: "artist",
+            external: artist_external,
+            row: &artist,
+            refreshed_at: now(),
+            actor,
+        },
     )
     .await
 }
@@ -873,12 +889,14 @@ pub(crate) async fn run(state: &AppState, payload: &Value) -> anyhow::Result<()>
                 state,
                 &service,
                 &connection,
-                &target,
-                "album",
-                &external,
-                &row,
-                now(),
-                actor,
+                MetadataUpdate {
+                    media_id: &target,
+                    kind: "album",
+                    external: &external,
+                    row: &row,
+                    refreshed_at: now(),
+                    actor,
+                },
             )
             .await?;
             update_album_parent(state, &service, &connection, &target, &row, actor).await?;
@@ -889,12 +907,14 @@ pub(crate) async fn run(state: &AppState, payload: &Value) -> anyhow::Result<()>
                 state,
                 &service,
                 &connection,
-                &target,
-                "artist",
-                &external,
-                &row,
-                now(),
-                actor,
+                MetadataUpdate {
+                    media_id: &target,
+                    kind: "artist",
+                    external: &external,
+                    row: &row,
+                    refreshed_at: now(),
+                    actor,
+                },
             )
             .await?
         }
@@ -903,12 +923,14 @@ pub(crate) async fn run(state: &AppState, payload: &Value) -> anyhow::Result<()>
                 state,
                 &service,
                 &connection,
-                &target,
-                "movie",
-                &external,
-                &row,
-                now(),
-                actor,
+                MetadataUpdate {
+                    media_id: &target,
+                    kind: "movie",
+                    external: &external,
+                    row: &row,
+                    refreshed_at: now(),
+                    actor,
+                },
             )
             .await?
         }

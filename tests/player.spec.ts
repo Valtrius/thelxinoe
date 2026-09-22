@@ -1054,6 +1054,7 @@ test('the player and its controls follow sidebar resizing without clipping or st
         ),
     );
     for (const direction of ['Collapse', 'Expand']) {
+      await page.locator('.player').dispatchEvent('pointermove');
       const before = await sample();
       await page.getByRole('button', { name: `${direction} sidebar` }).click();
       await page.evaluate(() => {

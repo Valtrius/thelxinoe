@@ -190,9 +190,7 @@ pub async fn overrides(
         return Err(ApiError::bad("Expected metadata fields"));
     };
     if fields.iter().any(|(key, value)| match key.as_str() {
-        "title" | "overview" => {
-            !value.is_null() && !value.as_str().is_some_and(|s| s.len() <= 10_000)
-        }
+        "title" | "overview" => !value.is_null() && value.as_str().is_none_or(|s| s.len() > 10_000),
         "year" => !value.is_null() && !value.as_i64().is_some_and(|n| (1..=9999).contains(&n)),
         _ => true,
     }) {

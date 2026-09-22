@@ -400,8 +400,8 @@ pub fn plan(source: &Source, options: &Options) -> Result<&'static str> {
         && (!video_ok
             || !remux_timestamps
             || !audio_ok
-            || !video.is_none_or(|v| v == "h264")
-            || !audio_codec.is_none_or(|v| ["aac", "mp3"].contains(&v)))
+            || video.is_some_and(|v| v != "h264")
+            || audio_codec.is_some_and(|v| !["aac", "mp3"].contains(&v)))
     {
         bail!("Original quality is unsupported by this client; select Auto");
     }
