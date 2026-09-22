@@ -158,20 +158,26 @@ try {
   await expect(
     page.getByRole('form', { name: 'Display preferences' }).getByRole('status'),
   ).toHaveText('Saved');
-  await page.getByRole('button', { name: 'History', exact: true }).click();
+  expect((await api(owner, '/me/preferences')).timezone_override).toBe(
+    'Europe/Paris',
+  );
+  await page.getByRole('button', { name: 'Statistics', exact: true }).click();
   await expect(
-    page.getByText('Times shown in Europe/Paris.', { exact: true }),
+    page.getByRole('heading', { name: 'Playback history', exact: true }),
   ).toBeVisible();
   await page
-    .getByLabel('History scope', { exact: true })
+    .getByRole('combobox', { name: 'Statistics user', exact: true })
     .selectOption({ label: 'All users' });
   await expect(
-    page.getByRole('heading', { name: 'By user', exact: true }),
+    page.getByRole('region', { name: 'Watch time by user', exact: true }),
   ).toBeVisible();
-  await other.getByRole('button', { name: 'History', exact: true }).click();
-  await expect(other.getByLabel('History scope', { exact: true })).toHaveCount(
-    0,
-  );
+  await other.getByRole('button', { name: 'Statistics', exact: true }).click();
+  await expect(
+    other.getByRole('heading', { name: 'Playback history', exact: true }),
+  ).toBeVisible();
+  await expect(
+    other.getByRole('combobox', { name: 'Statistics user', exact: true }),
+  ).toHaveCount(0);
   const denied = await guest.request.get(`${origin}/api/v1/admin/history`);
   expect(denied.status()).toBe(403);
   await page.screenshot({
