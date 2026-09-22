@@ -29,6 +29,8 @@
     scans = {},
     play,
     userId,
+    timezone,
+    timeFormat,
     focusId,
   } = $props<{
     domain: string;
@@ -37,6 +39,8 @@
     scans?: Record<string, { completed: number; total: number }>;
     play: (choice: MediaChoice) => void;
     userId: string;
+    timezone: string;
+    timeFormat: '12h' | '24h';
     focusId?: string;
   }>();
   type Item = {
@@ -280,7 +284,7 @@
                 ? `Scanning ${scans[root.id].completed} of ${scans[root.id].total} files`
                 : (root.scan_error ??
                   (root.last_scan
-                    ? `Scanned ${new Date(root.last_scan * 1000).toLocaleString()}`
+                    ? `Scanned ${new Date(root.last_scan * 1000).toLocaleString(undefined, { timeZone: timezone, hour12: timeFormat === '12h' })}`
                     : 'Waiting for first scan'))}</small
             >
           </div>

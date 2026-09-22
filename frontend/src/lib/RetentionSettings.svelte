@@ -4,7 +4,10 @@
   import { api } from './api';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
-  let { timezone } = $props<{ timezone: string }>();
+  let { timezone, timeFormat } = $props<{
+    timezone: string;
+    timeFormat: '12h' | '24h';
+  }>();
   type Policy = {
     domain: string;
     enabled: boolean;
@@ -147,7 +150,10 @@
       <p>
         {item.state} · {item.trigger_user ?? 'Removed user'} · Due {new Date(
           item.due_at * 1000,
-        ).toLocaleString(undefined, { timeZone: timezone })}
+        ).toLocaleString(undefined, {
+          timeZone: timezone,
+          hour12: timeFormat === '12h',
+        })}
       </p>
       {#if item.error}<p>{item.error}</p>{/if}
       {#if item.state === 'pending'}<div class="flex flex-wrap gap-2">

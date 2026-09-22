@@ -21,6 +21,7 @@ export async function installUiFixture(
     timezone: 'UTC',
     timezone_override: null as string | null,
     server_timezone: 'UTC',
+    time_format: '24h' as '12h' | '24h',
   };
   let appearance = {
     provider_preferences: {},
@@ -87,6 +88,7 @@ export async function installUiFixture(
           ...preferences,
           timezone_override: body.timezone,
           timezone: body.timezone ?? 'UTC',
+          time_format: body.time_format ?? preferences.time_format,
         };
       return json(preferences);
     }

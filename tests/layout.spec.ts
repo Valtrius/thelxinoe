@@ -109,7 +109,7 @@ test('short settings navigation fills the workspace and follows resizing', async
   expect(panels.width).toBeLessThanOrEqual(880);
   expect(panels.inset).toBe(24);
   await expect(
-    page.getByText('Use the server default or choose your own timezone.', {
+    page.getByText('Use the server default or choose your own timezone', {
       exact: false,
     }),
   ).toHaveCSS('line-height', '19.8px');
@@ -226,7 +226,18 @@ test('display, playback and skipping preferences save automatically', async ({
   expect(fixture.writes).toContainEqual({
     path: '/me/preferences',
     method: 'PUT',
-    body: { timezone: 'Europe/Paris' },
+    body: { timezone: 'Europe/Paris', time_format: '24h' },
+  });
+  await page
+    .getByRole('combobox', { name: 'Time format', exact: true })
+    .selectOption('12h');
+  await expect(
+    page.getByRole('form', { name: 'Display preferences' }).getByRole('status'),
+  ).toHaveText('Saved');
+  expect(fixture.writes).toContainEqual({
+    path: '/me/preferences',
+    method: 'PUT',
+    body: { timezone: 'Europe/Paris', time_format: '12h' },
   });
   await page.getByRole('button', { name: 'Smaller media cards' }).click();
   await expect(page.getByText('7 columns', { exact: true })).toBeVisible();
@@ -312,7 +323,7 @@ test('failed automatic saves retain edits and can be retried', async ({
   expect(fixture.writes).toContainEqual({
     path: '/me/preferences',
     method: 'PUT',
-    body: { timezone: 'Europe/Paris' },
+    body: { timezone: 'Europe/Paris', time_format: '24h' },
   });
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);

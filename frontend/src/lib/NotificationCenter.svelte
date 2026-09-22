@@ -5,9 +5,16 @@
   import { api } from './api';
   import Button from './ui/Button.svelte';
   import { sectionHeadingClass } from './ui/styles';
-  let { revision = 0, collapsed = false } = $props<{
+  let {
+    revision = 0,
+    collapsed = false,
+    timezone,
+    timeFormat,
+  } = $props<{
     revision?: number;
     collapsed?: boolean;
+    timezone: string;
+    timeFormat: '12h' | '24h';
   }>();
   type Notice = {
     id: string;
@@ -96,9 +103,13 @@
         >
           <p class="my-[0.2rem]">{item.message}</p>
           <small class="text-muted"
-            >{item.severity} · {new Date(
-              item.created_at * 1000,
-            ).toLocaleString()}</small
+            >{item.severity} · {new Date(item.created_at * 1000).toLocaleString(
+              undefined,
+              {
+                timeZone: timezone,
+                hour12: timeFormat === '12h',
+              },
+            )}</small
           >
           {#if !item.read_at}<Button
               variant="secondary"

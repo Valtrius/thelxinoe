@@ -64,13 +64,14 @@ pub async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<J
 
 fn read(db: &rusqlite::Connection, user: &str) -> anyhow::Result<Value> {
     Ok(db.query_row(
-        "SELECT timezone,timezone_override,server_timezone FROM user_profiles WHERE id=?1",
+        "SELECT p.timezone,p.timezone_override,p.server_timezone,u.time_format FROM user_profiles p JOIN users u ON u.id=p.id WHERE p.id=?1",
         [user],
         |r| {
             Ok(json!({
                 "timezone":r.get::<_,String>(0)?,
                 "timezone_override":r.get::<_,Option<String>>(1)?,
                 "server_timezone":r.get::<_,String>(2)?,
+                "time_format":r.get::<_,String>(3)?,
             }))
         },
     )?)
@@ -85,6 +86,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Js
 pub struct Preferences {
     // Null restores inheritance. A named zone, including UTC, is an override.
     timezone: Option<String>,
+    time_format: Option<String>,
 }
 
 pub async fn update(
@@ -97,16 +99,22 @@ pub async fn update(
         zone.parse::<chrono_tz::Tz>()
             .map_err(|_| ApiError::bad("Unknown timezone"))?;
     }
+    if let Some(format) = &input.time_format
+        && !matches!(format.as_str(), "12h" | "24h")
+    {
+        return Err(ApiError::bad("Unknown time format"));
+    }
     let recipient = p.user.id.clone();
     let value = state
         .db
         .call(move |db| {
             let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             tx.execute(
-                "UPDATE users SET timezone=?1,timezone_inherited=?2 WHERE id=?3",
+                "UPDATE users SET timezone=?1,timezone_inherited=?2,time_format=COALESCE(?3,time_format) WHERE id=?4",
                 params![
                     input.timezone.as_deref().unwrap_or("UTC"),
                     input.timezone.is_none(),
+                    input.time_format,
                     p.user.id
                 ],
             )?;

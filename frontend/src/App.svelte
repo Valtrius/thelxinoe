@@ -162,7 +162,8 @@
     newRole = $state<'admin' | 'user'>('user');
   let expandedUser = $state('');
   let preferencesRevision = $state(0);
-  let timezone = $state('UTC'),
+  let timeFormat = $state<'12h' | '24h'>('24h'),
+    timezone = $state('UTC'),
     health = $state<{
       version: string;
       controller: boolean;
@@ -279,7 +280,7 @@
         }
       }
       if (user) {
-        await loadAppearance(user.id);
+        await Promise.all([loadAppearance(user.id), loadDisplayPreferences()]);
         restoreNavigation();
         startEvents();
         if (desktop) {
@@ -304,6 +305,14 @@
       loading = false;
     }
   }
+  async function loadDisplayPreferences() {
+    const value = await api<{
+      timezone: string;
+      time_format: '12h' | '24h';
+    }>('/me/preferences');
+    timeFormat = value.time_format;
+    if (user) user = { ...user, timezone: value.timezone };
+  }
   function startEvents() {
     events?.close();
     events = new Events(
@@ -326,6 +335,14 @@
           event.kind === 'account.profile.changed'
         ) {
           preferencesRevision++;
+          if (event.kind === 'preferences.changed') {
+            const preference = event.payload as {
+              timezone: string;
+              time_format: '12h' | '24h';
+            };
+            timeFormat = preference.time_format;
+            if (user) user = { ...user, timezone: preference.timezone };
+          }
           if (event.kind === 'server.settings.changed')
             timezone = (event.payload as { timezone: string }).timezone;
           const userId = user?.id;
@@ -388,7 +405,7 @@
       password = '';
       passwordConfirmation = '';
       setup = false;
-      await loadAppearance(user.id);
+      await Promise.all([loadAppearance(user.id), loadDisplayPreferences()]);
       restoreNavigation();
       startEvents();
     });
@@ -614,6 +631,7 @@
       {section}
       {collapsed}
       {user}
+      {timeFormat}
       {notificationRevision}
       navigate={(name) => void navigate(name)}
       toggle={() => void toggleSidebar()}
@@ -713,7 +731,8 @@
               <UserPreferences
                 {user}
                 revision={preferencesRevision}
-                changed={(zone) => {
+                changed={(zone, format) => {
+                  timeFormat = format;
                   if (user) user = { ...user, timezone: zone };
                 }}
               />
@@ -770,7 +789,10 @@
                       <strong>{session.name}</strong><small
                         >{session.transport} · {new Date(
                           session.last_seen * 1000,
-                        ).toLocaleString()}{session.id === currentSession
+                        ).toLocaleString(undefined, {
+                          timeZone: user.timezone,
+                          hour12: timeFormat === '12h',
+                        })}{session.id === currentSession
                           ? ' · This device'
                           : ''}</small
                       >
@@ -793,10 +815,13 @@
               </Panel>
             {/if}
             {#if user.role === 'admin'}
-              {#if settingsSection === 'server-updates'}<ProductUpdates />{/if}
+              {#if settingsSection === 'server-updates'}<ProductUpdates
+                  {timeFormat}
+                />{/if}
               {#if settingsSection === 'analysis'}<SegmentSettings admin />{/if}
               {#if settingsSection === 'backups'}<BackupSettings
                   {timezone}
+                  {timeFormat}
                 />{/if}
               {#if settingsSection === 'providers'}<OnlineSettings />{/if}
               {#if settingsSection === 'services'}<ManagerSettings />{/if}
@@ -805,6 +830,7 @@
               {#if settingsSection === 'services'}<ServiceUpdates />{/if}
               {#if settingsSection === 'retention'}<RetentionSettings
                   {timezone}
+                  {timeFormat}
                 />{/if}
               {#if settingsSection === 'services'}<SupportServices />{/if}
               {#if settingsSection === 'server'}<Panel>
@@ -849,7 +875,7 @@
                     changes automatically.
                   </p>
                 </Panel>
-                <AdminOperations {timezone} />
+                <AdminOperations {timezone} {timeFormat} />
               {/if}
               {#if settingsSection === 'people'}<Panel>
                   <h2>People</h2>
@@ -949,6 +975,8 @@
             revision={catalogRevision}
             {scans}
             userId={user.id}
+            timezone={user.timezone}
+            {timeFormat}
             {focusId}
             play={(choice) => void playMedia(choice)}
           />

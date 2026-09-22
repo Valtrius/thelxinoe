@@ -4,6 +4,7 @@
   import { api } from './api';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
+  let { timeFormat } = $props<{ timeFormat: '12h' | '24h' }>();
   type Update = {
     id: string;
     version: string;
@@ -127,7 +128,10 @@
     {#if status.observation?.checked_at}<p>
         Last check: {new Date(
           status.observation.checked_at * 1000,
-        ).toLocaleString(undefined, { timeZone: status.timezone })}
+        ).toLocaleString(undefined, {
+          timeZone: status.timezone,
+          hour12: timeFormat === '12h',
+        })}
       </p>{/if}
     {#if status.observation?.error}<p role="status">
         {status.observation.error}

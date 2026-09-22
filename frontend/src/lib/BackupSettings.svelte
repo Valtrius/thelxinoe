@@ -5,7 +5,10 @@
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
   import { rowClass } from './ui/styles';
-  let { timezone } = $props<{ timezone: string }>();
+  let { timezone, timeFormat } = $props<{
+    timezone: string;
+    timeFormat: '12h' | '24h';
+  }>();
   type Backup = {
     id: string;
     stage: string;
@@ -100,6 +103,7 @@
         <strong
           >{new Date(item.created_at * 1000).toLocaleString(undefined, {
             timeZone: timezone,
+            hour12: timeFormat === '12h',
           })} · {item.stage}</strong
         ><small class="block wrap-anywhere">{item.archive}</small
         >{#if item.error}<p>{item.error}</p>{/if}

@@ -22,6 +22,7 @@
     section,
     collapsed,
     user,
+    timeFormat,
     navigate,
     toggle,
     logout,
@@ -31,6 +32,7 @@
     section: string;
     collapsed: boolean;
     user: User;
+    timeFormat: '12h' | '24h';
     navigate: (name: string) => void;
     toggle: () => void;
     logout: () => void;
@@ -144,7 +146,12 @@
         onclick={() => navigate('Settings')}
         ><Settings class="size-5 shrink-0" /></SidebarButton
       >
-      <NotificationCenter revision={notificationRevision} {collapsed} />
+      <NotificationCenter
+        revision={notificationRevision}
+        {collapsed}
+        timezone={user.timezone}
+        {timeFormat}
+      />
       {#if !desktop}<div
           class="web-theme-controls relative flex justify-center group-[.collapsed]/sidebar:[--compact-choice-width:24px]"
         >
