@@ -1,4 +1,8 @@
 //! Per-user UI preferences; partial updates avoid overwriting other client changes.
+
+#[path = "storage/appearance.rs"]
+mod storage;
+
 use crate::{
     AppState,
     error::{ApiError, Result},
@@ -58,21 +62,10 @@ where
 {
     Option::<f64>::deserialize(deserializer).map(Some)
 }
-fn read(db: &rusqlite::Connection, user: &str) -> anyhow::Result<Appearance> {
-    Ok(db
-        .query_row(
-            "SELECT value FROM ui_preferences WHERE user_id=?1",
-            [user],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?
-        .map(|value| serde_json::from_str(&value))
-        .transpose()?
-        .unwrap_or_default())
-}
+
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Appearance>> {
     let p = security::principal(&state, &headers).await?;
-    Ok(Json(state.db.call(move |db| read(db, &p.user.id)).await?))
+    Ok(Json(storage::get(&state.db, p).await?))
 }
 pub async fn update(
     State(state): State<AppState>,
@@ -134,26 +127,7 @@ pub async fn update(
             "Choose a supported theme, thumbnail fit and 3 to 12 card columns",
         ));
     }
-    let value = state.db.call(move |db| {
-        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let mut value = read(&tx, &p.user.id)?;
-        if let Some(v) = change.provider_preferences { value.provider_preferences.extend(v); }
-        if let Some(v) = change.audio_volume { value.audio_volume = v; }
-        if let Some(v) = change.player_height { value.player_height = v; }
-        if let Some(v) = change.youtube_card_shortcuts { value.youtube_card_shortcuts = v; }
-        if let Some(v) = change.theme { value.theme = v; }
-        if let Some(v) = change.sidebar_collapsed { value.sidebar_collapsed = v; }
-        if let Some(v) = change.card_columns { value.card_columns = v; }
-        if let Some(v) = change.fade_watched { value.fade_watched = v; }
-        if let Some(v) = change.thumbnail_fit { value.thumbnail_fit = v; }
-        tx.execute("INSERT INTO ui_preferences VALUES (?1,?2) ON CONFLICT(user_id) DO UPDATE SET value=excluded.value", params![p.user.id, serde_json::to_string(&value)?])?;
-        tx.execute(
-            "INSERT INTO events(user_id,kind,payload,created_at) VALUES (?1,'appearance.changed',?2,?3)",
-            params![p.user.id, serde_json::json!({"appearance":&value}).to_string(), thelxinoe_core::now()],
-        )?;
-        tx.commit()?;
-        Ok(value)
-    }).await?;
+    let value = storage::update(&state.db, change, p).await?;
     let _ = state.events.send(());
     Ok(Json(value))
 }
@@ -232,7 +206,7 @@ mod tests {
             .2["player_height"],
             Value::Null
         );
-        state.db.call(|db| {
+        state.db.write("test.fixture", |db| {
             assert_eq!(db.query_row("SELECT COUNT(*) FROM events WHERE kind='appearance.changed' AND user_id='alice'", [], |r|r.get::<_,i64>(0))?, 5);
             assert_eq!(db.query_row("SELECT COUNT(*) FROM events WHERE kind='appearance.changed' AND (user_id IS NULL OR user_id<>'alice')", [], |r|r.get::<_,i64>(0))?, 0);
             Ok(())

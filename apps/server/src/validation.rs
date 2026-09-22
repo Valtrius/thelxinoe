@@ -34,5 +34,5 @@ pub async fn run(config: Config) -> Result<()> {
     let mut file = options.open(destination)?;
     file.write_all(&serde_json::to_vec(&report)?)?;
     file.sync_all()?;
-    Ok(())
+    state.db.shutdown().await
 }

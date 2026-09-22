@@ -16,7 +16,7 @@ async fn refresh_is_single_flight_and_disconnect_fences_an_inflight_result() {
     connect(&state, "alice").await;
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE online_accounts SET expires_at=0", [])?;
             Ok(())
         })
@@ -48,7 +48,7 @@ async fn refresh_is_single_flight_and_disconnect_fences_an_inflight_result() {
     assert_eq!(count.load(Ordering::SeqCst), 1);
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE online_accounts SET expires_at=0", [])?;
             Ok(())
         })
@@ -89,7 +89,7 @@ async fn provider_revocation_requires_reconnection_without_erasing_saved_videos(
     .await;
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE online_accounts SET expires_at=0", [])?;
             Ok(())
         })

@@ -1,3 +1,6 @@
+mod runtime;
+pub use runtime::{AccessError, Metrics, Options, WorkStats};
+
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::{
@@ -32,25 +35,51 @@ pub fn verify_snapshot(path: &Path) -> Result<u32> {
     Ok(schema)
 }
 
+/// Shared database runtime. Domain storage modules own all SQL and call the
+/// explicitly read-only or write path. Accepted operations run through commit,
+/// even if the caller stops waiting; shutdown drains both bounded queues.
 #[derive(Clone)]
 pub struct Database {
+    runtime: Arc<runtime::Runtime>,
+    #[cfg(test)]
     path: Arc<PathBuf>,
-    slots: Arc<tokio::sync::Semaphore>,
-    // Keep WAL/SHM alive between calls rather than repeatedly closing the last connection.
-    _anchor: Arc<std::sync::Mutex<Option<Connection>>>,
+}
+
+fn connection(path: &Path, read_only: bool) -> Result<Connection> {
+    let flags = if read_only {
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+    } else {
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_CREATE
+    };
+    let conn = Connection::open_with_flags(path, flags).context("Open database")?;
+    conn.busy_timeout(Duration::from_secs(10))?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    if read_only {
+        conn.pragma_update(None, "query_only", "ON")?;
+    }
+    conn.set_prepared_statement_cache_capacity(64);
+    Ok(conn)
 }
 
 impl Database {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        if let Some(parent) = path.as_ref().parent() {
+        Self::open_with_options(path, Options::default())
+    }
+
+    pub fn open_with_options(path: impl AsRef<Path>, options: Options) -> Result<Self> {
+        anyhow::ensure!(
+            (1..=16).contains(&options.readers),
+            "Expected 1 to 16 database readers"
+        );
+        anyhow::ensure!(
+            (1..=4096).contains(&options.queue_capacity),
+            "Expected a database queue capacity of 1 to 4096"
+        );
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let db = Self {
-            path: Arc::new(path.as_ref().to_owned()),
-            slots: Arc::new(tokio::sync::Semaphore::new(16)),
-            _anchor: Arc::new(std::sync::Mutex::new(None)),
-        };
-        let mut conn = db.connect()?;
+        let mut conn = connection(path, false)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let application: u32 = tx.pragma_query_value(None, "application_id", |r| r.get(0))?;
         let version: u32 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
@@ -69,30 +98,62 @@ impl Database {
         }
         tx.commit()?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
-        *db._anchor.lock().expect("new database anchor") = Some(conn);
-        Ok(db)
+        let readers = (0..options.readers)
+            .map(|_| connection(path, true))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            runtime: Arc::new(runtime::Runtime {
+                writer: runtime::Lane::start("writer", vec![conn], &options)?,
+                readers: runtime::Lane::start("reader", readers, &options)?,
+            }),
+            #[cfg(test)]
+            path: Arc::new(path.to_owned()),
+        })
     }
-    pub fn connect(&self) -> Result<Connection> {
-        let conn = Connection::open(self.path.as_ref()).context("Open database")?;
-        conn.busy_timeout(Duration::from_secs(10))?;
-        conn.pragma_update(None, "foreign_keys", "ON")?;
-        Ok(conn)
+
+    /// Execute a named storage query in one consistent read-only snapshot.
+    pub async fn read<T, F>(&self, operation: &'static str, f: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Connection) -> Result<T> + Send + 'static,
+    {
+        self.runtime
+            .readers
+            .submit(operation, move |conn| {
+                let tx = conn.transaction()?;
+                let value = f(&tx)?;
+                tx.commit()?;
+                Ok(value)
+            })
+            .await
     }
-    pub async fn call<T, F>(&self, f: F) -> Result<T>
+
+    /// Execute a complete storage operation on the sole writer connection.
+    /// Multi-statement changes must use one transaction within this closure.
+    pub async fn write<T, F>(&self, operation: &'static str, f: F) -> Result<T>
     where
         T: Send + 'static,
         F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
     {
-        let db = self.clone();
-        let permit = self.slots.clone().acquire_owned().await?;
-        tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            f(&mut db.connect()?)
-        })
-        .await?
+        self.runtime.writer.submit(operation, f).await
     }
+
+    pub fn metrics(&self) -> Metrics {
+        self.runtime.metrics()
+    }
+
+    /// Reject new work, drain accepted operations, and join the database threads.
+    /// Safe to call through any clone, repeatedly, or after a cancelled shutdown.
+    pub async fn shutdown(&self) -> Result<()> {
+        self.runtime.writer.close();
+        self.runtime.readers.close();
+        let (writes, reads) = tokio::join!(self.runtime.writer.join(), self.runtime.readers.join());
+        writes?;
+        reads
+    }
+
     pub async fn backup(&self, destination: PathBuf) -> Result<()> {
-        self.call(move |conn| {
+        self.read("database.backup", move |conn| {
             anyhow::ensure!(!destination.exists(), "Backup destination already exists");
             conn.backup(rusqlite::MAIN_DB, &destination, None)?;
             verify_snapshot(&destination)?;
@@ -100,7 +161,14 @@ impl Database {
         })
         .await
     }
+
+    #[cfg(test)]
+    fn connect(&self) -> Result<Connection> {
+        connection(&self.path, false)
+    }
 }
 
+#[cfg(test)]
+mod runtime_tests;
 #[cfg(test)]
 mod tests;

@@ -1,5 +1,9 @@
 //! Official, digest-verified executable snapshots. Jobs keep their selected
 //! paths; installing a newer bundle never overwrites a running executable.
+
+#[path = "../storage/online/tools.rs"]
+mod storage;
+
 use crate::{AppState, error::Result, security};
 use anyhow::{Context, ensure};
 use axum::{Json, extract::State, http::HeaderMap};
@@ -38,7 +42,7 @@ pub(super) struct Bundle {
 pub async fn status(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
     let selected = selection(&state).await?;
-    let job=state.db.call(|db|Ok(db.query_row("SELECT id,state,error FROM jobs WHERE kind='online.tools.install' ORDER BY created_at DESC,rowid DESC LIMIT 1",[],|r|Ok(json!({"id":r.get::<_,String>(0)?,"state":r.get::<_,String>(1)?,"error":r.get::<_,Option<String>>(2)?}))).optional()?)).await?;
+    let job = storage::status(&state.db).await?;
     Ok(Json(
         json!({"installed":selected.is_some(),"yt_dlp":selected.as_ref().map(|b|&b.yt_dlp.version),"deno":selected.as_ref().map(|b|&b.deno.version),"job":job}),
     ))
@@ -52,14 +56,7 @@ pub async fn request_install(
     Ok(Json(json!({"job_id":queued})))
 }
 async fn enqueue_install(state: &AppState, actor: Option<String>) -> anyhow::Result<String> {
-    let queued=state.db.call(move|db|{
-        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        if let Some(id)=tx.query_row("SELECT id FROM jobs WHERE kind='online.tools.install' AND state IN ('queued','running') LIMIT 1",[],|r|r.get::<_,String>(0)).optional()?{return Ok(id);}
-        let id=thelxinoe_core::id();
-        tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'online.tools.install','{}',?1,'queued',?2,?2)",params![id,now()])?;
-        tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'online.tools.install',?2,?3)",params![actor,id,now()])?;
-        tx.commit()?;Ok(id)
-    }).await?;
+    let queued = storage::enqueue_install(&state.db, actor).await?;
     Ok(queued)
 }
 /// Playback dependencies belong to the server, not a client settings menu.
@@ -75,17 +72,7 @@ pub(super) async fn ready(state: &AppState) -> Result<Bundle> {
     ))
 }
 pub(super) async fn selection(state: &AppState) -> anyhow::Result<Option<Bundle>> {
-    state
-        .db
-        .call(|db| {
-            Ok(db
-                .query_row(
-                    "SELECT value FROM settings WHERE key='online.tools'",
-                    [],
-                    |r| r.get::<_, String>(0),
-                )
-                .optional()?)
-        })
+    storage::selection(&state.db)
         .await?
         .map(|v| serde_json::from_str(&v).context("Invalid managed tool selection"))
         .transpose()
@@ -264,16 +251,7 @@ pub async fn install(state: &AppState, job: &thelxinoe_jobs::Job) -> anyhow::Res
         let assets = vec![latest(&http, "yt-dlp").await?, latest(&http, "deno").await?];
         let payload = serde_json::to_string(&json!({"assets":assets}))?;
         let id = job.id.clone();
-        state
-            .db
-            .call(move |db| {
-                db.execute(
-                    "UPDATE jobs SET payload=?1 WHERE id=?2",
-                    params![payload, id],
-                )?;
-                Ok(())
-            })
-            .await?;
+        storage::install_write_jobs(payload, id, &state.db).await?;
         assets
     };
     ensure!(
@@ -304,7 +282,7 @@ pub async fn install(state: &AppState, job: &thelxinoe_jobs::Job) -> anyhow::Res
         );
     }
     let value = serde_json::to_string(&bundle)?;
-    state.db.call(move|db|{db.execute("INSERT INTO settings(key,value) VALUES ('online.tools',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[value])?;Ok(())}).await?;
+    storage::install_write_settings(value, &state.db).await?;
     state.emit(None, "online.tools.changed", json!({})).await?;
     Ok(())
 }
@@ -467,7 +445,7 @@ mod tests {
             assert_eq!(error.0, axum::http::StatusCode::CONFLICT);
             assert_eq!(error.1, "playback_preparing");
         }
-        state.db.call(|db| {
+        state.db.write("test.fixture", |db| {
             assert_eq!(db.query_row("SELECT COUNT(*) FROM jobs WHERE kind='online.tools.install' AND state='queued'", [], |r| r.get::<_, i64>(0))?, 1);
             db.execute("UPDATE jobs SET state='running' WHERE kind='online.tools.install'", [])?;
             Ok(())
@@ -475,7 +453,7 @@ mod tests {
         assert_eq!(ready(&state).await.err().unwrap().1, "playback_preparing");
         state
             .db
-            .call(|db| {
+            .write("test.fixture", |db| {
                 assert_eq!(
                     db.query_row(
                         "SELECT COUNT(*) FROM jobs WHERE kind='online.tools.install'",

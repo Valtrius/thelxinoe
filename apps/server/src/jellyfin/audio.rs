@@ -1,5 +1,9 @@
 //! Universal audio URLs do not carry a playback id in several Jellyfin clients.
 //! Keep the association private to the authenticated device and logical track.
+
+#[path = "../storage/jellyfin/audio.rs"]
+mod storage;
+
 use super::{Query, canonical};
 use crate::{
     AppState,
@@ -15,7 +19,7 @@ pub async fn session(state: &AppState, p: &Principal, media: &str) -> Result<Opt
     let auth = p.session_id.clone();
     let user = p.user.id.clone();
     let media = media.to_owned();
-    Ok(state.db.call(move|db|Ok(db.query_row("SELECT a.playback_id FROM compat_audio_playbacks a JOIN playback_sessions s ON s.id=a.playback_id JOIN media m ON m.id=a.media_id WHERE a.auth_session_id=?1 AND a.media_id=?2 AND s.user_id=?3 AND m.kind='track'",params![auth,media,user],|r|r.get(0)).optional()?)).await?)
+    Ok(storage::session(auth, user, media, &state.db).await?)
 }
 pub async fn stream(
     state: AppState,
@@ -28,16 +32,7 @@ pub async fn stream(
     let file = q.get("mediasourceid").map(|v| canonical(v));
     let source = core::source(&state, media, file.as_deref()).await?;
     let mid = media.to_owned();
-    let track = state
-        .db
-        .call(move |db| {
-            Ok(
-                db.query_row("SELECT kind='track' FROM media WHERE id=?1", [mid], |r| {
-                    r.get::<_, bool>(0)
-                })?,
-            )
-        })
-        .await?;
+    let track = storage::stream_read_media(mid, &state.db).await?;
     if !track || source.video_codec().is_some() {
         return Err(ApiError::bad("Universal audio requires an audio track"));
     }
@@ -86,16 +81,7 @@ pub async fn stream(
     let mut id = session(&state, p, media).await?;
     if let Some(existing) = &id {
         let key = existing.clone();
-        let current = state
-            .db
-            .call(move |db| {
-                Ok(db.query_row(
-                    "SELECT state,file_id FROM playback_sessions WHERE id=?1",
-                    [key],
-                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-                )?)
-            })
-            .await?;
+        let current = storage::stream_read_playback_sessions(key, &state.db).await?;
         if !["ready", "playing", "paused"].contains(&current.0.as_str()) {
             id = None;
         } else if current.1 != source.id {
@@ -134,12 +120,7 @@ pub async fn stream(
         let key = id.clone();
         let auth = p.session_id.clone();
         let media = media.to_owned();
-        state.db.call(move|db| {
-            let tx=db.transaction()?;
-            tx.execute("INSERT INTO compat_playbacks(playback_id) VALUES (?1)",[&key])?;
-            tx.execute("INSERT INTO compat_audio_playbacks VALUES (?1,?2,?3) ON CONFLICT(auth_session_id,media_id) DO UPDATE SET playback_id=excluded.playback_id",params![auth,media,key])?;
-            tx.commit()?;Ok(())
-        }).await?;
+        storage::stream_write_compat_playbacks(key, auth, media, &state.db).await?;
         id
     };
     q.insert("playsessionid".into(), id);

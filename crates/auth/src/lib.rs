@@ -1,3 +1,6 @@
+#[path = "storage.rs"]
+mod storage;
+
 use aes_gcm::{
     Aes256Gcm, KeyInit, Nonce,
     aead::{Aead, Payload},
@@ -96,20 +99,11 @@ impl SecretStore {
     }
     pub async fn put(&self, db: &Database, scope: String, value: &[u8]) -> Result<()> {
         let encrypted = self.encrypt(&scope, value)?;
-        db.call(move |c| { c.execute("INSERT INTO secrets VALUES (?1,?2) ON CONFLICT(scope) DO UPDATE SET ciphertext=excluded.ciphertext", params![scope, encrypted])?; Ok(()) }).await
+        storage::put(encrypted, db, scope).await
     }
     pub async fn get(&self, db: &Database, scope: &str) -> Result<Option<Vec<u8>>> {
         let key = scope.to_owned();
-        let value: Option<Vec<u8>> = db
-            .call(move |c| {
-                Ok(c.query_row(
-                    "SELECT ciphertext FROM secrets WHERE scope=?1",
-                    [key],
-                    |r| r.get(0),
-                )
-                .optional()?)
-            })
-            .await?;
+        let value: Option<Vec<u8>> = storage::get(key, db).await?;
         value.map(|v| self.decrypt(scope, &v)).transpose()
     }
 }
@@ -146,18 +140,7 @@ pub async fn verify_password(password: String, hash: String) -> Result<bool> {
     })
     .await?
 }
-pub fn user_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
-    Ok(User {
-        id: r.get(0)?,
-        username: r.get(1)?,
-        role: if r.get::<_, String>(2)? == "admin" {
-            Role::Admin
-        } else {
-            Role::User
-        },
-        timezone: r.get(3)?,
-    })
-}
+pub use storage::user_row;
 
 #[derive(Serialize)]
 pub struct Session {
@@ -177,22 +160,7 @@ pub async fn issue_session(
 ) -> Result<String> {
     let raw = token();
     let hashed = digest(&raw);
-    db.call(move |c| {
-        c.execute(
-            "INSERT INTO sessions VALUES (?1,?2,?3,?4,?5,?6,?7,?6)",
-            params![
-                id(),
-                user_id,
-                hashed,
-                transport,
-                name,
-                now(),
-                now() + 30 * 86400
-            ],
-        )?;
-        Ok(())
-    })
-    .await?;
+    storage::issue_session(hashed, db, user_id, transport, name).await?;
     Ok(raw)
 }
 pub async fn resolve(db: &Database, raw: &str, transport: &str) -> Result<Option<Principal>> {
@@ -201,11 +169,7 @@ pub async fn resolve(db: &Database, raw: &str, transport: &str) -> Result<Option
     }
     let hash = digest(raw);
     let transport = transport.to_owned();
-    db.call(move |c| {
-        let result = c.query_row("SELECT u.id,u.username,u.role,u.timezone,s.id,s.transport,s.last_seen FROM sessions s JOIN user_profiles u ON u.id=s.user_id WHERE token_hash=?1 AND transport=?2 AND expires_at>?3", params![hash,transport,now()], |r| Ok((Principal { user: user_row(r)?, session_id: r.get(4)?, transport: r.get(5)? },r.get::<_,i64>(6)?))).optional()?;
-        if let Some((p,last_seen)) = &result && *last_seen<now()-60 { c.execute("UPDATE sessions SET last_seen=?1 WHERE id=?2 AND last_seen<?3", params![now(),p.session_id,now()-60])?; }
-        Ok(result.map(|(p,_)|p))
-    }).await
+    storage::resolve(hash, transport, db).await
 }
 
 #[cfg(test)]
@@ -215,17 +179,33 @@ mod tests {
     async fn recent_session_authentication_does_not_wait_for_an_unrelated_writer() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let db = Database::open(temp.path().join("auth.db"))?;
-        db.call(|db|{db.execute("INSERT INTO users(id,username,password_hash,role,created_at) VALUES ('user','reader','unused','user',?1)",[now()])?;Ok(())}).await?;
+        db.write("test.fixture", |db|{db.execute("INSERT INTO users(id,username,password_hash,role,created_at) VALUES ('user','reader','unused','user',?1)",[now()])?;Ok(())}).await?;
         let token = issue_session(&db, "user".into(), "device".into(), "test".into()).await?;
-        let mut writer = db.connect()?;
-        let _transaction =
-            writer.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let (entered, ready) = tokio::sync::oneshot::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let writer = db.clone();
+        let writing = tokio::spawn(async move {
+            writer
+                .write("test.unrelated_write", move |db| {
+                    let tx =
+                        db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                    let _ = entered.send(());
+                    blocked.recv()?;
+                    tx.commit()?;
+                    Ok(())
+                })
+                .await
+        });
+        ready.await?;
         let principal = tokio::time::timeout(
             std::time::Duration::from_secs(2),
             resolve(&db, &token, "device"),
         )
         .await??;
         assert_eq!(principal.unwrap().user.id, "user");
+        release.send(())?;
+        writing.await??;
+        db.shutdown().await?;
         Ok(())
     }
     #[test]

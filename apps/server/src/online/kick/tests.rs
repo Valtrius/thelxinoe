@@ -80,7 +80,7 @@ async fn tracking_and_metadata_are_private_and_removed_generation_stays_removed(
         .0,
         StatusCode::FORBIDDEN
     );
-    let t=state.db.call(|db|Ok(db.query_row("SELECT c.generation,a.generation FROM kick_channels c JOIN online_accounts a ON a.user_id=c.user_id AND a.provider='kick'",[],|r|Ok(Turn{user:"alice".into(),slug:"fixture".into(),generation:r.get(0)?,account:r.get(1)?,failures:0}))?)).await.unwrap();
+    let t=state.db.write("test.fixture", |db|Ok(db.query_row("SELECT c.generation,a.generation FROM kick_channels c JOIN online_accounts a ON a.user_id=c.user_id AND a.provider='kick'",[],|r|Ok(Turn{user:"alice".into(),slug:"fixture".into(),generation:r.get(0)?,account:r.get(1)?,failures:0}))?)).await.unwrap();
     assert_eq!(
         call(
             &state,

@@ -1,3 +1,6 @@
+#[path = "../storage/online/streams.rs"]
+mod storage;
+
 use super::{downloads, extract, live};
 use crate::{
     AppState,
@@ -135,19 +138,7 @@ pub(crate) async fn info(state: &AppState, p: &Principal, video: &str) -> Result
     let prepared = prepare(state, video).await?;
     let owner = p.user.id.clone();
     let id = video.to_owned();
-    let position = state
-        .db
-        .call(move |db| {
-            Ok(db
-                .query_row(
-                    "SELECT position FROM youtube_state WHERE user_id=?1 AND video_id=?2",
-                    params![owner, id],
-                    |r| r.get::<_, f64>(0),
-                )
-                .optional()?
-                .unwrap_or(0.0))
-        })
-        .await?;
+    let position = storage::info(owner, id, &state.db).await?;
     Ok(
         json!({"sources":[{"id":video,"edition":"public","duration":prepared.duration,"video":true,"tracks":[],"probe":{},"size":0}],"progress":[{"edition":"public","position":position,"duration":prepared.duration}],"watched":false,"live":prepared.source.live}),
     )
@@ -204,21 +195,22 @@ pub(crate) async fn create_with_delivery(
     let input = options.clone();
     let duration = prepared.duration;
     let live = prepared.source.live;
-    let start=state.db.call(move |db| {
-        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        if let Some(title)=live_title {
-            anyhow::ensure!(tx.query_row("SELECT EXISTS(SELECT 1 FROM twitch_streams WHERE user_id=?1 AND 'twitch:'||channel_id=?2 AND active=1) OR EXISTS(SELECT 1 FROM kick_channels WHERE user_id=?1 AND 'kick:'||slug=?2)",params![owner,video],|r|r.get::<_,bool>(0))?,"Channel was removed before playback");
-            tx.execute("INSERT INTO live_media VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET title=excluded.title",params![video,title])?;
-            tx.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,generation,edition,state,mode,options,duration,position,created_at,updated_at,live_media_id,streaming) VALUES (?1,?2,?3,?1,'live','ready','transcode',?4,0,0,?5,?5,?6,1)",params![key,owner,auth,serde_json::to_string(&input)?,now(),video])?;
-            tx.commit()?;return Ok(0.0)
-        }
-        anyhow::ensure!(tx.query_row("SELECT EXISTS(SELECT 1 FROM youtube_videos WHERE user_id=?1 AND video_id=?2)",params![owner,video],|r|r.get::<_,bool>(0))?,"Video was removed before playback");
-        let saved=tx.query_row("SELECT position FROM youtube_state WHERE user_id=?1 AND video_id=?2",params![owner,video],|r|r.get::<_,f64>(0)).optional()?.unwrap_or(0.0);
-        let start=if live {0.0}else {position.unwrap_or(if saved>=duration*0.9 {0.0}else{saved}).clamp(0.0,(duration-0.1).max(0.0))};
-        tx.execute("INSERT INTO youtube_media(video_id) VALUES (?1) ON CONFLICT DO NOTHING",[&video])?;
-        tx.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,generation,edition,state,mode,options,duration,position,created_at,updated_at,youtube_video_id,streaming) VALUES (?1,?2,?3,?1,'public','ready',?9,?4,?5,?6,?7,?7,?8,1)",params![key,owner,auth,serde_json::to_string(&input)?,duration,start,now(),video,mode])?;
-        tx.commit()?;Ok(start)
-    }).await?;
+    let start = storage::create_with_delivery_write_twitch_streams(
+        &state.db,
+        storage::StreamSession {
+            live_title,
+            mode,
+            key,
+            owner,
+            auth,
+            video,
+            input,
+            duration,
+            live,
+            position,
+        },
+    )
+    .await?;
     state
         .online
         .streams
@@ -244,23 +236,14 @@ pub(crate) async fn create_with_delivery(
         Err(_) => {
             state.online.streams.sessions.lock().await.remove(&sid);
             let id = sid.clone();
-            state
-                .db
-                .call(move |db| {
-                    db.execute(
-                        "UPDATE playback_sessions SET state='failed' WHERE id=?1",
-                        [id],
-                    )?;
-                    Ok(())
-                })
-                .await?;
+            storage::create_with_delivery_write_playback_sessions(id, &state.db).await?;
             return Err(ApiError::conflict(
                 "The server could not start the public stream; try again later",
             ));
         }
     };
     let key = sid.clone();
-    let valid=state.db.call(move |db|Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM playback_sessions p JOIN sessions s ON s.id=p.auth_session_id WHERE p.id=?1 AND p.state='ready' AND s.expires_at>?2 AND (EXISTS(SELECT 1 FROM youtube_videos v WHERE v.user_id=p.user_id AND v.video_id=p.youtube_video_id) OR EXISTS(SELECT 1 FROM twitch_streams t WHERE t.user_id=p.user_id AND 'twitch:'||t.channel_id=p.live_media_id AND t.active=1) OR EXISTS(SELECT 1 FROM kick_channels k WHERE k.user_id=p.user_id AND 'kick:'||k.slug=p.live_media_id)))",params![key,now()],|r|r.get::<_,bool>(0))?)).await?;
+    let valid = storage::create_with_delivery_read_playback_sessions(key, &state.db).await?;
     if !valid {
         state.playback.stop(&sid).await;
         state.online.streams.sessions.lock().await.remove(&sid);
@@ -387,7 +370,7 @@ mod tests {
                 .0,
             StatusCode::NOT_FOUND
         );
-        state.db.call(move|db| { db.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES ('alice',?1,'Public fixture')",[video])?; Ok(()) }).await.unwrap();
+        state.db.write("test.fixture", move|db| { db.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES ('alice',?1,'Public fixture')",[video])?; Ok(()) }).await.unwrap();
         let created = call(&state, "/api/v1/playback", "POST", input.clone(), &cookie).await;
         assert_eq!(created.0, StatusCode::OK);
         let data = created.2;
@@ -494,7 +477,7 @@ mod tests {
         );
         state
             .db
-            .call(move |db| {
+            .write("test.fixture", move |db| {
                 db.execute(
                     "DELETE FROM youtube_videos WHERE user_id='alice' AND video_id=?1",
                     [video],
@@ -539,7 +522,7 @@ mod tests {
             .0,
             StatusCode::NOT_FOUND
         );
-        state.db.call(move|db|{db.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES ('alice',?1,'Live fixture')",[video])?;db.execute("INSERT INTO youtube_media VALUES (?1)",[video])?;db.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,generation,edition,state,mode,options,duration,created_at,updated_at,youtube_video_id,streaming) SELECT 'live','alice',id,'live','public','playing','transcode','{}',0,?1,?1,?2,1 FROM sessions WHERE user_id='alice' LIMIT 1",params![now(),video])?;Ok(())}).await.unwrap();
+        state.db.write("test.fixture", move|db|{db.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES ('alice',?1,'Live fixture')",[video])?;db.execute("INSERT INTO youtube_media VALUES (?1)",[video])?;db.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,generation,edition,state,mode,options,duration,created_at,updated_at,youtube_video_id,streaming) SELECT 'live','alice',id,'live','public','playing','transcode','{}',0,?1,?1,?2,1 FROM sessions WHERE user_id='alice' LIMIT 1",params![now(),video])?;Ok(())}).await.unwrap();
         let info = call(
             &state,
             "/api/v1/catalog/youtube:abcdefghijk/playback",
@@ -563,7 +546,7 @@ mod tests {
         assert_eq!(report.0, StatusCode::OK);
         let row = state
             .db
-            .call(|db| {
+            .write("test.fixture", |db| {
                 Ok(db.query_row(
                     "SELECT watched,position FROM youtube_state WHERE user_id='alice'",
                     [],

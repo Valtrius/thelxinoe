@@ -1,3 +1,6 @@
+#[path = "../storage/jellyfin/playback.rs"]
+mod storage;
+
 use super::{Query, canonical, catalog::ticks};
 use crate::{
     AppState,
@@ -74,7 +77,7 @@ pub async fn source_dto(source: &Source) -> Result<Value> {
 }
 pub async fn sources(state: &AppState, media: &str) -> Result<Vec<Value>> {
     let mid = media.to_owned();
-    let files=state.db.call(move|db|Ok(db.prepare("SELECT f.id FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=?1 AND f.present=1 ORDER BY f.edition,f.id")?.query_map([mid],|r|r.get::<_,String>(0))?.collect::<std::result::Result<Vec<_>,_>>()?)).await?;
+    let files = storage::sources(mid, &state.db).await?;
     let mut result = Vec::new();
     for file in files {
         result.push(source_dto(&core::source(state, media, Some(&file)).await?).await?);
@@ -264,16 +267,7 @@ pub(super) async fn info_source(
     .await?;
     let id = playback["id"].as_str().unwrap().to_owned();
     let key = id.clone();
-    state
-        .db
-        .call(move |db| {
-            db.execute(
-                "INSERT INTO compat_playbacks(playback_id) VALUES (?1)",
-                [key],
-            )?;
-            Ok(())
-        })
-        .await?;
+    storage::info_source(key, &state.db).await?;
     dto["SupportsDirectPlay"] = json!(playback["mode"] == "direct");
     // HLS selects one audio stream on the server, including when codecs are
     // copied. Clients must use their server-controlled track selection path.
@@ -347,12 +341,9 @@ pub async fn report(state: &AppState, p: &Principal, input: Value, stopped: bool
     let key = id.clone();
     let user = p.user.id.clone();
     let auth = p.session_id.clone();
-    let row=state.db.call(move|db|{
-        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let row=tx.query_row("SELECT c.sequence,s.position FROM compat_playbacks c JOIN playback_sessions s ON s.id=c.playback_id WHERE s.id=?1 AND COALESCE(s.media_id,'youtube:'||s.youtube_video_id,s.live_media_id)=?2 AND s.user_id=?3 AND s.auth_session_id=?4",params![key,media,user,auth],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,f64>(1)?))).optional()?;
-        if row.is_some(){tx.execute("UPDATE compat_playbacks SET sequence=sequence+1 WHERE playback_id=?1",[key])?;}
-        tx.commit()?;Ok(row)
-    }).await?.ok_or_else(ApiError::not_found)?;
+    let row = storage::report(media, key, user, auth, &state.db)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     core::report(
         state,
         p,
@@ -387,7 +378,9 @@ pub async fn stop_encoding(state: &AppState, p: &Principal, query: &Query) -> Re
     let user = p.user.id.clone();
     let auth = p.session_id.clone();
     let device = query.get("deviceid").cloned();
-    let media=state.db.call(move|db|Ok(db.query_row("SELECT s.media_id FROM playback_sessions s JOIN compat_playbacks c ON c.playback_id=s.id JOIN compat_devices d ON d.session_id=s.auth_session_id WHERE s.id=?1 AND s.user_id=?2 AND s.auth_session_id=?3 AND (?4 IS NULL OR d.device_id=?4)",params![key,user,auth,device],|r|r.get::<_,String>(0)).optional()?)).await?.ok_or_else(ApiError::not_found)?;
+    let media = storage::stop_encoding(key, user, auth, device, &state.db)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     report(state, p, json!({"ItemId":media,"PlaySessionId":id}), true).await
 }
 pub async fn stream_tag(
@@ -400,7 +393,7 @@ pub async fn stream_tag(
     let media = canonical(media);
     let file = query.get("mediasourceid").map(|s| canonical(s));
     let explicit = query.get("playsessionid").map(|s| canonical(s));
-    let id=state.db.call(move|db|Ok(db.query_row("SELECT s.id FROM playback_grants g JOIN playback_sessions s ON g.resource='playback:'||s.id JOIN compat_playbacks c ON c.playback_id=s.id WHERE g.token_hash=?1 AND s.media_id=?2 AND s.mode='direct' AND (?3 IS NULL OR s.file_id=?3) AND (?4 IS NULL OR s.id=?4)",params![hash,media,file,explicit],|r|r.get::<_,String>(0)).optional()?)).await?;
+    let id = storage::stream_tag(hash, media, file, explicit, &state.db).await?;
     let Some(id) = id else { return Ok(None) };
     Ok(
         crate::grants::resolve(state, tag, &format!("playback:{id}"), false)
@@ -424,7 +417,7 @@ pub async fn stream(
     let auth = p.session_id.clone();
     let media = media.to_owned();
     let file = q.get("mediasourceid").map(|s| canonical(s));
-    let valid=state.db.call(move|db|Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM playback_sessions WHERE id=?1 AND user_id=?2 AND auth_session_id=?3 AND media_id=?4 AND mode='direct' AND (?5 IS NULL OR file_id=?5))",params![key,uid,auth,media,file],|r|r.get::<_,bool>(0))?)).await?;
+    let valid = storage::stream(key, uid, auth, media, file, &state.db).await?;
     if !valid {
         return Err(ApiError::not_found());
     }

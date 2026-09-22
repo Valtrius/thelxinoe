@@ -2,12 +2,75 @@ use super::*;
 use crate::online::oauth::tests::{call, fixture};
 use axum::http::StatusCode;
 
+#[tokio::test]
+async fn playback_changes_roll_back_when_their_event_cannot_be_saved() {
+    let (_temp, state, alice, _) = live_fixture().await;
+    state.db.write("test.fail_event", |db| {
+        db.execute_batch("CREATE TEMP TRIGGER reject_playback_event BEFORE INSERT ON events WHEN NEW.kind='playback.changed' BEGIN SELECT RAISE(ABORT,'test event failure'); END;")?;
+        Ok(())
+    }).await.unwrap();
+    let path = "/api/v1/playback/alice/progress";
+    let event = json!({"sequence":0,"position":12.0,"active_seconds":0.0,"state":"playing"});
+    assert_eq!(
+        call(&state, path, "POST", event.clone(), &alice).await.0,
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+    state
+        .db
+        .write("test.check_rollback", |db| {
+            assert_eq!(
+                db.query_row(
+                    "SELECT state FROM playback_sessions WHERE id='alice'",
+                    [],
+                    |r| r.get::<_, String>(0)
+                )?,
+                "ready"
+            );
+            for table in [
+                "playback_history",
+                "playback_statistics",
+                "playback_activity",
+            ] {
+                assert_eq!(
+                    db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r
+                        .get::<_, i64>(0))?,
+                    0
+                );
+            }
+            db.execute_batch("DROP TRIGGER reject_playback_event")?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        call(&state, path, "POST", event.clone(), &alice).await.2["accepted"],
+        true
+    );
+    assert_eq!(
+        call(&state, path, "POST", event, &alice).await.2["accepted"],
+        false
+    );
+    let events = state
+        .db
+        .read("test.events", |db| {
+            Ok(db.query_row(
+                "SELECT COUNT(*) FROM events WHERE kind='playback.changed'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(events, 1);
+    state.db.shutdown().await.unwrap();
+}
+
 async fn live_fixture() -> (tempfile::TempDir, AppState, String, String) {
     let (temp, state, alice) = fixture().await;
     let token = thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())
         .await
         .unwrap();
-    state.db.call(|db|{
+    state.db.write("test.fixture", |db|{
         db.execute("INSERT INTO live_media VALUES ('twitch:42','Live fixture')",[])?;
         for user in ["alice","bob"] {
             db.execute("INSERT INTO twitch_streams(user_id,channel_id,login,display_name,title,category,viewers,started_at,snapshot,active) VALUES (?1,'42','fixture','Fixture','Live fixture','Science',10,'today','s',1)",[user])?;
@@ -21,7 +84,7 @@ async fn live_fixture() -> (tempfile::TempDir, AppState, String, String) {
 async fn backdate(state: &AppState, id: &'static str, milliseconds: i64) {
     state
         .db
-        .call(move |db| {
+        .write("test.fixture", move |db| {
             db.execute(
                 "UPDATE playback_sessions SET reported_at_ms=?1 WHERE id=?2",
                 params![Utc::now().timestamp_millis() - milliseconds, id],
@@ -137,7 +200,7 @@ async fn statistics_progress_is_idempotent_private_and_survives_session_revocati
     );
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE users SET role='admin' WHERE id='bob'", [])?;
             Ok(())
         })
@@ -181,7 +244,7 @@ async fn statistics_progress_is_idempotent_private_and_survives_session_revocati
     // Restarting/opening the server and signing out do not remove activity.
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("DELETE FROM sessions WHERE user_id='alice'", [])?;
             Ok(())
         })
@@ -217,7 +280,7 @@ async fn statistics_progress_is_idempotent_private_and_survives_session_revocati
 #[tokio::test]
 async fn statistics_split_minutes_and_local_days_without_counting_prefetch_or_idle() {
     let (_temp, state, _, _) = live_fixture().await;
-    state.db.call(|db|{
+    state.db.write("test.fixture", |db|{
         let start="2026-07-11T03:59:55Z".parse::<DateTime<Utc>>()?.timestamp_millis();
         let tx=db.transaction()?;
         let input=|total,state: &str|Progress{sequence:0,position:0.0,state:state.into(),active_seconds:Some(total)};
@@ -253,7 +316,7 @@ async fn statistics_split_minutes_and_local_days_without_counting_prefetch_or_id
 #[tokio::test]
 async fn statistics_completion_and_extra_media_counts_follow_user_state() {
     let (_temp, state, _) = fixture().await;
-    state.db.call(|db|{
+    state.db.write("test.fixture", |db|{
         let now=Utc::now();
         for (platform,media,kind,name,category,done) in [
             ("youtube","youtube:a","upload","Channel","",true),

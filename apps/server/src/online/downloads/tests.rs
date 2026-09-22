@@ -22,7 +22,7 @@ fn progress_accepts_estimates_and_rejects_invalid_byte_counts() {
 #[tokio::test]
 async fn download_progress_reaches_only_users_with_that_video() {
     let (_temp, state, _) = fixture().await;
-    state.db.call(|db| {
+    state.db.write("test.fixture", |db| {
         db.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES('alice',?1,'Video')", [VIDEO])?;
         db.execute("INSERT INTO youtube_downloads(video_id,generation,state,requested_at,updated_at,tools,downloaded_bytes,total_bytes,eta_seconds,media_kind) VALUES(?1,'g','downloading',1,1,'{}',25,100,3,'video')", [VIDEO])?;
         Ok(())
@@ -30,7 +30,7 @@ async fn download_progress_reaches_only_users_with_that_video() {
     publish_progress(&state, VIDEO).await.unwrap();
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             let (user, payload): (String, String) = db.query_row(
                 "SELECT user_id,payload FROM events WHERE kind='online.download.progress'",
                 [],
@@ -50,7 +50,7 @@ async fn download_progress_reaches_only_users_with_that_video() {
 #[tokio::test]
 async fn auto_removal_keeps_other_lists_and_the_manual_undo_window() {
     let (_temp, state, _) = fixture().await;
-    state.db.call(|db| {
+    state.db.write("test.fixture", |db| {
         db.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES('alice',?1,'Video')",[VIDEO])?;
         for (id,auto_remove) in [(1,1),(2,0)] {
             db.execute("INSERT INTO youtube_watchlists(id,user_id,name,auto_remove_watched,created_at,updated_at) VALUES(?1,'alice','Test',?2,1,1)",params![id,auto_remove])?;
@@ -63,7 +63,7 @@ async fn auto_removal_keeps_other_lists_and_the_manual_undo_window() {
     assert_eq!(
         state
             .db
-            .call(|db| Ok(db.query_row(
+            .write("test.fixture", |db| Ok(db.query_row(
                 "SELECT COUNT(*) FROM youtube_watchlist_items",
                 [],
                 |r| r.get::<_, i64>(0)
@@ -74,7 +74,7 @@ async fn auto_removal_keeps_other_lists_and_the_manual_undo_window() {
     );
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE youtube_state SET updated_at=?1", [now() - 6])?;
             Ok(())
         })
@@ -83,7 +83,7 @@ async fn auto_removal_keeps_other_lists_and_the_manual_undo_window() {
     maintain_watchlists(&state).await.unwrap();
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             assert_eq!(
                 db.query_row(
                     "SELECT watchlist_id FROM youtube_watchlist_items",
@@ -105,7 +105,7 @@ async fn auto_removal_keeps_other_lists_and_the_manual_undo_window() {
     // changes no longer rewrite the user's playback-state timestamp.
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute(
                 "INSERT INTO youtube_watchlist_items VALUES('alice',1,?1,0,?2)",
                 params![VIDEO, now()],
@@ -117,7 +117,7 @@ async fn auto_removal_keeps_other_lists_and_the_manual_undo_window() {
     maintain_watchlists(&state).await.unwrap();
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             assert_eq!(
                 db.query_row("SELECT COUNT(*) FROM youtube_watchlist_items", [], |r| r
                     .get::<_, u32>(0))?,
@@ -134,7 +134,7 @@ async fn auto_removal_keeps_other_lists_and_the_manual_undo_window() {
     maintain_watchlists(&state).await.unwrap();
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             assert_eq!(
                 db.query_row(
                     "SELECT watchlist_id FROM youtube_watchlist_items",
@@ -154,7 +154,7 @@ async fn both_admin_configuration_routes_control_the_same_download_policy() {
     let (_temp, state, cookie) = fixture().await;
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE users SET role='admin' WHERE id='alice'", [])?;
             Ok(())
         })
@@ -233,7 +233,7 @@ async fn public_file_sharing_keeps_progress_private_and_retention_fenced() {
         .unwrap();
     let metadata = std::fs::metadata(&path).unwrap();
     let generation_copy = generation.clone();
-    state.db.call(move|db| {
+    state.db.write("test.fixture", move|db| {
         db.execute("INSERT INTO youtube_media(video_id) VALUES (?1)",[VIDEO])?;
         db.execute("INSERT INTO youtube_videos(user_id,video_id,title,privacy) VALUES ('alice',?1,'Public fixture','public')",[VIDEO])?;
         let list=crate::online::watchlists::default_list(db,"alice")?;
@@ -298,7 +298,7 @@ async fn public_file_sharing_keeps_progress_private_and_retention_fenced() {
         .0,
         StatusCode::NOT_FOUND
     );
-    state.db.call(|db|{db.execute("INSERT INTO youtube_videos(user_id,video_id,title,privacy) VALUES ('bob',?1,'Same public fixture','public')",[VIDEO])?;db.execute("INSERT INTO youtube_state(user_id,video_id,pinned,updated_at) VALUES ('bob',?1,1,1)",[VIDEO])?;Ok(())}).await.unwrap();
+    state.db.write("test.fixture", |db|{db.execute("INSERT INTO youtube_videos(user_id,video_id,title,privacy) VALUES ('bob',?1,'Same public fixture','public')",[VIDEO])?;db.execute("INSERT INTO youtube_state(user_id,video_id,pinned,updated_at) VALUES ('bob',?1,1,1)",[VIDEO])?;Ok(())}).await.unwrap();
     let second = call(&state, "/api/v1/playback", "POST", body, &bob).await;
     assert_eq!(second.0, StatusCode::OK);
     assert_eq!(second.2["position"], 0.0);
@@ -333,7 +333,7 @@ async fn public_file_sharing_keeps_progress_private_and_retention_fenced() {
     );
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE youtube_state SET pinned=0", [])?;
             db.execute("UPDATE youtube_downloads SET unprotected_at=1", [])?;
             Ok(())
@@ -344,7 +344,7 @@ async fn public_file_sharing_keeps_progress_private_and_retention_fenced() {
     assert!(directory.exists(), "Active Bob playback protects the file");
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE playback_sessions SET state='stopped'", [])?;
             db.execute("UPDATE youtube_downloads SET unprotected_at=1", [])?;
             Ok(())
@@ -363,7 +363,7 @@ async fn public_file_sharing_keeps_progress_private_and_retention_fenced() {
     let metadata = std::fs::metadata(&replaced).unwrap();
     state
         .db
-        .call(move |db| {
+        .write("test.fixture", move |db| {
             db.execute(
                 "UPDATE youtube_downloads SET size=?1,modified=?2",
                 params![
@@ -384,7 +384,11 @@ async fn public_file_sharing_keeps_progress_private_and_retention_fenced() {
     assert_eq!(
         state
             .db
-            .call(|db| Ok(db.query_row("SELECT COUNT(*) FROM media", [], |r| r.get::<_, i64>(0))?))
+            .write("test.fixture", |db| Ok(db.query_row(
+                "SELECT COUNT(*) FROM media",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?))
             .await
             .unwrap(),
         0,

@@ -1,3 +1,6 @@
+#[path = "storage/avatars.rs"]
+mod storage;
+
 use crate::{
     AppState,
     error::{ApiError, Result},
@@ -22,18 +25,7 @@ pub struct Profile {
 // Pictures belong to the profile response, not to authentication on every request.
 pub async fn profile(state: &AppState, user: User) -> Result<Profile> {
     let id = user.id.clone();
-    let avatar = state
-        .db
-        .call(move |db| {
-            Ok(db
-                .query_row(
-                    "SELECT image FROM user_avatars WHERE user_id=?1",
-                    [id],
-                    |row| row.get(0),
-                )
-                .optional()?)
-        })
-        .await?;
+    let avatar = storage::profile(id, &state.db).await?;
     Ok(Profile { user, avatar })
 }
 
@@ -89,16 +81,7 @@ pub async fn save(
         .map_err(anyhow::Error::from)??;
     let saved = image.clone();
     let user_id = principal.user.id.clone();
-    state.db.call(move |db| {
-        if let Some(image) = image {
-            db.execute("INSERT INTO user_avatars(user_id,image,updated_at) VALUES (?1,?2,?3)
-                ON CONFLICT(user_id) DO UPDATE SET image=excluded.image,updated_at=excluded.updated_at",
-                params![user_id, image, now()])?;
-        } else {
-            db.execute("DELETE FROM user_avatars WHERE user_id=?1", [user_id])?;
-        }
-        Ok(())
-    }).await?;
+    storage::save(&state.db, image, user_id).await?;
     state
         .emit(
             Some(principal.user.id),

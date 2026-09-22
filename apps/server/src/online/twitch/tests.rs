@@ -97,7 +97,7 @@ async fn start_attempt(state: &AppState, cookie: &str) -> Attempt {
     assert!(claim_attempt(state).await.unwrap().is_none());
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE twitch_attempts SET next_poll=0", [])?;
             Ok(())
         })
@@ -108,7 +108,7 @@ async fn start_attempt(state: &AppState, cookie: &str) -> Attempt {
 async fn ready_sync(state: &AppState) {
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE twitch_sync SET next_run=0", [])?;
             Ok(())
         })
@@ -123,7 +123,7 @@ async fn connected_twitch_avatar_uses_the_viewer_and_refreshes_existing_connecti
     control.mode.store(1, Ordering::SeqCst);
     poll(&state, &attempt).await.unwrap();
     for _ in 0..2 {
-        state.db.call(|db| {
+        state.db.write("test.fixture", |db| {
             db.execute("UPDATE online_accounts SET avatar_url=NULL,profile_checked_at=0 WHERE provider='twitch'", [])?;
             Ok(())
         }).await.unwrap();
@@ -187,7 +187,7 @@ async fn device_connection_is_encrypted_session_bound_and_rate_limited() {
     poll(&state, &a).await.unwrap();
     let interval = state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             Ok(
                 db.query_row("SELECT interval FROM twitch_attempts", [], |r| {
                     r.get::<_, i64>(0)
@@ -205,7 +205,7 @@ async fn device_connection_is_encrypted_session_bound_and_rate_limited() {
     assert!(!status.2.to_string().contains("secret"));
     let credential = state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             Ok(db.query_row(
                 "SELECT credential FROM online_accounts WHERE provider='twitch'",
                 [],
@@ -241,7 +241,7 @@ async fn disconnect_and_revoked_session_block_late_authorization() {
     assert_eq!(status.2["account"]["status"], "disconnected");
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE online_accounts SET updated_at=0", [])?;
             Ok(())
         })
@@ -251,14 +251,14 @@ async fn disconnect_and_revoked_session_block_late_authorization() {
     let session = a.session.clone();
     state
         .db
-        .call(move |db| {
+        .write("test.fixture", move |db| {
             db.execute("DELETE FROM sessions WHERE id=?1", [session])?;
             Ok(())
         })
         .await
         .unwrap();
     poll(&state, &a).await.unwrap();
-    let count=state.db.call(|db|Ok(db.query_row("SELECT COUNT(*) FROM online_accounts WHERE provider='twitch' AND credential IS NOT NULL",[],|r|r.get::<_,i64>(0))?)).await.unwrap();
+    let count=state.db.write("test.fixture", |db|Ok(db.query_row("SELECT COUNT(*) FROM online_accounts WHERE provider='twitch' AND credential IS NOT NULL",[],|r|r.get::<_,i64>(0))?)).await.unwrap();
     assert_eq!(count, 0);
     server.abort();
 }
@@ -270,7 +270,7 @@ async fn followed_snapshot_is_private_paginated_and_refreshes_once() {
     poll(&state, &a).await.unwrap();
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute(
                 "UPDATE online_accounts SET expires_at=0 WHERE provider='twitch'",
                 [],
@@ -332,7 +332,7 @@ async fn followed_snapshot_is_private_paginated_and_refreshes_once() {
     sync_tick(&state).await.unwrap();
     let next = state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             Ok(db.query_row("SELECT next_run FROM twitch_sync", [], |r| {
                 r.get::<_, i64>(0)
             })?)

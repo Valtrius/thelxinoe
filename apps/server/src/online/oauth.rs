@@ -1,4 +1,8 @@
 //! Browser-bound authorization. Viewer credentials never reach an extractor.
+
+#[path = "../storage/online/oauth.rs"]
+mod storage;
+
 use super::{Google, bounded_response, google, quota, redirect_uri};
 use crate::{
     AppState,
@@ -67,14 +71,19 @@ pub async fn start(State(state): State<AppState>, headers: HeaderMap) -> Result<
     let browser = thelxinoe_auth::token();
     let browser_hash = thelxinoe_auth::digest(&browser);
     let generation = thelxinoe_core::id();
-    state.db.call(move|db|{
-        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        tx.execute("DELETE FROM oauth_attempts WHERE expires_at<=?1 OR (user_id=?2 AND provider='youtube')",params![now(),p.user.id])?;
-        tx.execute("INSERT INTO online_accounts(user_id,provider,generation,updated_at) VALUES (?1,'youtube',?2,?3) ON CONFLICT(user_id,provider) DO UPDATE SET generation=excluded.generation",params![p.user.id,generation,now()])?;
-        tx.execute("UPDATE youtube_sync SET generation=?1 WHERE user_id=?2",params![generation,p.user.id])?;
-        tx.execute("INSERT INTO oauth_attempts VALUES (?1,?2,?3,'youtube',?4,?5,?6,?7,?8,?9)",params![hash,p.user.id,p.session_id,generation,browser_hash,encrypted,redirect,client_hash,now()+600])?;
-        tx.commit()?;Ok(())
-    }).await?;
+    storage::start(
+        &state.db,
+        storage::AuthorizationAttempt {
+            p,
+            redirect,
+            client_hash,
+            hash,
+            encrypted,
+            browser_hash,
+            generation,
+        },
+    )
+    .await?;
     let mut response = Json(json!({"url":url.as_str()})).into_response();
     response.headers_mut().insert(header::SET_COOKIE,format!("{COOKIE}={browser}; HttpOnly; SameSite=Lax; Path=/api/v1/online/youtube/callback; Max-Age=600{}",if state.config.public_url.as_ref().is_some_and(|u|u.scheme()=="https"){"; Secure"}else{""}).parse().unwrap());
     Ok(response)
@@ -111,12 +120,7 @@ async fn consume(state: &AppState, headers: &HeaderMap, csrf: &str) -> Result<At
         })?;
     let browser_hash = thelxinoe_auth::digest(browser);
     let hash = thelxinoe_auth::digest(csrf);
-    let attempt=state.db.call(move|db|{
-        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let result=tx.query_row("SELECT a.user_id,a.session_id,a.generation,a.verifier,a.redirect_uri,a.client_hash FROM oauth_attempts a JOIN sessions s ON s.id=a.session_id JOIN online_accounts o ON o.user_id=a.user_id AND o.provider=a.provider AND o.generation=a.generation WHERE a.state_hash=?1 AND a.browser_hash=?2 AND a.expires_at>?3 AND s.expires_at>?3 AND s.user_id=a.user_id AND s.transport='web'",params![hash,browser_hash,now()],|r|Ok(Attempt{user:r.get(0)?,session:r.get(1)?,generation:r.get(2)?,verifier:r.get(3)?,redirect:r.get(4)?,client_hash:r.get(5)?})).optional()?;
-        if result.is_some(){tx.execute("DELETE FROM oauth_attempts WHERE state_hash=?1",[hash])?;}
-        tx.commit()?;Ok(result)
-    }).await?;
+    let attempt = storage::consume(browser_hash, hash, &state.db).await?;
     attempt
         .ok_or_else(|| ApiError::bad("Authorization attempt is invalid, expired or already used"))
 }
@@ -256,12 +260,10 @@ async fn complete(state: &AppState, headers: &HeaderMap, input: Callback) -> Res
         ));
     }
     let user = attempt.user.clone();
-    let saved=state.db.call(move|db|{
-        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let saved=tx.execute("UPDATE online_accounts SET status='connected',credential=?1,expires_at=?2,display_name=?3,external_id=?4,updated_at=?5,profile_checked_at=?5,avatar_url=?9 WHERE user_id=?6 AND provider='youtube' AND generation=?7 AND EXISTS(SELECT 1 FROM sessions WHERE id=?8 AND user_id=?6 AND expires_at>?5)",params![encrypted,now()+expires,name,external,now(),attempt.user,attempt.generation,attempt.session,avatar])?==1;
-        if saved {tx.execute("INSERT INTO youtube_sync(user_id,generation) VALUES (?1,?2) ON CONFLICT(user_id) DO UPDATE SET generation=excluded.generation,cursor='{}',next_run=0,failures=0,error=NULL",params![attempt.user,attempt.generation])?;}
-        tx.commit()?;Ok(saved)
-    }).await?;
+    let saved = storage::complete(
+        attempt, expires, name, avatar, external, encrypted, &state.db,
+    )
+    .await?;
     if !saved {
         return Err(ApiError::conflict(
             "The account or session changed; start account linking again",

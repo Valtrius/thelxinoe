@@ -1,4 +1,8 @@
 //! Narrow admin adapters for subtitle, indexer and download services.
+
+#[path = "../storage/managers/support.rs"]
+mod storage;
+
 use super::*;
 pub(super) fn router() -> Router<AppState> {
     Router::new()
@@ -21,7 +25,9 @@ pub(super) struct Support {
 }
 pub(super) async fn load(state: &AppState, key: &str) -> Result<Support> {
     let key = key.to_owned();
-    let row=state.db.call(move|db|Ok(db.query_row("SELECT id,kind,container_id,port,media_source,credential FROM support_services WHERE id=?1",[key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,u16>(3)?,r.get::<_,String>(4)?,r.get::<_,Vec<u8>>(5)?))).optional()?)).await?.ok_or_else(ApiError::not_found)?;
+    let row = storage::load(key, &state.db)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     let credentials = serde_json::from_slice(
         &state
             .secrets
@@ -193,17 +199,7 @@ async fn register_with_actor(
     };
     let version = version(&c, &input.credentials).await?;
     let kind = input.kind.clone();
-    let key = state
-        .db
-        .call(move |db| {
-            Ok(db
-                .query_row(
-                    "SELECT id FROM support_services WHERE kind=?1",
-                    [kind],
-                    |r| r.get::<_, String>(0),
-                )
-                .optional()?)
-        })
+    let key = storage::register_with_actor_read_support_services(kind, &state.db)
         .await?
         .unwrap_or_else(id);
     let returned = key.clone();
@@ -211,15 +207,16 @@ async fn register_with_actor(
         &format!("support:{key}"),
         &serde_json::to_vec(&input.credentials).map_err(|_| unavailable())?,
     )?;
-    let allowed=state.db.call(move|db|{
-        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let provision:Option<(String,Option<String>)>=tx.query_row("SELECT state,container_id FROM stack_provisions WHERE kind=?1",[&input.kind],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
-        if provision.is_some_and(|(state,container)| state!="connecting" || container.as_deref()!=Some(input.container_id.as_str())) {return Ok(false);}
-        tx.execute("INSERT INTO support_services(id,name,kind,container_id,port,generation,credential,media_source,native_url,version,checked_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(id) DO UPDATE SET name=excluded.name,container_id=excluded.container_id,port=excluded.port,generation=excluded.generation,credential=excluded.credential,media_source=excluded.media_source,native_url=excluded.native_url,version=excluded.version,checked_at=excluded.checked_at,error=NULL",params![key,input.name.trim(),input.kind,input.container_id,input.port,id(),secret,media_source,input.native_url,version,now()])?;
-        tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'support.register',?2,?3)",params![actor_id,key,now()])?;
-        tx.commit()?;
-        Ok(true)
-    }).await?;
+    let allowed = storage::register_with_actor_write_stack_provisions(
+        media_source,
+        version,
+        key,
+        secret,
+        &state.db,
+        input,
+        actor_id,
+    )
+    .await?;
     if !allowed {
         return Err(ApiError::conflict(
             "A managed service operation already owns this integration type",
@@ -229,7 +226,7 @@ async fn register_with_actor(
 }
 async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
-    let rows=state.db.call(|db|Ok(db.prepare("SELECT id,name,kind,version,native_url,checked_at,error FROM support_services ORDER BY kind,name")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"version":r.get::<_,String>(3)?,"native_url":r.get::<_,String>(4)?,"checked_at":r.get::<_,i64>(5)?,"error":r.get::<_,Option<String>>(6)?})))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
+    let rows = storage::list(&state.db).await?;
     Ok(Json(json!({"items":rows})))
 }
 fn text(value: &Value, secret: &str) -> String {
@@ -299,17 +296,7 @@ async fn snapshot(c: &Connection<'_>, s: &Support) -> Result<Value> {
     }
 }
 pub(crate) async fn operational_health(state: &AppState) -> anyhow::Result<()> {
-    let rows = state
-        .db
-        .call(|db| {
-            Ok(db
-                .prepare(
-                    "SELECT id,kind FROM support_services WHERE kind IN ('prowlarr','nzbget')",
-                )?
-                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
-                .collect::<rusqlite::Result<Vec<_>>>()?)
-        })
-        .await?;
+    let rows = storage::operational_health_read_support_services(&state.db).await?;
     let mut items = Vec::new();
     for (key, kind) in rows {
         let result = async {
@@ -336,7 +323,7 @@ pub(crate) async fn operational_health(state: &AppState) -> anyhow::Result<()> {
         };
         items.push(value);
     }
-    state.db.call(move|db|{db.execute("INSERT INTO settings VALUES ('operations.support',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[json!({"items":items,"checked_at":now()}).to_string()])?;Ok(())}).await
+    storage::operational_health_write_settings(items, &state.db).await
 }
 async fn inspect(
     State(state): State<AppState>,
@@ -351,16 +338,7 @@ async fn inspect(
     }
     .await;
     let error = result.as_ref().err().map(|e| e.2.clone());
-    state
-        .db
-        .call(move |db| {
-            db.execute(
-                "UPDATE support_services SET checked_at=?1,error=?2 WHERE id=?3",
-                params![now(), error, key],
-            )?;
-            Ok(())
-        })
-        .await?;
+    storage::inspect(&state.db, key, error).await?;
     Ok(Json(result?))
 }
 #[derive(Deserialize)]
@@ -499,16 +477,7 @@ async fn action(
             .await?;
         }
     }
-    state
-        .db
-        .call(move |db| {
-            db.execute(
-                "INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,?2,?3,?4)",
-                params![p.user.id, format!("support.{}", input.action), s.id, now()],
-            )?;
-            Ok(())
-        })
-        .await?;
+    storage::action(&state.db, input.action, p, s).await?;
     Ok(Json(json!({"accepted":true})))
 }
 
@@ -525,7 +494,7 @@ pub(super) async fn provision(state: AppState, actor: String, input: Value) -> R
 /// Wire only installations created by this controller. Provider choices remain explicit.
 pub(super) async fn wire_managed(state: &AppState) -> Result<()> {
     let _guard = state.managers.guard.lock().await;
-    let rows=state.db.call(|db|Ok(db.prepare("SELECT kind,service_id FROM stack_provisions WHERE origin='installed' AND service_id IS NOT NULL AND state IN ('complete','connecting','blocked')")?.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
+    let rows = storage::wire_managed(&state.db).await?;
     let mut managers = Vec::new();
     let mut nzb = None;
     let mut prowlarr = None;

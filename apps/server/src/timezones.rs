@@ -1,3 +1,6 @@
+#[path = "storage/timezones.rs"]
+mod storage;
+
 use crate::{
     AppState,
     error::{ApiError, Result},
@@ -10,34 +13,10 @@ use rusqlite::{OptionalExtension, params};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-pub(crate) fn server_zone(db: &rusqlite::Connection) -> anyhow::Result<Tz> {
-    let zone: Option<String> = db
-        .query_row(
-            "SELECT value FROM settings WHERE key='timezone'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?;
-    zone.as_deref()
-        .unwrap_or("UTC")
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Invalid server timezone"))
-}
+pub(crate) use storage::server_zone;
 
-fn maintenance_window(
-    db: &rusqlite::Connection,
-    instant: DateTime<Utc>,
-    start: u32,
-    end: u32,
-) -> anyhow::Result<bool> {
-    let hour = instant.with_timezone(&server_zone(db)?).hour();
-    Ok(start == end
-        || if start < end {
-            (start..end).contains(&hour)
-        } else {
-            hour >= start || hour < end
-        })
-}
+#[cfg(test)]
+use storage::maintenance_window;
 
 pub(crate) async fn in_server_window(
     state: &AppState,
@@ -46,10 +25,7 @@ pub(crate) async fn in_server_window(
 ) -> anyhow::Result<bool> {
     // Resolve the saved zone at the point of use: changing the server setting
     // also changes already queued maintenance, without restarting a scheduler.
-    state
-        .db
-        .call(move |db| maintenance_window(db, Utc::now(), start, end))
-        .await
+    storage::in_server_window(&state.db, start, end).await
 }
 
 pub async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
@@ -62,26 +38,9 @@ pub async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<J
     Ok(Json(json!({"timezones":zones})))
 }
 
-fn read(db: &rusqlite::Connection, user: &str) -> anyhow::Result<Value> {
-    Ok(db.query_row(
-        "SELECT timezone,timezone_override,server_timezone,time_format,time_format_override,server_time_format FROM user_profiles WHERE id=?1",
-        [user],
-        |r| {
-            Ok(json!({
-                "timezone":r.get::<_,String>(0)?,
-                "timezone_override":r.get::<_,Option<String>>(1)?,
-                "server_timezone":r.get::<_,String>(2)?,
-                "time_format":r.get::<_,String>(3)?,
-                "time_format_override":r.get::<_,Option<String>>(4)?,
-                "server_time_format":r.get::<_,String>(5)?,
-            }))
-        },
-    )?)
-}
-
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
-    Ok(Json(state.db.call(move |db| read(db, &p.user.id)).await?))
+    Ok(Json(storage::get(&state.db, p).await?))
 }
 
 #[derive(Deserialize)]
@@ -117,25 +76,7 @@ pub async fn update(
         return Err(ApiError::bad("Unknown time format"));
     }
     let recipient = p.user.id.clone();
-    let value = state
-        .db
-        .call(move |db| {
-            let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            tx.execute(
-                "UPDATE users SET timezone_override=?1 WHERE id=?2",
-                params![input.timezone, p.user.id],
-            )?;
-            if let Some(format) = input.time_format {
-                tx.execute(
-                    "UPDATE users SET time_format_override=?1 WHERE id=?2",
-                    params![format, p.user.id],
-                )?;
-            }
-            let value = read(&tx, &p.user.id)?;
-            tx.commit()?;
-            Ok(value)
-        })
-        .await?;
+    let value = storage::update(&state.db, input, p).await?;
     state
         .emit(Some(recipient), "preferences.changed", value.clone())
         .await?;
@@ -152,7 +93,7 @@ mod tests {
         let (_temp, state, cookie) = fixture().await;
         state
             .db
-            .call(|db| {
+            .write("test.fixture", |db| {
                 db.execute(
                     "UPDATE users SET role='admin',timezone_override='Asia/Tokyo' WHERE id='alice'",
                     [],

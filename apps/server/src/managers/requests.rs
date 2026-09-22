@@ -1,3 +1,6 @@
+#[path = "../storage/managers/requests.rs"]
+mod storage;
+
 use super::*;
 use axum::extract::Query;
 use thelxinoe_core::Role;
@@ -15,7 +18,7 @@ pub(super) fn router() -> Router<AppState> {
 }
 async fn services(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::principal(&state, &headers).await?;
-    let rows=state.db.call(|db|Ok(db.prepare("SELECT id,name,kind,defaults<>'{}' FROM manager_services WHERE enabled=1 ORDER BY kind,name")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"ready":r.get::<_,bool>(3)?})))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
+    let rows = storage::services(&state.db).await?;
     Ok(Json(json!({"items":rows})))
 }
 pub(super) fn endpoint(kind: &str) -> &'static str {
@@ -95,7 +98,7 @@ async fn search(
     };
     let term = input.term.trim().to_owned();
     let kind = s.kind.clone();
-    let local=state.db.call(move|db|Ok(db.prepare("SELECT id,title,year,(WITH RECURSIVE children(id) AS (SELECT card.id UNION ALL SELECT m.id FROM media m JOIN children c ON m.parent_id=c.id) SELECT EXISTS(SELECT 1 FROM children JOIN media_sources s ON s.media_id=children.id JOIN media_files f ON f.id=s.file_id WHERE f.present=1)) FROM media_cards card WHERE kind=?1 AND instr(lower(title),lower(?2))>0 ORDER BY title LIMIT 50")?.query_map(params![domain,term],|r|Ok(json!({"id":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"year":r.get::<_,Option<i64>>(2)?,"available":r.get::<_,bool>(3)?})))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
+    let local = storage::search(&state.db, domain, term).await?;
     let rows=remote.as_array().ok_or_else(unavailable)?.iter().take(50).filter_map(|r|{
         let external=external(&kind,r)?;let title=r["title"].as_str()?;
         Some(json!({"external_id":external,"title":title,"year":r["year"],"overview":r["overview"].as_str().unwrap_or("").chars().take(1000).collect::<String>(),"artist":r["artist"]["artistName"]}))
@@ -105,7 +108,7 @@ async fn search(
 async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
     let admin = p.user.role == Role::Admin;
-    let rows=state.db.call(move|db|Ok(db.prepare("SELECT r.id,r.title,r.state,r.created_at,r.updated_at,r.manager_id,r.error,u.username,s.name,s.kind,r.user_id FROM acquisition_requests r JOIN users u ON u.id=r.user_id JOIN manager_services s ON s.id=r.service_id WHERE ?1 OR r.user_id=?2 ORDER BY r.created_at DESC LIMIT 200")?.query_map(params![admin,p.user.id],|r|Ok(json!({"id":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"state":r.get::<_,String>(2)?,"created_at":r.get::<_,i64>(3)?,"updated_at":r.get::<_,i64>(4)?,"manager_id":r.get::<_,Option<i64>>(5)?,"error":r.get::<_,Option<String>>(6)?,"username":r.get::<_,String>(7)?,"service":r.get::<_,String>(8)?,"kind":r.get::<_,String>(9)?,"user_id":r.get::<_,String>(10)?})))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
+    let rows = storage::list(&state.db, p, admin).await?;
     Ok(Json(json!({"items":rows})))
 }
 #[derive(Deserialize)]
@@ -113,11 +116,7 @@ struct Request {
     service_id: String,
     external_id: String,
 }
-fn enqueue(tx: &rusqlite::Transaction<'_>, request: &str) -> anyhow::Result<()> {
-    let key = id();
-    tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'manager.request',?2,?1,'queued',?3,?3)",params![key,json!({"request_id":request}).to_string(),now()])?;
-    Ok(())
-}
+
 async fn request(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -135,12 +134,7 @@ async fn request(
         .chars()
         .take(500)
         .collect::<String>();
-    let result=state.db.call(move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        if let Some(existing)=tx.query_row("SELECT id,state FROM acquisition_requests WHERE user_id=?1 AND service_id=?2 AND external_id=?3 AND state NOT IN ('denied','cancelled','failed')",params![p.user.id,s.id,input.external_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?{return Ok(existing)}
-        let auto=p.user.role==Role::Admin||tx.query_row("SELECT auto_approve FROM acquisition_users WHERE user_id=?1",[&p.user.id],|r|r.get::<_,bool>(0)).optional()?.unwrap_or(false);
-        let key=id();let status=if auto{"approved"}else{"pending"};
-        tx.execute("INSERT INTO acquisition_requests(id,user_id,service_id,generation,external_id,title,state,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8)",params![key,p.user.id,s.id,s.generation,input.external_id,title,status,now()])?;
-        if auto{enqueue(&tx,&key)?;}tx.commit()?;Ok((key,status.into()))}).await?;
+    let result = storage::request(&state.db, input, p, s, title).await?;
     Ok(Json(json!({"id":result.0,"state":result.1})))
 }
 #[derive(Deserialize)]
@@ -163,17 +157,7 @@ async fn decide(
     if matches!(input.action.as_str(), "approve" | "deny") && p.user.role != Role::Admin {
         return Err(ApiError::forbidden());
     }
-    let changed=state.db.call(move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let row=tx.query_row("SELECT r.user_id,r.state,s.generation FROM acquisition_requests r JOIN manager_services s ON s.id=r.service_id WHERE r.id=?1",[&key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional()?;
-        let Some((owner,status,generation))=row else{return Ok(false)};
-        if owner!=p.user.id&&p.user.role!=Role::Admin{return Ok(false)}
-        let reacquire=input.action=="reacquire";
-        if if reacquire {!matches!(status.as_str(),"requested"|"available")}else{!matches!(status.as_str(),"pending"|"failed"|"uncertain")} {return Ok(false)}
-        let auto=p.user.role==Role::Admin||tx.query_row("SELECT auto_approve FROM acquisition_users WHERE user_id=?1",[&owner],|r|r.get::<_,bool>(0)).optional()?.unwrap_or(false);
-        let next=match input.action.as_str(){"approve"=>"approved","deny"=>"denied","reacquire"=>if auto{"approved"}else{"pending"},_=>"cancelled"};
-        tx.execute("UPDATE acquisition_requests SET state=?1,generation=?2,error=NULL,updated_at=?3 WHERE id=?4",params![next,generation,now(),key])?;
-        if next=="approved"{enqueue(&tx,&key)?;}
-        tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,?2,?3,?4)",params![p.user.id,format!("request.{}",input.action),key,now()])?;tx.commit()?;Ok(true)}).await?;
+    let changed = storage::decide(&state.db, key, input, p).await?;
     if !changed {
         return Err(ApiError::conflict(
             "This request cannot be changed in its current state",
@@ -187,7 +171,7 @@ struct Auto {
 }
 async fn approval_users(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageUsers).await?;
-    let rows=state.db.call(|db| Ok(db.prepare("SELECT u.id,u.username,COALESCE(a.auto_approve,0) FROM users u LEFT JOIN acquisition_users a ON a.user_id=u.id WHERE u.role <> 'admin' ORDER BY u.username")?.query_map([],|r| Ok(json!({"id":r.get::<_,String>(0)?,"username":r.get::<_,String>(1)?,"enabled":r.get::<_,bool>(2)?})))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
+    let rows = storage::approval_users(&state.db).await?;
     Ok(Json(json!({"items":rows})))
 }
 async fn auto_approve(
@@ -197,13 +181,13 @@ async fn auto_approve(
     Json(input): Json<Auto>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageUsers).await?;
-    state.db.call(move|db|{let tx=db.transaction()?;tx.execute("INSERT INTO acquisition_users VALUES (?1,?2) ON CONFLICT(user_id) DO UPDATE SET auto_approve=excluded.auto_approve",params![user,input.enabled])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'request.auto_approve',?2,?3)",params![p.user.id,user,now()])?;tx.commit()?;Ok(())}).await?;
+    storage::auto_approve(&state.db, user, input, p).await?;
     Ok(Json(json!({"saved":true})))
 }
 async fn update(state: &AppState, key: &str, status: &str, manager: Option<i64>) -> Result<()> {
     let key = key.to_owned();
     let status = status.to_owned();
-    state.db.call(move|db|{db.execute("UPDATE acquisition_requests SET state=?1,manager_id=COALESCE(?2,manager_id),updated_at=?3 WHERE id=?4",params![status,manager,now(),key])?;Ok(())}).await?;
+    storage::update(key, status, &state.db, manager).await?;
     Ok(())
 }
 pub(crate) async fn acquire(state: &AppState, job: &thelxinoe_jobs::Job) -> anyhow::Result<()> {
@@ -215,14 +199,16 @@ pub(crate) async fn acquire(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
     let _guard = state.managers.guard.lock().await;
     if let Err(error) = perform(state, &key).await {
         let message = error.2;
-        state.db.call(move|db|{db.execute("UPDATE acquisition_requests SET state=CASE WHEN state IN ('searching','uncertain') THEN 'uncertain' ELSE 'failed' END,error=?1,updated_at=?2 WHERE id=?3",params![message,now(),key])?;Ok(())}).await?;
+        storage::acquire(key, message, &state.db).await?;
         anyhow::bail!("Acquisition needs attention; review its request status")
     }
     Ok(())
 }
 async fn perform(state: &AppState, key: &str) -> Result<()> {
     let request_id = key.to_owned();
-    let row=state.db.call(move|db|Ok(db.query_row("SELECT service_id,generation,external_id,state FROM acquisition_requests WHERE id=?1",[request_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?))).optional()?)).await?.ok_or_else(ApiError::not_found)?;
+    let row = storage::perform(request_id, &state.db)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     if matches!(
         row.3.as_str(),
         "requested" | "available" | "denied" | "cancelled"

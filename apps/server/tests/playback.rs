@@ -76,7 +76,7 @@ async fn replacement_and_restart_keep_resume_but_invalidate_old_playback_generat
         controller_socket: temp.path().join("socket"),
     };
     let state = AppState::open(config.clone()).await.unwrap();
-    state.db.call(move|db|{
+    state.db.write("test.fixture", move|db|{
         db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Movies','movies',?1)",[root.to_string_lossy().to_string()])?;
         db.execute("INSERT INTO users(id,username,password_hash,role,created_at) VALUES ('user','viewer','unused','user',?1)",[now()])?;
         db.execute("INSERT INTO sessions VALUES ('device','user','unused','device','test',?1,?2,?1)",rusqlite::params![now(),now()+3600])?;Ok(())
@@ -95,7 +95,7 @@ async fn replacement_and_restart_keep_resume_but_invalidate_old_playback_generat
         session_id: "device".into(),
         transport: "device".into(),
     };
-    let (media_id,file_id,generation)=state.db.call(|db|Ok(db.query_row("SELECT m.id,f.id,f.generation FROM media m JOIN media_sources s ON s.media_id=m.id JOIN media_files f ON f.id=s.file_id",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))?)).await.unwrap();
+    let (media_id,file_id,generation)=state.db.write("test.fixture", |db|Ok(db.query_row("SELECT m.id,f.id,f.generation FROM media m JOIN media_sources s ON s.media_id=m.id JOIN media_files f ON f.id=s.file_id",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))?)).await.unwrap();
     let options = Options {
         quality: "auto".into(),
         audio: None,
@@ -157,7 +157,7 @@ async fn replacement_and_restart_keep_resume_but_invalidate_old_playback_generat
     let fid = file_id.clone();
     let new_generation = state
         .db
-        .call(move |db| {
+        .write("test.fixture", move |db| {
             Ok(db.query_row(
                 "SELECT generation FROM media_files WHERE id=?1",
                 [fid],
@@ -233,7 +233,7 @@ async fn replacement_and_restart_keep_resume_but_invalidate_old_playback_generat
     );
     let progress = state
         .db
-        .call(move |db| {
+        .write("test.fixture", move |db| {
             Ok(db.query_row(
                 "SELECT position FROM edition_progress WHERE media_id=?1",
                 [media_id],

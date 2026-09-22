@@ -23,7 +23,7 @@ async fn connected_youtube_avatar_is_backfilled_without_subscribing_to_own_chann
     let generation = connect(&state, "alice").await;
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute(
                 "UPDATE online_accounts SET external_id=?1 WHERE user_id='alice'",
                 [CHANNEL],
@@ -76,7 +76,7 @@ async fn connected_youtube_avatar_is_backfilled_without_subscribing_to_own_chann
     assert_eq!(account["account"]["display_name"], "Alice");
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             assert_eq!(
                 db.query_row("SELECT COUNT(*) FROM youtube_subscriptions", [], |row| row
                     .get::<_, i64>(
@@ -127,7 +127,7 @@ pub(crate) async fn connect(state: &AppState, user: &str) -> String {
     let owner = user.to_owned();
     let generation = id();
     let copy = generation.clone();
-    state.db.call(move|db|{
+    state.db.write("test.fixture", move|db|{
         db.execute("INSERT INTO online_accounts(user_id,provider,generation,status,credential,expires_at,updated_at) VALUES (?1,'youtube',?2,'connected',?3,?4,?5)",params![owner,copy,encrypted,now()+3600,now()])?;
         db.execute("INSERT INTO youtube_sync(user_id,generation) VALUES (?1,?2)",params![owner,copy])?;Ok(())
     }).await.unwrap();
@@ -160,7 +160,7 @@ async fn fair_sync_resumes_pages_and_preserves_private_state() {
     let (_temp, mut state, session) = fixture().await;
     connect(&state, "alice").await;
     connect(&state, "bob").await;
-    state.db.call(|db|{db.execute("INSERT INTO youtube_subscriptions(user_id,channel_id,title,snapshot,active) VALUES ('alice',?1,'Previous subscription','previous',1)",[OTHER])?;Ok(())}).await.unwrap();
+    state.db.write("test.fixture", |db|{db.execute("INSERT INTO youtube_subscriptions(user_id,channel_id,title,snapshot,active) VALUES ('alice',?1,'Previous subscription','previous',1)",[OTHER])?;Ok(())}).await.unwrap();
     let requests = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
     let record = requests.clone();
     let router=axum::Router::new().route("/{endpoint}",get(move|Path(endpoint):Path<String>,Query(query):Query<HashMap<String,String>>,headers:HeaderMap|{
@@ -183,7 +183,7 @@ async fn fair_sync_resumes_pages_and_preserves_private_state() {
     assert!(
         state
             .db
-            .call(|db| Ok(db.query_row(
+            .write("test.fixture", |db| Ok(db.query_row(
                 "SELECT active FROM youtube_subscriptions WHERE user_id='alice' AND channel_id=?1",
                 [OTHER],
                 |r| r.get::<_, bool>(0)
@@ -206,7 +206,7 @@ async fn fair_sync_resumes_pages_and_preserves_private_state() {
     }
     let completed = restarted
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             Ok(db.query_row(
                 "SELECT COUNT(*) FROM youtube_sync WHERE last_complete IS NOT NULL",
                 [],
@@ -344,10 +344,11 @@ async fn a_late_provider_reply_cannot_restore_deleted_data() {
     assert_eq!(
         state
             .db
-            .call(|db| Ok(
-                db.query_row("SELECT COUNT(*) FROM youtube_subscriptions", [], |r| r
-                    .get::<_, u32>(0))?
-            ))
+            .write("test.fixture", |db| Ok(db.query_row(
+                "SELECT COUNT(*) FROM youtube_subscriptions",
+                [],
+                |r| r.get::<_, u32>(0)
+            )?))
             .await
             .unwrap(),
         0
@@ -360,7 +361,7 @@ async fn direct_url_playback_resolves_metadata_without_saving_a_watchlist_item()
     connect(&state, "alice").await;
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE youtube_sync SET next_run=?1", [now() + 1800])?;
             Ok(())
         })
@@ -383,7 +384,7 @@ async fn direct_url_playback_resolves_metadata_without_saving_a_watchlist_item()
         StatusCode::OK
     );
     assert!(tick(&state).await.unwrap());
-    let (title, private_rows, saved) = state.db.call(|db| {
+    let (title, private_rows, saved) = state.db.write("test.fixture", |db| {
         Ok((
             db.query_row("SELECT title FROM youtube_videos WHERE user_id='alice' AND video_id=?1 AND metadata_at>0", [VIDEO], |r| r.get::<_, String>(0))?,
             db.query_row("SELECT COUNT(*) FROM youtube_videos WHERE user_id='bob'", [], |r| r.get::<_, u32>(0))?,

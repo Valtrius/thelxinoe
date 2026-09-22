@@ -40,6 +40,8 @@ base64 = "0.22"
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 
 [dev-dependencies]
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = "1"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

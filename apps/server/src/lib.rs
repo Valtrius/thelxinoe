@@ -1,3 +1,6 @@
+#[path = "storage/server.rs"]
+mod storage;
+
 mod accounts;
 #[cfg(test)]
 mod accounts_tests;
@@ -72,18 +75,10 @@ impl AppState {
         std::fs::create_dir_all(&config.state)?;
         std::fs::create_dir_all(&config.cache)?;
         let db = Database::open(config.state.join("thelxinoe.sqlite3"))?;
-        db.call(|db| {db.execute("UPDATE media_operations SET state='uncertain',error='Server stopped during execution; reconcile before preparing another operation' WHERE state='executing'",[])?;Ok(())}).await?;
-        let server_id=db.call(|db|{
-            db.execute("INSERT INTO settings(key,value) VALUES ('server_id',?1) ON CONFLICT(key) DO NOTHING",[thelxinoe_core::id()])?;
-            Ok(db.query_row("SELECT value FROM settings WHERE key='server_id'",[],|r|r.get::<_,String>(0))?)
-        }).await?;
+        storage::open_write_media_operations(&db).await?;
+        let server_id = storage::open_write_settings(&db).await?;
         if !config.state.join("secrets/master.key").exists()
-            && db
-                .call(|c| {
-                    Ok(c.query_row("SELECT (SELECT COUNT(*) FROM secrets)+(SELECT COUNT(*) FROM manager_services)+(SELECT COUNT(*) FROM support_services)+(SELECT COUNT(*) FROM stack_provisions)+(SELECT COUNT(*) FROM online_accounts WHERE credential IS NOT NULL)", [], |r| r.get::<_, i64>(0))?)
-                })
-                .await?
-                > 0
+            && storage::open_read_secrets(&db).await? > 0
         {
             anyhow::bail!(
                 "The credential master key is missing. Restore the original key before starting the server."
@@ -115,17 +110,14 @@ impl AppState {
         payload: serde_json::Value,
     ) -> anyhow::Result<()> {
         let kind = kind.to_owned();
-        self.db
-            .call(move |c| {
-                c.execute(
-                    "INSERT INTO events(user_id,kind,payload,created_at) VALUES (?1,?2,?3,?4)",
-                    rusqlite::params![user_id, kind, payload.to_string(), thelxinoe_core::now()],
-                )?;
-                Ok(())
-            })
-            .await?;
-        let _ = self.events.send(());
+        storage::emit(&self.db, kind, user_id, payload).await?;
+        self.notify_events();
         Ok(())
+    }
+
+    /// Wake subscribers after a storage operation has committed its event rows.
+    pub(crate) fn notify_events(&self) {
+        let _ = self.events.send(());
     }
 }
 pub fn router(state: AppState) -> Router {
@@ -356,16 +348,7 @@ pub async fn run_jobs(state: AppState) -> anyhow::Result<()> {
                         let succeeded = result.is_ok();
                         let error = result.err().map(|e| e.to_string());
                         if let Some(error) = error.clone() {
-                            state
-                                .db
-                                .call(move |db| {
-                                    db.execute(
-                                        "UPDATE library_roots SET scan_error=?1 WHERE id=?2",
-                                        rusqlite::params![error, root.id],
-                                    )?;
-                                    Ok(())
-                                })
-                                .await?;
+                            storage::run_jobs(error, root, &state.db).await?;
                         }
                         queue.finish(&job, error).await?;
                         if succeeded {

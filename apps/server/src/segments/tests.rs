@@ -18,7 +18,7 @@ async fn jellyfin_segments_follow_only_this_devices_selected_edition() {
     let mut headers = HeaderMap::new();
     headers.insert("cookie", alice.parse().unwrap());
     let p = security::principal(&state, &headers).await.unwrap();
-    state.db.call(|db|{
+    state.db.write("test.fixture", |db|{
         db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('r','Movies','movies','/fixture')",[])?;
         db.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES ('m','r','movie','e','Movie',1)",[])?;
         for (file,start) in [("f1",10),("f2",40)] {
@@ -30,7 +30,7 @@ async fn jellyfin_segments_follow_only_this_devices_selected_edition() {
     }).await.unwrap();
     assert!(for_jellyfin(&state, &p, "m").await.unwrap().is_empty());
     let auth = p.session_id.clone();
-    state.db.call(move|db|{
+    state.db.write("test.fixture", move|db|{
         db.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,media_id,file_id,generation,edition,state,mode,options,duration,created_at,updated_at) VALUES ('play','alice',?1,'m','f2','g1','','ready','direct','{}',120,1,1)",[auth])?;
         Ok(())
     }).await.unwrap();
@@ -40,7 +40,7 @@ async fn jellyfin_segments_follow_only_this_devices_selected_edition() {
     assert!(for_jellyfin(&state, &other, "m").await.unwrap().is_empty());
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE media_files SET generation='g2' WHERE id='f2'", [])?;
             Ok(())
         })
@@ -51,7 +51,7 @@ async fn jellyfin_segments_follow_only_this_devices_selected_edition() {
 #[tokio::test]
 async fn manual_overrides_are_authorized_bounded_and_specific_to_file_generation() {
     let (_temp, state, alice) = fixture().await;
-    state.db.call(|db|{
+    state.db.write("test.fixture", |db|{
         db.execute("UPDATE users SET role='admin' WHERE id='bob'",[])?;
         db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('r','TV','shows','/fixture')",[])?;
         db.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES ('m','r','episode','e','Episode',1)",[])?;
@@ -121,7 +121,7 @@ async fn manual_overrides_are_authorized_bounded_and_specific_to_file_generation
     );
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE media_files SET generation='g2'", [])?;
             Ok(())
         })

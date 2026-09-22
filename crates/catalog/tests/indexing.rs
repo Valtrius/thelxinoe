@@ -36,7 +36,7 @@ async fn scan_replacement_move_removal_and_failed_scan_preserve_logical_state() 
         scan_error: None,
     };
     let r = root.clone();
-    db.call(move |c| {
+    db.write("test.fixture", move |c| {
         c.execute(
             "INSERT INTO library_roots(id,name,kind,path) VALUES (?1,?2,?3,?4)",
             params![r.id, r.name, r.kind, r.path],
@@ -46,18 +46,18 @@ async fn scan_replacement_move_removal_and_failed_scan_preserve_logical_state() 
     .await?;
     std::fs::write(media.join("Track.wav"), wav(1))?;
     assert_eq!(scan(&db, root.clone()).await?, 1);
-    let first=db.call(|c|Ok(c.query_row("SELECT m.id,f.generation FROM media m JOIN media_sources s ON s.media_id=m.id JOIN media_files f ON f.id=s.file_id WHERE m.kind='track' AND f.present=1",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?)).await?;
+    let first=db.write("test.fixture", |c|Ok(c.query_row("SELECT m.id,f.generation FROM media m JOIN media_sources s ON s.media_id=m.id JOIN media_files f ON f.id=s.file_id WHERE m.kind='track' AND f.present=1",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?)).await?;
     std::fs::write(media.join("Track.wav"), wav(2))?;
     scan(&db, root.clone()).await?;
-    let second=db.call(|c|Ok(c.query_row("SELECT m.id,f.generation FROM media m JOIN media_sources s ON s.media_id=m.id JOIN media_files f ON f.id=s.file_id WHERE m.kind='track' AND f.present=1",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?)).await?;
+    let second=db.write("test.fixture", |c|Ok(c.query_row("SELECT m.id,f.generation FROM media m JOIN media_sources s ON s.media_id=m.id JOIN media_files f ON f.id=s.file_id WHERE m.kind='track' AND f.present=1",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?)).await?;
     assert_eq!(first.0, second.0);
     assert_ne!(first.1, second.1);
     std::fs::rename(media.join("Track.wav"), media.join("Renamed.wav"))?;
     scan(&db, root.clone()).await?;
-    let moved=db.call(|c|Ok(c.query_row("SELECT m.id FROM media m JOIN media_sources s ON s.media_id=m.id JOIN media_files f ON f.id=s.file_id WHERE m.kind='track' AND f.present=1",[],|r|r.get::<_,String>(0))?)).await?;
+    let moved=db.write("test.fixture", |c|Ok(c.query_row("SELECT m.id FROM media m JOIN media_sources s ON s.media_id=m.id JOIN media_files f ON f.id=s.file_id WHERE m.kind='track' AND f.present=1",[],|r|r.get::<_,String>(0))?)).await?;
     assert_eq!(moved, first.0);
     scan(&db, root.clone()).await?;
-    let stable=db.call(|c|Ok(c.query_row("SELECT m.id FROM media m JOIN media_sources s ON s.media_id=m.id JOIN media_files f ON f.id=s.file_id WHERE m.kind='track' AND f.present=1",[],|r|r.get::<_,String>(0))?)).await?;
+    let stable=db.write("test.fixture", |c|Ok(c.query_row("SELECT m.id FROM media m JOIN media_sources s ON s.media_id=m.id JOIN media_files f ON f.id=s.file_id WHERE m.kind='track' AND f.present=1",[],|r|r.get::<_,String>(0))?)).await?;
     assert_eq!(
         stable, first.0,
         "Repeated scans of a renamed file must retain the logical identity"
@@ -65,12 +65,11 @@ async fn scan_replacement_move_removal_and_failed_scan_preserve_logical_state() 
     std::fs::write(media.join("Distinct copy.wav"), wav(2))?;
     scan(&db, root.clone()).await?;
     assert_eq!(
-        db.call(|c| Ok(
-            c.query_row("SELECT COUNT(*) FROM media WHERE kind='track'", [], |r| r
-                .get::<_, i64>(
-                0
-            ))?
-        ))
+        db.write("test.fixture", |c| Ok(c.query_row(
+            "SELECT COUNT(*) FROM media WHERE kind='track'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )?))
         .await?,
         2,
         "An identical copy is not a move while its source still exists"
@@ -80,7 +79,7 @@ async fn scan_replacement_move_removal_and_failed_scan_preserve_logical_state() 
     std::fs::write(media.join("Broken.wav"), b"incomplete download")?;
     assert!(scan(&db, root.clone()).await.is_err());
     assert_eq!(
-        db.call(|c| Ok(c.query_row(
+        db.write("test.fixture", |c| Ok(c.query_row(
             "SELECT count(*) FROM media_files WHERE present=1",
             [],
             |r| r.get::<_, i64>(0)
@@ -92,7 +91,7 @@ async fn scan_replacement_move_removal_and_failed_scan_preserve_logical_state() 
     std::fs::remove_file(media.join("Renamed.wav"))?;
     scan(&db, root).await?;
     assert_eq!(
-        db.call(|c| Ok(c.query_row(
+        db.write("test.fixture", |c| Ok(c.query_row(
             "SELECT count(*) FROM media_files WHERE present=1",
             [],
             |r| r.get::<_, i64>(0)
@@ -101,12 +100,11 @@ async fn scan_replacement_move_removal_and_failed_scan_preserve_logical_state() 
         0
     );
     assert_eq!(
-        db.call(|c| Ok(
-            c.query_row("SELECT count(*) FROM media WHERE kind='track'", [], |r| r
-                .get::<_, i64>(
-                0
-            ))?
-        ))
+        db.write("test.fixture", |c| Ok(c.query_row(
+            "SELECT count(*) FROM media WHERE kind='track'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )?))
         .await?,
         2
     );

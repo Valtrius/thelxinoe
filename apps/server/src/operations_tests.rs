@@ -4,7 +4,7 @@ use serde_json::json;
 #[tokio::test]
 async fn notices_are_private_deduplicated_and_diagnostics_exclude_secret_material() {
     let (_temp, state, alice) = fixture().await;
-    state.db.call(|db|{db.execute("UPDATE users SET role='admin' WHERE id='bob'",[])?;db.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,completed_at,error,created_at) VALUES ('failed','metadata.match','{\"secret\":\"PRIVATE-TOKEN\"}','test','failed',1,?1,'https://private/?ApiKey=PRIVATE-TOKEN',1)",[thelxinoe_core::now()])?;Ok(())}).await.unwrap();
+    state.db.write("test.fixture", |db|{db.execute("UPDATE users SET role='admin' WHERE id='bob'",[])?;db.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,completed_at,error,created_at) VALUES ('failed','metadata.match','{\"secret\":\"PRIVATE-TOKEN\"}','test','failed',1,?1,'https://private/?ApiKey=PRIVATE-TOKEN',1)",[thelxinoe_core::now()])?;Ok(())}).await.unwrap();
     let token =
         thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
             .await
@@ -66,7 +66,7 @@ async fn notices_are_private_deduplicated_and_diagnostics_exclude_secret_materia
     assert!(!diagnostic.to_string().contains("bob"));
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE jobs SET state='complete' WHERE id='failed'", [])?;
             Ok(())
         })
@@ -75,7 +75,7 @@ async fn notices_are_private_deduplicated_and_diagnostics_exclude_secret_materia
     super::operations::observe(&state).await.unwrap();
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE jobs SET state='failed' WHERE id='failed'", [])?;
             Ok(())
         })
@@ -95,7 +95,7 @@ async fn notices_are_private_deduplicated_and_diagnostics_exclude_secret_materia
 #[tokio::test]
 async fn user_deletion_revokes_personal_state_and_preserves_shared_data() {
     let (_temp, state, alice) = fixture().await;
-    state.db.call(|db|{db.execute("UPDATE users SET role='admin' WHERE id='bob'",[])?;db.execute("INSERT INTO online_accounts(user_id,provider,generation,updated_at) VALUES ('alice','youtube','g',1)",[])?;db.execute("INSERT INTO events(user_id,kind,payload,created_at) VALUES ('alice','private','{}',1)",[])?;db.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,created_at,updated_at) VALUES ('service','radarr','alice',7878,X'00','active',1,1)",[])?;Ok(())}).await.unwrap();
+    state.db.write("test.fixture", |db|{db.execute("UPDATE users SET role='admin' WHERE id='bob'",[])?;db.execute("INSERT INTO online_accounts(user_id,provider,generation,updated_at) VALUES ('alice','youtube','g',1)",[])?;db.execute("INSERT INTO events(user_id,kind,payload,created_at) VALUES ('alice','private','{}',1)",[])?;db.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,created_at,updated_at) VALUES ('service','radarr','alice',7878,X'00','active',1,1)",[])?;Ok(())}).await.unwrap();
     let token =
         thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
             .await
@@ -131,5 +131,5 @@ async fn user_deletion_revokes_personal_state_and_preserves_shared_data() {
             .0,
         StatusCode::UNAUTHORIZED
     );
-    state.db.call(|db|{assert_eq!(db.query_row("SELECT (SELECT COUNT(*) FROM online_accounts)+(SELECT COUNT(*) FROM events WHERE user_id='alice')",[],|r|r.get::<_,i64>(0))?,0);assert_eq!(db.query_row("SELECT actor_id FROM stack_provisions",[],|r|r.get::<_,String>(0))?,"bob");assert!(!db.prepare("PRAGMA foreign_key_check")?.exists([])?);Ok(())}).await.unwrap();
+    state.db.write("test.fixture", |db|{assert_eq!(db.query_row("SELECT (SELECT COUNT(*) FROM online_accounts)+(SELECT COUNT(*) FROM events WHERE user_id='alice')",[],|r|r.get::<_,i64>(0))?,0);assert_eq!(db.query_row("SELECT actor_id FROM stack_provisions",[],|r|r.get::<_,String>(0))?,"bob");assert!(!db.prepare("PRAGMA foreign_key_check")?.exists([])?);Ok(())}).await.unwrap();
 }

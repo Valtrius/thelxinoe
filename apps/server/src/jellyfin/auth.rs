@@ -1,3 +1,6 @@
+#[path = "../storage/jellyfin/auth.rs"]
+mod storage;
+
 use super::Query;
 use crate::{
     AppState, accounts,
@@ -174,13 +177,7 @@ pub async fn issue(state: &AppState, user: String, device: Device) -> Result<Val
     )
     .await?;
     let hash = thelxinoe_auth::digest(&raw);
-    let (id,date)=state.db.call(move|db|{
-        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let session:String=tx.query_row("SELECT id FROM sessions WHERE token_hash=?1",[hash],|r|r.get(0))?;
-        tx.execute("DELETE FROM sessions WHERE user_id=?1 AND id IN (SELECT session_id FROM compat_devices WHERE device_id=?2 AND client=?3)",params![user,device.id,device.client])?;
-        tx.execute("INSERT INTO compat_devices VALUES (?1,?2,?3,?4)",params![session,device.id,device.client,device.version])?;
-        let date:String=tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ','now')",[],|r|r.get(0))?;tx.commit()?;Ok((session,date))
-    }).await?;
+    let (id, date) = storage::issue(hash, &state.db, user, device).await?;
     let p = thelxinoe_auth::resolve(&state.db, &raw, "jellyfin")
         .await?
         .ok_or_else(ApiError::unauthorized)?;
@@ -190,17 +187,7 @@ pub async fn issue(state: &AppState, user: String, device: Device) -> Result<Val
 }
 pub async fn user_dto(state: &AppState, p: &Principal) -> Result<Value> {
     let user = p.user.id.clone();
-    let prefs = state
-        .db
-        .call(move |db| {
-            Ok(db
-                .query_row(
-                    "SELECT value FROM playback_preferences WHERE user_id=?1",
-                    [user],
-                    |r| r.get::<_, String>(0),
-                )
-                .optional()?)
-        })
+    let prefs = storage::user_dto(user, &state.db)
         .await?
         .and_then(|v| serde_json::from_str::<Value>(&v).ok())
         .unwrap_or_else(|| json!({}));

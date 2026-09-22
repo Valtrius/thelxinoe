@@ -1,3 +1,6 @@
+#[path = "storage/playback.rs"]
+mod storage;
+
 use crate::{
     AppState,
     error::{ApiError, Result},
@@ -21,23 +24,13 @@ use tower::ServiceExt;
 pub async fn source(state: &AppState, media: &str, file: Option<&str>) -> Result<Source> {
     let media = media.to_owned();
     let file = file.map(str::to_owned);
-    state.db.call(move|db| {
-        Ok(db.query_row("SELECT f.id,f.generation,f.edition,f.path,r.path,f.size,f.modified,f.probe FROM media_sources s JOIN media_files f ON f.id=s.file_id JOIN library_roots r ON r.id=f.root_id WHERE s.media_id=?1 AND f.present=1 AND (?2 IS NULL OR f.id=?2) ORDER BY f.edition,f.id LIMIT 1",params![media,file],|r|Ok(Source {id:r.get(0)?,media_id:media.clone(),generation:r.get(1)?,edition:r.get(2)?,path:PathBuf::from(r.get::<_,String>(3)?),root:PathBuf::from(r.get::<_,String>(4)?),size:r.get::<_,i64>(5)? as u64,modified:r.get(6)?,probe:serde_json::from_str(&r.get::<_,String>(7)?).unwrap_or_default()})).optional()?)
-    }).await?.ok_or_else(ApiError::not_found)
+    storage::source(media, file, &state.db)
+        .await?
+        .ok_or_else(ApiError::not_found)
 }
 async fn user_preferences(state: &AppState, p: &Principal) -> Result<Preferences> {
     let user = p.user.id.clone();
-    Ok(state
-        .db
-        .call(move |db| {
-            Ok(db
-                .query_row(
-                    "SELECT value FROM playback_preferences WHERE user_id=?1",
-                    [user],
-                    |r| r.get::<_, String>(0),
-                )
-                .optional()?)
-        })
+    Ok(storage::user_preferences(user, &state.db)
         .await?
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default())
@@ -56,7 +49,7 @@ pub async fn save_preferences(
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
     value.validate().map_err(|e| ApiError::bad(e.to_string()))?;
-    state.db.call(move|db|{db.execute("INSERT INTO playback_preferences VALUES (?1,?2) ON CONFLICT(user_id) DO UPDATE SET value=excluded.value",params![p.user.id,serde_json::to_string(&value)?])?;Ok(())}).await?;
+    storage::save_preferences(&state.db, value, p).await?;
     Ok(Json(json!({"saved":true})))
 }
 pub async fn media_info(
@@ -85,19 +78,16 @@ pub async fn media_info(
         };
         let video = video.to_owned();
         let owner = p.user.id.clone();
-        let (position,watched)=state.db.call(move |db| Ok(db.query_row("SELECT position,watched FROM youtube_state WHERE user_id=?1 AND video_id=?2",params![owner,video],|r|Ok((r.get::<_,f64>(0)?,r.get::<_,bool>(1)?))).optional()?.unwrap_or((0.0,false)))).await?;
+        let (position, watched) =
+            storage::media_info_read_youtube_state(&state.db, video, owner).await?;
         return Ok(Json(
             json!({"sources":[{"id":source.id,"edition":source.edition,"duration":source.duration(),"video":source.video_codec().is_some(),"tracks":source.tracks().await?,"probe":source.probe,"size":source.size}],"progress":[{"edition":"public","position":position,"duration":source.duration()}],"watched":watched,"preferences":user_preferences(&state,&p).await?}),
         ));
     }
     let user = p.user.id.clone();
     let mid = media.clone();
-    let (files,progress,watched)=state.db.call(move|db| {
-        let files=db.prepare("SELECT f.id FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=?1 AND f.present=1 ORDER BY f.edition,f.id")?.query_map([&mid],|r|r.get::<_,String>(0))?.collect::<std::result::Result<Vec<_>,_>>()?;
-        let progress=db.prepare("SELECT edition,position,duration FROM edition_progress WHERE user_id=?1 AND media_id=?2")?.query_map(params![user,mid],|r|Ok(json!({"edition":r.get::<_,String>(0)?,"position":r.get::<_,f64>(1)?,"duration":r.get::<_,f64>(2)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
-        let watched=db.query_row("SELECT watched FROM media_state WHERE user_id=?1 AND media_id=?2",params![user,mid],|r|r.get::<_,bool>(0)).optional()?.unwrap_or(false);
-        Ok((files,progress,watched))
-    }).await?;
+    let (files, progress, watched) =
+        storage::media_info_read_media_sources(&state.db, user, mid).await?;
     let mut sources = Vec::new();
     for file in files {
         let source = source(&state, &media, Some(&file)).await?;
@@ -152,14 +142,7 @@ pub(crate) async fn create_with_delivery(
         let user = p.clone();
         let queue = queue.clone();
         let media = input.media_id.clone();
-        let matches = state
-            .db
-            .call(move |db| {
-                let saved = crate::user_media::queue_value(db, &user, &queue.client_id)?;
-                Ok(saved["revision"].as_i64() == Some(queue.revision)
-                    && saved["items"][queue.index].as_str() == Some(&media))
-            })
-            .await?;
+        let matches = storage::queue_matches(user, queue, media, &state.db).await?;
         if !matches {
             return Err(ApiError::conflict(
                 "The music queue changed; reload it before playing",
@@ -252,17 +235,22 @@ pub(crate) async fn create_with_delivery(
     let auth = p.session_id.clone();
     let src = source.clone();
     let options = input.options.clone();
-    let position=state.db.call(move|db| {
-        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let saved=if let Some(video)=&online_video {tx.query_row("SELECT position FROM youtube_state WHERE user_id=?1 AND video_id=?2",params![user,video],|r|r.get::<_,f64>(0)).optional()?.unwrap_or(0.0)} else {tx.query_row("SELECT position FROM edition_progress WHERE user_id=?1 AND media_id=?2 AND edition=?3",params![user,src.media_id,src.edition],|r|r.get::<_,f64>(0)).optional()?.unwrap_or(0.0)};
-        let position=input.position.unwrap_or(if saved>=duration*0.9 {0.0} else {saved}).clamp(0.0,duration);
-        if !position.is_finite() {anyhow::bail!("Invalid playback position");}
-        if let Some(video)=&online_video {
-            let available=tx.query_row("SELECT EXISTS(SELECT 1 FROM youtube_downloads d JOIN youtube_videos v ON v.video_id=d.video_id WHERE d.video_id=?1 AND d.generation=?2 AND d.state='ready' AND v.user_id=?3)",params![video,src.generation,user],|r|r.get::<_,bool>(0))?;
-            anyhow::ensure!(available,"Online media changed before playback");
-        }
-        tx.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,media_id,file_id,generation,edition,state,mode,options,duration,position,created_at,updated_at,client_id,queue_revision,queue_index,youtube_video_id) VALUES (?1,?2,?3,?4,?5,?6,?7,'ready',?8,?9,?10,?11,?12,?12,?13,?14,?15,?16)",params![key,user,auth,online_video.is_none().then_some(&src.media_id),online_video.is_none().then_some(&src.id),src.generation,src.edition,mode,serde_json::to_string(&options)?,duration,position,now(),input.queue.as_ref().map(|q|&q.client_id),input.queue.as_ref().map(|q|q.revision),input.queue.as_ref().map(|q|q.index as i64),online_video])?;tx.commit()?;Ok(position)
-    }).await?;
+    let position = storage::create_session(
+        &state.db,
+        storage::PlaybackSession {
+            online_video,
+            mode,
+            duration,
+            key,
+            user,
+            auth,
+            src,
+            options,
+            position: input.position,
+            queue: input.queue.clone(),
+        },
+    )
+    .await?;
     let grant = grants::issue(state, p, &format!("playback:{sid}"), 120).await?;
     let mut timeline_start = 0.0;
     let url = if mode == "direct" {
@@ -308,7 +296,9 @@ struct Session {
 async fn session(state: &AppState, p: &Principal, id: &str) -> Result<Session> {
     let id = id.to_owned();
     let p = p.clone();
-    state.db.call(move|db|Ok(db.query_row("SELECT COALESCE(media_id,'youtube:'||youtube_video_id,live_media_id),COALESCE(file_id,youtube_video_id,live_media_id),generation,mode,options,duration,streaming FROM playback_sessions WHERE id=?1 AND user_id=?2 AND auth_session_id=?3 AND state IN ('ready','playing','paused') AND updated_at>?4",params![id,p.user.id,p.session_id,now()-120],|r|Ok(Session {media:r.get(0)?,file:r.get(1)?,generation:r.get(2)?,mode:r.get(3)?,options:serde_json::from_str(&r.get::<_,String>(4)?).unwrap(),duration:r.get(5)?,streaming:r.get(6)?})).optional()?)).await?.ok_or_else(ApiError::not_found)
+    storage::session(id, p, &state.db)
+        .await?
+        .ok_or_else(ApiError::not_found)
 }
 async fn current_source(state: &AppState, session: &Session) -> Result<Source> {
     let src = if let Some(video) = session.media.strip_prefix("youtube:") {
@@ -432,7 +422,7 @@ pub async fn keepalive(
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
     session(&state, &p, &id).await?;
-    state.db.call(move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;tx.execute("UPDATE playback_sessions SET updated_at=?1 WHERE id=?2 AND state IN ('ready','playing','paused')",params![now(),id])?;tx.execute("UPDATE playback_grants SET expires_at=?1 WHERE resource=?2 AND expires_at>?3",params![now()+120,format!("playback:{id}"),now()])?;tx.commit()?;Ok(())}).await?;
+    storage::keepalive(&state.db, id).await?;
     Ok(Json(json!({"active":true})))
 }
 pub async fn cancel(
@@ -443,22 +433,7 @@ pub async fn cancel(
     let p = security::principal(&state, &headers).await?;
     session(&state, &p, &id).await?;
     let key = id.clone();
-    state
-        .db
-        .call(move |db| {
-            let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            tx.execute(
-                "UPDATE playback_sessions SET state='stopped',updated_at=?1 WHERE id=?2",
-                params![now(), key],
-            )?;
-            tx.execute(
-                "DELETE FROM playback_grants WHERE resource=?1",
-                [format!("playback:{key}")],
-            )?;
-            tx.commit()?;
-            Ok(())
-        })
-        .await?;
+    storage::cancel(&state.db, key).await?;
     state.playback.stop(&id).await;
     Ok(Json(json!({"stopped":true})))
 }
@@ -534,37 +509,14 @@ pub async fn report(state: &AppState, p: &Principal, id: &str, input: Progress) 
     let auth = p.session_id.clone();
     let key = id.to_owned();
     let stopped = input.state == "stopped";
-    let event_state = input.state.clone();
-    let updated=state.db.call(move|db| {
-        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let row=tx.query_row("SELECT COALESCE(media_id,'youtube:'||youtube_video_id,live_media_id),edition,duration,sequence,state FROM playback_sessions WHERE id=?1 AND user_id=?2 AND auth_session_id=?3",params![key,user,auth],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,f64>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?))).optional()?;
-        let Some((media,edition,duration,sequence,status))=row else {return Ok(None);};
-        if input.sequence<=sequence || ["stopped","failed"].contains(&status.as_str()) {return Ok(Some(false));}
-        let position=if duration==0.0 {input.position}else{input.position.min(duration)};
-        let seconds=crate::statistics::record(&tx,&key,&input)?;
-        tx.execute("UPDATE playback_sessions SET position=?1,sequence=?2,state=?3,updated_at=?4 WHERE id=?5",params![position,input.sequence,input.state,now(),key])?;
-        if let Some(video)=media.strip_prefix("youtube:") {
-            crate::online::downloads::record_state(&tx,&user,video,position,duration)?;
-        } else if !crate::online::live::domain(&media) {
-            tx.execute("INSERT INTO edition_progress VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(user_id,media_id,edition) DO UPDATE SET position=excluded.position,duration=excluded.duration,updated_at=excluded.updated_at",params![user,media,edition,position,duration,now()])?;
-            tx.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES (?1,?2,?3,?4) ON CONFLICT(user_id,media_id) DO UPDATE SET watched=MAX(watched,excluded.watched),updated_at=excluded.updated_at",params![user,media,position>=duration*0.9,now()])?;
-        }
-        crate::history::record(&tx,&key,position,&input.state,seconds)?;
-        let resource=format!("playback:{key}");
-        if stopped {tx.execute("DELETE FROM playback_grants WHERE resource=?1",[resource])?;} else {tx.execute("UPDATE playback_grants SET expires_at=?1 WHERE resource=?2 AND expires_at>?3",params![now()+120,resource,now()])?;}
-        tx.commit()?;Ok(Some(true))
-    }).await?.ok_or_else(ApiError::not_found)?;
+    let updated = storage::report(user, auth, key, stopped, &state.db, input)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     if updated {
         if stopped {
             state.playback.stop(id).await;
         }
-        state
-            .emit(
-                Some(p.user.id.clone()),
-                "playback.changed",
-                json!({"id":id,"state":event_state}),
-            )
-            .await?;
+        state.notify_events();
     }
     Ok(json!({"accepted":updated}))
 }
@@ -636,31 +588,14 @@ pub async fn subtitle(
 }
 async fn fail(state: &AppState, id: &str) -> anyhow::Result<()> {
     let id = id.to_owned();
-    state
-        .db
-        .call(move |db| {
-            db.execute(
-                "UPDATE playback_sessions SET state='failed',updated_at=?1 WHERE id=?2",
-                params![now(), id],
-            )?;
-            db.execute(
-                "DELETE FROM playback_grants WHERE resource=?1",
-                [format!("playback:{id}")],
-            )?;
-            Ok(())
-        })
-        .await
+    storage::fail(id, &state.db).await
 }
 pub async fn maintain(state: AppState) -> anyhow::Result<()> {
     // Process state cannot survive a server restart, but resume records do.
-    state.db.call(|db|{db.execute("UPDATE playback_sessions SET state='stopped' WHERE state IN ('ready','playing','paused')",[])?;crate::history::finish_stale(db)?;Ok(())}).await?;
+    storage::maintain_write_playback_sessions(&state.db).await?;
     loop {
         tokio::time::sleep(Duration::from_secs(10)).await;
-        let active=state.db.call(|db| {
-            db.execute("UPDATE playback_sessions SET state='stopped' WHERE state IN ('ready','playing','paused') AND updated_at<=?1",[now()-120])?;
-            crate::history::finish_stale(db)?;
-            Ok(db.prepare("SELECT p.id FROM playback_sessions p JOIN sessions s ON s.id=p.auth_session_id WHERE p.state IN ('ready','playing','paused') AND s.expires_at>?1")?.query_map([now()],|r|r.get::<_,String>(0))?.collect::<std::result::Result<Vec<_>,_>>()?)
-        }).await?;
+        let active = storage::expire_sessions(&state.db).await?;
         for id in state.playback.maintain(&active).await? {
             fail(&state, &id).await?;
         }

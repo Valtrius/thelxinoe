@@ -30,7 +30,7 @@ async fn fixture() -> (tempfile::TempDir, AppState) {
     })
     .await
     .unwrap();
-    state.db.call(|db|{
+    state.db.write("test.fixture", |db|{
         for user in ["alice","bob","admin"]{db.execute("INSERT INTO users(id,username,password_hash,role,created_at) VALUES (?1,?1,'unused',?2,?3)",params![user,if user=="admin"{"admin"}else{"user"},now()])?;}
         db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Test','movies','/media/test')",[])?;
         for (id,kind,parent,number) in [("movie","movie",None,0),("a","track",None,1),("b","track",None,2),("show","show",None,0),("season","season",Some("show"),1),("specials","season",Some("show"),0),("special","episode",Some("specials"),1),("e1","episode",Some("season"),1),("e2","episode",Some("season"),2)] {
@@ -56,7 +56,7 @@ async fn login(state: &AppState, user: &str) -> (String, Principal) {
     let hash = thelxinoe_auth::digest(&token);
     let session = state
         .db
-        .call(move |db| {
+        .write("test.fixture", move |db| {
             Ok(
                 db.query_row("SELECT id FROM sessions WHERE token_hash=?1", [hash], |r| {
                     r.get(0)
@@ -267,7 +267,7 @@ async fn timezone_defaults_follow_server_changes_until_explicitly_overridden() {
     );
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             assert!(
                 db.prepare(
                     "SELECT 1 FROM events WHERE kind='preferences.changed' AND user_id='alice'"
@@ -490,7 +490,7 @@ async fn shared_playlists_keep_owner_edits_and_private_favorites_and_queues() {
     let other = ok(&state, &bob, "/catalog/movie/state", "GET", Value::Null).await;
     assert_eq!(other["favorite"], false);
     assert_eq!(other["watch_later"], false);
-    state.db.call(|db|{
+    state.db.write("test.fixture", |db|{
         db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,edition,scanned_at) VALUES ('extended','root','extended','generation',10,'mtime','extended','{}','Extended',?1)",[now()])?;
         db.execute("INSERT INTO media_sources VALUES ('movie','extended')",[])?;
         db.execute("INSERT INTO edition_progress VALUES ('alice','movie','',3,100,?1),('alice','movie','Extended',7,100,?2)",params![now()-10,now()])?;
@@ -629,7 +629,7 @@ async fn shared_playlists_keep_owner_edits_and_private_favorites_and_queues() {
         thelxinoe_database::Database::open(state.config.state.join("thelxinoe.sqlite3")).unwrap();
     assert_eq!(
         reopened
-            .call(move |db| Ok(db.query_row(
+            .write("test.fixture", move |db| Ok(db.query_row(
                 "SELECT current_index FROM music_queues WHERE client_id=?1",
                 [client],
                 |r| r.get::<_, i64>(0)
@@ -674,7 +674,7 @@ async fn session(
     let auth = p.session_id.clone();
     let key = key.to_string();
     let media = media.to_string();
-    state.db.call(move|db|{db.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,media_id,file_id,generation,edition,state,mode,options,duration,created_at,updated_at,client_id,queue_revision,queue_index) VALUES (?1,?2,?3,?4,?4,'generation','','ready','direct','{}',100,?5,?5,?6,?7,?8)",params![key,user,auth,media,now(),queue.as_ref().map(|q|&q.0),queue.as_ref().map(|q|q.1),queue.as_ref().map(|q|q.2)])?;Ok(())}).await.unwrap();
+    state.db.write("test.fixture", move|db|{db.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,media_id,file_id,generation,edition,state,mode,options,duration,created_at,updated_at,client_id,queue_revision,queue_index) VALUES (?1,?2,?3,?4,?4,'generation','','ready','direct','{}',100,?5,?5,?6,?7,?8)",params![key,user,auth,media,now(),queue.as_ref().map(|q|&q.0),queue.as_ref().map(|q|q.1),queue.as_ref().map(|q|q.2)])?;Ok(())}).await.unwrap();
 }
 async fn progress(
     state: &AppState,
@@ -708,7 +708,7 @@ async fn viewing_statistics_exclude_seek_jumps_and_survive_device_revocation() {
     progress(&state, &p, "play", 0, 0.0, "playing").await;
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute(
                 "UPDATE playback_sessions SET reported_at_ms=?1 WHERE id='play'",
                 [chrono::Utc::now().timestamp_millis() - 10_000],

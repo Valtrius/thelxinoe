@@ -114,7 +114,7 @@ async fn setup_needs_only_credentials_and_accepts_one_concurrent_administrator()
     assert_eq!(statuses, [200, 409]);
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             assert_eq!(
                 db.query_row("SELECT COUNT(*) FROM users WHERE role='admin'", [], |row| {
                     row.get::<_, i64>(0)
@@ -333,7 +333,7 @@ async fn forwarded_headers_require_trusted_proxy_and_client_chain_is_resolved_fr
 async fn manual_fields_win_after_metadata_refresh() {
     let (_temp, state) = fixture().await;
     let cookie = setup(&state).await;
-    state.db.call(|db|{db.execute_batch("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Fixture','movies','/fixture'); INSERT INTO media(id,root_id,kind,evidence_key,title,metadata,created_at) VALUES ('movie','root','movie','fixture','Local title','{\"title\":\"Initial provider title\"}',0);")?;Ok(())}).await.unwrap();
+    state.db.write("test.fixture", |db|{db.execute_batch("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Fixture','movies','/fixture'); INSERT INTO media(id,root_id,kind,evidence_key,title,metadata,created_at) VALUES ('movie','root','movie','fixture','Local title','{\"title\":\"Initial provider title\"}',0);")?;Ok(())}).await.unwrap();
     assert_eq!(
         request(
             &state,
@@ -349,7 +349,7 @@ async fn manual_fields_win_after_metadata_refresh() {
     );
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute(
                 "UPDATE media SET metadata=?1 WHERE id='movie'",
                 [json!({"title":"Refreshed provider title"}).to_string()],
@@ -398,7 +398,7 @@ async fn manual_fields_win_after_metadata_refresh() {
 async fn episode_manager_numbering_is_explicit_and_complex_mappings_are_marked() {
     let (_temp, state) = fixture().await;
     let cookie = setup(&state).await;
-    state.db.call(|db|{db.execute_batch("INSERT INTO library_roots(id,name,kind,path) VALUES ('r','TV','shows','/tv');
+    state.db.write("test.fixture", |db|{db.execute_batch("INSERT INTO library_roots(id,name,kind,path) VALUES ('r','TV','shows','/tv');
 INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES ('show','r','show',NULL,'show','Show',NULL,0),('season','r','season','show','s','Season',1,0),('e1','r','episode','season','e1','First',1,0),('e2','r','episode','season','e2','Second',2,0);
 INSERT INTO manager_services VALUES ('sonarr','Fixture','sonarr','container',8989,'g',X'00','','{}','1',1,1,NULL);
 INSERT INTO metadata_bindings VALUES ('show','sonarr','g','100',NULL,1);
@@ -406,7 +406,7 @@ INSERT INTO manager_episodes VALUES ('sonarr','g','100',201,1,2,1,'{}'),('sonarr
     assert_eq!(
         state
             .db
-            .call(|db| Ok(db.query_row(
+            .write("test.fixture", |db| Ok(db.query_row(
                 "SELECT count(*) FROM manager_episode_mappings",
                 [],
                 |r| r.get::<_, i64>(0)
@@ -444,7 +444,7 @@ INSERT INTO manager_episodes VALUES ('sonarr','g','100',201,1,2,1,'{}'),('sonarr
     assert_eq!(
         state
             .db
-            .call(|db| Ok(db.query_row(
+            .write("test.fixture", |db| Ok(db.query_row(
                 "SELECT count(*) FROM manager_episode_mappings WHERE state='complex'",
                 [],
                 |r| r.get::<_, i64>(0)
@@ -644,7 +644,7 @@ async fn concurrent_library_additions_serialize_overlap_checks_and_job_writes() 
     assert_eq!(
         state
             .db
-            .call(|db| Ok(db.query_row(
+            .write("test.fixture", |db| Ok(db.query_row(
                 "SELECT count(*) FROM jobs WHERE kind='library.scan'",
                 [],
                 |r| r.get::<_, i64>(0)

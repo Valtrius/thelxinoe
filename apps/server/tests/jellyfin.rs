@@ -27,7 +27,7 @@ async fn fixture() -> (tempfile::TempDir, AppState, String) {
         .unwrap();
     state
         .db
-        .call(move |db| {
+        .write("test.fixture", move |db| {
             for name in ["alice", "bob"] {
                 db.execute(
                     "INSERT INTO users(id,username,password_hash,role,created_at) VALUES (?1,?1,?2,'user',1)",
@@ -80,7 +80,7 @@ const DEVICE: &str = "MediaBrowser Client=\"Test%20client\", Device=\"Living roo
 #[tokio::test]
 async fn online_libraries_and_watchlists_are_private_stable_and_use_existing_settings() {
     let (_temp, state, first_party) = fixture().await;
-    state.db.call(|db| {
+    state.db.write("test.fixture", |db| {
         for user in ["alice","bob"] {
             db.execute("INSERT INTO youtube_subscriptions(user_id,channel_id,title,snapshot,active) VALUES(?1,'channel','Channel','s',1)",[user])?;
             for video in ["aaaaaaaaaaa","bbbbbbbbbbb"] {
@@ -170,7 +170,7 @@ async fn online_libraries_and_watchlists_are_private_stable_and_use_existing_set
     );
     // Wholphin edits membership, preserving the user's existing list policy.
     let list_key = list.to_owned();
-    state.db.call(move|db|{db.execute("UPDATE youtube_watchlists SET auto_download=1,auto_remove_watched=1,sort_mode='date',sort_direction='desc' WHERE id=(SELECT watchlist_id FROM compat_online_items WHERE id=?1)",[list_key])?;Ok(())}).await.unwrap();
+    state.db.write("test.fixture", move|db|{db.execute("UPDATE youtube_watchlists SET auto_download=1,auto_remove_watched=1,sort_mode='date',sort_direction='desc' WHERE id=(SELECT watchlist_id FROM compat_online_items WHERE id=?1)",[list_key])?;Ok(())}).await.unwrap();
     assert_eq!(
         call(
             &state,
@@ -333,11 +333,11 @@ async fn online_libraries_and_watchlists_are_private_stable_and_use_existing_set
     assert_eq!(reordered["Items"][0]["Id"], second);
     assert_eq!(reordered["Items"][1]["Id"], video_id);
     let key = list.to_owned();
-    assert!(state.db.call(move|db|Ok(db.query_row("SELECT auto_download=1 AND auto_remove_watched=1 AND sort_mode='manual' AND sort_direction='asc' FROM youtube_watchlists WHERE id=(SELECT watchlist_id FROM compat_online_items WHERE id=?1)",[key],|r|r.get::<_,bool>(0))?)).await.unwrap());
+    assert!(state.db.write("test.fixture", move|db|Ok(db.query_row("SELECT auto_download=1 AND auto_remove_watched=1 AND sort_mode='manual' AND sort_direction='asc' FROM youtube_watchlists WHERE id=(SELECT watchlist_id FROM compat_online_items WHERE id=?1)",[key],|r|r.get::<_,bool>(0))?)).await.unwrap());
     assert!(
         state
             .db
-            .call(|db| Ok(db.query_row(
+            .write("test.fixture", |db| Ok(db.query_row(
                 "SELECT COUNT(*) FROM events WHERE user_id='alice' AND kind='youtube.changed'",
                 [],
                 |r| r.get::<_, i64>(0)
@@ -378,7 +378,7 @@ async fn online_libraries_and_watchlists_are_private_stable_and_use_existing_set
     );
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("DELETE FROM youtube_videos WHERE user_id='alice'", [])?;
             Ok(())
         })
@@ -396,7 +396,7 @@ async fn online_libraries_and_watchlists_are_private_stable_and_use_existing_set
         .0,
         StatusCode::NOT_FOUND
     );
-    assert_eq!(state.db.call(|db|Ok(db.query_row("SELECT COUNT(*) FROM compat_online_items WHERE user_id='alice' AND youtube_video_id IS NOT NULL",[],|r|r.get::<_,i64>(0))?)).await.unwrap(),0);
+    assert_eq!(state.db.write("test.fixture", |db|Ok(db.query_row("SELECT COUNT(*) FROM compat_online_items WHERE user_id='alice' AND youtube_video_id IS NOT NULL",[],|r|r.get::<_,i64>(0))?)).await.unwrap(),0);
 }
 
 #[tokio::test]
@@ -404,7 +404,7 @@ async fn diagnostics_exclude_compatibility_credentials_and_untrusted_errors() {
     let (_temp, state, first_party) = fixture().await;
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE users SET role='admin' WHERE id='alice'", [])?;
             Ok(())
         })
@@ -426,7 +426,7 @@ async fn diagnostics_exclude_compatibility_credentials_and_untrusted_errors() {
         StatusCode::OK
     );
     let leaked_error = format!("untrusted-error-sentinel: {query}");
-    state.db.call(move |db| {
+    state.db.write("test.fixture", move |db| {
         db.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,error,created_at) VALUES ('redaction','fixture','{}','redaction','failed',1,?1,1)", [&leaked_error])?;
         db.execute("INSERT INTO audit(action,target,created_at) VALUES ('fixture',?1,1)", [&leaked_error])?;
         Ok(())
@@ -470,7 +470,7 @@ async fn diagnostics_exclude_compatibility_credentials_and_untrusted_errors() {
 #[tokio::test]
 async fn catalog_paging_playlist_order_and_private_state_match_first_party() {
     let (_temp, state, first_party) = fixture().await;
-    state.db.call(|db| {
+    state.db.write("test.fixture", |db| {
         db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('music','Music','music','/music')",[])?;
         for (id,kind,parent) in [("artist","artist",None),("album","album",Some("artist")),("one","track",Some("album")),("two","track",Some("album"))] {
             db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,created_at) VALUES (?1,'music',?2,?3,?1,?1,1)",rusqlite::params![id,kind,parent])?;
@@ -569,7 +569,7 @@ async fn catalog_paging_playlist_order_and_private_state_match_first_party() {
     }
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             for index in 0..100 {
                 db.execute(
                     "INSERT INTO compat_preferences VALUES ('alice','test',?1,'{}')",

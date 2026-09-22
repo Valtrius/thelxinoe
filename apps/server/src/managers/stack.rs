@@ -1,4 +1,8 @@
 //! Server-owned provisioning jobs keep credentials out of job payloads and controller responses.
+
+#[path = "../storage/managers/stack.rs"]
+mod storage;
+
 use super::*;
 pub(super) fn router() -> Router<AppState> {
     Router::new()
@@ -68,7 +72,7 @@ async fn templates(State(state): State<AppState>, headers: HeaderMap) -> Result<
 async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
     let mut value = controller(&state, "", None).await?;
-    value["provisions"]=state.db.call(|db|Ok(json!(db.prepare("SELECT id,kind,state,host_port,container_id,service_id,error,native_url,origin FROM stack_provisions ORDER BY created_at")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"kind":r.get::<_,String>(1)?,"state":r.get::<_,String>(2)?,"host_port":r.get::<_,u16>(3)?,"container_id":r.get::<_,Option<String>>(4)?,"service_id":r.get::<_,Option<String>>(5)?,"error":r.get::<_,Option<String>>(6)?,"native_url":r.get::<_,String>(7)?,"origin":r.get::<_,String>(8)?})))?.collect::<rusqlite::Result<Vec<_>>>()?))).await?;
+    value["provisions"] = storage::list(&state.db).await?;
     Ok(Json(value))
 }
 #[derive(Deserialize)]
@@ -100,7 +104,7 @@ async fn install(
         &format!("provision:{key}"),
         id().replace('-', "").as_bytes(),
     )?;
-    let inserted=state.db.call(move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;if tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE kind=?1 UNION ALL SELECT 1 FROM manager_services WHERE kind=?1 UNION ALL SELECT 1 FROM support_services WHERE kind=?1)",[&input.kind],|r|r.get::<_,bool>(0))?{return Ok(false);}tx.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,created_at,updated_at,native_url) VALUES (?1,?2,?3,?4,?5,'queued',?6,?6,?7)",params![key,input.kind,p.user.id,input.host_port,credential,now(),input.native_url])?;tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'stack.install',?2,?3,'queued',?4,?4)",params![id(),json!({"id":key}).to_string(),format!("stack:{key}"),now()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'stack.install',?2,?3)",params![p.user.id,key,now()])?;tx.commit()?;Ok(true)}).await?;
+    let inserted = storage::install(&state.db, input, p, key, credential).await?;
     if !inserted {
         return Err(ApiError::conflict(
             "This service is already connected or managed",
@@ -142,18 +146,7 @@ async fn action(
             .as_str()
             .unwrap_or_default()
             .to_owned();
-        let service = state
-            .db
-            .call(move |db| {
-                Ok(db
-                    .query_row(
-                        "SELECT id FROM manager_services WHERE container_id=?1",
-                        [c],
-                        |r| r.get::<_, String>(0),
-                    )
-                    .optional()?)
-            })
-            .await?;
+        let service = storage::action_read_manager_services(&state.db, c).await?;
         if let Some(s) = service {
             operations::ensure_idle(&state, &s).await?;
         }
@@ -166,22 +159,9 @@ async fn action(
     .await?;
     if input.action == "reconcile" {
         let key = key.clone();
-        state.db.call(move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            if tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE id=?1 AND state='blocked')",[&key],|r|r.get::<_,bool>(0))? {
-                tx.execute("UPDATE stack_provisions SET state='connecting',error=NULL WHERE id=?1",[&key])?;
-                tx.execute("UPDATE jobs SET state='queued',error=NULL,available_at=?1 WHERE kind='stack.install' AND json_extract(payload,'$.id')=?2 AND state IN ('failed','complete')",params![now(),key])?;
-            }tx.commit()?;Ok(())}).await?;
+        storage::action_write_stack_provisions(&state.db, key).await?;
     }
-    state
-        .db
-        .call(move |db| {
-            db.execute(
-                "INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,?2,?3,?4)",
-                params![p.user.id, format!("stack.{}", input.action), key, now()],
-            )?;
-            Ok(())
-        })
-        .await?;
+    storage::action_write_audit(&state.db, key, input, p).await?;
     Ok(Json(result))
 }
 async fn progress(
@@ -193,7 +173,7 @@ async fn progress(
 ) -> Result<()> {
     let key = key.to_owned();
     let stage = stage.to_owned();
-    state.db.call(move|db|{db.execute("UPDATE stack_provisions SET state=?1,container_id=COALESCE(?2,container_id),error=?3,updated_at=?4 WHERE id=?5",params![stage,container,error,now(),key])?;Ok(())}).await?;
+    storage::progress(key, stage, &state.db, container, error).await?;
     Ok(())
 }
 pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> anyhow::Result<()> {
@@ -202,21 +182,12 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
         .ok_or_else(|| anyhow::anyhow!("Missing provision identity"))?
         .to_owned();
     let lookup = key.clone();
-    let row=state.db.call(move|db|Ok(db.query_row("SELECT kind,actor_id,host_port,credential,state,container_id,service_id,origin,native_url FROM stack_provisions WHERE id=?1",[lookup],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,u16>(2)?,r.get::<_,Vec<u8>>(3)?,r.get::<_,String>(4)?,r.get::<_,Option<String>>(5)?,r.get::<_,Option<String>>(6)?,r.get::<_,String>(7)?,r.get::<_,String>(8)?)))?)).await?;
+    let row = storage::provision_read_stack_provisions(lookup, &state.db).await?;
     if row.4 == "complete" {
         return Ok(());
     }
     let actor = row.1.clone();
-    let admin = state
-        .db
-        .call(move |db| {
-            Ok(db.query_row(
-                "SELECT EXISTS(SELECT 1 FROM users WHERE id=?1 AND role='admin')",
-                [actor],
-                |r| r.get::<_, bool>(0),
-            )?)
-        })
-        .await?;
+    let admin = storage::provision_read_users(actor, &state.db).await?;
     if !admin {
         progress(
             state,
@@ -250,16 +221,16 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
    } else {controller(state,"/install",Some(json!({"operation_id":key,"kind":row.0,"host_port":row.2,"username":"thelxinoe","secret":secret}))).await?}
   };
   let container=installed["container_id"].as_str().ok_or_else(unavailable)?.to_owned();progress(state,&key,"connecting",Some(container.clone()),None).await?;
-  if row.7=="adopted" {let service_id=row.6.clone().ok_or_else(unavailable)?;let container=container.clone();let kind=row.0.clone();state.db.call(move|db|{let table=if matches!(kind.as_str(),"radarr"|"sonarr"|"lidarr"){"manager_services"}else{"support_services"};db.execute(&format!("UPDATE {table} SET container_id=?1,generation=?2 WHERE id=?3"),params![container,id(),service_id])?;Ok(())}).await?;}
+  if row.7=="adopted" {let service_id=row.6.clone().ok_or_else(unavailable)?;let container=container.clone();let kind=row.0.clone();storage::provision_write(service_id, container, kind, &state.db).await?;}
   let mut last=None;let mut registered=None;
-  let service_name=if row.7=="adopted" {let integration=row.6.clone().ok_or_else(unavailable)?;state.db.call(move|db|Ok(db.query_row("SELECT name FROM manager_services WHERE id=?1 UNION ALL SELECT name FROM support_services WHERE id=?1",[integration],|r|r.get::<_,String>(0))?)).await?}else{format!("Managed {}",row.0)};
+  let service_name=if row.7=="adopted" {let integration=row.6.clone().ok_or_else(unavailable)?;storage::provision_read_manager_services(integration, &state.db).await?}else{format!("Managed {}",row.0)};
   for _ in 0..60 {
    let registration=if matches!(row.0.as_str(),"radarr"|"sonarr"|"lidarr") {super::register_with_actor(state.clone(),super::Register{name:service_name.clone(),kind:row.0.clone(),container_id:container.clone(),port:template["port"].as_u64().ok_or_else(unavailable)? as u16,api_key:secret.clone()},row.1.clone()).await}
    else {support::provision(state.clone(),row.1.clone(),json!({"name":service_name,"kind":row.0,"container_id":container,"port":template["port"],"credentials":{"username":credentials.username,"secret":secret},"native_url":row.8})).await};
    match registration {Ok(Json(value))=>{registered=Some(value);break;},Err(error)=>last=Some(error)};
    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
   }
-  let registered=registered.ok_or_else(||last.unwrap_or_else(unavailable))?;let key=key.clone();state.db.call(move|db|{db.execute("UPDATE stack_provisions SET service_id=?1,state='connecting',error=NULL,updated_at=?2 WHERE id=?3",params![registered["id"].as_str(),now(),key])?;Ok(())}).await?;
+  let registered=registered.ok_or_else(||last.unwrap_or_else(unavailable))?;let key=key.clone();storage::provision_write_stack_provisions(registered, key, &state.db).await?;
   Ok::<(),ApiError>(())
  }.await;
     if let Err(error) = result {
@@ -313,7 +284,9 @@ async fn adopt_preview(
 ) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
     let key = input.service_id.clone();
-    let (kind,container,port)=state.db.call(move|db|Ok(db.query_row("SELECT kind,container_id,port FROM manager_services WHERE id=?1 UNION ALL SELECT kind,container_id,port FROM support_services WHERE id=?1",[key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,u16>(2)?))).optional()?)).await?.ok_or_else(ApiError::not_found)?;
+    let (kind, container, port) = storage::adopt_preview(&state.db, key)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     let templates = controller(&state, "/templates", None).await?;
     if !templates["items"]
         .as_array()
@@ -361,7 +334,11 @@ async fn restore_original(
     let _lease = state.media_operations.write().await;
     let _guard = state.managers.guard.lock().await;
     let lookup = key.clone();
-    let (kind,integration)=state.db.call(move|db|Ok(db.query_row("SELECT p.kind,p.service_id FROM stack_provisions p WHERE p.id=?1 AND p.origin='adopted' AND p.state='blocked' AND EXISTS(SELECT 1 FROM jobs j WHERE j.kind='stack.install' AND json_extract(j.payload,'$.id')=p.id AND j.state='failed')",[lookup],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?)).await?.ok_or_else(||ApiError::conflict("Only a finished, blocked transfer can restore the original"))?;
+    let (kind, integration) = storage::restore_original_read_stack_provisions(&state.db, lookup)
+        .await?
+        .ok_or_else(|| {
+            ApiError::conflict("Only a finished, blocked transfer can restore the original")
+        })?;
     let result = controller(
         &state,
         &format!("/{key}/action"),
@@ -372,15 +349,8 @@ async fn restore_original(
         .as_str()
         .ok_or_else(unavailable)?
         .to_owned();
-    state.db.call(move|db|{
-        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let table=if matches!(kind.as_str(),"radarr"|"sonarr"|"lidarr"){"manager_services"}else{"support_services"};
-        tx.execute(&format!("UPDATE {table} SET container_id=?1,generation=?2 WHERE id=?3"),params![container,id(),integration])?;
-        tx.execute("UPDATE jobs SET state='complete',error=NULL WHERE kind='stack.install' AND json_extract(payload,'$.id')=?1",[&key])?;
-        tx.execute("DELETE FROM stack_provisions WHERE id=?1",[&key])?;
-        tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'stack.restore-original',?2,?3)",params![actor.user.id,key,now()])?;
-        tx.commit()?;Ok(())
-    }).await?;
+    storage::restore_original_write_jobs(&state.db, key, actor, kind, integration, container)
+        .await?;
     state
         .emit(None, "stack.changed", json!({"restored":true}))
         .await?;
@@ -400,7 +370,9 @@ async fn adopt(
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
     let service_id = input.service_id.clone();
-    let item=state.db.call(move|db|Ok(db.query_row("SELECT kind,container_id,'' FROM manager_services WHERE id=?1 UNION ALL SELECT kind,container_id,native_url FROM support_services WHERE id=?1",[service_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional()?)).await?.ok_or_else(ApiError::not_found)?;
+    let item = storage::adopt_read_manager_services(&state.db, service_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     let credentials = if matches!(item.0.as_str(), "radarr" | "sonarr" | "lidarr") {
         let service = service(&state, &input.service_id).await?;
         support::Credentials {
@@ -421,13 +393,14 @@ async fn adopt(
         ));
     }
     controller(&state,"/adopt/check",Some(json!({"operation_id":input.review_id,"kind":item.0,"container_id":item.1,"released_compose":input.released_compose}))).await?;
-    let key = input.review_id;
+    let key = input.review_id.clone();
     let returned = key.clone();
     let credential = state.secrets.encrypt(
         &format!("provision:{key}"),
         &serde_json::to_vec(&credentials).map_err(|_| unavailable())?,
     )?;
-    let inserted=state.db.call(move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;if tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE kind=?1)",[&item.0],|r|r.get::<_,bool>(0))?{return Ok(false);}tx.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,container_id,service_id,origin,created_at,updated_at,native_url) VALUES (?1,?2,?3,0,?4,'queued',?5,?6,'adopted',?7,?7,?8)",params![key,item.0,p.user.id,credential,item.1,input.service_id,now(),item.2])?;tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'stack.install',?2,?3,'queued',?4,?4)",params![id(),json!({"id":key}).to_string(),format!("stack:{key}"),now()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'stack.adopt',?2,?3)",params![p.user.id,key,now()])?;tx.commit()?;Ok(true)}).await?;
+    let inserted =
+        storage::adopt_write_stack_provisions(&state.db, input, p, item, key, credential).await?;
     if !inserted {
         return Err(ApiError::conflict(
             "This service already has a provisioning record",
@@ -463,13 +436,7 @@ async fn retry(
             "Reconcile the controller operation before retrying API connection",
         ));
     }
-    let changed=state.db.call(move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let ready=tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions p JOIN jobs j ON json_extract(j.payload,'$.id')=p.id WHERE p.id=?1 AND p.state='blocked' AND j.kind='stack.install' AND j.state='failed')",[&key],|r|r.get::<_,bool>(0))?;
-        if !ready {return Ok(false);}
-        tx.execute("UPDATE stack_provisions SET state='queued',error=NULL,updated_at=?1 WHERE id=?2",params![now(),key])?;
-        tx.execute("UPDATE jobs SET state='queued',error=NULL,available_at=?1 WHERE kind='stack.install' AND json_extract(payload,'$.id')=?2",params![now(),key])?;
-        tx.commit()?;Ok(true)
-    }).await?;
+    let changed = storage::retry(&state.db, key).await?;
     if !changed {
         return Err(ApiError::conflict(
             "Only a finished, blocked provisioning attempt can be retried",

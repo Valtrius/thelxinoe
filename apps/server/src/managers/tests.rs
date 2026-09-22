@@ -56,7 +56,7 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
     Arc::get_mut(&mut state.config).unwrap().media = "/media".into();
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE users SET role='admin' WHERE id='bob'", [])?;
             Ok(())
         })
@@ -181,7 +181,7 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
     assert_eq!(
         state
             .db
-            .call(|db| Ok(db.query_row(
+            .write("test.fixture", |db| Ok(db.query_row(
                 "SELECT COUNT(*) FROM manager_services WHERE kind='radarr'",
                 [],
                 |r| r.get::<_, i64>(0)
@@ -271,7 +271,7 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
     let request_id = key.to_owned();
     state
         .db
-        .call(move |db| {
+        .write("test.fixture", move |db| {
             db.execute(
                 "UPDATE acquisition_requests SET state='searching' WHERE id=?1",
                 [request_id],
@@ -295,7 +295,7 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
     )
     .await;
     assert_eq!(rows.2["items"][0]["state"], "uncertain");
-    state.db.call(|db|{
+    state.db.write("test.fixture", |db|{
         db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('binding-root','Fixture','movies','/media/movies')",[])?;
         db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES ('binding-file','binding-root','/media/movies/fixture.mkv','g',1,'1','hash','{}',1)",[])?;
         Ok(())
@@ -304,7 +304,7 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
     assert_eq!(
         state
             .db
-            .call(|db| Ok(db.query_row(
+            .write("test.fixture", |db| Ok(db.query_row(
                 "SELECT ownership FROM media_files WHERE id='binding-file'",
                 [],
                 |r| r.get::<_, String>(0)
@@ -325,7 +325,7 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
     assert_eq!(
         state
             .db
-            .call(|db| Ok(db.query_row(
+            .write("test.fixture", |db| Ok(db.query_row(
                 "SELECT ownership FROM media_files WHERE id='binding-file'",
                 [],
                 |r| r.get::<_, String>(0)
@@ -337,7 +337,7 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
     assert_eq!(
         state
             .db
-            .call(|db| Ok(db.query_row(
+            .write("test.fixture", |db| Ok(db.query_row(
                 "SELECT COUNT(*) FROM manager_bindings WHERE file_id='binding-file'",
                 [],
                 |r| r.get::<_, i64>(0)
@@ -367,7 +367,7 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
         .get_mut(&format!("containers/{container}"))
         .unwrap()["mounts"][0]["source"] = json!("/physical");
     let provision_container = container.clone();
-    state.db.call(move |db|{
+    state.db.write("test.fixture", move |db|{
         db.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,container_id,created_at,updated_at) VALUES ('manager-provision','radarr','bob',7878,X'00','queued',?1,1,1)",[provision_container])?;
         Ok(())
     }).await.unwrap();
@@ -382,7 +382,7 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
     assert_eq!(blocked.0, StatusCode::CONFLICT, "{}", blocked.2);
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute(
                 "UPDATE stack_provisions SET state='connecting' WHERE id='manager-provision'",
                 [],
@@ -409,7 +409,7 @@ async fn deletion_rechecks_keep_and_file_replacement_and_never_retries_completed
     let (temp, state, alice) = fixture().await;
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE users SET role='admin' WHERE id='bob'", [])?;
             Ok(())
         })
@@ -439,7 +439,7 @@ async fn deletion_rechecks_keep_and_file_replacement_and_never_retries_completed
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
     let stored = path.to_string_lossy().to_string();
-    state.db.call(move|db|{
+    state.db.write("test.fixture", move|db|{
         db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Fixture','movies',?1)",[root.to_string_lossy().as_ref()])?;
         db.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES ('movie','root','movie','fixture','Fixture',1)",[])?;
         db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES ('file','root',?1,'generation',?2,?3,?4,'{}',1)",params![stored,meta.len() as i64,modified,hash])?;
@@ -528,7 +528,7 @@ async fn support_services_are_admin_only_redacted_and_expose_only_allowed_comman
     Arc::get_mut(&mut state.config).unwrap().media = "/media".into();
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE users SET role='admin' WHERE id='bob'", [])?;
             Ok(())
         })
@@ -601,7 +601,7 @@ async fn support_services_are_admin_only_redacted_and_expose_only_allowed_comman
     assert_eq!(
         state
             .db
-            .call(|db| Ok(db.query_row(
+            .write("test.fixture", |db| Ok(db.query_row(
                 "SELECT COUNT(*) FROM support_services WHERE kind='nzbget'",
                 [],
                 |r| r.get::<_, i64>(0)
@@ -648,7 +648,7 @@ async fn support_services_are_admin_only_redacted_and_expose_only_allowed_comman
     assert_eq!(commands.load(Ordering::SeqCst), 1);
     let stored = state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             Ok(
                 db.query_row("SELECT credential FROM support_services", [], |r| {
                     r.get::<_, Vec<u8>>(0)
@@ -659,7 +659,7 @@ async fn support_services_are_admin_only_redacted_and_expose_only_allowed_comman
         .unwrap();
     assert!(!String::from_utf8_lossy(&stored).contains("private-test-secret"));
     let provision_container = replacement.clone();
-    state.db.call(move |db|{
+    state.db.write("test.fixture", move |db|{
         db.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,container_id,created_at,updated_at) VALUES ('support-provision','nzbget','bob',6789,X'00','queued',?1,1,1)",[provision_container])?;
         Ok(())
     }).await.unwrap();
@@ -674,7 +674,7 @@ async fn support_services_are_admin_only_redacted_and_expose_only_allowed_comman
     assert_eq!(blocked.0, StatusCode::CONFLICT, "{}", blocked.2);
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute(
                 "UPDATE stack_provisions SET state='connecting' WHERE id='support-provision'",
                 [],
@@ -700,7 +700,7 @@ async fn provisioning_is_admin_only_durable_and_never_puts_credentials_in_jobs()
     let (_temp, state, alice) = fixture().await;
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE users SET role='admin' WHERE id='bob'", [])?;
             Ok(())
         })
@@ -758,7 +758,7 @@ async fn provisioning_is_admin_only_durable_and_never_puts_credentials_in_jobs()
     );
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute(
                 "INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('existing-radarr','Existing Radarr','radarr','existing-container',7878,'generation',X'00','/media','1',1)",
                 [],
@@ -781,7 +781,7 @@ async fn provisioning_is_admin_only_durable_and_never_puts_credentials_in_jobs()
     );
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute(
                 "DELETE FROM manager_services WHERE id='existing-radarr'",
                 [],
@@ -805,7 +805,7 @@ async fn provisioning_is_admin_only_durable_and_never_puts_credentials_in_jobs()
             .0,
         StatusCode::CONFLICT
     );
-    let (key,encrypted,payload)=state.db.call(|db|Ok(db.query_row("SELECT p.id,p.credential,j.payload FROM stack_provisions p JOIN jobs j ON json_extract(j.payload,'$.id')=p.id",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Vec<u8>>(1)?,r.get::<_,String>(2)?)))?)).await.unwrap();
+    let (key,encrypted,payload)=state.db.write("test.fixture", |db|Ok(db.query_row("SELECT p.id,p.credential,j.payload FROM stack_provisions p JOIN jobs j ON json_extract(j.payload,'$.id')=p.id",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Vec<u8>>(1)?,r.get::<_,String>(2)?)))?)).await.unwrap();
     let plain = state
         .secrets
         .decrypt(&format!("provision:{key}"), &encrypted)
@@ -841,7 +841,7 @@ async fn provisioning_is_admin_only_durable_and_never_puts_credentials_in_jobs()
         StatusCode::OK
     );
     let provision = key.clone();
-    state.db.call(move|db|{db.execute("UPDATE stack_provisions SET state='complete',service_id='fixture-integration' WHERE id=?1",[provision])?;Ok(())}).await.unwrap();
+    state.db.write("test.fixture", move|db|{db.execute("UPDATE stack_provisions SET state='complete',service_id='fixture-integration' WHERE id=?1",[provision])?;Ok(())}).await.unwrap();
     let update_settings = call(
         &state,
         "/api/v1/admin/service-updates",

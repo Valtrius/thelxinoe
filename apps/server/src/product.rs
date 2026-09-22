@@ -1,4 +1,8 @@
 //! First-party release policy; privileged state transitions remain controller-owned.
+
+#[path = "storage/product.rs"]
+mod storage;
+
 use crate::{
     AppState,
     error::{ApiError, Result},
@@ -42,22 +46,11 @@ impl Default for Policy {
 }
 async fn setting(state: &AppState, key: &str) -> Result<Option<Value>> {
     let key = key.to_owned();
-    Ok(state
-        .db
-        .call(move |db| {
-            Ok(db
-                .query_row("SELECT value FROM settings WHERE key=?1", [key], |r| {
-                    r.get::<_, String>(0)
-                })
-                .optional()?
-                .map(|s| serde_json::from_str(&s))
-                .transpose()?)
-        })
-        .await?)
+    Ok(storage::setting(key, &state.db).await?)
 }
 async fn save(state: &AppState, key: &str, value: Value) -> Result<()> {
     let key = key.to_owned();
-    state.db.call(move|db|{db.execute("INSERT INTO settings VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,value.to_string()])?;Ok(())}).await?;
+    storage::save(key, &state.db, value).await?;
     Ok(())
 }
 pub(crate) async fn configured_policy(state: &AppState) -> Result<Policy> {
@@ -79,7 +72,7 @@ async fn status(State(state): State<AppState>, headers: HeaderMap) -> Result<Jso
         .await
         .unwrap_or_else(|_| json!({"items":[],"error":"Controller unavailable"}));
     Ok(Json(
-        json!({"version":thelxinoe_core::VERSION,"timezone":state.db.call(|db| crate::timezones::server_zone(db)).await?.name(),"policy":configured_policy(&state).await?,"release":setting(&state,"product.release").await?,"observation":setting(&state,"product.observation").await?,"configured":configured(),"controller":controller}),
+        json!({"version":thelxinoe_core::VERSION,"timezone":storage::server_zone(&state.db).await?.name(),"policy":configured_policy(&state).await?,"release":setting(&state,"product.release").await?,"observation":setting(&state,"product.observation").await?,"configured":configured(),"controller":controller}),
     ))
 }
 pub(crate) async fn observe(state: &AppState) -> Result<()> {
@@ -105,16 +98,7 @@ async fn policy(
 async fn audit(state: &AppState, user: Option<String>, action: &str, target: &str) -> Result<()> {
     let action = format!("product.update.{action}");
     let target = target.to_owned();
-    state
-        .db
-        .call(move |db| {
-            db.execute(
-                "INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,?2,?3,?4)",
-                params![user, action, target, now()],
-            )?;
-            Ok(())
-        })
-        .await?;
+    storage::audit(action, target, &state.db, user).await?;
     Ok(())
 }
 async fn fetch() -> Result<(Envelope, Manifest)> {
@@ -209,7 +193,7 @@ async fn check(State(state): State<AppState>, headers: HeaderMap) -> Result<Json
     Ok(Json(json!({"checked":true})))
 }
 async fn idle(state: &AppState) -> Result<()> {
-    let busy=state.db.call(|db|Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM playback_sessions WHERE state IN ('ready','playing','paused') AND updated_at>?1-120) OR EXISTS(SELECT 1 FROM jobs WHERE state='running') OR EXISTS(SELECT 1 FROM media_operations WHERE state='executing')",[now()],|r|r.get::<_,bool>(0))?)).await?;
+    let busy = storage::idle(&state.db).await?;
     if busy {
         return Err(ApiError::conflict(
             "Wait for playback, downloads and background work to finish",

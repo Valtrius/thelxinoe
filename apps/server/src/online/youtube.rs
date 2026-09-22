@@ -1,4 +1,8 @@
 //! Bounded Data API requests. These credentials are never extractor inputs.
+
+#[path = "../storage/online/youtube.rs"]
+mod storage;
+
 use super::{bounded_response, google, oauth, quota, redirect_uri};
 use crate::{
     AppState,
@@ -22,8 +26,9 @@ struct Stored {
 }
 async fn stored(state: &AppState, user: &str) -> Result<Stored> {
     let user = user.to_owned();
-    state.db.call(move|db|Ok(db.query_row("SELECT generation,credential,expires_at FROM online_accounts WHERE user_id=?1 AND provider='youtube' AND status='connected' AND credential IS NOT NULL",[user],|r|Ok(Stored{generation:r.get(0)?,encrypted:r.get(1)?,expires:r.get(2)?})).optional()?)).await?
-        .ok_or_else(||ApiError::conflict("Connect your YouTube account to synchronize"))
+    storage::stored(user, &state.db)
+        .await?
+        .ok_or_else(|| ApiError::conflict("Connect your YouTube account to synchronize"))
 }
 fn decrypt(state: &AppState, user: &str, bytes: &[u8]) -> Result<oauth::Credential> {
     let bytes = state
@@ -36,10 +41,7 @@ fn decrypt(state: &AppState, user: &str, bytes: &[u8]) -> Result<oauth::Credenti
 async fn invalidate(state: &AppState, user: &str, generation: &str) -> Result<()> {
     let user = user.to_owned();
     let generation = generation.to_owned();
-    state.db.call(move|db|{
-        db.execute("UPDATE online_accounts SET status='reconnect_required',credential=NULL,expires_at=0,updated_at=?1 WHERE user_id=?2 AND provider='youtube' AND generation=?3",params![now(),user,generation])?;
-        Ok(())
-    }).await?;
+    storage::invalidate(user, generation, &state.db).await?;
     Ok(())
 }
 pub(super) async fn access(state: &AppState, user: &str) -> Result<Access> {
@@ -118,7 +120,7 @@ pub(super) async fn access(state: &AppState, user: &str) -> Result<Access> {
             .unwrap_or(3600);
     let owner = user.to_owned();
     let generation = saved.generation.clone();
-    let updated=state.db.call(move|db|Ok(db.execute("UPDATE online_accounts SET credential=?1,expires_at=?2 WHERE user_id=?3 AND provider='youtube' AND generation=?4 AND status='connected' AND credential IS NOT NULL",params![encrypted,expires,owner,generation])?==1)).await?;
+    let updated = storage::access(encrypted, expires, owner, generation, &state.db).await?;
     if !updated {
         return Err(ApiError::conflict(
             "YouTube connection changed during refresh",
@@ -169,7 +171,7 @@ pub(super) async fn get(
         // free: the scheduler applies backoff and every request reserves quota.
         let user = user.to_owned();
         let generation = access.generation.clone();
-        state.db.call(move|db|{db.execute("UPDATE online_accounts SET expires_at=0 WHERE user_id=?1 AND provider='youtube' AND generation=?2",params![user,generation])?;Ok(())}).await?;
+        storage::get(user, generation, &state.db).await?;
         return Err(ApiError::conflict(
             "YouTube rejected access; refreshing before the next sync",
         ));

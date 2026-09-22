@@ -14,7 +14,7 @@ async fn initialization_reopen_and_online_backup_preserve_data() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let path = temp.path().join("main.db");
     let db = Database::open(&path)?;
-    db.call(|c| {
+    db.write("test.fixture", |c| {
         c.execute(
             "INSERT INTO settings VALUES ('timezone','Europe/Paris')",
             [],

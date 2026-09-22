@@ -1,3 +1,6 @@
+#[path = "../storage/managers/controls.rs"]
+mod storage;
+
 use super::*;
 pub(super) fn router() -> Router<AppState> {
     Router::new()
@@ -12,7 +15,9 @@ pub(super) fn router() -> Router<AppState> {
         )
 }
 async fn target(state: &AppState, key: String) -> Result<(Service, Value, String)> {
-    let row=state.db.call(move|db|Ok(db.query_row("SELECT service_id,manager_id,external_id,user_id FROM acquisition_requests WHERE id=?1",[key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<i64>>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?))).optional()?)).await?.ok_or_else(ApiError::not_found)?;
+    let row = storage::target(&state.db, key)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     let s = service(state, &row.0).await?;
     let id = row
         .1
@@ -45,7 +50,7 @@ async fn status(
     let check = key.clone();
     let uid = p.user.id.clone();
     let admin = p.user.role == thelxinoe_core::Role::Admin;
-    let allowed=state.db.call(move|db|Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM acquisition_requests WHERE id=?1 AND (?2 OR user_id=?3))",params![check,admin,uid],|r|r.get::<_,bool>(0))?)).await?;
+    let allowed = storage::status(&state.db, check, uid, admin).await?;
     if !allowed {
         return Err(ApiError::not_found());
     }
@@ -160,7 +165,7 @@ async fn grab(
         Some(json!({"guid":input.guid,"indexerId":input.indexer_id})),
     )
     .await?;
-    state.db.call(move|db|{db.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'request.grab',?2,?3)",params![p.user.id,key,now()])?;Ok(())}).await?;
+    storage::grab(&state.db, key, p).await?;
     Ok(Json(json!({"submitted":true})))
 }
 #[derive(Deserialize)]
@@ -185,7 +190,7 @@ async fn monitor(
         Some(item),
     )
     .await?;
-    state.db.call(move|db|{db.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'request.monitor',?2,?3)",params![p.user.id,key,now()])?;Ok(())}).await?;
+    storage::monitor(&state.db, key, p).await?;
     Ok(Json(json!({"saved":true})))
 }
 

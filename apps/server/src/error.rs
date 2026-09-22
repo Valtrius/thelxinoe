@@ -39,6 +39,13 @@ impl ApiError {
 }
 impl From<anyhow::Error> for ApiError {
     fn from(error: anyhow::Error) -> Self {
+        if error.is::<thelxinoe_database::AccessError>() {
+            return Self(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "database_unavailable",
+                "Database is busy or shutting down. Try again shortly.".into(),
+            );
+        }
         tracing::error!(error_type = %error.root_cause(), "Internal operation failed");
         Self(
             StatusCode::INTERNAL_SERVER_ERROR,

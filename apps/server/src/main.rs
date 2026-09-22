@@ -24,25 +24,36 @@ async fn main() -> Result<()> {
     let bind = config.bind;
     let state = AppState::open(config).await?;
     tracing::info!(version=thelxinoe_core::VERSION, %bind, "Starting Thelxinoe");
-    let worker = tokio::spawn(run_jobs(state.clone()));
-    let scanner = tokio::spawn(thelxinoe_server::library::reconcile(state.clone()));
-    let playback = tokio::spawn(thelxinoe_server::playback::maintain(state.clone()));
-    let discovery = tokio::spawn(thelxinoe_server::run_discovery(state.clone()));
-    let online = tokio::spawn(thelxinoe_server::run_online(state.clone()));
-    let downloads = tokio::spawn(thelxinoe_server::run_downloads(state.clone()));
-    let updates = tokio::spawn(thelxinoe_server::run_service_updates(state.clone()));
-    let retention = tokio::spawn(thelxinoe_server::run_retention(state.clone()));
-    let segments = tokio::spawn(thelxinoe_server::segments::run(state.clone()));
-    let operations = tokio::spawn(thelxinoe_server::operations::run(state.clone()));
-    let product = tokio::spawn(thelxinoe_server::product::run(state.clone()));
     let listener = tokio::net::TcpListener::bind(bind).await?;
+    let mut workers = tokio::task::JoinSet::new();
+    workers.spawn(run_jobs(state.clone()));
+    workers.spawn(thelxinoe_server::library::reconcile(state.clone()));
+    workers.spawn(thelxinoe_server::playback::maintain(state.clone()));
+    workers.spawn(thelxinoe_server::run_discovery(state.clone()));
+    workers.spawn(thelxinoe_server::run_online(state.clone()));
+    workers.spawn(thelxinoe_server::run_downloads(state.clone()));
+    workers.spawn(thelxinoe_server::run_service_updates(state.clone()));
+    workers.spawn(thelxinoe_server::run_retention(state.clone()));
+    workers.spawn(thelxinoe_server::segments::run(state.clone()));
+    workers.spawn(thelxinoe_server::operations::run(state.clone()));
+    workers.spawn(thelxinoe_server::product::run(state.clone()));
     let server = axum::serve(
         listener,
-        router(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        router(state.clone()).into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown());
-    tokio::select! {result=server=>result?,result=worker=>{result??;},result=scanner=>{result??;},result=playback=>{result??;},result=discovery=>{result??;},result=online=>{result??;},result=downloads=>{result??;},result=updates=>{result??;},result=retention=>{result??;},result=segments=>{result??;},result=operations=>{result??;},result=product=>{result??;}}
-    Ok(())
+    let result: Result<()> = tokio::select! {
+        result = server => result.map_err(Into::into),
+        result = workers.join_next() => match result {
+            Some(Ok(result)) => result,
+            Some(Err(error)) => Err(error.into()),
+            None => Ok(()),
+        },
+    };
+    // Stop producers first. Already accepted storage operations still finish.
+    workers.shutdown().await;
+    let drained = state.db.shutdown().await;
+    result.and(drained)
 }
 async fn shutdown() {
     #[cfg(unix)]

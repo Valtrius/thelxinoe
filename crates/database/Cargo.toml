@@ -8,6 +8,8 @@ license.workspace = true
 anyhow.workspace = true
 rusqlite.workspace = true
 tokio.workspace = true
+serde.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

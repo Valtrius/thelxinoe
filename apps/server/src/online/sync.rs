@@ -1,4 +1,8 @@
 //! One bounded Data API page per turn, with a durable cursor and fair ordering.
+
+#[path = "../storage/online/sync.rs"]
+mod storage;
+
 use super::{quota, youtube};
 use crate::{
     AppState,
@@ -33,7 +37,7 @@ struct Turn {
 }
 pub async fn request(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
-    let changed=state.db.call(move|db|Ok(db.execute("UPDATE youtube_sync SET next_run=?1 WHERE user_id=?2 AND (last_complete IS NULL OR last_complete<?1-300) AND failures=0 AND EXISTS(SELECT 1 FROM online_accounts a WHERE a.user_id=youtube_sync.user_id AND a.provider='youtube' AND a.status='connected' AND a.generation=youtube_sync.generation)",params![now(),p.user.id])?==1)).await?;
+    let changed = storage::request(&state.db, p).await?;
     if !changed {
         return Err(ApiError::conflict(
             "Connect YouTube first, or wait for the current retry delay and five-minute sync cooldown",
@@ -56,16 +60,12 @@ pub(super) async fn run_classifications(state: AppState) -> anyhow::Result<()> {
     }
 }
 async fn classify_next(state: &AppState) -> anyhow::Result<()> {
-    let candidate=state.db.call(|db|{
-        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let row=tx.query_row("SELECT v.user_id,v.video_id,a.generation FROM youtube_videos v JOIN online_accounts a ON a.user_id=v.user_id AND a.provider='youtube' AND a.status='connected' WHERE v.available=1 AND v.privacy='public' AND v.broadcast='none' AND v.is_short IS NULL AND v.duration BETWEEN 1 AND 180 AND v.short_checked<?1 ORDER BY v.short_checked,v.published_at DESC LIMIT 1",[now()-86400],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional()?;
-        if let Some((user,video,_))=&row {tx.execute("UPDATE youtube_videos SET short_checked=?1 WHERE user_id=?2 AND video_id=?3",params![now(),user,video])?;}
-        tx.commit()?;Ok(row)
-    }).await?;
+    let candidate = storage::claim_classification(&state.db).await?;
     if let Some((user, video, generation)) = candidate {
         let result = short(state, &video).await;
         let recipient = user.clone();
-        let changed=state.db.call(move|db|Ok(db.execute("UPDATE youtube_videos SET is_short=?1,short_checked=?2 WHERE user_id=?3 AND video_id=?4 AND EXISTS(SELECT 1 FROM online_accounts WHERE user_id=?3 AND provider='youtube' AND status='connected' AND generation=?5)",params![result,if result.is_some(){now()}else{now()-86400+300},user,video,generation])?)).await?;
+        let changed =
+            storage::save_classification(result, user, video, generation, &state.db).await?;
         if changed > 0 && result.is_some() {
             state
                 .emit(Some(recipient), "youtube.changed", json!({}))
@@ -75,16 +75,7 @@ async fn classify_next(state: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 async fn claim(state: &AppState) -> anyhow::Result<Option<Turn>> {
-    state.db.call(|db|{
-        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let turn=tx.query_row("SELECT y.user_id,y.generation,y.cursor,y.failures FROM youtube_sync y JOIN online_accounts a ON a.user_id=y.user_id AND a.provider='youtube' AND a.generation=y.generation AND a.status='connected' WHERE y.next_run<=?1 ORDER BY y.last_turn,y.user_id LIMIT 1",[now()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,u32>(3)?))).optional()?;
-        let turn=turn.map(|(user,generation,cursor,failures)|->anyhow::Result<Turn>{Ok(Turn{user,generation,cursor:serde_json::from_str(&cursor)?,failures})}).transpose()?;
-        if let Some(turn)=&turn {
-            // Crash recovery: the lease expires without resetting the cursor.
-            tx.execute("UPDATE youtube_sync SET next_run=?1,last_turn=(SELECT COALESCE(MAX(last_turn),0)+1 FROM youtube_sync) WHERE user_id=?2",params![now()+90,turn.user])?;
-        }
-        tx.commit()?;Ok(turn)
-    }).await
+    storage::claim(&state.db).await
 }
 async fn tick(state: &AppState) -> anyhow::Result<bool> {
     let Some(turn) = claim(state).await? else {
@@ -105,7 +96,7 @@ async fn tick(state: &AppState) -> anyhow::Result<bool> {
         } else {
             30i64.saturating_mul(1i64 << failures.min(7)).min(3600)
         };
-        state.db.call(move|db|{db.execute("UPDATE youtube_sync SET next_run=?1,failures=failures+1,error=?2 WHERE user_id=?3 AND generation=?4",params![now()+delay,message,user,generation])?;Ok(())}).await?;
+        storage::tick(user, generation, message, delay, &state.db).await?;
     }
     Ok(true)
 }
@@ -166,30 +157,15 @@ pub(super) fn duration(value: &str) -> Option<i64> {
     (time.is_empty() && days.is_finite() && days >= 0. && total <= 31536000.)
         .then_some(total.round() as i64)
 }
-async fn save(
-    state: &AppState,
-    turn: Turn,
-    done: bool,
-    write: impl FnOnce(&rusqlite::Transaction<'_>) -> anyhow::Result<()> + Send + 'static,
-) -> Result<()> {
+async fn save(state: &AppState, turn: Turn, done: bool, page: storage::Page) -> Result<()> {
     let cursor = if done {
         "{}".into()
     } else {
         serde_json::to_string(&turn.cursor).map_err(anyhow::Error::from)?
     };
-    let user = turn.user.clone();
-    let changed=state.db.call(move|db|{
-        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let active=tx.query_row("SELECT EXISTS(SELECT 1 FROM online_accounts WHERE user_id=?1 AND provider='youtube' AND status='connected' AND generation=?2)",params![turn.user,turn.generation],|r|r.get::<_,bool>(0))?;
-        if !active {return Ok(false);}
-        write(&tx)?;
-        tx.execute("UPDATE youtube_sync SET cursor=?1,next_run=?2,last_complete=CASE WHEN ?3 THEN ?4 ELSE last_complete END,failures=0,error=NULL WHERE user_id=?5 AND generation=?6",params![cursor,if done{now()+1800}else{now()},done,now(),turn.user,turn.generation])?;
-        tx.commit()?;Ok(true)
-    }).await?;
+    let changed = storage::save(cursor, &state.db, turn, done, page).await?;
     if changed {
-        state
-            .emit(Some(user), "youtube.changed", json!({"complete":done}))
-            .await?;
+        state.notify_events();
     }
     Ok(())
 }
@@ -205,7 +181,7 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
     let user = turn.user.clone();
     // URL additions get metadata in a bounded batch on the same fair queue.
     let owner = user.clone();
-    let pending=state.db.call(move|db|Ok(db.prepare("SELECT v.video_id FROM youtube_videos v LEFT JOIN youtube_video_state s USING(user_id,video_id) WHERE v.user_id=?1 AND v.metadata_at=0 ORDER BY s.added_at,v.video_id LIMIT 50")?.query_map([owner],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
+    let pending = storage::pending_metadata(owner, &state.db).await?;
     if !pending.is_empty() {
         let joined = pending.join(",");
         let data = youtube::get(
@@ -221,11 +197,13 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
         )
         .await?;
         let rows = items(&data)?.clone();
-        return save(state,turn,false,move|tx|{
-            for video in &pending {tx.execute("UPDATE youtube_videos SET available=0,metadata_at=?1 WHERE user_id=?2 AND video_id=?3",params![now(),user,video])?;}
-            for video in rows {upsert_video(tx,&user,&video,&pending)?;}
-            Ok(())
-        }).await;
+        return save(
+            state,
+            turn,
+            false,
+            storage::Page::PendingVideos { pending, rows },
+        )
+        .await;
     }
     match turn.cursor.phase.as_str() {
         "subscriptions" => {
@@ -276,29 +254,32 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
                 turn.cursor.phase = "channels".into();
                 turn.cursor.after.clear();
             }
-            save(state,turn,false,move|tx|{
-                for (channel,title,thumbnail) in rows {tx.execute("INSERT INTO youtube_subscriptions(user_id,channel_id,title,snapshot,thumbnail_url) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(user_id,channel_id) DO UPDATE SET title=excluded.title,snapshot=excluded.snapshot,thumbnail_url=excluded.thumbnail_url",params![user,channel,title,snapshot,thumbnail])?;}
-                if complete {
-                    tx.execute("DELETE FROM youtube_subscriptions WHERE user_id=?1 AND snapshot<>?2",params![user,snapshot])?;
-                    tx.execute("UPDATE youtube_subscriptions SET active=1 WHERE user_id=?1 AND snapshot=?2",params![user,snapshot])?;
-                }
-                Ok(())
-            }).await
+            save(
+                state,
+                turn,
+                false,
+                storage::Page::Subscriptions {
+                    rows,
+                    snapshot,
+                    complete,
+                },
+            )
+            .await
         }
         "channels" => {
             let owner = user.clone();
             let after = turn.cursor.after.clone();
-            let channels=state.db.call(move|db|Ok(db.prepare("SELECT channel_id FROM youtube_subscriptions WHERE user_id=?1 AND active=1 AND channel_id>?2 ORDER BY channel_id LIMIT 50")?.query_map(params![owner,after],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
+            let channels = storage::channels_to_refresh(owner, after, &state.db).await?;
             let owner = user.clone();
-            let profile = state.db.call(move |db| {
-                Ok(db.query_row("SELECT external_id FROM online_accounts WHERE user_id=?1 AND provider='youtube' AND external_id<>'' AND profile_checked_at<?2", params![owner, now()-86400], |row| row.get::<_, String>(0)).optional()?)
-            }).await?.filter(|_| channels.len() < 50);
+            let profile = storage::step_read_online_accounts(owner, &state.db)
+                .await?
+                .filter(|_| channels.len() < 50);
             if channels.is_empty() && profile.is_none() {
                 turn.cursor.phase = "uploads".into();
                 turn.cursor.after.clear();
                 turn.cursor.page.clear();
                 turn.cursor.pages = 0;
-                return save(state, turn, false, |_| Ok(())).await;
+                return save(state, turn, false, storage::Page::CursorOnly).await;
             }
             // Reuse the channel metadata batch to refresh the connected profile.
             // Existing accounts acquire an avatar without needing to reconnect.
@@ -350,7 +331,6 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
                 .map(|s| s.chars().take(200).collect::<String>());
             let has_profile = own_channel.is_some();
             let refresh_profile = profile.is_some();
-            let owner = user.clone();
             turn.cursor.after = channels.last().cloned().unwrap_or_default();
             if channels.is_empty() {
                 turn.cursor.phase = "uploads".into();
@@ -358,34 +338,32 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
                 turn.cursor.page.clear();
                 turn.cursor.pages = 0;
             }
-            save(state,turn,false,move|tx|{
-                if refresh_profile {
-                    tx.execute("UPDATE online_accounts SET profile_checked_at=?1,display_name=COALESCE(?2,display_name),avatar_url=CASE WHEN ?3 THEN ?4 ELSE avatar_url END WHERE user_id=?5 AND provider='youtube'",params![now(),name,has_profile,avatar,user])?;
-                }
-                for channel in channels {tx.execute("UPDATE youtube_subscriptions SET uploads=NULL WHERE user_id=?1 AND channel_id=?2",params![user,channel])?;}
-                for (channel,playlist) in rows {tx.execute("UPDATE youtube_subscriptions SET uploads=?1 WHERE user_id=?2 AND channel_id=?3",params![playlist,user,channel])?;}
-                Ok(())
-            }).await?;
-            if refresh_profile {
-                state
-                    .emit(
-                        Some(owner),
-                        "online.account.changed",
-                        json!({"provider":"youtube"}),
-                    )
-                    .await?;
-            }
+            save(
+                state,
+                turn,
+                false,
+                storage::Page::Channels {
+                    refresh_profile,
+                    name,
+                    has_profile,
+                    avatar,
+                    channels,
+                    rows,
+                },
+            )
+            .await?;
+
             Ok(())
         }
         "uploads" => {
             if turn.cursor.page.is_empty() {
                 let owner = user.clone();
                 let after = turn.cursor.after.clone();
-                let next=state.db.call(move|db|Ok(db.query_row("SELECT channel_id,uploads FROM youtube_subscriptions WHERE user_id=?1 AND active=1 AND uploads IS NOT NULL AND channel_id>?2 ORDER BY channel_id LIMIT 1",params![owner,after],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?)).await?;
+                let next = storage::next_upload_playlist(owner, after, &state.db).await?;
                 let Some((channel, playlist)) = next else {
                     turn.cursor.phase = "refresh".into();
                     turn.cursor.after.clear();
-                    return save(state, turn, false, |_| Ok(())).await;
+                    return save(state, turn, false, storage::Page::CursorOnly).await;
                 };
                 turn.cursor.channel = channel;
                 turn.cursor.playlist = playlist;
@@ -430,25 +408,25 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
                 turn.cursor.after = turn.cursor.channel.clone();
             }
             turn.cursor.phase = "videos".into();
-            save(state, turn, false, |_| Ok(())).await
+            save(state, turn, false, storage::Page::CursorOnly).await
         }
         "videos" | "refresh" => {
             let refresh = turn.cursor.phase == "refresh";
             if refresh {
                 let owner = user.clone();
                 let after = turn.cursor.after.clone();
-                turn.cursor.ids=state.db.call(move|db|Ok(db.prepare("SELECT v.video_id FROM youtube_videos v LEFT JOIN youtube_video_state s USING(user_id,video_id) WHERE v.user_id=?1 AND v.video_id>?2 AND (v.broadcast IN ('live','upcoming') OR s.watchlist=1 OR s.pinned=1) ORDER BY v.video_id LIMIT 50")?.query_map(params![owner,after],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
+                turn.cursor.ids = storage::videos_to_refresh(owner, after, &state.db).await?;
                 if turn.cursor.ids.is_empty() {
                     turn.cursor.phase = "shorts".into();
                     turn.cursor.pages = 0;
-                    return save(state, turn, false, |_| Ok(())).await;
+                    return save(state, turn, false, storage::Page::CursorOnly).await;
                 }
                 turn.cursor.after = turn.cursor.ids.last().unwrap().clone();
             }
             let ids = turn.cursor.ids.clone();
             if ids.is_empty() {
                 turn.cursor.phase = "uploads".into();
-                return save(state, turn, false, |_| Ok(())).await;
+                return save(state, turn, false, storage::Page::CursorOnly).await;
             }
             let joined = ids.join(",");
             let data = youtube::get(
@@ -468,14 +446,9 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
                 turn.cursor.phase = "uploads".into();
             }
             turn.cursor.ids.clear();
-            save(state,turn,false,move|tx|{
-                for video in &ids {tx.execute("UPDATE youtube_videos SET available=0,metadata_at=?1 WHERE user_id=?2 AND video_id=?3",params![now(),user,video])?;}
-                for video in rows {upsert_video(tx,&user,&video,&ids)?;}
-                tx.execute("DELETE FROM youtube_videos WHERE user_id=?1 AND published_at<?2 AND metadata_at<?3 AND NOT EXISTS(SELECT 1 FROM youtube_state s WHERE s.user_id=youtube_videos.user_id AND s.video_id=youtube_videos.video_id) AND NOT EXISTS(SELECT 1 FROM youtube_watchlist_items i WHERE i.user_id=youtube_videos.user_id AND i.video_id=youtube_videos.video_id)",params![user,now()-90*86400,now()-30*86400])?;
-                Ok(())
-            }).await
+            save(state, turn, false, storage::Page::Videos { ids, rows }).await
         }
-        "shorts" => save(state, turn, true, |_| Ok(())).await,
+        "shorts" => save(state, turn, true, storage::Page::CursorOnly).await,
         _ => Err(ApiError::bad("Invalid persisted YouTube sync cursor")),
     }
 }
@@ -509,39 +482,4 @@ async fn short(state: &AppState, video: &str) -> Option<bool> {
         && target.path() == "/watch"
         && target.query_pairs().any(|(k, v)| k == "v" && v == video))
     .then_some(false)
-}
-pub(super) fn upsert_video(
-    tx: &rusqlite::Transaction<'_>,
-    user: &str,
-    video: &Value,
-    requested: &[String],
-) -> anyhow::Result<()> {
-    let Some(video_id) = video["id"]
-        .as_str()
-        .filter(|v| identifier(v, 11) && requested.iter().any(|r| r == v))
-    else {
-        return Ok(());
-    };
-    let Some(channel) = channel_id(&video["snippet"]["channelId"]) else {
-        return Ok(());
-    };
-    let snippet = &video["snippet"];
-    let broadcast = match snippet["liveBroadcastContent"].as_str() {
-        Some("live") => "live",
-        Some("upcoming") => "upcoming",
-        _ if video["liveStreamingDetails"]["actualEndTime"].is_string() => "replay",
-        _ => "none",
-    };
-    let duration = video["contentDetails"]["duration"]
-        .as_str()
-        .and_then(duration);
-    let privacy = match video["status"]["privacyStatus"].as_str() {
-        Some("public") => "public",
-        Some("unlisted") => "unlisted",
-        Some("private") => "private",
-        _ => "unknown",
-    };
-    tx.execute("INSERT INTO youtube_videos(user_id,video_id,channel_id,title,channel_title,published_at,duration,broadcast,privacy,metadata_at,is_short) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(user_id,video_id) DO UPDATE SET channel_id=excluded.channel_id,title=excluded.title,channel_title=excluded.channel_title,published_at=excluded.published_at,duration=excluded.duration,broadcast=excluded.broadcast,privacy=excluded.privacy,metadata_at=excluded.metadata_at,available=1,is_short=COALESCE(excluded.is_short,youtube_videos.is_short)",params![user,video_id,channel,text(&snippet["title"],500),text(&snippet["channelTitle"],300),timestamp(&snippet["publishedAt"]),duration,broadcast,privacy,now(),if broadcast!="none"||duration.is_some_and(|d|d>180){Some(false)}else{None}])?;
-    tx.execute("UPDATE youtube_videos SET scheduled_start=?1,actual_start=?2,actual_end=?3 WHERE user_id=?4 AND video_id=?5",params![video["liveStreamingDetails"]["scheduledStartTime"].as_str(),video["liveStreamingDetails"]["actualStartTime"].as_str(),video["liveStreamingDetails"]["actualEndTime"].as_str(),user,video_id])?;
-    Ok(())
 }

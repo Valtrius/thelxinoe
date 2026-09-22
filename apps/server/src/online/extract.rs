@@ -1,4 +1,8 @@
 //! Public extraction never receives provider credentials or browser state.
+
+#[path = "../storage/online/extract.rs"]
+mod storage;
+
 use super::{process, sync, tools};
 use crate::{
     AppState,
@@ -23,16 +27,7 @@ pub async fn inspect(
         return Err(ApiError::bad("Invalid YouTube video"));
     }
     let video = id.clone();
-    let owned = state
-        .db
-        .call(move |db| {
-            Ok(db.query_row(
-                "SELECT EXISTS(SELECT 1 FROM youtube_videos WHERE user_id=?1 AND video_id=?2)",
-                rusqlite::params![user, video],
-                |r| r.get::<_, bool>(0),
-            )?)
-        })
-        .await?;
+    let owned = storage::inspect(&state.db, user, video).await?;
     if !owned {
         return Err(ApiError::not_found());
     }

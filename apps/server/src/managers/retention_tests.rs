@@ -21,7 +21,7 @@ async fn reacquisition_restores_exact_episode_ids_and_preserves_foreign_exclusio
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, stub).await.unwrap() });
-        state.db.call(move|db|{
+        state.db.write("test.fixture", move|db|{
             db.execute("INSERT INTO manager_services VALUES ('sonarr','Fixture','sonarr','container',8989,'g',X'00','[]','{}','1',1,1,NULL)",[])?;
             let targets=json!([{"id":"ret-file","generation":"first","path":"fixture","root":"fixture","size":0,"modified":"1","fingerprint":"1","ownership":"managed","claims":[{"service_id":"sonarr","service_generation":"g","manager_file_id":17,"entity_id":9,"manager_path":"fixture","external_id":"42","members":[37],"server_path":"fixture"}]}]);
             db.execute("INSERT INTO media_operations VALUES ('operation',NULL,'ret-movie','delete','complete',?1,1,1,NULL)",[targets.to_string()])?;
@@ -41,7 +41,7 @@ async fn reacquisition_restores_exact_episode_ids_and_preserves_foreign_exclusio
         assert_eq!(deletes.load(Ordering::SeqCst), usize::from(owned));
         state
             .db
-            .call(|db| {
+            .write("test.fixture", |db| {
                 assert_eq!(
                     db.query_row("SELECT state FROM retention_candidates", [], |r| r
                         .get::<_, String>(0))?,
@@ -80,7 +80,7 @@ async fn movie() -> (tempfile::TempDir, AppState, std::path::PathBuf) {
         .unwrap()
         .to_string_lossy()
         .to_string();
-    state.db.call(move|db| {
+    state.db.write("test.fixture", move|db| {
         db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('ret-root','Retention fixture','movies',?1)",[root])?;
         db.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES ('ret-movie','ret-root','movie','fixture','Retention fixture',1)",[])?;
         db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,ownership,scanned_at) VALUES ('ret-file','ret-root',?1,'first',?2,?3,?4,'{}','unmanaged',1)",params![stored,meta.len() as i64,modified,hash])?;
@@ -97,7 +97,7 @@ async fn watched_revision_protection_and_generation_are_revalidated() {
     let (_temp, state, _) = movie().await;
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             let original = eligibility(db, "ret-movie")?.unwrap();
             assert!(!original.automatic);
             db.execute(
@@ -149,7 +149,7 @@ async fn automatic_deletion_requires_grace_and_root_optin_and_cannot_replay() {
     assert_eq!(evaluate_all(&state, None).await.unwrap(), 0);
     let (candidate, operation) = state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             Ok(db.query_row(
                 "SELECT id,operation_id FROM retention_candidates",
                 [],
@@ -170,7 +170,7 @@ async fn automatic_deletion_requires_grace_and_root_optin_and_cannot_replay() {
     );
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute(
                 "UPDATE library_roots SET automatic_unmanaged_deletion=1",
                 [],
@@ -187,7 +187,7 @@ async fn automatic_deletion_requires_grace_and_root_optin_and_cannot_replay() {
     );
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE retention_candidates SET due_at=0", [])?;
             Ok(())
         })
@@ -201,7 +201,7 @@ async fn automatic_deletion_requires_grace_and_root_optin_and_cannot_replay() {
     assert!(delete_locked(&state, &candidate, None, true).await.is_err());
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             assert_eq!(
                 db.query_row("SELECT state FROM retention_candidates", [], |r| r
                     .get::<_, String>(0))?,
@@ -217,7 +217,7 @@ async fn automatic_deletion_requires_grace_and_root_optin_and_cannot_replay() {
 async fn season_requires_complete_confirmed_aired_metadata_and_one_users_watched_set() {
     let (_temp, state, _) = movie().await;
     let refreshed = now();
-    state.db.call(move |db| {
+    state.db.write("test.fixture", move |db| {
         db.execute("UPDATE library_roots SET kind='shows'",[])?;
         db.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at,metadata) VALUES ('show','ret-root','show','show','Show',1,?1)",[json!({"refreshed_at":refreshed,"status":"Ended","seasons":[{"season_number":1,"episode_count":2}]}).to_string()])?;
         db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES ('season','ret-root','season','show','season','Season',1,1)",[])?;

@@ -7,7 +7,7 @@ use thelxinoe_core::now;
 #[tokio::test]
 async fn live_cards_precede_pagination_and_unknown_shorts_never_flash_in_filtered_feed() {
     let (_temp, state, alice) = fixture().await;
-    state.db.call(|db| {
+    state.db.write("test.fixture", |db| {
         db.execute("INSERT INTO youtube_subscriptions(user_id,channel_id,title,snapshot,active) VALUES('alice','UCaaaaaaaaaaaaaaaaaaaaaa','Channel','s',1)", [])?;
         for (id, published, short, broadcast) in [
             ("aaaaaaaaaaa",10,Some(0),"none"),
@@ -168,7 +168,7 @@ async fn named_watchlists_keep_private_memberships_and_retention_consistent() {
 #[tokio::test]
 async fn feed_filters_sort_and_paginate_before_returning_cards() {
     let (_temp, state, alice) = fixture().await;
-    state.db.call(|db|{
+    state.db.write("test.fixture", |db|{
         for user in ["alice","bob"] {
             db.execute("INSERT INTO youtube_subscriptions(user_id,channel_id,title,snapshot,active) VALUES(?1,'UCaaaaaaaaaaaaaaaaaaaaaa','Science','s',1)",[user])?;
             for (id,title,duration,short,watched,position) in [("aaaaaaaaaaa","Short",60,1,0,0),("bbbbbbbbbbb","Long watched",2000,0,1,0),("ccccccccccc","Long in progress",1800,0,0,80),("ddddddddddd","Regular",800,0,0,0)] {
@@ -231,7 +231,7 @@ async fn feed_filters_sort_and_paginate_before_returning_cards() {
 #[tokio::test]
 async fn download_delete_protects_other_users() {
     let (_temp, state, alice) = fixture().await;
-    state.db.call(|db|{
+    state.db.write("test.fixture", |db|{
         for user in ["alice","bob"] {
             db.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES(?1,'abcdefghijk','Video')",[user])?;
             db.execute("INSERT INTO youtube_state(user_id,video_id,pinned,updated_at) VALUES(?1,'abcdefghijk',1,1)",[user])?;
@@ -253,7 +253,7 @@ async fn download_delete_protects_other_users() {
     );
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE youtube_state SET pinned=0 WHERE user_id='bob'", [])?;
             Ok(())
         })

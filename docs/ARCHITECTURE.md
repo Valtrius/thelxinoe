@@ -88,6 +88,18 @@ It owns:
 
 The server does not rename or reorganize local media. It may delete media under the retention and admin rules already defined.
 
+## Database access
+
+`crates/database` owns schema initialization, connections, scheduling, backups, and shutdown. Server SQL lives under `apps/server/src/storage`, grouped by domain. The standalone auth, catalog, and jobs crates each have a `storage.rs`. Handlers and workflows call named, typed storage operations; they never submit SQL closures. Storage modules are private children of their domain modules so they can use the domain's existing types without creating dependency cycles. A Rust architecture test checks this boundary, including SQL inside macros.
+
+Each `Database` instance owns one writer thread and two reader threads. Each thread reuses its own connection. Readers open SQLite in read-only mode and run each operation in a consistent snapshot. WAL allows them to continue while the writer commits. Each lane has a queue of 64 operations and a five-second admission timeout; overload or shutdown returns HTTP 503. `Database::open_with_options` can adjust the reader count, queue capacity, and admission timeout. SQL never runs on an async executor thread. Network requests, media probing, and password hashing stay in their existing workflows. Owned download-cache deletion retains its existing transaction fence against new playback and retained interests, so that filesystem operation can briefly occupy the writer.
+
+A storage operation contains the entire transaction, including its validation and related tables. Playback progress, statistics, history, and grants still change together. Playback reports, watchlist mutations, and YouTube sync pages also save their event rows in that transaction; subscribers are notified after commit. Large catalog scans retain their existing atomic commit, so they can delay other writes while readers continue. The runtime does not automatically retry writes.
+
+Accepted operations finish even if their caller disconnects or cancels. Multi-statement writes use explicit transactions; errors or panics roll those transactions back. A worker also rolls back any transaction accidentally left open before reusing its connection. Server shutdown stops background producers, drains accepted database operations, and joins the threads. The database has no public connection escape hatch or generic `call` method.
+
+The admin dashboard and diagnostics expose separate read/write queue depths, active operations, completions, failures, and cumulative wait/execution microseconds. Debug logs include the storage operation name and both timings. These measurements distinguish queue contention from expensive SQL; adding workers does not itself promise faster queries.
+
 ## Background jobs
 
 V1 uses one main server process with a persistent internal job scheduler and queue.

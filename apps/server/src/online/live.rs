@@ -1,4 +1,8 @@
 //! Public live extraction and private statistics, using the shared playback lifecycle.
+
+#[path = "../storage/online/live.rs"]
+mod storage;
+
 use crate::{
     AppState,
     error::{ApiError, Result},
@@ -18,7 +22,9 @@ pub(crate) async fn authorize(
     if let Some(channel) = media.strip_prefix("kick:") {
         let channel = super::kick::slug(channel)?;
         let user = p.user.id.clone();
-        return state.db.call(move|db|Ok(db.query_row("SELECT slug,slug||' - '||title FROM kick_channels WHERE user_id=?1 AND slug=?2",params![user,channel],|r|Ok((r.get(0)?,r.get(1)?))).optional()?)).await?.ok_or_else(ApiError::not_found);
+        return storage::authorize_read_kick_channels(channel, user, &state.db)
+            .await?
+            .ok_or_else(ApiError::not_found);
     }
     let channel = media
         .strip_prefix("twitch:")
@@ -28,7 +34,9 @@ pub(crate) async fn authorize(
         return Err(ApiError::not_found());
     }
     let user = p.user.id.clone();
-    state.db.call(move|db|Ok(db.query_row("SELECT login,display_name||' - '||title FROM twitch_streams WHERE user_id=?1 AND channel_id=?2 AND active=1",params![user,channel],|r|Ok((r.get(0)?,r.get(1)?))).optional()?)).await?.ok_or_else(ApiError::not_found)
+    storage::authorize_read_twitch_streams(channel, user, &state.db)
+        .await?
+        .ok_or_else(ApiError::not_found)
 }
 pub(crate) async fn extract(state: &AppState, media: &str) -> Result<RemoteSource> {
     let kick = media.starts_with("kick:");
@@ -39,17 +47,7 @@ pub(crate) async fn extract(state: &AppState, media: &str) -> Result<RemoteSourc
             .strip_prefix("twitch:")
             .ok_or_else(ApiError::not_found)?
             .to_owned();
-        state
-            .db
-            .call(move |db| {
-                Ok(db
-                    .query_row(
-                        "SELECT login FROM twitch_streams WHERE channel_id=?1 AND active=1 LIMIT 1",
-                        [channel],
-                        |r| r.get(0),
-                    )
-                    .optional()?)
-            })
+        storage::extract(channel, &state.db)
             .await?
             .ok_or_else(ApiError::not_found)?
     };
@@ -109,7 +107,7 @@ mod tests {
                 .await
                 .unwrap();
         let bob = format!("thelxinoe_session={bob}");
-        state.db.call(|db|{
+        state.db.write("test.fixture", |db|{
             db.execute("INSERT INTO live_media VALUES ('twitch:42','Live fixture')",[])?;
             for user in ["alice","bob"] {
                 db.execute("INSERT INTO twitch_streams(user_id,channel_id,login,display_name,title,category,viewers,started_at,snapshot,active) VALUES (?1,'42','fixture','Fixture','Live fixture','Science',10,'today','s',1)",[user])?;
@@ -184,7 +182,7 @@ mod tests {
         );
         let rows = state
             .db
-            .call(|db| {
+            .write("test.fixture", |db| {
                 Ok(db
                     .prepare("SELECT id,state FROM playback_sessions ORDER BY id")?
                     .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?

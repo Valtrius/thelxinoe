@@ -1,4 +1,8 @@
 //! Local Docker manager adapters. Docker evidence stays behind the private controller socket.
+
+#[path = "../storage/managers.rs"]
+mod storage;
+
 mod bindings;
 mod controls;
 mod metadata;
@@ -270,7 +274,9 @@ struct Service {
 }
 async fn service(state: &AppState, id: &str) -> Result<Service> {
     let id = id.to_owned();
-    state.db.call(move|db|Ok(db.query_row("SELECT id,name,kind,container_id,port,generation,credential,media_source,defaults FROM manager_services WHERE id=?1 AND enabled=1",[id],|r|Ok(Service{id:r.get(0)?,name:r.get(1)?,kind:r.get(2)?,container:r.get(3)?,port:r.get(4)?,generation:r.get(5)?,credential:r.get(6)?,media_source:r.get(7)?,defaults:serde_json::from_str(&r.get::<_,String>(8)?).unwrap_or(Value::Null)})).optional()?)).await?.ok_or_else(ApiError::not_found)
+    storage::service(id, &state.db)
+        .await?
+        .ok_or_else(ApiError::not_found)
 }
 struct Connection<'a> {
     state: &'a AppState,
@@ -349,7 +355,7 @@ async fn containers(State(state): State<AppState>, headers: HeaderMap) -> Result
 }
 async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
-    let rows=state.db.call(|db|Ok(db.prepare("SELECT id,name,kind,container_id,port,version,defaults,checked_at,error FROM manager_services ORDER BY kind,name")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"container_id":r.get::<_,String>(3)?,"port":r.get::<_,u16>(4)?,"version":r.get::<_,String>(5)?,"defaults":serde_json::from_str::<Value>(&r.get::<_,String>(6)?).unwrap_or(Value::Null),"checked_at":r.get::<_,i64>(7)?,"error":r.get::<_,Option<String>>(8)?})))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
+    let rows = storage::list(&state.db).await?;
     Ok(Json(json!({"items":rows})))
 }
 #[derive(Deserialize)]
@@ -405,32 +411,22 @@ async fn register_with_actor(
         .ok_or_else(unavailable)?
         .to_owned();
     let kind = input.kind.clone();
-    let existing = state
-        .db
-        .call(move |db| {
-            Ok(db
-                .query_row(
-                    "SELECT id FROM manager_services WHERE kind=?1",
-                    [kind],
-                    |r| r.get::<_, String>(0),
-                )
-                .optional()?)
-        })
-        .await?;
+    let existing = storage::register_with_actor_read_manager_services(kind, &state.db).await?;
     let key = existing.unwrap_or_else(id);
     let returned = key.clone();
     let credential = state
         .secrets
         .encrypt(&format!("manager:{key}"), input.api_key.as_bytes())?;
-    let allowed=state.db.call(move|db|{
-        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let provision:Option<(String,Option<String>)>=tx.query_row("SELECT state,container_id FROM stack_provisions WHERE kind=?1",[&input.kind],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
-        if provision.is_some_and(|(state,container)| state!="connecting" || container.as_deref()!=Some(input.container_id.as_str())) {return Ok(false);}
-        tx.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(id) DO UPDATE SET name=excluded.name,container_id=excluded.container_id,port=excluded.port,generation=excluded.generation,credential=excluded.credential,media_source=excluded.media_source,version=excluded.version,checked_at=excluded.checked_at,error=NULL",params![key,input.name.trim(),input.kind,input.container_id,input.port,id(),credential,media_source,version,now()])?;
-        tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'manager.register',?2,?3)",params![actor_id,key,now()])?;
-        tx.commit()?;
-        Ok(true)
-    }).await?;
+    let allowed = storage::register_with_actor_write_stack_provisions(
+        media_source,
+        version,
+        key,
+        credential,
+        &state.db,
+        input,
+        actor_id,
+    )
+    .await?;
     if !allowed {
         return Err(ApiError::conflict(
             "A managed service operation already owns this integration type",
@@ -554,7 +550,7 @@ async fn defaults(
         })?;
         c.call(reqwest::Method::POST,"rootfolder",&[],Some(json!({"path":input.root_folder,"name":"Thelxinoe music","defaultQualityProfileId":input.quality_profile,"defaultMetadataProfileId":input.metadata_profile,"defaultMonitorOption":"none","defaultTags":[]}))).await?;
     }
-    state.db.call(move|db|{let tx=db.transaction()?;tx.execute("UPDATE manager_services SET defaults=?1,generation=?3 WHERE id=?2",params![serde_json::to_string(&input)?,id,thelxinoe_core::id()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'manager.defaults',?2,?3)",params![p.user.id,id,now()])?;tx.commit()?;Ok(())}).await?;
+    storage::defaults(&state.db, id, input, p).await?;
     Ok(Json(json!({"saved":true})))
 }
 async fn test(
@@ -577,16 +573,7 @@ async fn test(
     }
     .await;
     let error = result.as_ref().err().map(|e| e.2.clone());
-    state
-        .db
-        .call(move |db| {
-            db.execute(
-                "UPDATE manager_services SET checked_at=?1,error=?2 WHERE id=?3",
-                params![now(), error, id],
-            )?;
-            Ok(())
-        })
-        .await?;
+    storage::test(&state.db, id, error).await?;
     Ok(Json(json!({"healthy":true,"version":result?})))
 }
 
@@ -613,5 +600,5 @@ fn canonical_root(kind: &str) -> &'static str {
 }
 async fn installed_here(state: &AppState, key: &str) -> Result<bool> {
     let key = key.to_owned();
-    Ok(state.db.call(move|db|Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE service_id=?1 AND origin='installed')",[key],|r|r.get::<_,bool>(0))?)).await?)
+    Ok(storage::installed_here(key, &state.db).await?)
 }

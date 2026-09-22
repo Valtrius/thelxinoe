@@ -10,7 +10,7 @@ async fn own_password_change_verifies_current_password_and_revokes_other_devices
     let hash = thelxinoe_auth::password_hash(old.into()).await.unwrap();
     state
         .db
-        .call(move |db| {
+        .write("test.fixture", move |db| {
             db.execute("UPDATE users SET password_hash=?1 WHERE id='alice'", [hash])?;
             Ok(())
         })
@@ -97,7 +97,7 @@ async fn own_password_change_verifies_current_password_and_revokes_other_devices
     );
     let hash = state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             Ok(db.query_row(
                 "SELECT password_hash FROM users WHERE id='alice'",
                 [],
@@ -118,7 +118,7 @@ async fn own_password_change_verifies_current_password_and_revokes_other_devices
     );
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             let audit: String =
                 db.query_row("SELECT action FROM audit WHERE actor_id='alice'", [], |r| {
                     r.get(0)

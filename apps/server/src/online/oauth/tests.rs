@@ -56,7 +56,7 @@ pub(crate) async fn fixture() -> (tempfile::TempDir, AppState, String) {
     .unwrap();
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             for name in ["alice", "bob"] {
                 db.execute(
                     "INSERT INTO users(id,username,password_hash,role,created_at) VALUES (?1,?1,'unused','user',1)",
@@ -184,7 +184,7 @@ async fn oauth_is_browser_bound_single_use_and_keeps_tokens_encrypted() {
     assert!(!mine.to_string().contains("secret"));
     let encrypted = state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             Ok(db.query_row(
                 "SELECT credential FROM online_accounts WHERE user_id='alice'",
                 [],
@@ -243,7 +243,7 @@ async fn oauth_is_browser_bound_single_use_and_keeps_tokens_encrypted() {
     );
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("DELETE FROM sessions WHERE user_id='alice'", [])?;
             Ok(())
         })
@@ -266,7 +266,7 @@ async fn concurrent_requests_cannot_overspend_shared_quota() {
     let (_temp, state, _session) = fixture().await;
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute(
                 "INSERT INTO settings VALUES ('youtube_daily_quota','7')",
                 [],
@@ -346,10 +346,10 @@ async fn replacement_expiry_and_application_changes_cancel_authorization_attempt
     assert_eq!(response.1[header::LOCATION], "/?youtube_link=failed");
     // Abandoning a reconnect attempt still leaves the existing connection's
     // scheduler generation in step with its account.
-    assert!(state.db.call(|db|Ok(db.query_row("SELECT y.generation=a.generation FROM youtube_sync y JOIN online_accounts a USING(user_id) WHERE a.provider='youtube'",[],|r|r.get::<_,bool>(0))?)).await.unwrap());
+    assert!(state.db.write("test.fixture", |db|Ok(db.query_row("SELECT y.generation=a.generation FROM youtube_sync y JOIN online_accounts a USING(user_id) WHERE a.provider='youtube'",[],|r|r.get::<_,bool>(0))?)).await.unwrap());
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE oauth_attempts SET expires_at=0", [])?;
             Ok(())
         })
@@ -376,7 +376,7 @@ async fn replacement_expiry_and_application_changes_cancel_authorization_attempt
     );
     state
         .db
-        .call(|db| {
+        .write("test.fixture", |db| {
             db.execute("UPDATE users SET role='admin' WHERE id='alice'", [])?;
             Ok(())
         })
@@ -406,7 +406,7 @@ async fn replacement_expiry_and_application_changes_cancel_authorization_attempt
     assert!(
         state
             .db
-            .call(|db| Ok(db.query_row(
+            .write("test.fixture", |db| Ok(db.query_row(
                 "SELECT credential IS NULL FROM online_accounts WHERE user_id='alice'",
                 [],
                 |r| r.get::<_, bool>(0)

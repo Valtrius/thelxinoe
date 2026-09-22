@@ -1,3 +1,6 @@
+#[path = "../storage/jellyfin.rs"]
+mod storage;
+
 mod audio;
 mod auth;
 mod catalog;
@@ -372,13 +375,7 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
         }
     }
     if method == "POST" && lower == "/sessions/logout" {
-        state
-            .db
-            .call(move |db| {
-                db.execute("DELETE FROM sessions WHERE id=?1", [p.session_id])?;
-                Ok(())
-            })
-            .await?;
+        storage::handle(&p, &state.db).await?;
         return Ok(StatusCode::NO_CONTENT.into_response());
     }
     if method == "POST" && lower.starts_with("/sessions/capabilities") {
