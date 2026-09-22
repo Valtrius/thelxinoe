@@ -22,7 +22,16 @@ test('profile pictures are cropped, resized, saved and removable', async ({
     context.fillRect(256, 0, 256, 256);
     return canvas.toDataURL('image/png').split(',')[1];
   });
-  await page.getByLabel('Choose a picture').setInputFiles({
+  await expect(page.getByText('Choose a picture', { exact: true })).toHaveCount(
+    0,
+  );
+  const pictureInput = page.getByLabel('Change profile picture');
+  const avatar = pictureInput.locator('..');
+  const editOverlay = avatar.locator('span[aria-hidden="true"]');
+  await expect(editOverlay).toHaveCSS('opacity', '0');
+  await avatar.hover();
+  await expect(editOverlay).toHaveCSS('opacity', '1');
+  await pictureInput.setInputFiles({
     name: 'two-colors.png',
     mimeType: 'image/png',
     buffer: Buffer.from(data, 'base64'),

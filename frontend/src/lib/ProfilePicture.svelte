@@ -5,6 +5,7 @@
   import Panel from './ui/Panel.svelte';
   import Button from './ui/Button.svelte';
   import { errorClass } from './ui/styles';
+  import { Pencil } from '@lucide/svelte';
 
   let { user, changed } = $props<{
     user: User;
@@ -128,8 +129,8 @@
 <Panel>
   <h2>Profile picture</h2>
   <div class="flex flex-wrap items-center gap-4">
-    <span
-      class="grid size-16 shrink-0 place-items-center overflow-hidden rounded-full border border-line bg-surface-soft text-2xl text-accent"
+    <label
+      class="group/avatar relative mb-0 grid size-16 shrink-0 cursor-pointer place-items-center overflow-hidden rounded-full border border-line bg-surface-soft text-2xl text-accent"
     >
       {#if user.avatar}<img
           src={user.avatar}
@@ -137,11 +138,14 @@
           class="size-full object-cover"
         />
       {:else}{user.username[0].toUpperCase()}{/if}
-    </span>
-    <label class="mb-0 max-w-80 flex-1"
-      >Choose a picture
+      <span
+        class="pointer-events-none absolute inset-0 grid place-items-center bg-black/55 text-white opacity-0 transition-opacity group-hover/avatar:opacity-100 group-focus-within/avatar:opacity-100"
+        aria-hidden="true"><Pencil size={20} /></span
+      >
       <input
+        class="sr-only"
         type="file"
+        aria-label="Change profile picture"
         accept="image/jpeg,image/png,image/webp,image/gif"
         disabled={busy}
         onchange={(event) => {
