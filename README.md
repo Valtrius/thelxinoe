@@ -14,11 +14,10 @@ Requires Rust 1.96+, Node 24+, FFmpeg/FFprobe, and Docker with Linux containers.
 
 ```powershell
 npm ci
-npm run build
-cargo run -p thelxinoe-server
+npm run dev
 ```
 
-Open http://127.0.0.1:8484 and choose a username and password to create the first administrator. Development data remains in `.local`. For frontend hot reload, run `npm run dev` in another terminal. Vite proxies the API and WebSocket to port 8484.
+`npm run dev` starts the Rust server on port 8484 and Vite on port 5173. Open http://127.0.0.1:5173 and choose a username and password to create the first administrator. Development data remains in `.local`, Vite proxies the API and WebSocket to the server, and Ctrl+C stops both processes. Use `npm run dev:web` when you only need Vite, or `cargo run --locked -p thelxinoe-server` when you only need the server.
 
 For a new empty Windows development instance on every launch:
 
@@ -54,11 +53,10 @@ The first account is an administrator. First-run setup is available while the se
 
 ```sh
 npm run validate
-cargo fmt --all --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-npm run desktop:build
+npm run ci
 ```
+
+`npm run validate` runs formatting, linting, Rust and web checks, unit tests and the web build. `npm run ci` runs the same server, web, container and desktop phases used by GitHub Actions. On Windows, the server phase runs the Linux Rust checks through Docker before the native desktop phase. On Linux, the desktop phase remains a Windows CI job.
 
 The canonical product version is `[workspace.package].version` in `Cargo.toml`. `npm run version:sync` updates npm, Tauri and Compose versions; builds reject drift. See [testing instructions](docs/TESTING.md) for browser, proxy, desktop and Android TV validation.
 

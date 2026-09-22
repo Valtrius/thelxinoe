@@ -9,7 +9,7 @@ COPY scripts/version.mjs scripts/version.mjs
 COPY Cargo.toml Cargo.toml
 COPY compose.yaml compose.test.yaml ./
 COPY apps/desktop/tauri.conf.json apps/desktop/tauri.conf.json
-RUN npm run build
+RUN npm run build:web
 
 FROM rust:1.98-bookworm AS rust
 WORKDIR /src

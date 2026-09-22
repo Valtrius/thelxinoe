@@ -4,7 +4,7 @@ The supported baseline is Linux x86-64 Docker, Windows x64 Tauri, current Chromi
 
 ## Required checks
 
-- Run `npm run validate`, `cargo fmt --all --check`, Windows workspace Clippy/tests and Linux controller/server tests. Linux-specific ownership, archive and process tests cannot be replaced by Windows-only Cargo results.
+- Run `npm run ci` before the broader release matrix below. On Windows, its server phase runs the Linux controller/server checks through Docker and its desktop phase builds and checks the native application.
 - Build both Linux images and the production Windows NSIS installer from the same shared product version. Keep test publisher overrides and test application identities out of production builds.
 - Start an empty Compose deployment; create the administrator through the wizard, verify secure login and device revocation, and restart it without losing state.
 - Run a signed previous-release upgrade, failed forward migration, offline controller recovery, encrypted earlier-generation restore and actual stale-bootstrap Compose recreation. Keep old recovery images until those checks pass.

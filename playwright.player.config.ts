@@ -10,7 +10,7 @@ export default defineConfig({
     viewport: { width: 1280, height: 900 },
   },
   webServer: {
-    command: 'npm run dev --workspace frontend -- --port 18487',
+    command: 'npm run dev:web -- --port 18487',
     url: 'http://127.0.0.1:18487',
     reuseExistingServer: false,
   },

@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "app.thelxinoe.desktop",
   "build": {
-    "beforeDevCommand": "npm --prefix .. run dev",
+    "beforeDevCommand": "npm --prefix .. run dev:web",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "npm --prefix .. run build",
+    "beforeBuildCommand": "npm --prefix .. run build:web",
     "frontendDist": "../../frontend/dist"
   },
   "app": {
@@ -32,11 +32,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": [
-      "nsis"
-    ],
-    "icon": [
-      "icons/icon.ico"
-    ]
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"]
   }
 }

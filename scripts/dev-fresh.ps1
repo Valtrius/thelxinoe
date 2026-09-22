@@ -62,7 +62,7 @@ try {
     }
 
     if (-not $SkipBuild) {
-        & $npmCommand run build
+        & $npmCommand run build:web
         if ($LASTEXITCODE -ne 0) {
             throw "Frontend build failed (exit $LASTEXITCODE)."
         }

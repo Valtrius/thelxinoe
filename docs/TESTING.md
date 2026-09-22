@@ -2,21 +2,20 @@
 
 ```powershell
 npm run validate
-npm run desktop:build
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test
+npm run ci
 ```
 
-On Linux, omit `--workspace` from Clippy to exclude the Windows desktop shell. Catalog tests require FFprobe. Generated fixtures require FFmpeg. CI installs those prerequisites explicitly.
+`npm run validate` covers formatting, linting, Rust and web checks, unit tests and the web build. `npm run ci` runs the server, web and container phases used by GitHub Actions, plus the native desktop phase on Windows. Catalog tests require FFprobe. Generated fixtures require FFmpeg. CI installs those prerequisites explicitly.
 
-Windows hosts can also run the complete Linux Rust checks in Docker:
+`npm run ci:containers` treats the `thelxinoe-test` and `thelxinoe-playback` Compose projects as disposable fixtures. It removes their containers and named volumes before and after the phase so retained local state cannot differ from a fresh GitHub Actions runner.
+
+The Windows server CI phase runs the complete Linux Rust checks through:
 
 ```powershell
 docker build -f scripts/Dockerfile.verify -t thelxinoe-verified:local .
 ```
 
-This runs formatting, Clippy and all default workspace tests with FFmpeg/FFprobe installed, including Linux-only controller locking, archive permissions and process behavior. The full acceptance matrix and local evidence are in [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md).
+This runs formatting, Clippy and all default workspace tests with FFmpeg/FFprobe installed, including Linux-only controller locking, archive permissions and process behavior. `npm run ci:server` invokes it automatically on Windows. The full acceptance matrix and local evidence are in [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md).
 
 ## Browser and reverse proxy
 
@@ -38,8 +37,8 @@ For first-run checks, start `npm run dev:fresh` in a separate terminal. Set `THE
 ### Isolated frontend layout and playback
 
 ```powershell
-npm run test:layout
-npm run test:player
+npm run test:ui:layout
+npm run test:ui:player
 ```
 
 These suites start their own frontend servers and intercept API requests in the browser. They do not require a running backend or change any server account. The layout suite covers full-height settings navigation, independent menu scrolling, mobile breakpoints, theme changes, shared form controls, keyboard sign-in and Ctrl+wheel card sizing. The player suite uses generated media to exercise playback controls, fullscreen, loading/error states, page scrolling and intermediate sidebar animation frames; FFmpeg is required.
@@ -238,4 +237,4 @@ The Windows MPV manager has version, archive, update, configuration and plugin t
 
 ## Web player controls and loading
 
-Run `npm run test:player` with FFmpeg and Playwright Chromium installed. This starts an isolated Vite server on port 18487 and uses generated video plus controlled API responses; it needs no running backend or account credentials. It checks immediate rendering during delayed metadata and stream preparation, buffering until frames decode, controls that hide and remain keyboard accessible, volume persistence, direct and HLS seeking, live pause/resume, fullscreen, mobile layout, quality changes, retry and closing during preparation. Screenshots are saved under `.local/player-ui`.
+Run `npm run test:ui:player` with FFmpeg and Playwright Chromium installed. This starts an isolated Vite server on port 18487 and uses generated video plus controlled API responses; it needs no running backend or account credentials. It checks immediate rendering during delayed metadata and stream preparation, buffering until frames decode, controls that hide and remain keyboard accessible, volume persistence, direct and HLS seeking, live pause/resume, fullscreen, mobile layout, quality changes, retry and closing during preparation. Screenshots are saved under `.local/player-ui`.
