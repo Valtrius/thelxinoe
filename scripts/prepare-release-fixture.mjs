@@ -1,6 +1,12 @@
 // Copies only source/build inputs into a private context. Production version is unchanged.
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'node:fs';
+import {
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  copyFileSync,
+  existsSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 const root = '.local/release-fixture';
 const files = execFileSync(
@@ -11,6 +17,7 @@ const files = execFileSync(
   .trim()
   .split(/\r?\n/);
 for (const file of new Set(files)) {
+  if (!existsSync(file)) continue;
   if (
     !/^(apps\/|crates\/|frontend\/|scripts\/|releases\/|Cargo\.|Dockerfile$|compose\.|package|\.dockerignore$)/.test(
       file,
@@ -56,22 +63,28 @@ const schema = Number(
   )[1],
 );
 const nextSchema = schema + 1;
-const migration = (n) => String(n).padStart(3, '0');
+// Only this disposable release fixture can change an existing schema. The
+// production database has a single fresh schema and no upgrade runner.
+const fixtureTable =
+  'CREATE TABLE release_forward_only_fixture(id INTEGER PRIMARY KEY, value TEXT NOT NULL) STRICT;';
 edit('crates/database/src/lib.rs', (s) =>
   s
     .replace(
       `SCHEMA_VERSION: u32 = ${schema}`,
       `SCHEMA_VERSION: u32 = ${nextSchema}`,
     )
+    .replace('let version: u32 =', 'let mut version: u32 =')
     .replace(
-      `include_str!("../migrations/${migration(schema)}.sql"),`,
-      `include_str!("../migrations/${migration(schema)}.sql"),\n            include_str!("../migrations/${migration(nextSchema)}.sql"),`,
+      '        let empty =',
+      `        if application == APPLICATION_ID && version == ${schema} {
+            tx.execute_batch("${fixtureTable}")?;
+            tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            version = SCHEMA_VERSION;
+        }
+        let empty =`,
     ),
 );
-writeFileSync(
-  join(root, `crates/database/migrations/${migration(nextSchema)}.sql`),
-  'CREATE TABLE release_forward_only_fixture(id INTEGER PRIMARY KEY, value TEXT NOT NULL);\n',
-);
+edit('crates/database/schema.sql', (s) => s + '\n' + fixtureTable + '\n');
 edit('apps/server/src/validation.rs', (s) =>
   s.replace(
     '    let report =',

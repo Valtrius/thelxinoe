@@ -73,7 +73,7 @@ pub async fn remove(
     let user = p.user.id.clone();
     let removed=state.db.call(move|db|{
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let protected=tx.query_row("SELECT EXISTS(SELECT 1 FROM youtube_state WHERE video_id=?1 AND user_id<>?2 AND (watchlist=1 OR pinned=1)) OR EXISTS(SELECT 1 FROM playback_sessions WHERE youtube_video_id=?1 AND state IN ('ready','playing','paused') AND updated_at>?3)",params![video,user,now()-120],|r|r.get::<_,bool>(0))?;
+        let protected=tx.query_row("SELECT EXISTS(SELECT 1 FROM youtube_video_state WHERE video_id=?1 AND user_id<>?2 AND (watchlist=1 OR pinned=1)) OR EXISTS(SELECT 1 FROM playback_sessions WHERE youtube_video_id=?1 AND state IN ('ready','playing','paused') AND updated_at>?3)",params![video,user,now()-120],|r|r.get::<_,bool>(0))?;
         if protected {return Ok(false);}
         let row=tx.query_row("SELECT generation,state FROM youtube_downloads WHERE video_id=?1",[&video],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?;
         if let Some((generation,status))=row {
@@ -111,8 +111,8 @@ pub(super) async fn run_watchlists(state: AppState) -> anyhow::Result<()> {
 
 async fn maintain_watchlists(state: &AppState) -> anyhow::Result<()> {
     let users=state.db.call(|db|{
-        let users=db.prepare("SELECT DISTINCT i.user_id FROM youtube_watchlist_items i JOIN youtube_watchlists w ON w.id=i.watchlist_id JOIN youtube_state s ON s.user_id=i.user_id AND s.video_id=i.video_id WHERE w.auto_remove_watched=1 AND s.watched=1 AND s.updated_at<?1")?.query_map([now()-5],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        db.execute("DELETE FROM youtube_watchlist_items WHERE EXISTS(SELECT 1 FROM youtube_watchlists w JOIN youtube_state s ON s.user_id=w.user_id WHERE w.id=youtube_watchlist_items.watchlist_id AND w.auto_remove_watched=1 AND s.video_id=youtube_watchlist_items.video_id AND s.watched=1 AND s.updated_at<?1)",[now()-5])?;
+        let users=db.prepare("SELECT DISTINCT i.user_id FROM youtube_watchlist_items i JOIN youtube_watchlists w ON w.id=i.watchlist_id JOIN youtube_state s ON s.user_id=i.user_id AND s.video_id=i.video_id WHERE w.auto_remove_watched=1 AND s.watched=1 AND s.updated_at<?1 AND i.added_at<?1")?.query_map([now()-5],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        db.execute("DELETE FROM youtube_watchlist_items WHERE added_at<?1 AND EXISTS(SELECT 1 FROM youtube_watchlists w JOIN youtube_state s ON s.user_id=w.user_id WHERE w.id=youtube_watchlist_items.watchlist_id AND w.auto_remove_watched=1 AND s.video_id=youtube_watchlist_items.video_id AND s.watched=1 AND s.updated_at<?1)",[now()-5])?;
         Ok(users)
     }).await?;
     for user in users {
@@ -182,7 +182,7 @@ pub(crate) async fn request_for(
     let p = p.clone();
     let result=state.db.call(move |db| {
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let interest=tx.query_row("SELECT EXISTS(SELECT 1 FROM youtube_state WHERE user_id=?1 AND video_id=?2 AND (watchlist=1 OR pinned=1))",params![p.user.id,video],|r|r.get::<_,bool>(0))?;
+        let interest=tx.query_row("SELECT EXISTS(SELECT 1 FROM youtube_video_state WHERE user_id=?1 AND video_id=?2 AND (watchlist=1 OR pinned=1))",params![p.user.id,video],|r|r.get::<_,bool>(0))?;
         if !interest { return Ok(false); }
         tx.execute("INSERT INTO youtube_media(video_id) VALUES (?1) ON CONFLICT DO NOTHING",[&video])?;
         tx.execute("DELETE FROM youtube_download_suppressed WHERE video_id=?1",[&video])?;
@@ -211,7 +211,7 @@ pub(crate) fn record_state(
     position: f64,
     duration: f64,
 ) -> anyhow::Result<()> {
-    tx.execute("INSERT INTO youtube_state(user_id,video_id,watched,position,added_at,updated_at) SELECT ?1,?2,?3,?4,?5,?5 WHERE EXISTS(SELECT 1 FROM youtube_videos WHERE user_id=?1 AND video_id=?2) ON CONFLICT(user_id,video_id) DO UPDATE SET watched=MAX(watched,excluded.watched),position=excluded.position,updated_at=excluded.updated_at",params![user,video,duration>0.0&&position>=duration*0.9,if duration>0.0 {position}else{0.0},now()])?;
+    tx.execute("INSERT INTO youtube_state(user_id,video_id,watched,position,updated_at) SELECT ?1,?2,?3,?4,?5 WHERE EXISTS(SELECT 1 FROM youtube_videos WHERE user_id=?1 AND video_id=?2) ON CONFLICT(user_id,video_id) DO UPDATE SET watched=MAX(watched,excluded.watched),position=excluded.position,updated_at=excluded.updated_at",params![user,video,duration>0.0&&position>=duration*0.9,if duration>0.0 {position}else{0.0},now()])?;
     Ok(())
 }
 
@@ -234,7 +234,7 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
         if enabled(&state).await? {
             let job=state.db.call(|db| {
                 let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-                let row=tx.query_row("SELECT video_id,generation,tools FROM youtube_downloads d WHERE state='queued' AND EXISTS(SELECT 1 FROM youtube_state s WHERE s.video_id=d.video_id AND (s.watchlist=1 OR s.pinned=1)) ORDER BY updated_at LIMIT 1",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional()?;
+                let row=tx.query_row("SELECT video_id,generation,tools FROM youtube_downloads d WHERE state='queued' AND EXISTS(SELECT 1 FROM youtube_video_state s WHERE s.video_id=d.video_id AND (s.watchlist=1 OR s.pinned=1)) ORDER BY updated_at LIMIT 1",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional()?;
                 if let Some((video,_,_))=&row {tx.execute("UPDATE youtube_downloads SET state='downloading',updated_at=?2 WHERE video_id=?1",params![video,now()])?;}
                 tx.commit()?;Ok(row)
             }).await?;
@@ -279,7 +279,7 @@ async fn cleanup(state: &AppState) -> anyhow::Result<()> {
     let root = root.canonicalize()?;
     state.db.call(move |db| {
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let protection="EXISTS(SELECT 1 FROM youtube_state s WHERE s.video_id=youtube_downloads.video_id AND (s.watchlist=1 OR s.pinned=1)) OR EXISTS(SELECT 1 FROM playback_sessions p WHERE p.youtube_video_id=youtube_downloads.video_id AND p.state IN ('ready','playing','paused') AND p.updated_at>".to_owned()+&(now()-120).to_string()+")";
+        let protection="EXISTS(SELECT 1 FROM youtube_video_state s WHERE s.video_id=youtube_downloads.video_id AND (s.watchlist=1 OR s.pinned=1)) OR EXISTS(SELECT 1 FROM playback_sessions p WHERE p.youtube_video_id=youtube_downloads.video_id AND p.state IN ('ready','playing','paused') AND p.updated_at>".to_owned()+&(now()-120).to_string()+")";
         tx.execute(&format!("UPDATE youtube_downloads SET unprotected_at=NULL WHERE {protection}"),[])?;
         tx.execute(&format!("UPDATE youtube_downloads SET unprotected_at=?1 WHERE unprotected_at IS NULL AND NOT ({protection}) AND state!='downloading'"),[now()])?;
         let candidate=tx.query_row(&format!("SELECT video_id,generation,path,size,modified FROM youtube_downloads WHERE unprotected_at<?1 AND state!='downloading' AND NOT ({protection}) ORDER BY unprotected_at LIMIT 1"),[now()-86400],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,Option<i64>>(3)?,r.get::<_,Option<String>>(4)?))).optional()?;
@@ -452,7 +452,7 @@ async fn download(
             _=interval.tick()=> {
                 let video=video.to_owned();
                 let generation=generation.to_owned();
-                let interested=state.db.call(move |db| Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM youtube_state WHERE video_id=?1 AND (watchlist=1 OR pinned=1)) AND EXISTS(SELECT 1 FROM youtube_downloads WHERE video_id=?1 AND generation=?2 AND state='downloading')",params![video,generation],|r|r.get::<_,bool>(0))?)).await?;
+                let interested=state.db.call(move |db| Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM youtube_video_state WHERE video_id=?1 AND (watchlist=1 OR pinned=1)) AND EXISTS(SELECT 1 FROM youtube_downloads WHERE video_id=?1 AND generation=?2 AND state='downloading')",params![video,generation],|r|r.get::<_,bool>(0))?)).await?;
                 ensure!(interested&&enabled(state).await?,"Download cancelled after its interest or permission changed");
                 ensure!(fs2::available_space(&directory)?>1024*1024*1024,"Download stopped to preserve free space");
                 let mut entries=tokio::fs::read_dir(&directory).await?;let mut bytes=0u64;

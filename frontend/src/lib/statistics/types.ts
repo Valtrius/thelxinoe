@@ -17,7 +17,6 @@ export type StatisticsOverview = {
   interval: 'day' | 'week' | 'month';
   trackingStartedAt: string | null;
   totalActiveSeconds: number;
-  estimatedActiveSeconds: number;
   activeDays: number;
   periodDays: number;
   averageActiveSecondsPerDay: number;

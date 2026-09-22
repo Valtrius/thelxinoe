@@ -1,4 +1,4 @@
-//! A one-shot migration contract. No listeners, job runners or provider calls are started.
+//! One-shot database and release validation. No listeners, job runners or provider calls are started.
 use crate::{AppState, config::Config};
 use anyhow::{Result, ensure};
 pub async fn run(config: Config) -> Result<()> {
@@ -15,7 +15,7 @@ pub async fn run(config: Config) -> Result<()> {
         thelxinoe_database::verify_snapshot(&state.config.state.join("thelxinoe.sqlite3"))?;
     ensure!(
         schema == thelxinoe_database::SCHEMA_VERSION,
-        "Unexpected migrated schema"
+        "Unexpected database schema"
     );
     ensure!(
         state.config.web.join("index.html").is_file(),

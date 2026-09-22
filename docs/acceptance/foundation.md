@@ -31,7 +31,7 @@ Build the minimum durable server.
 
 Deliver:
 
-- SQLite migration framework in WAL mode;
+- one transactional SQLite schema in WAL mode, with database identity and strict constraints;
 - first-boot master-key generation;
 - encrypted secret storage abstraction;
 - user/account schema;

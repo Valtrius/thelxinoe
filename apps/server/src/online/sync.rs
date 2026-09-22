@@ -205,7 +205,7 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
     let user = turn.user.clone();
     // URL additions get metadata in a bounded batch on the same fair queue.
     let owner = user.clone();
-    let pending=state.db.call(move|db|Ok(db.prepare("SELECT v.video_id FROM youtube_videos v LEFT JOIN youtube_state s USING(user_id,video_id) WHERE v.user_id=?1 AND v.metadata_at=0 ORDER BY s.added_at,v.video_id LIMIT 50")?.query_map([owner],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
+    let pending=state.db.call(move|db|Ok(db.prepare("SELECT v.video_id FROM youtube_videos v LEFT JOIN youtube_video_state s USING(user_id,video_id) WHERE v.user_id=?1 AND v.metadata_at=0 ORDER BY s.added_at,v.video_id LIMIT 50")?.query_map([owner],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
     if !pending.is_empty() {
         let joined = pending.join(",");
         let data = youtube::get(
@@ -437,7 +437,7 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
             if refresh {
                 let owner = user.clone();
                 let after = turn.cursor.after.clone();
-                turn.cursor.ids=state.db.call(move|db|Ok(db.prepare("SELECT v.video_id FROM youtube_videos v LEFT JOIN youtube_state s USING(user_id,video_id) WHERE v.user_id=?1 AND v.video_id>?2 AND (v.broadcast IN ('live','upcoming') OR s.watchlist=1 OR s.pinned=1) ORDER BY v.video_id LIMIT 50")?.query_map(params![owner,after],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
+                turn.cursor.ids=state.db.call(move|db|Ok(db.prepare("SELECT v.video_id FROM youtube_videos v LEFT JOIN youtube_video_state s USING(user_id,video_id) WHERE v.user_id=?1 AND v.video_id>?2 AND (v.broadcast IN ('live','upcoming') OR s.watchlist=1 OR s.pinned=1) ORDER BY v.video_id LIMIT 50")?.query_map(params![owner,after],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?)).await?;
                 if turn.cursor.ids.is_empty() {
                     turn.cursor.phase = "shorts".into();
                     turn.cursor.pages = 0;
@@ -471,7 +471,7 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
             save(state,turn,false,move|tx|{
                 for video in &ids {tx.execute("UPDATE youtube_videos SET available=0,metadata_at=?1 WHERE user_id=?2 AND video_id=?3",params![now(),user,video])?;}
                 for video in rows {upsert_video(tx,&user,&video,&ids)?;}
-                tx.execute("DELETE FROM youtube_videos WHERE user_id=?1 AND published_at<?2 AND metadata_at<?3 AND NOT EXISTS(SELECT 1 FROM youtube_state s WHERE s.user_id=youtube_videos.user_id AND s.video_id=youtube_videos.video_id)",params![user,now()-90*86400,now()-30*86400])?;
+                tx.execute("DELETE FROM youtube_videos WHERE user_id=?1 AND published_at<?2 AND metadata_at<?3 AND NOT EXISTS(SELECT 1 FROM youtube_state s WHERE s.user_id=youtube_videos.user_id AND s.video_id=youtube_videos.video_id) AND NOT EXISTS(SELECT 1 FROM youtube_watchlist_items i WHERE i.user_id=youtube_videos.user_id AND i.video_id=youtube_videos.video_id)",params![user,now()-90*86400,now()-30*86400])?;
                 Ok(())
             }).await
         }

@@ -99,7 +99,7 @@ This exercises separate users' Favorites and Watch Later, owner-controlled share
 
 Playback time is accumulated from observed position advances bounded by elapsed reporting time. Each report can add at most 30 seconds; large seek jumps are excluded. Timestamps are stored in UTC. History uses the server default timezone unless the user chooses a personal override; its date filters explicitly use UTC. Both timezone selectors list every timezone supported by the server. Choosing “Use server default” resumes inheritance, while explicitly choosing UTC remains a personal override. Regional timezones apply daylight saving rules automatically.
 
-Migration 30 preserves existing non-UTC user choices. Existing UTC accounts inherit the server default because earlier versions did not record whether UTC had been explicitly selected. Rust tests cover migration, new accounts, default changes, personal overrides, reset to inheritance, and the complete timezone list. Timezone changes emit events so connected clients refresh their display preferences.
+Rust tests cover fresh initialization, concurrent opens, restart and backup persistence, incompatible database rejection, new accounts, default changes, personal overrides, reset to inheritance, and the complete timezone list. Timezone changes emit events so connected clients refresh their display preferences.
 
 ## Windows MPV playback
 
@@ -191,7 +191,7 @@ Linux fixture tests cover device-code/session binding, encrypted tokens, refresh
 
 ## Product release, recovery and native installer
 
-Use a dedicated local registry, publisher key, server state and test application identity. The fixture intentionally migrates to a schema the original release cannot open. Never point it at the main or live-provider deployment.
+Use a dedicated local registry, publisher key, server state and test application identity. The fixture injects a deliberate schema change into its disposable source copy to exercise recovery from a database the original release cannot open. The production database has no migration runner. Never point the fixture at the main or live-provider deployment.
 
 1. Build the normal Linux images and Windows installer. Tag the Linux images `thelxinoe-server:release-base` and `thelxinoe-controller:release-base`.
 2. Run `node scripts/prepare-release-fixture.mjs`. Build both targets from `.local/release-fixture`, tag them `localhost:25000/thelxinoe/server:0.2.0` and `localhost:25000/thelxinoe/controller:0.2.0`, and push to a registry named `thelxinoe-release-registry` bound to `127.0.0.1:25000`.

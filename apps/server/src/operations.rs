@@ -290,7 +290,7 @@ async fn dashboard(State(state): State<AppState>, headers: HeaderMap) -> Result<
 async fn diagnostics(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
     let summary=state.db.call(move|db|{
-        let schema=db.query_row("SELECT MAX(version) FROM schema_migrations",[],|r|r.get::<_,i64>(0))?;
+        let schema=db.pragma_query_value(None,"user_version",|r|r.get::<_,u32>(0))?;
         let jobs=db.prepare("SELECT state,COUNT(*) FROM jobs GROUP BY state")?.query_map([],|r|Ok(json!({"state":r.get::<_,String>(0)?,"count":r.get::<_,i64>(1)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let check=db.query_row("PRAGMA quick_check",[],|r|r.get::<_,String>(0))?=="ok";
         db.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'diagnostics.export','server',?2)",params![p.user.id,now()])?;

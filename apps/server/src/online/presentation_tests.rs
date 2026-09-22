@@ -173,7 +173,7 @@ async fn feed_filters_sort_and_paginate_before_returning_cards() {
             db.execute("INSERT INTO youtube_subscriptions(user_id,channel_id,title,snapshot,active) VALUES(?1,'UCaaaaaaaaaaaaaaaaaaaaaa','Science','s',1)",[user])?;
             for (id,title,duration,short,watched,position) in [("aaaaaaaaaaa","Short",60,1,0,0),("bbbbbbbbbbb","Long watched",2000,0,1,0),("ccccccccccc","Long in progress",1800,0,0,80),("ddddddddddd","Regular",800,0,0,0)] {
                 db.execute("INSERT INTO youtube_videos(user_id,video_id,channel_id,title,channel_title,published_at,duration,is_short,metadata_at,privacy) VALUES(?1,?2,'UCaaaaaaaaaaaaaaaaaaaaaa',?3,'Science',?4,?5,?6,?4,'public')",params![user,id,title,now(),duration,short])?;
-                db.execute("INSERT INTO youtube_state(user_id,video_id,watched,position,added_at,updated_at) VALUES(?1,?2,?3,?4,?5,?5)",params![user,id,watched,position,now()])?;
+                db.execute("INSERT INTO youtube_state(user_id,video_id,watched,position,updated_at) VALUES(?1,?2,?3,?4,?5)",params![user,id,watched,position,now()])?;
             }
         } Ok(())
     }).await.unwrap();
@@ -234,7 +234,7 @@ async fn download_delete_protects_other_users() {
     state.db.call(|db|{
         for user in ["alice","bob"] {
             db.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES(?1,'abcdefghijk','Video')",[user])?;
-            db.execute("INSERT INTO youtube_state(user_id,video_id,pinned,added_at,updated_at) VALUES(?1,'abcdefghijk',1,1,1)",[user])?;
+            db.execute("INSERT INTO youtube_state(user_id,video_id,pinned,updated_at) VALUES(?1,'abcdefghijk',1,1)",[user])?;
         }
         db.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) VALUES('abcdefghijk',?1,'queued','{}',1,1)",[thelxinoe_core::id()])?;
         Ok(())

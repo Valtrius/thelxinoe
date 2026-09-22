@@ -1,4 +1,4 @@
-//! Private named lists, with aggregate retention tracked in youtube_state.
+//! Private named lists. Membership determines aggregate retention.
 use super::{browse, downloads, feed};
 use crate::{
     AppState,
@@ -182,9 +182,10 @@ pub(crate) async fn add_for(
         // Check again within the write transaction in case the list was deleted concurrently.
         let exists=tx.query_row("SELECT id FROM youtube_watchlists WHERE user_id=?1 AND id=?2",params![user,id],|r|r.get::<_,i64>(0)).optional()?;
         if exists.is_none(){return Ok(None);}
-        let retained=tx.query_row("SELECT COUNT(*) FROM youtube_state WHERE user_id=?1 AND video_id<>?2 AND (watchlist=1 OR pinned=1)",params![user,video],|r|r.get::<_,i64>(0))?;
+        let retained=tx.query_row("SELECT COUNT(*) FROM youtube_video_state WHERE user_id=?1 AND video_id<>?2 AND (watchlist=1 OR pinned=1)",params![user,video],|r|r.get::<_,i64>(0))?;
         if retained>=1000{return Ok(None);}
         tx.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES(?1,?2,?2) ON CONFLICT DO NOTHING",params![user,video])?;
+        tx.execute("INSERT INTO youtube_state(user_id,video_id,updated_at) VALUES(?1,?2,?3) ON CONFLICT DO NOTHING",params![user,video,now()])?;
         let added=tx.execute("INSERT INTO youtube_watchlist_items(user_id,watchlist_id,video_id,manual_position,added_at) VALUES(?1,?2,?3,?4,?5) ON CONFLICT DO NOTHING",params![user,id,video,input.manual_position,now()])?>0;
         tx.execute("UPDATE youtube_sync SET next_run=MIN(next_run,?1) WHERE user_id=?2 AND failures=0",params![now(),user])?;
         let output=browse::one(&tx,&user,&video,&grant)?;tx.commit()?;Ok(Some((added,output)))

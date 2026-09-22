@@ -279,8 +279,7 @@ fn aggregate(
     let mut channels = HashMap::<(String, String), Channel>::new();
     let mut people = BTreeMap::<String, f64>::new();
     let mut streams = [HashSet::<String>::new(), HashSet::<String>::new()];
-    let mut estimated = 0.0;
-    let mut statement = db.prepare("SELECT bucket_started_at,platform,media_id,active_seconds,estimated_seconds,channel_id,channel_name,user_id FROM playback_activity WHERE (?1 IS NULL OR user_id=?1) AND (?2='all' OR platform=?2) AND (?3 IS NULL OR bucket_started_at>=?3) AND bucket_started_at<=?4 ORDER BY bucket_started_at")?;
+    let mut statement = db.prepare("SELECT bucket_started_at,platform,media_id,active_seconds,channel_id,channel_name,user_id FROM playback_activity WHERE (?1 IS NULL OR user_id=?1) AND (?2='all' OR platform=?2) AND (?3 IS NULL OR bucket_started_at>=?3) AND bucket_started_at<=?4 ORDER BY bucket_started_at")?;
     let mut rows = statement.query(params![user, platform, cutoff, now.timestamp()])?;
     while let Some(row) = rows.next()? {
         let timestamp: i64 = row.get(0)?;
@@ -302,7 +301,6 @@ fn aggregate(
             continue;
         }
         totals[index] += seconds;
-        estimated += row.get::<_, f64>(4)?;
         active_days.insert(date);
         activity.entry(period(date, interval)).or_default()[index] += seconds;
         rhythm[local.weekday().num_days_from_monday() as usize * 24 + local.hour() as usize]
@@ -310,12 +308,12 @@ fn aggregate(
         if index == 1 || index == 2 {
             streams[index - 1].insert(media.clone());
         }
-        let channel = channels.entry((source, row.get(5)?)).or_default();
-        channel.name = row.get(6)?;
+        let channel = channels.entry((source, row.get(4)?)).or_default();
+        channel.name = row.get(5)?;
         channel.seconds += seconds;
         channel.days.insert(date);
         channel.media.insert(media);
-        *people.entry(row.get(7)?).or_default() += seconds;
+        *people.entry(row.get(6)?).or_default() += seconds;
     }
     let period_days = days.unwrap_or_else(|| {
         active_days
@@ -422,7 +420,7 @@ fn aggregate(
     Ok(
         json!({"range":range,"platform":platform,"timezone":zone.name(),"interval":interval,
         "trackingStartedAt":tracking.and_then(|t|DateTime::from_timestamp(t,0)).map(|t|t.to_rfc3339()),
-        "totalActiveSeconds":total,"estimatedActiveSeconds":estimated,"activeDays":active_days.len(),"periodDays":period_days,
+        "totalActiveSeconds":total,"activeDays":active_days.len(),"periodDays":period_days,
         "averageActiveSecondsPerDay":if active_days.is_empty(){0.0}else{total/active_days.len() as f64},
         "youtubeVideosStarted":started[0],"youtubeVideosWatched":completed[0],"twitchChannelsWatched":streams[0].len(),"kickChannelsWatched":streams[1].len(),
         "moviesStarted":started[3],"moviesWatched":completed[3],"episodesStarted":started[4],"episodesWatched":completed[4],"showsWatched":groups[4].len(),

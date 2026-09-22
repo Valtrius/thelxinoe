@@ -12,7 +12,7 @@ An envelope contains `payload` and `signature`, both base64. The signature cover
 
 ## Building a release
 
-1. Update the shared Cargo version and run `npm run version:sync`. Add a new migration; never change an already deployed migration.
+1. Update the shared Cargo version and run `npm run version:sync`. The unreleased database has one fresh schema in `crates/database/schema.sql`, at schema version 1. There is no production upgrade runner. Releases using that schema declare the same source and target schema; a future incompatible schema requires an explicit upgrade design before it can be offered to existing installations.
 2. Run the [release checklist](RELEASE_CHECKLIST.md) using the commands in [TESTING.md](TESTING.md). Build Linux server/controller images and push to the chosen registry; record their repository manifest digests and platform config digests.
 3. Build Windows with `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` supplied privately. Use a Tauri configuration override containing `bundle.createUpdaterArtifacts: true` and `plugins.updater.pubkey` with the corresponding Tauri public key. Keep this signing key distinct from the Ed25519 manifest key. The resulting NSIS installer has an adjacent `.sig` file.
 4. Prepare a reviewed manifest draft containing the release/image/API/migration metadata and the final HTTPS `windows_x64.url`.
@@ -25,9 +25,9 @@ No public release host or registry publication is configured in this checkout. T
 
 ## Container activation and offline recovery
 
-Preparation retains the original images, briefly stops the server for a consistent snapshot, verifies SQLite integrity/foreign keys/schema and the original credential key, then starts the original server again. The successor server migrates disposable copied state with networking disabled, no Docker socket and no production mounts. The recovery worker then restores that clone and runs the original server's validation command. A successor controller probe must also pass.
+Preparation retains the original images, briefly stops the server for a consistent snapshot, verifies SQLite integrity/foreign keys/schema and the original credential key, then starts the original server again. The successor server validates disposable copied state with networking disabled, no Docker socket and no production mounts. The recovery worker then restores that clone and runs the original server's validation command. A successor controller probe must also pass. The private release fixture injects a schema change only into its disposable source copy to test recovery across incompatible versions.
 
-Activation captures a new verified rollback bundle and migrates real state while the server is stopped and isolated. Only after validation does the controller create the successor server and perform a fenced controller handoff. Both runtime and persistent deployment file locks protect every Docker mutation. The accepted descriptor and Compose pins advance together through one atomic pointer. The successor records the activation boundary before starting the server with production access. Failures after that boundary require explicit recovery; restoration cannot undo media or external service side effects.
+Activation captures a new verified rollback bundle and validates real state while the server is stopped and isolated. Only after validation does the controller create the successor server and perform a fenced controller handoff. Both runtime and persistent deployment file locks protect every Docker mutation. The accepted descriptor and Compose pins advance together through one atomic pointer. The successor records the activation boundary before starting the server with production access. Failures after that boundary require explicit recovery; restoration cannot undo media or external service side effects.
 
 The controller's private Unix API works while the HTTP server is unavailable. From the accepted controller container, list operations with:
 

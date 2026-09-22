@@ -122,21 +122,13 @@ pub async fn update(
         .call(move |db| {
             let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             tx.execute(
-                "UPDATE users SET timezone=?1,timezone_inherited=?2 WHERE id=?3",
-                params![
-                    input.timezone.as_deref().unwrap_or("UTC"),
-                    input.timezone.is_none(),
-                    p.user.id
-                ],
+                "UPDATE users SET timezone_override=?1 WHERE id=?2",
+                params![input.timezone, p.user.id],
             )?;
             if let Some(format) = input.time_format {
                 tx.execute(
-                    "UPDATE users SET time_format=?1,time_format_inherited=?2 WHERE id=?3",
-                    params![
-                        format.as_deref().unwrap_or("24h"),
-                        format.is_none(),
-                        p.user.id
-                    ],
+                    "UPDATE users SET time_format_override=?1 WHERE id=?2",
+                    params![format, p.user.id],
                 )?;
             }
             let value = read(&tx, &p.user.id)?;
@@ -158,10 +150,17 @@ mod tests {
     async fn server_maintenance_policies_expose_the_current_zone() {
         use crate::online::oauth::tests::{call, fixture};
         let (_temp, state, cookie) = fixture().await;
-        state.db.call(|db| {
-            db.execute("UPDATE users SET role='admin',timezone='Asia/Tokyo',timezone_inherited=0 WHERE id='alice'", [])?;
-            Ok(())
-        }).await.unwrap();
+        state
+            .db
+            .call(|db| {
+                db.execute(
+                    "UPDATE users SET role='admin',timezone_override='Asia/Tokyo' WHERE id='alice'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
         for zone in ["America/New_York", "Europe/Paris"] {
             assert_eq!(
                 call(

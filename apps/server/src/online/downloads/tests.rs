@@ -56,7 +56,7 @@ async fn auto_removal_keeps_other_lists_and_the_manual_undo_window() {
             db.execute("INSERT INTO youtube_watchlists(id,user_id,name,auto_remove_watched,created_at,updated_at) VALUES(?1,'alice','Test',?2,1,1)",params![id,auto_remove])?;
             db.execute("INSERT INTO youtube_watchlist_items VALUES('alice',?1,?2,0,1)",params![id,VIDEO])?;
         }
-        db.execute("UPDATE youtube_state SET watched=1,updated_at=?1 WHERE user_id='alice'",[now()])?;
+        db.execute("INSERT INTO youtube_state(user_id,video_id,watched,updated_at) VALUES('alice',?1,1,?2)",params![VIDEO,now()])?;
         Ok(())
     }).await.unwrap();
     maintain_watchlists(&state).await.unwrap();
@@ -93,10 +93,56 @@ async fn auto_removal_keeps_other_lists_and_the_manual_undo_window() {
                 2
             );
             assert!(db.query_row(
-                "SELECT watchlist FROM youtube_state WHERE user_id='alice'",
+                "SELECT watchlist FROM youtube_video_state WHERE user_id='alice'",
                 [],
                 |r| r.get::<_, bool>(0)
             )?);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    // Re-adding an already watched video gets its own undo window. Membership
+    // changes no longer rewrite the user's playback-state timestamp.
+    state
+        .db
+        .call(|db| {
+            db.execute(
+                "INSERT INTO youtube_watchlist_items VALUES('alice',1,?1,0,?2)",
+                params![VIDEO, now()],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    maintain_watchlists(&state).await.unwrap();
+    state
+        .db
+        .call(|db| {
+            assert_eq!(
+                db.query_row("SELECT COUNT(*) FROM youtube_watchlist_items", [], |r| r
+                    .get::<_, u32>(0))?,
+                2
+            );
+            db.execute(
+                "UPDATE youtube_watchlist_items SET added_at=?1 WHERE watchlist_id=1",
+                [now() - 6],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    maintain_watchlists(&state).await.unwrap();
+    state
+        .db
+        .call(|db| {
+            assert_eq!(
+                db.query_row(
+                    "SELECT watchlist_id FROM youtube_watchlist_items",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                2
+            );
             Ok(())
         })
         .await
@@ -190,7 +236,8 @@ async fn public_file_sharing_keeps_progress_private_and_retention_fenced() {
     state.db.call(move|db| {
         db.execute("INSERT INTO youtube_media(video_id) VALUES (?1)",[VIDEO])?;
         db.execute("INSERT INTO youtube_videos(user_id,video_id,title,privacy) VALUES ('alice',?1,'Public fixture','public')",[VIDEO])?;
-        db.execute("INSERT INTO youtube_state(user_id,video_id,watchlist,added_at,updated_at) VALUES ('alice',?1,1,1,1)",[VIDEO])?;
+        let list=crate::online::watchlists::default_list(db,"alice")?;
+        db.execute("INSERT INTO youtube_watchlist_items VALUES('alice',?1,?2,0,1)",params![list,VIDEO])?;
         db.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,path,size,modified,probe,requested_at,updated_at,unprotected_at) VALUES (?1,?2,'ready','{}',?3,?4,?5,?6,1,1,1)",params![VIDEO,generation_copy,path.to_string_lossy(),metadata.len() as i64,metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos().to_string(),json!({"format":{"duration":"100"},"streams":[{"index":0,"codec_type":"video","codec_name":"h264"}]}).to_string()])?;
         Ok(())
     }).await.unwrap();
@@ -251,7 +298,7 @@ async fn public_file_sharing_keeps_progress_private_and_retention_fenced() {
         .0,
         StatusCode::NOT_FOUND
     );
-    state.db.call(|db|{db.execute("INSERT INTO youtube_videos(user_id,video_id,title,privacy) VALUES ('bob',?1,'Same public fixture','public')",[VIDEO])?;db.execute("INSERT INTO youtube_state(user_id,video_id,pinned,added_at,updated_at) VALUES ('bob',?1,1,1,1)",[VIDEO])?;Ok(())}).await.unwrap();
+    state.db.call(|db|{db.execute("INSERT INTO youtube_videos(user_id,video_id,title,privacy) VALUES ('bob',?1,'Same public fixture','public')",[VIDEO])?;db.execute("INSERT INTO youtube_state(user_id,video_id,pinned,updated_at) VALUES ('bob',?1,1,1)",[VIDEO])?;Ok(())}).await.unwrap();
     let second = call(&state, "/api/v1/playback", "POST", body, &bob).await;
     assert_eq!(second.0, StatusCode::OK);
     assert_eq!(second.2["position"], 0.0);

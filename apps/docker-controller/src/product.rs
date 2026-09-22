@@ -1103,11 +1103,9 @@ mod tests {
             &different_image_without_manifest,
             false
         ));
-        for (field, value) in [("Name", json!("/retired"))] {
-            let mut changed = expected.clone();
-            changed[field] = value;
-            assert!(!equivalent(&expected, &changed, false));
-        }
+        let mut renamed = expected.clone();
+        renamed["Name"] = json!("/retired");
+        assert!(!equivalent(&expected, &renamed, false));
         let mut changed = expected.clone();
         changed["ImageManifestDescriptor"]["digest"] = json!("sha256:new-manifest");
         changed["Image"] = json!("sha256:new-image");

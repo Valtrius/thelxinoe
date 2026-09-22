@@ -59,7 +59,7 @@ pub(crate) async fn fixture() -> (tempfile::TempDir, AppState, String) {
         .call(|db| {
             for name in ["alice", "bob"] {
                 db.execute(
-                    "INSERT INTO users(id,username,password_hash,role,timezone,created_at) VALUES (?1,?1,'unused','user','UTC',1)",
+                    "INSERT INTO users(id,username,password_hash,role,created_at) VALUES (?1,?1,'unused','user',1)",
                     [name],
                 )?;
             }

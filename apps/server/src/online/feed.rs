@@ -46,7 +46,7 @@ pub async fn list(
     }
     let owner = p.user.id.clone();
     let (mut items,total,sync)=state.db.call(move|db|{
-        let from="FROM youtube_videos v LEFT JOIN youtube_state s USING(user_id,video_id) WHERE v.user_id=?1 AND (?2=0 OR s.watchlist=1) AND (?3=0 OR s.pinned=1) AND (?4=0 OR (v.is_short=0 OR v.broadcast<>'none')) AND (?5=0 OR COALESCE(s.watched,0)=0) AND (?6='' OR instr(lower(v.title),lower(?6))>0 OR instr(lower(v.channel_title),lower(?6))>0) AND (?7='' OR v.channel_id=?7) AND (?2=1 OR ?3=1 OR EXISTS(SELECT 1 FROM youtube_subscriptions c WHERE c.user_id=v.user_id AND c.channel_id=v.channel_id AND c.active=1))";
+        let from="FROM youtube_videos v LEFT JOIN youtube_video_state s USING(user_id,video_id) WHERE v.user_id=?1 AND (?2=0 OR s.watchlist=1) AND (?3=0 OR s.pinned=1) AND (?4=0 OR (v.is_short=0 OR v.broadcast<>'none')) AND (?5=0 OR COALESCE(s.watched,0)=0) AND (?6='' OR instr(lower(v.title),lower(?6))>0 OR instr(lower(v.channel_title),lower(?6))>0) AND (?7='' OR v.channel_id=?7) AND (?2=1 OR ?3=1 OR EXISTS(SELECT 1 FROM youtube_subscriptions c WHERE c.user_id=v.user_id AND c.channel_id=v.channel_id AND c.active=1))";
         let query=params![owner,filter.watchlist,filter.pinned,filter.hide_shorts,filter.unwatched,filter.search,filter.channel];
         let total=db.query_row(&format!("SELECT COUNT(*) {from}"),query,|r|r.get::<_,u32>(0))?;
         let sql=format!("SELECT v.video_id,v.title,v.channel_title,v.published_at,v.duration,v.broadcast,v.available,v.is_short,v.metadata_at,COALESCE(s.watchlist,0),COALESCE(s.pinned,0),COALESCE(s.watched,0),COALESCE(s.position,0),v.privacy {from} ORDER BY CASE WHEN ?2=1 THEN s.added_at ELSE v.published_at END DESC,v.video_id LIMIT 50 OFFSET ?8");
@@ -119,11 +119,11 @@ pub async fn add(
     let user = p.user.id.clone();
     let added=state.db.call(move|db|{
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let exists=tx.query_row("SELECT EXISTS(SELECT 1 FROM youtube_state WHERE user_id=?1 AND video_id=?2 AND watchlist=1)",params![user,video],|r|r.get::<_,bool>(0))?;
-        let count=tx.query_row("SELECT COUNT(*) FROM youtube_state WHERE user_id=?1 AND (watchlist=1 OR pinned=1)",[&user],|r|r.get::<_,u32>(0))?;
+        let exists=tx.query_row("SELECT EXISTS(SELECT 1 FROM youtube_video_state WHERE user_id=?1 AND video_id=?2 AND watchlist=1)",params![user,video],|r|r.get::<_,bool>(0))?;
+        let count=tx.query_row("SELECT COUNT(*) FROM youtube_video_state WHERE user_id=?1 AND (watchlist=1 OR pinned=1)",[&user],|r|r.get::<_,u32>(0))?;
         if !exists&&count>=1000{return Ok(false);}
         tx.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES (?1,?2,?2) ON CONFLICT DO NOTHING",params![user,video])?;
-        tx.execute("INSERT INTO youtube_state(user_id,video_id,watchlist,added_at,updated_at) VALUES (?1,?2,1,?3,?3) ON CONFLICT(user_id,video_id) DO UPDATE SET watchlist=1,added_at=CASE WHEN watchlist=0 THEN excluded.added_at ELSE added_at END,updated_at=excluded.updated_at",params![user,video,now()])?;
+        tx.execute("INSERT INTO youtube_state(user_id,video_id,updated_at) VALUES (?1,?2,?3) ON CONFLICT DO NOTHING",params![user,video,now()])?;
         let list=super::watchlists::default_list(&tx,&user)?;
         tx.execute("INSERT INTO youtube_watchlist_items(user_id,watchlist_id,video_id,manual_position,added_at) VALUES(?1,?2,?3,?4,?5) ON CONFLICT DO NOTHING",params![user,list,video,-now(),now()])?;
         tx.execute("UPDATE youtube_sync SET next_run=MIN(next_run,?1) WHERE user_id=?2 AND failures=0",params![now(),user])?;
@@ -165,11 +165,11 @@ pub(crate) async fn edit_for(
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         if !tx.query_row("SELECT EXISTS(SELECT 1 FROM youtube_videos WHERE user_id=?1 AND video_id=?2)",params![user,video],|r|r.get::<_,bool>(0))? {return Ok(0);}
         if input.watchlist==Some(true)||input.pinned==Some(true) {
-            let count=tx.query_row("SELECT COUNT(*) FROM youtube_state WHERE user_id=?1 AND video_id<>?2 AND (watchlist=1 OR pinned=1)",params![user,video],|r|r.get::<_,u32>(0))?;
+            let count=tx.query_row("SELECT COUNT(*) FROM youtube_video_state WHERE user_id=?1 AND video_id<>?2 AND (watchlist=1 OR pinned=1)",params![user,video],|r|r.get::<_,u32>(0))?;
             if count>=1000 {return Ok(2);}
         }
-        tx.execute("INSERT INTO youtube_state(user_id,video_id,added_at,updated_at) VALUES (?1,?2,?3,?3) ON CONFLICT DO NOTHING",params![user,video,now()])?;
-        tx.execute("UPDATE youtube_state SET added_at=CASE WHEN ?1=1 AND watchlist=0 THEN ?4 ELSE added_at END,watchlist=COALESCE(?1,watchlist),pinned=COALESCE(?2,pinned),watched=COALESCE(?3,watched),updated_at=?4 WHERE user_id=?5 AND video_id=?6",params![input.watchlist,input.pinned,input.watched,now(),user,video])?;
+        tx.execute("INSERT INTO youtube_state(user_id,video_id,updated_at) VALUES (?1,?2,?3) ON CONFLICT DO NOTHING",params![user,video,now()])?;
+        tx.execute("UPDATE youtube_state SET pinned=COALESCE(?1,pinned),watched=COALESCE(?2,watched),updated_at=?3 WHERE user_id=?4 AND video_id=?5",params![input.pinned,input.watched,now(),user,video])?;
         if let Some(watchlist)=input.watchlist {
             if watchlist {
                 let list=super::watchlists::default_list(&tx,&user)?;

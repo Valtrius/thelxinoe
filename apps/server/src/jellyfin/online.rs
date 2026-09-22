@@ -86,7 +86,7 @@ pub async fn ensure_lists(state: &AppState, p: &Principal) -> Result<()> {
 const SELECT: &str = "WITH entries AS (
  SELECT 'youtube' kind,v.video_id provider_id,v.title name,v.channel_title overview,COALESCE(v.duration,0) duration,v.broadcast='live' live,
  'https://i.ytimg.com/vi/'||v.video_id||'/mqdefault.jpg' image,COALESCE(s.position,0) position,COALESCE(s.watched,0) played,COALESCE(s.pinned,0) favorite,strftime('%Y-%m-%dT%H:%M:%SZ',v.published_at,'unixepoch') created
- FROM youtube_videos v LEFT JOIN youtube_state s ON s.user_id=v.user_id AND s.video_id=v.video_id
+ FROM youtube_videos v LEFT JOIN youtube_video_state s ON s.user_id=v.user_id AND s.video_id=v.video_id
  WHERE v.user_id=?1 AND v.privacy='public' AND v.available=1 AND v.broadcast<>'upcoming'
  AND (EXISTS(SELECT 1 FROM youtube_subscriptions sub WHERE sub.user_id=v.user_id AND sub.channel_id=v.channel_id AND sub.active=1) OR COALESCE(s.watchlist,0)=1 OR COALESCE(s.pinned,0)=1)
  UNION ALL

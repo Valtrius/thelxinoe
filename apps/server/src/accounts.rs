@@ -116,7 +116,7 @@ pub async fn setup(
                 return Ok(false);
             }
             tx.execute(
-                "INSERT INTO users(id,username,password_hash,role,timezone,created_at) VALUES (?1,?2,?3,'admin','UTC',?4)",
+                "INSERT INTO users(id,username,password_hash,role,created_at) VALUES (?1,?2,?3,'admin',?4)",
                 params![uid, username, hash, now()],
             )?;
             tx.execute(
@@ -347,7 +347,7 @@ pub async fn create_user(
     let hash = password_hash(user.password).await?;
     let result=state.db.call(move |db|{
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;let uid=id();
-        let n=tx.execute("INSERT OR IGNORE INTO users(id,username,password_hash,role,timezone,created_at) VALUES (?1,?2,?3,?4,'UTC',?5)",params![uid,user.username,hash,user.role.as_str(),now()])?;
+        let n=tx.execute("INSERT OR IGNORE INTO users(id,username,password_hash,role,created_at) VALUES (?1,?2,?3,?4,?5)",params![uid,user.username,hash,user.role.as_str(),now()])?;
         if n==0{return Ok(None);}
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'user.create',?2,?3)",params![p.user.id,uid,now()])?;tx.commit()?;Ok(Some(uid))
     }).await?;

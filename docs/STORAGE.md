@@ -1,5 +1,30 @@
 # Storage and deployment paths
 
+## Application database
+
+Relational application data lives in `server/thelxinoe.sqlite3`. The complete schema is
+[`crates/database/schema.sql`](../crates/database/schema.sql); a new database is
+created in one transaction. There is no migration runner or upgrade history.
+SQLite's `application_id` identifies Thelxinoe and `user_version` identifies the
+schema used by backups, diagnostics and signed release validation. Startup only
+opens the supported schema, or initializes an empty database.
+
+This unreleased baseline starts at schema 1. Earlier development databases and
+their backups are incompatible. To reset one, stop the server and remove its
+`thelxinoe.sqlite3`, `thelxinoe.sqlite3-wal` and `thelxinoe.sqlite3-shm` files, then
+restart and complete setup. This resets accounts, provider connections, catalog
+state and preferences. Media files are separate. `npm run dev:fresh` creates a
+fresh development profile without having to reset an existing one.
+
+Tables use SQLite strict types, foreign keys and boolean/domain constraints.
+Personal timezone and time format overrides are nullable: `NULL` inherits the
+server default, with UTC and 24-hour time as the initial defaults. Watchlist
+membership is stored only in `youtube_watchlist_items`; `youtube_video_state`
+derives membership for feed and download-retention queries. Playback history and
+statistics keep identity snapshots so removing media or revoking a login does
+not erase viewing history. Session-bound playback, grants and provider attempts
+must belong to the same user as their authentication session.
+
 ## One shared media directory
 
 Thelxinoe and every connected media service must bind the **same host directory** at `/media`, writable, with this layout:

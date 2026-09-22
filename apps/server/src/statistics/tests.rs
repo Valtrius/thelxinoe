@@ -105,7 +105,6 @@ async fn statistics_progress_is_idempotent_private_and_survives_session_revocati
     assert_eq!(mine["totalActiveSeconds"], 10.0);
     assert_eq!(mine["twitchChannelsWatched"], 1);
     assert_eq!(mine["topChannels"][0]["name"], "Fixture");
-    assert_eq!(mine["estimatedActiveSeconds"], 0.0);
     assert_eq!(
         call(
             &state,
@@ -242,7 +241,7 @@ async fn statistics_split_minutes_and_local_days_without_counting_prefetch_or_id
         // Both occurrences of 01:30 during fall-back share the local rhythm cell.
         for instant in ["2026-11-01T05:30:00Z","2026-11-01T06:30:00Z"] {
             let at=instant.parse::<DateTime<Utc>>()?.timestamp();
-            db.execute("INSERT INTO playback_activity VALUES ('alice',?1,'twitch','twitch:42',60,0,'Live fixture','42','Fixture','Science','live')",[at])?;
+            db.execute("INSERT INTO playback_activity VALUES ('alice',?1,'twitch','twitch:42',60,'Live fixture','42','Fixture','Science','live')",[at])?;
         }
         let result=aggregate(db,Some("alice"),zone,"7d","twitch",false,"2026-11-01T08:00:00Z".parse()?)?;
         assert_eq!(result["totalActiveSeconds"],120.0);
@@ -279,7 +278,7 @@ async fn statistics_completion_and_extra_media_counts_follow_user_state() {
         assert_eq!(films["moviesWatched"],1);
         assert_eq!(films["youtubeVideosWatched"],0);
         db.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES ('alice','a','Video')",[])?;
-        db.execute("INSERT INTO youtube_state(user_id,video_id,watched,added_at,updated_at) VALUES ('alice','a',0,1,1)",[])?;
+        db.execute("INSERT INTO youtube_state(user_id,video_id,watched,updated_at) VALUES ('alice','a',0,1)",[])?;
         assert_eq!(aggregate(db,Some("alice"),chrono_tz::UTC,"all","youtube",false,now)?["youtubeVideosWatched"],2);
         db.execute("UPDATE youtube_state SET watched=1 WHERE user_id='alice' AND video_id='a'",[])?;
         db.execute("DELETE FROM youtube_videos WHERE user_id='alice' AND video_id='a'",[])?;
