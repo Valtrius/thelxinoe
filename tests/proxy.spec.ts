@@ -28,9 +28,7 @@ test('HTTPS setup, secure login, event replay, CSRF rejection and device revocat
       exact: true,
     })
     .click();
-  await expect(
-    page.getByRole('heading', { name: 'Good to see you, admin' }),
-  ).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Discover' })).toBeVisible();
   await expect(page.getByText('Connected', { exact: true })).toBeVisible();
   const cookies = await context.cookies();
   expect(cookies.find((c) => c.name === 'thelxinoe_session')).toMatchObject({

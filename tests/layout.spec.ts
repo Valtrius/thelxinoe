@@ -1,6 +1,13 @@
 import { test, expect, type Page } from '@playwright/test';
 import { installUiFixture } from './helpers/ui-fixture';
 
+async function selectRadarr(page: Page) {
+  await page
+    .getByRole('navigation', { name: 'Select service' })
+    .getByRole('button', { name: 'Radarr', exact: true })
+    .click();
+}
+
 test('connection checks keep the workspace still and keep feedback on its service', async ({
   page,
 }) => {
@@ -50,6 +57,7 @@ test('connection checks keep the workspace still and keep feedback on its servic
     },
   );
   await page.goto('/');
+  await selectRadarr(page);
   await expect(
     page.getByRole('combobox', { name: 'Quality profile' }),
   ).toBeVisible();
@@ -190,6 +198,7 @@ test('a stopped service can be removed after reviewing its configuration cleanup
     },
   );
   await page.goto('/');
+  await selectRadarr(page);
   await expect(
     page.getByRole('button', { name: 'Radarr', exact: true }),
   ).toContainText('Running');
@@ -278,6 +287,7 @@ test('removal and installation keep independent locks, feedback and polling', as
     await route.fulfill({ json: { id: 'managed-sonarr', state: 'queued' } });
   });
   await page.goto('/');
+  await selectRadarr(page);
   await page
     .getByRole('button', { name: 'Remove service', exact: true })
     .click();
@@ -375,6 +385,7 @@ test('an older update poll cannot unlock a newly queued update', async ({
     },
   );
   await page.goto('/');
+  await selectRadarr(page);
   const check = page.getByRole('button', {
     name: 'Check compatibility',
     exact: true,
@@ -407,6 +418,7 @@ for (const state of ['queued', 'preflight', 'activating', 'queued-recover']) {
       serviceUpdateState: state,
     });
     await page.goto('/');
+    await selectRadarr(page);
     await expect(
       page.getByRole('button', { name: 'Restart', exact: true }),
     ).toBeDisabled();
@@ -464,6 +476,7 @@ for (const savedControllerData of [false, true]) {
     await page.goto('/');
     const services = page.getByRole('navigation', { name: 'Select service' });
     if (savedControllerData) {
+      await selectRadarr(page);
       await expect(
         services.getByRole('button', { name: 'Radarr', exact: true }),
       ).toContainText('Setup mismatch');
@@ -793,6 +806,7 @@ test('media services select one workspace and keep desktop rail sections aligned
     settingsSection: 'services',
   });
   await page.goto('/');
+  await selectRadarr(page);
   const nav = page.getByRole('navigation', { name: 'Select service' });
   const radarr = page.getByRole('article', { name: 'Radarr service' });
   await expect(
@@ -1093,6 +1107,7 @@ for (const state of ['blocked', 'committed']) {
       serviceUpdateState: state,
     });
     await page.goto('/');
+    await selectRadarr(page);
     const service = page.getByRole('article', { name: 'Radarr service' });
     await expect(
       service.locator('.rail-identity:not(.inactive) > .service-status'),
@@ -1187,6 +1202,7 @@ for (const state of ['connecting', 'blocked']) {
       stackProvisionState: state,
     });
     await page.goto('/');
+    await selectRadarr(page);
     const radarr = page.getByRole('article', { name: 'Radarr service' });
     await expect(
       radarr.locator('.rail-identity:not(.inactive) > .service-status'),
@@ -1613,6 +1629,7 @@ test('matching service images are up to date with no update action', async ({
     });
   });
   await page.goto('/');
+  await selectRadarr(page);
   const updates = page.getByRole('region', { name: 'Updates', exact: true });
   await expect(updates.getByText('Up to date.', { exact: true })).toBeVisible();
   await expect(
