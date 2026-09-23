@@ -1,6 +1,226 @@
 import { test, expect, type Page } from '@playwright/test';
 import { installUiFixture } from './helpers/ui-fixture';
 
+test('connection checks keep the workspace still and keep feedback on its service', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+  });
+  let finish: (() => void) | undefined;
+  let failed = false;
+  let managerReads = 0;
+  await page.route('**/api/v1/admin/managers', async (route) => {
+    managerReads++;
+    if (!failed) return route.fallback();
+    return route.fulfill({
+      json: {
+        items: [
+          {
+            id: 'manager-radarr',
+            name: 'Radarr',
+            kind: 'radarr',
+            container_id: 'container-radarr',
+            port: 7878,
+            version: '6.0.0',
+            defaults: {
+              root_folder: '/media/movies',
+              quality_profile: 1,
+              monitored: true,
+            },
+            error: 'Connection unavailable',
+          },
+        ],
+      },
+    });
+  });
+  await page.route(
+    '**/api/v1/admin/managers/manager-radarr/test',
+    async (route) => {
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      await route.fulfill({
+        status: failed ? 409 : 200,
+        json: failed
+          ? { error: { message: 'Connection unavailable' } }
+          : { ok: true },
+      });
+    },
+  );
+  await page.goto('/');
+  await expect(
+    page.getByRole('combobox', { name: 'Quality profile' }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Refresh services' }),
+  ).toHaveCount(0);
+  const geometry = () =>
+    page.getByRole('combobox', { name: 'Quality profile' }).boundingBox();
+  const before = await geometry();
+  await page
+    .getByRole('button', { name: 'Test connection', exact: true })
+    .click();
+  await expect(
+    page.getByRole('button', { name: 'Testing…', exact: true }),
+  ).toBeVisible();
+  expect(await geometry()).toEqual(before);
+  await expect.poll(() => !!finish).toBe(true);
+  finish!();
+  await expect(
+    page.getByRole('button', { name: 'Connection OK', exact: true }),
+  ).toBeVisible();
+  expect(await geometry()).toEqual(before);
+  failed = true;
+  finish = undefined;
+  await page
+    .getByRole('button', { name: 'Connection OK', exact: true })
+    .click();
+  await expect.poll(() => !!finish).toBe(true);
+  finish!();
+  await expect(
+    page.getByRole('button', { name: 'Test failed', exact: true }),
+  ).toHaveAttribute('title', /Connection unavailable/);
+  expect(await geometry()).toEqual(before);
+  const reads = managerReads;
+  await expect
+    .poll(() => managerReads, { timeout: 7000 })
+    .toBeGreaterThan(reads);
+  expect(await geometry()).toEqual(before);
+  await page.getByRole('button', { name: 'Sonarr', exact: true }).click();
+  await expect(
+    page.getByText('Test failed', { exact: true }),
+  ).not.toBeVisible();
+  await expect(page.locator('.service-workspace > .notice')).toHaveCount(0);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('installation progress polls automatically without queued banners across tabs', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+  });
+  let installed = false;
+  let phase = 'queued';
+  let stackReads = 0;
+  await page.route('**/api/v1/admin/stack/install', async (route) => {
+    installed = true;
+    await route.fulfill({ json: { id: 'managed-sonarr', state: 'queued' } });
+  });
+  await page.route('**/api/v1/admin/stack', async (route) => {
+    stackReads++;
+    await route.fulfill({
+      json: {
+        items: [],
+        provisions: installed
+          ? [{ id: 'managed-sonarr', kind: 'sonarr', state: phase }]
+          : [],
+      },
+    });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Sonarr', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Install Sonarr', exact: true })
+    .click();
+  await expect(
+    page.getByRole('button', { name: 'Sonarr', exact: true }),
+  ).toContainText('Installing');
+  await expect(page.getByText(/installation queued/i)).toHaveCount(0);
+  await page.getByRole('button', { name: 'Radarr', exact: true }).click();
+  await expect(page.locator('.service-workspace > .notice')).toHaveCount(0);
+  phase = 'complete';
+  const before = stackReads;
+  await expect
+    .poll(() => stackReads, { timeout: 7000 })
+    .toBeGreaterThan(before);
+  await expect(
+    page.getByRole('button', { name: 'Sonarr', exact: true }),
+  ).not.toContainText('Installing');
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('a stopped service can be removed after reviewing its configuration cleanup', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+  });
+  let stopped = false;
+  let removed = false;
+  const actions: unknown[] = [];
+  await page.route('**/api/v1/admin/stack', async (route) => {
+    await route.fulfill({
+      json: {
+        items: removed
+          ? []
+          : [
+              {
+                id: 'managed-radarr',
+                kind: 'radarr',
+                phase: 'active',
+                running: !stopped,
+                existence: 'present',
+                drift: false,
+                can_remove: stopped,
+              },
+            ],
+        provisions: removed
+          ? []
+          : [{ id: 'managed-radarr', kind: 'radarr', state: 'complete' }],
+      },
+    });
+  });
+  await page.route('**/api/v1/admin/managers', async (route) => {
+    if (removed) await route.fulfill({ json: { items: [] } });
+    else await route.fallback();
+  });
+  await page.route(
+    '**/api/v1/admin/stack/managed-radarr/action',
+    async (route) => {
+      actions.push(route.request().postDataJSON());
+      removed = true;
+      await route.fulfill({ json: { removed: true } });
+    },
+  );
+  await page.goto('/');
+  await expect(
+    page.getByRole('button', { name: 'Radarr', exact: true }),
+  ).toContainText('Running');
+  await expect(
+    page.getByRole('button', { name: 'Remove service', exact: true }),
+  ).toHaveCount(0);
+  stopped = true;
+  await expect(
+    page.getByRole('button', { name: 'Radarr', exact: true }),
+  ).toContainText('Stopped', { timeout: 7000 });
+  await page
+    .getByRole('button', { name: 'Remove service', exact: true })
+    .click();
+  const dialog = page.getByRole('dialog', { name: 'Remove Radarr?' });
+  await expect(dialog).toContainText('Media files and other services are kept');
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  expect(actions).toEqual([]);
+  await page
+    .getByRole('button', { name: 'Remove service', exact: true })
+    .click();
+  await dialog
+    .getByRole('button', { name: 'Remove service and configuration' })
+    .click();
+  await expect(
+    page.getByRole('button', { name: 'Install Radarr', exact: true }),
+  ).toBeVisible();
+  expect(actions).toEqual([{ action: 'remove' }]);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 test('profile pictures are cropped, resized, saved and removable', async ({
   page,
 }) => {

@@ -84,8 +84,8 @@ impl Link {
     fn presentation(&self, source: Option<&Endpoint>, target: Option<&Endpoint>) -> Value {
         // Upstream fingerprints never expose API keys or passwords to clients.
         json!({"id":self.id,"source_id":self.source,"target_id":self.target,"kind":self.kind,
-            "source_kind":source.map(|s|s.kind.as_str()),"source_name":source.map(|s|s.name.as_str()),
-            "target_kind":target.map(|s|s.kind.as_str()),"target_name":target.map(|s|s.name.as_str()),
+            "source_kind":source.map(|s|s.kind.as_str()).unwrap_or(&self.source_kind),"source_name":source.map(|s|s.name.as_str()).unwrap_or(&self.source_kind),
+            "target_kind":target.map(|s|s.kind.as_str()).unwrap_or(&self.target_kind),"target_name":target.map(|s|s.name.as_str()).unwrap_or(&self.target_kind),
             "enabled":self.enabled,"state":self.state,"error":self.error,
             "updated_at":self.updated_at,"next_attempt":self.next_attempt,"cleanup_pending":self.cleanup})
     }
@@ -113,6 +113,13 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<
                 .cloned()
                 .unwrap_or_else(|| Link::new(source, target));
             items.push(link.presentation(Some(source), Some(target)));
+        }
+    }
+    for link in &links {
+        let source = endpoints.iter().find(|s| s.id == link.source);
+        let target = endpoints.iter().find(|s| s.id == link.target);
+        if link.cleanup && (source.is_none() || target.is_none()) {
+            items.push(link.presentation(source, target));
         }
     }
     Ok(Json(json!({"items":items})))
@@ -151,18 +158,20 @@ async fn configure(
         .iter()
         .find(|s| s.id == input.source_id)
         .ok_or_else(ApiError::not_found)?;
-    let target = endpoints
-        .iter()
-        .find(|s| s.id == input.target_id)
-        .ok_or_else(ApiError::not_found)?;
-    if kind(&source.kind, &target.kind).is_none() {
-        return Err(ApiError::bad(
-            "These services do not support this connection",
-        ));
-    }
-    let mut link = storage::load(&state.db, &key)
-        .await?
-        .unwrap_or_else(|| Link::new(source, target));
+    let target = endpoints.iter().find(|s| s.id == input.target_id);
+    let saved = storage::load(&state.db, &key).await?;
+    let mut link = if let Some(target) = target {
+        if kind(&source.kind, &target.kind).is_none() {
+            return Err(ApiError::bad(
+                "These services do not support this connection",
+            ));
+        }
+        saved.unwrap_or_else(|| Link::new(source, target))
+    } else {
+        saved
+            .filter(|link| input.action == "retry" && !link.enabled && link.cleanup)
+            .ok_or_else(ApiError::not_found)?
+    };
     match input.action.as_str() {
         "connect" => {
             link.enabled = true;
@@ -202,7 +211,7 @@ async fn configure(
     link.updated_at = now();
     storage::configure(&state.db, link.clone(), actor.user.id, input.action).await?;
     state.managers.connection_wake.notify_one();
-    Ok(Json(link.presentation(Some(source), Some(target))))
+    Ok(Json(link.presentation(Some(source), target)))
 }
 
 struct Failure {
@@ -268,6 +277,10 @@ async fn process(state: &AppState, key: &str) -> anyhow::Result<()> {
             link.attempts = 0;
             link.next_attempt = now() + 30;
             link.recreate_missing = false;
+            if target.is_none() {
+                storage::remove(&state.db, link.id).await?;
+                return Ok(());
+            }
         }
         Err(error) => {
             link.state = error.state.into();

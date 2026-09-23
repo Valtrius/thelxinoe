@@ -3,6 +3,74 @@ use crate::online::oauth::tests::{call, fixture};
 use axum::http::StatusCode;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+#[tokio::test]
+async fn removed_target_cleanup_stays_visible_retries_and_removes_only_its_link() {
+    let (_temp, state, cookie, mock) = connected_services().await;
+    action(&state, &cookie, "radarr", "connect").await;
+    action(&state, &cookie, "sonarr", "connect").await;
+    tick(&state).await.unwrap();
+    assert_eq!(mock.rows.lock().await.len(), 2);
+    let key = id();
+    let insert_key = key.clone();
+    state.db.write("test.remove", move |db| {
+        db.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,container_id,service_id,created_at,updated_at) VALUES (?1,'radarr','alice',17878,X'01','complete','old','radarr',1,1)",[insert_key])?;
+        Ok(())
+    }).await.unwrap();
+    state.managers.docker.lock().unwrap().extend([
+        (
+            "stack".into(),
+            json!({"items":[{"id":key,"can_remove":true}]}),
+        ),
+        (format!("stack/{key}/action"), json!({"removed":true})),
+    ]);
+    let response = call(
+        &state,
+        &format!("/api/v1/admin/stack/{key}/action"),
+        "POST",
+        json!({"action":"remove"}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(response.0, StatusCode::OK, "{}", response.2);
+    running(&state, 'c', false);
+    tick(&state).await.unwrap();
+    let response = call(
+        &state,
+        "/api/v1/admin/service-connections",
+        "GET",
+        Value::Null,
+        &cookie,
+    )
+    .await;
+    assert!(
+        response.2["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l["target_id"] == "radarr"
+                && l["cleanup_pending"] == true
+                && l["source_kind"] == "prowlarr")
+    );
+    action(&state, &cookie, "radarr", "retry").await;
+    running(&state, 'c', true);
+    tick(&state).await.unwrap();
+    assert_eq!(mock.rows.lock().await.len(), 1);
+    assert!(
+        storage::load(&state.db, &link_id("prowlarr", "radarr"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        storage::load(&state.db, &link_id("prowlarr", "sonarr"))
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "connected"
+    );
+}
+
 struct Mock {
     rows: Arc<tokio::sync::Mutex<Vec<Value>>>,
     posts: Arc<AtomicUsize>,

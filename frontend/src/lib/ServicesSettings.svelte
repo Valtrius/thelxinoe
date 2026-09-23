@@ -3,8 +3,9 @@
   import { api, serverUrl } from './api';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
+  import ConfirmDialog from './providers/components/ui/ConfirmDialog.svelte';
   import Switch from './ui/Switch.svelte';
-  import { Copy, ExternalLink, RefreshCw } from '@lucide/svelte';
+  import { Copy, ExternalLink } from '@lucide/svelte';
   import DownloadsTable from './services/DownloadsTable.svelte';
   import type { SupportDownload } from './services/downloads';
   import { serviceUiUrl, type Container } from './services/presentation';
@@ -98,6 +99,7 @@
     inspection_error: string | null;
     can_recreate: boolean;
     can_retire: boolean;
+    can_remove: boolean;
     error: string | null;
     transfer_pending: boolean;
   };
@@ -329,8 +331,11 @@
       window_start: 3,
       window_end: 5,
     }),
-    busy = $state(false),
-    message = $state('');
+    busy = $state(false);
+  const feedback = $state<Partial<Record<ServiceKind, string>>>({});
+  const connectionTests = $state<Partial<Record<ServiceKind, string>>>({});
+  const connectionErrors = $state<Partial<Record<ServiceKind, string>>>({});
+  let removalKind = $state<ServiceKind | null>(null);
   const loadErrors = $state({
     managers: '',
     support: '',
@@ -512,7 +517,7 @@
     detailLoading[kind] = true;
     detailErrors[kind] = '';
     try {
-      if (manager(kind) && !defaults[kind]?.loaded)
+      if (manager(kind) && runtime(kind)?.running !== false)
         await loadManagerOptions(kind);
       else if (supportService(kind)) await refreshSupport(kind);
     } catch (error) {
@@ -523,6 +528,7 @@
   }
   function selectService(kind: ServiceKind) {
     selectedKind = kind;
+    removalKind = null;
     void loadSelectedData();
   }
   function syncUpdateDrafts() {
@@ -570,6 +576,10 @@
     try {
       managers = (await api<{ items: ManagerService[] }>('/admin/managers'))
         .items;
+      for (const definition of definitions) {
+        const draft = defaults[definition.kind];
+        if (draft && !manager(definition.kind)) draft.loaded = false;
+      }
     } catch (error) {
       loadErrors.managers = String(error);
     }
@@ -622,10 +632,27 @@
         drift: null,
         can_recreate: false,
         can_retire: false,
+        can_remove: false,
       }));
     }
   }
+  let pendingRefresh: Promise<void> | undefined;
   async function refresh() {
+    // Serialize background reads with action refreshes so an older response
+    // cannot restore a service that has just been removed.
+    const previous = pendingRefresh;
+    const current = (async () => {
+      await previous;
+      await refreshData();
+    })();
+    pendingRefresh = current;
+    try {
+      await current;
+    } finally {
+      if (pendingRefresh === current) pendingRefresh = undefined;
+    }
+  }
+  async function refreshData() {
     await Promise.all([
       loadManagers(),
       loadSupport(),
@@ -662,12 +689,13 @@
     if (busy) return;
     busy = true;
     busyKind = selectedKind;
-    message = '';
+    const kind = selectedKind;
+    feedback[kind] = '';
     try {
       await action();
-      if (success) message = success;
+      if (success) feedback[kind] = success;
     } catch (error) {
-      message = String(error);
+      feedback[kind] = String(error);
     } finally {
       busy = false;
       busyKind = null;
@@ -716,6 +744,7 @@
       `/admin/managers/${service.id}/options`,
     );
     managerOptions[kind] = options;
+    if (draft.loaded) return;
     draft.root_folder =
       service.defaults.root_folder ?? options.roots[0]?.path ?? '';
     draft.quality_profile =
@@ -742,8 +771,15 @@
   async function testManager(kind: ServiceKind) {
     const service = manager(kind);
     if (!service) return;
-    await api(`/admin/managers/${service.id}/test`, 'POST');
-    await refresh();
+    connectionTests[kind] = 'Testing…';
+    connectionErrors[kind] = '';
+    try {
+      await api(`/admin/managers/${service.id}/test`, 'POST');
+      connectionTests[kind] = 'Connection OK';
+    } catch (error) {
+      connectionTests[kind] = 'Test failed';
+      connectionErrors[kind] = String(error);
+    }
   }
   async function refreshSupport(kind: ServiceKind) {
     const service = supportService(kind);
@@ -818,6 +854,14 @@
     const service = runtime(kind) ?? provision(kind);
     if (!service) return;
     await api(`/admin/stack/${service.id}/action`, 'POST', { action });
+    if (action === 'remove') {
+      removalKind = null;
+      const draft = defaults[kind];
+      if (draft) draft.loaded = false;
+      delete managerOptions[kind];
+      delete snapshots[kind];
+      delete connectionTests[kind];
+    }
     await refresh();
   }
   async function retryProvision(kind: ServiceKind) {
@@ -861,34 +905,40 @@
   onMount(() => {
     void work(refresh);
     let polling = false;
-    const timer = setInterval(async () => {
+    const poll = async () => {
       if (busy || polling || document.hidden) return;
       polling = true;
       try {
-        if (
-          provisions.some((item) =>
-            ['queued', 'installing', 'connecting'].includes(item.state),
-          )
-        )
-          await refresh();
-        else
-          await Promise.all([
-            loadStack(),
-            loadUpdateData(),
-            loadConnections(),
-            loadManagers(),
-            loadSupport(),
-          ]);
-        await loadSelectedData();
+        await refresh();
       } finally {
         polling = false;
       }
-    }, 4000);
-    return () => clearInterval(timer);
+    };
+    const timer = setInterval(() => void poll(), 4000);
+    document.addEventListener('visibilitychange', poll);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', poll);
+    };
   });
 </script>
 
 <Panel aria-label="Media services" class="services-panel">
+  <ConfirmDialog
+    open={removalKind !== null}
+    title={`Remove ${definitions.find((service) => service.kind === removalKind)?.label ?? 'service'}?`}
+    message="Delete this service's container, configuration, and retained update copies. Its connections in other services will be removed automatically. Media files and other services are kept."
+    confirmLabel="Remove service and configuration"
+    eyebrow="REMOVE / MEDIA SERVICE"
+    danger
+    {busy}
+    error={removalKind ? (feedback[removalKind] ?? '') : ''}
+    onCancel={() => (removalKind = null)}
+    onConfirm={() => {
+      const kind = removalKind;
+      if (kind) void work(() => stackAction(kind, 'remove'));
+    }}
+  />
   <nav class="service-strip" aria-label="Select service">
     {#each definitions as service (service.kind)}
       {@const state = status(service.kind)}
@@ -989,7 +1039,11 @@
                 class="activity-bar"
                 role="progressbar"
                 aria-label={`${service.label}: ${progress}`}
-              ></div>{/if}
+              ></div>{:else if feedback[service.kind]}<span
+                class="action-feedback"
+                role="status"
+                title={feedback[service.kind]}>{feedback[service.kind]}</span
+              >{/if}
           </div>
         </div>
         <div class="rail-actions" class:inactive={!active} inert={!active}>
@@ -1059,11 +1113,13 @@
                 size="form"
                 variant="secondary"
                 disabled={busy}
-                onclick={() =>
-                  void work(
-                    () => testManager(service.kind),
-                    'Connection and mount checks passed.',
-                  )}>Test connection</Button
+                onclick={() => void work(() => testManager(service.kind))}
+                title={connectionErrors[service.kind] ||
+                  attached?.error ||
+                  undefined}
+                ><span class="connection-result" aria-live="polite"
+                  >{connectionTests[service.kind] || 'Test connection'}</span
+                ></Button
               >{/if}
           {/if}
           {#if provisioned && (runtimeService?.can_retire || (!runtimeService && ['blocked', 'retiring'].includes(provisioned.state)))}
@@ -1074,6 +1130,17 @@
               onclick={() =>
                 void work(() => stackAction(service.kind, 'retire'))}
               >Retire and keep data</Button
+            >
+          {/if}
+          {#if provisioned && (runtimeService?.can_remove || provisioned.state === 'retiring')}
+            <Button
+              size="form"
+              variant="secondary"
+              disabled={busy}
+              onclick={() => {
+                feedback[service.kind] = '';
+                removalKind = service.kind;
+              }}>Remove service</Button
             >
           {/if}
           {#if !attached && !provisioned && !runtimeService}<span
@@ -1113,21 +1180,9 @@
       {/each}
     </aside>
     <div class="service-workspace">
-      {#if message}<p class="notice" role="status">{message}</p>{/if}
-      <div class="workspace-tools">
-        <Button
-          variant="ghost"
-          size="compact-icon"
-          disabled={busy}
-          title="Refresh services"
-          aria-label="Refresh services"
-          onclick={() => void work(refresh)}
-          ><RefreshCw size={14} aria-hidden="true" /></Button
-        >
-      </div>
-      {#if connected?.error || item?.error || live?.inspection_error || live?.error || live?.drift}
+      {#if item?.error || live?.inspection_error || live?.error || live?.drift}
         <div class="notice warn" role="status">
-          {#each [...new Set([connected?.error, item?.error, live?.inspection_error, live?.error].filter(Boolean))] as error (error)}<p
+          {#each [...new Set([item?.error, live?.inspection_error, live?.error].filter(Boolean))] as error (error)}<p
             >
               {error}
             </p>{/each}
@@ -1183,10 +1238,7 @@
               aria-label={`Install managed ${definition.label}`}
               onsubmit={(event) => {
                 event.preventDefault();
-                void work(
-                  () => installManaged(definition),
-                  `${definition.label} installation queued.`,
-                );
+                void work(() => installManaged(definition));
               }}
             >
               <strong class="text-xs">Install and own it</strong>
@@ -1326,24 +1378,18 @@
                     ? 'Downloads'
                     : 'Missing subtitles'}
             </h3>
-            {#if definition.role === 'manager'}<Button
-                variant="ghost"
-                size="sm"
-                disabled={busy}
-                onclick={() =>
-                  void work(() => loadManagerOptions(selectedKind))}
-                >Reload choices</Button
-              >{/if}
             {#if definition.role === 'manager' && (item || live)}
               <Button
                 variant="ghost"
                 size="sm"
                 disabled={busy}
-                onclick={() =>
-                  void work(
-                    () => testManager(selectedKind),
-                    'Connection and mount checks passed.',
-                  )}>Test connection</Button
+                onclick={() => void work(() => testManager(selectedKind))}
+                title={connectionErrors[selectedKind] ||
+                  connected?.error ||
+                  undefined}
+                ><span class="connection-result" aria-live="polite"
+                  >{connectionTests[selectedKind] || 'Test connection'}</span
+                ></Button
               >
             {/if}
             {#if definition.kind === 'nzbget' && supportData}<Button
@@ -1368,6 +1414,12 @@
               Loading service settings…
             </p>{/if}
           {#if definition.role === 'manager'}
+            <p>
+              These settings apply to new requests approved in Thelxinoe. Choose
+              the quality profile and whether to monitor and search for
+              releases. The library folder is configured automatically during
+              installation.
+            </p>
             {#if defaults[definition.kind]?.loaded}
               {@const options = managerOptions[definition.kind]}
               {@const draft = defaults[definition.kind]!}
@@ -1386,16 +1438,7 @@
                   {#if !options.roots.length}<p>
                       Add a root folder in {definition.label} first.
                     </p>{/if}
-                  {#if options.roots[0]?.id === 0}<p>
-                      The canonical library folder will be created when these
-                      defaults are saved.
-                    </p>{/if}
-                  <label
-                    >Root folder<input
-                      value={draft.root_folder}
-                      readonly
-                    /></label
-                  >
+                  <p>Library folder: <code>{draft.root_folder}</code></p>
                   <label
                     >Quality profile<select
                       bind:value={draft.quality_profile}
@@ -1953,14 +1996,15 @@
     padding-left: 22px;
     min-width: 0;
   }
-  .workspace-tools {
-    display: flex;
-    justify-content: flex-end;
-    height: 0;
-    transform: translateY(-7px);
+  .action-feedback {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .workspace-tools :global(button) {
-    z-index: 1;
+  .connection-result {
+    display: inline-block;
+    width: 100px;
   }
   .work-section {
     padding: 16px 0;

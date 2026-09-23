@@ -40,6 +40,16 @@ pub(super) async fn save(db: &Database, link: Link) -> anyhow::Result<()> {
         Ok(())
     }).await
 }
+pub(super) async fn remove(db: &Database, key: String) -> anyhow::Result<()> {
+    db.write("managers.connections.remove", move |db| {
+        db.execute(
+            "DELETE FROM settings WHERE key=?1",
+            [format!("{PREFIX}{key}")],
+        )?;
+        Ok(())
+    })
+    .await
+}
 pub(super) async fn configure(
     db: &Database,
     link: Link,

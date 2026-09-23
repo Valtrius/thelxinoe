@@ -20,6 +20,8 @@ mod backups;
 pub(crate) mod product;
 #[path = "service_recovery.rs"]
 mod recovery;
+#[path = "service_removal.rs"]
+mod removal;
 #[path = "updates.rs"]
 mod updates;
 pub async fn retain_worker_image() -> anyhow::Result<()> {
@@ -131,7 +133,7 @@ fn services() -> Result<Vec<Managed>> {
         id(&name)?;
         if entry.path().join("service.json").exists() {
             let service = load(&name)?;
-            if !matches!(service.phase.as_str(), "returned" | "retired") {
+            if !matches!(service.phase.as_str(), "returned" | "retired" | "removed") {
                 if rows.iter().any(|existing| existing.kind == service.kind) {
                     return Err(conflict("Managed state contains duplicate service kinds"));
                 }
@@ -568,6 +570,9 @@ async fn action(
         return adoption::cancel_unsubmitted(&d, &key).await;
     }
     let mut s = load(&key)?;
+    if input.action == "remove" {
+        return removal::remove(&d, &mut s).await;
+    }
     if input.action == "retire" {
         return recovery::retire(&d, &mut s).await;
     }

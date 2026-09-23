@@ -8,6 +8,26 @@ use std::{
 const MAX_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 const MAX_FILES: u64 = 500_000;
 
+pub fn remove() -> anyhow::Result<()> {
+    let destination = Path::new("/destination");
+    anyhow::ensure!(
+        fs::symlink_metadata(destination)?.is_dir(),
+        "Destination mount missing"
+    );
+    // Only a controller-selected private appdata directory is mounted here.
+    // Removing entries never follows a link into a different filesystem tree.
+    for entry in fs::read_dir(destination)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            fs::remove_dir_all(entry.path())?;
+        } else {
+            fs::remove_file(entry.path())?;
+        }
+    }
+    fs::File::open(destination)?.sync_all()?;
+    Ok(())
+}
+
 pub fn run(restore: bool) -> anyhow::Result<()> {
     let source = Path::new("/source");
     let destination = Path::new("/destination");

@@ -27,6 +27,7 @@ async fn main() -> anyhow::Result<()> {
             }
             "snapshot-copy" => state_copy::run(false),
             "snapshot-restore" => state_copy::run(true),
+            "appdata-remove" => state_copy::remove(),
             "verify-state" => {
                 let root = std::path::Path::new("/state");
                 let schema = thelxinoe_database::verify_snapshot(&root.join("thelxinoe.sqlite3"))?;

@@ -2,6 +2,67 @@ use super::*;
 use crate::online::oauth::tests::{call, fixture};
 use axum::http::StatusCode;
 
+#[tokio::test]
+async fn removal_requires_confirmation_from_controller_and_erases_configuration() {
+    let (_temp, state, cookie, key) = managed("radarr").await;
+    let route = format!("/api/v1/admin/stack/{key}/action");
+    for can_remove in [false, true] {
+        state.managers.docker.lock().unwrap().extend([
+            (
+                "stack".into(),
+                json!({"items":[{"id":key,"can_remove":can_remove}]}),
+            ),
+            (
+                format!("stack/{key}/action"),
+                json!({"accepted":true,"removed":false}),
+            ),
+        ]);
+        let response = call(&state, &route, "POST", json!({"action":"remove"}), &cookie).await;
+        assert_eq!(response.0, StatusCode::CONFLICT);
+        assert!(
+            super::super::storage::service("integration".into(), &state.db)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+    state.managers.docker.lock().unwrap().insert(
+        format!("stack/{key}/action"),
+        json!({"accepted":true,"removed":true}),
+    );
+    let response = call(&state, &route, "POST", json!({"action":"remove"}), &cookie).await;
+    assert_eq!(response.0, StatusCode::OK, "{}", response.2);
+    state
+        .db
+        .read("test.removed", |db| {
+            let (enabled, credential, defaults): (bool, Vec<u8>, String) = db.query_row(
+                "SELECT enabled,credential,defaults FROM manager_services WHERE id='integration'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?;
+            assert!(!enabled);
+            assert!(credential.is_empty());
+            assert_eq!(defaults, "{}");
+            assert_eq!(
+                db.query_row("SELECT COUNT(*) FROM stack_provisions", [], |r| r
+                    .get::<_, i64>(0))?,
+                0
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let response = call(
+        &state,
+        "/api/v1/admin/stack/install",
+        "POST",
+        json!({"kind":"radarr","host_port":17878}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(response.0, StatusCode::OK, "{}", response.2);
+}
+
 async fn managed(kind: &'static str) -> (tempfile::TempDir, AppState, String, String) {
     let (temp, state, cookie) = fixture().await;
     let key = id();

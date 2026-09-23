@@ -87,6 +87,31 @@ pub(super) async fn retained_originals(d: &Deployment, service: &Managed) -> Res
     }
     Ok(retained)
 }
+pub(super) fn removable_updates(service: &str) -> Result<Vec<String>> {
+    let root = store::root().join("updates");
+    let mut keys = Vec::new();
+    if root.exists() {
+        for entry in std::fs::read_dir(root).map_err(|_| unavailable())? {
+            let entry = entry.map_err(|_| unavailable())?;
+            if !entry.path().join("update.json").is_file() {
+                continue;
+            }
+            let update = read(&entry.file_name().to_string_lossy())?;
+            if update.service == service {
+                if !matches!(
+                    update.stage.as_str(),
+                    "committed" | "rolled-back" | "blocked"
+                ) {
+                    return Err(conflict(
+                        "Finish or recover the service update before removal",
+                    ));
+                }
+                keys.push(update.id);
+            }
+        }
+    }
+    Ok(keys)
+}
 #[derive(Deserialize)]
 pub(super) struct Preflight {
     operation_id: String,

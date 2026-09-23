@@ -19,12 +19,18 @@ fn runtime_state(expected: &Value, live: &Result<Value>) -> Value {
 pub(super) fn observation(s: &Managed, live: &Result<Value>) -> Value {
     let mut value = runtime_state(&s.expected, live);
     let transfer = adoption::pending(s);
-    let recoverable = recoverable(s) && !transfer && value["existence"] == "missing";
+    let can_recreate = recoverable(s) && !transfer && value["existence"] == "missing";
+    let can_remove = !transfer
+        && ((recoverable(s)
+            && (value["existence"] == "missing"
+                || (value["running"] == false && value["drift"] == false)))
+            || s.phase == "removing");
     value.as_object_mut().unwrap().extend(
         json!({
             "id":s.id,"kind":s.kind,"container_id":s.container,"name":s.name,"image":s.image,
             "phase":s.phase,"error":s.error,"transfer_pending":transfer,
-            "can_recreate":recoverable,"can_retire":recoverable
+            "can_recreate":can_recreate,"can_retire":can_recreate,
+            "can_remove":can_remove
         })
         .as_object()
         .unwrap()

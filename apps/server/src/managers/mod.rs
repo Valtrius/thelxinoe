@@ -456,15 +456,12 @@ async fn options(
     security::require(&state, &headers, Capability::ManageServer).await?;
     let s = service(&state, &id).await?;
     let c = Connection::open(&state, &s).await?;
-    let mut roots = c.get("rootfolder").await?;
-    validate_roots(&s.kind, &roots)?;
     if installed_here(&state, &s.id).await? {
-        let path = canonical_root(&s.kind);
-        let rows = roots.as_array_mut().ok_or_else(unavailable)?;
-        if !rows.iter().any(|r| r["path"] == path) {
-            rows.push(json!({"id":0,"path":path}));
-        }
+        let _guard = state.managers.guard.lock().await;
+        prepare_library(&state, &s).await?;
     }
+    let roots = c.get("rootfolder").await?;
+    validate_roots(&s.kind, &roots)?;
     let profiles = c.get("qualityprofile").await?;
     let metadata = if s.kind == "lidarr" {
         c.get("metadataprofile").await?
@@ -501,6 +498,53 @@ struct Defaults {
 }
 fn yes() -> bool {
     true
+}
+// Called as part of provisioning, and repairs installations created before
+// library setup became automatic. User acquisition preferences remain explicit.
+async fn prepare_library(state: &AppState, s: &Service) -> Result<()> {
+    let c = Connection::open(state, s).await?;
+    let roots = c.get("rootfolder").await?;
+    validate_roots(&s.kind, &roots)?;
+    let root = canonical_root(&s.kind);
+    if roots
+        .as_array()
+        .ok_or_else(unavailable)?
+        .iter()
+        .any(|r| r["path"] == root)
+    {
+        return Ok(());
+    }
+    let parent = tokio::fs::canonicalize(&state.config.media)
+        .await
+        .map_err(|_| ApiError::conflict("Media storage is unavailable"))?;
+    let path = std::path::PathBuf::from(root);
+    if !path.starts_with(&parent) {
+        return Err(ApiError::conflict("Manager root is outside media storage"));
+    }
+    if tokio::fs::symlink_metadata(&path)
+        .await
+        .is_ok_and(|m| m.file_type().is_symlink())
+    {
+        return Err(ApiError::conflict(
+            "Canonical media roots cannot be symbolic links",
+        ));
+    }
+    tokio::fs::create_dir_all(&path).await.map_err(|_| {
+        ApiError::conflict("The server needs permission to create the canonical library directory")
+    })?;
+    let mut body = json!({"path":root});
+    if s.kind == "lidarr" {
+        // Lidarr requires profiles on its root record even before any artist is added.
+        let profiles = c.get("qualityprofile").await?;
+        let metadata = c.get("metadataprofile").await?;
+        let quality = profiles[0]["id"].as_i64().ok_or_else(unavailable)?;
+        let metadata = metadata[0]["id"].as_i64().ok_or_else(unavailable)?;
+        body = json!({"path":root,"name":"Thelxinoe music","defaultQualityProfileId":quality,
+            "defaultMetadataProfileId":metadata,"defaultMonitorOption":"none","defaultTags":[]});
+    }
+    c.call(reqwest::Method::POST, "rootfolder", &[], Some(body))
+        .await?;
+    Ok(())
 }
 async fn defaults(
     State(state): State<AppState>,
@@ -542,27 +586,7 @@ async fn defaults(
         if !installed_here(&state, &s.id).await? {
             return Err(ApiError::bad("Choose an existing manager root folder"));
         }
-        let parent = tokio::fs::canonicalize(&state.config.media)
-            .await
-            .map_err(|_| ApiError::conflict("Media storage is unavailable"))?;
-        let path = std::path::PathBuf::from(&input.root_folder);
-        if !path.starts_with(&parent) {
-            return Err(ApiError::conflict("Manager root is outside media storage"));
-        }
-        if tokio::fs::symlink_metadata(&path)
-            .await
-            .is_ok_and(|m| m.file_type().is_symlink())
-        {
-            return Err(ApiError::conflict(
-                "Canonical media roots cannot be symbolic links",
-            ));
-        }
-        tokio::fs::create_dir_all(&path).await.map_err(|_| {
-            ApiError::conflict(
-                "The server needs permission to create the canonical library directory",
-            )
-        })?;
-        c.call(reqwest::Method::POST,"rootfolder",&[],Some(json!({"path":input.root_folder,"name":"Thelxinoe music","defaultQualityProfileId":input.quality_profile,"defaultMetadataProfileId":input.metadata_profile,"defaultMonitorOption":"none","defaultTags":[]}))).await?;
+        prepare_library(&state, &s).await?;
     }
     storage::defaults(&state.db, id, input, p).await?;
     Ok(Json(json!({"saved":true})))

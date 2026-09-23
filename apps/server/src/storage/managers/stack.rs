@@ -67,7 +67,12 @@ pub(super) async fn begin_retirement(db: &Database, key: String) -> anyhow::Resu
     }).await
 }
 
-pub(super) async fn retire(db: &Database, key: String, actor: String) -> anyhow::Result<()> {
+pub(super) async fn retire(
+    db: &Database,
+    key: String,
+    actor: String,
+    remove: bool,
+) -> anyhow::Result<()> {
     db.write("managers.stack.retire", move |db| {
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let integration: Option<(String,Option<String>)> = tx.query_row(
@@ -83,11 +88,20 @@ pub(super) async fn retire(db: &Database, key: String, actor: String) -> anyhow:
             } else {
                 tx.execute("DELETE FROM support_services WHERE id=?1",[&service])?;
             }
+            if remove {
+                // Retain the identity referenced by acquisition history, but erase
+                // connection credentials and preferences from the removed service.
+                tx.execute("UPDATE manager_services SET credential=X'',defaults='{}',container_id='removed:'||id,port=0,media_source='',version='' WHERE id=?1",[&service])?;
+                tx.execute("DELETE FROM settings WHERE key LIKE 'services.connection.%' AND json_extract(value,'$.source')=?1",[&service])?;
+            }
+        }
+        if remove {
+            tx.execute("DELETE FROM service_updates WHERE service_id=?1",[&key])?;
         }
         tx.execute("DELETE FROM service_update_policy WHERE service_id=?1",[&key])?;
         tx.execute("UPDATE jobs SET state='complete',error=NULL WHERE kind='stack.install' AND json_extract(payload,'$.id')=?1",[&key])?;
         tx.execute("DELETE FROM stack_provisions WHERE id=?1 AND state='retiring'",[&key])?;
-        tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'stack.retire',?2,?3)",params![actor,key,now()])?;
+        tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,?2,?3,?4)",params![actor,if remove {"stack.remove"} else {"stack.retire"},key,now()])?;
         tx.commit()?;
         Ok(())
     }).await

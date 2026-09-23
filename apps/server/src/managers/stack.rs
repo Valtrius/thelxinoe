@@ -186,13 +186,44 @@ async fn action(
     if uuid::Uuid::parse_str(&key).is_err()
         || !matches!(
             input.action.as_str(),
-            "start" | "stop" | "restart" | "reconcile" | "recreate" | "retire"
+            "start" | "stop" | "restart" | "reconcile" | "recreate" | "retire" | "remove"
         )
     {
         return Err(ApiError::bad("Invalid managed service action"));
     }
     let _lease = state.media_operations.write().await;
     let _guard = state.managers.guard.lock().await;
+    if input.action == "remove" {
+        let observed = controller(&state, "", None).await?;
+        if observed["items"]
+            .as_array()
+            .ok_or_else(unavailable)?
+            .iter()
+            .any(|s| s["id"] == key && s["can_remove"] != true)
+        {
+            return Err(ApiError::conflict(
+                "Stop the service before removing its configuration",
+            ));
+        }
+        if !storage::begin_retirement(&state.db, key.clone()).await? {
+            return Err(ApiError::conflict(
+                "Finish the current setup or update before removal",
+            ));
+        }
+        let result = controller(
+            &state,
+            &format!("/{key}/action"),
+            Some(json!({"action":"remove"})),
+        )
+        .await?;
+        if result["removed"] != true {
+            return Err(ApiError::conflict("Controller did not confirm removal"));
+        }
+        storage::retire(&state.db, key.clone(), p.user.id, true).await?;
+        state.managers.connection_wake.notify_one();
+        state.emit(None, "stack.changed", json!({"id":key})).await?;
+        return Ok(Json(result));
+    }
     if input.action == "retire" {
         let observed = controller(&state, "", None).await?;
         if observed["items"]
@@ -219,7 +250,7 @@ async fn action(
         if result["retired"] != true {
             return Err(ApiError::conflict("Controller did not confirm retirement"));
         }
-        storage::retire(&state.db, key.clone(), p.user.id).await?;
+        storage::retire(&state.db, key.clone(), p.user.id, false).await?;
         state.emit(None, "stack.changed", json!({"id":key})).await?;
         return Ok(Json(result));
     }
@@ -348,7 +379,13 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
    match registration {Ok(Json(value))=>{registered=Some(value);break;},Err(error)=>last=Some(error)};
    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
   }
-  let registered=registered.ok_or_else(||last.unwrap_or_else(unavailable))?;let key=key.clone();storage::provision_write_stack_provisions(registered, key, &state.db).await?;
+  let registered=registered.ok_or_else(||last.unwrap_or_else(unavailable))?;
+  let integration=registered["id"].as_str().ok_or_else(unavailable)?.to_owned();
+  let key=key.clone();storage::provision_write_stack_provisions(registered, key, &state.db).await?;
+  if row.7=="installed" && matches!(row.0.as_str(),"radarr"|"sonarr"|"lidarr") {
+    let _guard=state.managers.guard.lock().await;
+    super::prepare_library(state,&super::service(state,&integration).await?).await?;
+  }
   Ok::<(),ApiError>(())
  }.await;
     if let Err(error) = result {
