@@ -59,51 +59,54 @@
       active = false;
     };
   });
-  async function save() {
+  async function save(submitted: {
+    timezone: string;
+    time_format: '' | '12h' | '24h';
+  }) {
     const value = await api<Preferences>('/me/preferences', 'PUT', {
-      timezone: timezone || null,
-      time_format: timeFormat || null,
+      timezone: submitted.timezone || null,
+      time_format: submitted.time_format || null,
     });
     if (!active) return;
-    timezone = value.timezone_override ?? '';
     serverTimezone = value.server_timezone;
-    timeFormat = value.time_format_override ?? '';
     serverTimeFormat = value.server_time_format;
-    changed(value.timezone, value.time_format);
+    if (timezone === submitted.timezone && timeFormat === submitted.time_format)
+      changed(value.timezone, value.time_format);
   }
 </script>
 
 <Panel>
   <h2>Your display preferences</h2>
-  <AutoSaveForm
-    label="Display preferences"
-    class={inlineFormClass}
-    onsave={save}
-    disabled={busy || Boolean(error)}
-  >
-    <TimezoneSelect
-      label="Display timezone"
-      bind:value={timezone}
-      defaultTimezone={serverTimezone}
-      disabled={busy}
-    />
-    <FormField
-      >Display time format<select
-        class={formControlClass}
-        bind:value={timeFormat}
-        disabled={busy}
-        ><option value=""
-          >Use server default ({serverTimeFormat === '12h'
-            ? '12-hour'
-            : '24-hour'})</option
-        ><option value="24h">24-hour</option><option value="12h">12-hour</option
-        ></select
-      ></FormField
+  {#if !busy && !error}<AutoSaveForm
+      label="Display preferences"
+      class={inlineFormClass}
+      onsave={save}
+      value={{ timezone, time_format: timeFormat }}
+      onRevert={(previous) => {
+        timezone = previous.timezone;
+        timeFormat = previous.time_format;
+      }}
     >
-  </AutoSaveForm>
-  <p class="text-muted">
-    Use the server default or choose your own timezone and time format. Regional
-    timezones adjust automatically for daylight saving time.
-  </p>
+      <TimezoneSelect
+        label="Display timezone"
+        bind:value={timezone}
+        defaultTimezone={serverTimezone}
+        disabled={busy}
+      />
+      <FormField
+        >Display time format<select
+          class={formControlClass}
+          bind:value={timeFormat}
+          disabled={busy}
+          ><option value=""
+            >Use server default ({serverTimeFormat === '12h'
+              ? '12-hour'
+              : '24-hour'})</option
+          ><option value="24h">24-hour</option><option value="12h"
+            >12-hour</option
+          ></select
+        ></FormField
+      >
+    </AutoSaveForm>{/if}
   {#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
 </Panel>

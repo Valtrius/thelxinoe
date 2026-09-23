@@ -313,7 +313,7 @@ try {
     ),
   ).toBe(true);
   await api(`/admin/service-updates/policy/${managed.id}`, 'POST', {
-    policy: 'manual',
+    policy: 'notify',
     window_start: 0,
     window_end: 0,
   });

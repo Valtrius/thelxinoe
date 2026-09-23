@@ -37,6 +37,7 @@
   });
 
   const unread = $derived(items.filter((n) => !n.read_at).length);
+  const unreadDescription = $props.id();
   $effect(() => {
     void revision;
     untrack(() => void load());
@@ -76,12 +77,23 @@
 />
 <div class="notifications relative" bind:this={container}>
   <SidebarButton
-    label={unread ? `Notifications (${unread})` : 'Notifications'}
+    label="Notifications"
     {collapsed}
-    aria-label={unread ? `Notifications (${unread})` : 'Notifications'}
+    aria-label="Notifications"
+    aria-describedby={unread ? unreadDescription : undefined}
     aria-expanded={open}
     onclick={() => (open = !open)}
-    ><Bell class="size-5 shrink-0" /></SidebarButton
+    ><span class="relative size-5 shrink-0" aria-hidden="true">
+      <Bell class="size-5" />
+      {#if unread}<span
+          data-notification-count
+          class="absolute -top-1.5 -right-2 grid h-4 min-w-4 place-items-center rounded-full bg-accent px-1 text-[9px] leading-none font-semibold tracking-normal text-surface-strong"
+          >{unread > 99 ? '99+' : unread}</span
+        >{/if}
+    </span></SidebarButton
+  >
+  <span id={unreadDescription} class="sr-only"
+    >{unread} unread notifications</span
   >
   {#if open}<section
       bind:this={panel}

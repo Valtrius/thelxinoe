@@ -117,8 +117,8 @@ pub fn validate_credentials(username: &str, password: &str) -> Result<()> {
     {
         bail!("Username must be 2–64 letters, numbers, dots, underscores or hyphens");
     }
-    if password.len() < 12 || password.len() > 256 {
-        bail!("Password must be 12–256 bytes");
+    if password.chars().count() < 8 || password.len() > 256 {
+        bail!("Password must contain at least 8 characters and no more than 256 bytes");
     }
     Ok(())
 }
@@ -230,5 +230,14 @@ mod tests {
         assert!(verify_password("long passphrase".into(), a.clone()).await?);
         assert!(!verify_password("wrong".into(), a).await?);
         Ok(())
+    }
+    #[test]
+    fn credentials_accept_eight_characters_without_composition_rules() {
+        assert!(validate_credentials("admin", "12345678").is_ok());
+        assert!(validate_credentials("admin", "1234567").is_err());
+        assert!(validate_credentials("admin", "éééééééé").is_ok());
+        assert!(validate_credentials("admin", "éééé").is_err());
+        assert!(validate_credentials("admin", &"a".repeat(256)).is_ok());
+        assert!(validate_credentials("admin", &"a".repeat(257)).is_err());
     }
 }

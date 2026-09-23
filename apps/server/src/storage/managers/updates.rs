@@ -27,9 +27,9 @@ pub(super) async fn enqueue(
     actor: Option<String>,
 ) -> anyhow::Result<bool> {
     db.write("managers.updates.enqueue", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let available=tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE id=?1 AND state='complete' AND service_id IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM service_updates WHERE service_id=?1 AND state IN ('queued','submitting','preparing','snapshotting','preflight','queued-activate','activating','recovery-snapshot','isolated-live-validation','recovery-required','queued-recover'))",[&service],|r|r.get::<_,bool>(0))?;
+        let available=tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE id=?1 AND state='complete' AND service_id IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM service_updates WHERE service_id=?1 AND state IN ('queued','submitting','preparing','snapshotting','preflight','ready','queued-activate','activating','recovery-snapshot','isolated-live-validation','recovery-required','queued-recover'))",[&service],|r|r.get::<_,bool>(0))?;
         if !available{return Ok(false);}
-        tx.execute("INSERT INTO service_updates(id,service_id,actor_id,state,created_at,updated_at,automatic) VALUES (?1,?2,?3,'queued',?4,?4,?5)",params![key,service,actor,now(),actor.is_none()])?;
+        tx.execute("INSERT INTO service_updates(id,service_id,actor_id,state,created_at,updated_at,automatic,candidate) VALUES (?1,?2,?3,'queued',?4,?4,?5,(SELECT candidate FROM service_update_policy WHERE service_id=?2))",params![key,service,actor,now(),actor.is_none()])?;
         tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'service.update',?2,?3,'queued',?4,?4)",params![id(),json!({"id":key,"action":"preflight"}).to_string(),format!("update:{key}:preflight"),now()])?;
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'service.update.preflight',?2,?3)",params![actor,key,now()])?;
         tx.commit()?;Ok(true)
@@ -172,6 +172,25 @@ pub(super) async fn check_releases_write_service_update_policy(
     db: &Database,
 ) -> anyhow::Result<()> {
     db.write("managers.updates.check_releases_write_service_update_policy", move|db|{db.execute("INSERT INTO service_update_policy(service_id,policy,window_start,window_end,checked_at,candidate,error) VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(service_id) DO UPDATE SET checked_at=excluded.checked_at,candidate=excluded.candidate,error=excluded.error",params![key,mode,start,end,now(),found,if found.is_none(){Some("Stable release discovery unavailable")}else{None}])?;Ok(())}).await
+}
+
+pub(super) struct DiscoveredCandidate {
+    pub service_id: String,
+    pub policy: String,
+    pub window_start: u8,
+    pub window_end: u8,
+    pub image: String,
+}
+
+pub(super) async fn discovered_candidates(
+    db: &Database,
+) -> anyhow::Result<Vec<DiscoveredCandidate>> {
+    db.read("managers.updates.discovered_candidates", |db| {
+        Ok(db.prepare("SELECT p.service_id,p.policy,p.window_start,p.window_end,p.candidate FROM service_update_policy p JOIN stack_provisions s ON s.id=p.service_id WHERE s.state='complete' AND p.candidate IS NOT NULL AND p.error IS NULL AND NOT EXISTS(SELECT 1 FROM service_updates u WHERE u.service_id=p.service_id AND (u.state NOT IN ('committed','rolled-back','blocked','runtime-failure') OR (u.automatic=1 AND u.candidate=p.candidate AND u.state IN ('blocked','rolled-back','runtime-failure'))))")?
+            .query_map([], |row| Ok(DiscoveredCandidate {
+                service_id: row.get(0)?, policy: row.get(1)?, window_start: row.get(2)?, window_end: row.get(3)?, image: row.get(4)?,
+            }))?.collect::<rusqlite::Result<Vec<_>>>()?)
+    }).await
 }
 
 pub(super) async fn run(

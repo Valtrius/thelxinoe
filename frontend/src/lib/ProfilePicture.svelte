@@ -24,6 +24,7 @@
   let error = $state(''),
     busy = $state(false),
     saved = $state(false);
+  let dismissEdit = $state(false);
   let sourceUrl = '',
     generation = 0;
   let drag:
@@ -135,6 +136,7 @@
   <div class="flex flex-wrap items-center gap-4">
     <FormField
       class="group/avatar relative mb-0 grid size-16 shrink-0 cursor-pointer place-items-center overflow-hidden rounded-full border border-line bg-surface-soft text-2xl text-accent"
+      onpointermove={() => (dismissEdit = false)}
     >
       {#if user.avatar}<img
           src={user.avatar}
@@ -143,7 +145,12 @@
         />
       {:else}{user.username[0].toUpperCase()}{/if}
       <span
-        class="pointer-events-none absolute inset-0 grid place-items-center bg-black/55 text-white opacity-0 transition-opacity group-hover/avatar:opacity-100 group-focus-within/avatar:opacity-100"
+        class={[
+          'pointer-events-none absolute inset-0 grid place-items-center bg-black/55 text-white opacity-0',
+          dismissEdit
+            ? 'transition-none'
+            : 'transition-opacity group-hover/avatar:opacity-100 group-has-[:focus-visible]/avatar:opacity-100',
+        ]}
         aria-hidden="true"><Pencil size={20} /></span
       >
       <input
@@ -152,7 +159,14 @@
         aria-label="Change profile picture"
         accept="image/jpeg,image/png,image/webp,image/gif"
         disabled={busy}
+        onfocus={() => (dismissEdit = false)}
+        oncancel={(event) => {
+          dismissEdit = true;
+          event.currentTarget.blur();
+        }}
         onchange={(event) => {
+          dismissEdit = true;
+          event.currentTarget.blur();
           void choose(event.currentTarget.files?.[0]);
           event.currentTarget.value = '';
         }}

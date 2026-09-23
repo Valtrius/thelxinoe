@@ -90,7 +90,7 @@
           class={formControlClass}
           type="password"
           autocomplete="new-password"
-          minlength="12"
+          minlength="8"
           bind:value={password}
         /></FormField
       >

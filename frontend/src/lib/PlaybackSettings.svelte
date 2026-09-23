@@ -23,7 +23,9 @@
   {#if value}<AutoSaveForm
       label="Playback preferences"
       class={inlineFormClass}
-      onsave={() => api('/playback/preferences', 'PUT', value)}
+      {value}
+      onRevert={(previous) => (value = previous)}
+      onsave={(submitted) => api('/playback/preferences', 'PUT', submitted)}
     >
       <FormField
         >Default quality<select

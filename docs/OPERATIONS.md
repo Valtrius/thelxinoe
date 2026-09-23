@@ -26,6 +26,16 @@ networks:
 
 Connect services in Settings → Media services and save acquisition profiles. Connecting their APIs leaves lifecycle ownership with the original Compose project. To transfer ownership, use **Review ownership transfer**: disable the service in its old Compose file and external updaters before confirming. Thelxinoe stops it and copies its appdata; never restart the retained original alongside its replacement. Avoid `--remove-orphans` while retaining the original for recovery. Interrupted transfers offer **Retry setup**, **Reconcile** or **Restore original service**. Implementation: [adoption](../apps/docker-controller/src/adoption.rs), [storage contract](../apps/docker-controller/src/contract.rs).
 
+## Update selection and policies
+
+New managed media services use the immutable image digests in the controller's [service templates](../apps/docker-controller/src/templates.rs). Update discovery resolves each template repository's `latest` tag to a digest. The code calls that channel stable; it does not rank version numbers or certify a newly discovered image. Preparation resolves the tag again, pins that digest, and checks compatibility against a copy of the service's appdata before installation. See [discovery](../apps/docker-controller/src/stack.rs) and [preflight](../apps/docker-controller/src/updates.rs).
+
+The former “Stable candidate” label displayed the discovered digest even when it matched the installed image. Settings now show **Up to date** for that match and **Available image** when they differ. Image changes can include container rebuilds without an application version change.
+
+Both **Notify** and **Automatic** check every six hours in the background, with the first check due after initial setup. Notify leaves preparation and installation to an administrator. Automatic queues discovered updates and waits for the server's maintenance window and idle checks before proceeding. Media services can inherit the server policy or override it. Attached services remain under their original owner's update policy. [Scheduler](../apps/server/src/managers/updates.rs).
+
+Server updates use a signed release manifest with version and compatibility checks. They do not discover releases through a container `latest` tag. Their background checks require a configured release channel and signing public key; Notify is the default. [Server release policy](../apps/server/src/product.rs).
+
 ## HTTPS and TV access
 
 Serve the web app and API at one HTTPS origin. Set `THELXINOE_PUBLIC_URL` to that origin and `THELXINOE_TRUSTED_PROXIES` to the proxy's exact IPs/CIDRs. Forward Host, X-Forwarded-Host, X-Forwarded-Proto and X-Forwarded-For; support WebSocket upgrades, Range requests and long streams. [Caddy fixture](../tests/Caddyfile). HTTP localhost works for development. Ordinary web/PWA use needs no CORS; separate browser origins require explicit `THELXINOE_CORS_ORIGINS` and remain subject to cookie restrictions.

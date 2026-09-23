@@ -6,6 +6,10 @@ mod storage;
 use super::*;
 use stack::controller;
 
+#[cfg(test)]
+#[path = "../storage/managers/update_tests.rs"]
+mod tests;
+
 pub(super) fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/admin/service-updates", get(list))
@@ -31,7 +35,7 @@ async fn policy(
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
     if uuid::Uuid::parse_str(&key).is_err()
-        || !["automatic", "notify", "manual", "inherit"].contains(&input.policy.as_str())
+        || !["automatic", "notify", "inherit"].contains(&input.policy.as_str())
         || input.window_start > 23
         || input.window_end > 23
     {
@@ -342,14 +346,18 @@ async fn check_releases(state: &AppState, force: bool) -> Result<()> {
         .collect::<Vec<_>>();
     let pending: Vec<_> = rows
         .into_iter()
-        .filter(|r| force || (r.2 != "manual" && now() - r.5 >= 21600))
+        .filter(|r| force || now() - r.5 >= 21600)
         .collect();
     if pending.is_empty() {
         return Ok(());
     }
-    let releases = controller(state, "/releases", None).await?;
+    // Persist failed discovery too, so scheduled checks expose an error and
+    // do not silently leave an old candidate looking current.
+    let releases = controller(state, "/releases", None)
+        .await
+        .unwrap_or(Value::Null);
     let stack = controller(state, "", None).await?;
-    for (service, kind, policy, start, end, _) in pending {
+    for (service, kind, _, start, end, _) in pending {
         let candidate = releases["items"]
             .as_array()
             .into_iter()
@@ -363,7 +371,7 @@ async fn check_releases(state: &AppState, force: bool) -> Result<()> {
             .flatten()
             .find(|r| r["id"] == service)
             .and_then(|r| r["image"].as_str());
-        let changed = candidate.as_deref().is_some_and(|c| Some(c) != current);
+        let changed = current.is_some() && candidate.as_deref().is_some_and(|c| Some(c) != current);
         let key = service.clone();
         let found = candidate.clone();
         let mode = "inherit".to_owned();
@@ -379,19 +387,57 @@ async fn check_releases(state: &AppState, force: bool) -> Result<()> {
                     json!({"service_id":service,"candidate":candidate}),
                 )
                 .await?;
-            if policy == "automatic"
-                && crate::timezones::in_server_window(state, start, end).await?
-            {
-                let _ = enqueue(state, &service, None).await;
-            }
         }
     }
     Ok(())
 }
+
+async fn schedule_updates(state: &AppState) -> Result<()> {
+    let server_policy = crate::product::configured_policy(state).await?;
+    let mut due = Vec::new();
+    for candidate in storage::discovered_candidates(&state.db).await? {
+        let inherited = candidate.policy == "inherit";
+        let mode = if inherited {
+            &server_policy.policy
+        } else {
+            &candidate.policy
+        };
+        let (start, end) = if inherited {
+            (server_policy.window_start, server_policy.window_end)
+        } else {
+            (candidate.window_start, candidate.window_end)
+        };
+        if mode == "automatic"
+            && crate::timezones::in_server_window(state, start.into(), end.into()).await?
+        {
+            due.push(candidate);
+        }
+    }
+    if due.is_empty() {
+        return Ok(());
+    }
+    let stack = controller(state, "", None).await?;
+    for candidate in due {
+        let current = stack["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|item| item["id"] == candidate.service_id)
+            .and_then(|item| item["image"].as_str());
+        if current.is_some_and(|image| image != candidate.image) {
+            let _ = enqueue(state, &candidate.service_id, None).await;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) async fn run(state: AppState) -> anyhow::Result<()> {
     loop {
         // Failures remain visible in policy/update state; they never terminate the server.
         let _ = check_releases(&state, false).await;
+        // Registry discovery and maintenance have separate clocks. Retain the
+        // discovery until the window opens without locking service controls.
+        let _ = schedule_updates(&state).await;
         let server_policy = crate::product::configured_policy(&state)
             .await
             .map_err(|e| anyhow::anyhow!("{}", e.2))?;

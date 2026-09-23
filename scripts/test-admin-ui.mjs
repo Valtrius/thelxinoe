@@ -58,9 +58,12 @@ try {
     }));
   await api(`/catalog/roots/${root.id}/scan`, 'POST');
   const button = page.getByRole('button', {
-    name: /^Notifications \([1-9][0-9]*\)$/,
+    name: 'Notifications',
+    exact: true,
   });
-  await expect(button).toBeVisible({ timeout: 90000 });
+  await expect(button.locator('[data-notification-count]')).toBeVisible({
+    timeout: 90000,
+  });
   await button.click();
   const notices = page.getByRole('region', {
     name: 'Notifications',
@@ -80,6 +83,7 @@ try {
   await expect(
     page.getByRole('button', { name: 'Notifications', exact: true }),
   ).toBeVisible();
+  await expect(button.locator('[data-notification-count]')).toHaveCount(0);
   await page
     .getByRole('button', { name: 'Notifications', exact: true })
     .click();

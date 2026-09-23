@@ -41,7 +41,7 @@
 <Panel>
   <h2>Change password</h2>
   <p class="text-muted">
-    Choose a password with at least 12 characters. Your other devices will be
+    Choose a password with at least 8 characters. Your other devices will be
     signed out; this device stays connected.
   </p>
   <form
@@ -67,7 +67,7 @@
         type="password"
         bind:value={password}
         required
-        minlength="12"
+        minlength="8"
         autocomplete="new-password"
         disabled={busy}
       /></FormField
@@ -78,7 +78,7 @@
         type="password"
         bind:value={confirmation}
         required
-        minlength="12"
+        minlength="8"
         autocomplete="new-password"
         disabled={busy}
       /></FormField

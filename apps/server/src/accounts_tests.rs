@@ -6,7 +6,7 @@ use serde_json::json;
 async fn own_password_change_verifies_current_password_and_revokes_other_devices() {
     let (_temp, state, cookie) = fixture().await;
     let old = "previous passphrase";
-    let new = "replacement passphrase";
+    let new = "12345678";
     let hash = thelxinoe_auth::password_hash(old.into()).await.unwrap();
     state
         .db

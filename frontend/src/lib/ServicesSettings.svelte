@@ -1,5 +1,7 @@
 <script lang="ts">
   import FormField from './ui/FormField.svelte';
+  import AutoSaveForm from './ui/AutoSaveForm.svelte';
+  import UpdatePolicyFields from './ui/UpdatePolicyFields.svelte';
   import { formControlClass } from './ui/styles';
   import StatusIndicator from './ui/StatusIndicator.svelte';
   import Notice from './ui/Notice.svelte';
@@ -23,6 +25,8 @@
   import ServiceConnections, {
     type ServiceConnection,
   } from './ServiceConnections.svelte';
+
+  let { timeFormat = '24h' } = $props<{ timeFormat?: '12h' | '24h' }>();
 
   type ServiceKind =
     'radarr' | 'sonarr' | 'lidarr' | 'bazarr' | 'prowlarr' | 'nzbget';
@@ -135,6 +139,7 @@
     window_start: number;
     window_end: number;
     candidate: string | null;
+    checked_at: number;
     error: string | null;
   };
   type Update = {
@@ -327,10 +332,7 @@
     policies = $state<UpdatePolicy[]>([]),
     updates = $state<Update[]>([]),
     updateTargets = $state<UpdateTarget[]>([]),
-    approvalUsers = $state<ApprovalUser[]>([]),
-    releases = $state<
-      { kind: ServiceKind; image: string | null; tested_image: string }[]
-    >([]);
+    approvalUsers = $state<ApprovalUser[]>([]);
   let timezone = $state(''),
     serverPolicy = $state<ServerUpdatePolicy>({
       policy: 'notify',
@@ -929,17 +931,6 @@
     await api(`/admin/stack/${item.id}/restore-original`, 'POST', {});
     await refresh();
   }
-  async function saveServiceUpdatePolicy(kind: ServiceKind) {
-    const target = updateTarget(kind);
-    if (!target) return;
-    const draft = updateDrafts[kind];
-    await api(`/admin/service-updates/policy/${target.id}`, 'POST', {
-      policy: draft.policy,
-      window_start: draft.start,
-      window_end: draft.end,
-    });
-    await loadUpdateData();
-  }
   async function preflight(kind: ServiceKind) {
     const target = updateTarget(kind);
     if (!target) return;
@@ -949,10 +940,6 @@
   async function updateAction(id: string, action: 'activate' | 'recover') {
     await api(`/admin/service-updates/${id}/${action}`, 'POST', {});
     await loadUpdateData();
-  }
-  async function discoverReleases() {
-    releases = (await api<{ items: typeof releases }>('/admin/stack/releases'))
-      .items;
   }
 
   onMount(() => {
@@ -976,7 +963,10 @@
   });
 </script>
 
-<Panel aria-label="Media services" class="services-panel">
+<Panel
+  aria-label="Media services"
+  class="services-panel settings-panel:compact:p-0"
+>
   <ConfirmDialog
     open={removalKind !== null}
     title={`Remove ${definitions.find((service) => service.kind === removalKind)?.label ?? 'service'}?`}
@@ -1038,7 +1028,7 @@
     aria-label={`${definition.label} service`}
   >
     <aside
-      class="service-rail grid grid-cols-1 grid-rows-[minmax(180px,max-content)_minmax(145px,max-content)_minmax(215px,max-content)] content-start border-r border-line pr-5 compact:block compact:border-0 compact:p-0"
+      class="service-rail grid grid-cols-1 grid-rows-[minmax(180px,max-content)_minmax(145px,max-content)_minmax(215px,max-content)] content-start border-r border-line pr-5 pl-4 compact:block compact:border-0 compact:px-3"
       aria-label="Service controls"
     >
       {#each definitions as service (service.kind)}
@@ -1304,7 +1294,7 @@
       {/each}
     </aside>
     <div
-      class="service-workspace relative min-w-0 pl-5.5 compact:pt-5.5 compact:pl-0 [&_form>button]:w-fit"
+      class="service-workspace relative min-w-0 pl-5.5 compact:px-3 compact:pt-5.5 [&_form>button]:w-fit"
     >
       {#if live?.registered === false}
         <div
@@ -1796,91 +1786,70 @@
       >
         <h3 class="mb-3.25 text-[12px] font-[650]">Updates</h3>
         {#if target}
-          <form
-            class="grid gap-3 [&_label]:m-0"
-            aria-label={`${definition.label} update settings`}
-            onsubmit={(event) => {
-              event.preventDefault();
-              void work(
-                () => saveServiceUpdatePolicy(definition.kind),
-                `${definition.label} update policy saved.`,
-              );
-            }}
-          >
-            <FormField
-              >Update policy<select
-                class={formControlClass}
-                bind:value={servicePolicy.policy}
-                ><option value="inherit">Use server update policy</option
-                ><option value="notify">Notify</option><option value="automatic"
-                  >Automatic</option
-                ><option value="manual">Manual</option></select
-              ></FormField
+          {#key target.id}<AutoSaveForm
+              class="grid gap-3 [&_label]:m-0"
+              label={`${definition.label} update settings`}
+              value={{
+                policy: servicePolicy.policy,
+                window_start: servicePolicy.start,
+                window_end: servicePolicy.end,
+              }}
+              onRevert={(previous) => {
+                servicePolicy.policy = previous.policy;
+                servicePolicy.start = previous.window_start;
+                servicePolicy.end = previous.window_end;
+              }}
+              onsave={(submitted) =>
+                api(
+                  `/admin/service-updates/policy/${target.id}`,
+                  'POST',
+                  submitted,
+                )}
             >
-            {#if servicePolicy.policy !== 'inherit'}
-              <div class="grid grid-cols-2 gap-3 compact:grid-cols-1">
-                <FormField
-                  >Maintenance starts ({timezone})<input
-                    class={formControlClass}
-                    type="number"
-                    min="0"
-                    max="23"
-                    bind:value={servicePolicy.start}
-                    required
-                  /></FormField
-                >
-                <FormField
-                  >Maintenance ends ({timezone})<input
-                    class={formControlClass}
-                    type="number"
-                    min="0"
-                    max="23"
-                    bind:value={servicePolicy.end}
-                    required
-                  /></FormField
-                >
-              </div>
-            {:else}
-              <p
-                class="text-muted my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
-              >
-                Uses the Server update policy ({serverPolicy.policy},
-                {String(serverPolicy.window_start).padStart(2, '0')}:00–{String(
-                  serverPolicy.window_end,
-                ).padStart(2, '0')}:00).
-              </p>
-            {/if}
-            <Button type="submit" size="form" disabled={busy}
-              >Save update policy</Button
-            >
-          </form>
-
-          {#if policy?.candidate}<p
+              {#snippet children(save)}
+                <UpdatePolicyFields
+                  bind:policy={servicePolicy.policy}
+                  bind:start={servicePolicy.start}
+                  bind:end={servicePolicy.end}
+                  {timezone}
+                  inherited={serverPolicy}
+                  onChange={() => void save()}
+                />
+              {/snippet}
+            </AutoSaveForm>{/key}
+          {#if policy?.candidate && policy.candidate !== live?.image}<p
               class="candidate my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
             >
-              Stable candidate: <code>{policy.candidate}</code>
+              Available image: <code>{policy.candidate}</code>
+            </p>
+          {:else if policy?.candidate && live?.image}<p
+              class="my-2 text-xs text-muted"
+            >
+              Up to date.
+            </p>
+          {:else if !policy?.checked_at}<p class="my-2 text-xs text-muted">
+              Waiting for the first automatic update check.
+            </p>{/if}
+          {#if policy?.checked_at}<p class="my-2 text-xs text-muted">
+              Last check: {new Date(policy.checked_at * 1000).toLocaleString(
+                undefined,
+                { timeZone: timezone, hour12: timeFormat === '12h' },
+              )}
             </p>{/if}
           {#if policy?.error}<Notice tone="warning" role="status">
               {policy.error}
             </Notice>{/if}
-          <div class="row-actions flex flex-wrap items-center gap-2">
-            <Button
-              variant="secondary"
-              size="form"
-              disabled={busy}
-              onclick={() => void work(() => preflight(selectedKind))}
-              >Check compatibility</Button
-            ><Button
-              variant="secondary"
-              size="form"
-              disabled={busy}
-              onclick={() =>
-                void work(async () => {
-                  await api('/admin/service-updates/check', 'POST', {});
-                  await loadUpdateData();
-                })}>Check stable updates</Button
-            >
-          </div>
+          {#if policy?.candidate && policy.candidate !== live?.image && !policy.error}
+            <div class="row-actions flex flex-wrap items-center gap-2">
+              <Button
+                variant="secondary"
+                size="form"
+                disabled={busy}
+                onclick={() => void work(() => preflight(selectedKind))}
+                >Check compatibility</Button
+              >
+            </div>
+          {/if}
           {#each serviceUpdatesList as update (update.id)}
             <Notice
               tone={[
@@ -1937,48 +1906,39 @@
       </section>
     </div>
   </article>
-  <footer class="services-footer mt-6 grid gap-5 border-t border-line pt-4.5">
-    {#if feedback.general}<p
-        class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
-        role="status"
-      >
-        {feedback.general}
-      </p>{/if}
-    {#if approvalUsers.length}<section aria-label="Automatic request approval">
-        <h3 class="mb-3.25 text-[12px] font-[650]">
-          Automatic request approval
-        </h3>
-        <div class="row-actions flex flex-wrap items-center gap-2">
-          {#each approvalUsers as user (user.id)}<Switch
-              size="sm"
-              checked={user.enabled}
-              disabled={pendingActions.general}
-              onCheckedChange={(enabled) =>
-                void work(
-                  async () => {
-                    await api(`/admin/acquisition/users/${user.id}`, 'PUT', {
-                      enabled,
-                    });
-                    await loadApprovalUsers();
-                  },
-                  '',
-                  'general',
-                )}>{user.username}</Switch
-            >{/each}
-        </div>
-      </section>{/if}
-    <section>
-      <Button
-        variant="ghost"
-        size="sm"
-        disabled={pendingActions.general || !!loadErrors.stack}
-        onclick={() => void work(discoverReleases, '', 'general')}
-        >Discover stable releases</Button
-      >{#each releases as release (release.kind)}<p
-          class="candidate my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
+  {#if feedback.general || approvalUsers.length}<footer
+      class="services-footer mt-6 grid gap-5 border-t border-line pt-4.5 pl-4 compact:pl-3"
+    >
+      {#if feedback.general}<p
+          class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
+          role="status"
         >
-          {release.kind}: {release.image ?? 'No stable release found'} · tested {release.tested_image}
-        </p>{/each}
-    </section>
-  </footer>
+          {feedback.general}
+        </p>{/if}
+      {#if approvalUsers.length}<section
+          aria-label="Automatic request approval"
+        >
+          <h3 class="mb-3.25 text-[12px] font-[650]">
+            Automatic request approval
+          </h3>
+          <div class="row-actions flex flex-wrap items-center gap-2">
+            {#each approvalUsers as user (user.id)}<Switch
+                size="sm"
+                checked={user.enabled}
+                disabled={pendingActions.general}
+                onCheckedChange={(enabled) =>
+                  void work(
+                    async () => {
+                      await api(`/admin/acquisition/users/${user.id}`, 'PUT', {
+                        enabled,
+                      });
+                      await loadApprovalUsers();
+                    },
+                    '',
+                    'general',
+                  )}>{user.username}</Switch
+              >{/each}
+          </div>
+        </section>{/if}
+    </footer>{/if}
 </Panel>

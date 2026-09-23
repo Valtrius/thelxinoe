@@ -614,7 +614,7 @@
           bind:value={password}
           type="password"
           required
-          minlength={setup ? 12 : 1}
+          minlength={setup ? 8 : 1}
           autocomplete={setup ? 'new-password' : 'current-password'}
         /></FormField
       >
@@ -624,12 +624,12 @@
             bind:value={passwordConfirmation}
             type="password"
             required
-            minlength="12"
+            minlength="8"
             autocomplete="new-password"
           /></FormField
         >
         <p class="text-[11px] text-muted">
-          Use at least 12 characters. You can create other users after setup.
+          Use at least 8 characters. You can create other users after setup.
         </p>{/if}
       {#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
       <Button size="form" type="submit" class="w-full" disabled={busy}
@@ -760,6 +760,9 @@
             {#if settingsSection === 'online'}<OnlineAccounts
                 revision={accountRevision}
                 navigate={(name) => void navigate(name)}
+                configureProviders={user.role === 'admin'
+                  ? () => (settingsSection = 'providers')
+                  : undefined}
               />{/if}
             {#if settingsSection === 'playback'}<PlaybackSettings />
               <SegmentSettings />
@@ -841,7 +844,9 @@
                   {timeFormat}
                 />{/if}
               {#if settingsSection === 'providers'}<OnlineSettings />{/if}
-              {#if settingsSection === 'services'}<ServicesSettings />{/if}
+              {#if settingsSection === 'services'}<ServicesSettings
+                  {timeFormat}
+                />{/if}
               {#if settingsSection === 'services'}<ManagerOwnership />{/if}
               {#if settingsSection === 'retention'}<RetentionSettings
                   {timezone}
@@ -874,11 +879,13 @@
                     label="Server display defaults"
                     class={inlineFormClass}
                     disabled={busy}
-                    onsave={() =>
-                      api('/admin/settings', 'PUT', {
-                        timezone,
-                        time_format: serverTimeFormat,
-                      })}
+                    value={{ timezone, time_format: serverTimeFormat }}
+                    onRevert={(previous) => {
+                      timezone = previous.timezone;
+                      serverTimeFormat = previous.time_format;
+                    }}
+                    onsave={(submitted) =>
+                      api('/admin/settings', 'PUT', submitted)}
                   >
                     <TimezoneSelect
                       label="Server default timezone"
@@ -923,7 +930,7 @@
                         bind:value={newPassword}
                         type="password"
                         required
-                        minlength="12"
+                        minlength="8"
                         autocomplete="new-password"
                       /></FormField
                     ><FormField

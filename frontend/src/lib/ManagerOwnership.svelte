@@ -42,7 +42,7 @@
   }
 </script>
 
-<Panel>
+<Panel class="settings-panel:pl-4 settings-panel:compact:pl-3">
   <h2>Media ownership and operations</h2>
   <p>
     Refresh ownership after a manager import or configuration change. Unresolved

@@ -3,17 +3,14 @@
   import { appearance, appearanceError, updateAppearance } from './appearance';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
-  import { eyebrowClass, settingRowClass } from './ui/styles';
+  import { eyebrowClass } from './ui/styles';
 </script>
 
 <Panel aria-label="Appearance preferences">
   <p class={eyebrowClass}>YOUR WORKSPACE</p>
-  <h2>Appearance</h2>
-  <p class="text-muted">
-    Choose how your collection is displayed. Your preferences follow your
-    account.
-  </p>
-  <div class={settingRowClass}>
+  <div
+    class="mb-4.5 flex items-center justify-between gap-4 py-4 [&_p]:mt-1.25 [&_p]:mb-0 compact:flex-wrap compact:items-start"
+  >
     <div>
       <strong>Media density</strong>
       <p class="text-muted">

@@ -1,17 +1,20 @@
-<script lang="ts">
+<script lang="ts" generics="Value extends object">
   import Notice from './Notice.svelte';
-  import type { Snippet } from 'svelte';
-  import Button from './Button.svelte';
+  import { onDestroy, untrack, type Snippet } from 'svelte';
 
   let {
     onsave,
+    value,
+    onRevert,
     children,
     disabled = false,
     busy = $bindable(false),
     class: className = '',
     label = 'Preferences',
   } = $props<{
-    onsave: () => Promise<unknown>;
+    value: Value;
+    onsave: (value: Value) => Promise<unknown>;
+    onRevert: (value: Value) => void;
     children: Snippet<[() => Promise<void>]>;
     disabled?: boolean;
     busy?: boolean;
@@ -19,21 +22,45 @@
     label?: string;
   }>();
   let form: HTMLFormElement;
-  let error = $state(''),
-    saved = $state(false);
+  let error = $state('');
+  const copy = (value: Value): Value => JSON.parse(JSON.stringify(value));
+  let confirmed = copy(untrack(() => value));
+  let pending: Value | undefined;
+  let active = true;
+  onDestroy(() => (active = false));
 
   async function submit() {
-    if (busy || disabled || !form.reportValidity()) return;
-    // A single request owns the form until it completes. Keeping edits out of
-    // that interval prevents older responses from overwriting newer settings.
+    if (disabled || !form.reportValidity()) return;
+    pending = copy(value);
+    if (busy) return;
+    // Keep the latest edit visible while serializing complete snapshots. An
+    // older response must never replace edits made during its request.
     busy = true;
     error = '';
-    saved = false;
     try {
-      await onsave();
-      saved = true;
-    } catch (caught) {
-      error = String(caught);
+      while (pending) {
+        const submitted = pending;
+        pending = undefined;
+        try {
+          await onsave(submitted);
+          confirmed = submitted;
+          error = '';
+        } catch (caught) {
+          if (!pending && active) {
+            // Text fields can contain a newer edit before their change/blur
+            // event submits it. Preserve that draft when rolling back.
+            const reverted = copy(value);
+            for (const key of Object.keys(submitted) as (keyof Value)[]) {
+              if (
+                JSON.stringify(reverted[key]) === JSON.stringify(submitted[key])
+              )
+                reverted[key] = confirmed[key];
+            }
+            onRevert(reverted);
+            error = String(caught);
+          }
+        }
+      }
     } finally {
       busy = false;
     }
@@ -49,21 +76,12 @@
     void submit();
   }}
 >
-  <fieldset disabled={disabled || busy} class={['min-w-0', className]}>
+  <fieldset {disabled} class={['min-w-0', className]}>
     {@render children(submit)}
   </fieldset>
-  {#if busy || saved}<p class="mt-2 text-xs text-muted" role="status">
-      {busy ? 'Saving…' : 'Saved'}
-    </p>{/if}
   {#if error}
     <Notice variant="error" role="alert">
-      <p>Your changes could not be saved: {error}</p>
-      <Button
-        size="form"
-        variant="secondary"
-        disabled={disabled || busy}
-        onclick={() => void submit()}>Retry saving</Button
-      >
+      <p>Your changes could not be saved and were reverted: {error}</p>
     </Notice>
   {/if}
 </form>

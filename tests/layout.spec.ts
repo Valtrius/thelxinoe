@@ -349,7 +349,17 @@ test('an older update poll cannot unlock a newly queued update', async ({
       });
     await route.fulfill({
       json: {
-        policies: [],
+        policies: [
+          {
+            service_id: 'managed-radarr',
+            policy: 'notify',
+            window_start: 3,
+            window_end: 5,
+            candidate: 'ghcr.io/example/radarr:new',
+            checked_at: 1700000000,
+            error: null,
+          },
+        ],
         timezone: 'UTC',
         items,
         services: [{ id: 'managed-radarr', kind: 'radarr' }],
@@ -599,7 +609,7 @@ test('short settings navigation fills the workspace and follows resizing', async
   const fixture = await installUiFixture(page);
   await page.goto('/');
   await expect(
-    page.getByRole('heading', { name: 'Appearance', exact: true }),
+    page.getByRole('region', { name: 'Appearance preferences', exact: true }),
   ).toBeVisible();
   await expectFullHeightNavigation(page);
   const panels = await page.locator('.settings-panels').evaluate((element) => ({
@@ -614,7 +624,7 @@ test('short settings navigation fills the workspace and follows resizing', async
     page.getByText('Use the server default or choose your own timezone', {
       exact: false,
     }),
-  ).toHaveCSS('line-height', '19.8px');
+  ).toHaveCount(0);
   await expect(page.locator('.settings-panels > .panel').first()).toHaveCSS(
     'padding',
     '0px 0px 24px',
@@ -728,16 +738,13 @@ test('server settings contain display defaults and server updates', async ({
       exact: true,
     })
     .selectOption('12h');
-  await expect(
-    page
-      .getByRole('form', { name: 'Server display defaults' })
-      .getByRole('status'),
-  ).toHaveText('Saved');
-  expect(fixture.writes).toContainEqual({
-    path: '/admin/settings',
-    method: 'PUT',
-    body: { timezone: 'UTC', time_format: '12h' },
-  });
+  await expect
+    .poll(() => fixture.writes)
+    .toContainEqual({
+      path: '/admin/settings',
+      method: 'PUT',
+      body: { timezone: 'UTC', time_format: '12h' },
+    });
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });
@@ -766,10 +773,8 @@ test('media services select one workspace and keep desktop rail sections aligned
   ).toBeVisible();
   await expect(page.locator('article details')).toHaveCount(0);
   await radarr
-    .getByRole('combobox', { name: 'Update policy', exact: true })
-    .selectOption('notify');
-  await radarr
-    .getByRole('button', { name: 'Save update policy', exact: true })
+    .getByRole('group', { name: 'Update policy', exact: true })
+    .getByRole('button', { name: 'Notify', exact: true })
     .click();
   await expect
     .poll(() =>
@@ -1226,25 +1231,23 @@ test('display, playback and skipping preferences save automatically', async ({
   await page
     .getByRole('combobox', { name: 'Display timezone', exact: true })
     .selectOption('Europe/Paris');
-  await expect(
-    page.getByRole('form', { name: 'Display preferences' }).getByRole('status'),
-  ).toHaveText('Saved');
-  expect(fixture.writes).toContainEqual({
-    path: '/me/preferences',
-    method: 'PUT',
-    body: { timezone: 'Europe/Paris', time_format: null },
-  });
+  await expect
+    .poll(() => fixture.writes)
+    .toContainEqual({
+      path: '/me/preferences',
+      method: 'PUT',
+      body: { timezone: 'Europe/Paris', time_format: null },
+    });
   await page
     .getByRole('combobox', { name: 'Display time format', exact: true })
     .selectOption('12h');
-  await expect(
-    page.getByRole('form', { name: 'Display preferences' }).getByRole('status'),
-  ).toHaveText('Saved');
-  expect(fixture.writes).toContainEqual({
-    path: '/me/preferences',
-    method: 'PUT',
-    body: { timezone: 'Europe/Paris', time_format: '12h' },
-  });
+  await expect
+    .poll(() => fixture.writes)
+    .toContainEqual({
+      path: '/me/preferences',
+      method: 'PUT',
+      body: { timezone: 'Europe/Paris', time_format: '12h' },
+    });
   await page.getByRole('button', { name: 'Smaller media cards' }).click();
   await expect(page.getByText('7 columns', { exact: true })).toBeVisible();
   await page.getByText('Fade watched videos', { exact: true }).click();
@@ -1276,11 +1279,11 @@ test('display, playback and skipping preferences save automatically', async ({
     fixture.writes.find((write) => write.path === '/me/segments')?.body,
   ).toEqual({ Intro: 'Ignore', Recap: 'Ask', Credits: 'Ask', Preview: 'Ask' });
   await page.getByLabel('Default quality').selectOption('original');
-  await expect(
-    page
-      .getByRole('form', { name: 'Playback preferences' })
-      .getByRole('status'),
-  ).toHaveText('Saved');
+  await expect
+    .poll(() =>
+      fixture.writes.filter((write) => write.path === '/playback/preferences'),
+    )
+    .toHaveLength(1);
   await page.getByLabel('Audio language').fill('fra');
   await page.getByLabel('Audio language').press('Tab');
   await expect
@@ -1297,7 +1300,7 @@ test('display, playback and skipping preferences save automatically', async ({
   expect(fixture.unexpected).toEqual([]);
 });
 
-test('failed automatic saves retain edits and can be retried', async ({
+test('failed automatic saves revert edits and allow another selection', async ({
   page,
 }) => {
   const fixture = await installUiFixture(page);
@@ -1321,16 +1324,17 @@ test('failed automatic saves retain edits and can be retried', async ({
   );
   await expect(
     page.getByRole('combobox', { name: 'Display timezone', exact: true }),
-  ).toHaveValue('Europe/Paris');
-  await page.getByRole('button', { name: 'Retry saving' }).click();
-  await expect(
-    page.getByRole('form', { name: 'Display preferences' }).getByRole('status'),
-  ).toHaveText('Saved');
-  expect(fixture.writes).toContainEqual({
-    path: '/me/preferences',
-    method: 'PUT',
-    body: { timezone: 'Europe/Paris', time_format: null },
-  });
+  ).toHaveValue('');
+  await page
+    .getByRole('combobox', { name: 'Display timezone', exact: true })
+    .selectOption('Europe/Paris');
+  await expect
+    .poll(() => fixture.writes)
+    .toContainEqual({
+      path: '/me/preferences',
+      method: 'PUT',
+      body: { timezone: 'Europe/Paris', time_format: null },
+    });
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });
@@ -1389,6 +1393,218 @@ test('the sign-in button still submits the form by keyboard', async ({
     method: 'POST',
     body: { username: 'fixture', password: 'fixture password' },
   });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('skipping stays responsive during saves, animates, and reverts a failed latest edit', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, { settingsSection: 'playback' });
+  const writes: Record<string, string>[] = [];
+  const complete: (() => void)[] = [];
+  let fail = false;
+  await page.route('**/api/v1/me/segments', async (route) => {
+    if (route.request().method() !== 'PUT') return route.fallback();
+    writes.push(route.request().postDataJSON());
+    await new Promise<void>((resolve) => complete.push(resolve));
+    await route.fulfill(
+      fail
+        ? {
+            status: 503,
+            json: { error: { code: 'unavailable', message: 'Save failed' } },
+          }
+        : { json: {} },
+    );
+  });
+  await page.goto('/');
+  const intro = page.getByRole('group', { name: 'Intro skipping' });
+  const recap = page.getByRole('group', { name: 'Recap skipping' });
+  const ignore = intro.getByRole('button', { name: 'Ignore', exact: true });
+  const auto = intro.getByRole('button', { name: 'Auto', exact: true });
+  await expect(auto).toBeEnabled();
+  const selection = intro.locator('[data-choice-selection]');
+  // Freeze the transition at an intermediate frame to verify actual movement.
+  await intro.evaluate((element) => {
+    const button = element.querySelector<HTMLButtonElement>(
+      'button[aria-label="Auto"]',
+    )!;
+    button.click();
+  });
+  await expect.poll(() => complete.length).toBe(1);
+  await expect(auto).toHaveAttribute('aria-pressed', 'true');
+  await expect(ignore).toBeEnabled();
+  const motion = await selection.evaluate((element) => {
+    const animation = element
+      .getAnimations()
+      .find(
+        (item) => (item as CSSTransition).transitionProperty === 'translate',
+      );
+    if (!animation) return null;
+    animation.pause();
+    animation.currentTime = 80;
+    const rect = element.getBoundingClientRect();
+    const parent = element.parentElement!;
+    const from = parent.querySelector('button')!.getBoundingClientRect();
+    const to = parent
+      .querySelector('[aria-pressed="true"]')!
+      .getBoundingClientRect();
+    return { left: rect.left, from: from.left, to: to.left };
+  });
+  expect(motion).not.toBeNull();
+  expect(motion!.left).toBeGreaterThan(motion!.from);
+  expect(motion!.left).toBeLessThan(motion!.to);
+  await selection.evaluate((element) =>
+    element.getAnimations().forEach((animation) => animation.finish()),
+  );
+  await ignore.click();
+  await recap.getByRole('button', { name: 'Ignore', exact: true }).click();
+  await expect(ignore).toHaveAttribute('aria-pressed', 'true');
+  expect(writes).toHaveLength(1);
+  fail = true;
+  complete[0]();
+  await expect.poll(() => complete.length).toBe(2);
+  // Failure of the older request must not roll back the newer choices.
+  await expect(ignore).toHaveAttribute('aria-pressed', 'true');
+  expect(writes[1]).toMatchObject({ Intro: 'Ignore', Recap: 'Ignore' });
+  fail = false;
+  complete[1]();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await auto.click();
+  await expect.poll(() => complete.length).toBe(3);
+  fail = true;
+  complete[2]();
+  await expect(page.getByRole('alert')).toContainText('were reverted');
+  await expect(ignore).toHaveAttribute('aria-pressed', 'true');
+  await expect(
+    recap.getByRole('button', { name: 'Ignore', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true');
+  await expect(auto).toBeEnabled();
+  await expect(page.getByText('Saved', { exact: true })).toHaveCount(0);
+  await page.screenshot({
+    path: 'test-results/settings-optimistic.png',
+    fullPage: true,
+  });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('update choices save eagerly, roll back failures, and respect reduced motion', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'server',
+  });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  let finish: (() => void) | undefined;
+  await page.route('**/api/v1/admin/product-update/policy', async (route) => {
+    await new Promise<void>((resolve) => (finish = resolve));
+    await route.fulfill({
+      status: 503,
+      json: { error: { code: 'unavailable', message: 'Policy save failed' } },
+    });
+  });
+  await page.goto('/');
+  const choices = page.getByRole('group', { name: 'Update policy' });
+  const automatic = choices.getByRole('button', {
+    name: 'Automatic',
+    exact: true,
+  });
+  const notify = choices.getByRole('button', { name: 'Notify', exact: true });
+  await automatic.click();
+  await expect(automatic).toHaveAttribute('aria-pressed', 'true');
+  await expect(notify).toBeEnabled();
+  await expect(choices.locator('[data-choice-selection]')).toHaveCSS(
+    'transition-property',
+    'none',
+  );
+  await expect.poll(() => Boolean(finish)).toBe(true);
+  finish!();
+  await expect(page.getByRole('alert')).toContainText('Policy save failed');
+  await expect(notify).toHaveAttribute('aria-pressed', 'true');
+  await expect(
+    choices.getByRole('button', { name: 'Manual', exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Check signed releases' }),
+  ).toHaveCount(0);
+  const nav = page.getByRole('navigation', { name: 'Settings navigation' });
+  await expect(nav.getByRole('heading')).toHaveCount(0);
+  await expect(nav.getByRole('separator')).toHaveCount(1);
+  await page.screenshot({
+    path: 'test-results/settings-update-policy.png',
+    fullPage: true,
+  });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('matching service images are up to date with no update action', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+  });
+  const currentImage = 'ghcr.io/example/radarr:stable';
+  await page.route('**/api/v1/admin/service-updates', async (route) => {
+    await route.fulfill({
+      json: {
+        policies: [
+          {
+            service_id: 'managed-radarr',
+            policy: 'notify',
+            window_start: 3,
+            window_end: 5,
+            candidate: currentImage,
+            checked_at: 1700000000,
+            error: null,
+          },
+        ],
+        items: [],
+        services: [{ id: 'managed-radarr', kind: 'radarr' }],
+        timezone: 'UTC',
+        server_policy: { policy: 'notify', window_start: 3, window_end: 5 },
+      },
+    });
+  });
+  await page.goto('/');
+  const updates = page.getByRole('region', { name: 'Updates', exact: true });
+  await expect(updates.getByText('Up to date.', { exact: true })).toBeVisible();
+  await expect(
+    updates.getByRole('button', { name: 'Check compatibility' }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('button', {
+      name: /Check stable updates|Discover stable releases/,
+    }),
+  ).toHaveCount(0);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('failed playback saves preserve newer text still being edited', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, { settingsSection: 'playback' });
+  let finish: (() => void) | undefined;
+  await page.route('**/api/v1/playback/preferences', async (route) => {
+    if (route.request().method() !== 'PUT') return route.fallback();
+    await new Promise<void>((resolve) => (finish = resolve));
+    await route.fulfill({
+      status: 503,
+      json: { error: { code: 'unavailable', message: 'Playback save failed' } },
+    });
+  });
+  await page.goto('/');
+  await page.getByLabel('Default quality').selectOption('original');
+  await page.getByLabel('Audio language').fill('fra');
+  await expect.poll(() => Boolean(finish)).toBe(true);
+  finish!();
+  await expect(page.getByRole('alert')).toContainText('Playback save failed');
+  await expect(page.getByLabel('Default quality')).toHaveValue('auto');
+  await expect(page.getByLabel('Audio language')).toHaveValue('fra');
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });

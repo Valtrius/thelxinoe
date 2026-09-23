@@ -1,6 +1,8 @@
 <script lang="ts">
   import FormField from './ui/FormField.svelte';
   import { formControlClass } from './ui/styles';
+  import AutoSaveForm from './ui/AutoSaveForm.svelte';
+  import UpdatePolicyFields from './ui/UpdatePolicyFields.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
   import Button from './ui/Button.svelte';
@@ -70,51 +72,43 @@
 
 <section
   aria-label="Product updates"
-  class="mt-6 border-t border-line pt-5 [&_button]:m-[0.3rem]"
+  class="mt-6 grid gap-3 border-t border-line pt-5"
 >
   <h3>Server updates</h3>
   {#if status}
-    <div class="flex flex-wrap gap-4 [&_label]:min-w-48">
-      <FormField
-        >Update policy<select class={formControlClass} bind:value={policy}
-          ><option value="notify">Notify</option><option value="automatic"
-            >Automatic</option
-          ><option value="manual">Manual</option></select
-        ></FormField
-      >
-      <FormField
-        >Maintenance starts ({status.timezone})<input
-          class={formControlClass}
-          type="number"
-          min="0"
-          max="23"
-          bind:value={start}
-        /></FormField
-      >
-      <FormField
-        >Maintenance ends ({status.timezone})<input
-          class={formControlClass}
-          type="number"
-          min="0"
-          max="23"
-          bind:value={end}
-        /></FormField
-      >
-    </div>
-    <Button
-      variant="secondary"
-      size="form"
-      disabled={busy}
-      onclick={() =>
-        command('policy', { policy, window_start: start, window_end: end })}
-      >Save update policy</Button
+    <AutoSaveForm
+      label="Server update settings"
+      class="grid gap-3"
+      value={{ policy, window_start: start, window_end: end }}
+      onRevert={(previous) => {
+        policy = previous.policy;
+        start = previous.window_start;
+        end = previous.window_end;
+      }}
+      onsave={(submitted) =>
+        api('/admin/product-update/policy', 'POST', submitted)}
     >
-    <Button
-      variant="secondary"
-      size="form"
-      disabled={busy || !status.configured}
-      onclick={() => command('check')}>Check signed releases</Button
-    >
+      {#snippet children(save)}
+        <UpdatePolicyFields
+          bind:policy
+          bind:start
+          bind:end
+          timezone={status?.timezone ?? 'UTC'}
+          onChange={() => void save()}
+        />
+      {/snippet}
+    </AutoSaveForm>
+    {#if !status.configured}<p class="text-xs text-muted">
+        Automatic checks will start once a signed release channel is configured.
+      </p>
+    {:else if status.observation?.checked_at && !status.observation.error && !status.release}<p
+        class="text-xs text-muted"
+      >
+        Up to date.
+      </p>
+    {:else if !status.observation?.checked_at}<p class="text-xs text-muted">
+        Waiting for the first automatic update check.
+      </p>{/if}
     {#if status.observation?.checked_at}<p>
         Last check: {new Date(
           status.observation.checked_at * 1000,

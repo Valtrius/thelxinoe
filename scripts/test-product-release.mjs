@@ -97,7 +97,7 @@ try {
     await api('/setup', 'POST', credentials);
   else await api('/auth/login', 'POST', credentials);
   await api('/admin/product-update/policy', 'POST', {
-    policy: 'manual',
+    policy: 'notify',
     window_start: 0,
     window_end: 0,
   });

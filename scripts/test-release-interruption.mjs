@@ -37,7 +37,7 @@ try {
     password: 'test-only long passphrase',
   });
   await api('/admin/product-update/policy', 'POST', {
-    policy: 'manual',
+    policy: 'notify',
     window_start: 0,
     window_end: 0,
   });

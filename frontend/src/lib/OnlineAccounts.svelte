@@ -10,9 +10,14 @@
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
 
-  let { navigate, revision = 0 } = $props<{
+  let {
+    navigate,
+    revision = 0,
+    configureProviders,
+  } = $props<{
     navigate: (section: string) => void;
     revision?: number;
+    configureProviders?: () => void;
   }>();
   let accounts = $state<Partial<Record<'youtube' | 'twitch', OnlineAccount>>>(
     {},
@@ -60,11 +65,21 @@
 
 <Panel>
   <h2>Your online accounts</h2>
-  <p class="text-muted">
-    Connections, watchlists and viewing history belong to your account on this
-    server. A server administrator configures application credentials under
-    Provider applications before accounts can connect.
-  </p>
+  {#if Object.values(accounts).some((account) => !account.configured)}
+    <Notice>
+      {#if configureProviders}<a
+          href="#provider-applications"
+          class="text-accent underline underline-offset-2"
+          onclick={(event) => {
+            event.preventDefault();
+            configureProviders();
+          }}
+          >Connections unavailable until an admin sets up the provider
+          applications.</a
+        >{:else}Connections unavailable until an admin sets up the provider
+        applications.{/if}
+    </Notice>
+  {/if}
   {#if error}<Notice variant="error" role="alert">{error}</Notice>{/if}
   {#each [['youtube', 'YouTube'], ['twitch', 'Twitch']] as [provider, label] (provider)}
     {@const account = accounts[provider as 'youtube' | 'twitch']}
@@ -149,7 +164,7 @@
         >
       </Notice>{/if}
   {/each}
-  <div class="mb-4.5 flex flex-col items-start gap-4 border-b border-line py-4">
+  <div class="mb-4.5 flex flex-col items-start gap-4 py-4">
     <div>
       <strong>Kick</strong>
       <p class="mt-1.5 mb-0 text-muted">

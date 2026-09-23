@@ -119,29 +119,30 @@
       >Apply Google application</Button
     >
   </form>
-  <AutoSaveForm
-    label="YouTube preferences"
-    class={inlineFormClass}
-    bind:busy={savingPreferences}
-    disabled={busy || !config}
-    onsave={() =>
-      api('/admin/online', 'PUT', {
-        youtube_downloads: downloads,
-        youtube_daily_quota: budget,
-      })}
-  >
-    <FormField
-      >Daily API budget<input
-        class={formControlClass}
-        type="number"
-        bind:value={budget}
-        min="1"
-        max="10000000"
-        required
-      /></FormField
+  {#if config}<AutoSaveForm
+      label="YouTube preferences"
+      class={inlineFormClass}
+      bind:busy={savingPreferences}
+      disabled={busy || !config}
+      value={{ youtube_downloads: downloads, youtube_daily_quota: budget }}
+      onRevert={(previous) => {
+        downloads = previous.youtube_downloads;
+        budget = previous.youtube_daily_quota;
+      }}
+      onsave={(submitted) => api('/admin/online', 'PUT', submitted)}
     >
-    <Switch bind:checked={downloads}>Allow YouTube downloads</Switch>
-  </AutoSaveForm>
+      <FormField
+        >Daily API budget<input
+          class={formControlClass}
+          type="number"
+          bind:value={budget}
+          min="1"
+          max="10000000"
+          required
+        /></FormField
+      >
+      <Switch bind:checked={downloads}>Allow YouTube downloads</Switch>
+    </AutoSaveForm>{/if}
   {#if config}<p class="text-muted">
       {config.quota.used.toLocaleString()} API units used today. The shared budget
       resets at midnight Pacific time.{config.quota.blocked

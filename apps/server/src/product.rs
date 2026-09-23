@@ -85,7 +85,7 @@ async fn policy(
     Json(input): Json<Policy>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
-    if !["automatic", "notify", "manual"].contains(&input.policy.as_str())
+    if !["automatic", "notify"].contains(&input.policy.as_str())
         || input.window_start > 23
         || input.window_end > 23
     {
@@ -323,9 +323,6 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
 }
 async fn tick(state: &AppState) -> Result<()> {
     let p = configured_policy(state).await?;
-    if p.policy == "manual" {
-        return Ok(());
-    }
     let checked = setting(state, "product.observation")
         .await?
         .and_then(|v| v["checked_at"].as_i64())

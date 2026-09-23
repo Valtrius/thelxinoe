@@ -38,11 +38,12 @@ try {
   const integration = before.provisions.find(
     (p) => p.id === service.id,
   ).service_id;
-  const u = await api(
-    '/admin/service-updates/preflight/' + service.id,
-    'POST',
-    {},
+  const prepared = (await api('/admin/service-updates')).items.find(
+    (item) => item.service_id === service.id && item.state === 'ready',
   );
+  const u =
+    prepared ??
+    (await api('/admin/service-updates/preflight/' + service.id, 'POST', {}));
   expect((await wait(u.id, ['ready', 'blocked'])).state).toBe('ready');
   await api('/admin/service-updates/' + u.id + '/activate', 'POST', {});
   expect(
@@ -78,20 +79,17 @@ try {
     .click();
   const panel = page.getByRole('article', { name: 'Radarr service' });
   await panel
-    .getByRole('combobox', { name: 'Update policy', exact: true })
-    .selectOption('manual');
-  await panel.getByLabel('Maintenance starts (UTC)').fill('22');
-  await panel.getByLabel('Maintenance ends (UTC)').fill('3');
-  await panel.getByRole('button', { name: 'Save update policy' }).click();
-  await expect(
-    panel.getByText('Radarr update policy saved.', { exact: true }),
-  ).toBeVisible();
-  const saved = (await api('/admin/service-updates')).policies.find(
-    (p) => p.service_id === service.id,
-  );
-  expect(saved.policy).toBe('manual');
-  expect(saved.window_start).toBe(22);
-  expect(saved.window_end).toBe(3);
+    .getByRole('group', { name: 'Update policy', exact: true })
+    .getByRole('button', { name: 'Notify', exact: true })
+    .click();
+  await expect
+    .poll(
+      async () =>
+        (await api('/admin/service-updates')).policies.find(
+          (p) => p.service_id === service.id,
+        )?.policy,
+    )
+    .toBe('notify');
   await panel.scrollIntoViewIfNeeded();
   await page.screenshot({ path: '.local/service-updates.png' });
   const result = {

@@ -22,7 +22,7 @@
     items = $state<
       { media_id: string; title: string; state: string; error: string | null }[]
     >([]),
-    busy = $state(false),
+    busy = $state(true),
     message = $state('');
   async function refresh() {
     if (admin) {
@@ -59,32 +59,32 @@
       Ask shows a skip button. Auto seeks past the segment while playing. Ignore
       leaves it untouched. Jellyfin clients use their own skip preferences.
     </p>
-    <AutoSaveForm
-      label="Skipping preferences"
-      class="grid justify-items-start gap-4"
-      onsave={() => api('/me/segments', 'PUT', preferences)}
-      disabled={busy || Boolean(message)}
-    >
-      {#snippet children(save)}
-        {#each kinds as kind (kind)}
-          <div
-            class="grid grid-cols-[4rem_max-content] items-center gap-2 text-[0.8rem]"
-          >
-            <span>{kind}</span>
-            <ExclusiveChoiceGroup
-              {choices}
-              value={preferences[kind]}
-              ariaLabel={`${kind} skipping`}
-              disabled={busy}
-              onChange={(value) => {
-                preferences[kind] = value;
-                void save();
-              }}
-            />
-          </div>
-        {/each}
-      {/snippet}
-    </AutoSaveForm>
+    {#if !busy && !message}<AutoSaveForm
+        label="Skipping preferences"
+        class="grid justify-items-start gap-4"
+        value={preferences}
+        onRevert={(previous) => (preferences = previous)}
+        onsave={(submitted) => api('/me/segments', 'PUT', submitted)}
+      >
+        {#snippet children(save)}
+          {#each kinds as kind (kind)}
+            <div
+              class="grid grid-cols-[4rem_max-content] items-center gap-2 text-[0.8rem]"
+            >
+              <span>{kind}</span>
+              <ExclusiveChoiceGroup
+                {choices}
+                value={preferences[kind]}
+                ariaLabel={`${kind} skipping`}
+                onChange={(value) => {
+                  preferences[kind] = value;
+                  void save();
+                }}
+              />
+            </div>
+          {/each}
+        {/snippet}
+      </AutoSaveForm>{/if}
   {:else}<h2>Episode analysis</h2>
     <Switch bind:checked={config.local} disabled={busy}
       >Detect recurring intro and credit audio locally</Switch
