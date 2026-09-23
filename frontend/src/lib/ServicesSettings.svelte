@@ -5,7 +5,7 @@
   import Panel from './ui/Panel.svelte';
   import ConfirmDialog from './providers/components/ui/ConfirmDialog.svelte';
   import Switch from './ui/Switch.svelte';
-  import { Copy, ExternalLink } from '@lucide/svelte';
+  import { Copy, ExternalLink, LoaderCircle } from '@lucide/svelte';
   import DownloadsTable from './services/DownloadsTable.svelte';
   import type { SupportDownload } from './services/downloads';
   import { serviceUiUrl, type Container } from './services/presentation';
@@ -332,6 +332,9 @@
       window_end: 5,
     }),
     busy = $state(false);
+  const copyingCredentials = $state<
+    Partial<Record<'username' | 'password', boolean>>
+  >({});
   const feedback = $state<Partial<Record<ServiceKind, string>>>({});
   const connectionTests = $state<Partial<Record<ServiceKind, string>>>({});
   const connectionErrors = $state<Partial<Record<ServiceKind, string>>>({});
@@ -818,6 +821,20 @@
     }
     if (!copied) throw new Error('Could not copy the NZBGet credential.');
   }
+  async function copyNzbgetCredentialFromButton(
+    field: 'username' | 'password',
+  ) {
+    if (busy || copyingCredentials[field]) return;
+    copyingCredentials[field] = true;
+    feedback.nzbget = '';
+    try {
+      await copyNzbgetCredential(field);
+    } catch (error) {
+      feedback.nzbget = String(error);
+    } finally {
+      copyingCredentials[field] = false;
+    }
+  }
   async function supportCommand(
     kind: ServiceKind,
     action: string,
@@ -1017,21 +1034,31 @@
                   type="button"
                   aria-label="Copy NZBGet login"
                   title="Copy NZBGet login"
-                  disabled={busy}
+                  aria-busy={copyingCredentials.username}
+                  disabled={busy || copyingCredentials.username}
                   onclick={() =>
-                    void work(() => copyNzbgetCredential('username'))}
-                  ><Copy size={10} aria-hidden="true" />Login</button
-                >
+                    void copyNzbgetCredentialFromButton('username')}>
+                    {#if copyingCredentials.username}
+                      <LoaderCircle size={10} class="animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                    {:else}
+                      <Copy size={10} aria-hidden="true" />
+                    {/if}Login
+                </button>
                 <button
                   class="credential-copy"
                   type="button"
                   aria-label="Copy NZBGet password"
                   title="Copy NZBGet password"
-                  disabled={busy}
+                  aria-busy={copyingCredentials.password}
+                  disabled={busy || copyingCredentials.password}
                   onclick={() =>
-                    void work(() => copyNzbgetCredential('password'))}
-                  ><Copy size={10} aria-hidden="true" />Pass</button
-                >
+                    void copyNzbgetCredentialFromButton('password')}>
+                    {#if copyingCredentials.password}
+                      <LoaderCircle size={10} class="animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                    {:else}
+                      <Copy size={10} aria-hidden="true" />
+                    {/if}Pass
+                </button>
                 </div>
               {/if}
             </div>{/if}
