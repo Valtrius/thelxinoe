@@ -156,7 +156,30 @@ async fn ensure_kind_available(d: &Deployment, kind: &str) -> Result<Value> {
         return Err(conflict("This service already has a managed installation"));
     }
     let containers = engine("/containers/json?all=true").await?;
-    if deployment_has_kind(&containers, &d.id, kind)? {
+    let mut active = containers.clone();
+    let mut retained = Vec::new();
+    for container in containers.as_array().ok_or_else(unavailable)? {
+        if container["Labels"]["app.thelxinoe.deployment"] != d.id
+            || container["Labels"]["app.thelxinoe.kind"] != kind
+        {
+            continue;
+        }
+        if let Some(key) = container["Labels"]["app.thelxinoe.managed-id"].as_str()
+            && let Ok(service) = load(key)
+            && service.phase == "retired"
+        {
+            retained.extend(updates::retained_originals(d, &service).await?);
+        }
+    }
+    active
+        .as_array_mut()
+        .ok_or_else(unavailable)?
+        .retain(|row| {
+            !row["Id"]
+                .as_str()
+                .is_some_and(|id| retained.iter().any(|old| old == id))
+        });
+    if deployment_has_kind(&active, &d.id, kind)? {
         return Err(conflict("This service already has a managed installation"));
     }
     Ok(containers)
@@ -589,6 +612,14 @@ async fn action(
         None,
     )
     .await?;
+    let after = engine(&format!("/containers/{}/json", s.container)).await?;
+    let fingerprint = policy::fingerprint(&after);
+    if fingerprint != s.expected && !policy::first_start_matches(&s.expected, &fingerprint) {
+        return Err(conflict(
+            "Docker configuration changed during the lifecycle action",
+        ));
+    }
+    s.expected = fingerprint;
     s.phase = "active".into();
     save(&s)?;
     Ok(Json(json!({"accepted":true})))
@@ -657,7 +688,10 @@ fn verify_ownership(d: &Deployment, s: &Managed, raw: &Value) -> Result<()> {
 
 fn verify_fingerprint(d: &Deployment, s: &Managed, raw: &Value) -> Result<()> {
     verify_ownership(d, s, raw)?;
-    if policy::fingerprint(raw) != s.expected {
+    let actual = policy::fingerprint(raw);
+    if actual != s.expected
+        && !(s.phase == "changing" && policy::first_start_matches(&s.expected, &actual))
+    {
         return Err(conflict("Docker configuration drift blocks reconciliation"));
     }
     Ok(())

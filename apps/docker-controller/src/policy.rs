@@ -43,6 +43,33 @@ pub fn fingerprint(container: &Value) -> Value {
     }).unwrap_or_default();
     json!({"image_id":container["Image"],"config":configuration,"host":host_config,"networks":networks})
 }
+
+/// Docker leaves network IDs unresolved until a new stopped container first
+/// starts. Accept only that initialization during a journaled lifecycle action.
+pub fn first_start_matches(expected: &Value, actual: &Value) -> bool {
+    let mut normalized = expected.clone();
+    let mut initialized = false;
+    if let Some(networks) = normalized["networks"].as_object_mut() {
+        for (name, network) in networks {
+            if network["network_id"] == ""
+                && actual["networks"][name]["network_id"]
+                    .as_str()
+                    .is_some_and(|id| !id.is_empty())
+            {
+                network["network_id"] = actual["networks"][name]["network_id"].clone();
+                initialized = true;
+            }
+        }
+    }
+    // Docker Desktop normalizes its default OOM setting on the same transition.
+    if initialized
+        && normalized["host"]["OomKillDisable"] == false
+        && actual["host"]["OomKillDisable"].is_null()
+    {
+        normalized["host"]["OomKillDisable"] = Value::Null;
+    }
+    initialized && normalized == *actual
+}
 fn empty(value: &Value) -> bool {
     value.is_null()
         || value == ""
@@ -474,5 +501,25 @@ mod tests {
         assert_eq!(before, fingerprint(&c));
         c["HostConfig"]["Privileged"] = json!(true);
         assert_ne!(before, fingerprint(&c));
+    }
+
+    #[test]
+    fn first_start_accepts_only_deferred_network_identity_and_oom_defaults() {
+        let before = json!({"config":{"Env":["PUID=10001"]},"host":{"OomKillDisable":false,"Privileged":false},"networks":{"media":{"network_id":"","aliases":["radarr"],"ipam":null}}});
+        let mut after = before.clone();
+        after["networks"]["media"]["network_id"] = json!("network-id");
+        after["host"]["OomKillDisable"] = Value::Null;
+        assert!(first_start_matches(&before, &after));
+        let initialized = after.clone();
+        after["networks"]["media"]["network_id"] = json!("different-network");
+        assert!(!first_start_matches(&initialized, &after));
+        after["host"]["Privileged"] = json!(true);
+        assert!(!first_start_matches(&before, &after));
+        after = initialized.clone();
+        after["config"]["Env"] = json!(["PUID=0"]);
+        assert!(!first_start_matches(&before, &after));
+        after = initialized;
+        after["networks"]["media"]["aliases"] = json!(["changed"]);
+        assert!(!first_start_matches(&before, &after));
     }
 }
