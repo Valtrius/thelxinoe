@@ -1011,6 +1011,7 @@
                 ><ExternalLink size={13} aria-hidden="true" /></a
               >
               {#if service.kind === 'nzbget' && nzbgetLoginTarget}
+                <div class="ml-auto flex shrink-0 items-center gap-1">
                 <button
                   class="credential-copy"
                   type="button"
@@ -1031,6 +1032,7 @@
                     void work(() => copyNzbgetCredential('password'))}
                   ><Copy size={10} aria-hidden="true" />Pass</button
                 >
+                </div>
               {/if}
             </div>{/if}
           <div class="rail-progress">
