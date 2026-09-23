@@ -55,6 +55,38 @@ pub(super) async fn verified(s: &Managed, d: &Deployment) -> Result<Value> {
     }
     Ok(raw)
 }
+
+pub(super) async fn retained_originals(d: &Deployment, service: &Managed) -> Result<Vec<String>> {
+    let root = store::root().join("updates");
+    let mut retained = Vec::new();
+    if !root.exists() {
+        return Ok(retained);
+    }
+    for entry in std::fs::read_dir(root).map_err(|_| unavailable())? {
+        let entry = entry.map_err(|_| unavailable())?;
+        if !entry.path().join("update.json").is_file() {
+            continue;
+        }
+        let update = read(&entry.file_name().to_string_lossy())?;
+        if update.service != service.id
+            || update.old.container == service.container
+            || !update.activation_crossed
+            || !matches!(update.stage.as_str(), "committed" | "runtime-failure")
+        {
+            continue;
+        }
+        match verified(&update.old, d).await {
+            Ok(raw) if raw["State"]["Running"] == false => retained.push(update.old.container),
+            Err((StatusCode::NOT_FOUND, _)) => {}
+            _ => {
+                return Err(conflict(
+                    "A retained update container is running or changed; stop and reconcile it before recovery",
+                ));
+            }
+        }
+    }
+    Ok(retained)
+}
 #[derive(Deserialize)]
 pub(super) struct Preflight {
     operation_id: String,
@@ -392,7 +424,12 @@ pub(super) async fn activate(
     {
         return Err(conflict("A current compatible preflight is required"));
     }
-    verified(&s, &d).await?;
+    let observed = verified(&s, &d).await?;
+    // Preflight may have happened hours ago. Preserve the running state at
+    // activation, including a deliberate stop since the earlier snapshot.
+    u.was_running = observed["State"]["Running"]
+        .as_bool()
+        .ok_or_else(unavailable)?;
     u.stage = "recovery-snapshot".into();
     write(&u)?;
     s.phase = "updating".into();

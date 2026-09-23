@@ -77,7 +77,15 @@ fn candidate(
 pub(super) async fn find_container(d: &Deployment, s: &Managed) -> Result<Option<String>> {
     // A successful complete listing also catches a renamed container, preventing
     // a second writer against the same appdata after a lost create response.
-    let rows = engine("/containers/json?all=true").await?;
+    let mut rows = engine("/containers/json?all=true").await?;
+    // Update backups retain the same ownership labels. Exclude only originals
+    // proven stopped and unchanged against their completed update journals.
+    let retained = updates::retained_originals(d, s).await?;
+    rows.as_array_mut().ok_or_else(unavailable)?.retain(|row| {
+        !row["Id"]
+            .as_str()
+            .is_some_and(|id| retained.iter().any(|old| old == id))
+    });
     candidate(&rows, &d.id, &s.id, &s.name, &s.container)
 }
 

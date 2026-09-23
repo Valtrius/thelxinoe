@@ -505,6 +505,15 @@
       provisions = stack.provisions;
     } catch (error) {
       loadErrors.stack = String(error);
+      stackServices = stackServices.map((service) => ({
+        ...service,
+        status: 'unavailable',
+        existence: 'unknown',
+        running: null,
+        drift: null,
+        can_recreate: false,
+        can_retire: false,
+      }));
     }
   }
   async function refresh() {

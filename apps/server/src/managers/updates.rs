@@ -126,12 +126,22 @@ async fn progress(
 }
 async fn idle(state: &AppState, provision: &str) -> Result<()> {
     let provision = provision.to_owned();
-    let (kind, service) = storage::idle_read_stack_provisions(provision, &state.db).await?;
+    let (kind, service) = storage::idle_read_stack_provisions(provision.clone(), &state.db).await?;
     let active = storage::idle_read_playback_sessions(&state.db).await?;
     if active {
         return Err(ApiError::conflict(
             "Updates wait for active playback to finish",
         ));
+    }
+    let observed = controller(state, "", None).await?;
+    let live = observed["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|item| item["id"] == provision)
+        .ok_or_else(unavailable)?;
+    if stack::confirmed_stopped(live)? {
+        return Ok(());
     }
     if ["radarr", "sonarr", "lidarr"].contains(&kind.as_str()) {
         operations::ensure_idle(state, &service).await
@@ -139,6 +149,7 @@ async fn idle(state: &AppState, provision: &str) -> Result<()> {
         support::ensure_idle(state, &service).await
     }
 }
+
 pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyhow::Result<bool> {
     let key = job.payload["id"]
         .as_str()
@@ -407,5 +418,53 @@ pub(crate) async fn run(state: AppState) -> anyhow::Result<()> {
             }
         }
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+    }
+}
+
+#[cfg(test)]
+mod offline_tests {
+    use super::*;
+    use crate::online::oauth::tests::fixture;
+
+    #[tokio::test]
+    async fn stopped_update_requires_positive_docker_evidence_and_keeps_idle_guards() {
+        let (_temp, state, _cookie) = fixture().await;
+        let key = id();
+        let insert = key.clone();
+        state.db.write("test.offline_update",move|db| {
+            db.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,container_id,service_id,created_at,updated_at) VALUES (?1,'radarr','alice',17878,X'01','complete','old','integration',1,1)",[insert])?;Ok(())
+        }).await.unwrap();
+        for (observed, allowed) in [
+            (
+                json!({"existence":"present","phase":"active","drift":false,"running":false}),
+                true,
+            ),
+            (
+                json!({"existence":"present","phase":"active","drift":false,"running":true}),
+                false,
+            ),
+            (
+                json!({"existence":"unknown","phase":"active","drift":null,"running":null}),
+                false,
+            ),
+            (
+                json!({"existence":"missing","phase":"active","drift":null,"running":false}),
+                false,
+            ),
+            (
+                json!({"existence":"present","phase":"active","drift":true,"running":false}),
+                false,
+            ),
+        ] {
+            let mut observed = observed;
+            observed["id"] = json!(key);
+            state
+                .managers
+                .docker
+                .lock()
+                .unwrap()
+                .insert("stack".into(), json!({"items":[observed]}));
+            assert_eq!(idle(&state, &key).await.is_ok(), allowed);
+        }
     }
 }

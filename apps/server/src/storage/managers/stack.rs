@@ -16,16 +16,16 @@ pub(super) async fn install(
     db.write("managers.stack.install", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;if tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE kind=?1 UNION ALL SELECT 1 FROM manager_services WHERE kind=?1 AND enabled=1 UNION ALL SELECT 1 FROM support_services WHERE kind=?1)",[&input.kind],|r|r.get::<_,bool>(0))?{return Ok(false);}tx.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,created_at,updated_at,native_url) VALUES (?1,?2,?3,?4,?5,'queued',?6,?6,?7)",params![key,input.kind,p.user.id,input.host_port,credential,now(),input.native_url])?;tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'stack.install',?2,?3,'queued',?4,?4)",params![id(),json!({"id":key}).to_string(),format!("stack:{key}"),now()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'stack.install',?2,?3)",params![p.user.id,key,now()])?;tx.commit()?;Ok(true)}).await
 }
 
-pub(super) async fn action_read_manager_services(
+pub(super) async fn action_read_service(
     db: &Database,
     c: String,
-) -> anyhow::Result<Option<String>> {
-    db.read("managers.stack.action_read_manager_services", move |db| {
+) -> anyhow::Result<Option<(String, String)>> {
+    db.read("managers.stack.action_read_service", move |db| {
         Ok(db
             .query_row(
-                "SELECT id FROM manager_services WHERE container_id=?1",
+                "SELECT kind,id FROM manager_services WHERE container_id=?1 AND enabled=1 UNION ALL SELECT kind,id FROM support_services WHERE container_id=?1",
                 [c],
-                |r| r.get::<_, String>(0),
+                |r| Ok((r.get(0)?,r.get(1)?)),
             )
             .optional()?)
     })

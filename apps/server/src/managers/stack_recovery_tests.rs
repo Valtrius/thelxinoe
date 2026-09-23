@@ -18,6 +18,62 @@ async fn managed(kind: &'static str) -> (tempfile::TempDir, AppState, String, St
 }
 
 #[tokio::test]
+async fn stopped_actions_skip_api_checks_but_unknown_or_running_services_do_not() {
+    for kind in ["radarr", "prowlarr"] {
+        let (_temp, state, cookie, key) = managed(kind).await;
+        for action in ["stop", "restart"] {
+            for (observation, expected) in [
+                (
+                    json!({"existence":"present","phase":"active","drift":false,"running":false}),
+                    StatusCode::OK,
+                ),
+                (
+                    json!({"existence":"present","phase":"active","drift":false,"running":true}),
+                    StatusCode::CONFLICT,
+                ),
+                (
+                    json!({"existence":"unknown","phase":"active","drift":null,"running":null}),
+                    StatusCode::CONFLICT,
+                ),
+                (
+                    json!({"existence":"missing","phase":"active","drift":null,"running":null}),
+                    StatusCode::CONFLICT,
+                ),
+                (
+                    json!({"existence":"present","phase":"active","drift":true,"running":false}),
+                    StatusCode::CONFLICT,
+                ),
+            ] {
+                let mut observed = observation;
+                observed["id"] = json!(key);
+                observed["container_id"] = json!("old");
+                state.managers.docker.lock().unwrap().extend([
+                    ("stack".into(), json!({"items":[observed]})),
+                    (
+                        format!("stack/{key}/action"),
+                        json!({"accepted":true,"container_id":"old","running":false}),
+                    ),
+                ]);
+                let response = call(
+                    &state,
+                    &format!("/api/v1/admin/stack/{key}/action"),
+                    "POST",
+                    json!({"action":action}),
+                    &cookie,
+                )
+                .await;
+                assert_eq!(
+                    response.0.is_success(),
+                    expected == StatusCode::OK,
+                    "{kind} {action}: {}",
+                    response.2
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn accepted_replacement_reconnects_both_records_and_queues_api_verification() {
     for kind in ["radarr", "prowlarr"] {
         let (_temp, state, cookie, key) = managed(kind).await;

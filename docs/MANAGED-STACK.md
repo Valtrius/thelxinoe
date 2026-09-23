@@ -92,4 +92,6 @@ Servarr APIs mask saved keys and passwords, so their exact values cannot be comp
 
 ## Container names
 
+Stopped managed services can be stopped again, restarted, and updated without a live application API check. Docker must positively confirm that the accepted container exists, is stopped and has no configuration drift. Running services still require an idle API check; active playback continues to block updates. Activation preserves the running state observed immediately before the update, including a deliberate stop after preflight. An inspection outage is displayed as unavailable and never treated as stopped or missing.
+
 The bootstrap services are named `thelxinoe-server` and `thelxinoe-controller`. New and adopted managed services use `thelxinoe-radarr`, `thelxinoe-sonarr`, `thelxinoe-lidarr`, `thelxinoe-bazarr`, `thelxinoe-prowlarr` and `thelxinoe-nzbget`. If another deployment already owns the preferred name, the controller adds a short installation suffix. Adoption preserves the original configuration for recovery and recreates the accepted service under its Thelxinoe name. Existing prefixed installations retain their recorded names through updates and restore.

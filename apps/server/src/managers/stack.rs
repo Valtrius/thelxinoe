@@ -129,6 +129,21 @@ async fn install(
 struct Action {
     action: String,
 }
+
+pub(super) fn confirmed_stopped(observed: &Value) -> Result<bool> {
+    if observed["existence"] != "present"
+        || observed["drift"] != false
+        || observed["phase"] != "active"
+    {
+        return Err(ApiError::conflict(
+            "A present, accepted container with known Docker state is required",
+        ));
+    }
+    observed["running"]
+        .as_bool()
+        .map(|running| !running)
+        .ok_or_else(unavailable)
+}
 async fn action(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -176,7 +191,8 @@ async fn action(
         state.emit(None, "stack.changed", json!({"id":key})).await?;
         return Ok(Json(result));
     }
-    // Media managers can be stopped only after their activity is inspected.
+    // A confirmed stopped service needs no live API idle check. Inspection
+    // failures and missing containers never count as stopped.
     let container = controller(&state, "", None).await?["items"]
         .as_array()
         .into_iter()
@@ -184,14 +200,20 @@ async fn action(
         .find(|s| s["id"] == key)
         .cloned()
         .ok_or_else(ApiError::not_found)?;
-    if !matches!(input.action.as_str(), "start" | "reconcile" | "recreate") {
+    if matches!(input.action.as_str(), "stop" | "restart") && !confirmed_stopped(&container)? {
         let c = container["container_id"]
             .as_str()
             .unwrap_or_default()
             .to_owned();
-        let service = storage::action_read_manager_services(&state.db, c).await?;
-        if let Some(s) = service {
-            operations::ensure_idle(&state, &s).await?;
+        let (kind, service) = storage::action_read_service(&state.db, c)
+            .await?
+            .ok_or_else(|| {
+                ApiError::conflict("Connect the service API before checking its activity")
+            })?;
+        if matches!(kind.as_str(), "radarr" | "sonarr" | "lidarr") {
+            operations::ensure_idle(&state, &service).await?;
+        } else {
+            support::ensure_idle(&state, &service).await?;
         }
     }
     let result = controller(
