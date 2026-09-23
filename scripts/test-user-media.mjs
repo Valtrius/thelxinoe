@@ -53,7 +53,10 @@ try {
     favorite: false,
     watch_later: false,
   });
-  await page.getByRole('button', { name: 'Movies', exact: true }).click();
+  await page
+    .getByRole('navigation', { name: 'Main navigation' })
+    .getByRole('button', { name: 'Movies', exact: true })
+    .click();
   await page.getByRole('button', { name: 'Direct 2020', exact: true }).click();
   await page.getByRole('button', { name: 'Favorite', exact: true }).click();
   await page.getByRole('button', { name: 'Watch Later', exact: true }).click();

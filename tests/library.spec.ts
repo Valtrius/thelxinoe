@@ -75,7 +75,10 @@ test('movie, multi-episode and tagged music scan into browsable libraries with s
   expect(
     (await (await api.get('/api/v1/catalog?kind=movie')).json()).items[0].id,
   ).toBe(movieId);
-  await page.getByRole('button', { name: 'Movies', exact: true }).click();
+  await page
+    .getByRole('navigation', { name: 'Main navigation' })
+    .getByRole('button', { name: 'Movies', exact: true })
+    .click();
   await expect(
     page.getByRole('button', { name: 'Thelxinoe Fixture 2020' }),
   ).toBeVisible();

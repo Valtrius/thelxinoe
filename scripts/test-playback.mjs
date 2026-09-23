@@ -134,7 +134,10 @@ try {
   });
   const page = await context.newPage();
   await page.goto(origin);
-  await page.getByRole('button', { name: 'Movies', exact: true }).click();
+  await page
+    .getByRole('navigation', { name: 'Main navigation' })
+    .getByRole('button', { name: 'Movies', exact: true })
+    .click();
   await page.getByRole('button', { name: 'Direct 2020', exact: true }).click();
   await page.getByRole('button', { name: 'Play media', exact: true }).click();
   await page.waitForFunction(

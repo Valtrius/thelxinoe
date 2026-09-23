@@ -78,7 +78,10 @@ try {
     selected.installed.find((v) => v.package.id === selected.preference.active)
       .package.sha256,
   ).toMatch(/^[a-f0-9]{64}$/);
-  await page.getByRole('button', { name: 'Movies', exact: true }).click();
+  await page
+    .getByRole('navigation', { name: 'Main navigation' })
+    .getByRole('button', { name: 'Movies', exact: true })
+    .click();
   await page.getByRole('button', { name: 'Direct 2020', exact: true }).click();
   await page.getByRole('button', { name: 'Play media', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Native player' })).toHaveCount(

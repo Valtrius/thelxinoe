@@ -46,7 +46,10 @@ try {
   expect(Object.keys(stored.session)).toHaveLength(0);
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Discover' })).toBeVisible();
-  await page.getByRole('button', { name: 'Movies', exact: true }).click();
+  await page
+    .getByRole('navigation', { name: 'Main navigation' })
+    .getByRole('button', { name: 'Movies', exact: true })
+    .click();
   await expect(
     page.getByRole('button', { name: 'Thelxinoe Fixture 2020', exact: true }),
   ).toBeVisible();
