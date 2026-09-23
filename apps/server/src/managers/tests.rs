@@ -583,6 +583,25 @@ async fn support_services_are_admin_only_redacted_and_expose_only_allowed_comman
     let response = call(&state, "/api/v1/admin/support", "POST", input, &admin).await;
     assert_eq!(response.0, StatusCode::OK, "{}", response.2);
     let key = response.2["id"].as_str().unwrap();
+    let login_path = format!("/api/v1/admin/support/{key}/login");
+    assert_eq!(
+        call(&state, &login_path, "POST", Value::Null, &alice)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(&state, &login_path, "GET", Value::Null, &admin)
+            .await
+            .0,
+        StatusCode::METHOD_NOT_ALLOWED
+    );
+    let login = call(&state, &login_path, "POST", Value::Null, &admin).await;
+    assert_eq!(login.0, StatusCode::OK);
+    assert_eq!(
+        login.2,
+        json!({"username":"fixture","password":"private-test-secret"})
+    );
     let replacement = "e".repeat(64);
     state.managers.docker.lock().unwrap().insert(
         format!("containers/{replacement}"),
@@ -693,6 +712,103 @@ async fn support_services_are_admin_only_redacted_and_expose_only_allowed_comman
     .await;
     assert_eq!(internal.0, StatusCode::OK, "{}", internal.2);
     task.abort();
+}
+
+#[tokio::test]
+async fn nzbget_login_is_available_to_admins_while_provisioning() {
+    let (_temp, state, alice) = fixture().await;
+    state
+        .db
+        .write("test.fixture", |db| {
+            db.execute("UPDATE users SET role='admin' WHERE id='bob'", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let token =
+        thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
+            .await
+            .unwrap();
+    let admin = format!("thelxinoe_session={token}");
+    let key = "queued-nzbget";
+    let credential = state
+        .secrets
+        .encrypt(&format!("provision:{key}"), b"generated-private-password")
+        .unwrap();
+    state
+        .db
+        .write("test.fixture", move |db| {
+            db.execute(
+                "INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,created_at,updated_at) VALUES (?1,'nzbget','bob',16789,?2,'queued',1,1)",
+                rusqlite::params![key, credential],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let path = format!("/api/v1/admin/stack/{key}/login");
+    assert_eq!(
+        call(&state, &path, "POST", Value::Null, &alice).await.0,
+        StatusCode::FORBIDDEN
+    );
+    let login = call(&state, &path, "POST", Value::Null, &admin).await;
+    assert_eq!(login.0, StatusCode::OK);
+    assert_eq!(
+        login.2,
+        json!({"username":"thelxinoe","password":"generated-private-password"})
+    );
+    let adopted = state
+        .secrets
+        .encrypt(
+            &format!("provision:{key}"),
+            br#"{"username":"existing","secret":"existing-private-password"}"#,
+        )
+        .unwrap();
+    state
+        .db
+        .write("test.fixture", move |db| {
+            db.execute(
+                "UPDATE stack_provisions SET origin='adopted',credential=?1 WHERE id=?2",
+                rusqlite::params![adopted, key],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let login = call(&state, &path, "POST", Value::Null, &admin).await;
+    assert_eq!(login.0, StatusCode::OK);
+    assert_eq!(
+        login.2,
+        json!({"username":"existing","password":"existing-private-password"})
+    );
+    let other_key = "queued-radarr";
+    let other_credential = state
+        .secrets
+        .encrypt(&format!("provision:{other_key}"), b"radarr-private-key")
+        .unwrap();
+    state
+        .db
+        .write("test.fixture", move |db| {
+            db.execute(
+                "INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,created_at,updated_at) VALUES (?1,'radarr','bob',17878,?2,'queued',1,1)",
+                rusqlite::params![other_key, other_credential],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        call(
+            &state,
+            &format!("/api/v1/admin/stack/{other_key}/login"),
+            "POST",
+            Value::Null,
+            &admin,
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
 }
 
 #[tokio::test]

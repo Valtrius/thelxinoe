@@ -139,6 +139,22 @@ pub(super) async fn provision_read_stack_provisions(
     db.read("managers.stack.provision_read_stack_provisions", move|db|Ok(db.query_row("SELECT kind,actor_id,host_port,credential,state,container_id,service_id,origin,native_url FROM stack_provisions WHERE id=?1",[lookup],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,u16>(2)?,r.get::<_,Vec<u8>>(3)?,r.get::<_,String>(4)?,r.get::<_,Option<String>>(5)?,r.get::<_,Option<String>>(6)?,r.get::<_,String>(7)?,r.get::<_,String>(8)?)))?)).await
 }
 
+pub(super) async fn login(
+    key: String,
+    db: &Database,
+) -> anyhow::Result<Option<(String, Vec<u8>, String)>> {
+    db.read("managers.stack.login", move |db| {
+        Ok(db
+            .query_row(
+                "SELECT kind,credential,origin FROM stack_provisions WHERE id=?1",
+                [key],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?)
+    })
+    .await
+}
+
 pub(super) async fn provision_read_users(actor: String, db: &Database) -> anyhow::Result<bool> {
     db.read("managers.stack.provision_read_users", move |db| {
         Ok(db.query_row(

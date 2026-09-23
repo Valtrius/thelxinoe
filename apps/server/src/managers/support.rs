@@ -8,6 +8,7 @@ pub(super) fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/admin/support", get(list).post(register))
         .route("/api/v1/admin/support/{id}", get(inspect).post(action))
+        .route("/api/v1/admin/support/{id}/login", post(login))
 }
 #[derive(Deserialize, Serialize)]
 pub(super) struct Credentials {
@@ -42,6 +43,21 @@ pub(super) async fn load(state: &AppState, key: &str) -> Result<Support> {
         media_source: row.4,
         credentials,
     })
+}
+async fn login(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+) -> Result<Json<Value>> {
+    security::require(&state, &headers, Capability::ManageServer).await?;
+    let service = load(&state, &key).await?;
+    if service.kind != "nzbget" {
+        return Err(ApiError::not_found());
+    }
+    Ok(Json(json!({
+        "username": service.credentials.username,
+        "password": service.credentials.secret,
+    })))
 }
 pub(super) async fn ensure_idle(state: &AppState, key: &str) -> Result<()> {
     let s = load(state, key).await?;

@@ -11,6 +11,7 @@ export async function installUiFixture(
     approvalUsers?: { id: string; username: string; enabled: boolean }[];
     endpointFailures?: Record<string, string>;
     stackProvisionState?: string;
+    managedNzbget?: boolean;
     serviceUpdateState?: string;
   } = {},
 ) {
@@ -260,6 +261,10 @@ export async function installUiFixture(
           },
         ],
       });
+    if (path === '/admin/support/support-nzbget/login' && method === 'POST')
+      return json({ username: 'fixture', password: 'fixture-password' });
+    if (path === '/admin/stack/managed-nzbget/login' && method === 'POST')
+      return json({ username: 'thelxinoe', password: 'managed-password' });
     if (path === '/admin/support/support-nzbget')
       return json({
         paused: false,
@@ -394,6 +399,21 @@ export async function installUiFixture(
             native_url: '',
             origin: 'installed',
           },
+          ...(options.managedNzbget
+            ? [
+                {
+                  id: 'managed-nzbget',
+                  kind: 'nzbget',
+                  state: 'queued',
+                  host_port: 16789,
+                  container_id: null,
+                  service_id: null,
+                  error: null,
+                  native_url: '',
+                  origin: 'installed',
+                },
+              ]
+            : []),
         ],
       });
     if (path === '/admin/service-updates')

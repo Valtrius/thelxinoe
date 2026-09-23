@@ -13,6 +13,7 @@ pub(super) fn router() -> Router<AppState> {
         .route("/api/v1/admin/stack/templates", get(templates))
         .route("/api/v1/admin/stack/releases", get(releases))
         .route("/api/v1/admin/stack/install", post(install))
+        .route("/api/v1/admin/stack/{id}/login", post(login))
         .route("/api/v1/admin/stack/adopt", post(adopt))
         .route("/api/v1/admin/stack/adopt/preview", post(adopt_preview))
         .route(
@@ -87,6 +88,37 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<
     let mut value = controller(&state, "", None).await?;
     value["provisions"] = storage::list(&state.db).await?;
     Ok(Json(value))
+}
+async fn login(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+) -> Result<Json<Value>> {
+    security::require(&state, &headers, Capability::ManageServer).await?;
+    let (kind, encrypted, origin) = storage::login(key.clone(), &state.db)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    if kind != "nzbget" {
+        return Err(ApiError::not_found());
+    }
+    let raw = String::from_utf8(
+        state
+            .secrets
+            .decrypt(&format!("provision:{key}"), &encrypted)?,
+    )
+    .map_err(|_| unavailable())?;
+    let credentials = if origin == "adopted" {
+        serde_json::from_str::<support::Credentials>(&raw).map_err(|_| unavailable())?
+    } else {
+        support::Credentials {
+            username: "thelxinoe".into(),
+            secret: raw,
+        }
+    };
+    Ok(Json(json!({
+        "username": credentials.username,
+        "password": credentials.secret,
+    })))
 }
 #[derive(Deserialize)]
 struct Install {

@@ -331,6 +331,12 @@
     }),
     busy = $state(false),
     message = $state('');
+  let nzbgetLogin = $state<{
+    id: string;
+    username: string;
+    password: string;
+  } | null>(null);
+  let showNzbgetPassword = $state(false);
   const loadErrors = $state({
     managers: '',
     support: '',
@@ -392,6 +398,9 @@
   const item = $derived(provision(selectedKind));
   const live = $derived(runtime(selectedKind));
   const supportData = $derived(snapshots[selectedKind]);
+  const nzbgetLoginTarget = $derived(
+    provision('nzbget') ?? supportService('nzbget'),
+  );
   const target = $derived(updateTarget(selectedKind));
   const policy = $derived(updatePolicy(selectedKind));
   const servicePolicy = $derived(updateDrafts[selectedKind]);
@@ -519,6 +528,8 @@
     }
   }
   function selectService(kind: ServiceKind) {
+    nzbgetLogin = null;
+    showNzbgetPassword = false;
     selectedKind = kind;
     void loadSelectedData();
   }
@@ -747,6 +758,23 @@
     if (!service) return;
     const snapshot = await api<SupportSnapshot>(`/admin/support/${service.id}`);
     snapshots[kind] = snapshot;
+  }
+  async function revealNzbgetLogin() {
+    const service = nzbgetLoginTarget;
+    if (!service) return;
+    const source = provision('nzbget') ? 'stack' : 'support';
+    const login = await api<{ username: string; password: string }>(
+      `/admin/${source}/${service.id}/login`,
+      'POST',
+    );
+    if (selectedKind === 'nzbget' && nzbgetLoginTarget?.id === service.id)
+      nzbgetLogin = { id: service.id, ...login };
+  }
+  async function copyNzbgetLogin(value: string, label: string) {
+    if (!navigator.clipboard?.writeText)
+      throw new Error('Clipboard unavailable. Select the value to copy it.');
+    await navigator.clipboard.writeText(value);
+    message = `${label} copied to clipboard.`;
   }
   async function supportCommand(
     kind: ServiceKind,
@@ -1244,6 +1272,68 @@
           <p>
             This view refreshes automatically as the service becomes available.
           </p>
+        </section>
+      {/if}
+      {#if definition.kind === 'nzbget' && nzbgetLoginTarget}
+        <section class="work-section" aria-label="NZBGet login">
+          <div class="work-head">
+            <h3>NZBGet login</h3>
+            {#if nzbgetLogin?.id === nzbgetLoginTarget.id}<Button
+                variant="ghost"
+                size="sm"
+                onclick={() => {
+                  nzbgetLogin = null;
+                  showNzbgetPassword = false;
+                }}>Hide login</Button
+              >{:else}<Button
+                variant="secondary"
+                size="sm"
+                disabled={busy}
+                onclick={() => void work(revealNzbgetLogin)}>Show login</Button
+              >{/if}
+          </div>
+          {#if nzbgetLogin && nzbgetLogin.id === nzbgetLoginTarget.id}
+            <div class="login-fields">
+              <label
+                >Username<input readonly value={nzbgetLogin.username} /></label
+              >
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={busy}
+                onclick={() =>
+                  void work(() =>
+                    copyNzbgetLogin(nzbgetLogin!.username, 'Username'),
+                  )}>Copy username</Button
+              >
+              <label
+                >Password<input
+                  readonly
+                  type={showNzbgetPassword ? 'text' : 'password'}
+                  value={nzbgetLogin.password}
+                /></label
+              >
+              <div class="row-actions">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onclick={() => (showNzbgetPassword = !showNzbgetPassword)}
+                  >{showNzbgetPassword
+                    ? 'Hide password'
+                    : 'Show password'}</Button
+                >
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={busy}
+                  onclick={() =>
+                    void work(() =>
+                      copyNzbgetLogin(nzbgetLogin!.password, 'Password'),
+                    )}>Copy password</Button
+                >
+              </div>
+            </div>
+          {/if}
         </section>
       {/if}
       {#if connected}
@@ -1890,6 +1980,18 @@
   }
   .work-head h3 {
     margin: 0;
+  }
+  .login-fields {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 10px;
+  }
+  .login-fields label {
+    min-width: 0;
+  }
+  .login-fields input {
+    width: 100%;
   }
   .service-workspace p,
   .services-footer p {

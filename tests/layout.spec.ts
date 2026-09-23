@@ -452,6 +452,72 @@ test('NZBGet combines active downloads with scrollable history and compact actio
   expect(fixture.unexpected).toEqual([]);
 });
 
+test('NZBGet login is revealed on request and its password can be copied', async ({
+  page,
+}) => {
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+  });
+  await page.goto('/');
+  const services = page.getByRole('navigation', { name: 'Select service' });
+  await services.getByRole('button', { name: 'NZBGet', exact: true }).click();
+  const login = page.getByRole('region', { name: 'NZBGet login' });
+  await expect(login.getByLabel('Password')).toHaveCount(0);
+  expect(
+    fixture.writes.some(
+      (write) => write.path === '/admin/support/support-nzbget/login',
+    ),
+  ).toBe(false);
+  await login.getByRole('button', { name: 'Show login' }).click();
+  await expect(login.getByLabel('Username')).toHaveValue('fixture');
+  await expect(login.getByLabel('Password')).toHaveAttribute(
+    'type',
+    'password',
+  );
+  await page.setViewportSize({ width: 320, height: 850 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  await login.getByRole('button', { name: 'Copy password' }).click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+    'fixture-password',
+  );
+  await login.getByRole('button', { name: 'Hide login' }).click();
+  await expect(login.getByLabel('Password')).toHaveCount(0);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('NZBGet login is available during managed installation', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+    managedNzbget: true,
+  });
+  await page.goto('/');
+  await page
+    .getByRole('navigation', { name: 'Select service' })
+    .getByRole('button', { name: 'NZBGet', exact: true })
+    .click();
+  const login = page.getByRole('region', { name: 'NZBGet login' });
+  await login.getByRole('button', { name: 'Show login' }).click();
+  await expect(login.getByLabel('Username')).toHaveValue('thelxinoe');
+  await expect(login.getByLabel('Password')).toHaveValue('managed-password');
+  expect(
+    fixture.writes.some(
+      (write) => write.path === '/admin/stack/managed-nzbget/login',
+    ),
+  ).toBe(true);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 for (const state of ['blocked', 'committed']) {
   test(`service remains running after ${state} update`, async ({ page }) => {
     const fixture = await installUiFixture(page, {
