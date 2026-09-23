@@ -1,6 +1,42 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { expect } from '@playwright/test';
+import { request, expect } from '@playwright/test';
+const context = await request.newContext({ ignoreHTTPSErrors: true });
+async function api(path, method = 'GET', data) {
+  const response = await context.fetch(
+    `https://localhost:24443/api/v1${path}`,
+    {
+      method,
+      data,
+      headers: { 'X-Thelxinoe-Client': '1' },
+    },
+  );
+  expect(response.ok()).toBe(true);
+  return response.json();
+}
+await api('/auth/login', 'POST', {
+  username: 'admin',
+  password: 'test-only long passphrase',
+});
+const available = (await api('/admin/service-connections')).items;
+expect(available).toHaveLength(8);
+for (const link of available) {
+  await api('/admin/service-connections', 'POST', {
+    source_id: link.source_id,
+    target_id: link.target_id,
+    action: 'connect',
+  });
+}
+await expect
+  .poll(
+    async () =>
+      (await api('/admin/service-connections')).items.filter(
+        (link) => link.state === 'connected',
+      ).length,
+    { timeout: 180000, intervals: [2000] },
+  )
+  .toBe(8);
+await context.dispose();
 const snapshot = JSON.parse(
   readFileSync('.local/managed-install-result.json', 'utf8'),
 );

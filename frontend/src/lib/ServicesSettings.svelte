@@ -6,6 +6,9 @@
   import Switch from './ui/Switch.svelte';
   import { badgeClass, sectionHeadingClass } from './ui/styles';
   import { CircleX } from '@lucide/svelte';
+  import ServiceConnections, {
+    type ServiceConnection,
+  } from './ServiceConnections.svelte';
 
   type ServiceKind =
     'radarr' | 'sonarr' | 'lidarr' | 'bazarr' | 'prowlarr' | 'nzbget';
@@ -236,6 +239,7 @@
     { key: 'updates', label: 'Service updates' },
     { key: 'containers', label: 'Docker container discovery' },
     { key: 'stack', label: 'Managed service runtime' },
+    { key: 'connections', label: 'Optional service connections' },
   ] as const;
   const setup = $state(
     Object.fromEntries(
@@ -318,6 +322,7 @@
   });
 
   let managers = $state<ManagerService[]>([]),
+    connections = $state<ServiceConnection[]>([]),
     support = $state<SupportService[]>([]),
     containers = $state<Container[]>([]),
     stackServices = $state<StackService[]>([]),
@@ -344,6 +349,7 @@
     updates: '',
     containers: '',
     stack: '',
+    connections: '',
   });
 
   function integration(definition: Definition) {
@@ -508,8 +514,30 @@
       loadApprovalUsers(),
       loadUpdateData(),
       loadStack(),
+      loadConnections(),
     ]);
     await loadContainers();
+  }
+  async function loadConnections() {
+    loadErrors.connections = '';
+    try {
+      connections = (
+        await api<{ items: ServiceConnection[] }>('/admin/service-connections')
+      ).items;
+    } catch (error) {
+      loadErrors.connections = String(error);
+    }
+  }
+  async function connectionAction(
+    connection: ServiceConnection,
+    action: 'connect' | 'disconnect' | 'retry',
+  ) {
+    await api('/admin/service-connections', 'POST', {
+      source_id: connection.source_id,
+      target_id: connection.target_id,
+      action,
+    });
+    await loadConnections();
   }
   async function work(action: () => Promise<void>, success = '') {
     if (busy) return;
@@ -692,7 +720,8 @@
           )
         )
           await refresh();
-        else await Promise.all([loadStack(), loadUpdateData()]);
+        else
+          await Promise.all([loadStack(), loadUpdateData(), loadConnections()]);
       } finally {
         polling = false;
       }
@@ -757,16 +786,6 @@
   {/if}
 
   <div class="flex flex-wrap gap-2">
-    <Button
-      variant="secondary"
-      size="form"
-      disabled={busy || Boolean(loadErrors.stack)}
-      onclick={() =>
-        void work(async () => {
-          await api('/admin/stack/wire', 'POST', {});
-          await refresh();
-        }, 'Installed services connected.')}>Connect installed services</Button
-    >
     <Button
       variant="secondary"
       size="form"
@@ -1462,6 +1481,16 @@
                   {/if}
                 </div>
               </details>
+            {/if}
+
+            {#if connected && !loadErrors.connections}
+              <ServiceConnections
+                kind={definition.kind}
+                {connections}
+                {busy}
+                onaction={(connection, action) =>
+                  void work(() => connectionAction(connection, action))}
+              />
             {/if}
 
             <details>

@@ -106,7 +106,3 @@ pub(super) async fn action(
     })
     .await
 }
-
-pub(super) async fn wire_managed(db: &Database) -> anyhow::Result<Vec<(String, String)>> {
-    db.read("managers.support.wire_managed", |db|Ok(db.prepare("SELECT kind,service_id FROM stack_provisions WHERE origin='installed' AND service_id IS NOT NULL AND state IN ('complete','connecting','blocked')")?.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)).await
-}

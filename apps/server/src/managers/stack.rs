@@ -303,26 +303,18 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
             .map_err(|e| anyhow::anyhow!("{}", e.2))?;
         anyhow::bail!("{}", error.2);
     }
-    if row.7 == "installed" {
-        if let Err(error) = support::wire_managed(state).await {
-            progress(state, &key, "blocked", None, Some(error.2.clone()))
-                .await
-                .map_err(|e| anyhow::anyhow!("{}", e.2))?;
-            anyhow::bail!("{}", error.2);
-        }
-    } else {
-        if let Err(error) = controller(
+    if row.7 == "adopted"
+        && let Err(error) = controller(
             state,
             &format!("/{key}/action"),
             Some(json!({"action":"complete_adoption"})),
         )
         .await
-        {
-            progress(state, &key, "blocked", None, Some(error.2.clone()))
-                .await
-                .map_err(|e| anyhow::anyhow!("{}", e.2))?;
-            anyhow::bail!("{}", error.2);
-        }
+    {
+        progress(state, &key, "blocked", None, Some(error.2.clone()))
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e.2))?;
+        anyhow::bail!("{}", error.2);
     }
     progress(state, &key, "complete", None, None)
         .await
@@ -333,8 +325,9 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
 
 async fn wire(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
-    support::wire_managed(&state).await?;
-    Ok(Json(json!({"connected":true})))
+    Err(ApiError::conflict(
+        "Choose Connect for each optional connection in the service settings",
+    ))
 }
 
 #[derive(Deserialize)]

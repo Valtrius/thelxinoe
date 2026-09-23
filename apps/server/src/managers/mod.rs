@@ -4,6 +4,7 @@
 mod storage;
 
 mod bindings;
+mod connections;
 mod controls;
 mod metadata;
 mod operations;
@@ -11,6 +12,7 @@ mod requests;
 mod retention;
 mod stack;
 mod support;
+pub(crate) use connections::run as run_connections;
 pub(crate) use support::operational_health;
 mod updates;
 pub(crate) use retention::run as run_retention;
@@ -40,10 +42,14 @@ pub(crate) async fn reconcile_after_scan(state: &AppState) {
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::sync::Arc;
 use thelxinoe_core::{Capability, id, now};
 pub(crate) struct Runtime {
     http: reqwest::Client,
     guard: tokio::sync::Mutex<()>,
+    connection_locks:
+        std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    connection_wake: tokio::sync::Notify,
     #[cfg(test)]
     docker: std::sync::Mutex<std::collections::HashMap<String, Value>>,
 }
@@ -56,6 +62,8 @@ impl Runtime {
                 .timeout(std::time::Duration::from_secs(20))
                 .build()?,
             guard: tokio::sync::Mutex::new(()),
+            connection_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+            connection_wake: tokio::sync::Notify::new(),
             #[cfg(test)]
             docker: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
@@ -69,6 +77,7 @@ pub(crate) fn router() -> Router<AppState> {
         .merge(metadata::router())
         .merge(operations::router())
         .merge(support::router())
+        .merge(connections::router())
         .merge(stack::router())
         .merge(updates::router())
         .merge(retention::router())
@@ -342,6 +351,11 @@ impl Connection<'_> {
                 "Manager rejected the request (HTTP {})",
                 response.status().as_u16()
             )));
+        }
+        if response.status() == reqwest::StatusCode::NO_CONTENT
+            || response.content_length() == Some(0)
+        {
+            return Ok(Value::Null);
         }
         read(response).await
     }

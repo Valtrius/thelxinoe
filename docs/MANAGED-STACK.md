@@ -2,7 +2,7 @@
 
 Administrators can install Radarr, Sonarr, Lidarr, Bazarr, Prowlarr and NZBGet from Settings. The controller accepts only curated templates and immutable image identities. Appdata lives below its persistent deployment directory; created services use the server's single writable `/media` bind mount. Advanced UI ports bind to host loopback. An optional administrator-supplied URL can point to a separately configured reverse proxy.
 
-Installation records an encrypted credential and durable job before submitting Docker work. The controller journals container creation before issuing it. Interrupted or uncertain mutations require reconciliation; retries never silently accept configuration drift. Installed services connect to NZBGet, Prowlarr and Bazarr automatically. Choose acquisition profiles and canonical library folders in manager settings, then configure indexers, subtitle providers and a news server using the services' own advanced settings.
+Installation records an encrypted credential and durable job before submitting Docker work. The controller journals container creation before issuing it. Interrupted or uncertain mutations require reconciliation; retries never silently accept configuration drift. Every service installs independently. Choose acquisition profiles and canonical library folders in manager settings, then configure indexers, subtitle providers and a news server using the services' own advanced settings.
 
 Ownership transfer starts with an existing API integration. It copies the service's appdata into Thelxinoe's deployment storage and creates a managed replacement using the exact installed stable LinuxServer image. Application settings, API credentials, library records and the integration ID are preserved. The original container remains stopped with automatic restart disabled; its config folder is retained. Custom commands, privileged devices, cluster ownership and unsupported mounts or network configuration are rejected.
 
@@ -84,7 +84,11 @@ The controller owns Docker-level configuration such as image, mounts, networks, 
 
 Docker-level ownership is exclusive. The administrator releases the previous Compose definition before transfer; the replacement carries only its new Thelxinoe ownership. Swarm, Kubernetes, Podman Compose, Nomad and another Thelxinoe deployment remain unsupported transfer sources. The controller records the supported configuration and immutable image before taking ownership. Drift detection reports outside mutations instead of accepting a second owner.
 
-Thelxinoe automatically wires mechanical relationships where APIs allow it, including Prowlarr to the media managers, NZBGet as download client, Bazarr to Sonarr/Radarr, categories, and canonical paths. Real administrator choices remain explicit.
+Cross-service connections are optional and require **Connect** in the source service's settings: **Applications** under Prowlarr, **Download clients** under Radarr/Sonarr/Lidarr, and **Media managers** under Bazarr. A compatible registered service appears as **Available to connect**. Leaving it disconnected does not affect either service's installation or health. API integrations can use these connections with or without Docker ownership.
+
+Enabled connections are persisted and retry independently after outages, restarts, address changes and container replacement. Only the connection shows an unavailable state when its source or target is stopped. **Disconnect** immediately disables reconnection; removal of configuration created by Thelxinoe finishes when the source is available. An upstream record's saved ID identifies it even after renaming. Changes to fields controlled by the connection require attention instead of being overwritten. Existing manual connections are preserved. NZBGet categories use unique names and free slots; disconnecting retains categories so existing downloads keep their routing.
+
+Servarr APIs mask saved keys and passwords, so their exact values cannot be compared for outside edits. Thelxinoe preserves those saved secrets during address updates and uses the service's connection test to check them. After changing a service credential, update the upstream connection in its advanced settings, or disconnect and connect it again.
 
 ## Container names
 

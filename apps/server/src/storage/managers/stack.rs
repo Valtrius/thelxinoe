@@ -73,6 +73,7 @@ pub(super) async fn retire(db: &Database, key: String, actor: String) -> anyhow:
         let integration: Option<(String,Option<String>)> = tx.query_row(
             "SELECT kind,service_id FROM stack_provisions WHERE id=?1 AND state='retiring'", [&key], |r|Ok((r.get(0)?,r.get(1)?))).optional()?;
         if let Some((kind, Some(service))) = integration {
+            tx.execute("UPDATE settings SET value=json_set(value,'$.enabled',json('false'),'$.cleanup',json(CASE WHEN json_extract(value,'$.source')=?1 THEN 'false' ELSE 'true' END),'$.state',CASE WHEN json_extract(value,'$.source')=?1 THEN 'disconnected' ELSE 'disconnecting' END,'$.error',NULL,'$.next_attempt',0) WHERE key LIKE 'services.connection.%' AND (json_extract(value,'$.source')=?1 OR json_extract(value,'$.target')=?1)",[&service])?;
             if matches!(kind.as_str(),"radarr"|"sonarr"|"lidarr") {
                 // Keep historical requests/bindings, but stop acquisition and
                 // leave previously claimed media unresolved until reviewed.

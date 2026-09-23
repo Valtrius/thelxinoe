@@ -63,7 +63,7 @@ Deliver:
 - Docker configuration ownership and drift detection;
 - controller-owned persistent first-party deployment descriptor containing the accepted immutable server/controller digests, recreate specs, and controller generation outside server SQLite;
 - persistent deployment Compose project with a controller-maintained `compose.override.yaml` that pins the accepted immutable first-party digests from the deployment descriptor, so normal `docker compose up` in the deployment directory cannot recreate stale bootstrap images;
-- automatic service wiring;
+- explicit optional service connections with durable independent retries and disconnect cleanup;
 - native admin-facing URL tracking;
 - stable-only release discovery;
 - immutable digest resolution.
