@@ -29,11 +29,6 @@ async function login(page, username) {
   await expect(
     page.getByRole('heading', { name: 'Discover', exact: true }),
   ).toBeVisible();
-  await expect
-    .poll(() =>
-      page.evaluate(() => localStorage.getItem('thelxinoe-client-id')),
-    )
-    .not.toBeNull();
 }
 try {
   await login(page, 'admin');
@@ -138,11 +133,21 @@ try {
   expect((await api(owner, `/me/queue/${client}`)).completed).toBe(true);
   const another = await second.newPage();
   await login(another, 'admin');
+  await another.getByRole('button', { name: 'Playlists', exact: true }).click();
+  await another.getByRole('button', { name, exact: true }).click();
+  await another
+    .getByRole('button', { name: 'Play playlist', exact: true })
+    .click();
+  await expect(
+    another.getByRole('region', { name: 'Music player', exact: true }),
+  ).toBeVisible();
   const otherClient = await another.evaluate(() =>
     localStorage.getItem('thelxinoe-client-id'),
   );
+  expect(otherClient).toMatch(/^[0-9a-f-]{36}$/);
   expect(otherClient).not.toBe(client);
-  expect((await api(second, `/me/queue/${otherClient}`)).items).toHaveLength(0);
+  expect((await api(second, `/me/queue/${otherClient}`)).items).toHaveLength(2);
+  expect((await api(owner, `/me/queue/${client}`)).completed).toBe(true);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page
     .getByRole('combobox', { name: 'Display timezone', exact: true })
