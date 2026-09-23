@@ -3,6 +3,7 @@ mod storage;
 
 mod audio;
 mod auth;
+pub(crate) use auth::authorization as seerr_authorization;
 mod catalog;
 pub(crate) mod discovery;
 mod online;

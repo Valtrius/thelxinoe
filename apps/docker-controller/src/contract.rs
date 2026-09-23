@@ -82,6 +82,12 @@ pub async fn run(kind: &str, isolated: bool) -> anyhow::Result<()> {
             ("api/movies/wanted", false),
             ("api/episodes/wanted", false),
         ],
+        "seerr" => &[
+            ("api/v1/settings/public", false),
+            ("api/v1/auth/me", false),
+            ("api/v1/settings/radarr", true),
+            ("api/v1/settings/sonarr", true),
+        ],
         "nzbget" => &[],
         _ => anyhow::bail!("Unsupported adapter"),
     };
@@ -256,6 +262,15 @@ fn credential(kind: &str) -> anyhow::Result<(String, String)> {
                 .to_owned()
         };
         (field("ControlUsername"), field("ControlPassword"))
+    } else if kind == "seerr" {
+        let config: Value = serde_json::from_slice(&std::fs::read("/config/settings.json")?)?;
+        (
+            String::new(),
+            config["main"]["apiKey"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+        )
     } else if kind == "bazarr" {
         let content = std::fs::read_to_string("/config/config/config.yaml")?;
         let secret = content

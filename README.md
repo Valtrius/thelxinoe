@@ -4,7 +4,7 @@ Self-hosted movies, shows, music, YouTube, Twitch and Kick. Rust server, Svelte 
 
 ## Run
 
-Development requires Rust 1.96+, Node 24+, FFmpeg/FFprobe and Docker with Linux containers.
+Development requires Rust 1.96+, Node 24+, FFmpeg/FFprobe 7.1+ and Docker with Linux containers.
 
 ```sh
 npm ci

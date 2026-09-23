@@ -71,6 +71,6 @@
     ]}
     data-sidebar-resize-origin
   >
-    <div class="settings-panels w-full max-w-220">{@render children()}</div>
+    <div class="settings-panels w-full max-w-320">{@render children()}</div>
   </div>
 </div>

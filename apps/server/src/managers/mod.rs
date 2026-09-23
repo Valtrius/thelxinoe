@@ -6,10 +6,13 @@ mod storage;
 mod bindings;
 mod connections;
 mod controls;
+mod indexers;
 mod metadata;
 mod operations;
+mod quality;
 mod requests;
 mod retention;
+mod seerr;
 mod stack;
 mod support;
 pub(crate) use connections::run as run_connections;
@@ -88,6 +91,9 @@ pub(crate) fn router() -> Router<AppState> {
         .merge(requests::router())
         .merge(bindings::router())
         .merge(controls::router())
+        .merge(quality::router())
+        .merge(seerr::router())
+        .merge(indexers::router())
         .merge(metadata::router())
         .merge(operations::router())
         .merge(support::router())
@@ -165,7 +171,11 @@ fn host_path(value: &str) -> Option<String> {
         return Some(value.trim_end_matches('/').into());
     }
     let bytes = value.as_bytes();
-    if bytes.len() > 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\' {
+    if bytes.len() > 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/')
+    {
         let path = value.replace('\\', "/").to_ascii_lowercase();
         if !path.contains('\0') && !path.split('/').any(|p| p == "." || p == "..") {
             return Some(path.trim_end_matches('/').into());
@@ -329,7 +339,7 @@ impl Connection<'_> {
         })
     }
     fn version(&self) -> u8 {
-        if matches!(self.kind.as_str(), "lidarr" | "prowlarr") {
+        if matches!(self.kind.as_str(), "lidarr" | "prowlarr" | "seerr") {
             1
         } else {
             3
@@ -474,6 +484,10 @@ async fn options(
         let _guard = state.managers.guard.service(&s.kind).await;
         prepare_library(&state, &s).await?;
     }
+    {
+        let _guard = state.managers.guard.service(&s.kind).await;
+        quality::ensure_defaults(&state, &service(&state, &id).await?).await?;
+    }
     let roots = c.get("rootfolder").await?;
     validate_roots(&s.kind, &roots)?;
     let profiles = c.get("qualityprofile").await?;
@@ -499,7 +513,7 @@ async fn options(
             .unwrap_or_default()
     };
     Ok(Json(
-        json!({"roots":summarize(roots,true),"profiles":summarize(profiles,false),"metadata_profiles":summarize(metadata,false)}),
+        json!({"roots":summarize(roots,true),"profiles":summarize(profiles,false),"metadata_profiles":summarize(metadata,false),"defaults":service(&state,&id).await?.defaults}),
     ))
 }
 #[derive(Deserialize, Serialize, Clone)]
@@ -604,6 +618,9 @@ async fn defaults(
         prepare_library(&state, &s).await?;
     }
     storage::defaults(&state.db, id, input, p).await?;
+    // The saved defaults remain authoritative when Seerr is temporarily offline.
+    // Its connection worker retries, and requests synchronize before submission.
+    let _ = seerr::sync_managers(&state).await;
     Ok(Json(json!({"saved":true})))
 }
 async fn test(

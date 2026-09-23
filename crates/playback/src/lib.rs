@@ -39,7 +39,11 @@ pub struct Conversion {
 }
 pub(crate) fn conversion_args(options: &Options) -> Result<Vec<String>> {
     let mut rate = bitrate(&options.quality)?.unwrap_or(8_000_000);
-    let mut filter = "scale=w='min(1920,iw)':h=-2".to_owned();
+    let mut filter = if let Some(height) = resolution(&options.quality) {
+        format!("scale=w=-2:h='min({height},ih)'")
+    } else {
+        "scale=w='min(1920,iw)':h=-2".to_owned()
+    };
     let mut extra = Vec::new();
     if let Some(c) = &options.capabilities.conversion {
         if !(2..=1920).contains(&c.width)
@@ -332,6 +336,12 @@ impl Source {
         self.probe["streams"].as_array()?.iter().find(|s|s["codec_type"]=="video" && s["disposition"]["attached_pic"]!=1)?["codec_name"].as_str()
     }
 }
+pub fn resolution(quality: &str) -> Option<u32> {
+    quality
+        .strip_suffix('p')
+        .and_then(|s| s.parse().ok())
+        .filter(|h| [144, 240, 360, 480, 720, 1080, 1440, 2160, 4320].contains(h))
+}
 pub fn bitrate(quality: &str) -> Result<Option<u32>> {
     Ok(match quality {
         "auto" | "original" => None,
@@ -339,7 +349,16 @@ pub fn bitrate(quality: &str) -> Result<Option<u32>> {
         "4mbps" => Some(4_000_000),
         "8mbps" => Some(8_000_000),
         "20mbps" => Some(20_000_000),
-        _ => bail!("Unsupported quality"),
+        _ => Some(match resolution(quality) {
+            Some(144 | 240 | 360) => 1_000_000,
+            Some(480) => 2_000_000,
+            Some(720) => 4_000_000,
+            Some(1080) => 8_000_000,
+            Some(1440) => 16_000_000,
+            Some(2160) => 25_000_000,
+            Some(4320) => 60_000_000,
+            _ => bail!("Unsupported quality"),
+        }),
     })
 }
 pub fn plan(source: &Source, options: &Options) -> Result<&'static str> {

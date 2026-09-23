@@ -18,11 +18,11 @@ COPY crates crates
 COPY apps apps
 RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/src/target cargo build --locked --release -p thelxinoe-server -p thelxinoe-docker-controller && cp target/release/thelxinoe-server target/release/thelxinoe-docker-controller /usr/local/bin/
 
-FROM python:3.11-slim-bookworm@sha256:a36c24f9cbdf4fd0f52d67f0823eeac19c2028c637cecc392d97f980d4fec56b AS streamlink
+FROM python:3.11-slim-trixie@sha256:da047cb8f9d1d98e5c070f5300ba9f7274e33b8fc0e5be5ed88740aed1b95ba9 AS streamlink
 COPY scripts/streamlink-requirements.txt /requirements.txt
 RUN python -m venv /opt/streamlink && /opt/streamlink/bin/pip install --no-cache-dir --require-hashes -r /requirements.txt
 
-FROM python:3.11-slim-bookworm@sha256:a36c24f9cbdf4fd0f52d67f0823eeac19c2028c637cecc392d97f980d4fec56b AS server
+FROM python:3.11-slim-trixie@sha256:da047cb8f9d1d98e5c070f5300ba9f7274e33b8fc0e5be5ed88740aed1b95ba9 AS server
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates ffmpeg curl tini && rm -rf /var/lib/apt/lists/* && groupadd -g 10001 thelxinoe && useradd -u 10001 -g 10001 thelxinoe && mkdir -p /var/lib/thelxinoe /var/cache/thelxinoe /run/thelxinoe && chown -R 10001:10001 /var/lib/thelxinoe /var/cache/thelxinoe /run/thelxinoe && chmod 2770 /run/thelxinoe
 COPY --from=rust /usr/local/bin/thelxinoe-server /usr/local/bin/
 COPY --from=streamlink /opt/streamlink /opt/streamlink

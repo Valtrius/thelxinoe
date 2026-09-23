@@ -81,6 +81,7 @@ export async function installUiFixture(
       writes.push({ path, method, body });
     const json = (value: unknown) => route.fulfill({ json: value });
     if (path === '/health') return json({ api_version: 1 });
+    if (path === '/seerr/status') return json({ configured: false });
     if (path === '/setup') return json({ setup_required: false });
     if (path === '/auth/login') {
       signedIn = true;

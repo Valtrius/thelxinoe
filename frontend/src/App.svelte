@@ -83,7 +83,7 @@
   import MpvSettings from './lib/MpvSettings.svelte';
   import { connectTools } from './lib/providers/tools-events';
   import NativePlayer from './lib/NativePlayer.svelte';
-  import PersonalHome from './lib/PersonalHome.svelte';
+  import Discover from './lib/seerr/Discover.svelte';
   import Playlists from './lib/Playlists.svelte';
   import History from './lib/History.svelte';
   import StatisticsView from './lib/statistics/StatisticsView.svelte';
@@ -98,11 +98,12 @@
   import ServicesSettings from './lib/ServicesSettings.svelte';
   import ManagerOwnership from './lib/ManagerOwnership.svelte';
   import RetentionSettings from './lib/RetentionSettings.svelte';
-  import Requests from './lib/Requests.svelte';
-  import { persistQueue, type Card } from './lib/media-state';
+  import { persistQueue } from './lib/media-state';
   import { invoke } from '@tauri-apps/api/core';
   import type { MediaChoice } from './lib/playback';
+  import { youtubeVideoIdFromInput } from './lib/providers/youtube-video-input';
   let playing = $state<MediaChoice | null>(null);
+  let playbackRequest = 0;
   let mediaRevision = $state(0),
     focusId = $state<string | undefined>(undefined);
   import {
@@ -112,7 +113,6 @@
     Music,
     Play,
     Radio,
-    Library,
     ShieldCheck,
     RefreshCw,
   } from '@lucide/svelte';
@@ -175,7 +175,6 @@
     { name: 'Shows', icon: Tv },
     { name: 'Music', icon: Music },
     { name: 'Playlists', icon: Music },
-    { name: 'Requests', icon: Library },
     { name: 'YouTube', icon: Play },
     { name: 'Twitch', icon: Radio },
     { name: 'Kick', icon: Radio },
@@ -188,9 +187,11 @@
     try {
       const saved = JSON.parse(localStorage.getItem(key) ?? 'null');
       const query = new URLSearchParams(location.search);
-      const requested = query.has('youtube_link')
-        ? 'YouTube'
-        : query.get('section');
+      const requested = /^#discover\/(movie|tv)\/\d+$/.test(location.hash)
+        ? 'Home'
+        : query.has('youtube_link')
+          ? 'YouTube'
+          : query.get('section');
       const restored = requested ?? saved?.section;
       const destination = restored === 'History' ? 'Statistics' : restored;
       if (
@@ -461,22 +462,57 @@
   async function navigate(name: string) {
     mobileNavOpen = false;
     focusId = undefined;
+    if (location.hash.startsWith('#discover/'))
+      history.replaceState(
+        history.state,
+        '',
+        `${location.pathname}${location.search}`,
+      );
     section = name;
     error = '';
     if (name === 'Settings') await loadSettings();
   }
-  function openMedia(item: Card) {
-    section =
-      item.kind === 'movie'
-        ? 'Movies'
-        : ['show', 'season', 'episode'].includes(item.kind)
-          ? 'Shows'
-          : 'Music';
-    focusId = item.id;
+  function playYoutubeLink(event: MouseEvent) {
+    if (
+      !user ||
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.shiftKey ||
+      event.altKey ||
+      !(event.target instanceof Element)
+    )
+      return;
+    const link = event.target.closest('a[href]');
+    if (!(link instanceof HTMLAnchorElement) || link.hasAttribute('download'))
+      return;
+    const videoId = youtubeVideoIdFromInput(link.href);
+    if (!videoId) return;
+    event.preventDefault();
+    void playMedia(
+      {
+        id: `youtube:${videoId}`,
+        title:
+          link.dataset.playbackTitle ||
+          link.textContent?.trim() ||
+          'YouTube video',
+        position: 0,
+      },
+      true,
+    );
   }
-  async function playMedia(choice: MediaChoice) {
+  async function playMedia(choice: MediaChoice, resolveYoutube = false) {
+    const request = ++playbackRequest;
+    const owner = user?.id;
     await act(async () => {
-      playing = await persistQueue(choice);
+      if (resolveYoutube)
+        await api('/online/youtube/resolve', 'POST', {
+          video_id: choice.id.slice('youtube:'.length),
+        });
+      const next = await persistQueue(choice);
+      if (request !== playbackRequest || user?.id !== owner) return;
+      playing = next;
       if (!desktop) {
         await tick();
         workspace?.scrollTo({
@@ -525,6 +561,8 @@
     };
   });
 </script>
+
+<svelte:document onclick={playYoutubeLink} />
 
 {#if desktop}<WindowTitlebar />{/if}
 {#if loading}
@@ -676,7 +714,7 @@
             class="m-0 text-[18px] leading-6 compact:text-[17px]"
             data-sidebar-resize="x-pos"
           >
-            {section === 'Home' ? `Good to see you, ${user.username}` : section}
+            {section === 'Home' ? 'Discover' : section}
           </h1>
         </div>
         <span
@@ -982,24 +1020,13 @@
             {/if}
           </SettingsLayout>
         {:else if section === 'Home'}
-          <PersonalHome
-            revision={mediaRevision}
-            open={openMedia}
-            play={(choice) => void playMedia(choice)}
+          <Discover
+            {user}
+            settings={() => {
+              settingsSection = 'services';
+              void navigate('Settings');
+            }}
           />
-          <SectionHeading>
-            <h2>Your collections</h2>
-            <span class="text-muted">Built around you</span>
-          </SectionHeading>
-          <div class="grid grid-cols-3 gap-3 compact:grid-cols-1">
-            {#each sections.slice(1, 4) as item (item.name)}<button
-                class="flex flex-col items-start gap-4 border border-line bg-surface p-6 text-left text-foreground transition-[transform,border-color] duration-200 hover:border-line-strong hover:[transform:translateY(-2px)] [&_svg]:text-accent [&_strong]:text-sm [&_strong]:leading-normal [&_strong]:font-[550] [&_span]:text-[11px] [&_span]:text-muted compact:flex-row compact:items-center compact:p-4 compact:[&_span]:ml-auto"
-                onclick={() => navigate(item.name)}
-                ><item.icon size={30} /><strong>{item.name}</strong><span
-                  >Browse your collection →</span
-                ></button
-              >{/each}
-          </div>
         {:else if ['Movies', 'Shows', 'Music'].includes(section)}
           <LibraryView
             domain={section}
@@ -1017,7 +1044,6 @@
             revision={mediaRevision}
             play={(choice) => void playMedia(choice)}
           />
-        {:else if section === 'Requests'}<Requests {user} />
         {:else if section === 'Statistics'}<StatisticsView {user} />
         {:else if providerPage}<ProviderView
             admin={user.role === 'admin'}

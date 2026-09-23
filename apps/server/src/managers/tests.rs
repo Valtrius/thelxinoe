@@ -35,6 +35,13 @@ fn integrations_require_the_same_single_writable_media_bind() {
         shared_media_source(&desktop, &desktop, "/media").unwrap(),
         "c:/media"
     );
+    let mut forward_slash = desktop.clone();
+    forward_slash["mounts"][0]["source"] = json!("C:/Media");
+    assert_eq!(
+        shared_media_source(&desktop, &forward_slash, "/media").unwrap(),
+        "c:/media"
+    );
+    assert!(host_path("C:/Media/../private").is_none());
 }
 #[test]
 fn managers_must_use_the_canonical_root_for_their_media_kind() {

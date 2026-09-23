@@ -13,7 +13,7 @@ Every media service must bind the same absolute host directory, writable, at `/m
 <MEDIA_ROOT>/downloads    Download clients: /media/downloads
 ```
 
-Keep each service's separate `/config` mount. Prowlarr needs no media mount. Separate child mounts and path translations are unsupported. Update existing manager records and download locations when changing paths; changing mounts alone does not update them. Hardlinks require a common filesystem.
+Keep each service's separate `/config` mount. Prowlarr and Seerr need no media mount. Separate child mounts and path translations are unsupported. Update existing manager records and download locations when changing paths; changing mounts alone does not update them. Hardlinks require a common filesystem.
 
 Existing services must share a Docker network with the server. For an existing network, add this `compose.override.yaml`:
 
@@ -24,11 +24,23 @@ networks:
     name: media_network
 ```
 
-Connect services in Settings → Media services and save acquisition profiles. Connecting their APIs leaves lifecycle ownership with the original Compose project. To transfer ownership, use **Review ownership transfer**: disable the service in its old Compose file and external updaters before confirming. Thelxinoe stops it and copies its appdata; never restart the retained original alongside its replacement. Avoid `--remove-orphans` while retaining the original for recovery. Interrupted transfers offer **Retry setup**, **Reconcile** or **Restore original service**. Implementation: [adoption](../apps/docker-controller/src/adoption.rs), [storage contract](../apps/docker-controller/src/contract.rs).
+Connect services in Settings → Media services. Radarr and Sonarr automatically create and select a 1080p–2160p upgrade profile; profile and monitoring changes save immediately. Custom profiles can be created from the qualities offered by each service. Connecting their APIs leaves lifecycle ownership with the original Compose project. To transfer ownership, use **Review ownership transfer**: disable the service in its old Compose file and external updaters before confirming. Thelxinoe stops it and copies its appdata; never restart the retained original alongside its replacement. Avoid `--remove-orphans` while retaining the original for recovery. Interrupted transfers offer **Retry setup**, **Reconcile** or **Restore original service**. Implementation: [adoption](../apps/docker-controller/src/adoption.rs), [storage contract](../apps/docker-controller/src/contract.rs).
+
+## Discovery and requests
+
+Install **Seerr** in Media services. Home provides discovery, search, movie/show details, season selection, and the request queue. Seerr supplies TMDB metadata and uses connected Radarr/Sonarr services for availability. Manually imported Thelxinoe catalog entries are excluded. Library pages are for browsing and playback.
+
+The server manages Seerr API credentials and maps each signed-in Thelxinoe user to a local Seerr account. Regular users request media and see their own queue; administrators approve, decline, or retry requests. The existing per-user automatic approval setting also applies. Seerr's local and media-server sign-in are disabled for managed installations.
+
+Upstream Seerr requires an initial media-server administrator before it exposes local-user creation. Managed setup performs that handshake against a temporary empty endpoint, authenticated with a random token that expires after two minutes and is revoked as soon as setup finishes. It exposes no catalog or Thelxinoe login. Setup then clears the media-server type; subsequent availability scans come from Arr. The update preflight verifies the Seerr API and existing owner against copied state; first-run initialization also needs checking when qualifying new upstream releases. [Adapter](../apps/server/src/managers/seerr.rs).
+
+Arr profile, root, and address changes are synchronized immediately where possible and retried in the background. Requests synchronize the relevant manager before submission. **Refresh connections** also runs availability scans. Managed service lifecycle and API connections retain their existing ownership boundaries.
+
+Prowlarr's **Add indexer** form loads its supported definitions, fields, profiles, and address choices from the API. It supports connection testing and image challenges. Managed Prowlarr hosts are configured from the internal service address and configured public/native URLs. Indexer-to-manager connections still use the separate service connection controls.
 
 ## Update selection and policies
 
-New managed media services use the immutable image digests in the controller's [service templates](../apps/docker-controller/src/templates.rs). Update discovery resolves each template repository's `latest` tag to a digest. The code calls that channel stable; it does not rank version numbers or certify a newly discovered image. Preparation resolves the tag again, pins that digest, and checks compatibility against a copy of the service's appdata before installation. See [discovery](../apps/docker-controller/src/stack.rs) and [preflight](../apps/docker-controller/src/updates.rs).
+New managed services resolve the curated repository's `latest` tag and install that immutable digest. Update discovery uses the same channel, so a new installation is current unless the upstream image changes afterward. The allowed repositories and API ports are defined in the controller's [service templates](../apps/docker-controller/src/templates.rs). The code calls that channel stable; it does not rank version numbers or certify a newly discovered image. Preparation resolves the tag again, pins that digest, and checks compatibility against a copy of the service's appdata before installation. See [discovery](../apps/docker-controller/src/stack.rs) and [preflight](../apps/docker-controller/src/updates.rs).
 
 The former “Stable candidate” label displayed the discovered digest even when it matched the installed image. Settings now show **Up to date** for that match and **Available image** when they differ. Image changes can include container rebuilds without an application version change.
 

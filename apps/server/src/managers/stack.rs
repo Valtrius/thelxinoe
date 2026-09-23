@@ -153,7 +153,7 @@ async fn install(
         || input.host_port < 1024
         || !matches!(
             input.kind.as_str(),
-            "radarr" | "sonarr" | "lidarr" | "bazarr" | "prowlarr" | "nzbget"
+            "radarr" | "sonarr" | "lidarr" | "bazarr" | "prowlarr" | "nzbget" | "seerr"
         )
     {
         return Err(ApiError::bad("Choose a supported service and local port"));
@@ -403,7 +403,11 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
   if row.7=="installed" && matches!(row.0.as_str(),"radarr"|"sonarr"|"lidarr") {
     let _guard=state.managers.guard.service(&row.0).await;
     super::prepare_library(state,&super::service(state,&integration).await?).await?;
+    super::quality::ensure_defaults(state,&super::service(state,&integration).await?).await?;
   }
+  if row.0=="seerr" && row.7=="installed" {super::seerr::initialize(state).await?;}
+  else if row.0=="prowlarr" {super::indexers::ensure_hosts(state,&integration).await?;}
+  else if matches!(row.0.as_str(),"radarr"|"sonarr") {super::seerr::sync_managers(state).await?;}
   Ok::<(),ApiError>(())
  }.await;
     if let Err(error) = result {

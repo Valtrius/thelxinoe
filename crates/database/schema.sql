@@ -531,7 +531,7 @@ CREATE TABLE media_protection (
 CREATE TABLE support_services (
     id TEXT NOT NULL PRIMARY KEY,
     name TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK(kind IN ('bazarr','prowlarr','nzbget')),
+    kind TEXT NOT NULL CHECK(kind IN ('bazarr','prowlarr','nzbget','seerr')),
     container_id TEXT NOT NULL UNIQUE,
     port INTEGER NOT NULL,
     generation TEXT NOT NULL,
@@ -541,6 +541,19 @@ CREATE TABLE support_services (
     version TEXT NOT NULL,
     checked_at INTEGER NOT NULL,
     error TEXT
+) STRICT;
+
+CREATE TABLE seerr_bootstrap_tokens (
+    service_id TEXT NOT NULL PRIMARY KEY REFERENCES support_services(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE seerr_users (
+    service_id TEXT NOT NULL REFERENCES support_services(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    remote_id INTEGER NOT NULL CHECK(remote_id > 1),
+    PRIMARY KEY(service_id,user_id),
+    UNIQUE(service_id,remote_id)
 ) STRICT;
 
 CREATE TABLE stack_provisions (

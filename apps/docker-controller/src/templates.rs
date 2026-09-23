@@ -8,7 +8,14 @@ pub struct Template {
     pub media: bool,
     pub digest: &'static str,
 }
-pub const TEMPLATES: [Template; 6] = [
+pub const TEMPLATES: [Template; 7] = [
+    Template {
+        kind: "seerr",
+        repository: "ghcr.io/seerr-team/seerr",
+        port: 5055,
+        media: false,
+        digest: "sha256:f4768de5f616248d723e05891f3345a1402123775d03bf0890dbfedc0831bda1",
+    },
     Template {
         kind: "radarr",
         repository: "lscr.io/linuxserver/radarr",
@@ -63,7 +70,10 @@ mod tests {
         assert!(find("docker").is_none());
         assert!(find("radarr:develop").is_none());
         for t in TEMPLATES {
-            assert!(t.repository.starts_with("lscr.io/linuxserver/"));
+            assert!(
+                t.repository.starts_with("lscr.io/linuxserver/")
+                    || t.repository == "ghcr.io/seerr-team/seerr"
+            );
             assert_eq!(t.digest.len(), 71);
             assert!(t.digest[7..].bytes().all(|b| b.is_ascii_hexdigit()));
         }

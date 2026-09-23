@@ -26,6 +26,7 @@
   import { appearance, updateAppearance } from './appearance';
   import {
     capabilities,
+    qualityOptions,
     mediaUrl,
     prepare,
     time,
@@ -333,7 +334,7 @@
       if (revision === generation) busy = false;
     }
   }
-  async function start(at?: number, revision = generation) {
+  async function start(at?: number, revision = generation, autoplay = true) {
     const result = await prepare(
       choice,
       {
@@ -344,6 +345,7 @@
       },
       at,
     );
+    if (revision === generation && active) await stop();
     if (revision !== generation) {
       await api(`/playback/${result.id}/progress`, 'POST', {
         sequence: 0,
@@ -353,6 +355,14 @@
       return;
     }
     active = result;
+    if (result.qualities?.length) {
+      if (quality.endsWith('mbps')) quality = 'auto';
+      else if (
+        quality !== 'auto' &&
+        !result.qualities.some((item) => item.value === quality)
+      )
+        quality = result.quality ?? 'auto';
+    }
     activity = new PlaybackActivity();
     sequence = 0;
     position = result.position;
@@ -360,7 +370,7 @@
     if (subtitle !== 'off') lastSubtitle = subtitle;
     await tick();
     if (revision !== generation) return;
-    await attach(result.url, result.position);
+    await attach(result.url, result.position, autoplay);
   }
   async function attach(url: string, at: number, autoplay = true) {
     if (!active || !player) return;
@@ -498,12 +508,13 @@
   }
   async function changeOptions() {
     const at = position;
+    const autoplay = !player.paused;
     const revision = generation;
     busy = true;
     error = '';
     try {
-      await stop();
-      if (revision === generation) await start(at, revision);
+      player.pause();
+      if (revision === generation) await start(at, revision, autoplay);
     } catch (e) {
       if (revision === generation) error = String(e);
     } finally {
@@ -572,7 +583,21 @@
     }
     await audioContext?.resume();
     if (revision !== generation || active !== session) return;
-    if (active.mode !== 'direct' && !active.live) await seek(position, true);
+    const buffered = Array.from(
+      { length: player.buffered.length },
+      (_, i) =>
+        player.currentTime >= player.buffered.start(i) &&
+        player.currentTime < player.buffered.end(i),
+    );
+    const firstFragment = hls?.latestLevelDetails?.fragments[0];
+    const expired = firstFragment && player.currentTime < firstFragment.start;
+    if (
+      active.mode !== 'direct' &&
+      !active.live &&
+      expired &&
+      !buffered.some(Boolean)
+    )
+      await seek(position, true);
     else await player.play().catch((e) => (error = String(e)));
   }
 </script>
@@ -854,11 +879,12 @@
         </span>
         {#if active}<span
             class="playback-mode text-[11px] text-[#acb4ba] player-small:hidden"
-            >{active.mode === 'direct'
-              ? 'Original file'
-              : active.mode === 'remux'
-                ? 'Original codecs'
-                : 'Converted'}{info?.watched ? ' · Watched' : ''}</span
+            >{active.quality ??
+              (active.mode === 'direct'
+                ? 'Original file'
+                : active.mode === 'remux'
+                  ? 'Original codecs'
+                  : 'Converted')}{info?.watched ? ' · Watched' : ''}</span
           >{/if}
       </div>
       <div class="control-spacer flex-1"></div>
@@ -871,14 +897,7 @@
         <PlayerOption
           label="Quality"
           value={quality}
-          options={[
-            { value: 'auto', label: 'Auto' },
-            { value: 'original', label: 'Original' },
-            ...[2, 4, 8, 20].map((rate) => ({
-              value: `${rate}mbps`,
-              label: `${rate} Mbps`,
-            })),
-          ]}
+          options={qualityOptions(active, info)}
           disabled={busy || !active}
           open={optionMenu === 'quality'}
           setOpen={(open) => (optionMenu = open ? 'quality' : null)}

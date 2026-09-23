@@ -58,6 +58,21 @@ pub(super) async fn defaults(
     db.write("managers.defaults", move|db|{let tx=db.transaction()?;tx.execute("UPDATE manager_services SET defaults=?1,generation=?3 WHERE id=?2",params![serde_json::to_string(&input)?,id,thelxinoe_core::id()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'manager.defaults',?2,?3)",params![p.user.id,id,now()])?;tx.commit()?;Ok(())}).await
 }
 
+pub(super) async fn initialize_defaults(
+    db: &Database,
+    key: String,
+    input: Defaults,
+) -> anyhow::Result<()> {
+    db.write("managers.initialize_defaults", move |db| {
+        db.execute(
+            "UPDATE manager_services SET defaults=?1,generation=?2 WHERE id=?3",
+            params![serde_json::to_string(&input)?, id(), key],
+        )?;
+        Ok(())
+    })
+    .await
+}
+
 pub(super) async fn test(db: &Database, id: String, error: Option<String>) -> anyhow::Result<()> {
     db.write("managers.test", move |db| {
         db.execute(
@@ -71,4 +86,20 @@ pub(super) async fn test(db: &Database, id: String, error: Option<String>) -> an
 
 pub(super) async fn installed_here(key: String, db: &Database) -> anyhow::Result<bool> {
     db.read("managers.installed_here", move|db|Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE service_id=?1 AND origin='installed')",[key],|r|r.get::<_,bool>(0))?)).await
+}
+
+pub(super) async fn support_native_host(
+    db: &Database,
+    key: String,
+) -> anyhow::Result<Option<String>> {
+    db.read("managers.support_native_host", move |db| {
+        Ok(db
+            .query_row(
+                "SELECT native_url FROM support_services WHERE id=?1",
+                [key],
+                |r| r.get(0),
+            )
+            .optional()?)
+    })
+    .await
 }

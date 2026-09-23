@@ -445,6 +445,7 @@ fn app_config(t: templates::Template, input: &Install, directory: &std::path::Pa
         ));
     }
     let text = match t.kind {
+        "seerr" => json!({"main":{"apiKey":input.secret,"mediaServerType":4,"applicationTitle":"Thelxinoe","localLogin":false,"newPlexLogin":false}}).to_string(),
         "nzbget" => {
             if input.username != "thelxinoe" {
                 return Err(bad("Use the managed NZBGet account"));
@@ -467,11 +468,26 @@ fn app_config(t: templates::Template, input: &Install, directory: &std::path::Pa
         ),
     };
     let file = match t.kind {
+        "seerr" => "settings.json",
         "nzbget" => "nzbget.conf",
         "bazarr" => "config/config.yaml",
         _ => "config.xml",
     };
     persisted(store::write(&directory.join(file), text.as_bytes()))?;
+    if t.kind == "seerr" {
+        // The controller runs as 0:10001 with no capabilities in the test
+        // stack. Group access lets Seerr's 10001:10001 process manage its data
+        // without requiring CAP_CHOWN.
+        use std::os::unix::fs::PermissionsExt;
+        persisted(
+            std::fs::set_permissions(directory.join(file), std::fs::Permissions::from_mode(0o660))
+                .map_err(Into::into),
+        )?;
+        persisted(
+            std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o770))
+                .map_err(Into::into),
+        )?;
+    }
     // LSIO initializes its appdata ownership on first boot as root.
     Ok(())
 }
@@ -509,14 +525,9 @@ async fn install(
         return Err(conflict("Provisioning identity already exists"));
     }
     let directory = store::root().join("services").join(&key).join("appdata");
+    let image = stable_image(t).await?;
+    pull_image(&image).await?;
     app_config(t, &input, &directory)?;
-    let image = format!("{}@{}", t.repository, t.digest);
-    request(
-        reqwest::Method::POST,
-        &format!("/images/create?fromImage={}@{}", t.repository, t.digest),
-        None,
-    )
-    .await?;
     let name = choose_service_name(t.kind, &key, &containers, None)?;
     let mut mounts = vec![
         json!({"Type":"bind","Source":format!("{}/services/{key}/appdata",d.appdata_source),"Target":"/config"}),
@@ -525,7 +536,11 @@ async fn install(
         mounts.push(json!({"Type":"bind","Source":d.media_source,"Target":"/media"}));
     }
     let port = format!("{}/tcp", t.port);
-    let spec = json!({"Image":image,"Env":["PUID=10001","PGID=10001","TZ=UTC"],"Labels":{"app.thelxinoe.managed-id":key,"app.thelxinoe.deployment":d.id,"app.thelxinoe.kind":t.kind},"HostConfig":{"Mounts":mounts,"NetworkMode":d.network,"RestartPolicy":{"Name":"unless-stopped"},"PortBindings":{port:[{"HostIp":"127.0.0.1","HostPort":input.host_port.to_string()}]}},"NetworkingConfig":{"EndpointsConfig":{d.network.clone():{"Aliases":[format!("thelxinoe-{}",t.kind)]}}}});
+    let mut spec = json!({"Image":image,"Env":["PUID=10001","PGID=10001","TZ=UTC"],"Labels":{"app.thelxinoe.managed-id":key,"app.thelxinoe.deployment":d.id,"app.thelxinoe.kind":t.kind},"HostConfig":{"Mounts":mounts,"NetworkMode":d.network,"RestartPolicy":{"Name":"unless-stopped"},"PortBindings":{port:[{"HostIp":"127.0.0.1","HostPort":input.host_port.to_string()}]}},"NetworkingConfig":{"EndpointsConfig":{d.network.clone():{"Aliases":[format!("thelxinoe-{}",t.kind)]}}}});
+    if t.kind == "seerr" {
+        spec["User"] = json!("10001:10001");
+        spec["Env"] = json!(["CONFIG_DIRECTORY=/config", "TZ=UTC"]);
+    }
     let mut s = Managed {
         id: key,
         kind: input.kind,
@@ -639,6 +654,45 @@ async fn action(
     Ok(Json(json!({"accepted":true})))
 }
 
+async fn stable_image(t: templates::Template) -> Result<String> {
+    for attempt in 0..3 {
+        if let Ok(descriptor) = engine(&format!("/distribution/{}:latest/json", t.repository)).await
+            && let Some(digest) = descriptor["Descriptor"]["digest"].as_str().filter(|v| {
+                v.starts_with("sha256:")
+                    && v.len() == 71
+                    && v[7..].bytes().all(|b| b.is_ascii_hexdigit())
+            })
+        {
+            return Ok(format!("{}@{digest}", t.repository));
+        }
+        if attempt < 2 {
+            tokio::time::sleep(std::time::Duration::from_secs(2 * (attempt + 1))).await;
+        }
+    }
+    Err(conflict(
+        "Could not resolve the current service image. Check Docker registry access and retry setup",
+    ))
+}
+async fn pull_image(image: &str) -> Result<()> {
+    for attempt in 0..3 {
+        if request(
+            reqwest::Method::POST,
+            &format!("/images/create?fromImage={image}"),
+            None,
+        )
+        .await
+        .is_ok()
+        {
+            return Ok(());
+        }
+        if attempt < 2 {
+            tokio::time::sleep(std::time::Duration::from_secs(2 * (attempt + 1))).await;
+        }
+    }
+    Err(conflict(
+        "Docker could not pull the service image. Check registry access and retry setup",
+    ))
+}
 async fn releases() -> Result<Json<Value>> {
     let mut results = Vec::new();
     for t in templates::TEMPLATES {

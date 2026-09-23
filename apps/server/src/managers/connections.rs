@@ -319,9 +319,20 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 pub(crate) async fn run(state: AppState) -> anyhow::Result<()> {
+    let mut seerr_sync = tokio::time::Instant::now();
     loop {
         if tick(&state).await.is_err() {
             tracing::warn!("Service connection state is temporarily unavailable");
+        }
+        if tokio::time::Instant::now() >= seerr_sync {
+            let _gate = state.release_gate.read().await;
+            if !state
+                .release_quiescing
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                let _ = seerr::sync_managers(&state).await;
+            }
+            seerr_sync = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
         }
         tokio::select! {
             _=state.managers.connection_wake.notified()=>{},

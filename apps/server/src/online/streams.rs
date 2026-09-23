@@ -1,6 +1,9 @@
 #[path = "../storage/online/streams.rs"]
 mod storage;
 
+#[path = "stream_formats.rs"]
+mod formats;
+
 use super::{downloads, extract, live};
 use crate::{
     AppState,
@@ -26,6 +29,9 @@ struct Prepared {
     duration: f64,
     expires: i64,
     native: bool,
+    formats: Vec<formats::Format>,
+    remux: bool,
+    quality: Option<String>,
 }
 
 async fn prepare(state: &AppState, video: &str) -> Result<Prepared> {
@@ -42,6 +48,9 @@ async fn prepare(state: &AppState, video: &str) -> Result<Prepared> {
             duration: 0.0,
             expires: now() + 60,
             native: false,
+            formats: Vec::new(),
+            remux: false,
+            quality: None,
         }
     } else {
         let metadata = extract::metadata(state, video).await?;
@@ -60,75 +69,19 @@ fn select(metadata: &Value) -> Result<Prepared> {
     if !live && (!duration.is_finite() || duration <= 0.0) {
         return Err(ApiError::conflict("This video is not ready for playback"));
     }
-    let formats = metadata["formats"]
-        .as_array()
-        .ok_or_else(|| ApiError::conflict("No public media formats are available"))?;
-    let videos = formats.iter().filter(|f| {
-        f["vcodec"]
-            .as_str()
-            .is_some_and(|v| v.starts_with("avc1") || v == "h264")
-            && f["height"].as_u64().is_some_and(|h| h <= 1080)
-            && f["url"].is_string()
-            && matches!(
-                f["protocol"].as_str(),
-                Some("https" | "m3u8_native" | "m3u8")
-            )
-    });
-    let video = videos
-        .max_by_key(|f| (f["height"].as_u64().unwrap_or(0), f["protocol"] == "https"))
-        .ok_or_else(|| ApiError::conflict("No supported public video stream is available"))?;
-    let audio = if video["acodec"].as_str().is_some_and(|v| v != "none") {
-        None
-    } else {
-        Some(
-            formats
-                .iter()
-                .filter(|f| {
-                    f["vcodec"] == "none"
-                        // Live audio HLS often omits the codec. FFmpeg probes
-                        // the audio-only input and converts it to AAC.
-                        && f["acodec"] != "none"
-                        && matches!(
-                            f["protocol"].as_str(),
-                            Some("https" | "m3u8_native" | "m3u8")
-                        )
-                })
-                .max_by(|a, b| {
-                    a["abr"]
-                        .as_f64()
-                        .unwrap_or(0.0)
-                        .total_cmp(&b["abr"].as_f64().unwrap_or(0.0))
-                })
-                .filter(|f| f["url"].is_string())
-                .ok_or_else(|| {
-                    ApiError::conflict("No supported public audio stream is available")
-                })?,
-        )
-    };
-    // Only finite, independently seekable files can be relayed to MPV. HLS
-    // manifests and live sources retain the server's conversion pipeline.
-    let native = !live
-        && video["protocol"] == "https"
-        && video["ext"] == "mp4"
-        && audio.is_none_or(|f| {
-            f["protocol"] == "https"
-                && matches!(f["ext"].as_str(), Some("m4a" | "mp4" | "webm" | "opus"))
-        });
-    let source = RemoteSource {
-        video: video["url"].as_str().unwrap().into(),
-        audio: audio.map(|f| f["url"].as_str().unwrap().to_owned()),
-        live,
-    };
-    source
-        .validate()
-        .map_err(|_| ApiError::conflict("The extractor returned an unsupported media address"))?;
+    let formats = formats::extract(metadata)?;
+    let best = formats.last().unwrap();
     Ok(Prepared {
-        source,
+        source: best.source.clone(),
+        native: best.native,
         duration: if live { 0.0 } else { duration },
         expires: now() + 300,
-        native,
+        formats,
+        remux: false,
+        quality: None,
     })
 }
+
 pub(crate) async fn info(state: &AppState, p: &Principal, video: &str) -> Result<Value> {
     if live::domain(video) {
         live::authorize(state, p, video).await?;
@@ -165,11 +118,6 @@ pub(crate) async fn create_with_delivery(
             "Streaming requires HLS with H.264 and AAC support",
         ));
     }
-    if options.quality == "original" {
-        return Err(ApiError::conflict(
-            "Original quality requires a completed download; use Auto for streaming",
-        ));
-    }
     if options.subtitle.as_deref().is_some_and(|s| s != "off") || options.audio.is_some() {
         return Err(ApiError::bad(
             "Track selection is not available for this public stream",
@@ -183,11 +131,24 @@ pub(crate) async fn create_with_delivery(
     } else {
         None
     };
-    let prepared = prepare(state, video).await?;
+    let mut prepared = prepare(state, video).await?;
+    let qualities = formats::choices(&prepared.formats, &options.capabilities);
+    if !prepared.formats.is_empty() {
+        let format = formats::choose(&prepared.formats, &options.quality, &options.capabilities)?;
+        prepared.source = format.source.clone();
+        prepared.native = format.native;
+        prepared.quality = Some(format.quality());
+        prepared.remux = !vod && !format.source.live;
+    }
     let sid = thelxinoe_core::id();
-    let native =
-        prepared.native && options.capabilities.native_remote && options.quality == "auto" && !vod;
-    let mode = if native { "direct" } else { "transcode" };
+    let native = prepared.native && options.capabilities.native_remote && !vod;
+    let mode = if native {
+        "direct"
+    } else if prepared.remux {
+        "remux"
+    } else {
+        "transcode"
+    };
     let key = sid.clone();
     let owner = p.user.id.clone();
     let auth = p.session_id.clone();
@@ -228,12 +189,13 @@ pub(crate) async fn create_with_delivery(
     } else {
         state
             .playback
-            .start_remote(&sid, &prepared.source, &options, start)
+            .start_remote(&sid, &prepared.source, &options, mode, start)
             .await
     };
     let (revision, offset) = match prepared_pipeline {
         Ok(value) => value,
-        Err(_) => {
+        Err(error) => {
+            tracing::warn!(reason = %error, "Public stream preparation failed");
             state.online.streams.sessions.lock().await.remove(&sid);
             let id = sid.clone();
             storage::create_with_delivery_write_playback_sessions(id, &state.db).await?;
@@ -258,7 +220,7 @@ pub(crate) async fn create_with_delivery(
     let external_audio = (native && prepared.source.audio.is_some())
         .then(|| format!("/api/v1/playback/{sid}/remote/audio?grant={grant}"));
     Ok(
-        json!({"id":sid,"url":url,"external_audio":external_audio,"grant":grant,"mode":mode,"position":start,"duration":prepared.duration,"timeline_start":offset,"video":true,"live":live,"tracks":[],"subtitles":[],"selected_subtitle":null,"options":options,"probe":{},"replay_gain":"off"}),
+        json!({"id":sid,"url":url,"external_audio":external_audio,"grant":grant,"mode":mode,"position":start,"duration":prepared.duration,"timeline_start":offset,"video":true,"live":live,"tracks":[],"subtitles":[],"selected_subtitle":null,"options":options,"qualities":qualities,"quality":prepared.quality,"probe":{},"replay_gain":"off"}),
     )
 }
 pub(crate) async fn validate(state: &AppState, id: &str) -> Result<()> {
@@ -299,7 +261,13 @@ pub(crate) async fn seek(
     }
     state
         .playback
-        .start_remote(id, &source.source, options, position)
+        .start_remote(
+            id,
+            &source.source,
+            options,
+            if source.remux { "remux" } else { "transcode" },
+            position,
+        )
         .await
         .map_err(|_| {
             ApiError::conflict("Could not seek the public stream; reopen it to refresh its address")

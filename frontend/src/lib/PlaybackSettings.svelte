@@ -12,7 +12,13 @@
     error = $state('');
   onMount(() => {
     api<Preferences>('/playback/preferences')
-      .then((v) => (value = v))
+      .then(
+        (v) =>
+          (value = {
+            ...v,
+            quality: v.quality.endsWith('mbps') ? 'auto' : v.quality,
+          }),
+      )
       .catch((e) => (error = String(e)));
   });
 </script>
@@ -33,8 +39,8 @@
           bind:value={value.quality}
           ><option value="auto">Auto</option><option value="original"
             >Original</option
-          >{#each [2, 4, 8, 20] as rate (rate)}<option value={`${rate}mbps`}
-              >{rate} Mbps</option
+          >{#each [360, 480, 720, 1080, 1440, 2160] as height (height)}<option
+              value={`${height}p`}>{height}p</option
             >{/each}</select
         ></FormField
       >

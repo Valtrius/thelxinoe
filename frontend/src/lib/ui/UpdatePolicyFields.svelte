@@ -26,7 +26,6 @@
 </script>
 
 <div class="grid justify-items-start gap-2">
-  <span class="text-[11px] font-[550]">Update policy</span>
   <ExclusiveChoiceGroup
     {choices}
     value={policy}
@@ -36,11 +35,6 @@
       onChange();
     }}
   />
-  <p class="text-xs text-muted">
-    Checks automatically every six hours. Notify lets you choose when to
-    install. Automatic installs during the maintenance window when the service
-    is idle.
-  </p>
 </div>
 {#if policy === 'automatic'}
   <div class="grid grid-cols-2 gap-3 compact:grid-cols-1 [&_label]:m-0">
@@ -65,13 +59,4 @@
       /></FormField
     >
   </div>
-{:else if policy === 'inherit' && inherited}
-  <p class="text-xs text-muted">
-    Uses the server policy: {inherited.policy === 'automatic'
-      ? 'Automatic'
-      : 'Notify'}{#if inherited.policy === 'automatic'},
-      {String(inherited.window_start).padStart(2, '0')}:00–{String(
-        inherited.window_end,
-      ).padStart(2, '0')}:00 ({timezone}){/if}.
-  </p>
 {/if}

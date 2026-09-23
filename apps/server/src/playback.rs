@@ -112,7 +112,12 @@ pub async fn create(
     Json(mut input): Json<Create>,
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
-    if context.remote() && input.options.quality == "auto" && input.options.capabilities.hls {
+    if context.remote()
+        && input.options.quality == "auto"
+        && input.options.capabilities.hls
+        && !crate::online::live::domain(&input.media_id)
+        && !input.media_id.starts_with("youtube:")
+    {
         let video = crate::online::live::domain(&input.media_id)
             || input.media_id.starts_with("youtube:")
             || source(&state, &input.media_id, input.file_id.as_deref())
@@ -393,6 +398,8 @@ pub async fn hls(
             .map(|line| {
                 if line.starts_with("segment-") {
                     format!("{line}?grant={}", grant.grant)
+                } else if line == "#EXT-X-MAP:URI=\"init.mp4\"" {
+                    format!("#EXT-X-MAP:URI=\"init.mp4?grant={}\"", grant.grant)
                 } else {
                     line.into()
                 }

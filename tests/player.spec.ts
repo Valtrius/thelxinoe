@@ -95,6 +95,7 @@ async function fixture(
     app?: boolean;
     playerHeight?: number | null;
     subtitles?: boolean;
+    qualities?: { value: string; label: string }[];
   } = {},
 ) {
   const metadata = gate(!!options.hold),
@@ -284,6 +285,9 @@ async function fixture(
       return route.fulfill({
         json: {
           id: 'fixture',
+          qualities: options.qualities,
+          quality:
+            input.options.quality === 'auto' ? '1080p' : input.options.quality,
           mode: options.mode ?? 'direct',
           live: options.live ?? false,
           url:
@@ -841,7 +845,10 @@ test('controls hide, recover with keyboard, retain volume, seek, and stay inside
   await expect(page.locator('.player-volume-range')).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
   await insidePlayer(page);
-  await page.getByRole('button', { name: 'Pause', exact: true }).click();
+  // Changing quality preserves the pause established before seeking.
+  await expect(
+    page.getByRole('button', { name: 'Play', exact: true }),
+  ).toBeVisible();
   await page.screenshot({ path: '.local/player-ui/mobile.png' });
   expect(state.errors).toEqual([]);
 });
@@ -1407,4 +1414,52 @@ test('failed streams can retry and closing during preparation stops a late sessi
     .poll(() => pending.progress.some((p) => p.state === 'stopped'))
     .toBe(true);
   expect(pending.errors).toEqual([]);
+});
+
+test('buffered HLS resumes without rebuilding its pipeline and quality changes preserve pause and position', async ({
+  page,
+}) => {
+  const state = await fixture(page, {
+    mode: 'remux',
+    qualities: [
+      { value: '1080p', label: '1080p' },
+      { value: '720p', label: '720p' },
+    ],
+  });
+  await decoded(page);
+  await expect
+    .poll(() => page.locator('video').evaluate((video) => video.currentTime))
+    .toBeGreaterThan(0.3);
+  await page.getByRole('button', { name: 'Pause', exact: true }).click();
+  const at = await page.locator('video').evaluate((video) => video.currentTime);
+  await page.getByRole('button', { name: 'Play', exact: true }).click();
+  await expect
+    .poll(() => page.locator('video').evaluate((video) => video.currentTime))
+    .toBeGreaterThan(at + 0.2);
+  expect(state.seeks).toEqual([]);
+  expect(state.starts).toHaveLength(1);
+  await page.getByRole('button', { name: 'Pause', exact: true }).click();
+  const before = await page
+    .locator('video')
+    .evaluate((video) => video.currentTime);
+  await page.getByRole('button', { name: 'Quality', exact: true }).click();
+  await expect(page.getByRole('menu', { name: 'Quality' })).not.toContainText(
+    'Mbps',
+  );
+  await page.getByRole('menuitemradio', { name: '720p', exact: true }).click();
+  await expect.poll(() => state.starts.length).toBe(2);
+  expect(state.starts[1].options.quality).toBe('720p');
+  expect(Math.abs(state.starts[1].position - before)).toBeLessThan(0.2);
+  await expect(
+    page.getByRole('button', { name: 'Play', exact: true }),
+  ).toBeEnabled();
+  expect(await page.locator('video').evaluate((video) => video.paused)).toBe(
+    true,
+  );
+  await page.getByRole('button', { name: 'Play', exact: true }).click();
+  await expect
+    .poll(() => page.locator('video').evaluate((video) => video.currentTime))
+    .toBeGreaterThan(before + 0.2);
+  expect(state.seeks).toEqual([]);
+  expect(state.errors).toEqual([]);
 });

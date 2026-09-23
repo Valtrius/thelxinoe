@@ -41,6 +41,8 @@ export type Playback = {
   id: string;
   url: string;
   mode: string;
+  qualities?: { value: string; label: string }[];
+  quality?: string;
   position: number;
   duration: number;
   timeline_start: number;
@@ -57,6 +59,7 @@ export type Probe = {
   streams?: {
     tags?: Record<string, string>;
     codec_type?: string;
+    height?: number;
     avg_frame_rate?: string;
     r_frame_rate?: string;
   }[];
@@ -160,4 +163,28 @@ export function scheduleBuffer(
 export function time(value: number) {
   const seconds = Math.max(0, Math.floor(value));
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+export function qualityOptions(
+  playback: Playback | null,
+  info: MediaInfo | null,
+) {
+  const selected = playback?.quality;
+  const automatic = {
+    value: 'auto',
+    label: selected ? `Auto (${selected})` : 'Auto',
+  };
+  if (playback?.qualities?.length) return [automatic, ...playback.qualities];
+  if (playback && !playback.video)
+    return [automatic, { value: 'original', label: 'Original' }];
+  const height = info?.sources
+    .flatMap((source) => source.probe.streams ?? [])
+    .find((stream) => stream.codec_type === 'video')?.height;
+  return [
+    automatic,
+    { value: 'original', label: `Original${height ? ` (${height}p)` : ''}` },
+    ...[2160, 1440, 1080, 720, 480, 360]
+      .filter((value) => value <= (height ?? 1080))
+      .map((value) => ({ value: `${value}p`, label: `${value}p` })),
+  ];
 }

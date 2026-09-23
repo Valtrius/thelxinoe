@@ -392,6 +392,10 @@ async fn candidate(d: &Deployment, u: &mut Update, config: &str) -> Result<()> {
         persisted(std::fs::create_dir_all(data.join(sub)).map_err(Into::into))?;
     }
     let mut spec = json!({"Image":u.candidate,"Env":["PUID=10001","PGID=10001","TZ=UTC"],"Labels":{"app.thelxinoe.update":u.id,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":"none","CapDrop":["ALL"],"CapAdd":["CHOWN","DAC_OVERRIDE","FOWNER","SETUID","SETGID","KILL"],"SecurityOpt":["no-new-privileges:true"],"Memory":2147483648u64,"NanoCpus":2000000000u64,"PidsLimit":256,"Mounts":[{"Type":"bind","Source":config,"Target":"/config"},{"Type":"bind","Source":host_path(d,u,"scratch-data"),"Target":"/media"}]}});
+    if u.old.kind == "seerr" {
+        spec["User"] = json!("10001:10001");
+        spec["Env"] = json!(["CONFIG_DIRECTORY=/config", "TZ=UTC"]);
+    }
     // Never inherit host ports, sockets, extra mounts, production networks or commands.
     spec["Healthcheck"] = json!({"Test":["NONE"]});
     spec["HostConfig"]["ExtraHosts"] = json!([

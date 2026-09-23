@@ -6,6 +6,10 @@ const youtubeHosts = new Set([
   'music.youtube.com',
 ]);
 const youtubeShortHosts = new Set(['youtu.be', 'www.youtu.be']);
+const youtubeEmbedHosts = new Set([
+  'youtube-nocookie.com',
+  'www.youtube-nocookie.com',
+]);
 const schemelessYoutubeUrl =
   /^(?:(?:www|m|music)\.)?youtube\.com(?:\/|$)|^(?:www\.)?youtu\.be(?:\/|$)/i;
 
@@ -42,10 +46,16 @@ export function youtubeVideoIdFromInput(raw: string): string | null {
       videoId = parsed.searchParams.get('v');
     } else if (
       segments.length === 2 &&
-      ['shorts', 'live'].includes(segments[0])
+      ['shorts', 'live', 'embed'].includes(segments[0])
     ) {
       videoId = segments[1];
     }
+  } else if (
+    youtubeEmbedHosts.has(hostname) &&
+    segments.length === 2 &&
+    segments[0] === 'embed'
+  ) {
+    videoId = segments[1];
   }
 
   return videoId && youtubeVideoIdPattern.test(videoId) ? videoId : null;

@@ -5,7 +5,6 @@
     Tv,
     Music,
     ListMusic,
-    Search,
     ChartNoAxesCombined,
     PanelLeftClose,
     PanelLeftOpen,
@@ -115,17 +114,6 @@
             class="size-5 shrink-0"
           /></SidebarButton
         >{/each}
-      <div class="h-px bg-line"></div>
-      <SidebarButton
-        label="Requests"
-        resizeWithSidebar={false}
-        {collapsed}
-        aria-label="Requests"
-        title={collapsed ? 'Requests' : undefined}
-        active={section === 'Requests'}
-        onclick={() => navigate('Requests')}
-        ><Search class="size-5 shrink-0" /></SidebarButton
-      >
     </nav>
     <div class="sidebar-bottom mt-auto shrink-0 pb-2">
       <SidebarButton

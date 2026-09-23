@@ -618,7 +618,8 @@ test('short settings navigation fills the workspace and follows resizing', async
       element.getBoundingClientRect().left -
       element.parentElement!.getBoundingClientRect().left,
   }));
-  expect(panels.width).toBeLessThanOrEqual(880);
+  expect(panels.width).toBeGreaterThan(880);
+  expect(panels.width).toBeLessThanOrEqual(1280);
   expect(panels.inset).toBe(24);
   await expect(
     page.getByText('Use the server default or choose your own timezone', {
@@ -749,6 +750,41 @@ test('server settings contain display defaults and server updates', async ({
   expect(fixture.unexpected).toEqual([]);
 });
 
+test('all seven media service tabs stay on one row at desktop and mobile widths', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+  });
+  await page.goto('/');
+  const nav = page.getByRole('navigation', { name: 'Select service' });
+  const tabs = nav.getByRole('button');
+  await expect(tabs).toHaveCount(7);
+  for (const width of [1440, 1024, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const geometry = await tabs.evaluateAll((nodes) =>
+      nodes.map((node) => {
+        const rect = node.getBoundingClientRect();
+        return { top: rect.top, width: rect.width, content: node.scrollWidth };
+      }),
+    );
+    expect(geometry.every((tab) => tab.top === geometry[0].top)).toBe(true);
+    expect(geometry.every((tab) => tab.content <= tab.width + 1)).toBe(true);
+    if (width === 390) {
+      expect(
+        await nav.evaluate((node) => node.scrollWidth > node.clientWidth),
+      ).toBe(true);
+      await tabs.last().click();
+      await expect(
+        page.getByRole('article', { name: 'NZBGet service' }),
+      ).toBeVisible();
+    }
+  }
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 test('media services select one workspace and keep desktop rail sections aligned', async ({
   page,
 }) => {
@@ -768,7 +804,7 @@ test('media services select one workspace and keep desktop rail sections aligned
   await expect(radarr.getByText('6.0.0', { exact: true })).toBeVisible();
   await expect(
     radarr.getByRole('switch', {
-      name: 'Monitor and search approved requests',
+      name: 'Monitor and search requests',
     }),
   ).toBeVisible();
   await expect(page.locator('article details')).toHaveCount(0);
@@ -794,7 +830,14 @@ test('media services select one workspace and keep desktop rail sections aligned
       }),
     );
   const original = await railGeometry();
-  for (const name of ['Sonarr', 'Lidarr', 'Bazarr', 'Prowlarr', 'NZBGet']) {
+  for (const name of [
+    'Seerr',
+    'Sonarr',
+    'Lidarr',
+    'Bazarr',
+    'Prowlarr',
+    'NZBGet',
+  ]) {
     await nav.getByRole('button', { name, exact: true }).click();
     await expect(
       page.getByRole('article', { name: `${name} service` }),

@@ -7,6 +7,7 @@ export default defineConfig({
     'statistics.spec.ts',
     'provider-setup.spec.ts',
     'settings-details.spec.ts',
+    'seerr.spec.ts',
   ],
   workers: 1,
   use: {

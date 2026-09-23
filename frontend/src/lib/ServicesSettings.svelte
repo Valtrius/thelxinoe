@@ -22,6 +22,9 @@
   import bazarrIcon from './services/icons/bazarr.png';
   import prowlarrIcon from './services/icons/prowlarr.png';
   import nzbgetIcon from './services/icons/nzbget.png';
+  import seerrIcon from './services/icons/seerr.png';
+  import QualityProfileEditor from './services/QualityProfileEditor.svelte';
+  import IndexerOnboarding from './services/IndexerOnboarding.svelte';
   import ServiceConnections, {
     type ServiceConnection,
   } from './ServiceConnections.svelte';
@@ -29,7 +32,7 @@
   let { timeFormat = '24h' } = $props<{ timeFormat?: '12h' | '24h' }>();
 
   type ServiceKind =
-    'radarr' | 'sonarr' | 'lidarr' | 'bazarr' | 'prowlarr' | 'nzbget';
+    'radarr' | 'sonarr' | 'lidarr' | 'bazarr' | 'prowlarr' | 'nzbget' | 'seerr';
   type Definition = {
     kind: ServiceKind;
     label: string;
@@ -67,6 +70,7 @@
     error?: string | null;
   };
   type ManagerOptions = {
+    defaults: ManagerDefaults;
     roots: { id: number; path: string }[];
     profiles: { id: number; name: string }[];
     metadata_profiles: { id: number; name: string }[];
@@ -79,6 +83,7 @@
     missing: unknown[];
   };
   type SupportSnapshot = {
+    initialized?: boolean;
     health?: ({ message: string; type: string } | string)[];
     indexers?: {
       id: number;
@@ -175,6 +180,14 @@
   };
 
   const definitions: Definition[] = [
+    {
+      kind: 'seerr',
+      label: 'Seerr',
+      role: 'support',
+      internalPort: 5055,
+      hostPort: 15055,
+      description: 'Discovery and requests',
+    },
     {
       kind: 'radarr',
       label: 'Radarr',
@@ -398,8 +411,9 @@
     bazarr: bazarrIcon,
     prowlarr: prowlarrIcon,
     nzbget: nzbgetIcon,
+    seerr: seerrIcon,
   };
-  let selectedKind = $state<ServiceKind>('radarr');
+  let selectedKind = $state<ServiceKind>('seerr');
   const busy = $derived(isBusy(selectedKind));
   const detailErrors = $state<Partial<Record<ServiceKind, string>>>({});
   const detailLoading = $state<Partial<Record<ServiceKind, boolean>>>({});
@@ -788,6 +802,7 @@
     if (manager(kind)?.id !== service.id) return;
     managerOptions[kind] = options;
     if (draft.loaded) return;
+    service.defaults = options.defaults ?? service.defaults;
     draft.root_folder =
       service.defaults.root_folder ?? options.roots[0]?.path ?? '';
     draft.quality_profile =
@@ -799,17 +814,14 @@
     draft.monitored = service.defaults.monitored ?? true;
     draft.loaded = true;
   }
-  async function saveManagerDefaults(kind: ServiceKind) {
+  async function saveManagerDefaults(
+    kind: ServiceKind,
+    value: ManagerDefaults,
+  ) {
     const service = manager(kind);
-    const draft = defaults[kind];
-    if (!service || !draft) return;
-    await api(`/admin/managers/${service.id}/defaults`, 'PUT', {
-      root_folder: draft.root_folder,
-      quality_profile: draft.quality_profile,
-      metadata_profile: draft.metadata_profile,
-      monitored: draft.monitored,
-    });
-    await refresh();
+    if (!service) return;
+    await api(`/admin/managers/${service.id}/defaults`, 'PUT', value);
+    service.defaults = value;
   }
   async function testManager(kind: ServiceKind) {
     const service = manager(kind);
@@ -984,13 +996,13 @@
     }}
   />
   <nav
-    class="service-strip mb-5.5 grid grid-cols-6 border-b border-line compact:grid-cols-3 tight:grid-cols-2"
+    class="service-strip mb-5.5 grid grid-cols-[repeat(7,minmax(8.5rem,1fr))] overflow-x-auto border-b border-line"
     aria-label="Select service"
   >
     {#each definitions as service (service.kind)}
       {@const state = status(service.kind)}
       <button
-        class="service-tab flex min-w-0 cursor-pointer items-center gap-2 border-0 border-r border-b-3 border-r-line border-b-transparent bg-transparent px-2 py-3 text-left text-foreground last:border-r-0 hover:bg-surface-soft aria-[current=true]:border-b-accent aria-[current=true]:bg-accent-soft service-narrow:flex-col service-narrow:items-start compact:flex-row tight:gap-1.25 tight:px-1.25 tight:py-2.5 [&>img]:size-6.75 [&>img]:object-contain tight:[&>img]:size-5.75 [&_strong]:text-[11px] [&_strong]:font-[650]"
+        class="service-tab flex min-w-0 cursor-pointer items-center gap-2 border-0 border-r border-b-3 border-r-line border-b-transparent bg-transparent px-2 py-3 text-left text-foreground last:border-r-0 hover:bg-surface-soft aria-[current=true]:border-b-accent aria-[current=true]:bg-accent-soft tight:gap-1.25 tight:px-1.25 tight:py-2.5 [&>img]:size-6.75 [&>img]:object-contain tight:[&>img]:size-5.75 [&_strong]:text-[11px] [&_strong]:font-[650]"
         aria-current={selectedKind === service.kind ? 'true' : undefined}
         aria-label={service.label}
         onclick={() => selectService(service.kind)}
@@ -1524,11 +1536,13 @@
           class="work-section border-b border-line py-4 first-of-type:pt-0 last:border-b-0"
           aria-label={definition.role === 'manager'
             ? 'Acquisition defaults'
-            : definition.kind === 'prowlarr'
-              ? 'Indexers'
-              : definition.kind === 'nzbget'
-                ? 'Downloads'
-                : 'Missing subtitles'}
+            : definition.kind === 'seerr'
+              ? 'Requests'
+              : definition.kind === 'prowlarr'
+                ? 'Indexers'
+                : definition.kind === 'nzbget'
+                  ? 'Downloads'
+                  : 'Missing subtitles'}
         >
           <div
             class="work-head mt-0 mr-7 mb-3 ml-0 flex items-center justify-between gap-3 compact:flex-wrap [&_h3]:m-0"
@@ -1536,11 +1550,13 @@
             <h3 class="mb-3.25 text-[12px] font-[650]">
               {definition.role === 'manager'
                 ? 'Acquisition defaults'
-                : definition.kind === 'prowlarr'
-                  ? 'Indexers'
-                  : definition.kind === 'nzbget'
-                    ? 'Downloads'
-                    : 'Missing subtitles'}
+                : definition.kind === 'seerr'
+                  ? 'Requests'
+                  : definition.kind === 'prowlarr'
+                    ? 'Indexers'
+                    : definition.kind === 'nzbget'
+                      ? 'Downloads'
+                      : 'Missing subtitles'}
             </h3>
             {#if definition.role === 'manager' && (item || live)}
               <Button
@@ -1581,72 +1597,83 @@
               Loading service settings…
             </p>{/if}
           {#if definition.role === 'manager'}
-            <p class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted">
-              These settings apply to new requests approved in Thelxinoe. Choose
-              the quality profile and whether to monitor and search for
-              releases. The library folder is configured automatically during
-              installation.
-            </p>
             {#if defaults[definition.kind]?.loaded}
               {@const options = managerOptions[definition.kind]}
               {@const draft = defaults[definition.kind]!}
               {#if options}
-                <form
-                  class="mt-3 grid gap-3 [&_label]:m-0"
-                  aria-label={`${definition.label} acquisition defaults`}
-                  onsubmit={(event) => {
-                    event.preventDefault();
-                    void work(
-                      () => saveManagerDefaults(definition.kind),
-                      'Acquisition defaults saved.',
-                    );
-                  }}
-                >
-                  {#if !options.roots.length}<p
-                      class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
-                    >
-                      Add a root folder in {definition.label} first.
-                    </p>{/if}
-                  <p
-                    class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
+                {#key connected.id}<AutoSaveForm
+                    class="mt-3 grid gap-3 [&_label]:m-0"
+                    label={`${definition.label} acquisition defaults`}
+                    value={{
+                      root_folder: draft.root_folder,
+                      quality_profile: draft.quality_profile,
+                      metadata_profile: draft.metadata_profile,
+                      monitored: draft.monitored,
+                    }}
+                    onsave={(value) =>
+                      saveManagerDefaults(definition.kind, value)}
+                    onRevert={(value) => Object.assign(draft, value)}
+                    disabled={busy}
                   >
-                    Library folder: <code>{draft.root_folder}</code>
-                  </p>
-                  <FormField
-                    >Quality profile<select
-                      class={formControlClass}
-                      bind:value={draft.quality_profile}
-                      required
-                      >{#each options.profiles as option (option.id)}
-                        <option value={option.id}>{option.name}</option>
-                      {/each}</select
-                    ></FormField
-                  >
-                  {#if definition.kind === 'lidarr'}
+                    <p class="text-[11px] text-muted">
+                      Library folder: <code>{draft.root_folder}</code>
+                    </p>
                     <FormField
-                      >Metadata profile<select
+                      >Quality profile<select
                         class={formControlClass}
-                        bind:value={draft.metadata_profile}
+                        bind:value={draft.quality_profile}
                         required
-                        >{#each options.metadata_profiles as option (option.id)}
-                          <option value={option.id}>{option.name}</option>
-                        {/each}</select
+                        >{#each options.profiles as option (option.id)}<option
+                            value={option.id}>{option.name}</option
+                          >{/each}</select
                       ></FormField
                     >
-                  {/if}
-                  <Switch bind:checked={draft.monitored} size="sm"
-                    >Monitor and search approved requests</Switch
+                    {#if definition.kind === 'lidarr'}<FormField
+                        >Metadata profile<select
+                          class={formControlClass}
+                          bind:value={draft.metadata_profile}
+                          required
+                          >{#each options.metadata_profiles as option (option.id)}<option
+                              value={option.id}>{option.name}</option
+                            >{/each}</select
+                        ></FormField
+                      >{/if}
+                    <Switch bind:checked={draft.monitored} size="sm"
+                      >Monitor and search requests</Switch
+                    >
+                  </AutoSaveForm>{/key}
+                {#if ['radarr', 'sonarr'].includes(definition.kind)}<div
+                    class="mt-4"
                   >
-                  <Button
-                    type="submit"
-                    size="form"
-                    disabled={busy ||
-                      !draft.root_folder ||
-                      !draft.quality_profile}>Save defaults</Button
-                  >
-                </form>
+                    {#key connected.id}<QualityProfileEditor
+                        serviceId={connected.id}
+                        created={async () => {
+                          draft.loaded = false;
+                          await loadManagerOptions(definition.kind);
+                        }}
+                      />{/key}
+                  </div>{/if}
               {/if}
             {/if}
+          {:else if definition.kind === 'seerr'}
+            <p class="text-xs leading-6 text-muted">
+              Discovery and requests are available on Home. Availability comes
+              from Radarr and Sonarr.
+            </p>
+            {#if supportData?.initialized === false}<Notice tone="warning"
+                >Seerr setup is still in progress.</Notice
+              >{/if}
+            <Button
+              class="mt-3"
+              variant="secondary"
+              size="sm"
+              disabled={busy}
+              onclick={() =>
+                void work(async () => {
+                  await api('/admin/seerr/sync', 'POST');
+                }, 'Service connections refreshed.')}
+              >Refresh Radarr and Sonarr connections</Button
+            >
           {:else if supportData}
             {#each supportData.health ?? [] as issue, index (index)}<Notice
                 tone="warning"
@@ -1657,7 +1684,7 @@
               {#if !supportData.indexers?.length}<p
                   class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
                 >
-                  No indexers configured. Open Prowlarr to add one.
+                  No indexers configured.
                 </p>{/if}
               {#each supportData.indexers ?? [] as indexer (indexer.id)}
                 <div
@@ -1703,6 +1730,10 @@
                   </div>
                 </div>
               {/each}
+              {#key connected.id}<IndexerOnboarding
+                  serviceId={connected.id}
+                  added={() => refreshSupport('prowlarr')}
+                />{/key}
             {:else if selectedKind === 'nzbget'}
               <DownloadsTable
                 queue={supportData.queue ?? []}

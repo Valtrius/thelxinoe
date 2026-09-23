@@ -47,6 +47,7 @@ pub struct View {
 pub enum Control {
     Pause,
     Seek(f64),
+    Quality { session: String, quality: String },
     Volume(f64),
     Next,
     Stop,
@@ -180,8 +181,17 @@ struct Prepared {
     activity: thelxinoe_core::activity::ActivityClock,
 }
 async fn prepare(backend: &Backend, choice: &Choice, first: bool) -> Result<Prepared> {
+    prepare_quality(backend, choice, first, None).await
+}
+async fn prepare_quality(
+    backend: &Backend,
+    choice: &Choice,
+    first: bool,
+    quality: Option<&str>,
+) -> Result<Prepared> {
     let preferences = backend.call("/playback/preferences", "GET", None).await?;
-    let data=backend.call("/playback","POST",Some(json!({"media_id":choice.id,"file_id":choice.file_id,"position":if first {json!(choice.position)}else{json!(0)},"queue":choice.queue_context,"options":{"quality":preferences["quality"],"audio":null,"subtitle":null,"capabilities":{"containers":["mp4","m4v","m4a","mkv","avi","mov","webm","ts","m2ts","mpg","mpeg","flac","mp3","ogg","opus","wav","wma","aac","aiff","alac"],"video":["h264","hevc","vp8","vp9","av1","mpeg4","mpeg2video","mpeg1video","wmv3","vc1","prores","mjpeg"],"audio":["aac","mp3","flac","vorbis","opus","ac3","eac3","dts","truehd","alac","pcm_s16le","pcm_s24le","pcm_s32le","pcm_f32le","wmav2"],"hls":true,"native_tracks":true,"native_remote":true}}}))).await?;
+    let quality = quality.unwrap_or(preferences["quality"].as_str().unwrap_or("auto"));
+    let data=backend.call("/playback","POST",Some(json!({"media_id":choice.id,"file_id":choice.file_id,"position":if first {json!(choice.position)}else{json!(0)},"queue":choice.queue_context,"options":{"quality":quality,"audio":null,"subtitle":null,"capabilities":{"containers":["mp4","m4v","m4a","mkv","avi","mov","webm","ts","m2ts","mpg","mpeg","flac","mp3","ogg","opus","wav","wma","aac","aiff","alac"],"video":["h264","hevc","vp8","vp9","av1","mpeg4","mpeg2video","mpeg1video","wmv3","vc1","prores","mjpeg"],"audio":["aac","mp3","flac","vorbis","opus","ac3","eac3","dts","truehd","alac","pcm_s16le","pcm_s24le","pcm_s32le","pcm_f32le","wmav2"],"hls":true,"native_tracks":true,"native_remote":true}}}))).await?;
     Ok(Prepared {
         playlist_id: -1,
         id: data["id"]
@@ -290,11 +300,17 @@ async fn run(
     let pipe = format!(r"\\.\pipe\thelxinoe-{}", uuid::Uuid::new_v4());
     let segment_script = app.path().app_local_data_dir()?.join("segments.lua");
     std::fs::write(&segment_script, include_str!("segments.lua"))?;
+    let quality_script = app
+        .path()
+        .app_local_data_dir()?
+        .join("thelxinoe-quality.lua");
+    std::fs::write(&quality_script, include_str!("quality.lua"))?;
     let mut command = Command::new(executable);
     launch.configure(&mut command)?;
     let mut child = command
         .args(&launch.mpv_args)
         .arg(format!("--scripts-append={}", segment_script.display()))
+        .arg(format!("--scripts-append={}", quality_script.display()))
         .args([
             "--config=yes",
             "--idle=yes",
@@ -399,6 +415,33 @@ async fn run(
                             }
                         }
                     }
+                    Some(Control::Quality { session, quality }) => {
+                        let Some(entry) = prepared.get_mut(&current).filter(|entry| entry.id == session && quality_allowed(&entry.data, &quality)) else { continue; };
+                        let resume = !paused;
+                        ipc.call(json!(["set_property", "pause", true])).await?;
+                        entry.activity.set_active(false);
+                        let mut choice = choices[current].clone();
+                        choice.position = Some(entry.position);
+                        match prepare_quality(&backend, &choice, true, Some(&quality)).await {
+                            Ok(mut replacement) => {
+                                match load(&mut ipc, &mut replacement, &choice.title, "replace").await {
+                                    Ok(()) => {
+                                        report(&backend, entry, "stopped").await?;
+                                        *entry = replacement;
+                                        loaded = false;
+                                        video_ready = false;
+                                    }
+                                    Err(_) => {
+                                        let _ = backend.call(&format!("/playback/{}", replacement.id), "DELETE", None).await;
+                                        load(&mut ipc, entry, &choice.title, "replace").await?;
+                                        let _ = ipc.call(json!(["show-text", "Could not switch quality", 4000])).await;
+                                    }
+                                }
+                            }
+                            Err(_) => { let _ = ipc.call(json!(["show-text", "This quality is temporarily unavailable", 4000])).await; }
+                        }
+                        ipc.call(json!(["set_property", "pause", !resume])).await?;
+                    }
                     Some(Control::Volume(volume)) => { ipc.call(json!(["set_property", "volume", volume])).await?; }
                     Some(Control::Next) if current + 1 < choices.len() => { ipc.call(json!(["playlist-next", "force"])).await?; }
                     Some(Control::Next | Control::Stop) | None => { break; }
@@ -409,7 +452,11 @@ async fn run(
                         Some("start-file") => {
                             if let Some(entry) = prepared.get_mut(&current) { entry.activity.set_active(false); }
                             if let Some((index, _)) = prepared.iter().find(|(_, e)| Some(e.playlist_id) == message["playlist_entry_id"].as_i64()) {
-                                current = *index;
+                                let index = *index;
+                                if index != current && let Some(previous) = prepared.get_mut(&current) {
+                                    report(&backend, previous, "stopped").await?;
+                                }
+                                current = index;
                                 loaded = false;
                                 video_ready = false;
                                 started = true;
@@ -440,8 +487,19 @@ async fn run(
                                 && let Some(at) = message["args"][3].as_str().and_then(|s| s.parse::<f64>().ok()).filter(|v| v.is_finite() && *v >= 0.0)
                             { let _ = controls.try_send(Control::Seek(at)); }
                         }
+                        Some("client-message") if message["args"][0] == "thelxinoe-quality" => {
+                            if let (Some(session), Some(quality)) = (message["args"][1].as_str(), message["args"][2].as_str()) {
+                                let _ = controls.try_send(Control::Quality { session: session.into(), quality: quality.into() });
+                            }
+                        }
                         Some("file-loaded") => {
                             loaded = true;
+                            if let Some(entry) = prepared.get(&current) {
+                                let mut qualities = entry.data["qualities"].as_array().cloned().unwrap_or_default();
+                                if !qualities.is_empty() { qualities.insert(0, json!({"value":"auto","label":"Auto"})); }
+                                let payload = json!({"session":entry.id,"qualities":qualities,"selected":entry.data["options"]["quality"]});
+                                let _ = ipc.call(json!(["script-message", "thelxinoe-qualities", payload.to_string()])).await;
+                            }
                             if let Some(entry) = prepared.get_mut(&current) {
                                 entry.activity.set_active(!paused && !idle);
                                 report(&backend, entry, if paused || idle { "paused" } else { "playing" }).await?;
@@ -471,6 +529,12 @@ async fn run(
                             if let Some(index) = index {
                                 let entry = prepared.get_mut(&index).unwrap();
                                 entry.activity.set_active(false);
+                                // MPV emits stop/redirect while a script reloads the
+                                // same playlist entry. Keep its server session alive.
+                                if reload_event(&message) {
+                                    if index == current { loaded = false; }
+                                    continue;
+                                }
                                 if message["reason"] == "error" { anyhow::bail!("MPV could not decode or retrieve this media"); }
                                 if message["reason"] == "eof" && entry.data["live"]!=true { entry.position = entry.data["duration"].as_f64().unwrap_or(entry.position); }
                                 report(&backend, entry, "stopped").await?;
@@ -545,3 +609,42 @@ async fn run(
     drop(launch); // Keep versions and the plugin configuration snapshot leased until MPV exits.
     work
 }
+
+fn quality_allowed(data: &Value, quality: &str) -> bool {
+    let choices = data["qualities"].as_array();
+    choices.is_some_and(|choices| {
+        !choices.is_empty()
+            && (quality == "auto" || choices.iter().any(|choice| choice["value"] == quality))
+    })
+}
+fn reload_event(message: &Value) -> bool {
+    matches!(message["reason"].as_str(), Some("stop" | "redirect"))
+}
+#[cfg(test)]
+mod quality_tests {
+    use super::*;
+    #[test]
+    fn reload_keeps_session_alive_but_eof_and_errors_end_it() {
+        for reason in ["stop", "redirect"] {
+            assert!(reload_event(&json!({"reason":reason})));
+        }
+        for reason in ["eof", "error", "quit"] {
+            assert!(!reload_event(&json!({"reason":reason})));
+        }
+    }
+    #[test]
+    fn menu_can_only_request_server_offered_resolutions() {
+        let data = json!({"qualities":[{"value":"1080p"},{"value":"720p60"}]});
+        for quality in ["auto", "1080p", "720p60"] {
+            assert!(quality_allowed(&data, quality));
+        }
+        for quality in ["2160p", "https://example.org/video", ""] {
+            assert!(!quality_allowed(&data, quality));
+        }
+        assert!(!quality_allowed(&json!({}), "auto"));
+    }
+}
+
+#[cfg(test)]
+#[path = "quality_smoke.rs"]
+mod quality_smoke;

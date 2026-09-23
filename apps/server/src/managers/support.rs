@@ -19,7 +19,7 @@ pub(super) struct Credentials {
 pub(super) struct Support {
     id: String,
     kind: String,
-    container: String,
+    pub(super) container: String,
     port: u16,
     media_source: String,
     pub(super) credentials: Credentials,
@@ -80,6 +80,11 @@ pub(super) async fn ensure_idle(state: &AppState, key: &str) -> Result<()> {
                 )
             })
         }),
+        "seerr" => c
+            .get("settings/jobs")
+            .await?
+            .as_array()
+            .is_some_and(|jobs| jobs.iter().all(|job| job["running"] == false)),
         "bazarr" => c.get("system/tasks").await?["data"]
             .as_array()
             .is_some_and(|tasks| tasks.iter().all(|v| v["job_running"] == false)),
@@ -93,8 +98,13 @@ pub(super) async fn ensure_idle(state: &AppState, key: &str) -> Result<()> {
     Ok(())
 }
 pub(super) async fn connect<'a>(state: &'a AppState, s: &Support) -> Result<Connection<'a>> {
-    let (base, media_source) =
-        evidence_for(state, &s.container, s.port, s.kind != "prowlarr").await?;
+    let (base, media_source) = evidence_for(
+        state,
+        &s.container,
+        s.port,
+        !matches!(s.kind.as_str(), "prowlarr" | "seerr"),
+    )
+    .await?;
     if media_source != s.media_source {
         return Err(ApiError::conflict(
             "Service mounts changed; reconnect the service",
@@ -138,6 +148,7 @@ pub(super) async fn version(c: &Connection<'_>, credentials: &Credentials) -> Re
     let value = match c.kind.as_str() {
         "nzbget" => rpc(c, credentials, "version", json!([])).await?,
         "bazarr" => c.get("system/status").await?["data"]["bazarr_version"].clone(),
+        "seerr" => c.get("status").await?["version"].clone(),
         _ => {
             let value = c.get("system/status").await?;
             if value["appName"] != "Prowlarr" {
@@ -186,8 +197,10 @@ async fn register_with_actor(
     input: Register,
     actor_id: String,
 ) -> Result<Json<Value>> {
-    if !matches!(input.kind.as_str(), "bazarr" | "prowlarr" | "nzbget")
-        || input.name.trim().is_empty()
+    if !matches!(
+        input.kind.as_str(),
+        "bazarr" | "prowlarr" | "nzbget" | "seerr"
+    ) || input.name.trim().is_empty()
         || input.name.len() > 100
         || input.credentials.secret.is_empty()
         || input.credentials.secret.len() > 1024
@@ -204,7 +217,7 @@ async fn register_with_actor(
         &state,
         &input.container_id,
         input.port,
-        input.kind != "prowlarr",
+        !matches!(input.kind.as_str(), "prowlarr" | "seerr"),
     )
     .await?;
     let c = Connection {
@@ -275,6 +288,9 @@ async fn wanted(c: &Connection<'_>, domain: &str) -> Result<Value> {
 }
 async fn snapshot(c: &Connection<'_>, s: &Support) -> Result<Value> {
     match s.kind.as_str() {
+        "seerr" => {
+            Ok(json!({"initialized":c.get("settings/public").await?["initialized"],"health":[]}))
+        }
         "nzbget" => {
             let status = rpc(c, &s.credentials, "status", json!([])).await?;
             let queue = rpc(c, &s.credentials, "listgroups", json!([0])).await?;
@@ -348,6 +364,9 @@ async fn inspect(
 ) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
     let s = load(&state, &key).await?;
+    if s.kind == "prowlarr" {
+        super::indexers::ensure_hosts(&state, &key).await?;
+    }
     let result = async {
         let c = connect(&state, &s).await?;
         snapshot(&c, &s).await
@@ -386,6 +405,7 @@ async fn action(
     let s = load(&state, &key).await?;
     let c = connect(&state, &s).await?;
     match s.kind.as_str() {
+        "seerr" => return Err(ApiError::bad("Use the Seerr request controls")),
         "nzbget" => {
             let (method, params) = match input.action.as_str() {
                 "pause_all" => ("pausedownload", json!([])),

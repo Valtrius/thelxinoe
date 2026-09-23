@@ -67,17 +67,23 @@ impl Pipelines {
         id: &str,
         source: &RemoteSource,
         options: &Options,
+        mode: &str,
         start: f64,
     ) -> Result<(String, f64)> {
         source.validate()?;
         if !start.is_finite() || start < 0.0 {
             bail!("Invalid stream position");
         }
+        let start = if mode == "remux" && start > 0.0 {
+            remote_keyframe_start(source, start).await?
+        } else {
+            start
+        };
         self.start_input(
             id,
             Input::Remote(source),
             options,
-            "transcode",
+            mode,
             if source.live { 0.0 } else { start },
         )
         .await
@@ -127,7 +133,14 @@ impl Pipelines {
                     "15000000",
                 ]);
                 if !source.live {
-                    command.args(["-readrate", "1", "-ss", &timeline_start.to_string()]);
+                    command.args([
+                        "-readrate",
+                        "1",
+                        "-readrate_initial_burst",
+                        "30",
+                        "-ss",
+                        &timeline_start.to_string(),
+                    ]);
                 }
                 command.args(["-i", address]);
             }
@@ -177,6 +190,15 @@ impl Pipelines {
                 &format!("expr:gte(t,n_forced*{segment_seconds})"),
             ]);
         }
+        let fragmented = online && mode == "remux";
+        if fragmented {
+            command.args([
+                "-hls_segment_type",
+                "fmp4",
+                "-hls_fmp4_init_filename",
+                "init.mp4",
+            ]);
+        }
         command
             .args([
                 "-avoid_negative_ts",
@@ -193,7 +215,11 @@ impl Pipelines {
                 "delete_segments+independent_segments+temp_file",
                 "-hls_segment_filename",
             ])
-            .arg(directory.join("segment-%06d.ts"))
+            .arg(directory.join(if fragmented {
+                "segment-%06d.m4s"
+            } else {
+                "segment-%06d.ts"
+            }))
             .arg(directory.join("index.m3u8"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -258,9 +284,10 @@ impl Pipelines {
     }
     pub async fn file(&self, id: &str, revision: &str, name: &str) -> Result<Option<PathBuf>> {
         let valid = name == "index.m3u8"
+            || name == "init.mp4"
             || (name.starts_with("segment-")
-                && name.ends_with(".ts")
-                && name.len() == 17
+                && ((name.ends_with(".ts") && name.len() == 17)
+                    || (name.ends_with(".m4s") && name.len() == 18))
                 && name[8..14].bytes().all(|v| v.is_ascii_digit()));
         if !valid {
             return Ok(None);
@@ -325,24 +352,46 @@ impl Pipelines {
 }
 
 async fn keyframe_start(source: &Source, position: f64) -> Result<f64> {
+    probe_keyframe(&source.path.to_string_lossy(), position, false).await
+}
+async fn remote_keyframe_start(source: &RemoteSource, position: f64) -> Result<f64> {
+    source.validate()?;
+    probe_keyframe(&source.video, position, true).await
+}
+async fn probe_keyframe(input: &str, position: f64, remote: bool) -> Result<f64> {
     let mut command = Command::new("ffprobe");
-    command
-        .args([
-            "-v",
-            "error",
+    if remote {
+        command.env_remove("FFREPORT").args([
+            "-protocol_whitelist",
+            "https,tls,tcp,crypto",
+            "-rw_timeout",
+            "10000000",
+        ]);
+    }
+    if remote {
+        // The demuxer seeks to the preceding keyframe using the file index.
+        // Inspect packets there instead of downloading and decoding a minute.
+        command.args([
+            "-read_intervals",
+            &format!("{position}%+0.1"),
+            "-show_packets",
+            "-show_entries",
+            "packet=pts_time,flags",
+        ]);
+    } else {
+        command.args([
             "-skip_frame",
             "nokey",
             "-read_intervals",
             &format!("{}%+60", (position - 30.0).max(0.0)),
-            "-select_streams",
-            "v:0",
             "-show_frames",
             "-show_entries",
             "frame=best_effort_timestamp_time",
-            "-of",
-            "json",
-        ])
-        .arg(&source.path)
+        ]);
+    }
+    command
+        .args(["-v", "error", "-select_streams", "v:0", "-of", "json"])
+        .arg(input)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);
@@ -353,15 +402,22 @@ async fn keyframe_start(source: &Source, position: f64) -> Result<f64> {
         bail!("Unable to locate a safe keyframe for seeking");
     }
     let frames: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    frames["frames"]
+    frames[if remote { "packets" } else { "frames" }]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|f| {
-            f["best_effort_timestamp_time"]
-                .as_str()?
-                .parse::<f64>()
-                .ok()
+            if remote && !f["flags"].as_str().is_some_and(|flags| flags.contains('K')) {
+                return None;
+            }
+            f[if remote {
+                "pts_time"
+            } else {
+                "best_effort_timestamp_time"
+            }]
+            .as_str()?
+            .parse::<f64>()
+            .ok()
         })
         .filter(|t| t.is_finite() && *t >= 0.0 && *t <= position + 0.001)
         .max_by(f64::total_cmp)

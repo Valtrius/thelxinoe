@@ -12,18 +12,11 @@
   import MediaActions from './MediaActions.svelte';
   import MediaOperations from './MediaOperations.svelte';
   import SegmentEditor from './SegmentEditor.svelte';
-  import Requests from './Requests.svelte';
   import { untrack, onDestroy } from 'svelte';
-  import { twMerge } from 'tailwind-merge';
   import type { MediaChoice } from './playback';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
-  import {
-    emptyClass,
-    inlineFormClass,
-    panelClass,
-    rowClass,
-  } from './ui/styles';
+  import { emptyClass, rowClass } from './ui/styles';
   let {
     domain,
     admin,
@@ -67,11 +60,7 @@
   let items = $state<Item[]>([]),
     roots = $state<Root[]>([]),
     error = $state(''),
-    busy = $state(false),
-    showAdd = $state(false),
-    name = $state(''),
-    path = $state(''),
-    mount = $state('');
+    busy = $state(false);
   let collections = $state<{ id: number; name: string; count: number }[]>([]),
     collection = $state('');
   let breadcrumbs = $state<{ id: string; title: string }[]>([]),
@@ -96,7 +85,6 @@
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => void load(), 250);
   }
-  let acquisition = $state(false);
   async function load() {
     const request = ++generation;
     busy = true;
@@ -132,7 +120,6 @@
         );
         if (request !== generation) return;
         roots = result.items.filter((r) => r.kind === domain.toLowerCase());
-        mount = result.media_mount;
       }
     } catch (e) {
       if (request === generation) error = String(e);
@@ -186,65 +173,30 @@
       error = String(e);
     }
   }
-  async function add() {
-    busy = true;
-    error = '';
-    try {
-      await api('/catalog/roots', 'POST', {
-        name,
-        path,
-        kind: domain.toLowerCase(),
-      });
-      name = '';
-      path = '';
-      showAdd = false;
-      await load();
-    } catch (e) {
-      error = String(e);
-    } finally {
-      busy = false;
-    }
-  }
 </script>
 
-<SectionHeading>
-  <div>
-    {#if breadcrumbs.length}<Button
-        variant="secondary"
-        size="form"
-        onclick={() => {
-          breadcrumbs = breadcrumbs.slice(0, -1);
-          void load();
-        }}><ArrowLeft size={15} />{breadcrumbs.at(-1)?.title}</Button
-      >{:else}<p class="text-muted">Your collection, in one place.</p>{/if}
-  </div>
-  <Button
-    variant="secondary"
-    size="form"
-    onclick={() => (acquisition = !acquisition)}
-    >{acquisition ? 'Hide requests' : 'Search and request'}</Button
-  >
-  {#if admin}<Button
+{#if breadcrumbs.length}
+  <div class="mb-4">
+    <Button
       variant="secondary"
       size="form"
-      onclick={() => (showAdd = !showAdd)}
-      ><Folder size={16} /> Add folder</Button
-    >{/if}
-</SectionHeading>
+      onclick={() => {
+        breadcrumbs = breadcrumbs.slice(0, -1);
+        void load();
+      }}><ArrowLeft size={15} />{breadcrumbs.at(-1)?.title}</Button
+    >
+  </div>
+{/if}
 <div class="mb-5 flex flex-wrap items-center gap-3">
   <FormField class="m-0 min-w-45 max-w-90 flex-1"
-    >Search {domain.toLowerCase()}<input
+    ><span class="sr-only">Search {domain.toLowerCase()}</span><input
       class={formControlClass}
       bind:value={search}
       oninput={searchChanged}
       placeholder={`Search your ${domain.toLowerCase()}`}
     /></FormField
-  ><span class="text-muted">{items.length} items · Ctrl + scroll to zoom</span>
+  ><span class="text-muted">{items.length} items</span>
 </div>
-{#if acquisition}{#key domain}<Requests
-      user={{ id: userId, role: admin ? 'admin' : 'user' }}
-      {domain}
-    />{/key}{/if}
 {#if error}<Notice variant="error" role="alert">{error}</Notice>{/if}
 {#if domain === 'Movies' && collections.length}
   <FormField class="max-w-80"
@@ -259,29 +211,6 @@
     ></FormField
   >
 {/if}
-{#if showAdd}<form
-    class={twMerge(panelClass, inlineFormClass)}
-    onsubmit={(e) => {
-      e.preventDefault();
-      void add();
-    }}
-  >
-    <FormField
-      >Library name<input
-        class={formControlClass}
-        bind:value={name}
-        required
-        placeholder={`My ${domain.toLowerCase()}`}
-      /></FormField
-    ><FormField
-      >Folder inside {mount}<input
-        class={formControlClass}
-        bind:value={path}
-        required
-        placeholder={`${mount}/${domain.toLowerCase()}`}
-      /></FormField
-    ><Button type="submit" size="form" disabled={busy}>Add and scan</Button>
-  </form>{/if}
 {#if admin && roots.length}<details class="mb-5 border-b border-line">
     <summary>Library folders · {roots.length}</summary>
     <div>
@@ -391,10 +320,10 @@
       />{/each}
   </MediaGrid>{:else}<section class={emptyClass}>
     <Folder size={42} />
-    <h2>{busy ? 'Loading your library…' : 'Your collection starts here'}</h2>
+    <h2>
+      {busy ? 'Loading your library…' : search ? 'No matches' : 'No media yet'}
+    </h2>
     <p>
-      {admin
-        ? 'Add a folder from your media mount. Thelxinoe will discover its files and keep the catalog up to date.'
-        : 'Your administrator can add media folders to this library.'}
+      {search ? 'Try a different search.' : 'Imported media will appear here.'}
     </p>
   </section>{/if}
