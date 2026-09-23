@@ -4,7 +4,7 @@
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
   import Switch from './ui/Switch.svelte';
-  import { ExternalLink, RefreshCw } from '@lucide/svelte';
+  import { Copy, ExternalLink, RefreshCw } from '@lucide/svelte';
   import DownloadsTable from './services/DownloadsTable.svelte';
   import type { SupportDownload } from './services/downloads';
   import { serviceUiUrl, type Container } from './services/presentation';
@@ -331,12 +331,6 @@
     }),
     busy = $state(false),
     message = $state('');
-  let nzbgetLogin = $state<{
-    id: string;
-    username: string;
-    password: string;
-  } | null>(null);
-  let showNzbgetPassword = $state(false);
   const loadErrors = $state({
     managers: '',
     support: '',
@@ -528,8 +522,6 @@
     }
   }
   function selectService(kind: ServiceKind) {
-    nzbgetLogin = null;
-    showNzbgetPassword = false;
     selectedKind = kind;
     void loadSelectedData();
   }
@@ -759,7 +751,7 @@
     const snapshot = await api<SupportSnapshot>(`/admin/support/${service.id}`);
     snapshots[kind] = snapshot;
   }
-  async function revealNzbgetLogin() {
+  async function copyNzbgetCredential(field: 'username' | 'password') {
     const service = nzbgetLoginTarget;
     if (!service) return;
     const source = provision('nzbget') ? 'stack' : 'support';
@@ -767,14 +759,28 @@
       `/admin/${source}/${service.id}/login`,
       'POST',
     );
-    if (selectedKind === 'nzbget' && nzbgetLoginTarget?.id === service.id)
-      nzbgetLogin = { id: service.id, ...login };
-  }
-  async function copyNzbgetLogin(value: string, label: string) {
-    if (!navigator.clipboard?.writeText)
-      throw new Error('Clipboard unavailable. Select the value to copy it.');
-    await navigator.clipboard.writeText(value);
-    message = `${label} copied to clipboard.`;
+    const value = login[field];
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(value);
+        return;
+      } catch {
+        // Local HTTP sessions can use the selection-based fallback below.
+      }
+    }
+    const input = document.createElement('textarea');
+    input.value = value;
+    input.style.position = 'fixed';
+    input.style.left = '-9999px';
+    document.body.appendChild(input);
+    let copied: boolean;
+    try {
+      input.select();
+      copied = document.execCommand('copy');
+    } finally {
+      input.remove();
+    }
+    if (!copied) throw new Error('Could not copy the NZBGet credential.');
   }
   async function supportCommand(
     kind: ServiceKind,
@@ -943,15 +949,40 @@
           <span class="service-status" data-tone={state.tone}
             >{state.label}</span
           >
-          {#if url}<a
-              class="service-link"
-              href={url}
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label={`Open ${service.label}: ${url}`}
-              ><span>{url.replace(/^https?:\/\//, '').replace(/\/$/, '')}</span
-              ><ExternalLink size={13} aria-hidden="true" /></a
-            >{/if}
+          {#if url}<div class="service-url-line">
+              <a
+                class="service-link"
+                href={url}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label={`Open ${service.label}: ${url}`}
+                ><span
+                  >{url.replace(/^https?:\/\//, '').replace(/\/$/, '')}</span
+                ><ExternalLink size={13} aria-hidden="true" /></a
+              >
+              {#if service.kind === 'nzbget' && nzbgetLoginTarget}
+                <button
+                  class="credential-copy"
+                  type="button"
+                  aria-label="Copy NZBGet login"
+                  title="Copy NZBGet login"
+                  disabled={busy}
+                  onclick={() =>
+                    void work(() => copyNzbgetCredential('username'))}
+                  ><Copy size={10} aria-hidden="true" />Login</button
+                >
+                <button
+                  class="credential-copy"
+                  type="button"
+                  aria-label="Copy NZBGet password"
+                  title="Copy NZBGet password"
+                  disabled={busy}
+                  onclick={() =>
+                    void work(() => copyNzbgetCredential('password'))}
+                  ><Copy size={10} aria-hidden="true" />Pass</button
+                >
+              {/if}
+            </div>{/if}
           <div class="rail-progress">
             {#if progress}<span>{progress}</span>
               <div
@@ -1272,68 +1303,6 @@
           <p>
             This view refreshes automatically as the service becomes available.
           </p>
-        </section>
-      {/if}
-      {#if definition.kind === 'nzbget' && nzbgetLoginTarget}
-        <section class="work-section" aria-label="NZBGet login">
-          <div class="work-head">
-            <h3>NZBGet login</h3>
-            {#if nzbgetLogin?.id === nzbgetLoginTarget.id}<Button
-                variant="ghost"
-                size="sm"
-                onclick={() => {
-                  nzbgetLogin = null;
-                  showNzbgetPassword = false;
-                }}>Hide login</Button
-              >{:else}<Button
-                variant="secondary"
-                size="sm"
-                disabled={busy}
-                onclick={() => void work(revealNzbgetLogin)}>Show login</Button
-              >{/if}
-          </div>
-          {#if nzbgetLogin && nzbgetLogin.id === nzbgetLoginTarget.id}
-            <div class="login-fields">
-              <label
-                >Username<input readonly value={nzbgetLogin.username} /></label
-              >
-              <Button
-                variant="secondary"
-                size="sm"
-                disabled={busy}
-                onclick={() =>
-                  void work(() =>
-                    copyNzbgetLogin(nzbgetLogin!.username, 'Username'),
-                  )}>Copy username</Button
-              >
-              <label
-                >Password<input
-                  readonly
-                  type={showNzbgetPassword ? 'text' : 'password'}
-                  value={nzbgetLogin.password}
-                /></label
-              >
-              <div class="row-actions">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onclick={() => (showNzbgetPassword = !showNzbgetPassword)}
-                  >{showNzbgetPassword
-                    ? 'Hide password'
-                    : 'Show password'}</Button
-                >
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={busy}
-                  onclick={() =>
-                    void work(() =>
-                      copyNzbgetLogin(nzbgetLogin!.password, 'Password'),
-                    )}>Copy password</Button
-                >
-              </div>
-            </div>
-          {/if}
         </section>
       {/if}
       {#if connected}
@@ -1870,20 +1839,57 @@
     margin-top: 15px;
     font-size: 11px;
   }
+  .service-url-line {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 12px;
+    min-width: 0;
+    min-height: 18px;
+  }
   .service-link {
     display: flex;
     align-items: center;
+    flex: 0 1 auto;
     gap: 5px;
-    margin-top: 12px;
+    min-width: 0;
     width: fit-content;
     max-width: 100%;
     font-size: 11px;
     color: var(--accent);
   }
   .service-link span {
-    overflow-wrap: anywhere;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .service-link :global(svg) {
+    flex: none;
+  }
+  .credential-copy {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    gap: 2px;
+    height: 18px;
+    padding: 0 3px;
+    border: 1px solid var(--line);
+    background: var(--surface-soft);
+    color: var(--foreground);
+    font-size: 9px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .credential-copy:hover {
+    border-color: var(--line-strong);
+    color: var(--accent);
+  }
+  .credential-copy:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  .credential-copy :global(svg) {
     flex: none;
   }
   .rail-progress {
@@ -1980,18 +1986,6 @@
   }
   .work-head h3 {
     margin: 0;
-  }
-  .login-fields {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: end;
-    gap: 10px;
-  }
-  .login-fields label {
-    min-width: 0;
-  }
-  .login-fields input {
-    width: 100%;
   }
   .service-workspace p,
   .services-footer p {
