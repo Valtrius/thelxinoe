@@ -1,4 +1,6 @@
 <script lang="ts">
+  import FormField from './ui/FormField.svelte';
+  import { formControlClass } from './ui/styles';
   import { onMount } from 'svelte';
   import { api } from './api';
   import Button from './ui/Button.svelte';
@@ -32,9 +34,13 @@
   onMount(() => void load());
 </script>
 
-<label>
+<FormField>
   {label}
-  <select bind:value disabled={disabled || loading || Boolean(error)}>
+  <select
+    class={formControlClass}
+    bind:value
+    disabled={disabled || loading || Boolean(error)}
+  >
     {#if defaultTimezone}
       <option value="">Use server default ({defaultTimezone})</option>
     {/if}
@@ -45,7 +51,7 @@
       <option value={zone}>{zone}</option>
     {/each}
   </select>
-</label>
+</FormField>
 {#if error}
   <p role="alert">Could not load timezones: {error}</p>
   <Button

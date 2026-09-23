@@ -1,10 +1,13 @@
 <script lang="ts">
+  import Notice from './ui/Notice.svelte';
+  import FormField from './ui/FormField.svelte';
+  import { formControlClass } from './ui/styles';
   import { onMount } from 'svelte';
   import { api } from './api';
   import type { Preferences } from './playback';
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
   import Panel from './ui/Panel.svelte';
-  import { errorClass, inlineFormClass } from './ui/styles';
+  import { inlineFormClass } from './ui/styles';
   let value = $state<Preferences | null>(null),
     error = $state('');
   onMount(() => {
@@ -16,48 +19,54 @@
 
 <Panel>
   <h2>Playback</h2>
-  {#if error}<p role="alert" class={errorClass}>{error}</p>{/if}
+  {#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
   {#if value}<AutoSaveForm
       label="Playback preferences"
       class={inlineFormClass}
       onsave={() => api('/playback/preferences', 'PUT', value)}
     >
-      <label
-        >Default quality<select bind:value={value.quality}
+      <FormField
+        >Default quality<select
+          class={formControlClass}
+          bind:value={value.quality}
           ><option value="auto">Auto</option><option value="original"
             >Original</option
           >{#each [2, 4, 8, 20] as rate (rate)}<option value={`${rate}mbps`}
               >{rate} Mbps</option
             >{/each}</select
-        ></label
+        ></FormField
       >
-      <label
+      <FormField
         >Audio language<input
+          class={formControlClass}
           maxlength="16"
           placeholder="eng"
           bind:value={value.audio_language}
-        /></label
+        /></FormField
       >
-      <label
+      <FormField
         >Subtitle language<input
+          class={formControlClass}
           maxlength="16"
           placeholder="eng"
           bind:value={value.subtitle_language}
-        /></label
+        /></FormField
       >
-      <label
-        >Subtitles<select bind:value={value.subtitles}
+      <FormField
+        >Subtitles<select class={formControlClass} bind:value={value.subtitles}
           ><option value={false}>Off by default</option><option value={true}
             >Preferred language</option
           ></select
-        ></label
+        ></FormField
       >
-      <label
-        >ReplayGain<select bind:value={value.replay_gain}
+      <FormField
+        >ReplayGain<select
+          class={formControlClass}
+          bind:value={value.replay_gain}
           ><option value="track">Track</option><option value="album"
             >Album</option
           ><option value="off">Off</option></select
-        ></label
+        ></FormField
       >
     </AutoSaveForm>{/if}
 </Panel>

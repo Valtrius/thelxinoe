@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ProgressBar from './ProgressBar.svelte';
   import { Film, Music, Tv, Play, MoreHorizontal } from '@lucide/svelte';
   import { serverUrl } from '../api';
   let {
@@ -71,10 +72,11 @@
         />{:else if music}<Music size={48} />{:else if item.kind === 'show'}<Tv
           size={48}
         />{:else}<Film size={48} />{/if}
-      {#if item.position && item.duration}<span
-          class="card-progress absolute bottom-0 left-0 h-0.75 bg-accent shadow-accent-glow"
-          style:width={`${Math.min(100, (item.position / item.duration) * 100)}%`}
-        ></span>{/if}
+      {#if item.position && item.duration}<ProgressBar
+          class="card-progress absolute inset-x-0 bottom-0 h-0.75 bg-transparent"
+          value={(item.position / item.duration) * 100}
+          barClass="shadow-accent-glow"
+        />{/if}
     </div>
     <div class="tile-body min-w-0 p-4">
       {#if item.show_title}<div

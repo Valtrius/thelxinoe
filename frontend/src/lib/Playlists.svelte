@@ -1,16 +1,15 @@
 <script lang="ts">
+  import SectionHeading from './ui/SectionHeading.svelte';
+  import Notice from './ui/Notice.svelte';
+  import FormField from './ui/FormField.svelte';
+  import { formControlClass } from './ui/styles';
   import { untrack } from 'svelte';
   import { api } from './api';
   import type { Card } from './media-state';
   import type { MediaChoice } from './playback';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
-  import {
-    errorClass,
-    inlineFormClass,
-    rowClass,
-    sectionHeadingClass,
-  } from './ui/styles';
+  import { inlineFormClass, rowClass } from './ui/styles';
   type Playlist = {
     id: string;
     name: string;
@@ -137,7 +136,7 @@
   const editable = $derived(creating || selected?.owner_id === userId);
 </script>
 
-<div class={sectionHeadingClass}>
+<SectionHeading>
   <p class="text-muted">
     Everyone can play and favorite a playlist. Its owner controls the tracks.
   </p>
@@ -152,10 +151,10 @@
       results = [];
     }}>New playlist</Button
   >
-</div>
-{#if error}<p role="alert" class={errorClass}>{error}</p>{/if}
+</SectionHeading>
+{#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
 {#if creating || selected}<Panel aria-label="Playlist details">
-    <div class={sectionHeadingClass}>
+    <SectionHeading>
       <h2>{creating ? 'Create playlist' : selected?.name}</h2>
       <Button
         variant="secondary"
@@ -165,7 +164,7 @@
           selected = null;
         }}>Close playlist</Button
       >
-    </div>
+    </SectionHeading>
     {#if editable}<form
         class="my-4 grid gap-3 [&_button]:justify-self-start"
         onsubmit={(e) => {
@@ -173,27 +172,30 @@
           void save();
         }}
       >
-        <label
+        <FormField
           >Playlist name<input
+            class={formControlClass}
             bind:value={name}
             required
             maxlength="160"
-          /></label
-        ><label
-          >Description<textarea bind:value={description} maxlength="2000"
-          ></textarea></label
+          /></FormField
+        ><FormField
+          >Description<textarea
+            class={formControlClass}
+            bind:value={description}
+            maxlength="2000"></textarea></FormField
         ><Button type="submit" size="form" disabled={busy}>Save playlist</Button
         >
       </form>{:else}<p>{selected?.description}</p>
       <small>Owned by {selected?.owner}</small>{/if}
-    <div class={sectionHeadingClass}>
+    <SectionHeading>
       <h3>{tracks.length} tracks</h3>
       <Button
         size="form"
         disabled={!tracks.some((t) => t.available)}
         onclick={() => start()}>Play playlist</Button
       >
-    </div>
+    </SectionHeading>
     {#each tracks as track, index (index)}<div class={rowClass}>
         <span
           >{index + 1}. {track.title}{!track.available
@@ -233,10 +235,13 @@
           void search();
         }}
       >
-        <label>Find tracks<input bind:value={query} /></label><Button
-          type="submit"
-          variant="secondary"
-          size="form">Search tracks</Button
+        <FormField
+          >Find tracks<input
+            class={formControlClass}
+            bind:value={query}
+          /></FormField
+        ><Button type="submit" variant="secondary" size="form"
+          >Search tracks</Button
         >
       </form>
       {#each results as track (track.id)}<div class={rowClass}>

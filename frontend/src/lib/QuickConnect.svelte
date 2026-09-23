@@ -1,8 +1,11 @@
 <script lang="ts">
+  import Notice from './ui/Notice.svelte';
+  import FormField from './ui/FormField.svelte';
+  import { formControlClass } from './ui/styles';
   import { api } from './api';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
-  import { errorClass, inlineFormClass } from './ui/styles';
+  import { inlineFormClass } from './ui/styles';
   let { username } = $props<{ username: string }>();
   let code = $state('');
   let device = $state<{
@@ -57,8 +60,9 @@
       void inspect();
     }}
   >
-    <label
+    <FormField
       >TV code<input
+        class={formControlClass}
         bind:value={code}
         oninput={() => {
           device = null;
@@ -69,7 +73,7 @@
         inputmode="numeric"
         autocomplete="off"
         required
-      /></label
+      /></FormField
     >
     <Button type="submit" variant="secondary" size="form" disabled={busy}
       >Find device</Button
@@ -82,6 +86,6 @@
     <Button size="form" disabled={busy} onclick={() => void approve()}
       >Connect this device</Button
     >{/if}
-  {#if error}<p role="alert" class={errorClass}>{error}</p>{/if}
+  {#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
   {#if approved}<p role="status">Device approved. Continue on your TV.</p>{/if}
 </Panel>

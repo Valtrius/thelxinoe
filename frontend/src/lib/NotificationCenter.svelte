@@ -1,10 +1,11 @@
 <script lang="ts">
+  import SectionHeading from './ui/SectionHeading.svelte';
   import { untrack } from 'svelte';
   import { Bell } from '@lucide/svelte';
   import SidebarButton from './ui/SidebarButton.svelte';
   import { api } from './api';
   import Button from './ui/Button.svelte';
-  import { sectionHeadingClass } from './ui/styles';
+
   let {
     revision = 0,
     collapsed = false,
@@ -88,12 +89,12 @@
       class="panel notices fixed inset-auto bottom-6 z-80 m-0 max-h-[70vh] w-[min(480px,calc(100vw-210px))] overflow-auto border border-line bg-surface-strong p-6 shadow-none compact:right-2 compact:bottom-3 compact:left-20 compact:w-auto compact:p-4"
       aria-label="Notifications"
     >
-      <div class={sectionHeadingClass}>
+      <SectionHeading>
         <h2>Notifications</h2>
         <Button variant="secondary" size="form" onclick={() => void mark('all')}
           >Mark all read</Button
         >
-      </div>
+      </SectionHeading>
       {#if error}<p role="alert">{error}</p>{/if}
       {#each items as item (item.id)}<article
           class:unread={!item.read_at}

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import FormField from './ui/FormField.svelte';
+  import { formControlClass } from './ui/styles';
   import { onMount } from 'svelte';
   import { api, type User } from './api';
   import RequestStatus from './RequestStatus.svelte';
@@ -128,8 +130,9 @@
         void act(search);
       }}
     >
-      <label
+      <FormField
         >Acquisition service<select
+          class={formControlClass}
           bind:value={selected}
           onchange={() => {
             items = [];
@@ -138,14 +141,15 @@
           >{#each services as s (s.id)}<option value={s.id}
               >{s.name} ({s.kind})</option
             >{/each}</select
-        ></label
-      ><label
+        ></FormField
+      ><FormField
         >Search media<input
+          class={formControlClass}
           bind:value={term}
           required
           minlength="2"
           maxlength="200"
-        /></label
+        /></FormField
       ><Button type="submit" size="form" disabled={busy}>Search media</Button>
     </form>
   {/if}

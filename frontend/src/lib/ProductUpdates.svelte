@@ -1,4 +1,6 @@
 <script lang="ts">
+  import FormField from './ui/FormField.svelte';
+  import { formControlClass } from './ui/styles';
   import { onMount } from 'svelte';
   import { api } from './api';
   import Button from './ui/Button.svelte';
@@ -73,28 +75,30 @@
   <h3>Server updates</h3>
   {#if status}
     <div class="flex flex-wrap gap-4 [&_label]:min-w-48">
-      <label
-        >Update policy<select bind:value={policy}
+      <FormField
+        >Update policy<select class={formControlClass} bind:value={policy}
           ><option value="notify">Notify</option><option value="automatic"
             >Automatic</option
           ><option value="manual">Manual</option></select
-        ></label
+        ></FormField
       >
-      <label
+      <FormField
         >Maintenance starts ({status.timezone})<input
+          class={formControlClass}
           type="number"
           min="0"
           max="23"
           bind:value={start}
-        /></label
+        /></FormField
       >
-      <label
+      <FormField
         >Maintenance ends ({status.timezone})<input
+          class={formControlClass}
           type="number"
           min="0"
           max="23"
           bind:value={end}
-        /></label
+        /></FormField
       >
     </div>
     <Button
@@ -159,11 +163,12 @@
             Changes since the update are lost. It does not undo media or
             external service changes.
           </p>
-          <label
+          <FormField
             >Type RESTORE to recover version {item.previous_version}<input
+              class={formControlClass}
               bind:value={restore}
               autocomplete="off"
-            /></label
+            /></FormField
           >
           <Button
             variant="secondary"

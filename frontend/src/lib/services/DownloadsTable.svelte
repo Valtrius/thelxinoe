@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ProgressBar from '../ui/ProgressBar.svelte';
   import {
     ArrowDownToLine,
     Pause,
@@ -52,32 +53,40 @@
 {:else}
   <!-- svelte-ignore a11y_no_noninteractive_tabindex (The scroll region must be keyboard scrollable.) -->
   <div
-    class="downloads-scroll"
+    class="downloads-scroll max-h-136 overflow-auto [scrollbar-width:thin] [scrollbar-color:var(--line-strong)_transparent]"
     tabindex="0"
     role="region"
     aria-label="Current and recent downloads"
   >
-    <table>
-      <thead
+    <table
+      class="w-full min-w-0 table-fixed border-separate border-spacing-0 text-[11px] [&_th]:sticky [&_th]:top-0 [&_th]:z-1 [&_th]:h-8.5 [&_th]:bg-surface-strong [&_th]:text-[9px] [&_th]:font-[650] [&_th]:tracking-[0.06em] [&_th]:text-muted [&_th]:uppercase [&_th]:border-b [&_th]:border-line [&_th]:px-1.5 [&_th]:py-2.5 [&_th]:text-left [&_th]:align-middle [&_td]:border-b [&_td]:border-line [&_td]:px-1.5 [&_td]:py-2.5 [&_td]:text-left [&_td]:align-middle compact:text-[9px] compact:[&_th]:px-0.75 compact:[&_th]:py-2.25 compact:[&_td]:px-0.75 compact:[&_td]:py-2.25 tight:[&_td]:border-0 tight:[&_td]:px-0.5 tight:[&_td]:py-0.75"
+    >
+      <thead class="tight:sr-only"
         ><tr
-          ><th class="state-col" scope="col"
+          ><th class="state-col w-8 compact:w-5.5" scope="col"
             ><span class="sr-only">Status</span></th
-          ><th class="name-col" scope="col">Download</th><th
-            class="progress-col"
-            scope="col">Progress</th
-          ><th class="actions-col" scope="col">Actions</th></tr
+          ><th class="name-col w-[29%] compact:w-1/4" scope="col">Download</th
+          ><th class="progress-col w-auto" scope="col">Progress</th><th
+            class="actions-col w-17 compact:w-14.5"
+            scope="col">Actions</th
+          ></tr
         ></thead
       >
-      <tbody>
+      <tbody class="tight:block">
         {#each rows as row (`${row.history ? 'history' : 'queue'}:${row.id}`)}
           {@const state = downloadState(row, paused)}
           {@const progress = downloadProgress(row)}
           {@const StateIcon = icons[state.icon as keyof typeof icons]}
-          <tr>
-            <td class="download-state" data-tone={state.tone}>
+          <tr
+            class="h-12.5 tight:grid tight:h-auto tight:min-h-16.25 tight:grid-cols-[20px_minmax(0,1fr)_54px] tight:border-b tight:border-line tight:py-1.5 tight:[&>td:nth-child(3)]:col-start-2 tight:[&>td:nth-child(3)]:self-center tight:[&>td:last-child]:col-start-3 tight:[&>td:last-child]:self-center"
+          >
+            <td
+              class="download-state text-muted data-[tone=accent]:text-accent data-[tone=ok]:text-success data-[tone=warn]:text-warning data-[tone=bad]:text-danger tight:row-span-2 tight:self-center"
+              data-tone={state.tone}
+            >
               <!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard focus reveals the same status detail as hover.) -->
               <span
-                class="state-symbol"
+                class="state-symbol group/status inline-flex cursor-help"
                 tabindex="0"
                 role="img"
                 aria-label={state.label}
@@ -85,17 +94,25 @@
               >
                 <StateIcon
                   size={15}
-                  class={state.icon === 'processing' ? 'processing' : ''}
+                  class={state.icon === 'processing'
+                    ? 'animate-spin [animation-duration:1.4s] motion-reduce:animate-none'
+                    : ''}
                   aria-hidden="true"
                 />
-                <span class="status-tooltip" aria-hidden="true"
-                  >{state.label}</span
+                <span
+                  class="status-tooltip absolute z-2 mt-5 hidden max-w-57.5 border border-line-strong bg-surface-strong px-2 py-1.25 text-[11px] text-foreground group-hover/status:block group-focus/status:block"
+                  aria-hidden="true">{state.label}</span
                 >
               </span>
             </td>
-            <td class="download-name" title={row.title}>{row.title}</td>
+            <td
+              class="download-name font-[550] wrap-anywhere tight:col-start-2 tight:col-end-4 tight:text-[10px]"
+              title={row.title}>{row.title}</td
+            >
             <td>
-              <div class="progress-values">
+              <div
+                class="progress-values grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] gap-0.75 text-[10px] whitespace-nowrap tabular-nums [&_strong]:font-[650] [&>span:last-child]:text-right compact:gap-0.5 compact:text-[8px]"
+              >
                 <span title="Downloaded"
                   ><span class="sr-only">Downloaded </span>{formatDownloadSize(
                     progress.downloaded,
@@ -112,24 +129,18 @@
                   )}</span
                 >
               </div>
-              <div
-                class="download-progress"
-                data-tone={state.tone}
-                role="progressbar"
-                aria-label={`${row.title} download progress`}
-                aria-valuenow={progress.percent ?? undefined}
-                aria-valuemin="0"
-                aria-valuemax="100"
-                aria-valuetext={progress.percent === null
-                  ? 'Progress unavailable'
-                  : `${progress.percent}%`}
-              >
-                <span style:width={`${progress.percent ?? 0}%`}></span>
-              </div>
+              <ProgressBar
+                value={progress.percent}
+                label={`${row.title} download progress`}
+                class={`download-progress mt-1.5 ${state.tone === 'ok' ? 'text-success' : state.tone === 'bad' ? 'text-danger' : 'text-accent'}`}
+                barClass="transition-[width] duration-350 ease-[ease] motion-reduce:transition-none"
+              />
             </td>
             <td>
               {#if !row.history}
-                <div class="download-actions">
+                <div
+                  class="download-actions flex justify-end gap-0.5 [&_button]:h-6.5 [&_button]:w-6.5 compact:[&_button]:w-5.75"
+                >
                   {#if ['QUEUED', 'PAUSED', 'DOWNLOADING', 'FETCHING'].includes(row.status)}
                     <Button
                       variant="secondary"
@@ -167,220 +178,3 @@
     </table>
   </div>
 {/if}
-
-<style>
-  .downloads-scroll {
-    max-height: 34rem;
-    overflow: auto;
-    scrollbar-width: thin;
-    scrollbar-color: var(--line-strong) transparent;
-  }
-  table {
-    width: 100%;
-    min-width: 0;
-    table-layout: fixed;
-    border-collapse: separate;
-    border-spacing: 0;
-    font-size: 11px;
-  }
-  th,
-  td {
-    border-bottom: 1px solid var(--line);
-    padding: 10px 6px;
-    vertical-align: middle;
-    text-align: left;
-  }
-  th {
-    position: sticky;
-    top: 0;
-    z-index: 1;
-    height: 34px;
-    background: var(--surface-strong);
-    color: var(--muted);
-    font-size: 9px;
-    font-weight: 650;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-  tbody tr {
-    height: 50px;
-  }
-  .state-col {
-    width: 32px;
-  }
-  .name-col {
-    width: 29%;
-  }
-  .progress-col {
-    width: auto;
-  }
-  .actions-col {
-    width: 68px;
-  }
-  .download-name {
-    overflow-wrap: anywhere;
-    font-weight: 550;
-  }
-  .state-symbol {
-    display: inline-flex;
-    cursor: help;
-  }
-  .status-tooltip {
-    display: none;
-    position: absolute;
-    z-index: 2;
-    margin: 20px 0 0;
-    max-width: 230px;
-    padding: 5px 8px;
-    background: var(--surface-strong);
-    border: 1px solid var(--line-strong);
-    color: var(--foreground);
-    font-size: 11px;
-  }
-  .state-symbol:hover .status-tooltip,
-  .state-symbol:focus .status-tooltip {
-    display: block;
-  }
-  .download-state {
-    color: var(--muted);
-  }
-  [data-tone='accent'] {
-    color: var(--accent);
-  }
-  [data-tone='ok'] {
-    color: var(--success);
-  }
-  [data-tone='warn'] {
-    color: var(--warning);
-  }
-  [data-tone='bad'] {
-    color: var(--danger);
-  }
-  .progress-values {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-    gap: 3px;
-    font-size: 10px;
-    white-space: nowrap;
-    font-variant-numeric: tabular-nums;
-  }
-  .progress-values strong {
-    font-weight: 650;
-  }
-  .progress-values > span:last-child {
-    text-align: right;
-  }
-  .download-progress {
-    height: 4px;
-    margin-top: 6px;
-    background: var(--accent-soft);
-    color: var(--accent);
-  }
-  .download-progress[data-tone='ok'] {
-    color: var(--success);
-  }
-  .download-progress[data-tone='bad'] {
-    color: var(--danger);
-  }
-  .download-progress > span {
-    display: block;
-    height: 100%;
-    background: currentColor;
-    transition: width 0.35s ease;
-  }
-  .download-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 2px;
-  }
-  .download-actions :global(button) {
-    width: 26px;
-    height: 26px;
-  }
-  .state-symbol :global(.processing) {
-    animation: turn 1.4s linear infinite;
-  }
-  @keyframes turn {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-  @media (max-width: 720px) {
-    table {
-      min-width: 0;
-      font-size: 9px;
-    }
-    th,
-    td {
-      padding: 9px 3px;
-    }
-    .state-col {
-      width: 22px;
-    }
-    .name-col {
-      width: 25%;
-    }
-    .progress-col {
-      width: auto;
-    }
-    .actions-col {
-      width: 58px;
-    }
-    .progress-values {
-      font-size: 8px;
-      gap: 2px;
-    }
-    .download-actions :global(button) {
-      width: 23px;
-      height: 26px;
-    }
-  }
-  @media (max-width: 440px) {
-    thead {
-      position: absolute;
-      width: 1px;
-      height: 1px;
-      overflow: hidden;
-      clip-path: inset(50%);
-    }
-    tbody {
-      display: block;
-    }
-    tbody tr {
-      display: grid;
-      grid-template-columns: 20px minmax(0, 1fr) 54px;
-      height: auto;
-      min-height: 65px;
-      border-bottom: 1px solid var(--line);
-      padding: 6px 0;
-    }
-    td {
-      border: 0;
-      padding: 3px 2px;
-    }
-    .download-state {
-      grid-row: 1/3;
-      align-self: center;
-    }
-    .download-name {
-      grid-column: 2/4;
-      font-size: 10px;
-    }
-    td:nth-child(3) {
-      grid-column: 2;
-      align-self: center;
-    }
-    td:last-child {
-      grid-column: 3;
-      align-self: center;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .state-symbol :global(.processing) {
-      animation: none;
-    }
-    .download-progress > span {
-      transition: none;
-    }
-  }
-</style>

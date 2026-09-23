@@ -1,4 +1,6 @@
 <script lang="ts">
+  import FormField from './ui/FormField.svelte';
+  import { formControlClass } from './ui/styles';
   import Switch from './ui/Switch.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
@@ -74,13 +76,14 @@
       'the controller deployment backup directory'}. Keep the passphrase
     separately; Thelxinoe cannot recover it.
   </p>
-  <label class="my-4 block max-w-136"
+  <FormField class="my-4 block max-w-136"
     >Backup passphrase<input
+      class={formControlClass}
       type="password"
       autocomplete="new-password"
       minlength="16"
       bind:value={passphrase}
-    /></label
+    /></FormField
   >
   <Switch bind:checked={confirmation}
     >I understand that services will temporarily stop.</Switch
@@ -124,11 +127,12 @@
         backup. Changes since that backup will be lost. It does not undo changes
         to media or external services.
       </p>
-      <label class="my-4 block max-w-136"
+      <FormField class="my-4 block max-w-136"
         >Type RESTORE to confirm<input
+          class={formControlClass}
           bind:value={restoreConfirmation}
           autocomplete="off"
-        /></label
+        /></FormField
       ><Button
         variant="secondary"
         size="form"

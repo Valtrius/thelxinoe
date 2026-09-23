@@ -1,8 +1,12 @@
 <script lang="ts">
+  import Notice from './ui/Notice.svelte';
+  import FormField from './ui/FormField.svelte';
+  import { formControlClass } from './ui/styles';
+  import { twMerge } from 'tailwind-merge';
   import { api } from './api';
   import { untrack } from 'svelte';
   import Button from './ui/Button.svelte';
-  import { errorClass } from './ui/styles';
+
   let { id, changed } = $props<{ id: string; changed: () => void }>();
   type Episode = {
     id: string;
@@ -66,21 +70,21 @@
     Select the episodes represented by this local item. Sonarr numbering can
     differ from your files.
   </p>
-  {#if error}<p role="alert" class={errorClass}>{error}</p>{/if}
+  {#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
   <p class="text-[0.75rem]" role="status">{message}</p>
   {#if episodes.length}
     <div class="my-3 max-h-60 overflow-auto">
       {#each episodes as episode (episode.id)}
-        <label
+        <FormField
           class="flex-row items-center gap-2.5 py-1.75 text-xs leading-normal"
           ><input
-            class="w-auto"
+            class={twMerge(formControlClass, 'w-auto')}
             type="checkbox"
             value={episode.id}
             bind:group={chosen}
           />
           S{episode.season}E{episode.episode} · {episode.metadata.name ??
-            episode.id}</label
+            episode.id}</FormField
         >
       {/each}
     </div>

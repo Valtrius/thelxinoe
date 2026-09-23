@@ -1,8 +1,11 @@
 <script lang="ts">
+  import Notice from './ui/Notice.svelte';
+  import FormField from './ui/FormField.svelte';
+  import { formControlClass } from './ui/styles';
   import { api } from './api';
   import { untrack } from 'svelte';
   import Button from './ui/Button.svelte';
-  import { errorClass, inlineFormClass, rowClass } from './ui/styles';
+  import { inlineFormClass, rowClass } from './ui/styles';
   let {
     id,
     kind,
@@ -60,10 +63,8 @@
 
 <div class="mt-5 border-t border-line pt-4.5">
   <h3 class="text-[15px] font-[550]">Metadata</h3>
-  {#if error}<p class={errorClass} role="alert">{error}</p>{/if}{#if message}<p
-      class="text-[0.75rem] text-muted"
-      role="status"
-    >
+  {#if error}<Notice variant="error" role="alert">{error}</Notice
+    >{/if}{#if message}<p class="text-[0.75rem] text-muted" role="status">
       {message}
     </p>{/if}
   {#if ['movie', 'show', 'artist', 'album'].includes(kind)}<form
@@ -79,11 +80,14 @@
         });
       }}
     >
-      <label>Find a match<input bind:value={query} required /></label><Button
-        type="submit"
-        variant="secondary"
-        size="form"
-        disabled={busy}>Search media service</Button
+      <FormField
+        >Find a match<input
+          class={formControlClass}
+          bind:value={query}
+          required
+        /></FormField
+      ><Button type="submit" variant="secondary" size="form" disabled={busy}
+        >Search media service</Button
       ><Button
         type="button"
         variant="secondary"
@@ -137,24 +141,27 @@
       });
     }}
   >
-    <label
+    <FormField
       >Manual title<input
+        class={formControlClass}
         bind:value={manualTitle}
         placeholder="Leave empty to use media service title"
-      /></label
-    ><label
+      /></FormField
+    ><FormField
       >Manual overview<input
+        class={formControlClass}
         bind:value={overview}
         placeholder="Leave empty to use media service overview"
-      /></label
-    ><label
+      /></FormField
+    ><FormField
       >Manual year<input
+        class={formControlClass}
         type="number"
         min="1"
         max="9999"
         bind:value={year}
         placeholder="Use media service year"
-      /></label
+      /></FormField
     ><Button type="submit" variant="secondary" size="form" disabled={busy}
       >Save corrections</Button
     ><Button

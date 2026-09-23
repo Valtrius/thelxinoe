@@ -1,4 +1,7 @@
 <script lang="ts">
+  import FormField from './ui/FormField.svelte';
+  import { formControlClass } from './ui/styles';
+  import { twMerge } from 'tailwind-merge';
   import Switch from './ui/Switch.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
@@ -72,9 +75,9 @@
     <fieldset class="grid gap-[0.7rem] border border-line p-4" disabled={busy}>
       <legend>{policy.domain === 'movies' ? 'Movies' : 'TV seasons'}</legend>
       <Switch bind:checked={policy.enabled}>Enable retention</Switch>
-      <label class="m-0 flex-row items-center gap-2"
+      <FormField class="m-0 flex-row items-center gap-2"
         >Grace period (hours)<input
-          class="w-28"
+          class={twMerge(formControlClass, 'w-28')}
           type="number"
           min="0"
           max="8760"
@@ -82,7 +85,7 @@
           value={policy.grace_seconds / 3600}
           onchange={(event) =>
             (policy.grace_seconds = Number(event.currentTarget.value) * 3600)}
-        /></label
+        /></FormField
       >
       {#if policy.domain === 'shows'}<Switch
           bind:checked={policy.exclude_specials}

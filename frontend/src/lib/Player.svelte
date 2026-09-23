@@ -1,4 +1,7 @@
 <script lang="ts">
+  import Button from './ui/Button.svelte';
+  import { formControlClass } from './ui/styles';
+  import { twMerge } from 'tailwind-merge';
   import { onDestroy, tick, untrack } from 'svelte';
   import { PlaybackActivity } from './playback-activity';
   import Hls from 'hls.js';
@@ -603,11 +606,11 @@
     player?.pause();
   }}
   class={[
-    'player relative isolate aspect-video min-h-[210px] w-full overflow-hidden bg-[#090b0c] text-[#f5f6f7] [color-scheme:dark] [container-type:inline-size] fullscreen:m-0 fullscreen:aspect-auto fullscreen:h-full fullscreen:max-h-none fullscreen:w-full',
+    'player relative isolate aspect-video min-h-[210px] w-full overflow-hidden bg-[#090b0c] text-[#f5f6f7] [color-scheme:dark] @container/player fullscreen:m-0 fullscreen:aspect-auto fullscreen:h-full fullscreen:max-h-none fullscreen:w-full',
     resizable ? 'm-0' : 'mb-7',
+    !controlsShown && 'controls-hidden cursor-none',
     boundedHeight === undefined ? 'max-h-[60vh]' : 'max-h-[calc(100dvh-120px)]',
   ]}
-  class:controls-hidden={!controlsShown}
   aria-label="Media player"
   tabindex="-1"
   onpointermove={revealControls}
@@ -675,7 +678,10 @@
   </video>
 
   <div
-    class="player-header absolute inset-x-0 top-0 z-[2] flex items-center gap-4 bg-[linear-gradient(#000b,transparent)] px-4 pt-3 pb-9 opacity-100 transition-opacity duration-[180ms] ease-[ease] motion-reduce:transition-none max-[600px]:px-2 max-[600px]:pt-2 max-[600px]:pb-7"
+    class={[
+      'player-header absolute inset-x-0 top-0 z-[2] flex items-center gap-4 bg-[linear-gradient(#000b,transparent)] px-4 pt-3 pb-9 transition-opacity duration-[180ms] ease-[ease] motion-reduce:transition-none max-[600px]:px-2 max-[600px]:pt-2 max-[600px]:pb-7',
+      !controlsShown && 'pointer-events-none opacity-0',
+    ]}
   >
     <h2
       class="m-0 min-w-0 flex-1 overflow-hidden text-[15px] font-[550] text-ellipsis whitespace-nowrap [text-shadow:0_1px_4px_#000] max-[600px]:text-[13px]"
@@ -684,15 +690,17 @@
     >
       {choice.title}
     </h2>
-    <button
+    <Button
+      size="icon"
+      variant="player"
       data-sidebar-resize="xy-pos"
-      class="player-button inline-grid size-9 shrink-0 place-items-center border-0 bg-transparent p-0 text-inherit transition-[background] duration-150 hover:bg-[#ffffff24]"
+      class="player-button shrink-0"
       aria-label="Close player"
       title="Close player"
       onclick={closed}
     >
       <X size={20} />
-    </button>
+    </Button>
   </div>
 
   {#if error}
@@ -712,7 +720,7 @@
         {error}
       </p>
       <button
-        class="retry-button pointer-events-auto border border-[#ffffff50] bg-[#15191be6] px-3 py-1.5 text-inherit"
+        class="retry-button focus-visible:outline-2 focus-visible:outline-offset-2 pointer-events-auto border border-[#ffffff50] bg-[#15191be6] px-3 py-1.5 text-inherit"
         data-sidebar-resize="xy-pos"
         onclick={() => void open(choice)}>Retry playback</button
       >
@@ -757,11 +765,17 @@
   {/if}
 
   <div
-    class="player-controls absolute inset-x-0 bottom-0 z-[2] bg-[linear-gradient(transparent,#000c)] px-4 pt-[30px] pb-2.5 opacity-100 transition-opacity duration-[180ms] ease-[ease] motion-reduce:transition-none max-[600px]:px-2 max-[600px]:pt-6 max-[600px]:pb-1.5"
+    class={[
+      'player-controls absolute inset-x-0 bottom-0 z-[2] bg-[linear-gradient(transparent,#000c)] px-4 pt-[30px] pb-2.5 transition-opacity duration-[180ms] ease-[ease] motion-reduce:transition-none max-[600px]:px-2 max-[600px]:pt-6 max-[600px]:pb-1.5',
+      !controlsShown && 'pointer-events-none opacity-0',
+    ]}
   >
     {#if !active?.live}
       <input
-        class="seek block h-4 w-full cursor-pointer border-0 bg-transparent p-0 accent-accent"
+        class={twMerge(
+          formControlClass,
+          'seek focus-visible:outline-2 focus-visible:outline-offset-2 block h-4 w-full cursor-pointer border-0 bg-transparent p-0 accent-accent',
+        )}
         data-sidebar-resize="xy"
         aria-label="Playback position"
         aria-valuetext={`${time(position)} of ${time(active?.duration ?? 0)}`}
@@ -777,9 +791,11 @@
     <div
       class="control-row mt-[3px] flex items-center gap-2 max-[600px]:gap-0.5"
     >
-      <button
+      <Button
+        size="icon"
+        variant="player"
         data-sidebar-resize="xy-pos"
-        class="player-button inline-grid size-9 shrink-0 place-items-center border-0 bg-transparent p-0 text-inherit transition-[background] duration-150 hover:bg-[#ffffff24]"
+        class="player-button shrink-0"
         aria-label={paused ? 'Play' : 'Pause'}
         title={paused ? 'Play' : 'Pause'}
         disabled={busy || !active}
@@ -789,13 +805,15 @@
             size={20}
             fill="currentColor"
           />{/if}
-      </button>
+      </Button>
       <div
         class="volume-controls flex items-center gap-2 max-[600px]:gap-0.5"
         data-sidebar-resize="xy-pos"
       >
-        <button
-          class="player-button inline-grid size-9 shrink-0 place-items-center border-0 bg-transparent p-0 text-inherit transition-[background] duration-150 hover:bg-[#ffffff24]"
+        <Button
+          size="icon"
+          variant="player"
+          class="player-button shrink-0"
           aria-label={muted || $appearance.audio_volume === 0
             ? 'Unmute'
             : 'Mute'}
@@ -805,9 +823,12 @@
           {#if muted || $appearance.audio_volume === 0}<VolumeX
               size={20}
             />{:else}<Volume2 size={20} />{/if}
-        </button>
+        </Button>
         <input
-          class="player-volume-range block h-4 w-[76px] cursor-pointer border-0 bg-transparent p-0 accent-accent max-[600px]:w-10"
+          class={twMerge(
+            formControlClass,
+            'player-volume-range focus-visible:outline-2 focus-visible:outline-offset-2 player-small:hidden block h-4 w-[76px] cursor-pointer border-0 bg-transparent p-0 accent-accent max-[600px]:w-10',
+          )}
           aria-label="Playback volume"
           type="range"
           min="0"
@@ -831,7 +852,8 @@
               active?.duration ?? 0,
             )}{/if}
         </span>
-        {#if active}<span class="playback-mode text-[11px] text-[#acb4ba]"
+        {#if active}<span
+            class="playback-mode text-[11px] text-[#acb4ba] player-small:hidden"
             >{active.mode === 'direct'
               ? 'Original file'
               : active.mode === 'remux'
@@ -910,15 +932,17 @@
           {#snippet icon()}<Captions size={20} />{/snippet}
         </PlayerOption>
       </div>
-      <button
-        class="player-button inline-grid size-9 shrink-0 place-items-center border-0 bg-transparent p-0 text-inherit transition-[background] duration-150 hover:bg-[#ffffff24]"
+      <Button
+        size="icon"
+        variant="player"
+        class="player-button shrink-0"
         data-sidebar-resize="xy-pos"
         aria-label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
         title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
         onclick={() => void toggleFullscreen()}
       >
         {#if fullscreen}<Minimize size={20} />{:else}<Maximize size={20} />{/if}
-      </button>
+      </Button>
     </div>
   </div>
 </section>
@@ -976,25 +1000,3 @@
     ></span>
   </div>
 {/if}
-
-<style>
-  :is(button, input):focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-  .controls-hidden {
-    cursor: none;
-  }
-  .controls-hidden :is(.player-header, .player-controls) {
-    opacity: 0;
-    pointer-events: none;
-  }
-  @container (max-width: 380px) {
-    .player-volume-range {
-      display: none;
-    }
-    .playback-mode {
-      display: none;
-    }
-  }
-</style>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SectionHeading from './ui/SectionHeading.svelte';
   let { timezone, timeFormat } = $props<{
     timezone: string;
     timeFormat: '12h' | '24h';
@@ -7,7 +8,7 @@
   import { api } from './api';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
-  import { rowClass, sectionHeadingClass, statsClass } from './ui/styles';
+  import { rowClass, statsClass } from './ui/styles';
   type Usage = { bytes: number; free_bytes: number; partial: boolean };
   type Dashboard = {
     storage: { state: Usage; cache: Usage };
@@ -83,7 +84,7 @@
 </script>
 
 <Panel aria-label="Administration overview">
-  <div class={sectionHeadingClass}>
+  <SectionHeading>
     <h2>Administration overview</h2>
     <Button
       variant="secondary"
@@ -91,7 +92,7 @@
       disabled={busy}
       onclick={() => void load()}>Refresh health</Button
     >
-  </div>
+  </SectionHeading>
   {#if error}<p role="alert">{error}</p>{/if}
   {#if data}
     <div class={statsClass}>

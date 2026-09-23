@@ -1,5 +1,20 @@
 @import 'tailwindcss';
 
+@theme {
+  --animate-progress-travel: progress-travel 1.8s ease-in-out infinite;
+  --animate-status-pulse: status-pulse 1.5s ease-in-out infinite;
+  @keyframes progress-travel {
+    to {
+      left: 100%;
+    }
+  }
+  @keyframes status-pulse {
+    50% {
+      opacity: 0.3;
+    }
+  }
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-surface: var(--surface);
@@ -20,8 +35,11 @@
 }
 
 /* Preserve the existing application breakpoints without changing provider sm/md/lg. */
+@custom-variant service-narrow (@media (max-width: 1050px));
 @custom-variant narrow (@media (max-width: 1000px));
 @custom-variant compact (@media (max-width: 720px));
+@custom-variant tight (@media (max-width: 440px));
+@custom-variant player-small (@container player (max-width: 380px));
 @custom-variant desktop-shell (&:where(.desktop-app *));
 @custom-variant settings-panel (&:where(.settings-panels > *));
 
@@ -99,19 +117,17 @@
   }
 
   * {
-    box-sizing: border-box;
+    @apply box-border;
   }
 
   html,
   body,
   #app {
-    min-height: 100%;
-    margin: 0;
+    @apply m-0 min-h-full;
   }
 
   body {
-    min-width: 320px;
-    overflow: hidden;
+    @apply min-w-80 overflow-hidden text-foreground;
     background:
       linear-gradient(
         118deg,
@@ -126,13 +142,10 @@
         transparent 17.2%
       ),
       var(--background);
-    color: var(--foreground);
   }
 
   body::before {
-    position: fixed;
-    inset: 0;
-    z-index: -1;
+    @apply pointer-events-none fixed inset-0 -z-1 bg-size-[42px_42px] content-[''];
     background-image:
       linear-gradient(
         color-mix(in srgb, var(--foreground) 2%, transparent) 1px,
@@ -143,10 +156,7 @@
         color-mix(in srgb, var(--foreground) 2%, transparent) 1px,
         transparent 1px
       );
-    background-size: 42px 42px;
-    content: '';
     mask-image: linear-gradient(to bottom, black, transparent 86%);
-    pointer-events: none;
   }
 
   button:focus-visible,
@@ -154,187 +164,105 @@
   input:focus-visible,
   select:focus-visible,
   summary:focus-visible {
-    outline: 1px solid var(--accent);
-    outline-offset: 3px;
+    @apply outline-1 outline-offset-3 outline-accent;
   }
 
   button:disabled {
-    cursor: not-allowed;
-    opacity: 0.46;
+    @apply cursor-not-allowed opacity-46;
   }
 }
 
 /* These values are animated by the media layout code. */
-@layer components {
-  .feed-group-label {
-    display: inline-block;
-    transform: scaleX(calc(1 / var(--feed-label-scale-x)));
-    transform-origin: left;
-  }
+@utility feed-group-label {
+  @apply inline-block origin-left [transform:scaleX(calc(1/var(--feed-label-scale-x)))];
+}
 
-  .media-card-popover {
-    zoom: var(--media-card-inverse-scale, 1);
-  }
+@utility media-card-popover {
+  @apply [zoom:var(--media-card-inverse-scale,1)];
 }
 
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
-    scroll-behavior: auto !important;
-    transition-duration: 0.01ms !important;
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
+    @apply scroll-auto! duration-[0.01ms]! [animation-duration:0.01ms]! [animation-iteration-count:1]!;
   }
 }
 
-/* Provider setup reuses Settings forms; other provider controls keep their own styles. */
+/* Typography defaults for the shell. FormField and formControlClass own controls;
+   provider surfaces use their explicit Tailwind typography. */
 @scope (:root, .provider-setup) to (.provider-surface, .provider-overlay, .ui-switch) {
   @layer base {
     body {
-      font-size: 13px;
+      @apply text-[13px];
     }
     button,
     input,
     select,
     textarea {
-      font: inherit;
+      @apply [font:inherit];
     }
     button {
-      cursor: pointer;
-      border-radius: 0;
+      @apply cursor-pointer rounded-none;
     }
     a {
-      color: inherit;
-      text-decoration: none;
+      @apply text-inherit no-underline;
     }
     h1,
     h2,
     h3,
     p {
-      margin: 0;
+      @apply m-0;
     }
     h1 {
-      font-size: 1.3rem;
-      font-weight: 600;
-      letter-spacing: -0.035em;
+      @apply text-[1.3rem] font-semibold tracking-[-0.035em];
     }
     h2 {
-      font-size: 1rem;
-      font-weight: 600;
-      letter-spacing: -0.02em;
-      margin-bottom: 12px;
+      @apply mb-3 text-[1rem] font-semibold tracking-[-0.02em];
     }
     h3 {
-      font-size: 0.94rem;
-      font-weight: 550;
+      @apply text-[0.94rem] font-[550];
     }
     p {
-      line-height: 1.65;
-      margin-bottom: 12px;
+      @apply mb-3 leading-[1.65];
     }
     /* Typography defaults stay in base so a child's utilities can override them. */
     :where(.panel) h2 {
-      display: flex;
-      align-items: center;
-      gap: 10px;
+      @apply flex items-center gap-2.5;
     }
     :where(.panel) p {
-      font-size: 0.75rem;
+      @apply text-[0.75rem];
     }
     small {
-      display: block;
-      color: var(--muted);
-      font-size: 11px;
-    }
-    label {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      font-size: 11px;
-      font-weight: 550;
-      margin-bottom: 16px;
-    }
-    input,
-    select,
-    textarea {
-      width: 100%;
-      min-width: 0;
-      border: 1px solid var(--line);
-      background: var(--surface-strong);
-      color: var(--foreground);
-      padding: 9px 11px;
-      border-radius: 0;
-    }
-    input::placeholder,
-    textarea::placeholder {
-      color: var(--muted);
-      opacity: 0.8;
-    }
-    input:focus,
-    select:focus,
-    textarea:focus {
-      border-color: var(--line-strong);
-      outline-color: var(--accent);
-    }
-    input[type='checkbox'],
-    input[type='radio'] {
-      width: 15px;
-      height: 15px;
-      accent-color: var(--accent);
-      flex-shrink: 0;
-    }
-    label:has(> input[type='checkbox']),
-    label:has(> input[type='radio']) {
-      flex-direction: row;
-      align-items: center;
+      @apply block text-[11px] text-muted;
     }
     table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 12px;
+      @apply w-full border-collapse text-[12px];
     }
     th,
     td {
-      padding: 11px;
-      border-bottom: 1px solid var(--line);
-      text-align: left;
+      @apply border-b border-line p-2.75 text-left;
     }
     th {
-      color: var(--muted);
-      font-weight: 550;
-      font-size: 10px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
+      @apply text-[10px] font-[550] tracking-[0.08em] text-muted uppercase;
     }
     summary {
-      cursor: pointer;
-      color: var(--muted);
-      font-size: 12px;
-      padding: 8px 0;
+      @apply cursor-pointer py-2 text-[12px] text-muted;
     }
     details[open] > summary {
-      color: var(--foreground);
-      margin-bottom: 12px;
+      @apply mb-3 text-foreground;
     }
     pre {
-      white-space: pre-wrap;
-      overflow-wrap: anywhere;
-      font-size: 11px;
-      color: var(--muted);
+      @apply text-[11px] wrap-anywhere whitespace-pre-wrap text-muted;
     }
     progress {
-      accent-color: var(--accent);
-      width: 100%;
-      height: 4px;
+      @apply h-1 w-full accent-accent;
     }
     :is(button, input, select, textarea):disabled {
-      opacity: 0.46;
-      cursor: not-allowed;
+      @apply cursor-not-allowed opacity-46;
     }
     * {
-      scrollbar-width: thin;
-      scrollbar-color: var(--line-strong) transparent;
+      @apply [scrollbar-width:thin] [scrollbar-color:var(--line-strong)_transparent];
     }
   }
 }

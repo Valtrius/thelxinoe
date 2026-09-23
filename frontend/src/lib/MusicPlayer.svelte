@@ -1,4 +1,9 @@
 <script lang="ts">
+  import SectionHeading from './ui/SectionHeading.svelte';
+  import Notice from './ui/Notice.svelte';
+  import FormField from './ui/FormField.svelte';
+  import { formControlClass } from './ui/styles';
+  import { twMerge } from 'tailwind-merge';
   import { onDestroy, untrack } from 'svelte';
   import { GaplessQueue, StreamingRequired, type MusicState } from './gapless';
   import { time, type MediaChoice } from './playback';
@@ -7,7 +12,7 @@
   import { choiceIndex } from './media-state';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
-  import { errorClass, sectionHeadingClass } from './ui/styles';
+
   let { choice, closed } = $props<{
     choice: MediaChoice;
     closed: () => void;
@@ -81,7 +86,7 @@
     {closed}
     ended={nextStream}
   />{:else}<Panel aria-label="Music player">
-    <div class={sectionHeadingClass}>
+    <SectionHeading>
       <h2>{musicState?.title ?? choice.title}</h2>
       <Button
         variant="secondary"
@@ -91,16 +96,13 @@
           closed();
         }}>Close player</Button
       >
-    </div>
-    {#if error}<p class={errorClass} role="alert">{error}</p>{/if}{#if busy}<p
-        role="status"
-      >
-        Preparing music…
-      </p>{/if}
+    </SectionHeading>
+    {#if error}<Notice variant="error" role="alert">{error}</Notice
+      >{/if}{#if busy}<p role="status">Preparing music…</p>{/if}
     {#if musicState}<div class="flex flex-wrap items-center gap-[15px]">
-        <label class="min-w-45 flex-1"
+        <FormField class="min-w-45 flex-1"
           >Volume<input
-            class="w-full p-0"
+            class={twMerge(formControlClass, 'w-full p-0')}
             aria-label="Music volume"
             type="range"
             min="0"
@@ -112,7 +114,7 @@
               queue?.setVolume(volume);
               updateAppearance({ audio_volume: volume });
             }}
-          /></label
+          /></FormField
         >
         <Button size="form" onclick={() => void queue?.toggle()}
           >{musicState.paused ? 'Play' : 'Pause'}</Button
@@ -121,9 +123,9 @@
           size="form"
           onclick={() => void queue?.skip()}>Next track</Button
         ><span>{time(musicState.position)} / {time(musicState.duration)}</span
-        ><label class="min-w-45 flex-1"
+        ><FormField class="min-w-45 flex-1"
           >Music position<input
-            class="w-full p-0"
+            class={twMerge(formControlClass, 'w-full p-0')}
             aria-label="Music position"
             type="range"
             min="0"
@@ -131,7 +133,7 @@
             step="0.1"
             value={musicState.position}
             onchange={(e) => queue?.seek(Number(e.currentTarget.value))}
-          /></label
+          /></FormField
         >
       </div>
       <p class="text-muted">

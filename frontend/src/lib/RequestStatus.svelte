@@ -1,4 +1,6 @@
 <script lang="ts">
+  import FormField from './ui/FormField.svelte';
+  import { formControlClass } from './ui/styles';
   import { api } from './api';
   import Button from './ui/Button.svelte';
   import { panelClass } from './ui/styles';
@@ -76,8 +78,9 @@
         })}>{status.monitored ? 'Unmonitor' : 'Monitor'}</Button
     >
     {#if status.seasons.length}
-      <label
+      <FormField
         >Sonarr season<select
+          class={formControlClass}
           bind:value={season}
           onchange={() => {
             releases = [];
@@ -85,7 +88,7 @@
           >{#each status.seasons as number (number)}<option value={number}
               >{number === 0 ? 'Specials' : `Season ${number}`}</option
             >{/each}</select
-        ></label
+        ></FormField
       >
     {/if}
     <Button

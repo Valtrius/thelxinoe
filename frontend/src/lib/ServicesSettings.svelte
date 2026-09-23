@@ -1,4 +1,9 @@
 <script lang="ts">
+  import FormField from './ui/FormField.svelte';
+  import { formControlClass } from './ui/styles';
+  import StatusIndicator from './ui/StatusIndicator.svelte';
+  import Notice from './ui/Notice.svelte';
+  import ProgressBar from './ui/ProgressBar.svelte';
   import { onMount } from 'svelte';
   import { api, serverUrl } from './api';
   import Button from './ui/Button.svelte';
@@ -842,8 +847,7 @@
     }
     const input = document.createElement('textarea');
     input.value = value;
-    input.style.position = 'fixed';
-    input.style.left = '-9999px';
+    input.className = 'fixed -left-[9999px]';
     document.body.appendChild(input);
     let copied: boolean;
     try {
@@ -989,20 +993,23 @@
       if (kind) void work(() => stackAction(kind, 'remove'), '', kind, true);
     }}
   />
-  <nav class="service-strip" aria-label="Select service">
+  <nav
+    class="service-strip mb-5.5 grid grid-cols-6 border-b border-line compact:grid-cols-3 tight:grid-cols-2"
+    aria-label="Select service"
+  >
     {#each definitions as service (service.kind)}
       {@const state = status(service.kind)}
       <button
-        class="service-tab"
+        class="service-tab flex min-w-0 cursor-pointer items-center gap-2 border-0 border-r border-b-3 border-r-line border-b-transparent bg-transparent px-2 py-3 text-left text-foreground last:border-r-0 hover:bg-surface-soft aria-[current=true]:border-b-accent aria-[current=true]:bg-accent-soft service-narrow:flex-col service-narrow:items-start compact:flex-row tight:gap-1.25 tight:px-1.25 tight:py-2.5 [&>img]:size-6.75 [&>img]:object-contain tight:[&>img]:size-5.75 [&_strong]:text-[11px] [&_strong]:font-[650]"
         aria-current={selectedKind === service.kind ? 'true' : undefined}
         aria-label={service.label}
         onclick={() => selectService(service.kind)}
       >
         <img src={icons[service.kind]} alt="" />
         <span
-          ><strong>{service.label}</strong><span
-            class="service-status"
-            data-tone={state.tone}>{state.label}</span
+          ><strong>{service.label}</strong><StatusIndicator
+            class="service-status mt-1.5"
+            tone={state.tone}>{state.label}</StatusIndicator
           ></span
         >
       </button>
@@ -1010,8 +1017,8 @@
   </nav>
   {#each loaderSubsystems as subsystem (subsystem.key)}
     {#if loadErrors[subsystem.key]}
-      <div
-        class="notice bad"
+      <Notice
+        tone="danger"
         role="alert"
         aria-label={`${subsystem.label} load error`}
       >
@@ -1023,11 +1030,17 @@
           disabled={pendingActions.general}
           onclick={() => void work(refresh, '', 'general')}>Retry</Button
         >
-      </div>
+      </Notice>
     {/if}
   {/each}
-  <article class="service-detail" aria-label={`${definition.label} service`}>
-    <aside class="service-rail" aria-label="Service controls">
+  <article
+    class="service-detail grid grid-cols-[minmax(175px,25%)_minmax(0,1fr)] service-narrow:grid-cols-[minmax(160px,27%)_minmax(0,1fr)] compact:grid-cols-1"
+    aria-label={`${definition.label} service`}
+  >
+    <aside
+      class="service-rail grid grid-cols-1 grid-rows-[minmax(180px,max-content)_minmax(145px,max-content)_minmax(215px,max-content)] content-start border-r border-line pr-5 compact:block compact:border-0 compact:p-0"
+      aria-label="Service controls"
+    >
       {#each definitions as service (service.kind)}
         {@const active = service.kind === selectedKind}
         {@const attached = integration(service)}
@@ -1038,20 +1051,31 @@
         {@const state = status(service.kind)}
         {@const url = externalUrl(service)}
         {@const progress = activity(service.kind)}
-        <div class="rail-identity" class:inactive={!active} inert={!active}>
-          <div class="rail-heading">
+        <div
+          class={[
+            'rail-identity col-start-1 min-w-0 border-b border-line py-3.5 row-start-1 flex flex-col pt-0 compact:min-h-42.5',
+            !active && 'inactive invisible pointer-events-none compact:hidden',
+          ]}
+          inert={!active}
+        >
+          <div
+            class="rail-heading flex items-center gap-2.5 [&_img]:size-10.5 [&_img]:object-contain [&_span]:text-[9px] [&_span]:tracking-[0.07em] [&_span]:text-muted [&_span]:uppercase [&_h2]:mt-0.5 [&_h2]:mb-0 [&_h2]:text-[20px]"
+          >
             <img src={icons[service.kind]} alt="" />
             <div>
               <span>{service.description}</span>
               <h2>{service.label}</h2>
             </div>
           </div>
-          <span class="service-status" data-tone={state.tone}
-            >{state.label}</span
+          <StatusIndicator
+            class="service-status mt-3.75 text-[11px]"
+            tone={state.tone}>{state.label}</StatusIndicator
           >
-          {#if url}<div class="service-url-line">
+          {#if url}<div
+              class="service-url-line mt-3 flex min-h-4.5 min-w-0 items-center gap-1"
+            >
               <a
-                class="service-link"
+                class="service-link flex w-fit max-w-full min-w-0 flex-[0_1_auto] items-center gap-1.25 text-[11px] text-accent [&_span]:min-w-0 [&_span]:truncate [&_svg]:shrink-0"
                 href={url}
                 target="_blank"
                 rel="noopener noreferrer"
@@ -1062,7 +1086,9 @@
               >
               {#if service.kind === 'nzbget' && nzbgetLoginTarget}
                 <div class="ml-auto flex shrink-0 items-center gap-1">
-                  <button
+                  <Button
+                    variant="secondary"
+                    size="credential"
                     class="credential-copy"
                     type="button"
                     aria-label="Copy NZBGet login"
@@ -1079,9 +1105,11 @@
                       />{:else}<Copy
                         size={10}
                         aria-hidden="true"
-                      />{/if}Login</button
+                      />{/if}Login</Button
                   >
-                  <button
+                  <Button
+                    variant="secondary"
+                    size="credential"
                     class="credential-copy"
                     type="button"
                     aria-label="Copy NZBGet password"
@@ -1098,25 +1126,33 @@
                       />{:else}<Copy
                         size={10}
                         aria-hidden="true"
-                      />{/if}Pass</button
+                      />{/if}Pass</Button
                   >
                 </div>
               {/if}
             </div>{/if}
-          <div class="rail-progress">
+          <div
+            class="rail-progress mt-auto min-h-9 pt-3 text-[10px] text-muted"
+          >
             {#if progress}<span>{progress}</span>
-              <div
-                class="activity-bar"
-                role="progressbar"
-                aria-label={`${service.label}: ${progress}`}
-              ></div>{:else if feedback[service.kind]}<span
-                class="action-feedback"
+              <ProgressBar
+                class="activity-bar mt-1.75 h-0.75"
+                indeterminate
+                label={`${service.label}: ${progress}`}
+              ></ProgressBar>{:else if feedback[service.kind]}<span
+                class="action-feedback block truncate"
                 role="status"
                 title={feedback[service.kind]}>{feedback[service.kind]}</span
               >{/if}
           </div>
         </div>
-        <div class="rail-actions" class:inactive={!active} inert={!active}>
+        <div
+          class={[
+            'rail-actions col-start-1 min-w-0 border-b border-line py-3.5 row-start-2 flex flex-col justify-start gap-1.75 [&_button]:w-full [&_button]:whitespace-normal compact:flex-row compact:flex-wrap compact:[&_button]:w-auto',
+            !active && 'inactive invisible pointer-events-none compact:hidden',
+          ]}
+          inert={!active}
+        >
           {#if review}
             <Button
               size="form"
@@ -1187,7 +1223,9 @@
                 title={connectionErrors[service.kind] ||
                   attached?.error ||
                   undefined}
-                ><span class="connection-result" aria-live="polite"
+                ><span
+                  class="connection-result inline-block w-25"
+                  aria-live="polite"
                   >{connectionTests[service.kind] || 'Test connection'}</span
                 ></Button
               >{/if}
@@ -1217,10 +1255,18 @@
               class="text-xs text-muted">Choose how to connect.</span
             >{/if}
         </div>
-        <dl class="rail-meta" class:inactive={!active} inert={!active}>
+        <dl
+          class={[
+            'rail-meta col-start-1 min-w-0 border-b border-line py-3.5 row-start-3 m-0 flex flex-col gap-3 border-b-0 compact:grid compact:grid-cols-2 compact:border-b tight:grid-cols-1',
+            !active && 'inactive invisible pointer-events-none compact:hidden',
+          ]}
+          inert={!active}
+        >
           <div>
-            <dt>Ownership</dt>
-            <dd>
+            <dt class="text-[9px] tracking-[0.07em] text-muted uppercase">
+              Ownership
+            </dt>
+            <dd class="mt-0.75 wrap-anywhere text-[11px]">
               {runtimeService || provisioned
                 ? 'Thelxinoe'
                 : attached
@@ -1229,27 +1275,37 @@
             </dd>
           </div>
           <div>
-            <dt>Container</dt>
-            <dd>
+            <dt class="text-[9px] tracking-[0.07em] text-muted uppercase">
+              Container
+            </dt>
+            <dd class="mt-0.75 wrap-anywhere text-[11px]">
               {runtimeService?.name ||
                 container?.names[0]?.replace(/^\//, '') ||
                 (attached ? 'Unavailable' : '—')}
             </dd>
           </div>
           <div>
-            <dt>Installed image</dt>
-            <dd class="image-value">
+            <dt class="text-[9px] tracking-[0.07em] text-muted uppercase">
+              Installed image
+            </dt>
+            <dd class="image-value mt-0.75 wrap-anywhere text-[10px]">
               {runtimeService?.image || container?.image || '—'}
             </dd>
           </div>
           <div>
-            <dt>Version</dt>
-            <dd>{attached?.version || '—'}</dd>
+            <dt class="text-[9px] tracking-[0.07em] text-muted uppercase">
+              Version
+            </dt>
+            <dd class="mt-0.75 wrap-anywhere text-[11px]">
+              {attached?.version || '—'}
+            </dd>
           </div>
         </dl>
       {/each}
     </aside>
-    <div class="service-workspace">
+    <div
+      class="service-workspace relative min-w-0 pl-5.5 compact:pt-5.5 compact:pl-0 [&_form>button]:w-fit"
+    >
       {#if live?.registered === false}
         <div
           class="mb-3 border-l-2 border-warning bg-surface px-3 py-2 text-xs leading-5"
@@ -1262,41 +1318,57 @@
         </div>
       {/if}
       {#if item?.error || live?.inspection_error || live?.error || live?.drift}
-        <div class="notice warn" role="status">
+        <Notice tone="warning" role="status">
           {#each [...new Set([item?.error, live?.inspection_error, live?.error].filter(Boolean))] as error (error)}<p
+              class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
             >
               {error}
             </p>{/each}
-          {#if live?.drift}<p>
+          {#if live?.drift}<p
+              class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
+            >
               Configuration changed outside Thelxinoe. Repair configuration to
               restore managed settings.
             </p>{/if}
-        </div>
+        </Notice>
       {/if}
       {#if transferReviews[selectedKind]}
         {@const review = transferReviews[selectedKind]!}
-        <section class="work-section" aria-label="Ownership review">
-          <h3>Ownership review</h3>
-          <p>
+        <section
+          class="work-section border-b border-line py-4 first-of-type:pt-0 last:border-b-0"
+          aria-label="Ownership review"
+        >
+          <h3 class="mb-3.25 text-[12px] font-[650]">Ownership review</h3>
+          <p class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted">
             Thelxinoe stops the original container, disables its restart policy,
             copies its configuration, and starts the managed copy.
           </p>
-          <dl class="review-paths">
+          <dl class="review-paths my-3.75 grid gap-3">
             <div>
-              <dt>Copy from</dt>
-              <dd>{review.source_config}</dd>
+              <dt class="text-[9px] tracking-[0.07em] text-muted uppercase">
+                Copy from
+              </dt>
+              <dd class="mt-0.75 wrap-anywhere text-[11px]">
+                {review.source_config}
+              </dd>
             </div>
             <div>
-              <dt>Copy to</dt>
-              <dd>{review.managed_config}</dd>
+              <dt class="text-[9px] tracking-[0.07em] text-muted uppercase">
+                Copy to
+              </dt>
+              <dd class="mt-0.75 wrap-anywhere text-[11px]">
+                {review.managed_config}
+              </dd>
             </div>
             <div>
-              <dt>Retained image</dt>
-              <dd>{review.image}</dd>
+              <dt class="text-[9px] tracking-[0.07em] text-muted uppercase">
+                Retained image
+              </dt>
+              <dd class="mt-0.75 wrap-anywhere text-[11px]">{review.image}</dd>
             </div>
           </dl>
           {#if review.compose_project}
-            <p>
+            <p class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted">
               Remove or disable <strong>{review.compose_service}</strong> in
               Compose project <strong>{review.compose_project}</strong> so it cannot
               recreate the original container.
@@ -1304,16 +1376,23 @@
             <Switch size="sm" bind:checked={releasedCompose[selectedKind]}
               >The previous Compose definition is disabled</Switch
             >
-          {:else}<p>
+          {:else}<p
+              class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
+            >
               Disable any external script or updater that would recreate the
               original container.
             </p>{/if}
         </section>
       {/if}
       {#if !connected && !item && !live}
-        <section class="work-section" aria-label="Service setup">
-          <h3>Set up {definition.label}</h3>
-          <div class="setup-forms">
+        <section
+          class="work-section border-b border-line py-4 first-of-type:pt-0 last:border-b-0"
+          aria-label="Service setup"
+        >
+          <h3 class="mb-3.25 text-[12px] font-[650]">
+            Set up {definition.label}
+          </h3>
+          <div class="setup-forms grid gap-5.5">
             <form
               class="grid gap-3 [&_label]:m-0"
               aria-label={`Install managed ${definition.label}`}
@@ -1324,21 +1403,23 @@
             >
               <strong class="text-xs">Install and own it</strong>
               <div class="grid grid-cols-2 gap-3 compact:grid-cols-1">
-                <label
+                <FormField
                   >Local port<input
+                    class={formControlClass}
                     type="number"
                     min="1024"
                     max="65535"
                     bind:value={installs[definition.kind].hostPort}
                     required
-                  /></label
+                  /></FormField
                 >
-                <label
+                <FormField
                   >Advanced UI address<input
+                    class={formControlClass}
                     type="url"
                     bind:value={installs[definition.kind].nativeUrl}
                     placeholder="Optional"
-                  /></label
+                  /></FormField
                 >
               </div>
               <Button
@@ -1361,16 +1442,18 @@
               }}
             >
               <strong class="text-xs">Connect an existing container</strong>
-              <label
+              <FormField
                 >Name<input
+                  class={formControlClass}
                   bind:value={setup[definition.kind].name}
                   required
                   maxlength="100"
-                /></label
+                /></FormField
               >
               <div class="grid grid-cols-2 gap-3 compact:grid-cols-1">
-                <label
+                <FormField
                   >Container<select
+                    class={formControlClass}
                     bind:value={setup[definition.kind].container}
                     required
                     ><option value="">Select container</option
@@ -1381,44 +1464,48 @@
                           : ''}</option
                       >
                     {/each}</select
-                  ></label
+                  ></FormField
                 >
-                <label
+                <FormField
                   >Internal port<input
+                    class={formControlClass}
                     type="number"
                     min="1"
                     max="65535"
                     bind:value={setup[definition.kind].port}
                     required
-                  /></label
+                  /></FormField
                 >
               </div>
               {#if definition.kind === 'nzbget'}
-                <label
+                <FormField
                   >NZBGet username<input
+                    class={formControlClass}
                     bind:value={setup.nzbget.username}
                     required
                     autocomplete="off"
-                  /></label
+                  /></FormField
                 >
               {/if}
-              <label
+              <FormField
                 >{definition.kind === 'nzbget'
                   ? 'NZBGet password'
                   : 'API key'}<input
+                  class={formControlClass}
                   type="password"
                   bind:value={setup[definition.kind].secret}
                   required
                   autocomplete="new-password"
-                /></label
+                /></FormField
               >
               {#if definition.role === 'support'}
-                <label
+                <FormField
                   >Service UI address<input
+                    class={formControlClass}
                     type="url"
                     bind:value={setup[definition.kind].nativeUrl}
                     placeholder="https://service.example.com"
-                  /></label
+                  /></FormField
                 >
               {/if}
               <Button
@@ -1431,16 +1518,20 @@
           </div>
         </section>
       {:else if setupActive(selectedKind)}
-        <section class="work-section">
-          <h3>{activity(selectedKind)}</h3>
-          <p>
+        <section
+          class="work-section border-b border-line py-4 first-of-type:pt-0 last:border-b-0"
+        >
+          <h3 class="mb-3.25 text-[12px] font-[650]">
+            {activity(selectedKind)}
+          </h3>
+          <p class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted">
             This view refreshes automatically as the service becomes available.
           </p>
         </section>
       {/if}
       {#if connected}
         <section
-          class="work-section"
+          class="work-section border-b border-line py-4 first-of-type:pt-0 last:border-b-0"
           aria-label={definition.role === 'manager'
             ? 'Acquisition defaults'
             : definition.kind === 'prowlarr'
@@ -1449,8 +1540,10 @@
                 ? 'Downloads'
                 : 'Missing subtitles'}
         >
-          <div class="work-head">
-            <h3>
+          <div
+            class="work-head mt-0 mr-7 mb-3 ml-0 flex items-center justify-between gap-3 compact:flex-wrap [&_h3]:m-0"
+          >
+            <h3 class="mb-3.25 text-[12px] font-[650]">
               {definition.role === 'manager'
                 ? 'Acquisition defaults'
                 : definition.kind === 'prowlarr'
@@ -1468,7 +1561,9 @@
                 title={connectionErrors[selectedKind] ||
                   connected?.error ||
                   undefined}
-                ><span class="connection-result" aria-live="polite"
+                ><span
+                  class="connection-result inline-block w-25"
+                  aria-live="polite"
                   >{connectionTests[selectedKind] || 'Test connection'}</span
                 ></Button
               >
@@ -1486,16 +1581,17 @@
                   )}>{supportData.paused ? 'Resume all' : 'Pause all'}</Button
               >{/if}
           </div>
-          {#if detailErrors[selectedKind]}<div class="notice bad" role="alert">
+          {#if detailErrors[selectedKind]}<Notice tone="danger" role="alert">
               {detailErrors[selectedKind]}
-            </div>{/if}
+            </Notice>{/if}
           {#if detailLoading[selectedKind] && !supportData && !defaults[selectedKind]?.loaded}<p
+              class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
               role="status"
             >
               Loading service settings…
             </p>{/if}
           {#if definition.role === 'manager'}
-            <p>
+            <p class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted">
               These settings apply to new requests approved in Thelxinoe. Choose
               the quality profile and whether to monitor and search for
               releases. The library folder is configured automatically during
@@ -1516,28 +1612,36 @@
                     );
                   }}
                 >
-                  {#if !options.roots.length}<p>
+                  {#if !options.roots.length}<p
+                      class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
+                    >
                       Add a root folder in {definition.label} first.
                     </p>{/if}
-                  <p>Library folder: <code>{draft.root_folder}</code></p>
-                  <label
+                  <p
+                    class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
+                  >
+                    Library folder: <code>{draft.root_folder}</code>
+                  </p>
+                  <FormField
                     >Quality profile<select
+                      class={formControlClass}
                       bind:value={draft.quality_profile}
                       required
                       >{#each options.profiles as option (option.id)}
                         <option value={option.id}>{option.name}</option>
                       {/each}</select
-                    ></label
+                    ></FormField
                   >
                   {#if definition.kind === 'lidarr'}
-                    <label
+                    <FormField
                       >Metadata profile<select
+                        class={formControlClass}
                         bind:value={draft.metadata_profile}
                         required
                         >{#each options.metadata_profiles as option (option.id)}
                           <option value={option.id}>{option.name}</option>
                         {/each}</select
-                      ></label
+                      ></FormField
                     >
                   {/if}
                   <Switch bind:checked={draft.monitored} size="sm"
@@ -1554,19 +1658,24 @@
               {/if}
             {/if}
           {:else if supportData}
-            {#each supportData.health ?? [] as issue, index (index)}<p
-                class="notice warn"
+            {#each supportData.health ?? [] as issue, index (index)}<Notice
+                tone="warning"
               >
                 {typeof issue === 'string' ? issue : issue.message}
-              </p>{/each}
+              </Notice>{/each}
             {#if selectedKind === 'prowlarr'}
-              {#if !supportData.indexers?.length}<p>
+              {#if !supportData.indexers?.length}<p
+                  class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
+                >
                   No indexers configured. Open Prowlarr to add one.
                 </p>{/if}
               {#each supportData.indexers ?? [] as indexer (indexer.id)}
-                <div class="service-row">
+                <div
+                  class="service-row flex items-center justify-between gap-3 border-b border-line py-3 text-[11px] [&>div]:min-w-0"
+                >
                   <div>
-                    <strong>{indexer.name}</strong><span class="row-status"
+                    <strong>{indexer.name}</strong><span
+                      class="row-status mt-1 block text-[10px] text-muted"
                       >{indexer.disabled_until
                         ? `Unavailable until ${indexer.disabled_until}`
                         : indexer.enabled
@@ -1574,7 +1683,7 @@
                           : 'Disabled'}</span
                     >
                   </div>
-                  <div class="row-actions">
+                  <div class="row-actions flex flex-wrap items-center gap-2">
                     <Button
                       size="sm"
                       variant="secondary"
@@ -1617,13 +1726,14 @@
               />
             {:else}
               <div class="my-3 grid gap-3 [&_label]:m-0">
-                <label
+                <FormField
                   >Subtitle language<input
+                    class={formControlClass}
                     bind:value={subtitle.language}
                     minlength="2"
                     maxlength="3"
                     placeholder="en"
-                  /></label
+                  /></FormField
                 >
                 <div class="flex flex-wrap gap-3">
                   <Switch bind:checked={subtitle.forced} size="sm"
@@ -1635,13 +1745,18 @@
                 </div>
               </div>
               {#if !supportData.movies?.length && !supportData.episodes?.length}<p
+                  class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
                 >
                   No missing subtitles reported. Configure language profiles and
                   providers in Bazarr.
                 </p>{/if}
               {#each [...(supportData.movies ?? []), ...(supportData.episodes ?? [])] as missing (`${missing.movie_id}:${missing.episode_id}`)}
                 <div class="border-t border-line py-2">
-                  <p>{missing.title}</p>
+                  <p
+                    class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
+                  >
+                    {missing.title}
+                  </p>
                   <Button
                     variant="secondary"
                     size="sm"
@@ -1670,14 +1785,16 @@
               void work(() => connectionAction(connection, action))}
           />{/if}
       {/if}
-      {#if item && (live?.can_retire || (!live && ['blocked', 'retiring'].includes(item.state)))}<p
-          class="notice"
+      {#if item && (live?.can_retire || (!live && ['blocked', 'retiring'].includes(item.state)))}<Notice
         >
           Retiring removes the installation and its API connection. Appdata,
           request history, and media files are kept.
-        </p>{/if}
-      <section class="work-section" aria-label="Updates">
-        <h3>Updates</h3>
+        </Notice>{/if}
+      <section
+        class="work-section border-b border-line py-4 first-of-type:pt-0 last:border-b-0"
+        aria-label="Updates"
+      >
+        <h3 class="mb-3.25 text-[12px] font-[650]">Updates</h3>
         {#if target}
           <form
             class="grid gap-3 [&_label]:m-0"
@@ -1690,37 +1807,43 @@
               );
             }}
           >
-            <label
-              >Update policy<select bind:value={servicePolicy.policy}
+            <FormField
+              >Update policy<select
+                class={formControlClass}
+                bind:value={servicePolicy.policy}
                 ><option value="inherit">Use server update policy</option
                 ><option value="notify">Notify</option><option value="automatic"
                   >Automatic</option
                 ><option value="manual">Manual</option></select
-              ></label
+              ></FormField
             >
             {#if servicePolicy.policy !== 'inherit'}
               <div class="grid grid-cols-2 gap-3 compact:grid-cols-1">
-                <label
+                <FormField
                   >Maintenance starts ({timezone})<input
+                    class={formControlClass}
                     type="number"
                     min="0"
                     max="23"
                     bind:value={servicePolicy.start}
                     required
-                  /></label
+                  /></FormField
                 >
-                <label
+                <FormField
                   >Maintenance ends ({timezone})<input
+                    class={formControlClass}
                     type="number"
                     min="0"
                     max="23"
                     bind:value={servicePolicy.end}
                     required
-                  /></label
+                  /></FormField
                 >
               </div>
             {:else}
-              <p class="text-muted">
+              <p
+                class="text-muted my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
+              >
                 Uses the Server update policy ({serverPolicy.policy},
                 {String(serverPolicy.window_start).padStart(2, '0')}:00–{String(
                   serverPolicy.window_end,
@@ -1732,13 +1855,15 @@
             >
           </form>
 
-          {#if policy?.candidate}<p class="candidate">
+          {#if policy?.candidate}<p
+              class="candidate my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
+            >
               Stable candidate: <code>{policy.candidate}</code>
             </p>{/if}
-          {#if policy?.error}<p class="notice warn" role="status">
+          {#if policy?.error}<Notice tone="warning" role="status">
               {policy.error}
-            </p>{/if}
-          <div class="row-actions">
+            </Notice>{/if}
+          <div class="row-actions flex flex-wrap items-center gap-2">
             <Button
               variant="secondary"
               size="form"
@@ -1757,14 +1882,15 @@
             >
           </div>
           {#each serviceUpdatesList as update (update.id)}
-            <div
-              class="notice"
-              class:warn={[
+            <Notice
+              tone={[
                 'blocked',
                 'recovery-required',
                 'runtime-failure',
                 'rolled-back',
-              ].includes(update.state)}
+              ].includes(update.state)
+                ? 'warning'
+                : 'info'}
               role="status"
             >
               <strong
@@ -1774,7 +1900,11 @@
                     ? 'Unable to verify update'
                     : (stages[update.state] ?? update.state)}</strong
               >
-              {#if update.error}<p>{update.error}</p>{/if}
+              {#if update.error}<p
+                  class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
+                >
+                  {update.error}
+                </p>{/if}
               {#if update.state === 'ready'}<Button
                   size="sm"
                   disabled={busy}
@@ -1790,12 +1920,16 @@
                     void work(() => updateAction(update.id, 'recover'))}
                   >Recover before activation</Button
                 >{/if}
-              {#if update.state === 'runtime-failure'}<p>
+              {#if update.state === 'runtime-failure'}<p
+                  class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
+                >
                   Review the updated service before an explicit restore.
                 </p>{/if}
-            </div>
+            </Notice>
           {/each}
-        {:else}<p>
+        {:else}<p
+            class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
+          >
             {connected
               ? 'Take ownership to manage updates here.'
               : 'Updates become available after managed setup.'}
@@ -1803,11 +1937,18 @@
       </section>
     </div>
   </article>
-  <footer class="services-footer">
-    {#if feedback.general}<p role="status">{feedback.general}</p>{/if}
+  <footer class="services-footer mt-6 grid gap-5 border-t border-line pt-4.5">
+    {#if feedback.general}<p
+        class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
+        role="status"
+      >
+        {feedback.general}
+      </p>{/if}
     {#if approvalUsers.length}<section aria-label="Automatic request approval">
-        <h3>Automatic request approval</h3>
-        <div class="row-actions">
+        <h3 class="mb-3.25 text-[12px] font-[650]">
+          Automatic request approval
+        </h3>
+        <div class="row-actions flex flex-wrap items-center gap-2">
           {#each approvalUsers as user (user.id)}<Switch
               size="sm"
               checked={user.enabled}
@@ -1833,453 +1974,11 @@
         disabled={pendingActions.general || !!loadErrors.stack}
         onclick={() => void work(discoverReleases, '', 'general')}
         >Discover stable releases</Button
-      >{#each releases as release (release.kind)}<p class="candidate">
+      >{#each releases as release (release.kind)}<p
+          class="candidate my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
+        >
           {release.kind}: {release.image ?? 'No stable release found'} · tested {release.tested_image}
         </p>{/each}
     </section>
   </footer>
 </Panel>
-
-<style>
-  .service-strip {
-    display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
-    border-bottom: 1px solid var(--line);
-    margin-bottom: 22px;
-  }
-  .service-tab {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-    padding: 12px 8px;
-    border: 0;
-    border-right: 1px solid var(--line);
-    border-bottom: 3px solid transparent;
-    background: transparent;
-    text-align: left;
-    color: var(--foreground);
-    cursor: pointer;
-  }
-  .service-tab:last-child {
-    border-right: 0;
-  }
-  .service-tab:hover {
-    background: var(--surface-soft);
-  }
-  .service-tab[aria-current='true'] {
-    background: var(--accent-soft);
-    border-bottom-color: var(--accent);
-  }
-  .service-tab img {
-    width: 27px;
-    height: 27px;
-    object-fit: contain;
-  }
-  .service-tab strong {
-    font-size: 11px;
-    font-weight: 650;
-  }
-  .service-status {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    font-size: 9px;
-    color: var(--muted);
-    line-height: 1.3;
-    margin-top: 6px;
-  }
-  .service-status::before {
-    content: '';
-    width: 5px;
-    height: 5px;
-    flex: none;
-    background: currentColor;
-    border-radius: 50%;
-  }
-  .service-status[data-tone='ok'] {
-    color: var(--success);
-  }
-  .service-status[data-tone='bad'] {
-    color: var(--danger);
-  }
-  .service-status[data-tone='warn'] {
-    color: var(--warning);
-  }
-  .service-status[data-tone='busy'] {
-    color: var(--accent);
-  }
-  .service-status[data-tone='busy']::before {
-    animation: pulse 1.5s ease-in-out infinite;
-  }
-  .service-detail {
-    display: grid;
-    grid-template-columns: minmax(175px, 25%) minmax(0, 1fr);
-  }
-  .service-rail {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows:
-      minmax(180px, max-content) minmax(145px, max-content)
-      minmax(215px, max-content);
-    align-content: start;
-    padding-right: 20px;
-    border-right: 1px solid var(--line);
-  }
-  .rail-identity,
-  .rail-actions,
-  .rail-meta {
-    grid-column: 1;
-    min-width: 0;
-    border-bottom: 1px solid var(--line);
-    padding: 14px 0;
-  }
-  .inactive {
-    visibility: hidden;
-    pointer-events: none;
-  }
-  .rail-identity {
-    grid-row: 1;
-    display: flex;
-    flex-direction: column;
-    padding-top: 0;
-  }
-  .rail-heading {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .rail-heading img {
-    width: 42px;
-    height: 42px;
-    object-fit: contain;
-  }
-  .rail-heading span {
-    font-size: 9px;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
-  }
-  .rail-heading h2 {
-    font-size: 20px;
-    margin: 2px 0 0;
-  }
-  .rail-identity > .service-status {
-    margin-top: 15px;
-    font-size: 11px;
-  }
-  .service-url-line {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    margin-top: 12px;
-    min-width: 0;
-    min-height: 18px;
-  }
-  .service-link {
-    display: flex;
-    align-items: center;
-    flex: 0 1 auto;
-    gap: 5px;
-    min-width: 0;
-    width: fit-content;
-    max-width: 100%;
-    font-size: 11px;
-    color: var(--accent);
-  }
-  .service-link span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .service-link :global(svg) {
-    flex: none;
-  }
-  .credential-copy {
-    display: inline-flex;
-    align-items: center;
-    flex: none;
-    gap: 2px;
-    height: 18px;
-    padding: 0 3px;
-    border: 1px solid var(--line);
-    background: var(--surface-soft);
-    color: var(--foreground);
-    font-size: 9px;
-    line-height: 1;
-    cursor: pointer;
-  }
-  .credential-copy:hover {
-    border-color: var(--line-strong);
-    color: var(--accent);
-  }
-  .credential-copy:disabled {
-    opacity: 0.45;
-    cursor: default;
-  }
-  .credential-copy :global(svg) {
-    flex: none;
-  }
-  .rail-progress {
-    margin-top: auto;
-    padding-top: 12px;
-    min-height: 36px;
-    font-size: 10px;
-    color: var(--muted);
-  }
-  .activity-bar {
-    position: relative;
-    height: 3px;
-    overflow: hidden;
-    background: var(--accent-soft);
-    margin-top: 7px;
-  }
-  .activity-bar::after {
-    content: '';
-    position: absolute;
-    height: 100%;
-    width: 40%;
-    left: -40%;
-    background: var(--accent);
-    animation: travel 1.8s ease-in-out infinite;
-  }
-  .rail-actions {
-    grid-row: 2;
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-start;
-    gap: 7px;
-  }
-  .rail-actions :global(button) {
-    width: 100%;
-    white-space: normal;
-  }
-  .rail-meta {
-    grid-row: 3;
-    border-bottom: 0;
-    margin: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-  }
-  dt {
-    font-size: 9px;
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
-    color: var(--muted);
-  }
-  dd {
-    font-size: 11px;
-    margin: 3px 0 0;
-    overflow-wrap: anywhere;
-  }
-  .image-value {
-    font-size: 10px;
-  }
-  .service-workspace {
-    position: relative;
-    padding-left: 22px;
-    min-width: 0;
-  }
-  .action-feedback {
-    display: block;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .connection-result {
-    display: inline-block;
-    width: 100px;
-  }
-  .work-section {
-    padding: 16px 0;
-    border-bottom: 1px solid var(--line);
-  }
-  .work-section:first-of-type {
-    padding-top: 0;
-  }
-  .work-section:last-child {
-    border-bottom: 0;
-  }
-  h3 {
-    font-size: 12px;
-    font-weight: 650;
-    margin: 0 0 13px;
-  }
-  .work-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 12px;
-    margin: 0 28px 12px 0;
-  }
-  .work-head h3 {
-    margin: 0;
-  }
-  .service-workspace p,
-  .services-footer p {
-    color: var(--muted);
-    font-size: 11px;
-    line-height: 1.6;
-    margin: 8px 0;
-    overflow-wrap: anywhere;
-  }
-  .notice {
-    border-left: 3px solid var(--accent);
-    background: var(--accent-soft);
-    padding: 10px 12px;
-    font-size: 11px;
-    margin: 0 0 13px;
-    overflow-wrap: anywhere;
-  }
-  .notice.warn {
-    border-color: var(--warning);
-  }
-  .notice.bad {
-    border-color: var(--danger);
-  }
-  .notice p {
-    margin: 3px 0;
-  }
-  .notice :global(button) {
-    margin-top: 8px;
-  }
-  .service-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    border-bottom: 1px solid var(--line);
-    padding: 12px 0;
-    font-size: 11px;
-  }
-  .service-row > div {
-    min-width: 0;
-  }
-  .row-status {
-    display: block;
-    color: var(--muted);
-    font-size: 10px;
-    margin-top: 4px;
-  }
-  .row-actions {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-  .review-paths {
-    display: grid;
-    gap: 12px;
-    margin: 15px 0;
-  }
-  .setup-forms {
-    display: grid;
-    gap: 22px;
-  }
-  .service-workspace :global(form > button) {
-    width: fit-content;
-  }
-  .service-workspace :global(label) {
-    font-size: 11px;
-  }
-  .service-workspace :global(input),
-  .service-workspace :global(select) {
-    min-width: 0;
-  }
-  .candidate {
-    overflow-wrap: anywhere;
-  }
-  .services-footer {
-    border-top: 1px solid var(--line);
-    margin-top: 24px;
-    padding-top: 18px;
-    display: grid;
-    gap: 20px;
-  }
-  @keyframes travel {
-    to {
-      left: 100%;
-    }
-  }
-  @keyframes pulse {
-    50% {
-      opacity: 0.3;
-    }
-  }
-  @media (max-width: 1050px) {
-    .service-tab {
-      flex-direction: column;
-      align-items: flex-start;
-    }
-    .service-detail {
-      grid-template-columns: minmax(160px, 27%) minmax(0, 1fr);
-    }
-  }
-  @media (max-width: 720px) {
-    .service-strip {
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-    }
-    .service-tab {
-      flex-direction: row;
-    }
-    .service-detail {
-      grid-template-columns: minmax(0, 1fr);
-    }
-    .service-rail {
-      display: block;
-      padding: 0;
-      border: 0;
-    }
-    .service-rail > .inactive {
-      display: none;
-    }
-    .rail-identity {
-      min-height: 170px;
-    }
-    .rail-actions {
-      flex-direction: row;
-      flex-wrap: wrap;
-    }
-    .rail-actions :global(button) {
-      width: auto;
-    }
-    .rail-meta {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      border-bottom: 1px solid var(--line);
-    }
-    .service-workspace {
-      padding: 22px 0 0;
-    }
-    .work-head {
-      flex-wrap: wrap;
-    }
-  }
-  @media (max-width: 440px) {
-    .service-strip {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-    .service-tab {
-      padding: 10px 5px;
-      gap: 5px;
-    }
-    .service-tab img {
-      width: 23px;
-      height: 23px;
-    }
-    .rail-meta {
-      grid-template-columns: minmax(0, 1fr);
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .activity-bar::after,
-    .service-status[data-tone='busy']::before {
-      animation: none;
-    }
-    .activity-bar::after {
-      left: 30%;
-    }
-  }
-</style>

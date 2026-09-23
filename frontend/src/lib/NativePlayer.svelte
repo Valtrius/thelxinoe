@@ -1,11 +1,15 @@
 <script lang="ts">
+  import SectionHeading from './ui/SectionHeading.svelte';
+  import Notice from './ui/Notice.svelte';
+  import FormField from './ui/FormField.svelte';
+  import { formControlClass } from './ui/styles';
   import { onDestroy, untrack } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { time, type MediaChoice } from './playback';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
-  import { errorClass, sectionHeadingClass } from './ui/styles';
+
   type View = {
     file_id: string;
     generation: string;
@@ -80,7 +84,7 @@
 </script>
 
 {#if choice.kind === 'track'}<Panel aria-label="Native player">
-    <div class={sectionHeadingClass}>
+    <SectionHeading>
       <h2>{view?.title ?? choice.title}</h2>
       <Button
         variant="secondary"
@@ -91,12 +95,9 @@
           closed(closing);
         }}>Close player</Button
       >
-    </div>
-    {#if error}<p class={errorClass} role="alert">{error}</p>{/if}{#if busy}<p
-        role="status"
-      >
-        Opening MPV…
-      </p>{/if}
+    </SectionHeading>
+    {#if error}<Notice variant="error" role="alert">{error}</Notice
+      >{/if}{#if busy}<p role="status">Opening MPV…</p>{/if}
     {#if view}<p class="text-muted">
         {view.music
           ? 'Music plays through MPV.'
@@ -118,8 +119,9 @@
           >{view.duration === 0
             ? 'Live'
             : `${time(view.position)} / ${time(view.duration)}`}</span
-        >{#if view.duration > 0}<label
+        >{#if view.duration > 0}<FormField
             >Position<input
+              class={formControlClass}
               aria-label="Native playback position"
               type="range"
               min="0"
@@ -128,9 +130,10 @@
               value={view.position}
               onchange={(e) =>
                 void command('seek', Number(e.currentTarget.value))}
-            /></label
-          >{/if}<label
+            /></FormField
+          >{/if}<FormField
           >Volume<input
+            class={formControlClass}
             aria-label="Native playback volume"
             type="range"
             min="0"
@@ -139,10 +142,11 @@
             value="100"
             oninput={(e) =>
               void command('volume', Number(e.currentTarget.value))}
-          /></label
+          /></FormField
         >
       </div>
       {#if view.count > 1}<p class="text-muted">
           Track {view.index + 1} of {view.count}
         </p>{/if}{/if}
-  </Panel>{:else if error}<p class={errorClass} role="alert">{error}</p>{/if}
+  </Panel>{:else if error}<Notice variant="error" role="alert">{error}</Notice
+  >{/if}

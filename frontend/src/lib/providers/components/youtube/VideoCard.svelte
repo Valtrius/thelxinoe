@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ProgressBar from '../../../ui/ProgressBar.svelte';
   import VideoActionsMenu from './VideoActionsMenu.svelte';
   import type { YoutubeVideoActions } from '../../youtube-video-actions';
 
@@ -200,21 +201,20 @@
         title={activeDownload?.errorMessage ?? downloadLabel}
         >{downloadLabel}</span
       >{/if}
-    {#if downloadPending && downloadPercent !== null}<span
-        class="absolute right-0 bottom-1 left-0 h-1 bg-success/18"
-        ><i
-          class="block h-full bg-success shadow-[0_0_12px_var(--success)]"
-          style={`width:${downloadPercent}%`}
-        ></i></span
-      >{/if}
-    {#if tracksVideoProgress && video.watchedPercentage > 0}<span
-        class="absolute right-0 bottom-0 left-0 h-1 bg-white/12"
-      >
-        <i
-          class="block h-full bg-accent shadow-accent-glow"
-          style={`width:${video.watchedPercentage}%`}
-        ></i>
-      </span>{/if}
+    {#if downloadPending && downloadPercent !== null}
+      <ProgressBar
+        value={downloadPercent}
+        class="absolute inset-x-0 bottom-1 bg-success/18 text-success"
+        barClass="shadow-[0_0_12px_var(--success)]"
+      />
+    {/if}
+    {#if tracksVideoProgress && video.watchedPercentage > 0}
+      <ProgressBar
+        value={video.watchedPercentage}
+        class="absolute inset-x-0 bottom-0 bg-white/12"
+        barClass="shadow-accent-glow"
+      />
+    {/if}
   </button>
 
   <div class="flex flex-1 items-start gap-3 p-4 pb-5">

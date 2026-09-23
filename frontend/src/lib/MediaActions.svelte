@@ -1,8 +1,11 @@
 <script lang="ts">
+  import Notice from './ui/Notice.svelte';
+  import FormField from './ui/FormField.svelte';
+  import { formControlClass } from './ui/styles';
   import { untrack } from 'svelte';
   import { api } from './api';
   import Button from './ui/Button.svelte';
-  import { errorClass } from './ui/styles';
+
   let { id, kind, userId } = $props<{
     id: string;
     kind: string;
@@ -106,12 +109,12 @@
         onclick={() => void toggle('watched')}
         >{flags.watched ? 'Mark unwatched' : 'Mark watched'}</Button
       >{/if}
-    {#if kind === 'track' && playlists.length}<label
-        >Playlist<select bind:value={playlist}
+    {#if kind === 'track' && playlists.length}<FormField
+        >Playlist<select class={formControlClass} bind:value={playlist}
           ><option value="">Choose your playlist</option
           >{#each playlists as p (p.id)}<option value={p.id}>{p.name}</option
             >{/each}</select
-        ></label
+        ></FormField
       ><Button
         variant="secondary"
         size="form"
@@ -119,4 +122,4 @@
         onclick={() => void add()}>Add to playlist</Button
       >{/if}
   </div>{/if}
-{#if error}<p class={errorClass} role="alert">{error}</p>{/if}
+{#if error}<Notice variant="error" role="alert">{error}</Notice>{/if}

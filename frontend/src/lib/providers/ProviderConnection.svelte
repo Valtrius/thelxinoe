@@ -1,7 +1,6 @@
 <script lang="ts">
   import YoutubeSettings from '../YoutubeSettings.svelte';
-  import TwitchSettings from '../TwitchSettings.svelte';
-  import KickSettings from '../KickSettings.svelte';
+  import ProviderApplicationSettings from './ProviderApplicationSettings.svelte';
   import Button from '../ui/Button.svelte';
   import SetupLink from './SetupLink.svelte';
 
@@ -88,7 +87,9 @@
             >Optional: show live status, titles and thumbnails</summary
           >
           {#if admin}
-            <div class="mt-3"><KickSettings {onConfigured} /></div>
+            <div class="mt-3">
+              <ProviderApplicationSettings platform="kick" {onConfigured} />
+            </div>
           {:else}
             <p class="mt-3 text-muted">
               Ask your Thelxinoe administrator to add a Kick application in
@@ -102,7 +103,7 @@
           {#if platform === 'youtube'}
             <YoutubeSettings {onConfigured} />
           {:else}
-            <TwitchSettings {onConfigured} />
+            <ProviderApplicationSettings platform="twitch" {onConfigured} />
           {/if}
         </div>
       {/if}

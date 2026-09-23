@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Notice from './ui/Notice.svelte';
+  import SectionHeading from './ui/SectionHeading.svelte';
   import { untrack } from 'svelte';
   import { api } from './api';
   import MediaGrid from './ui/MediaGrid.svelte';
@@ -12,13 +14,7 @@
   import { time, type MediaChoice } from './playback';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
-  import {
-    badgeClass,
-    emptyClass,
-    errorClass,
-    rowClass,
-    sectionHeadingClass,
-  } from './ui/styles';
+  import { badgeClass, emptyClass, rowClass } from './ui/styles';
   let { revision, open, play } = $props<{
     revision: number;
     open: (item: Card) => void;
@@ -64,7 +60,7 @@
   ] as const;
 </script>
 
-{#if error}<p class={errorClass} role="alert">{error}</p>{/if}
+{#if error}<Notice variant="error" role="alert">{error}</Notice>{/if}
 {#if home}{#each shelves.filter(([key]) => home?.[key].length) as [key, title] (key)}<section
       class="my-7"
       aria-label={title}
@@ -100,7 +96,7 @@
       </p>
     </section>{/each}{/if}
 {#if queue?.items.length}<Panel aria-label="Saved music queue">
-    <div class={sectionHeadingClass}>
+    <SectionHeading>
       <h2>This device’s music queue</h2>
       <Button
         size="form"
@@ -109,7 +105,7 @@
           if (choice) play(choice);
         }}>{queue.completed ? 'Replay queue' : 'Resume queue'}</Button
       >
-    </div>
+    </SectionHeading>
     <p class="text-muted">
       Track {queue.current_index + 1} of {queue.items.length} · {time(
         queue.position,

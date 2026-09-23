@@ -1,10 +1,14 @@
 <script lang="ts">
+  import Notice from './ui/Notice.svelte';
+  import FormField from './ui/FormField.svelte';
+  import { formControlClass } from './ui/styles';
+  import { twMerge } from 'tailwind-merge';
   import { onDestroy } from 'svelte';
   import { api, type User } from './api';
   import { cropRectangle } from './avatar-crop';
   import Panel from './ui/Panel.svelte';
   import Button from './ui/Button.svelte';
-  import { errorClass } from './ui/styles';
+
   import { Pencil } from '@lucide/svelte';
 
   let { user, changed } = $props<{
@@ -129,7 +133,7 @@
 <Panel>
   <h2>Profile picture</h2>
   <div class="flex flex-wrap items-center gap-4">
-    <label
+    <FormField
       class="group/avatar relative mb-0 grid size-16 shrink-0 cursor-pointer place-items-center overflow-hidden rounded-full border border-line bg-surface-soft text-2xl text-accent"
     >
       {#if user.avatar}<img
@@ -143,7 +147,7 @@
         aria-hidden="true"><Pencil size={20} /></span
       >
       <input
-        class="sr-only"
+        class={twMerge(formControlClass, 'sr-only')}
         type="file"
         aria-label="Change profile picture"
         accept="image/jpeg,image/png,image/webp,image/gif"
@@ -153,7 +157,7 @@
           event.currentTarget.value = '';
         }}
       />
-    </label>
+    </FormField>
     {#if user.avatar}<Button
         size="form"
         variant="secondary"
@@ -240,22 +244,27 @@
           style:transform={`translate(${-crop.x * scale}px, ${-crop.y * scale}px)`}
         />
       </button>
-      <label class="mb-0"
+      <FormField class="mb-0"
         >Picture zoom<input
+          class={formControlClass}
           type="range"
           min="1"
           max="4"
           step="0.01"
           bind:value={zoom}
           disabled={busy}
-        /></label
+        /></FormField
       >
-      <label class="mb-0"
-        >Saved picture size<select bind:value={resolution} disabled={busy}>
+      <FormField class="mb-0"
+        >Saved picture size<select
+          class={formControlClass}
+          bind:value={resolution}
+          disabled={busy}
+        >
           <option value={128}>128 × 128 pixels</option><option value={256}
             >256 × 256 pixels</option
           ><option value={512}>512 × 512 pixels</option>
-        </select></label
+        </select></FormField
       >
       <div class="flex gap-2">
         <Button size="form" disabled={busy} onclick={() => void save()}
@@ -267,6 +276,6 @@
       </div>
     </div>
   {/if}
-  {#if error}<p role="alert" class={errorClass}>{error}</p>{/if}
+  {#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
   {#if saved}<p role="status">Profile picture saved.</p>{/if}
 </Panel>

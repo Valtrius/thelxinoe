@@ -3,6 +3,7 @@
   import { toolOperationActive } from '../../tools-presentation';
   import { formatBytes } from '../../utils';
   import Button from '../../../ui/Button.svelte';
+  import ProgressBar from '../../../ui/ProgressBar.svelte';
 
   let {
     label,
@@ -50,11 +51,11 @@
   {onclick}
 >
   {#if working}
-    <span
-      class={`pointer-events-none absolute inset-y-0 left-0 bg-accent-soft transition-[width] duration-150 ${percent === undefined ? 'animate-pulse motion-reduce:animate-none' : ''}`}
-      style:width={`${percent ?? 100}%`}
-      aria-hidden="true"
-    ></span>
+    <ProgressBar
+      value={percent ?? 100}
+      class="pointer-events-none absolute inset-0 h-full bg-transparent text-accent-soft"
+      barClass={`transition-[width] duration-150 motion-reduce:transition-none ${percent === undefined ? 'animate-pulse motion-reduce:animate-none' : ''}`}
+    />
   {/if}
   <span class="relative grid">
     <span class="invisible col-start-1 row-start-1" aria-hidden="true"

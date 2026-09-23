@@ -833,13 +833,17 @@ test('media services select one workspace and keep desktop rail sections aligned
       ),
     )
     .toBe(true);
-  for (const width of [720, 480, 320]) {
+  for (const width of [720, 480, 440, 320]) {
     await page.setViewportSize({ width, height: 850 });
     await page.screenshot({
       path: `.local/services-mobile-${width}.png`,
       fullPage: true,
     });
     await nav.getByRole('button', { name: 'Sonarr', exact: true }).click();
+    const rail = await page.locator('.service-rail').boundingBox();
+    const workspace = await page.locator('.service-workspace').boundingBox();
+    expect(workspace!.x).toBeCloseTo(rail!.x, 0);
+    expect(workspace!.y).toBeGreaterThanOrEqual(rail!.y + rail!.height);
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -924,7 +928,7 @@ test('NZBGet combines active downloads with scrollable history and compact actio
     path: '.local/services-desktop.png',
     fullPage: true,
   });
-  for (const width of [720, 480, 320]) {
+  for (const width of [720, 480, 440, 320]) {
     await page.setViewportSize({ width, height: 850 });
     expect(
       await page.evaluate(
@@ -934,6 +938,11 @@ test('NZBGet combines active downloads with scrollable history and compact actio
     expect(
       await region.evaluate((node) => node.scrollWidth <= node.clientWidth),
     ).toBe(true);
+    if (width <= 440) {
+      const row = region.locator('tbody tr').first();
+      await expect(row).toHaveCSS('display', 'grid');
+      expect((await row.boundingBox())!.height).toBeLessThanOrEqual(66);
+    }
   }
   await region.scrollIntoViewIfNeeded();
   await page.screenshot({ path: '.local/services-mobile.png', fullPage: true });
@@ -1104,7 +1113,7 @@ for (const scenario of [
     });
     await expect(banner).toContainText(`Failed to load ${scenario.label}`);
     await expect(banner).toContainText(failure);
-    await expect(banner).toHaveClass(/bad/);
+    await expect(banner).toHaveAttribute('data-tone', 'danger');
     await page
       .getByRole('navigation', { name: 'Select service' })
       .getByRole('button', { name: scenario.unaffectedService, exact: true })
@@ -1144,18 +1153,14 @@ for (const state of ['connecting', 'blocked']) {
         radarr.locator('.rail-actions:not(.inactive)').getByRole('progressbar'),
       ).toHaveCount(0);
       const progress = radarr.locator(
-        '.rail-identity:not(.inactive) .activity-bar',
+        '.rail-identity:not(.inactive) .activity-bar > span',
       );
       expect(
-        await progress.evaluate(
-          (node) => getComputedStyle(node, '::after').animationName,
-        ),
+        await progress.evaluate((node) => getComputedStyle(node).animationName),
       ).not.toBe('none');
       await page.emulateMedia({ reducedMotion: 'reduce' });
       expect(
-        await progress.evaluate(
-          (node) => getComputedStyle(node, '::after').animationName,
-        ),
+        await progress.evaluate((node) => getComputedStyle(node).animationName),
       ).toBe('none');
     }
     expect(fixture.errors).toEqual([]);

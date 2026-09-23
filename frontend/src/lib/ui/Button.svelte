@@ -14,6 +14,8 @@
         ghost:
           'border-transparent bg-transparent text-muted hover:bg-surface-soft hover:text-foreground',
         danger: 'border-danger/45 bg-danger/9 text-danger hover:bg-danger/16',
+        player:
+          'border-0 bg-transparent text-inherit hover:bg-[#ffffff24] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent data-[state=open]:bg-[#ffffff24]',
       },
       size: {
         default: 'h-9 px-3.5',
@@ -22,6 +24,8 @@
         form: 'min-h-8.5 px-3.25 py-2 disabled:pointer-events-auto disabled:opacity-46',
         'compact-icon':
           'inline-grid size-7.5 shrink-0 place-items-center border-0 p-0 disabled:pointer-events-auto disabled:opacity-46',
+        credential:
+          'h-4.5 shrink-0 gap-0.5 px-0.75 py-0 text-[9px] leading-none font-normal tracking-normal normal-case disabled:pointer-events-auto disabled:cursor-default [&_svg]:shrink-0',
       },
     },
     defaultVariants: { variant: 'default', size: 'default' },

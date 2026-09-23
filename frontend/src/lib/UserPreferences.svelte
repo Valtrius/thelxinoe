@@ -1,10 +1,13 @@
 <script lang="ts">
+  import Notice from './ui/Notice.svelte';
+  import FormField from './ui/FormField.svelte';
+  import { formControlClass } from './ui/styles';
   import { api, type User } from './api';
   import TimezoneSelect from './TimezoneSelect.svelte';
   import { onDestroy } from 'svelte';
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
   import Panel from './ui/Panel.svelte';
-  import { errorClass, inlineFormClass } from './ui/styles';
+  import { inlineFormClass } from './ui/styles';
   let {
     user,
     changed,
@@ -84,20 +87,23 @@
       defaultTimezone={serverTimezone}
       disabled={busy}
     />
-    <label
-      >Display time format<select bind:value={timeFormat} disabled={busy}
+    <FormField
+      >Display time format<select
+        class={formControlClass}
+        bind:value={timeFormat}
+        disabled={busy}
         ><option value=""
           >Use server default ({serverTimeFormat === '12h'
             ? '12-hour'
             : '24-hour'})</option
         ><option value="24h">24-hour</option><option value="12h">12-hour</option
         ></select
-      ></label
+      ></FormField
     >
   </AutoSaveForm>
   <p class="text-muted">
     Use the server default or choose your own timezone and time format. Regional
     timezones adjust automatically for daylight saving time.
   </p>
-  {#if error}<p role="alert" class={errorClass}>{error}</p>{/if}
+  {#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
 </Panel>

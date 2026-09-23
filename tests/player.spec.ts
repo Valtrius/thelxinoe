@@ -832,6 +832,13 @@ test('controls hide, recover with keyboard, retain volume, seek, and stay inside
   await expect(
     page.getByRole('group', { name: 'Playback settings' }),
   ).toBeVisible();
+  const playerWidth = (await page.locator('.player').boundingBox())!.width;
+  const outsidePlayer = page.viewportSize()!.width - playerWidth;
+  await page.setViewportSize({ width: outsidePlayer + 380, height: 844 });
+  await expect(page.locator('.player-volume-range')).toBeHidden();
+  await expect(page.locator('.playback-mode')).toBeHidden();
+  await page.setViewportSize({ width: outsidePlayer + 381, height: 844 });
+  await expect(page.locator('.player-volume-range')).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
   await insidePlayer(page);
   await page.getByRole('button', { name: 'Pause', exact: true }).click();

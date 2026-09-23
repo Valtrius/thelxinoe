@@ -1,8 +1,10 @@
 <script lang="ts">
+  import Notice from './ui/Notice.svelte';
+  import FormField from './ui/FormField.svelte';
+  import { formControlClass } from './ui/styles';
   import { api } from './api';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
-  import { errorClass } from './ui/styles';
 
   let { changed } = $props<{ changed: () => void }>();
   let current = $state(''),
@@ -49,40 +51,43 @@
       void save();
     }}
   >
-    <label
+    <FormField
       >Current password<input
+        class={formControlClass}
         type="password"
         bind:value={current}
         required
         autocomplete="current-password"
         disabled={busy}
-      /></label
+      /></FormField
     >
-    <label
+    <FormField
       >New password<input
+        class={formControlClass}
         type="password"
         bind:value={password}
         required
         minlength="12"
         autocomplete="new-password"
         disabled={busy}
-      /></label
+      /></FormField
     >
-    <label
+    <FormField
       >Confirm new password<input
+        class={formControlClass}
         type="password"
         bind:value={confirmation}
         required
         minlength="12"
         autocomplete="new-password"
         disabled={busy}
-      /></label
+      /></FormField
     >
     <Button type="submit" size="form" disabled={busy}>
       {busy ? 'Changing password…' : 'Change password'}
     </Button>
   </form>
-  {#if error}<p role="alert" class={errorClass}>{error}</p>{/if}
+  {#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
   {#if saved}<p role="status">
       Password changed. Other devices have been signed out.
     </p>{/if}

@@ -1,4 +1,8 @@
 <script lang="ts">
+  import SectionHeading from './ui/SectionHeading.svelte';
+  import Notice from './ui/Notice.svelte';
+  import FormField from './ui/FormField.svelte';
+  import { formControlClass } from './ui/styles';
   import { Folder, RefreshCw, ArrowLeft } from '@lucide/svelte';
   import { api } from './api';
   import MediaGrid from './ui/MediaGrid.svelte';
@@ -16,11 +20,9 @@
   import Panel from './ui/Panel.svelte';
   import {
     emptyClass,
-    errorClass,
     inlineFormClass,
     panelClass,
     rowClass,
-    sectionHeadingClass,
   } from './ui/styles';
   let {
     domain,
@@ -205,7 +207,7 @@
   }
 </script>
 
-<div class={sectionHeadingClass}>
+<SectionHeading>
   <div>
     {#if breadcrumbs.length}<Button
         variant="secondary"
@@ -228,29 +230,33 @@
       onclick={() => (showAdd = !showAdd)}
       ><Folder size={16} /> Add folder</Button
     >{/if}
-</div>
+</SectionHeading>
 <div class="mb-5 flex flex-wrap items-center gap-3">
-  <label class="m-0 min-w-45 max-w-90 flex-1"
+  <FormField class="m-0 min-w-45 max-w-90 flex-1"
     >Search {domain.toLowerCase()}<input
+      class={formControlClass}
       bind:value={search}
       oninput={searchChanged}
       placeholder={`Search your ${domain.toLowerCase()}`}
-    /></label
+    /></FormField
   ><span class="text-muted">{items.length} items · Ctrl + scroll to zoom</span>
 </div>
 {#if acquisition}{#key domain}<Requests
       user={{ id: userId, role: admin ? 'admin' : 'user' }}
       {domain}
     />{/key}{/if}
-{#if error}<p class={errorClass} role="alert">{error}</p>{/if}
+{#if error}<Notice variant="error" role="alert">{error}</Notice>{/if}
 {#if domain === 'Movies' && collections.length}
-  <label class="max-w-80"
-    >Collection<select bind:value={collection} onchange={() => void load()}
+  <FormField class="max-w-80"
+    >Collection<select
+      class={formControlClass}
+      bind:value={collection}
+      onchange={() => void load()}
       ><option value="">All movies</option
       >{#each collections as group (group.id)}<option value={String(group.id)}
           >{group.name} ({group.count})</option
         >{/each}</select
-    ></label
+    ></FormField
   >
 {/if}
 {#if showAdd}<form
@@ -260,18 +266,20 @@
       void add();
     }}
   >
-    <label
+    <FormField
       >Library name<input
+        class={formControlClass}
         bind:value={name}
         required
         placeholder={`My ${domain.toLowerCase()}`}
-      /></label
-    ><label
+      /></FormField
+    ><FormField
       >Folder inside {mount}<input
+        class={formControlClass}
         bind:value={path}
         required
         placeholder={`${mount}/${domain.toLowerCase()}`}
-      /></label
+      /></FormField
     ><Button type="submit" size="form" disabled={busy}>Add and scan</Button>
   </form>{/if}
 {#if admin && roots.length}<details class="mb-5 border-b border-line">
@@ -304,12 +312,12 @@
     </div>
   </details>{/if}
 {#if selected}<Panel>
-    <div class={sectionHeadingClass}>
+    <SectionHeading>
       <h2>{selected.title}</h2>
       <Button variant="secondary" size="form" onclick={() => (selected = null)}
         >Close</Button
       >
-    </div>
+    </SectionHeading>
     {#if selected.overview}<p class="text-muted">{selected.overview}</p>{/if}
     <MediaActions id={selected.id} kind={selected.kind} {userId} />
     {#if admin}<MediaOperations

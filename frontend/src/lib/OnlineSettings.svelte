@@ -1,9 +1,8 @@
 <script lang="ts">
   import YoutubeSettings from './YoutubeSettings.svelte';
-  import TwitchSettings from './TwitchSettings.svelte';
-  import KickSettings from './KickSettings.svelte';
+  import ProviderApplicationSettings from './providers/ProviderApplicationSettings.svelte';
 </script>
 
 <YoutubeSettings />
-<TwitchSettings />
-<KickSettings />
+<ProviderApplicationSettings platform="twitch" />
+<ProviderApplicationSettings platform="kick" />

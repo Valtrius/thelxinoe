@@ -1,9 +1,12 @@
 <script lang="ts">
+  import Notice from './ui/Notice.svelte';
+  import FormField from './ui/FormField.svelte';
+  import { formControlClass } from './ui/styles';
   import { api, type User } from './api';
   import { Accordion } from 'bits-ui';
   import { ChevronDown } from '@lucide/svelte';
   import Button from './ui/Button.svelte';
-  import { badgeClass, errorClass } from './ui/styles';
+  import { badgeClass } from './ui/styles';
   let { person, currentId, changed, close } = $props<{
     person: User;
     currentId: string;
@@ -75,36 +78,38 @@
         state, playlists and linked credentials. Shared media remains in the
         library.
       </p>
-      <label class="my-4 block max-w-120"
-        >Role<select bind:value={role}
+      <FormField class="my-4 block max-w-120"
+        >Role<select class={formControlClass} bind:value={role}
           ><option value="user">User</option><option value="admin"
             >Administrator</option
           ></select
-        ></label
+        ></FormField
       >
-      <label class="my-4 block max-w-120"
+      <FormField class="my-4 block max-w-120"
         >New password (optional)<input
+          class={formControlClass}
           type="password"
           autocomplete="new-password"
           minlength="12"
           bind:value={password}
-        /></label
+        /></FormField
       >
       <Button variant="secondary" size="form" type="submit" disabled={busy}
         >Save user</Button
       >
     </form>
-    {#if person.id !== currentId}<label class="my-4 block max-w-120"
+    {#if person.id !== currentId}<FormField class="my-4 block max-w-120"
         >Type {person.username} to confirm deletion<input
+          class={formControlClass}
           bind:value={confirm}
           autocomplete="off"
-        /></label
+        /></FormField
       ><Button
         variant="secondary"
         size="form"
         disabled={busy || confirm !== person.username}
         onclick={() => void remove()}>Delete user and personal data</Button
       >{/if}
-    {#if error}<p class={errorClass} role="alert">{error}</p>{/if}
+    {#if error}<Notice variant="error" role="alert">{error}</Notice>{/if}
   </Accordion.Content>
 </Accordion.Item>

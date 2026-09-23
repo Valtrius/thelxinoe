@@ -1,13 +1,15 @@
 <script lang="ts">
+  import Notice from './lib/ui/Notice.svelte';
+  import SectionHeading from './lib/ui/SectionHeading.svelte';
+  import FormField from './lib/ui/FormField.svelte';
+  import { formControlClass } from './lib/ui/styles';
   import AuthLayout from './lib/ui/AuthLayout.svelte';
   import Button from './lib/ui/Button.svelte';
   import Panel from './lib/ui/Panel.svelte';
   import {
     inlineFormClass,
     rowClass,
-    sectionHeadingClass,
     badgeClass,
-    errorClass,
     statsClass,
   } from './lib/ui/styles';
   import { onMount, tick } from 'svelte';
@@ -540,8 +542,11 @@
   <AuthLayout>
     <h1>Update required</h1>
     <p>{updateRequired}</p>
-    {#if desktop}<DesktopUpdates /><label
-        >Server address<input bind:value={serverAddress} /></label
+    {#if desktop}<DesktopUpdates /><FormField
+        >Server address<input
+          class={formControlClass}
+          bind:value={serverAddress}
+        /></FormField
       ><Button
         size="form"
         variant="secondary"
@@ -573,11 +578,12 @@
         ? 'Create the administrator account for your media server.'
         : 'Sign in to pick up where you left off.'}
     </p>
-    {#if desktop}<label
+    {#if desktop}<FormField
         >Server address<input
+          class={formControlClass}
           bind:value={serverAddress}
           placeholder="https://media.example.com"
-        /></label
+        /></FormField
       ><Button
         size="form"
         variant="secondary"
@@ -594,35 +600,38 @@
         void authenticate();
       }}
     >
-      <label
+      <FormField
         >Username<input
+          class={formControlClass}
           bind:value={username}
           required
           autocomplete="username"
-        /></label
+        /></FormField
       >
-      <label
+      <FormField
         >Password<input
+          class={formControlClass}
           bind:value={password}
           type="password"
           required
           minlength={setup ? 12 : 1}
           autocomplete={setup ? 'new-password' : 'current-password'}
-        /></label
+        /></FormField
       >
-      {#if setup}<label
+      {#if setup}<FormField
           >Confirm password<input
+            class={formControlClass}
             bind:value={passwordConfirmation}
             type="password"
             required
             minlength="12"
             autocomplete="new-password"
-          /></label
+          /></FormField
         >
         <p class="text-[11px] text-muted">
           Use at least 12 characters. You can create other users after setup.
         </p>{/if}
-      {#if error}<p role="alert" class={errorClass}>{error}</p>{/if}
+      {#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
       <Button size="form" type="submit" class="w-full" disabled={busy}
         >{busy
           ? 'Connecting…'
@@ -704,7 +713,7 @@
         {#if $appearanceError}<p class="text-muted" role="status">
             {$appearanceError}
           </p>{/if}
-        {#if error}<p class={errorClass} role="alert">{error}</p>{/if}
+        {#if error}<Notice variant="error" role="alert">{error}</Notice>{/if}
         {#if playing && desktop}<NativePlayer
             choice={playing}
             closed={(closedChoice) => {
@@ -776,11 +785,12 @@
                     });
                   }}
                 >
-                  <label
+                  <FormField
                     >Server address<input
+                      class={formControlClass}
                       bind:value={serverAddress}
                       required
-                    /></label
+                    /></FormField
                   ><Button
                     size="form"
                     variant="secondary"
@@ -875,14 +885,15 @@
                       bind:value={timezone}
                       disabled={busy}
                     />
-                    <label
+                    <FormField
                       >Server default time format<select
+                        class={formControlClass}
                         bind:value={serverTimeFormat}
                         disabled={busy}
                         ><option value="24h">24-hour</option><option value="12h"
                           >12-hour</option
                         ></select
-                      ></label
+                      ></FormField
                     >
                   </AutoSaveForm>
                   <ProductUpdates {timeFormat} />
@@ -899,26 +910,28 @@
                       void createUser();
                     }}
                   >
-                    <label
+                    <FormField
                       >Username<input
+                        class={formControlClass}
                         bind:value={newUsername}
                         required
                         autocomplete="off"
-                      /></label
-                    ><label
+                      /></FormField
+                    ><FormField
                       >Password<input
+                        class={formControlClass}
                         bind:value={newPassword}
                         type="password"
                         required
                         minlength="12"
                         autocomplete="new-password"
-                      /></label
-                    ><label
-                      >Role<select bind:value={newRole}
+                      /></FormField
+                    ><FormField
+                      >Role<select class={formControlClass} bind:value={newRole}
                         ><option value="user">User</option><option value="admin"
                           >Administrator</option
                         ></select
-                      ></label
+                      ></FormField
                     ><Button size="form" type="submit" disabled={busy}
                       >Add user</Button
                     >
@@ -935,7 +948,7 @@
               {/if}
               {#if settingsSection === 'audit'}<History {user} audit />{/if}
               {#if settingsSection === 'jobs'}<Panel>
-                  <div class={sectionHeadingClass}>
+                  <SectionHeading>
                     <h2>Background jobs</h2>
                     <Button
                       size="form"
@@ -949,7 +962,7 @@
                           await loadSettings();
                         })}><RefreshCw size={15} /> Run checkpoint</Button
                     >
-                  </div>
+                  </SectionHeading>
                   {#each jobs as job (job.id)}<div class={rowClass}>
                       <span>{job.kind}</span><span class={badgeClass}
                         >{job.state}</span
@@ -967,10 +980,10 @@
             open={openMedia}
             play={(choice) => void playMedia(choice)}
           />
-          <div class={sectionHeadingClass}>
+          <SectionHeading>
             <h2>Your collections</h2>
             <span class="text-muted">Built around you</span>
-          </div>
+          </SectionHeading>
           <div class="grid grid-cols-3 gap-3 compact:grid-cols-1">
             {#each sections.slice(1, 4) as item (item.name)}<button
                 class="flex flex-col items-start gap-4 border border-line bg-surface p-6 text-left text-foreground transition-[transform,border-color] duration-200 hover:border-line-strong hover:[transform:translateY(-2px)] [&_svg]:text-accent [&_strong]:text-sm [&_strong]:leading-normal [&_strong]:font-[550] [&_span]:text-[11px] [&_span]:text-muted compact:flex-row compact:items-center compact:p-4 compact:[&_span]:ml-auto"

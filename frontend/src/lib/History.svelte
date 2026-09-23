@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Notice from './ui/Notice.svelte';
+  import SectionHeading from './ui/SectionHeading.svelte';
   import { onDestroy, untrack } from 'svelte';
   import { SvelteURLSearchParams } from 'svelte/reactivity';
   import { api, type User } from './api';
@@ -7,7 +9,7 @@
   import type { StatisticsPlatform, StatisticsRange } from './statistics/types';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
-  import { errorClass, rowClass, sectionHeadingClass } from './ui/styles';
+  import { rowClass } from './ui/styles';
   let {
     user,
     audit = false,
@@ -124,9 +126,9 @@
   }
 </script>
 
-{#if error}<p role="alert" class={errorClass}>{error}</p>{/if}
+{#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
 <Panel>
-  <div class={sectionHeadingClass}>
+  <SectionHeading>
     <h2>
       {audit ? 'Administrative activity' : 'Playback history'}
     </h2>
@@ -136,7 +138,7 @@
       disabled={busy}
       onclick={() => void load()}>Refresh</Button
     >
-  </div>
+  </SectionHeading>
   {#if audit}<p class="text-muted">Times shown in {user.timezone}.</p>{/if}
   {#if (result?.items.length ?? 0) > 0}
     {#if audit}

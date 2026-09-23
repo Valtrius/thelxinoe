@@ -64,39 +64,43 @@
 
 {#if titles[kind]}
   <section aria-label={titles[kind]} class="border-t border-line py-3">
-    <h3 class="text-xs font-semibold">{titles[kind]}</h3>
+    <h3 class="mb-3 text-xs font-semibold">{titles[kind]}</h3>
     {#if items.length === 0}
-      <p class="text-muted">
+      <p class="text-[11px] leading-[1.6] text-muted my-2">
         No compatible services are connected to Thelxinoe yet.
       </p>
     {/if}
     {#each items as connection (connection.id)}
       <div
-        class="connection-row"
+        class="connection-row grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-2 border-b border-line py-3 last:border-b-0"
         aria-label={`${connection.target_name} connection`}
       >
-        <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="flex flex-col flex-wrap items-start justify-center gap-1">
           <strong class="text-xs">{connection.target_name}</strong>
           <span class="text-xs text-muted" role="status"
             >{status(connection)}</span
           >
         </div>
         {#if connection.error && (connection.enabled || connection.cleanup_pending)}
-          <p class="text-xs" role="status">{connection.error}</p>
+          <p class="text-[11px] leading-[1.6] col-span-full m-0" role="status">
+            {connection.error}
+          </p>
         {/if}
         {#if connection.enabled && connection.state === 'unavailable'}
-          <p class="text-xs text-muted">
+          <p class="text-[11px] leading-[1.6] text-muted col-span-full m-0">
             Retries automatically when both services are available.
           </p>
         {/if}
         {#if connection.cleanup_pending}
-          <p class="text-xs text-muted">
+          <p class="text-[11px] leading-[1.6] text-muted col-span-full m-0">
             Automatic reconnection is disabled. {connection.state === 'conflict'
               ? 'Resolve the reported configuration change, then retry removal.'
               : 'Removal finishes when the source service is available.'}
           </p>
         {/if}
-        <div class="mt-2 flex flex-wrap gap-2">
+        <div
+          class="col-start-2 row-start-1 m-0 flex flex-wrap items-center gap-2"
+        >
           {#if connection.enabled}
             <Button
               variant="secondary"
@@ -126,40 +130,3 @@
     {/each}
   </section>
 {/if}
-
-<style>
-  section > h3 {
-    margin-bottom: 12px;
-  }
-  section p {
-    font-size: 11px;
-    line-height: 1.6;
-    margin: 8px 0;
-  }
-  .connection-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 8px 16px;
-    padding: 12px 0;
-    border-bottom: 1px solid var(--line);
-  }
-  .connection-row > div:first-child {
-    flex-direction: column;
-    align-items: flex-start;
-    justify-content: center;
-    gap: 4px;
-  }
-  .connection-row > div:last-child {
-    grid-column: 2;
-    grid-row: 1;
-    align-items: center;
-    margin: 0;
-  }
-  .connection-row > p {
-    grid-column: 1/-1;
-    margin: 0;
-  }
-  .connection-row:last-child {
-    border-bottom: 0;
-  }
-</style>

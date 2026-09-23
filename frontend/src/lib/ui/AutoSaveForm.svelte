@@ -1,7 +1,7 @@
 <script lang="ts">
+  import Notice from './Notice.svelte';
   import type { Snippet } from 'svelte';
   import Button from './Button.svelte';
-  import { errorClass } from './styles';
 
   let {
     onsave,
@@ -56,7 +56,7 @@
       {busy ? 'Saving…' : 'Saved'}
     </p>{/if}
   {#if error}
-    <div class={errorClass} role="alert">
+    <Notice variant="error" role="alert">
       <p>Your changes could not be saved: {error}</p>
       <Button
         size="form"
@@ -64,6 +64,6 @@
         disabled={disabled || busy}
         onclick={() => void submit()}>Retry saving</Button
       >
-    </div>
+    </Notice>
   {/if}
 </form>

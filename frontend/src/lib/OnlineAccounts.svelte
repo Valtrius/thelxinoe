@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Notice from './ui/Notice.svelte';
   import { onDestroy, untrack } from 'svelte';
   import { api } from './api';
   import {
@@ -8,7 +9,7 @@
   } from './providers/api';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
-  import { errorClass } from './ui/styles';
+
   let { navigate, revision = 0 } = $props<{
     navigate: (section: string) => void;
     revision?: number;
@@ -64,7 +65,7 @@
     server. A server administrator configures application credentials under
     Provider applications before accounts can connect.
   </p>
-  {#if error}<p class={errorClass} role="alert">{error}</p>{/if}
+  {#if error}<Notice variant="error" role="alert">{error}</Notice>{/if}
   {#each [['youtube', 'YouTube'], ['twitch', 'Twitch']] as [provider, label] (provider)}
     {@const account = accounts[provider as 'youtube' | 'twitch']}
     <div
@@ -130,7 +131,7 @@
         >
       </div>
     </div>
-    {#if deleting === provider}<div class={errorClass}>
+    {#if deleting === provider}<Notice variant="error">
         <p>
           Disconnect {label} and delete your {provider === 'youtube'
             ? 'feed, watchlists, pins and history'
@@ -146,7 +147,7 @@
         ><Button variant="secondary" size="form" onclick={() => (deleting = '')}
           >Cancel</Button
         >
-      </div>{/if}
+      </Notice>{/if}
   {/each}
   <div class="mb-4.5 flex flex-col items-start gap-4 border-b border-line py-4">
     <div>
@@ -179,7 +180,7 @@
       >
     </div>
   </div>
-  {#if deleting === 'kick'}<div class={errorClass}>
+  {#if deleting === 'kick'}<Notice variant="error">
       <p>Delete your tracked Kick channels and history?</p>
       <Button
         variant="secondary"
@@ -190,5 +191,5 @@
       ><Button variant="secondary" size="form" onclick={() => (deleting = '')}
         >Cancel</Button
       >
-    </div>{/if}
+    </Notice>{/if}
 </Panel>

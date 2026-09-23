@@ -1,4 +1,6 @@
 <script lang="ts">
+  import FormField from './ui/FormField.svelte';
+  import { formControlClass } from './ui/styles';
   import Switch from './ui/Switch.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
@@ -69,11 +71,12 @@
   </p>
   <ProviderSetupInstructions platform="youtube" />
   {#if config?.redirect_uri}
-    <label
+    <FormField
       >Authorized redirect URI<input
+        class={formControlClass}
         readonly
         value={config.redirect_uri}
-      /></label
+      /></FormField
     >
   {:else}<p role="status">
       Set THELXINOE_PUBLIC_URL to this server's HTTPS origin in its environment
@@ -88,24 +91,26 @@
       void save();
     }}
   >
-    <label
+    <FormField
       >Google client ID<input
+        class={formControlClass}
         bind:value={clientId}
         required
         autocomplete="off"
         placeholder={config?.google_configured
           ? 'Configured — enter credentials to replace it'
           : 'Web application client ID'}
-      /></label
+      /></FormField
     >
-    <label
+    <FormField
       >Google client secret<input
+        class={formControlClass}
         type="password"
         bind:value={clientSecret}
         required
         autocomplete="new-password"
         placeholder="Enter with the client ID"
-      /></label
+      /></FormField
     >
     <Button
       type="submit"
@@ -125,14 +130,15 @@
         youtube_daily_quota: budget,
       })}
   >
-    <label
+    <FormField
       >Daily API budget<input
+        class={formControlClass}
         type="number"
         bind:value={budget}
         min="1"
         max="10000000"
         required
-      /></label
+      /></FormField
     >
     <Switch bind:checked={downloads}>Allow YouTube downloads</Switch>
   </AutoSaveForm>

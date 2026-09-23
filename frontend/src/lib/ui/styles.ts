@@ -8,17 +8,15 @@ export const inlineFormClass =
 export const rowClass =
   'row flex items-center justify-between gap-4 border-t border-line py-3.25 text-xs leading-normal [&>div]:min-w-0 [&>div]:wrap-anywhere [&>span]:min-w-0 [&>span]:wrap-anywhere [&_small]:mt-1 compact:flex-wrap compact:gap-2';
 
-export const sectionHeadingClass =
-  'mb-4.5 flex items-center justify-between gap-4 [&_h2]:mb-0 [&_p]:mb-0 compact:flex-wrap compact:items-start';
-
 export const settingRowClass =
   'mb-4.5 flex items-center justify-between gap-4 border-b border-line py-4 [&_p]:mt-1.25 [&_p]:mb-0 compact:flex-wrap compact:items-start';
 
 export const badgeClass =
   'inline-flex items-center border border-line bg-surface-soft px-1.75 py-0.75 text-[9px] tracking-[0.06em] text-muted uppercase';
 
-export const errorClass =
-  'mb-4 border border-danger/45 bg-danger/8 px-4 py-3 text-[0.75rem] text-danger';
+// Keep native inputs so Svelte preserves number, file and select bindings.
+export const formControlClass =
+  'w-full min-w-0 rounded-none border border-line bg-surface-strong px-2.75 py-2.25 text-foreground placeholder:text-muted placeholder:opacity-80 focus:border-line-strong focus:outline-accent disabled:cursor-not-allowed disabled:opacity-46 [&[type=checkbox]]:size-3.75 [&[type=checkbox]]:shrink-0 [&[type=checkbox]]:accent-accent [&[type=radio]]:size-3.75 [&[type=radio]]:shrink-0 [&[type=radio]]:accent-accent';
 
 const eyebrowTypographyClass =
   'font-[650] tracking-[0.17em] text-muted uppercase';

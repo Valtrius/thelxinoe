@@ -1,4 +1,6 @@
 <script lang="ts">
+  import FormField from './ui/FormField.svelte';
+  import { formControlClass } from './ui/styles';
   import { untrack } from 'svelte';
   import { api } from './api';
   import Button from './ui/Button.svelte';
@@ -77,30 +79,32 @@
   {#each items as item (item.id)}<div
       class="my-[0.8rem] flex flex-wrap items-center gap-[0.8rem]"
     >
-      <label
-        >Type<select bind:value={item.kind}
+      <FormField
+        >Type<select class={formControlClass} bind:value={item.kind}
           >{#each ['Intro', 'Recap', 'Credits', 'Preview'] as kind (kind)}<option
               >{kind}</option
             >{/each}</select
-        ></label
+        ></FormField
       >
-      <label
+      <FormField
         >Start<input
+          class={formControlClass}
           type="number"
           min="0"
           max={duration}
           step="0.1"
           bind:value={item.start}
-        /></label
+        /></FormField
       >
-      <label
+      <FormField
         >End<input
+          class={formControlClass}
           type="number"
           min="0"
           max={duration}
           step="0.1"
           bind:value={item.end}
-        /></label
+        /></FormField
       >
       <span>{item.source} · {Math.round(item.confidence * 100)}%</span>
       <Button
