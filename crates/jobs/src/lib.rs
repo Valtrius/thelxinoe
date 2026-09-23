@@ -32,7 +32,13 @@ impl Queue {
         storage::enqueue(&self.0, kind, payload, key).await
     }
     pub async fn claim(&self) -> Result<Option<Job>> {
-        storage::claim(&self.0).await
+        storage::claim(&self.0, None).await
+    }
+    pub async fn claim_services(&self) -> Result<Option<Job>> {
+        storage::claim(&self.0, Some(true)).await
+    }
+    pub async fn claim_general(&self) -> Result<Option<Job>> {
+        storage::claim(&self.0, Some(false)).await
     }
     pub async fn finish(&self, job: &Job, error: Option<String>) -> Result<()> {
         let id = job.id.clone();
@@ -47,6 +53,32 @@ impl Queue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn service_jobs_can_be_claimed_together_without_taking_general_jobs() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let queue = Queue(Database::open(temp.path().join("db"))?);
+        for (kind, key) in [
+            ("stack.install", "sonarr"),
+            ("service.update", "radarr"),
+            ("checkpoint", "general"),
+        ] {
+            queue
+                .enqueue(kind.into(), serde_json::json!({}), key.into())
+                .await?;
+        }
+        let (first, second) = tokio::join!(queue.claim_services(), queue.claim_services());
+        let first = first?.unwrap();
+        let second = second?.unwrap();
+        assert_ne!(first.id, second.id);
+        assert_ne!(first.kind, "checkpoint");
+        assert_ne!(second.kind, "checkpoint");
+        assert!(queue.claim_services().await?.is_none());
+        let general = queue.claim_general().await?.unwrap();
+        assert_eq!(general.kind, "checkpoint");
+        assert!(queue.claim_general().await?.is_none());
+        Ok(())
+    }
+
     #[tokio::test]
     async fn interrupted_job_recovers_without_duplicating_completed_effect() -> Result<()> {
         let temp = tempfile::tempdir()?;

@@ -166,6 +166,13 @@ function desktop() {
   if (!isWindows) {
     throw new Error('The desktop CI phase requires Windows.');
   }
+  run('powershell.exe', [
+    '-NoProfile',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    'scripts/test-online-storage.ps1',
+  ]);
   npm('run', 'build:desktop');
   run('cargo', [
     'clippy',

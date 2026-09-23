@@ -286,6 +286,61 @@ async fn admin_health(
 pub async fn run_jobs(state: AppState) -> anyhow::Result<()> {
     let queue = Queue(state.db.clone());
     queue.recover().await?;
+    tokio::try_join!(run_general_jobs(state.clone()), run_service_jobs(state))?;
+    Ok(())
+}
+
+async fn run_service_job(state: AppState, job: thelxinoe_jobs::Job) -> anyhow::Result<()> {
+    let result = if job.kind == "stack.install" {
+        managers::provision(&state, &job).await.map(|()| true)
+    } else {
+        managers::update_service(&state, &job).await
+    };
+    if !matches!(result, Ok(false)) {
+        Queue(state.db.clone())
+            .finish(&job, result.err().map(|e| e.to_string()))
+            .await?;
+    }
+    state
+        .emit(None, "jobs.changed", json!({"id":job.id}))
+        .await?;
+    Ok(())
+}
+
+async fn run_service_jobs(state: AppState) -> anyhow::Result<()> {
+    let queue = Queue(state.db.clone());
+    let mut running = tokio::task::JoinSet::new();
+    loop {
+        while let Some(result) = running.try_join_next() {
+            result??;
+        }
+        if running.len() >= 6 {
+            if let Some(result) = running.join_next().await {
+                result??;
+            }
+            continue;
+        }
+        let job = {
+            let _gate = state.release_gate.read().await;
+            if state
+                .release_quiescing
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                None
+            } else {
+                queue.claim_services().await?
+            }
+        };
+        if let Some(job) = job {
+            running.spawn(run_service_job(state.clone(), job));
+        } else {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    }
+}
+
+async fn run_general_jobs(state: AppState) -> anyhow::Result<()> {
+    let queue = Queue(state.db.clone());
     loop {
         let job = {
             let _gate = state.release_gate.read().await;
@@ -295,26 +350,12 @@ pub async fn run_jobs(state: AppState) -> anyhow::Result<()> {
             {
                 None
             } else {
-                queue.claim().await?
+                queue.claim_general().await?
             }
         };
         if let Some(job) = job {
             match job.kind.as_str() {
                 "checkpoint" => queue.checkpoint(&job).await?,
-                "stack.install" => {
-                    let result = managers::provision(&state, &job).await;
-                    queue
-                        .finish(&job, result.err().map(|e| e.to_string()))
-                        .await?;
-                }
-                "service.update" => {
-                    let result = managers::update_service(&state, &job).await;
-                    if !matches!(result, Ok(false)) {
-                        queue
-                            .finish(&job, result.err().map(|e| e.to_string()))
-                            .await?;
-                    }
-                }
                 "manager.request" => {
                     let result = managers::acquire(&state, &job).await;
                     queue

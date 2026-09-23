@@ -117,7 +117,12 @@ pub(super) async fn remove(d: &Deployment, s: &mut Managed) -> Result<Json<Value
         if key.starts_with(&controller) {
             continue;
         }
-        let raw = engine(&format!("/containers/{key}/json")).await?;
+        let raw = match engine(&format!("/containers/{key}/json")).await {
+            Ok(raw) => raw,
+            // Another service can finish removing a container after this listing.
+            Err((StatusCode::NOT_FOUND, _)) => continue,
+            Err(error) => return Err(error),
+        };
         if owned(&raw, &d.id, &s.id, &updates) {
             if raw["State"]["Running"] != false {
                 return Err(conflict(

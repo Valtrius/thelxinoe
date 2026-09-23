@@ -53,6 +53,8 @@ if ($databaseExists -ne $masterKeyExists) {
     throw "The saved online profile is incomplete: $stateRoot/$missing is missing. Restore the matching database and master key before using dev:online."
 }
 $firstLaunch = -not $databaseExists
+. (Join-Path $PSScriptRoot 'online-storage.ps1')
+$volumePrefix = Resolve-OnlineStoragePrefix -StateRoot $stateRoot -BasePrefix $volumePrefix -FirstLaunch $firstLaunch
 
 $version = (Get-Content -LiteralPath (Join-Path $repoRoot 'package.json') -Raw | ConvertFrom-Json).version
 $runEnvironment = @{

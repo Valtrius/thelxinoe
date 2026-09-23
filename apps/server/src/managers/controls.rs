@@ -138,7 +138,8 @@ async fn grab(
     if input.guid.len() > 2000 || input.indexer_id <= 0 {
         return Err(ApiError::bad("Select a release returned by the manager"));
     }
-    let _guard = state.managers.guard.lock().await;
+    let kind = target(&state, key.clone()).await?.0.kind;
+    let _guard = state.managers.guard.service(&kind).await;
     let (s, item, _) = target(&state, key.clone()).await?;
     let c = Connection::open(&state, &s).await?;
     let rows = candidates(&c, &item, &input.target).await?;
@@ -179,7 +180,8 @@ async fn monitor(
     Json(input): Json<Monitor>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
-    let _guard = state.managers.guard.lock().await;
+    let kind = target(&state, key.clone()).await?.0.kind;
+    let _guard = state.managers.guard.service(&kind).await;
     let (s, mut item, _) = target(&state, key.clone()).await?;
     let c = Connection::open(&state, &s).await?;
     item["monitored"] = json!(input.monitored);

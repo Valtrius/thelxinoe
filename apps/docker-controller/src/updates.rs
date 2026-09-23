@@ -26,6 +26,18 @@ fn read(key: &str) -> Result<Update> {
     id(key)?;
     persisted(store::read(&path(key).join("update.json")))
 }
+fn read_listed(key: &str) -> Result<Option<Update>> {
+    id(key)?;
+    // A different service can remove its update copies after directory discovery.
+    let bytes = match std::fs::read(path(key).join("update.json")) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(unavailable()),
+    };
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|_| unavailable())
+}
 fn write(u: &Update) -> Result<()> {
     persisted(store::write_json(&path(&u.id).join("update.json"), u))
 }
@@ -38,8 +50,10 @@ pub(super) async fn list() -> Result<Json<Value>> {
     if root.exists() {
         for entry in std::fs::read_dir(root).map_err(|_| unavailable())? {
             let entry = entry.map_err(|_| unavailable())?;
-            if entry.path().join("update.json").is_file() {
-                items.push(public(&read(&entry.file_name().to_string_lossy())?));
+            if entry.path().join("update.json").is_file()
+                && let Some(update) = read_listed(&entry.file_name().to_string_lossy())?
+            {
+                items.push(public(&update));
             }
         }
     }
@@ -67,7 +81,9 @@ pub(super) async fn retained_originals(d: &Deployment, service: &Managed) -> Res
         if !entry.path().join("update.json").is_file() {
             continue;
         }
-        let update = read(&entry.file_name().to_string_lossy())?;
+        let Some(update) = read_listed(&entry.file_name().to_string_lossy())? else {
+            continue;
+        };
         if update.service != service.id
             || update.old.container == service.container
             || !update.activation_crossed
@@ -96,7 +112,9 @@ pub(super) fn removable_updates(service: &str) -> Result<Vec<String>> {
             if !entry.path().join("update.json").is_file() {
                 continue;
             }
-            let update = read(&entry.file_name().to_string_lossy())?;
+            let Some(update) = read_listed(&entry.file_name().to_string_lossy())? else {
+                continue;
+            };
             if update.service == service {
                 if !matches!(
                     update.stage.as_str(),
@@ -131,8 +149,8 @@ pub(super) async fn preflight(
     }
     let guard = runtime
         .0
-        .try_lock_owned()
-        .map_err(|_| conflict("Another Docker operation is active"))?;
+        .try_service(&load(&key)?.kind)
+        .map_err(|_| conflict("This service or the deployment has an active operation"))?;
     let d = bootstrap().await?;
     let mut s = load(&key)?;
     if s.phase != "active" {
@@ -436,8 +454,8 @@ pub(super) async fn activate(
 ) -> Result<Json<Value>> {
     let guard = runtime
         .0
-        .try_lock_owned()
-        .map_err(|_| conflict("Another Docker operation is active"))?;
+        .try_service(&load(&read(&key)?.service)?.kind)
+        .map_err(|_| conflict("This service or the deployment has an active operation"))?;
     let d = bootstrap().await?;
     let mut u = read(&key)?;
     let mut s = load(&u.service)?;
@@ -575,8 +593,8 @@ pub(super) async fn recover(
 ) -> Result<Json<Value>> {
     let _guard = runtime
         .0
-        .try_lock_owned()
-        .map_err(|_| conflict("Another Docker operation is active"))?;
+        .try_service(&load(&read(&key)?.service)?.kind)
+        .map_err(|_| conflict("This service or the deployment has an active operation"))?;
     let d = bootstrap().await?;
     let mut u = read(&key)?;
     let current = load(&u.service)?;

@@ -221,6 +221,275 @@ test('a stopped service can be removed after reviewing its configuration cleanup
   expect(fixture.unexpected).toEqual([]);
 });
 
+test('removal and installation keep independent locks, feedback and polling', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+  });
+  let finishRemoval: (() => void) | undefined;
+  let finishInstall: (() => void) | undefined;
+  let stackReads = 0;
+  let retiring = false;
+  await page.route('**/api/v1/admin/stack', async (route) => {
+    stackReads++;
+    await route.fulfill({
+      json: {
+        items: [
+          {
+            id: 'managed-radarr',
+            kind: 'radarr',
+            phase: 'active',
+            running: false,
+            existence: 'present',
+            drift: false,
+            can_remove: true,
+          },
+        ],
+        provisions: [
+          {
+            id: 'managed-radarr',
+            kind: 'radarr',
+            state: retiring ? 'retiring' : 'complete',
+          },
+        ],
+      },
+    });
+  });
+  await page.route(
+    '**/api/v1/admin/stack/managed-radarr/action',
+    async (route) => {
+      retiring = true;
+      await new Promise<void>((resolve) => {
+        finishRemoval = resolve;
+      });
+      await route.fulfill({
+        status: 409,
+        json: { error: { message: 'Removal needs attention' } },
+      });
+    },
+  );
+  await page.route('**/api/v1/admin/stack/install', async (route) => {
+    expect(route.request().postDataJSON().kind).toBe('sonarr');
+    await new Promise<void>((resolve) => {
+      finishInstall = resolve;
+    });
+    await route.fulfill({ json: { id: 'managed-sonarr', state: 'queued' } });
+  });
+  await page.goto('/');
+  await page
+    .getByRole('button', { name: 'Remove service', exact: true })
+    .click();
+  await page
+    .getByRole('button', { name: 'Remove service and configuration' })
+    .click();
+  await expect(
+    page.getByRole('dialog', { name: 'Remove Radarr?' }),
+  ).not.toBeVisible();
+  await expect.poll(() => !!finishRemoval).toBe(true);
+  await expect(
+    page.getByRole('button', { name: 'Start', exact: true }),
+  ).toBeDisabled();
+  await page.getByRole('button', { name: 'Sonarr', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Install Sonarr', exact: true })
+    .click();
+  await expect.poll(() => !!finishInstall).toBe(true);
+  await expect(
+    page.getByRole('button', { name: 'Install Sonarr', exact: true }),
+  ).toBeDisabled();
+  await page.getByRole('button', { name: 'Lidarr', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'Install Lidarr', exact: true }),
+  ).toBeEnabled();
+  const reads = stackReads;
+  await expect.poll(() => stackReads, { timeout: 7000 }).toBeGreaterThan(reads);
+  finishRemoval!();
+  await page.getByRole('button', { name: 'Radarr', exact: true }).click();
+  await expect(page.locator('.rail-identity:not(.inactive)')).toContainText(
+    'Removal needs attention',
+  );
+  await expect(
+    page.getByRole('button', { name: 'Remove service', exact: true }),
+  ).toBeEnabled();
+  await page.getByRole('button', { name: 'Sonarr', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'Install Sonarr', exact: true }),
+  ).toBeDisabled();
+  await expect(page.locator('.rail-identity:not(.inactive)')).not.toContainText(
+    'Removal needs attention',
+  );
+  finishInstall!();
+  await expect(
+    page.getByRole('button', { name: 'Install Sonarr', exact: true }),
+  ).toBeEnabled();
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('an older update poll cannot unlock a newly queued update', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+  });
+  let reads = 0;
+  let queued = false;
+  let finishOldPoll: (() => void) | undefined;
+  await page.route('**/api/v1/admin/service-updates', async (route) => {
+    reads++;
+    const items = queued
+      ? [{ id: 'update-radarr', service_id: 'managed-radarr', state: 'queued' }]
+      : [];
+    if (reads === 2)
+      await new Promise<void>((resolve) => {
+        finishOldPoll = resolve;
+      });
+    await route.fulfill({
+      json: {
+        policies: [],
+        timezone: 'UTC',
+        items,
+        services: [{ id: 'managed-radarr', kind: 'radarr' }],
+        server_policy: { policy: 'notify', window_start: 3, window_end: 5 },
+      },
+    });
+  });
+  await page.route(
+    '**/api/v1/admin/service-updates/preflight/managed-radarr',
+    async (route) => {
+      queued = true;
+      await route.fulfill({ json: { id: 'update-radarr', state: 'queued' } });
+    },
+  );
+  await page.goto('/');
+  const check = page.getByRole('button', {
+    name: 'Check compatibility',
+    exact: true,
+  });
+  await expect(check).toBeEnabled();
+  await expect.poll(() => !!finishOldPoll, { timeout: 7000 }).toBe(true);
+  await check.click();
+  await expect.poll(() => reads).toBe(3);
+  await expect(check).toBeDisabled();
+  const staleResponse = page.waitForResponse((response) =>
+    response.url().endsWith('/admin/service-updates'),
+  );
+  finishOldPoll!();
+  await staleResponse;
+  await page.getByRole('button', { name: 'Sonarr', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'Install Sonarr', exact: true }),
+  ).toBeEnabled();
+  await page.getByRole('button', { name: 'Radarr', exact: true }).click();
+  await expect(check).toBeDisabled();
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+for (const state of ['queued', 'preflight', 'activating', 'queued-recover']) {
+  test(`a ${state} update only disables its own service`, async ({ page }) => {
+    const fixture = await installUiFixture(page, {
+      role: 'admin',
+      settingsSection: 'services',
+      serviceUpdateState: state,
+    });
+    await page.goto('/');
+    await expect(
+      page.getByRole('button', { name: 'Restart', exact: true }),
+    ).toBeDisabled();
+    await expect(
+      page.getByRole('button', { name: 'Check compatibility', exact: true }),
+    ).toBeDisabled();
+    await page.getByRole('button', { name: 'Sonarr', exact: true }).click();
+    await expect(
+      page.getByRole('button', { name: 'Install Sonarr', exact: true }),
+    ).toBeEnabled();
+    await page.getByRole('button', { name: 'NZBGet', exact: true }).click();
+    await expect(
+      page.getByRole('button', { name: 'Pause all', exact: true }),
+    ).toBeEnabled();
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.unexpected).toEqual([]);
+  });
+}
+
+for (const savedControllerData of [false, true]) {
+  test(`fresh service setup ${savedControllerData ? 'explains unmatched controller data' : 'offers installation for every service'}`, async ({
+    page,
+  }) => {
+    const fixture = await installUiFixture(page, {
+      role: 'admin',
+      settingsSection: 'services',
+    });
+    for (const endpoint of ['managers', 'support']) {
+      await page.route(`**/api/v1/admin/${endpoint}`, (route) =>
+        route.fulfill({ json: { items: [] } }),
+      );
+    }
+    await page.route('**/api/v1/admin/stack', (route) =>
+      route.fulfill({
+        json: {
+          items: savedControllerData
+            ? [
+                {
+                  id: 'old-radarr',
+                  kind: 'radarr',
+                  phase: 'active',
+                  status: 'missing',
+                  existence: 'missing',
+                  registered: false,
+                  can_recreate: false,
+                  can_retire: false,
+                  can_remove: false,
+                },
+              ]
+            : [],
+          provisions: [],
+        },
+      }),
+    );
+    await page.goto('/');
+    const services = page.getByRole('navigation', { name: 'Select service' });
+    if (savedControllerData) {
+      await expect(
+        services.getByRole('button', { name: 'Radarr', exact: true }),
+      ).toContainText('Setup mismatch');
+      await expect(
+        page.getByRole('status', { name: 'Service setup mismatch' }),
+      ).toContainText('no matching record');
+      await expect(
+        page.getByRole('button', { name: 'Recreate and start', exact: true }),
+      ).toHaveCount(0);
+      await expect(
+        page.getByRole('button', { name: 'Restart', exact: true }),
+      ).toHaveCount(0);
+    } else {
+      for (const name of [
+        'Radarr',
+        'Sonarr',
+        'Lidarr',
+        'Bazarr',
+        'Prowlarr',
+        'NZBGet',
+      ]) {
+        await services.getByRole('button', { name, exact: true }).click();
+        await expect(
+          services.getByRole('button', { name, exact: true }),
+        ).toContainText('Not connected');
+        await expect(
+          page.getByRole('button', { name: `Install ${name}`, exact: true }),
+        ).toBeEnabled();
+      }
+    }
+    await expect(services).not.toContainText('Container missing');
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.unexpected).toEqual([]);
+  });
+}
+
 test('profile pictures are cropped, resized, saved and removable', async ({
   page,
 }) => {

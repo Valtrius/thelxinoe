@@ -276,3 +276,16 @@ pub(super) async fn retry(db: &Database, key: String) -> anyhow::Result<bool> {
         tx.commit()?;Ok(true)
     }).await
 }
+
+pub(super) async fn kind(db: &Database, key: String) -> anyhow::Result<Option<String>> {
+    db.read("managers.stack.kind", move |db| {
+        Ok(db
+            .query_row(
+                "SELECT kind FROM stack_provisions WHERE id=?1",
+                [key],
+                |r| r.get(0),
+            )
+            .optional()?)
+    })
+    .await
+}

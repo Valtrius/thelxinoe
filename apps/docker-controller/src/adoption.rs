@@ -82,7 +82,7 @@ pub(super) async fn preview(
     State(runtime): State<Runtime>,
     Json(input): Json<Preview>,
 ) -> Result<Json<Value>> {
-    let _guard = runtime.0.lock().await;
+    let _guard = runtime.0.service(&input.kind).await;
     let d = bootstrap().await?;
     ensure_kind_available(&d, &input.kind).await?;
     let (raw, image) = inspect(&d, &input).await?;
@@ -143,7 +143,7 @@ pub(super) async fn check(
     State(runtime): State<Runtime>,
     Json(input): Json<Adopt>,
 ) -> Result<Json<Value>> {
-    let _guard = runtime.0.lock().await;
+    let _guard = runtime.0.service(&input.kind).await;
     let d = bootstrap().await?;
     ensure_kind_available(&d, &input.kind).await?;
     checked(&d, &input).await?;
@@ -176,7 +176,7 @@ pub(super) async fn adopt(
     State(runtime): State<Runtime>,
     Json(input): Json<Adopt>,
 ) -> Result<Json<Value>> {
-    let _guard = runtime.0.lock().await;
+    let _guard = runtime.0.service(&input.kind).await;
     let d = bootstrap().await?;
     let containers = ensure_kind_available(&d, &input.kind).await?;
     let review = checked(&d, &input).await?;

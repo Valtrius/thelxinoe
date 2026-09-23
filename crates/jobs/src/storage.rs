@@ -25,10 +25,10 @@ pub(super) async fn enqueue(
     }).await
 }
 
-pub(super) async fn claim(db: &Database) -> anyhow::Result<Option<Job>> {
-    db.write("jobs.claim", |c| {
+pub(super) async fn claim(db: &Database, services: Option<bool>) -> anyhow::Result<Option<Job>> {
+    db.write("jobs.claim", move |c| {
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let job = tx.query_row("UPDATE jobs SET state='running',attempts=attempts+1,started_at=?1 WHERE id=(SELECT id FROM jobs WHERE state='queued' AND available_at<=?1 ORDER BY created_at LIMIT 1) RETURNING id,kind,payload,state,attempts,error", [now()], |r| Ok(Job { id:r.get(0)?, kind:r.get(1)?, payload:serde_json::from_str(&r.get::<_,String>(2)?).unwrap_or_default(), state:r.get(3)?, attempts:r.get(4)?, error:r.get(5)? })).optional()?;
+        let job = tx.query_row("UPDATE jobs SET state='running',attempts=attempts+1,started_at=?1 WHERE id=(SELECT id FROM jobs WHERE state='queued' AND available_at<=?1 AND (?2 IS NULL OR (kind IN ('stack.install','service.update'))=?2) ORDER BY created_at LIMIT 1) RETURNING id,kind,payload,state,attempts,error", params![now(), services], |r| Ok(Job { id:r.get(0)?, kind:r.get(1)?, payload:serde_json::from_str(&r.get::<_,String>(2)?).unwrap_or_default(), state:r.get(3)?, attempts:r.get(4)?, error:r.get(5)? })).optional()?;
         tx.commit()?; Ok(job)
     }).await
 }

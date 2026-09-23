@@ -339,3 +339,123 @@ async fn retirement_rejects_unknown_or_present_containers_without_changing_setup
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn another_service_can_be_removed_while_one_service_is_busy() {
+    let (_temp, state, cookie, key) = managed("radarr").await;
+    let other = id();
+    let insert = other.clone();
+    state.db.write("test.concurrent_service", move |db| {
+        db.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,created_at,updated_at) VALUES (?1,'sonarr','alice',18989,X'01','complete',1,1)", [insert])?;
+        Ok(())
+    }).await.unwrap();
+    state.managers.docker.lock().unwrap().extend([
+        (
+            "stack".into(),
+            json!({"items":[{"id":key,"can_remove":true},{"id":other,"can_remove":true}]}),
+        ),
+        (format!("stack/{key}/action"), json!({"removed":true})),
+        (format!("stack/{other}/action"), json!({"removed":true})),
+    ]);
+    let lease = state.managers.maintenance(&state).await;
+    let guard = state.managers.guard.service("radarr").await;
+    let path = format!("/api/v1/admin/stack/{key}/action");
+    let blocked = call(&state, &path, "POST", json!({"action":"remove"}), &cookie);
+    tokio::pin!(blocked);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), &mut blocked)
+            .await
+            .is_err()
+    );
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        call(
+            &state,
+            &format!("/api/v1/admin/stack/{other}/action"),
+            "POST",
+            json!({"action":"remove"}),
+            &cookie,
+        ),
+    )
+    .await
+    .expect("An unrelated service must not wait for Radarr");
+    assert_eq!(response.0, StatusCode::OK, "{}", response.2);
+    assert!(
+        state.media_operations.try_read().is_err(),
+        "Maintenance must still exclude new playback/media work"
+    );
+    drop(guard);
+    let response = tokio::time::timeout(std::time::Duration::from_secs(3), &mut blocked)
+        .await
+        .unwrap();
+    assert_eq!(response.0, StatusCode::OK, "{}", response.2);
+    drop(lease);
+    assert!(state.media_operations.try_read().is_ok());
+}
+
+#[tokio::test]
+async fn fresh_server_rejects_recovery_of_unregistered_controller_records() {
+    let (_temp, state, cookie) = fixture().await;
+    state
+        .db
+        .write("test.admin", |db| {
+            db.execute("UPDATE users SET role='admin' WHERE id='alice'", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let key = id();
+    state.managers.docker.lock().unwrap().insert(
+        "stack".into(),
+        json!({"items":[{
+            "id":key,"kind":"radarr","status":"missing","existence":"missing",
+            "can_recreate":true,"can_retire":true,"can_remove":true
+        }]}),
+    );
+    let response = call(&state, "/api/v1/admin/stack", "GET", json!({}), &cookie).await;
+    assert_eq!(response.0, StatusCode::OK);
+    assert_eq!(response.2["provisions"], json!([]));
+    let item = &response.2["items"][0];
+    assert_eq!(item["registered"], false);
+    for flag in ["can_recreate", "can_retire", "can_remove"] {
+        assert_eq!(item[flag], false);
+    }
+    let response = call(
+        &state,
+        &format!("/api/v1/admin/stack/{key}/action"),
+        "POST",
+        json!({"action":"recreate"}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(response.0, StatusCode::CONFLICT);
+    assert!(response.2.to_string().contains("no matching server record"));
+
+    state
+        .managers
+        .docker
+        .lock()
+        .unwrap()
+        .insert("stack".into(), json!({"items":[]}));
+    let response = call(&state, "/api/v1/admin/stack", "GET", json!({}), &cookie).await;
+    assert_eq!(response.0, StatusCode::OK);
+    assert_eq!(response.2["items"], json!([]));
+    assert_eq!(response.2["provisions"], json!([]));
+}
+
+#[tokio::test]
+async fn matching_server_record_keeps_missing_container_recovery_available() {
+    let (_temp, state, cookie, key) = managed("radarr").await;
+    state.managers.docker.lock().unwrap().insert(
+        "stack".into(),
+        json!({"items":[{
+            "id":key,"kind":"radarr","status":"missing","existence":"missing",
+            "can_recreate":true,"can_retire":true,"can_remove":true
+        }]}),
+    );
+    let response = call(&state, "/api/v1/admin/stack", "GET", json!({}), &cookie).await;
+    assert_eq!(response.0, StatusCode::OK);
+    let item = &response.2["items"][0];
+    assert_eq!(item["registered"], true);
+    assert_eq!(item["can_recreate"], true);
+}

@@ -199,7 +199,7 @@ async fn register_with_actor(
             "Choose a supported service, credentials and an HTTP(S) UI address without credentials or query parameters",
         ));
     }
-    let _guard = state.managers.guard.lock().await;
+    let _guard = state.managers.guard.service(&input.kind).await;
     let (base, media_source) = evidence_for(
         &state,
         &input.container_id,
@@ -380,8 +380,9 @@ async fn action(
     Json(input): Json<Action>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
-    let _lease = state.media_operations.read().await;
-    let _guard = state.managers.guard.lock().await;
+    let kind = load(&state, &key).await?.kind;
+    let _lease = state.managers.maintenance(&state).await;
+    let _guard = state.managers.guard.service(&kind).await;
     let s = load(&state, &key).await?;
     let c = connect(&state, &s).await?;
     match s.kind.as_str() {

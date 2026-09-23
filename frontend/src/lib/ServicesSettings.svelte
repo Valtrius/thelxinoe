@@ -88,6 +88,7 @@
   };
   type StackService = {
     id: string;
+    registered?: boolean;
     kind: ServiceKind;
     name: string;
     phase: string;
@@ -330,12 +331,14 @@
       policy: 'notify',
       window_start: 3,
       window_end: 5,
-    }),
-    busy = $state(false);
+    });
+  const pendingActions = $state<
+    Partial<Record<ServiceKind | 'general', boolean>>
+  >({});
   const copyingCredentials = $state<
     Partial<Record<'username' | 'password', boolean>>
   >({});
-  const feedback = $state<Partial<Record<ServiceKind, string>>>({});
+  const feedback = $state<Partial<Record<ServiceKind | 'general', string>>>({});
   const connectionTests = $state<Partial<Record<ServiceKind, string>>>({});
   const connectionErrors = $state<Partial<Record<ServiceKind, string>>>({});
   let removalKind = $state<ServiceKind | null>(null);
@@ -390,7 +393,7 @@
     nzbget: nzbgetIcon,
   };
   let selectedKind = $state<ServiceKind>('radarr');
-  let busyKind = $state<ServiceKind | null>(null);
+  const busy = $derived(isBusy(selectedKind));
   const detailErrors = $state<Partial<Record<ServiceKind, string>>>({});
   const detailLoading = $state<Partial<Record<ServiceKind, boolean>>>({});
   const definition = $derived(
@@ -415,6 +418,8 @@
   }
   function activity(kind: ServiceKind) {
     const state = provision(kind)?.state;
+    if (state === 'retiring' && !pendingActions[kind] && feedback[kind])
+      return '';
     if (setupActive(kind))
       return (
         {
@@ -424,7 +429,15 @@
           retiring: 'Retiring installation',
         } as Record<string, string>
       )[state!];
-    const update = serviceUpdates(kind)
+    const update = activeUpdate(kind);
+    if (update)
+      return update.state === 'activating'
+        ? 'Connecting API'
+        : stages[update.state];
+    return pendingActions[kind] ? 'Working' : '';
+  }
+  function activeUpdate(kind: ServiceKind) {
+    return serviceUpdates(kind)
       .slice(0, 1)
       .find((entry) =>
         [
@@ -440,15 +453,20 @@
           'queued-recover',
         ].includes(entry.state),
       );
-    if (update)
-      return update.state === 'activating'
-        ? 'Connecting API'
-        : stages[update.state];
-    return busy && busyKind === kind ? 'Working' : '';
+  }
+  function isBusy(kind: ServiceKind, retryRemoval = false) {
+    return (
+      !!pendingActions[kind] ||
+      (!(retryRemoval && provision(kind)?.state === 'retiring') &&
+        setupActive(kind)) ||
+      !!activeUpdate(kind)
+    );
   }
   function status(kind: ServiceKind) {
     const item = provision(kind),
       live = runtime(kind);
+    if (live?.registered === false)
+      return { label: 'Setup mismatch', tone: 'warn' };
     const connected = integration(
       definitions.find((entry) => entry.kind === kind)!,
     );
@@ -504,9 +522,10 @@
   function canControl(kind: ServiceKind, action: string) {
     const live = runtime(kind);
     return (
-      !busy &&
+      !isBusy(kind) &&
       !setupActive(kind) &&
       !!live &&
+      live.registered !== false &&
       live.existence !== 'unknown' &&
       (action === 'reconcile' ||
         (live.existence === 'present' &&
@@ -516,7 +535,7 @@
   }
   async function loadSelectedData() {
     const kind = selectedKind;
-    if (detailLoading[kind]) return;
+    if (detailLoading[kind] || isBusy(kind)) return;
     detailLoading[kind] = true;
     detailErrors[kind] = '';
     try {
@@ -554,7 +573,9 @@
       draft.targetId = target.id;
     }
   }
+  let updateLoad = 0;
   async function loadUpdateData() {
+    const request = ++updateLoad;
     loadErrors.updates = '';
     try {
       const result = await api<{
@@ -564,6 +585,7 @@
         services: UpdateTarget[];
         server_policy: ServerUpdatePolicy;
       }>('/admin/service-updates');
+      if (request !== updateLoad) return;
       policies = result.policies;
       updates = result.items;
       updateTargets = result.services;
@@ -571,7 +593,7 @@
       serverPolicy = result.server_policy;
       syncUpdateDrafts();
     } catch (error) {
-      loadErrors.updates = String(error);
+      if (request === updateLoad) loadErrors.updates = String(error);
     }
   }
   async function loadManagers() {
@@ -665,16 +687,19 @@
       loadConnections(),
     ]);
     await loadContainers();
-    await loadSelectedData();
+    void loadSelectedData();
   }
+  let connectionLoad = 0;
   async function loadConnections() {
+    const request = ++connectionLoad;
     loadErrors.connections = '';
     try {
-      connections = (
-        await api<{ items: ServiceConnection[] }>('/admin/service-connections')
-      ).items;
+      const result = await api<{ items: ServiceConnection[] }>(
+        '/admin/service-connections',
+      );
+      if (request === connectionLoad) connections = result.items;
     } catch (error) {
-      loadErrors.connections = String(error);
+      if (request === connectionLoad) loadErrors.connections = String(error);
     }
   }
   async function connectionAction(
@@ -688,11 +713,19 @@
     });
     await loadConnections();
   }
-  async function work(action: () => Promise<void>, success = '') {
-    if (busy) return;
-    busy = true;
-    busyKind = selectedKind;
-    const kind = selectedKind;
+  async function work(
+    action: () => Promise<void>,
+    success = '',
+    kind: ServiceKind | 'general' = selectedKind,
+    allowBackground = false,
+  ) {
+    if (
+      kind === 'general' || allowBackground
+        ? pendingActions[kind]
+        : isBusy(kind)
+    )
+      return;
+    pendingActions[kind] = true;
     feedback[kind] = '';
     try {
       await action();
@@ -700,8 +733,7 @@
     } catch (error) {
       feedback[kind] = String(error);
     } finally {
-      busy = false;
-      busyKind = null;
+      pendingActions[kind] = false;
     }
   }
   async function connectExternal(definition: Definition) {
@@ -746,6 +778,7 @@
     const options = await api<ManagerOptions>(
       `/admin/managers/${service.id}/options`,
     );
+    if (manager(kind)?.id !== service.id) return;
     managerOptions[kind] = options;
     if (draft.loaded) return;
     draft.root_folder =
@@ -788,7 +821,7 @@
     const service = supportService(kind);
     if (!service) return;
     const snapshot = await api<SupportSnapshot>(`/admin/support/${service.id}`);
-    snapshots[kind] = snapshot;
+    if (supportService(kind)?.id === service.id) snapshots[kind] = snapshot;
   }
   async function copyNzbgetCredential(field: 'username' | 'password') {
     const service = nzbgetLoginTarget;
@@ -824,7 +857,7 @@
   async function copyNzbgetCredentialFromButton(
     field: 'username' | 'password',
   ) {
-    if (busy || copyingCredentials[field]) return;
+    if (copyingCredentials[field]) return;
     copyingCredentials[field] = true;
     feedback.nzbget = '';
     try {
@@ -872,7 +905,6 @@
     if (!service) return;
     await api(`/admin/stack/${service.id}/action`, 'POST', { action });
     if (action === 'remove') {
-      removalKind = null;
       const draft = defaults[kind];
       if (draft) draft.loaded = false;
       delete managerOptions[kind];
@@ -920,10 +952,10 @@
   }
 
   onMount(() => {
-    void work(refresh);
+    void refresh();
     let polling = false;
     const poll = async () => {
-      if (busy || polling || document.hidden) return;
+      if (polling || document.hidden) return;
       polling = true;
       try {
         await refresh();
@@ -948,12 +980,13 @@
     confirmLabel="Remove service and configuration"
     eyebrow="REMOVE / MEDIA SERVICE"
     danger
-    {busy}
+    busy={removalKind ? isBusy(removalKind, true) : false}
     error={removalKind ? (feedback[removalKind] ?? '') : ''}
     onCancel={() => (removalKind = null)}
     onConfirm={() => {
       const kind = removalKind;
-      if (kind) void work(() => stackAction(kind, 'remove'));
+      removalKind = null;
+      if (kind) void work(() => stackAction(kind, 'remove'), '', kind, true);
     }}
   />
   <nav class="service-strip" aria-label="Select service">
@@ -987,8 +1020,8 @@
         <Button
           variant="secondary"
           size="sm"
-          disabled={busy}
-          onclick={() => void work(refresh)}>Retry</Button
+          disabled={pendingActions.general}
+          onclick={() => void work(refresh, '', 'general')}>Retry</Button
         >
       </div>
     {/if}
@@ -1029,36 +1062,44 @@
               >
               {#if service.kind === 'nzbget' && nzbgetLoginTarget}
                 <div class="ml-auto flex shrink-0 items-center gap-1">
-                <button
-                  class="credential-copy"
-                  type="button"
-                  aria-label="Copy NZBGet login"
-                  title="Copy NZBGet login"
-                  aria-busy={copyingCredentials.username}
-                  disabled={busy || copyingCredentials.username}
-                  onclick={() =>
-                    void copyNzbgetCredentialFromButton('username')}>
-                    {#if copyingCredentials.username}
-                      <LoaderCircle size={10} class="animate-spin motion-reduce:animate-none" aria-hidden="true" />
-                    {:else}
-                      <Copy size={10} aria-hidden="true" />
-                    {/if}Login
-                </button>
-                <button
-                  class="credential-copy"
-                  type="button"
-                  aria-label="Copy NZBGet password"
-                  title="Copy NZBGet password"
-                  aria-busy={copyingCredentials.password}
-                  disabled={busy || copyingCredentials.password}
-                  onclick={() =>
-                    void copyNzbgetCredentialFromButton('password')}>
-                    {#if copyingCredentials.password}
-                      <LoaderCircle size={10} class="animate-spin motion-reduce:animate-none" aria-hidden="true" />
-                    {:else}
-                      <Copy size={10} aria-hidden="true" />
-                    {/if}Pass
-                </button>
+                  <button
+                    class="credential-copy"
+                    type="button"
+                    aria-label="Copy NZBGet login"
+                    title="Copy NZBGet login"
+                    aria-busy={copyingCredentials.username}
+                    disabled={pendingActions.nzbget ||
+                      copyingCredentials.username}
+                    onclick={() =>
+                      void copyNzbgetCredentialFromButton('username')}
+                    >{#if copyingCredentials.username}<LoaderCircle
+                        size={10}
+                        class="animate-spin motion-reduce:animate-none"
+                        aria-hidden="true"
+                      />{:else}<Copy
+                        size={10}
+                        aria-hidden="true"
+                      />{/if}Login</button
+                  >
+                  <button
+                    class="credential-copy"
+                    type="button"
+                    aria-label="Copy NZBGet password"
+                    title="Copy NZBGet password"
+                    aria-busy={copyingCredentials.password}
+                    disabled={pendingActions.nzbget ||
+                      copyingCredentials.password}
+                    onclick={() =>
+                      void copyNzbgetCredentialFromButton('password')}
+                    >{#if copyingCredentials.password}<LoaderCircle
+                        size={10}
+                        class="animate-spin motion-reduce:animate-none"
+                        aria-hidden="true"
+                      />{:else}<Copy
+                        size={10}
+                        aria-hidden="true"
+                      />{/if}Pass</button
+                  >
                 </div>
               {/if}
             </div>{/if}
@@ -1079,7 +1120,7 @@
           {#if review}
             <Button
               size="form"
-              disabled={busy ||
+              disabled={isBusy(service.kind) ||
                 (!!review.compose_project && !releasedCompose[service.kind])}
               onclick={() =>
                 void work(
@@ -1090,25 +1131,25 @@
             <Button
               size="form"
               variant="secondary"
-              disabled={busy}
+              disabled={isBusy(service.kind)}
               onclick={() => (transferReviews[service.kind] = null)}
               >Cancel</Button
             >
           {:else if provisioned?.state === 'blocked'}
             <Button
               size="form"
-              disabled={busy}
+              disabled={isBusy(service.kind)}
               onclick={() => void work(() => retryProvision(service.kind))}
               >Retry setup</Button
             >
             {#if provisioned.origin === 'adopted' && !stackServices.some((entry) => entry.id === provisioned.id && !entry.transfer_pending)}<Button
                 size="form"
                 variant="secondary"
-                disabled={busy}
+                disabled={isBusy(service.kind)}
                 onclick={() => void work(() => restoreOriginal(service.kind))}
                 >Restore original</Button
               >{/if}
-          {:else if runtimeService && !setupActive(service.kind)}
+          {:else if runtimeService && runtimeService.registered !== false && !setupActive(service.kind)}
             {#if runtimeService.existence === 'present'}
               {#each runtimeService.running ? ['restart', 'stop', 'reconcile'] : ['start', 'reconcile'] as action (action)}
                 <Button
@@ -1125,7 +1166,7 @@
             {/if}
             {#if runtimeService.can_recreate}<Button
                 size="form"
-                disabled={busy}
+                disabled={isBusy(service.kind)}
                 onclick={() =>
                   void work(() => stackAction(service.kind, 'recreate'))}
                 >Recreate and start</Button
@@ -1134,14 +1175,14 @@
             <Button
               size="form"
               variant="secondary"
-              disabled={busy || !!loadErrors.stack}
+              disabled={isBusy(service.kind) || !!loadErrors.stack}
               onclick={() => void work(() => previewAdoption(service))}
               >Review ownership transfer</Button
             >
             {#if service.role === 'manager'}<Button
                 size="form"
                 variant="secondary"
-                disabled={busy}
+                disabled={isBusy(service.kind)}
                 onclick={() => void work(() => testManager(service.kind))}
                 title={connectionErrors[service.kind] ||
                   attached?.error ||
@@ -1155,7 +1196,7 @@
             <Button
               size="form"
               variant="secondary"
-              disabled={busy || setupActive(service.kind)}
+              disabled={isBusy(service.kind) || setupActive(service.kind)}
               onclick={() =>
                 void work(() => stackAction(service.kind, 'retire'))}
               >Retire and keep data</Button
@@ -1165,7 +1206,7 @@
             <Button
               size="form"
               variant="secondary"
-              disabled={busy}
+              disabled={isBusy(service.kind, true)}
               onclick={() => {
                 feedback[service.kind] = '';
                 removalKind = service.kind;
@@ -1209,6 +1250,17 @@
       {/each}
     </aside>
     <div class="service-workspace">
+      {#if live?.registered === false}
+        <div
+          class="mb-3 border-l-2 border-warning bg-surface px-3 py-2 text-xs leading-5"
+          role="status"
+          aria-label="Service setup mismatch"
+        >
+          Saved service data has no matching record in this server profile.
+          Restore the matching server profile to manage it. For a new instance,
+          use fresh storage for both the server and its controller.
+        </div>
+      {/if}
       {#if item?.error || live?.inspection_error || live?.error || live?.drift}
         <div class="notice warn" role="status">
           {#each [...new Set([item?.error, live?.inspection_error, live?.error].filter(Boolean))] as error (error)}<p
@@ -1752,20 +1804,25 @@
     </div>
   </article>
   <footer class="services-footer">
+    {#if feedback.general}<p role="status">{feedback.general}</p>{/if}
     {#if approvalUsers.length}<section aria-label="Automatic request approval">
         <h3>Automatic request approval</h3>
         <div class="row-actions">
           {#each approvalUsers as user (user.id)}<Switch
               size="sm"
               checked={user.enabled}
-              disabled={busy}
+              disabled={pendingActions.general}
               onCheckedChange={(enabled) =>
-                void work(async () => {
-                  await api(`/admin/acquisition/users/${user.id}`, 'PUT', {
-                    enabled,
-                  });
-                  await loadApprovalUsers();
-                })}>{user.username}</Switch
+                void work(
+                  async () => {
+                    await api(`/admin/acquisition/users/${user.id}`, 'PUT', {
+                      enabled,
+                    });
+                    await loadApprovalUsers();
+                  },
+                  '',
+                  'general',
+                )}>{user.username}</Switch
             >{/each}
         </div>
       </section>{/if}
@@ -1773,8 +1830,8 @@
       <Button
         variant="ghost"
         size="sm"
-        disabled={busy || !!loadErrors.stack}
-        onclick={() => void work(discoverReleases)}
+        disabled={pendingActions.general || !!loadErrors.stack}
+        onclick={() => void work(discoverReleases, '', 'general')}
         >Discover stable releases</Button
       >{#each releases as release (release.kind)}<p class="candidate">
           {release.kind}: {release.image ?? 'No stable release found'} · tested {release.tested_image}

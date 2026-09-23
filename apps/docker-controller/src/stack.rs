@@ -11,7 +11,6 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::sync::Arc;
 #[path = "adoption.rs"]
 mod adoption;
 #[path = "backups.rs"]
@@ -36,7 +35,7 @@ pub async fn recover_backups() -> anyhow::Result<()> {
         .map_err(|(_, message)| anyhow::anyhow!(message))
 }
 #[derive(Clone)]
-struct Runtime(Arc<tokio::sync::Mutex<()>>);
+struct Runtime(thelxinoe_core::operation_locks::OperationLocks);
 #[derive(Clone, Serialize, Deserialize)]
 struct Managed {
     id: String,
@@ -298,6 +297,8 @@ fn escape_compose(value: &mut Value) {
     }
 }
 async fn bootstrap() -> Result<Deployment> {
+    static INITIALIZE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _initializing = INITIALIZE.lock().await;
     let root = store::root();
     if root.join("desired-state.json").exists() {
         return persisted(store::read(&root.join("desired-state.json")));
@@ -403,7 +404,7 @@ pub fn router() -> Router {
         .route("/stack/adopt/check", post(adoption::check))
         .route("/stack/adopt", post(adoption::adopt))
         .route("/stack/{id}/action", post(action))
-        .with_state(Runtime(Arc::new(tokio::sync::Mutex::new(()))))
+        .with_state(Runtime(Default::default()))
 }
 async fn list(State(runtime): State<Runtime>) -> Result<Json<Value>> {
     let d = if store::root().join("desired-state.json").exists() {
@@ -448,10 +449,11 @@ fn app_config(t: templates::Template, input: &Install, directory: &std::path::Pa
             if input.username != "thelxinoe" {
                 return Err(bad("Use the managed NZBGet account"));
             }
-            // A preseeded config bypasses the image's defaults. NZBGet needs both
-            // paths explicitly to serve its web interface and settings editor.
+            // A preseeded config bypasses the image's defaults. Keep the
+            // download, logging, and unpack settings useful from first boot.
+            // The paths also serve the web interface and settings editor.
             format!(
-                "MainDir=/media/downloads\nDestDir=/media/downloads/completed\nInterDir=/media/downloads/intermediate\nNzbDir=/config/nzb\nQueueDir=/config/queue\nTempDir=/config/tmp\nScriptDir=/config/scripts\nLogFile=/config/nzbget.log\nWebDir=${{AppDir}}/webui\nConfigTemplate=${{AppDir}}/webui/nzbget.conf.template\nControlIP=0.0.0.0\nControlPort=6789\nControlUsername=thelxinoe\nControlPassword={}\n",
+                "MainDir=/media/downloads\nDestDir=/media/downloads/completed\nInterDir=/media/downloads/intermediate\nNzbDir=/config/nzb\nQueueDir=/config/queue\nTempDir=/config/tmp\nScriptDir=/config/scripts\nLogFile=/config/nzbget.log\nWriteLog=rotate\nRotateLog=3\nArticleCache=128\nDirectWrite=yes\nWriteBuffer=1024\nFileNaming=auto\nPostStrategy=balanced\nNzbCleanupDisk=yes\nParCheck=auto\nParRepair=yes\nUnpack=yes\nWebDir=${{AppDir}}/webui\nConfigTemplate=${{AppDir}}/webui/nzbget.conf.template\nControlIP=0.0.0.0\nControlPort=6789\nControlUsername=thelxinoe\nControlPassword={}\n",
                 input.secret
             )
         }
@@ -477,7 +479,7 @@ async fn install(
     State(runtime): State<Runtime>,
     Json(input): Json<Install>,
 ) -> Result<Json<Value>> {
-    let _guard = runtime.0.lock().await;
+    let _guard = runtime.0.service(&input.kind).await;
     let t = templates::find(&input.kind).ok_or_else(|| bad("Unknown curated service"))?;
     if input.host_port < 1024 {
         return Err(bad("Choose a nonprivileged local port"));
@@ -551,9 +553,14 @@ async fn action(
     Path(key): Path<String>,
     Json(input): Json<Action>,
 ) -> Result<Json<Value>> {
-    let _guard = runtime.0.lock().await;
-    let d = bootstrap().await?;
     id(&key)?;
+    let kind = if service_path(&key).exists() {
+        load(&key)?.kind
+    } else {
+        key.clone()
+    };
+    let _guard = runtime.0.service(&kind).await;
+    let d = bootstrap().await?;
     if input.action == "retire" && !service_path(&key).exists() {
         let rows = engine("/containers/json?all=true").await?;
         if rows.as_array().ok_or_else(unavailable)?.iter().any(|row| {

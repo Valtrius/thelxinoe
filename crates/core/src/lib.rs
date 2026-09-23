@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub mod operation_locks;
+
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const API_VERSION: u32 = 1;
 

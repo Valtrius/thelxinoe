@@ -87,6 +87,21 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<
     security::require(&state, &headers, Capability::ManageServer).await?;
     let mut value = controller(&state, "", None).await?;
     value["provisions"] = storage::list(&state.db).await?;
+    let provisions = value["provisions"]
+        .as_array()
+        .ok_or_else(unavailable)?
+        .clone();
+    for item in value["items"].as_array_mut().ok_or_else(unavailable)? {
+        let registered = provisions
+            .iter()
+            .any(|provision| provision["id"] == item["id"] && provision["kind"] == item["kind"]);
+        item["registered"] = json!(registered);
+        if !registered {
+            item["can_recreate"] = json!(false);
+            item["can_retire"] = json!(false);
+            item["can_remove"] = json!(false);
+        }
+    }
     Ok(Json(value))
 }
 async fn login(
@@ -191,8 +206,11 @@ async fn action(
     {
         return Err(ApiError::bad("Invalid managed service action"));
     }
-    let _lease = state.media_operations.write().await;
-    let _guard = state.managers.guard.lock().await;
+    let kind = storage::kind(&state.db, key.clone())
+        .await?
+        .ok_or_else(|| ApiError::conflict("This saved installation has no matching server record. Restore the matching server profile before managing it."))?;
+    let _lease = state.managers.maintenance(&state).await;
+    let _guard = state.managers.guard.service(&kind).await;
     if input.action == "remove" {
         let observed = controller(&state, "", None).await?;
         if observed["items"]
@@ -364,7 +382,7 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
    if row.4!="queued"{return Err(ApiError::conflict("Interrupted Docker submission requires review before retry"));}
    progress(state,&key,"installing",None,None).await?;
    if row.7=="adopted" {
-       let _lease=state.media_operations.write().await;let _guard=state.managers.guard.lock().await;
+       let _lease=state.managers.maintenance(state).await;let _guard=state.managers.guard.service(&row.0).await;
        if matches!(row.0.as_str(),"radarr"|"sonarr"|"lidarr"){operations::ensure_idle(state,row.6.as_deref().ok_or_else(unavailable)?).await?;}
        controller(state,"/adopt",Some(json!({"operation_id":key,"kind":row.0,"container_id":row.5,"released_compose":true}))).await?
    } else {controller(state,"/install",Some(json!({"operation_id":key,"kind":row.0,"host_port":row.2,"username":"thelxinoe","secret":secret}))).await?}
@@ -383,7 +401,7 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
   let integration=registered["id"].as_str().ok_or_else(unavailable)?.to_owned();
   let key=key.clone();storage::provision_write_stack_provisions(registered, key, &state.db).await?;
   if row.7=="installed" && matches!(row.0.as_str(),"radarr"|"sonarr"|"lidarr") {
-    let _guard=state.managers.guard.lock().await;
+    let _guard=state.managers.guard.service(&row.0).await;
     super::prepare_library(state,&super::service(state,&integration).await?).await?;
   }
   Ok::<(),ApiError>(())
@@ -479,8 +497,11 @@ async fn restore_original(
     if uuid::Uuid::parse_str(&key).is_err() {
         return Err(ApiError::bad("Invalid transfer identity"));
     }
-    let _lease = state.media_operations.write().await;
-    let _guard = state.managers.guard.lock().await;
+    let kind = storage::kind(&state.db, key.clone())
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    let _lease = state.managers.maintenance(&state).await;
+    let _guard = state.managers.guard.service(&kind).await;
     let lookup = key.clone();
     let (kind, integration) = storage::restore_original_read_stack_provisions(&state.db, lookup)
         .await?
@@ -593,4 +614,8 @@ async fn retry(
         ));
     }
     Ok(Json(json!({"queued":true})))
+}
+
+pub(super) async fn service_kind(state: &AppState, key: String) -> anyhow::Result<Option<String>> {
+    storage::kind(&state.db, key).await
 }

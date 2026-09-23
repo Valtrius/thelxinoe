@@ -46,7 +46,8 @@ use std::sync::Arc;
 use thelxinoe_core::{Capability, id, now};
 pub(crate) struct Runtime {
     http: reqwest::Client,
-    guard: tokio::sync::Mutex<()>,
+    guard: thelxinoe_core::operation_locks::OperationLocks,
+    maintenance: tokio::sync::Mutex<std::sync::Weak<tokio::sync::OwnedRwLockWriteGuard<()>>>,
     connection_locks:
         std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     connection_wake: tokio::sync::Notify,
@@ -54,6 +55,18 @@ pub(crate) struct Runtime {
     docker: std::sync::Mutex<std::collections::HashMap<String, Value>>,
 }
 impl Runtime {
+    // Service mutations share one media lease while retaining their own service
+    // lock. Playback and media deletion still cannot race an idle preflight.
+    async fn maintenance(&self, state: &AppState) -> Arc<tokio::sync::OwnedRwLockWriteGuard<()>> {
+        let mut lease = self.maintenance.lock().await;
+        if let Some(active) = lease.upgrade() {
+            return active;
+        }
+        let active = Arc::new(state.media_operations.clone().write_owned().await);
+        *lease = Arc::downgrade(&active);
+        active
+    }
+
     pub fn new() -> anyhow::Result<Self> {
         Ok(Self {
             http: reqwest::Client::builder()
@@ -61,7 +74,8 @@ impl Runtime {
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(std::time::Duration::from_secs(20))
                 .build()?,
-            guard: tokio::sync::Mutex::new(()),
+            guard: Default::default(),
+            maintenance: Default::default(),
             connection_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
             connection_wake: tokio::sync::Notify::new(),
             #[cfg(test)]
@@ -401,7 +415,7 @@ async fn register_with_actor(
     {
         return Err(ApiError::bad("Enter a manager type, name and API key"));
     }
-    let _guard = state.managers.guard.lock().await;
+    let _guard = state.managers.guard.service(&input.kind).await;
     let (base, media_source) = evidence(&state, &input.container_id, input.port).await?;
     let connection = Connection {
         state: &state,
@@ -457,7 +471,7 @@ async fn options(
     let s = service(&state, &id).await?;
     let c = Connection::open(&state, &s).await?;
     if installed_here(&state, &s.id).await? {
-        let _guard = state.managers.guard.lock().await;
+        let _guard = state.managers.guard.service(&s.kind).await;
         prepare_library(&state, &s).await?;
     }
     let roots = c.get("rootfolder").await?;
@@ -553,7 +567,8 @@ async fn defaults(
     Json(input): Json<Defaults>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
-    let _guard = state.managers.guard.lock().await;
+    let kind = service(&state, &id).await?.kind;
+    let _guard = state.managers.guard.service(&kind).await;
     let s = service(&state, &id).await?;
     let c = Connection::open(&state, &s).await?;
     if input.root_folder != canonical_root(&s.kind)

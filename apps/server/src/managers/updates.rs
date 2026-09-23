@@ -155,13 +155,16 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing update identity"))?;
     let action = job.payload["action"].as_str().unwrap_or("");
-    let _lease = state.media_operations.write().await;
-    let _guard = state.managers.guard.lock().await;
     let lookup = key.to_owned();
     let server_policy = crate::product::configured_policy(state)
         .await
         .map_err(|e| anyhow::anyhow!("{}", e.2))?;
     let automatic = storage::run_job_read_service_updates(lookup, &state.db).await?;
+    let kind = stack::service_kind(state, automatic.1.clone())
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Managed service no longer exists"))?;
+    let _lease = state.managers.maintenance(state).await;
+    let _guard = state.managers.guard.service(&kind).await;
     let inherited = automatic
         .2
         .as_deref()
