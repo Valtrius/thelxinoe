@@ -214,9 +214,8 @@ try {
     .getByRole('button', { name: 'Media services', exact: true })
     .click();
   await page
-    .getByRole('article', { name: 'Prowlarr service' })
-    .locator('summary')
-    .first()
+    .getByRole('navigation', { name: 'Select service' })
+    .getByRole('button', { name: 'Prowlarr', exact: true })
     .click();
   const applications = page.getByRole('region', {
     name: 'Applications',

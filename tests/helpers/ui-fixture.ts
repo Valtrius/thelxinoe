@@ -11,6 +11,7 @@ export async function installUiFixture(
     approvalUsers?: { id: string; username: string; enabled: boolean }[];
     endpointFailures?: Record<string, string>;
     stackProvisionState?: string;
+    serviceUpdateState?: string;
   } = {},
 ) {
   const user = {
@@ -192,6 +193,7 @@ export async function installUiFixture(
       return json({
         items: options.approvalUsers ?? [],
       });
+    if (path === '/admin/service-connections') return json({ items: [] });
     if (path === '/admin/managers')
       return json({
         items: [
@@ -220,16 +222,124 @@ export async function installUiFixture(
             id: 'support-prowlarr',
             name: 'Prowlarr',
             kind: 'prowlarr',
+            container_id: 'container-prowlarr',
+            port: 9696,
             version: '2.0.0',
             native_url: 'https://prowlarr.example.test',
             checked_at: 1789984800,
             error: null,
           },
+          {
+            id: 'support-nzbget',
+            name: 'NZBGet',
+            kind: 'nzbget',
+            container_id: 'container-nzbget',
+            port: 6789,
+            version: '25.0',
+            native_url: 'https://nzbget.example.test',
+            checked_at: 1789984800,
+            error: null,
+          },
         ],
       });
+    if (path === '/admin/managers/manager-radarr/options')
+      return json({
+        roots: [{ id: 1, path: '/media/movies' }],
+        profiles: [{ id: 1, name: 'HD-1080p' }],
+        metadata_profiles: [],
+      });
+    if (path === '/admin/support/support-prowlarr')
+      return json({
+        health: [],
+        indexers: [
+          {
+            id: 1,
+            name: 'Fixture indexer',
+            enabled: true,
+            disabled_until: null,
+          },
+        ],
+      });
+    if (path === '/admin/support/support-nzbget')
+      return json({
+        paused: false,
+        queue: [
+          {
+            id: 1,
+            title: 'Active fixture',
+            status: 'DOWNLOADING',
+            size_mb: 8192,
+            remaining_mb: 2048,
+          },
+          {
+            id: 2,
+            title: 'Paused fixture',
+            status: 'PAUSED',
+            size_mb: 2048,
+            remaining_mb: 1024,
+          },
+          {
+            id: 3,
+            title: 'Unpacking fixture',
+            status: 'UNPACKING',
+            size_mb: 4096,
+            remaining_mb: 0,
+          },
+        ],
+        history: Array.from({ length: 30 }, (_, i) => ({
+          id: 100 + i,
+          title: `Finished fixture ${i + 1}`,
+          status:
+            i === 0
+              ? 'FAILURE/UNPACK'
+              : i === 1
+                ? 'SUCCESS/HIDDEN'
+                : 'SUCCESS/ALL',
+          size_mb: i === 1 ? null : 2048,
+          remaining_mb: null,
+          downloaded_mb: i === 1 ? null : 2048,
+          history_time: 1789984800 - i,
+        })),
+      });
+    if (path === '/admin/stack/adopt/preview')
+      return json({
+        review_id: 'review-prowlarr',
+        name: 'prowlarr',
+        image: 'linuxserver/prowlarr',
+        source_config: '/external/prowlarr',
+        managed_config: '/managed/prowlarr',
+        compose_project: 'media',
+        compose_service: 'prowlarr',
+      });
+    if (
+      path === '/admin/stack/adopt' ||
+      path === '/admin/stack/managed-radarr/action'
+    )
+      return json({ queued: true });
     if (path === '/admin/managers/containers')
       return json({
         items: [
+          {
+            id: 'container-radarr',
+            names: ['/radarr'],
+            image: 'ghcr.io/example/radarr:stable',
+            state: 'running',
+            ports: [
+              {
+                Type: 'tcp',
+                PrivatePort: 7878,
+                PublicPort: 17878,
+                IP: '127.0.0.1',
+              },
+            ],
+          },
+          {
+            id: 'container-prowlarr',
+            names: ['/prowlarr'],
+            image: 'linuxserver/prowlarr:stable',
+            state: 'running',
+            ports: [],
+          },
           {
             id: 'container-sonarr',
             names: ['sonarr'],
@@ -249,6 +359,10 @@ export async function installUiFixture(
             image: 'ghcr.io/example/radarr:stable',
             drift: false,
             running: true,
+            existence: 'present',
+            status: 'running',
+            can_recreate: false,
+            can_retire: false,
             error: null,
             transfer_pending: false,
           },
@@ -260,6 +374,10 @@ export async function installUiFixture(
             image: 'ghcr.io/example/bazarr:stable',
             drift: false,
             running: true,
+            existence: 'present',
+            status: 'running',
+            can_recreate: false,
+            can_retire: false,
             error: null,
             transfer_pending: false,
           },
@@ -291,7 +409,23 @@ export async function installUiFixture(
           },
         ],
         timezone: 'UTC',
-        items: [],
+        items: options.serviceUpdateState
+          ? [
+              {
+                id: 'update-radarr',
+                service_id: 'managed-radarr',
+                state: options.serviceUpdateState,
+                classification:
+                  options.serviceUpdateState === 'blocked'
+                    ? 'incompatible'
+                    : null,
+                error:
+                  options.serviceUpdateState === 'blocked'
+                    ? 'Candidate has an incompatible database'
+                    : null,
+              },
+            ]
+          : [],
         services: [{ id: 'managed-radarr', kind: 'radarr' }],
         server_policy: {
           policy: productUpdate.policy.policy,

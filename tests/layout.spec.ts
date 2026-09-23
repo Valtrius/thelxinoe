@@ -253,50 +253,29 @@ test('server settings contain display defaults and server updates', async ({
   expect(fixture.unexpected).toEqual([]);
 });
 
-test('media services group singleton settings by service', async ({ page }) => {
+test('media services select one workspace and keep desktop rail sections aligned', async ({
+  page,
+}) => {
   const fixture = await installUiFixture(page, {
     role: 'admin',
     settingsSection: 'services',
   });
   await page.goto('/');
-  await expect(
-    page.getByRole('heading', { name: 'Media services', exact: true }),
-  ).toBeVisible();
-  for (const name of [
-    'Radarr',
-    'Sonarr',
-    'Lidarr',
-    'Bazarr',
-    'Prowlarr',
-    'NZBGet',
-  ]) {
-    await expect(
-      page.getByRole('article', { name: `${name} service` }),
-    ).toBeVisible();
-  }
-  await expect(
-    page.getByRole('heading', { name: 'Automatic request approval' }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByRole('form', { name: 'Default service update policy' }),
-  ).toHaveCount(0);
+  const nav = page.getByRole('navigation', { name: 'Select service' });
   const radarr = page.getByRole('article', { name: 'Radarr service' });
-  const radarrDetails = radarr.locator(':scope > details');
-  await expect(radarrDetails).not.toHaveAttribute('open', '');
   await expect(
-    radarr.getByText('Managed, running', { exact: true }),
+    radarr.locator('.rail-identity:not(.inactive) > .service-status'),
+  ).toHaveText('Running');
+  await expect(
+    radarr.getByRole('link', { name: /Open Radarr/ }),
+  ).toHaveAttribute('href', 'http://127.0.0.1:17878/');
+  await expect(radarr.getByText('6.0.0', { exact: true })).toBeVisible();
+  await expect(
+    radarr.getByRole('switch', {
+      name: 'Monitor and search approved requests',
+    }),
   ).toBeVisible();
-  await radarr.locator(':scope > details > summary').click();
-  await radarr.getByText('Updates', { exact: true }).click();
-  await expect(
-    radarr.getByRole('combobox', { name: 'Update policy', exact: true }),
-  ).toHaveValue('inherit');
-  await expect(
-    radarr.getByText('Uses the Server update policy', { exact: false }),
-  ).toBeVisible();
-  await expect(
-    radarr.getByText('Stable candidate:', { exact: false }),
-  ).toContainText('ghcr.io/example/radarr:new');
+  await expect(page.locator('article details')).toHaveCount(0);
   await radarr
     .getByRole('combobox', { name: 'Update policy', exact: true })
     .selectOption('notify');
@@ -313,61 +292,187 @@ test('media services group singleton settings by service', async ({ page }) => {
       ),
     )
     .toBe(true);
-
-  const sonarr = page.getByRole('article', { name: 'Sonarr service' });
+  const railGeometry = () =>
+    page.locator('.service-rail > :not(.inactive)').evaluateAll((nodes) =>
+      nodes.map((node) => {
+        const r = node.getBoundingClientRect();
+        return { top: r.top, height: r.height };
+      }),
+    );
+  const original = await railGeometry();
+  for (const name of ['Sonarr', 'Lidarr', 'Bazarr', 'Prowlarr', 'NZBGet']) {
+    await nav.getByRole('button', { name, exact: true }).click();
+    await expect(
+      page.getByRole('article', { name: `${name} service` }),
+    ).toBeVisible();
+    await expect(page.getByRole('article')).toHaveCount(1);
+    expect(await railGeometry()).toEqual(original);
+  }
+  await nav.getByRole('button', { name: 'Sonarr', exact: true }).click();
   await expect(
-    sonarr.getByText('Not connected', { exact: true }),
+    page.getByRole('button', { name: 'Install Sonarr', exact: true }),
   ).toBeVisible();
   await expect(
-    sonarr.getByRole('button', { name: 'Install Sonarr', exact: true }),
-  ).not.toBeVisible();
-  await expect(
-    sonarr.locator('summary').filter({ hasText: 'Connect Sonarr' }),
-  ).not.toBeVisible();
-  await sonarr.locator(':scope > details > summary').click();
-  await expect(
-    sonarr.locator('summary').filter({ hasText: 'Connect Sonarr' }),
+    page.getByRole('form', { name: 'Connect existing Sonarr' }),
   ).toBeVisible();
-
-  const prowlarr = page.getByRole('article', { name: 'Prowlarr service' });
-  await expect(prowlarr.getByText('Connected', { exact: true })).toBeVisible();
+  await nav.getByRole('button', { name: 'Prowlarr', exact: true }).click();
   await expect(
-    prowlarr.getByText('Ownership', { exact: true }),
-  ).not.toBeVisible();
-  await prowlarr.locator(':scope > details > summary').click();
-  await expect(prowlarr.getByText('Ownership', { exact: true })).toBeVisible();
-
-  const bazarr = page.getByRole('article', { name: 'Bazarr service' });
-  await expect(
-    bazarr.getByText('Managed, running', { exact: true }),
+    page.getByRole('switch', { name: 'Enable Fixture indexer' }),
   ).toBeVisible();
+  await page.getByRole('button', { name: 'Review ownership transfer' }).click();
   await expect(
-    bazarr.locator('summary').filter({ hasText: 'Connect Bazarr' }),
-  ).toHaveCount(0);
-
+    page.getByRole('region', { name: 'Ownership review' }),
+  ).toContainText('stops the original container');
   await expect(
-    page.getByRole('heading', { name: 'Acquisition managers', exact: true }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByRole('heading', { name: 'Service updates', exact: true }),
-  ).toHaveCount(0);
-  const radarrBounds = (await radarr.boundingBox())!;
-  const sonarrBounds = (await sonarr.boundingBox())!;
-  expect(sonarrBounds.x).toBeCloseTo(radarrBounds.x, 0);
-  expect(sonarrBounds.width).toBeCloseTo(radarrBounds.width, 0);
-  expect(sonarrBounds.y).toBeGreaterThan(radarrBounds.y);
-  await page.setViewportSize({ width: 720, height: 850 });
-  await expect(
-    page.getByRole('article', { name: 'NZBGet service' }),
-  ).toBeVisible();
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= window.innerWidth,
-    ),
-  ).toBe(true);
+    page.getByRole('button', { name: 'Take ownership', exact: true }),
+  ).toBeDisabled();
+  await page
+    .getByRole('switch', {
+      name: 'The previous Compose definition is disabled',
+    })
+    .press('Space');
+  await page
+    .getByRole('button', { name: 'Take ownership', exact: true })
+    .click();
+  await expect
+    .poll(() =>
+      fixture.writes.some(
+        (write) =>
+          write.path === '/admin/stack/adopt' &&
+          JSON.stringify(write.body) ===
+            '{"service_id":"support-prowlarr","review_id":"review-prowlarr","released_compose":true}',
+      ),
+    )
+    .toBe(true);
+  for (const width of [720, 480, 320]) {
+    await page.setViewportSize({ width, height: 850 });
+    await page.screenshot({
+      path: `.local/services-mobile-${width}.png`,
+      fullPage: true,
+    });
+    await nav.getByRole('button', { name: 'Sonarr', exact: true }).click();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+  }
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });
+
+test('NZBGet combines active downloads with scrollable history and compact actions', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+  });
+  await page.goto('/');
+  await page
+    .getByRole('navigation', { name: 'Select service' })
+    .getByRole('button', { name: 'NZBGet', exact: true })
+    .click();
+  const region = page.getByRole('region', {
+    name: 'Current and recent downloads',
+  });
+  await expect(region.locator('tbody tr')).toHaveCount(33);
+  await expect(region.locator('tbody tr').first()).toContainText(
+    'Active fixture',
+  );
+  await expect(region.locator('tbody tr').first()).toContainText(
+    /6 GiB\s*75%\s*Remaining\s*2 GiB/,
+  );
+  await expect(
+    region.getByRole('img', { name: /Failed: failure .* unpack/ }),
+  ).toBeVisible();
+  await expect(
+    region.getByRole('progressbar', {
+      name: 'Finished fixture 2 download progress',
+    }),
+  ).toHaveAttribute('aria-valuetext', 'Progress unavailable');
+  expect(
+    await region.evaluate(
+      (node) =>
+        node.scrollHeight > node.clientHeight && node.clientHeight < 560,
+    ),
+  ).toBe(true);
+  await page
+    .getByRole('button', { name: 'Pause Active fixture', exact: true })
+    .click();
+  await expect
+    .poll(() =>
+      fixture.writes.some(
+        (write) =>
+          write.path === '/admin/support/support-nzbget' &&
+          JSON.stringify(write.body) === '{"action":"pause","item_id":1}',
+      ),
+    )
+    .toBe(true);
+  await page
+    .getByRole('button', { name: 'Resume Paused fixture', exact: true })
+    .click();
+  await expect
+    .poll(() =>
+      fixture.writes.some(
+        (write) =>
+          JSON.stringify(write.body) === '{"action":"resume","item_id":2}',
+      ),
+    )
+    .toBe(true);
+  await page
+    .getByRole('button', { name: 'Remove Active fixture', exact: true })
+    .click();
+  await expect
+    .poll(() =>
+      fixture.writes.some(
+        (write) =>
+          JSON.stringify(write.body) === '{"action":"remove","item_id":1}',
+      ),
+    )
+    .toBe(true);
+  await page.screenshot({
+    path: '.local/services-desktop.png',
+    fullPage: true,
+  });
+  for (const width of [720, 480, 320]) {
+    await page.setViewportSize({ width, height: 850 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    expect(
+      await region.evaluate((node) => node.scrollWidth <= node.clientWidth),
+    ).toBe(true);
+  }
+  await region.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: '.local/services-mobile.png', fullPage: true });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+for (const state of ['blocked', 'committed']) {
+  test(`service remains running after ${state} update`, async ({ page }) => {
+    const fixture = await installUiFixture(page, {
+      role: 'admin',
+      settingsSection: 'services',
+      serviceUpdateState: state,
+    });
+    await page.goto('/');
+    const service = page.getByRole('article', { name: 'Radarr service' });
+    await expect(
+      service.locator('.rail-identity:not(.inactive) > .service-status'),
+    ).toHaveText('Running');
+    await expect(
+      service.getByRole('region', { name: 'Updates' }),
+    ).toContainText(
+      state === 'blocked' ? 'Update incompatible' : 'Update complete',
+    );
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.unexpected).toEqual([]);
+  });
+}
 
 for (const scenario of [
   {
@@ -423,10 +528,11 @@ for (const scenario of [
     });
     await expect(banner).toContainText(`Failed to load ${scenario.label}`);
     await expect(banner).toContainText(failure);
-    await expect(banner).toHaveClass(/border-danger/);
-    await expect(banner).toHaveClass(/bg-danger\/12/);
-    await expect(banner).toHaveClass(/text-danger/);
-    await expect(banner.locator('svg')).toBeVisible();
+    await expect(banner).toHaveClass(/bad/);
+    await page
+      .getByRole('navigation', { name: 'Select service' })
+      .getByRole('button', { name: scenario.unaffectedService, exact: true })
+      .click();
 
     await expect(
       page.getByRole('article', {
@@ -450,11 +556,32 @@ for (const state of ['connecting', 'blocked']) {
     await page.goto('/');
     const radarr = page.getByRole('article', { name: 'Radarr service' });
     await expect(
-      radarr.getByText(`Setup ${state}`, { exact: true }),
-    ).toBeVisible();
-    await expect(
-      radarr.getByText('Managed, running', { exact: true }),
-    ).toHaveCount(0);
+      radarr.locator('.rail-identity:not(.inactive) > .service-status'),
+    ).toHaveText(state === 'connecting' ? 'Connecting API' : 'Setup blocked');
+    if (state === 'connecting') {
+      await expect(
+        radarr
+          .locator('.rail-identity:not(.inactive)')
+          .getByRole('progressbar'),
+      ).toBeVisible();
+      await expect(
+        radarr.locator('.rail-actions:not(.inactive)').getByRole('progressbar'),
+      ).toHaveCount(0);
+      const progress = radarr.locator(
+        '.rail-identity:not(.inactive) .activity-bar',
+      );
+      expect(
+        await progress.evaluate(
+          (node) => getComputedStyle(node, '::after').animationName,
+        ),
+      ).not.toBe('none');
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+      expect(
+        await progress.evaluate(
+          (node) => getComputedStyle(node, '::after').animationName,
+        ),
+      ).toBe('none');
+    }
     expect(fixture.errors).toEqual([]);
     expect(fixture.unexpected).toEqual([]);
   });

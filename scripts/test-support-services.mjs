@@ -60,37 +60,46 @@ try {
       c.names.some((n) => n.includes(`acquisition-${kind}-`)),
     );
     if (!container) throw Error(`Missing fixture ${kind}`);
+    const label = { bazarr: 'Bazarr', prowlarr: 'Prowlarr', nzbget: 'NZBGet' }[
+      kind
+    ];
     await page
-      .getByLabel('Service name', { exact: true })
-      .fill(`Fixture ${kind}`);
-    await page.getByLabel('Service type').selectOption(kind);
-    await page.getByLabel('Service container').selectOption(container.id);
+      .getByRole('navigation', { name: 'Select service' })
+      .getByRole('button', { name: label, exact: true })
+      .click();
+    const form = page.getByRole('form', { name: `Connect existing ${label}` });
+    await form.getByLabel('Name', { exact: true }).fill(`Fixture ${kind}`);
+    await form
+      .getByLabel('Container', { exact: true })
+      .selectOption(container.id);
     if (kind === 'nzbget')
-      await page.getByLabel('NZBGet username', { exact: true }).fill(username);
-    await page
-      .getByLabel(kind === 'nzbget' ? 'NZBGet password' : 'Service API key', {
+      await form.getByLabel('NZBGet username', { exact: true }).fill(username);
+    await form
+      .getByLabel(kind === 'nzbget' ? 'NZBGet password' : 'API key', {
         exact: true,
       })
       .fill(secret);
-    await page
-      .getByLabel('Native service UI address', { exact: true })
+    await form
+      .getByLabel('Service UI address', { exact: true })
       .fill(`http://localhost:${port}`);
     const registering = page.waitForResponse(
       (r) =>
         r.url().endsWith('/api/v1/admin/support') &&
         r.request().method() === 'POST',
     );
-    await page
-      .getByRole('button', { name: 'Connect support service', exact: true })
+    await form
+      .getByRole('button', { name: `Connect ${label}`, exact: true })
       .click();
     const response = await registering;
     if (!response.ok())
       throw Error(`${kind} registration: HTTP ${response.status()}`);
     await expect(
-      page.getByRole('button', {
-        name: `Refresh Fixture ${kind}`,
-        exact: true,
-      }),
+      page
+        .getByRole('article', { name: `${label} service` })
+        .getByRole('link', {
+          name: `Open ${label}: http://localhost:${port}/`,
+          exact: true,
+        }),
     ).toBeVisible();
     const list = await api('/admin/support');
     expect(JSON.stringify(list)).not.toContain(secret);

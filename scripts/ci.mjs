@@ -75,6 +75,7 @@ function server() {
 function web() {
   ensurePlaywright();
   npm('run', 'validate:web');
+  npm('run', 'test:ui:layout');
   npm('run', 'test:ui:player');
 }
 

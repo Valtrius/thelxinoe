@@ -65,13 +65,6 @@
 {#if titles[kind]}
   <section aria-label={titles[kind]} class="border-t border-line py-3">
     <h3 class="text-xs font-semibold">{titles[kind]}</h3>
-    <p>
-      Each connection is optional. {kind === 'prowlarr'
-        ? 'Connected applications receive indexers from Prowlarr.'
-        : kind === 'bazarr'
-          ? 'Connect a manager to enable subtitle integration.'
-          : 'Connect a client to send downloads to it.'}
-    </p>
     {#if items.length === 0}
       <p class="text-muted">
         No compatible services are connected to Thelxinoe yet.
@@ -79,7 +72,7 @@
     {/if}
     {#each items as connection (connection.id)}
       <div
-        class="mt-3 border border-line p-3"
+        class="connection-row"
         aria-label={`${connection.target_name} connection`}
       >
         <div class="flex flex-wrap items-center justify-between gap-2">
@@ -133,3 +126,40 @@
     {/each}
   </section>
 {/if}
+
+<style>
+  section > h3 {
+    margin-bottom: 12px;
+  }
+  section p {
+    font-size: 11px;
+    line-height: 1.6;
+    margin: 8px 0;
+  }
+  .connection-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px 16px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .connection-row > div:first-child {
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 4px;
+  }
+  .connection-row > div:last-child {
+    grid-column: 2;
+    grid-row: 1;
+    align-items: center;
+    margin: 0;
+  }
+  .connection-row > p {
+    grid-column: 1/-1;
+    margin: 0;
+  }
+  .connection-row:last-child {
+    border-bottom: 0;
+  }
+</style>

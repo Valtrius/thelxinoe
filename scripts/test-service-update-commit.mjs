@@ -76,15 +76,16 @@ try {
     .getByRole('navigation', { name: 'Settings navigation' })
     .getByRole('button', { name: 'Media services', exact: true })
     .click();
-  const panel = page.locator('section').filter({
-    has: page.getByRole('heading', { name: 'Service updates', exact: true }),
-  });
-  await panel.getByLabel('Update policy for').selectOption(service.id);
-  await panel.getByRole('combobox', { name: /^Policy/ }).selectOption('manual');
-  await panel.getByLabel('Maintenance starts (UTC hour)').fill('22');
-  await panel.getByLabel('Maintenance ends (UTC hour)').fill('3');
+  const panel = page.getByRole('article', { name: 'Radarr service' });
+  await panel
+    .getByRole('combobox', { name: 'Update policy', exact: true })
+    .selectOption('manual');
+  await panel.getByLabel('Maintenance starts (UTC)').fill('22');
+  await panel.getByLabel('Maintenance ends (UTC)').fill('3');
   await panel.getByRole('button', { name: 'Save update policy' }).click();
-  await expect(panel.getByRole('status')).toContainText('Update policy saved');
+  await expect(
+    panel.getByText('Radarr update policy saved.', { exact: true }),
+  ).toBeVisible();
   const saved = (await api('/admin/service-updates')).policies.find(
     (p) => p.service_id === service.id,
   );

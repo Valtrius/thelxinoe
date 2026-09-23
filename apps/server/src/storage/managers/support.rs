@@ -49,7 +49,7 @@ pub(super) async fn register_with_actor_write_stack_provisions(
 }
 
 pub(super) async fn list(db: &Database) -> anyhow::Result<Vec<Value>> {
-    db.read("managers.support.list", |db|Ok(db.prepare("SELECT id,name,kind,version,native_url,checked_at,error FROM support_services ORDER BY kind,name")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"version":r.get::<_,String>(3)?,"native_url":r.get::<_,String>(4)?,"checked_at":r.get::<_,i64>(5)?,"error":r.get::<_,Option<String>>(6)?})))?.collect::<rusqlite::Result<Vec<_>>>()?)).await
+    db.read("managers.support.list", |db|Ok(db.prepare("SELECT id,name,kind,version,native_url,checked_at,error,container_id,port FROM support_services ORDER BY kind,name")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"version":r.get::<_,String>(3)?,"native_url":r.get::<_,String>(4)?,"checked_at":r.get::<_,i64>(5)?,"error":r.get::<_,Option<String>>(6)?,"container_id":r.get::<_,String>(7)?,"port":r.get::<_,u16>(8)?})))?.collect::<rusqlite::Result<Vec<_>>>()?)).await
 }
 
 pub(super) async fn operational_health_read_support_services(

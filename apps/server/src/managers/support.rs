@@ -264,7 +264,7 @@ async fn snapshot(c: &Connection<'_>, s: &Support) -> Result<Value> {
             let queue = rpc(c, &s.credentials, "listgroups", json!([0])).await?;
             let history = rpc(c, &s.credentials, "history", json!([true])).await?;
             let summarize = |rows: &Value| {
-                rows.as_array().into_iter().flatten().take(200).map(|r|json!({"id":r["NZBID"],"title":text(r.get("NZBName").unwrap_or(&r["Name"]),&c.key),"status":r["Status"],"category":r["Category"],"size_mb":r["FileSizeMB"],"remaining_mb":r["RemainingSizeMB"],"paused_mb":r["PausedSizeMB"],"downloaded_mb":r["DownloadedSizeMB"]})).collect::<Vec<_>>()
+                rows.as_array().into_iter().flatten().take(200).map(|r|json!({"id":r["NZBID"],"title":text(r.get("NZBName").unwrap_or(&r["Name"]),&c.key),"status":r["Status"],"category":r["Category"],"size_mb":r["FileSizeMB"],"remaining_mb":r["RemainingSizeMB"],"paused_mb":r["PausedSizeMB"],"downloaded_mb":r["DownloadedSizeMB"],"history_time":r["HistoryTime"]})).collect::<Vec<_>>()
             };
             Ok(
                 json!({"rate":status["DownloadRate"],"limit":status["DownloadLimit"],"paused":status["DownloadPaused"],"remaining_mb":status["RemainingSizeMB"],"free_mb":status["FreeDiskSpaceMB"],"queue":summarize(&queue),"history":summarize(&history)}),

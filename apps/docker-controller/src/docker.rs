@@ -84,7 +84,7 @@ pub(crate) async fn request(
 }
 async fn list() -> Result<Json<Value>> {
     let data = engine("/containers/json?all=true").await?;
-    let items=data.as_array().ok_or_else(unavailable)?.iter().take(1000).map(|c|json!({"id":c["Id"],"names":c["Names"],"image":c["Image"],"image_id":c["ImageID"],"state":c["State"],"compose_project":c["Labels"]["com.docker.compose.project"]})).collect::<Vec<_>>();
+    let items=data.as_array().ok_or_else(unavailable)?.iter().take(1000).map(|c|json!({"id":c["Id"],"names":c["Names"],"image":c["Image"],"image_id":c["ImageID"],"state":c["State"],"ports":c["Ports"],"compose_project":c["Labels"]["com.docker.compose.project"]})).collect::<Vec<_>>();
     Ok(Json(json!({"items":items})))
 }
 async fn inspect(Path(id): Path<String>) -> Result<Json<Value>> {
