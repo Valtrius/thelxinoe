@@ -31,8 +31,9 @@
   import KickView from './components/kick/KickView.svelte';
   import ToastViewport from './components/ui/ToastViewport.svelte';
 
-  let { platform, userId, revision, playing, play, settings } = $props<{
+  let { platform, admin, userId, revision, playing, play, settings } = $props<{
     platform: 'youtube' | 'twitch' | 'kick';
+    admin: boolean;
     userId: string;
     revision: number;
     playing: MediaChoice | null;
@@ -283,6 +284,7 @@
 >
   {#if platform === 'youtube'}
     <YoutubeView
+      {admin}
       {account}
       {watchlistController}
       {syncStatus}
@@ -308,6 +310,7 @@
     />
   {:else if platform === 'twitch'}
     <TwitchView
+      {admin}
       {account}
       {syncStatus}
       {playback}
@@ -323,6 +326,9 @@
     />
   {:else}
     <KickView
+      {admin}
+      connected={!!kick?.connected}
+      onAccountChanged={() => void load()}
       {syncStatus}
       {playback}
       {activeSessions}

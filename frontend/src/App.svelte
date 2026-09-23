@@ -1000,6 +1000,7 @@
         {:else if section === 'Requests'}<Requests {user} />
         {:else if section === 'Statistics'}<StatisticsView {user} />
         {:else if providerPage}<ProviderView
+            admin={user.role === 'admin'}
             platform={section.toLowerCase() as 'youtube' | 'twitch' | 'kick'}
             userId={user.id}
             revision={mediaRevision}

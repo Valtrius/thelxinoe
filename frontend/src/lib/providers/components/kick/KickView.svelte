@@ -19,10 +19,15 @@
   import Button from '../../../ui/Button.svelte';
   import ConfirmDialog from '../ui/ConfirmDialog.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
+  import ProviderConnection from '../../ProviderConnection.svelte';
+  import { api as request } from '../../../api';
   import { eyebrowTextClass as eyebrowClass } from '../../../ui/styles';
   import KickCard from './KickCard.svelte';
 
   let {
+    admin,
+    connected,
+    onAccountChanged,
     syncStatus,
     playback,
     activeSessions,
@@ -32,6 +37,9 @@
     onNavigateSettings,
     onCardColumnsChange,
   }: {
+    admin: boolean;
+    connected: boolean;
+    onAccountChanged: () => void;
     syncStatus: SyncStatus;
     playback: PlaybackDiagnostics;
     activeSessions: PlaybackSession[];
@@ -50,6 +58,18 @@
   let adding = $state(false);
   let removalTarget = $state<KickChannel | null>(null);
   let removing = $state(false);
+  let connecting = $state(false);
+  async function resumeTracking() {
+    connecting = true;
+    try {
+      await request('/online/kick/connect', 'POST');
+      onAccountChanged();
+    } catch (caught) {
+      error = normalizeError(caught);
+    } finally {
+      connecting = false;
+    }
+  }
   let observedDataRevision = $state<number | null>(null);
   const layoutMotion = createLayoutMotion();
   const connectLayoutMotion = layoutMotion.connect;
@@ -201,6 +221,7 @@
       const added = await api.addKickTrackedChannel(value);
       channelInput = '';
       await load();
+      onAccountChanged();
       showToast({
         key: 'kick-channel-added',
         tone: 'success',
@@ -425,27 +446,34 @@
         onAction={load}
       />
     {:else if channels.length === 0}
-      <EmptyState
-        eyebrow="TRACKED / EMPTY"
-        title="Add your first Kick channel"
-        message="Kick app access cannot read your followed list, so Thelxinoe keeps its own private tracked list."
-        actionLabel="Manage channels"
-        onAction={() => (managerOpen = true)}
+      <ProviderConnection
+        platform="kick"
+        {admin}
+        configured={metadataConfigured}
+        onConfigured={onAccountChanged}
+        onConnect={() => (managerOpen = true)}
       />
     {:else}
-      {#if !metadataConfigured}
+      {#if !connected}
         <div
           class="mb-3 flex flex-wrap items-center justify-between gap-2 border border-line bg-surface-soft px-3 py-2 text-xs text-muted"
         >
-          <span
-            >Direct playback works now. Add an API client only if you want live
-            status, titles, and thumbnails.</span
+          <span>Tracking is paused. Resume to refresh your saved channels.</span
           >
-          <Button
-            size="sm"
-            variant="ghost"
-            onclick={() => onNavigateSettings('kick')}>Metadata settings</Button
+          <Button size="sm" disabled={connecting} onclick={resumeTracking}
+            >Resume tracking</Button
           >
+          {#if error}<p role="alert">{error.message}</p>{/if}
+        </div>
+      {/if}
+      {#if !metadataConfigured}
+        <div class="mb-3">
+          <ProviderConnection
+            platform="kick"
+            {admin}
+            configured={metadataConfigured}
+            onConfigured={onAccountChanged}
+          />
         </div>
       {/if}
       <div class="pb-4" data-sidebar-resize="y">

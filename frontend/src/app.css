@@ -188,8 +188,8 @@
   }
 }
 
-/* Library and Settings form defaults must not restyle the shared provider views. */
-@scope (:root) to (.provider-surface, .provider-overlay, .ui-switch) {
+/* Provider setup reuses Settings forms; other provider controls keep their own styles. */
+@scope (:root, .provider-setup) to (.provider-surface, .provider-overlay, .ui-switch) {
   @layer base {
     body {
       font-size: 13px;

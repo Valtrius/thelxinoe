@@ -1,57 +1,70 @@
-# Administration and backups
+# Deployment and recovery
 
-Settings shows state/cache usage, active playback and transcodes, integration observations, indexer/download health, recent failed jobs and all devices. Support-service observations refresh in the background. The existing support-service panels provide queue details and actions. Diagnostic export uses an explicit allowlist of version, schema, database-check outcome and job counts; it never exports settings, paths, tokens, arbitrary error strings or viewing history.
+## Storage and services
 
-Notifications are stored per user for 90 days and delivered to connected browser/PWA/Windows clients through the existing authenticated event stream. Repeated observations of one unresolved fault are deduplicated; recovery followed by another failure creates a new notification. Administrators receive operational alerts. Users receive request-status and account-reconnection notices. Background Web Push remains outside v1.
+Copy [`.env.example`](../.env.example) to `.env` and choose paths before starting [Compose](../compose.yaml). On Linux, pre-create the server, cache, media and backup directories with access for UID/GID `10001:10001`. Keep SQLite on local storage, and state/backups outside media. The controller deployment directory needs a Linux filesystem with atomic rename and symlinks; use a Linux volume on Docker Desktop.
 
-Administrators can change roles/passwords, revoke devices and delete other users. Changes revoke existing sessions. Database constraints preserve at least one administrator. Deletion cascades through private media state, queues, playlists, history and linked credentials; removes private events and retention selections; and preserves installed services by transferring their administrative reference. Shared media stays in place. Historical encrypted backups retain their captured state and may restore deleted accounts.
+Every media service must bind the same absolute host directory, writable, at `/media`:
 
-## Backup operation
+```text
+<MEDIA_ROOT>/movies       Radarr: /media/movies
+<MEDIA_ROOT>/tv           Sonarr: /media/tv
+<MEDIA_ROOT>/music        Lidarr: /media/music
+<MEDIA_ROOT>/downloads    Download clients: /media/downloads
+```
 
-The Backups panel takes an administrator-supplied passphrase of at least 16 bytes. The controller stops the server and managed services, captures their state through the same constrained copy worker used by service updates, restarts them and encrypts the snapshot. Media and cache are excluded. Failed components cause the operation to fail; the application never labels a partial archive complete.
+Keep each service's separate `/config` mount. Prowlarr needs no media mount. Separate child mounts and path translations are unsupported. Update existing manager records and download locations when changing paths; changing mounts alone does not update them. Hardlinks require a common filesystem.
 
-Archives use the [age passphrase format](https://docs.rs/age/latest/age/struct.Encryptor.html) around TAR, with bounded size/entry counts. Restore rejects links, special files, traversal and duplicate names and verifies the authenticated end of the encrypted stream before touching live state. Passphrases are not stored in operation journals or SQLite.
+Existing services must share a Docker network with the server. For an existing network, add this `compose.override.yaml`:
 
-The main Compose file mounts `THELXINOE_BACKUP_ROOT` (default `.local/backups`) on the controller at `/backups`. Without that configuration archives default to `<controller deployment>/backups/<id>.age`. Internal staging and recovery snapshots remain under the private deployment tree. Copying an archive with its original UUID filename into the configured destination makes it available for import. Keep its passphrase separately. External replication and retention of backup files are the operator's responsibility.
+```yaml
+networks:
+  default:
+    external: true
+    name: media_network
+```
 
-The controller requires `CHOWN`, `FOWNER` and `DAC_OVERRIDE` to preserve and read protected component files. These are declared in the main Compose file. It remains on `network_mode: none` with a read-only root filesystem and its private Unix socket. The server never receives Docker credentials or these capabilities.
+Connect services in Settings → Media services and save acquisition profiles. Connecting their APIs leaves lifecycle ownership with the original Compose project. To transfer ownership, use **Review ownership transfer**: disable the service in its old Compose file and external updaters before confirming. Thelxinoe stops it and copies its appdata; never restart the retained original alongside its replacement. Avoid `--remove-orphans` while retaining the original for recovery. Interrupted transfers offer **Retry setup**, **Reconcile** or **Restore original service**. Implementation: [adoption](../apps/docker-controller/src/adoption.rs), [storage contract](../apps/docker-controller/src/contract.rs).
 
-## Restore and recovery
+## HTTPS and TV access
 
-The UI requires explicit confirmation before restoring. The entire archive is decrypted into private staging first. The controller validates the accepted deployment generation, images, service specifications and component paths. It then stops the components and takes a recovery snapshot of the current state before replacing anything.
+Serve the web app and API at one HTTPS origin. Set `THELXINOE_PUBLIC_URL` to that origin and `THELXINOE_TRUSTED_PROXIES` to the proxy's exact IPs/CIDRs. Forward Host, X-Forwarded-Host, X-Forwarded-Proto and X-Forwarded-For; support WebSocket upgrades, Range requests and long streams. [Caddy fixture](../tests/Caddyfile). HTTP localhost works for development. Ordinary web/PWA use needs no CORS; separate browser origins require explicit `THELXINOE_CORS_ORIGINS` and remain subject to cookie restrictions.
 
-If replacement fails before restart, it restores that recovery snapshot. The journal survives controller termination. On restart the controller cleans up its interrupted workers, restores pre-operation state when necessary and starts the original components. Once restored services are restarted, external work may resume; the controller does not automatically rewind those external effects.
+Only the controller gets the Docker socket; keep its private Unix socket and Docker daemon unexposed.
 
-Archives include the full first-party descriptor, Compose pins and managed-service specifications. Restore can recreate an older server/controller generation using its previously accepted descriptor and retained images, including after a forward-only server migration. The old server validates a disposable copy before handoff. The managed-service layout must still match; unrelated adoption or changed paths block restoration instead of guessing host locations. Preserve the deployment directory and retained images alongside portable archives when moving hosts. See [release recovery](RELEASES.md) for the private offline recovery API.
+TV clients use the server HTTP(S) address and a Thelxinoe account, or Quick Connect approved in web Settings. For discovery, set `THELXINOE_DISCOVERY_URL` to a TV-reachable origin and bind `THELXINOE_LISTEN` to the LAN address. Compose publishes UDP 7359. Discovery falls back to the public URL; neither URL means disabled. Routed networks may need manual entry. [Discovery code](../apps/server/src/jellyfin/discovery.rs).
 
-## Evidence
+## Backups and offline recovery
 
-`compose.operations.test.yaml` is an isolated HTTPS deployment. `node scripts/test-operations.mjs` exercises encrypted backup, wrong-password rejection, server-state restoration, Radarr appdata restoration and API reconnection. `node scripts/test-backup-interruption.mjs` terminates that test controller during snapshot and restore, then verifies restart and rollback of the incomplete restore. The scripts must only target their dedicated generated test deployment.
+Use Settings → Backups with a passphrase of at least 16 bytes. Backups briefly stop the server and managed services and include their state, credentials and deployment descriptor; media/cache are excluded. Copy encrypted `.age` archives off-host and retain the passphrase separately. Preserve UUID filenames for import. External replication and backup retention are your responsibility.
 
-Private results: `.local/operations-result.json`, `.local/backup-interruption-result.json`, `.local/operations.png`. Private test passphrases and archives are excluded from Git. Rust tests check notification isolation/deduplication, diagnostic redaction, user cleanup, archive corruption, traversal, links and duplicate entries. Browser notification and administration workflows are checked independently of the backup interruption tests.
+Keep the server database **and its encryption key**, controller deployment directory and retained images. Losing the key makes provider secrets unreadable. Cross-host restore also requires the original mount/network layout. Restore can reinstate deleted accounts; it cannot undo media changes or external service activity. [Backup implementation](../apps/docker-controller/src/backups.rs).
 
-## Notifications, admin, and audit
+If the HTTP server is unavailable, run these from the accepted controller container (replace `OPERATION_UUID` with the selected operation):
 
-Notifications live on the server. Connected web/PWA/Tauri clients receive realtime notifications. Background Web Push while the browser is closed is deferred.
+```sh
+curl --unix-socket /run/thelxinoe/controller.sock http://localhost/stack/product
+curl --unix-socket /run/thelxinoe/controller.sock \
+  -H 'Content-Type: application/json' -d '{"confirm":true}' \
+  http://localhost/stack/product/OPERATION_UUID/recover
+```
 
-The admin UI shows backend and storage health, managed services and updates, integration health, Prowlarr/indexer failures, playback/transcode sessions, download activity, pending retention, backup state, and recent application errors.
+Recreate from the generated deployment directory using both `compose.yaml` and `compose.override.yaml`; the override pins accepted images. Preserve recovery images until restoration is verified. [Recovery implementation](../apps/docker-controller/src/product.rs).
 
-Admins can inspect aggregate statistics and nominative per-user history/statistics.
+The fresh [schema](../crates/database/schema.sql) rejects earlier development databases and backups. Prefer `npm run dev:fresh`. To discard an old development database, stop its server, remove only its `thelxinoe.sqlite3`, `thelxinoe.sqlite3-wal` and `thelxinoe.sqlite3-shm`, then restart and complete setup. This loses accounts, connections, catalog state and preferences; media is separate.
 
-Important administrative and destructive operations go into an audit log. Playback activity itself stays in playback history, not the audit log.
+## Publishing
 
-The server can export a redacted diagnostic bundle. It excludes secrets, tokens, media contents, cookies, and detailed user history unless a future explicit diagnostic mode says otherwise.
+No public release host or registry is configured. Product updates use a signed HTTPS envelope configured by `THELXINOE_RELEASE_URL`. Notify is the default; Automatic requires an idle maintenance window and successful recovery checks.
 
-## Backups
+1. Change `[workspace.package].version` in [Cargo.toml](../Cargo.toml), then run `npm run version:sync` and the [release checks](TESTING.md#release-checks). Schema source/target must match this baseline; incompatible schema upgrades require an upgrade design.
+2. Build and publish Linux server/controller images, retaining their manifest and platform config digests. Build Windows with `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; a Tauri override must enable `bundle.createUpdaterArtifacts` and set `plugins.updater.pubkey`.
+3. Prepare a manifest matching the [release types and validation](../crates/releases/src/lib.rs), with the final HTTPS installer URL. Keep the Tauri signing key separate from the manifest Ed25519 key. The committed [publisher public key](../releases/release.pub) must match the private manifest key.
+4. Assemble and sign:
 
-V1 supports manual backup and restore of Thelxinoe state and managed-service appdata. Media files are outside backup scope.
+```sh
+node scripts/assemble-release.mjs draft.json installer.exe installer.exe.sig updater.pub manifest.json
+node scripts/sign-release.mjs manifest.json private-manifest-key.pem latest.json
+```
 
-Backups write to a local or Compose-mounted filesystem destination. Off-host replication is external to Thelxinoe.
-
-The same consistency primitives used for update snapshots are used by manual backups. Thelxinoe SQLite uses its online backup/quiesce path. Each managed service uses the snapshot strategy defined by its curated adapter/template. A backup operation reports a component as failed rather than archive a knowingly inconsistent live database copy.
-
-The first-party deployment descriptor and the metadata needed to recreate the accepted server/controller generation are part of restorable server state. A restore can therefore recover both data and the image/spec generation compatible with that data.
-
-Pre-update snapshots are mandatory where rollback depends on service state, and the controller verifies that the required snapshot/rollback bundle exists before crossing an update activation boundary.
-
-Portable backups containing secret-restoration material require an administrator-supplied encryption passphrase.
+Publish the installer, adjacent `.sig`, generated `windows-x64.json` beside the installer URL, and signed `latest.json`. Back up signing keys privately; never put them on the release host.

@@ -4,6 +4,8 @@
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
   import { inlineFormClass } from './ui/styles';
+  import ProviderSetupInstructions from './providers/ProviderSetupInstructions.svelte';
+  let { onConfigured }: { onConfigured?: () => void } = $props();
   let configured = $state(false),
     clientId = $state(''),
     busy = $state(false),
@@ -20,6 +22,7 @@
       configured = true;
       clientId = '';
       message = 'Twitch application saved.';
+      onConfigured?.();
     } catch (e) {
       message = String(e);
     } finally {
@@ -35,6 +38,7 @@
     connects their own account. Replacing the client ID requires everyone to
     reconnect.
   </p>
+  <ProviderSetupInstructions platform="twitch" />
   <form
     class={inlineFormClass}
     onsubmit={(e) => {

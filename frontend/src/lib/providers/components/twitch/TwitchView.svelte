@@ -29,10 +29,12 @@
   } from '../../utils';
   import Button from '../../../ui/Button.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
+  import ProviderConnection from '../../ProviderConnection.svelte';
   import { eyebrowTextClass as eyebrowClass } from '../../../ui/styles';
   import StreamCard from './StreamCard.svelte';
 
   let {
+    admin,
     account,
     syncStatus,
     playback,
@@ -46,6 +48,7 @@
     onAccountChanged,
     onCardColumnsChange,
   }: {
+    admin: boolean;
     account?: PlatformAccount | null;
     syncStatus: SyncStatus;
     playback: PlaybackDiagnostics;
@@ -350,29 +353,19 @@
             </div>
           {/if}
         </section>
-      {:else if !['idle', 'success'].includes(authState.status)}
-        <EmptyState
-          eyebrow="AUTH / TWITCH"
-          title={authFailureTitle}
-          message={authState.message ?? 'The account was not connected.'}
-          actionLabel="Try again"
-          onAction={connect}
-        />
-      {:else if !clientConfigured}
-        <EmptyState
-          eyebrow="SETUP / TWITCH"
-          title="Twitch client ID is not configured"
-          message="Add the Public Twitch application client ID in Settings before Twitch can connect."
-          actionLabel="Open Settings"
-          onAction={() => onNavigateSettings('twitch')}
-        />
       {:else}
-        <EmptyState
-          eyebrow="ACCOUNT / TWITCH"
-          title="Connect a Twitch account"
-          message="Thelxinoe requests followed-channel access only and stores encrypted tokens on your server."
-          actionLabel="Connect Twitch"
-          onAction={connect}
+        {#if !['idle', 'success'].includes(authState.status)}
+          <p role="alert" class="mb-3 text-sm text-muted">
+            {authFailureTitle}: {authState.message ??
+              'The account was not connected.'}
+          </p>
+        {/if}
+        <ProviderConnection
+          platform="twitch"
+          {admin}
+          configured={clientConfigured}
+          onConfigured={onAccountChanged}
+          onConnect={connect}
         />
       {/if}
     {:else if loading && streams.length === 0}

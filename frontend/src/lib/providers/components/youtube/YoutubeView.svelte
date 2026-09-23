@@ -51,12 +51,14 @@
   import { youtubeVideoIdFromInput } from '../../youtube-video-input';
   import Button from '../../../ui/Button.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
+  import ProviderConnection from '../../ProviderConnection.svelte';
   import { eyebrowTextClass as eyebrowClass } from '../../../ui/styles';
   import YoutubeFeedToolbar from './YoutubeFeedToolbar.svelte';
   import VideoGrid from './VideoGrid.svelte';
   import WatchlistSidebar from './WatchlistSidebar.svelte';
 
   let {
+    admin,
     account,
     watchlistController,
     syncStatus,
@@ -78,6 +80,7 @@
     onYoutubeCardShortcutsChanged,
     onCardColumnsChange,
   }: {
+    admin: boolean;
     account?: PlatformAccount | null;
     watchlistController: YoutubeWatchlistController;
     syncStatus: SyncStatus;
@@ -919,29 +922,19 @@
               </div>
             </div>
           </section>
-        {:else if !['idle', 'success'].includes(authState.status)}
-          <EmptyState
-            eyebrow="AUTH / YOUTUBE"
-            title={authFailureTitle}
-            message={authState.message ?? 'The account was not connected.'}
-            actionLabel="Try again"
-            onAction={connect}
-          />
-        {:else if !clientConfigured}
-          <EmptyState
-            eyebrow="SETUP / GOOGLE OAUTH"
-            title="Google OAuth is not configured"
-            message="Add the Google Web application credentials and public server URL in Settings before YouTube can connect."
-            actionLabel="Open Settings"
-            onAction={() => onNavigateSettings('youtube')}
-          />
         {:else}
-          <EmptyState
-            eyebrow="ACCOUNT / YOUTUBE"
-            title="Connect a Google account"
-            message="Thelxinoe requests read-only YouTube access and stores encrypted tokens on your server."
-            actionLabel="Connect YouTube"
-            onAction={connect}
+          {#if !['idle', 'success'].includes(authState.status)}
+            <p role="alert" class="mb-3 text-sm text-muted">
+              {authFailureTitle}: {authState.message ??
+                'The account was not connected.'}
+            </p>
+          {/if}
+          <ProviderConnection
+            platform="youtube"
+            {admin}
+            configured={clientConfigured}
+            onConfigured={onAccountChanged}
+            onConnect={connect}
           />
         {/if}
       {:else if feed.loading && feed.videos.length === 0}

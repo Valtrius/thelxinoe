@@ -63,9 +63,9 @@ test('matching passwords create the administrator and empty provider pages load'
     page.getByRole('navigation', { name: 'Main navigation' }),
   ).toBeVisible();
   for (const [name, heading] of [
-    ['YouTube', 'Google OAuth is not configured'],
-    ['Twitch', 'Twitch client ID is not configured'],
-    ['Kick', 'Add your first Kick channel'],
+    ['YouTube', 'Connect YouTube'],
+    ['Twitch', 'Connect Twitch'],
+    ['Kick', 'Track Kick channels'],
   ]) {
     await page.getByRole('button', { name, exact: true }).click();
     await expect(

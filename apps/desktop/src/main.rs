@@ -19,7 +19,15 @@ fn open_provider_url(app: tauri::AppHandle, value: String) -> Result<(), String>
         || url.port().is_some()
         || !matches!(
             url.host_str(),
-            Some("www.youtube.com" | "www.twitch.tv" | "kick.com")
+            Some(
+                "www.youtube.com"
+                    | "www.twitch.tv"
+                    | "kick.com"
+                    | "console.cloud.google.com"
+                    | "developers.google.com"
+                    | "dev.twitch.tv"
+                    | "docs.kick.com"
+            )
         )
     {
         return Err("Invalid provider URL".into());

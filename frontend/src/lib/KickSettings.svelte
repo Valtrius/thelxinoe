@@ -4,6 +4,8 @@
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
   import { inlineFormClass } from './ui/styles';
+  import ProviderSetupInstructions from './providers/ProviderSetupInstructions.svelte';
+  let { onConfigured }: { onConfigured?: () => void } = $props();
   let configured = $state(false),
     clientId = $state(''),
     clientSecret = $state(''),
@@ -25,6 +27,7 @@
       clientId = '';
       clientSecret = '';
       message = 'Kick application saved.';
+      onConfigured?.();
     } catch (e) {
       message = String(e);
     } finally {
@@ -39,6 +42,7 @@
     Optional application credentials provide live status and channel metadata.
     Regular users track public channels without signing in to Kick.
   </p>
+  <ProviderSetupInstructions platform="kick" />
   <form
     class={inlineFormClass}
     onsubmit={(e) => {

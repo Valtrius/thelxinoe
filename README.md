@@ -1,85 +1,50 @@
 # Thelxinoe
 
-A self-hosted media server with a shared Svelte web and Windows Tauri application.
+Self-hosted movies, shows, music, YouTube, Twitch and Kick. Rust server, Svelte web/PWA and Windows Tauri app. [MIT](LICENSE).
 
-See the [documentation index](docs/README.md) for product scope, architecture and operations.
+## Run
 
-The planned v1 workflows are implemented and locally validated. See [implementation status](docs/STATUS.md) for evidence and supported limits, and the [release checklist](docs/RELEASE_CHECKLIST.md) before distributing a release. [GitHub Actions](https://github.com/Valtrius/thelxinoe/actions/workflows/ci.yml) runs on pushes to `develop` and pull requests. Release publishing and deployment automation are not configured yet.
+Development requires Rust 1.96+, Node 24+, FFmpeg/FFprobe and Docker with Linux containers.
 
-The source is licensed under [MIT](LICENSE). Third-party dependencies retain their own licenses.
-
-## Development
-
-Requires Rust 1.96+, Node 24+, FFmpeg/FFprobe, and Docker with Linux containers.
-
-```powershell
+```sh
 npm ci
 npm run dev
 ```
 
-`npm run dev` starts the Rust server on port 8484 and Vite on port 5173. Open http://127.0.0.1:5173 and choose a username and password to create the first administrator. Development data remains in `.local`, Vite proxies the API and WebSocket to the server, and Ctrl+C stops both processes. Use `npm run dev:web` when you only need Vite, or `cargo run --locked -p thelxinoe-server` when you only need the server.
+Open http://127.0.0.1:5173 and create the first administrator (password: 12+ characters). The server runs on port 8484; development state stays in `.local`. Ctrl+C stops both processes.
 
-For a new empty Windows development instance on every launch:
+| Command                        | Purpose                                                                                                                      |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `npm run dev:web`              | Frontend only                                                                                                                |
+| `npm run dev:desktop`          | Windows app; requires a running server                                                                                       |
+| `npm run dev:fresh`            | Windows: new empty profile at http://127.0.0.1:18486; previous runs remain in `.local/dev-runs`                              |
+| `npm run dev:online`           | Windows: reuse existing `.local/online/server` database and key at https://localhost:22443; containers keep running          |
+| `docker compose up --build -d` | Deploy using [Compose](compose.yaml) and [.env.example](.env.example); read [storage and recovery](docs/OPERATIONS.md) first |
+| `npm run validate`             | Formatting, lint, Rust/web checks, unit tests and web build                                                                  |
+| `npm run ci`                   | [CI phases](scripts/ci.mjs), including Docker fixtures and Windows desktop checks                                            |
 
-```powershell
-npm run dev:fresh
-# Optional: another port and an already-built frontend
-npm run dev:fresh -- -Port 18487 -SkipBuild
-```
+Open each provider page for connection instructions and application setup. Administrators configure credentials once; each user connects YouTube/Twitch or tracks Kick channels. Local metadata comes from connected Radarr/Sonarr/Lidarr services; files remain usable without them.
 
-The launcher builds the frontend and runs the server at http://127.0.0.1:18486. Open that address and choose the first administrator's username and password. Each invocation creates separate state, cache and media folders under `.local/dev-runs/`, with no provider credentials or linked accounts. Ctrl+C stops the server. Earlier runs stay on disk, and existing deployments are preserved. Inherited `THELXINOE_*` settings are temporarily replaced and restored when the script exits. This serves the built web UI without hot reload or the Docker controller.
+## Source map
 
-The underlying `scripts/dev-fresh.ps1` can also be invoked by its full path from another working directory. Run `npm ci` once before first use.
+Code and tests define behavior. Keep docs to commands, operational prerequisites and limits; put setup help beside the controls it explains.
 
-To reuse the existing online development profile with its saved provider credentials and account connections:
+| Area                         | Entry points                                                                                                                                             |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Server/API/configuration     | [router](apps/server/src/lib.rs), [configuration](apps/server/src/config.rs), [.env.example](.env.example)                                               |
+| Database                     | [schema](crates/database/schema.sql), [runtime](crates/database/src/lib.rs), [server SQL](apps/server/src/storage)                                       |
+| Identity and permissions     | [authentication](crates/auth/src), [security](apps/server/src/security.rs), [capabilities](crates/core/src)                                              |
+| Catalog and playback         | [catalog](crates/catalog/src), [playback](crates/playback/src), [server playback](apps/server/src/playback.rs)                                           |
+| Online providers             | [server](apps/server/src/online), [pages](frontend/src/lib/providers), [setup instructions](frontend/src/lib/providers/ProviderSetupInstructions.svelte) |
+| Jellyfin clients             | [adapter](apps/server/src/jellyfin), [protocol checks](scripts/test-jellyfin.mjs)                                                                        |
+| Media services and retention | [manager integrations](apps/server/src/managers), [Docker controller](apps/docker-controller/src), [retention](apps/server/src/managers/retention.rs)    |
+| Web and Windows UI           | [app](frontend/src/App.svelte), [shared controls](frontend/src/lib/ui), [desktop](apps/desktop/src)                                                      |
+| Builds and releases          | [commands](package.json), [CI](.github/workflows/ci.yml), [Dockerfile](Dockerfile), [release protocol](crates/releases/src/lib.rs)                       |
 
-```powershell
-npm run dev:online
-# Optional: start the existing image without rebuilding
-npm run dev:online -- -SkipBuild
-```
+## Limits
 
-This Windows launcher builds the server image (including the web UI), starts the `thelxinoe-online` Docker Compose project, and waits for it to become healthy at https://localhost:22443. Sign in with your existing Thelxinoe account. State persists in `.local/online/server`, including its database and encryption key; both must already exist. The containers keep running after the command exits. This serves the built UI without hot reload.
+Supported targets: Linux x86-64 server, Windows x64 desktop and Chromium web/PWA. Transcoding uses software. Provider playback is public media only; account linking does not grant restricted playback. Offline media, casting, background Web Push, remote API-only media managers and full Jellyfin server compatibility are outside scope.
 
-```sh
-docker compose up --build -d
-```
+Wholphin 1.0.8 and Jellyfin Android TV 0.19.10 were locally checked for local media; online libraries were checked in Wholphin only. Wholphin can lose a long active subtitle cue after seeking. Universal audio conversion without playback-info is unsupported. LAN broadcast discovery still needs testing on a real LAN. Repeat client checks before claiming support for newer versions.
 
-For Linux bind mounts, create the server, cache, and backup directories before startup and give them to uid/gid `10001:10001`. Configure persistent paths using `.env.example`. The Docker daemon is mounted only into the controller, which has no TCP network. The server connects over a private Unix socket.
-
-The first account is an administrator. First-run setup is available while the server has no users; after that, additional accounts require an administrator. Passwords require at least 12 characters. Provider secrets use AES-256-GCM with a persistent master key outside SQLite. Losing that key loses the ability to decrypt provider credentials.
-
-## Checks
-
-```sh
-npm run validate
-npm run ci
-```
-
-`npm run validate` runs formatting, linting, Rust and web checks, unit tests and the web build. `npm run ci` runs the same server, web, container and desktop phases used by GitHub Actions. On Windows, the server phase runs the Linux Rust checks through Docker before the native desktop phase. On Linux, the desktop phase remains a Windows CI job.
-
-The canonical product version is `[workspace.package].version` in `Cargo.toml`. `npm run version:sync` updates npm, Tauri and Compose versions; builds reject drift. See [testing instructions](docs/TESTING.md) for browser, proxy, desktop and Android TV validation.
-
-## Remote access
-
-Publish the server behind your own HTTPS reverse proxy. Set `THELXINOE_PUBLIC_URL` to its origin and `THELXINOE_TRUSTED_PROXIES` to the exact proxy IPs/CIDRs. Proxy the Host, X-Forwarded-Host, X-Forwarded-Proto, and X-Forwarded-For headers and support WebSocket upgrades. Untrusted clients cannot override the request scheme or address with forwarded headers. Same-origin web sessions use HttpOnly/SameSite=Strict cookies, with Secure when reached through trusted HTTPS.
-
-The controller is intentionally unavailable outside its Unix socket. Do not publish the Docker daemon or mount it into the server.
-
-The web app supports installation as a Chromium PWA, mobile layouts, an offline reconnect screen and automatic remote video quality. See [remote access](docs/REMOTE.md) for proxy, CORS and cache behavior.
-
-## YouTube
-
-Administrators configure a Google Web application in Settings, then each person connects their own YouTube account. The server owns OAuth, refresh, subscription/feed synchronization and the shared quota budget. Watchlists, pins and watched flags are private to each user. Public VOD/live streaming and retained downloads work in the browser and Windows MPV. Twitch uses per-user device authorization; Kick supports privately tracked public channels. See [provider setup and limits](docs/ONLINE.md).
-
-## Administration and updates
-
-Settings includes users/devices, service health, jobs, notifications, diagnostics, encrypted backups and recovery. The managed stack supports Radarr, Sonarr, Lidarr, Bazarr, Prowlarr and NZBGet, with guarded acquisition, retention and service updates. See [operations](docs/OPERATIONS.md), [managed services](docs/MANAGED-STACK.md) and [retention](docs/RETENTION.md).
-
-Signed product releases coordinate the server, controller, web and Windows application. Notify is the default; Automatic requires a maintenance window, idle state and tested recovery. Keep the deployment directory and retained images with backups. See [publishing and offline recovery](docs/RELEASES.md).
-
-## TV clients
-
-Wholphin and Jellyfin Android TV can connect to the server's HTTP(S) address using a Thelxinoe account or Quick Connect approved from web Settings. The adapter exposes the local Movies, Shows and Music catalog. See [tested client versions and limitations](docs/JELLYFIN.md).
-
-For LAN auto-discovery, set `THELXINOE_DISCOVERY_URL` to the origin reachable by TVs, for example `http://192.168.1.20:8484`, and expose the HTTP listener using `THELXINOE_LISTEN`. Compose publishes UDP 7359 for discovery. A configured `THELXINOE_PUBLIC_URL` is used when the discovery URL is omitted; with neither configured, discovery is disabled. Set `THELXINOE_DISCOVERY=false` to disable it explicitly. Routed networks and emulator NAT may require entering the server address manually.
+This is an unreleased schema baseline with no database upgrade runner. Release publication is not configured. See [deployment, backups and release commands](docs/OPERATIONS.md) and [test commands](docs/TESTING.md); current CI results are in [GitHub Actions](https://github.com/Valtrius/thelxinoe/actions/workflows/ci.yml).
