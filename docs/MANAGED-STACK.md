@@ -90,8 +90,22 @@ Enabled connections are persisted and retry independently after outages, restart
 
 Servarr APIs mask saved keys and passwords, so their exact values cannot be compared for outside edits. Thelxinoe preserves those saved secrets during address updates and uses the service's connection test to check them. After changing a service credential, update the upstream connection in its advanced settings, or disconnect and connect it again.
 
-## Container names
+## Stopped services
 
 Stopped managed services can be stopped again, restarted, and updated without a live application API check. Docker must positively confirm that the accepted container exists, is stopped and has no configuration drift. Running services still require an idle API check; active playback continues to block updates. Activation preserves the running state observed immediately before the update, including a deliberate stop after preflight. An inspection outage is displayed as unavailable and never treated as stopped or missing.
 
+## Container names
+
 The bootstrap services are named `thelxinoe-server` and `thelxinoe-controller`. New and adopted managed services use `thelxinoe-radarr`, `thelxinoe-sonarr`, `thelxinoe-lidarr`, `thelxinoe-bazarr`, `thelxinoe-prowlarr` and `thelxinoe-nzbget`. If another deployment already owns the preferred name, the controller adds a short installation suffix. Adoption preserves the original configuration for recovery and recreates the accepted service under its Thelxinoe name. Existing prefixed installations retain their recorded names through updates and restore.
+
+## Regression fixture
+
+Run the real six-service API and browser fixture with Docker available:
+
+```sh
+docker build --target server -t thelxinoe-service-server:local .
+docker build --target controller -t thelxinoe-service-controller:local .
+node scripts/test-service-connections.mjs
+```
+
+The fixture creates a unique Compose project and data directory below `.local`, uses free loopback ports, and removes only its own deployment containers and volumes. It covers optional links, restart retries, disconnects during outages, masked credentials, manual edits, custom NZBGet categories, missing containers, interrupted creation, stopped updates, changes in running state after preflight, retirement and reinstall. Screenshots and the result summary stay in its `.local` directory. Set `THELXINOE_KEEP_FAILED_FIXTURE=1` to retain a failing deployment for inspection.

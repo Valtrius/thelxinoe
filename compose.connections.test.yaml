@@ -1,0 +1,39 @@
+services:
+  controller:
+    image: thelxinoe-service-controller:local
+    network_mode: none
+    volumes:
+      - runtime:/run/thelxinoe
+      - deployment:/var/lib/thelxinoe/deployment
+      - /var/run/docker.sock:/var/run/docker.sock
+    read_only: true
+    cap_drop: [ALL]
+    labels: { app.thelxinoe.component: controller }
+  server:
+    image: thelxinoe-service-server:local
+    environment:
+      THELXINOE_PUBLIC_URL: https://localhost:${THELXINOE_CONNECTIONS_PORT}
+      THELXINOE_TRUSTED_PROXIES: 172.31.244.0/24
+    volumes:
+      - ${THELXINOE_CONNECTIONS_ROOT:?Run scripts/test-service-connections.mjs}/server:/var/lib/thelxinoe
+      - ${THELXINOE_CONNECTIONS_ROOT}/cache:/var/cache/thelxinoe
+      - ${THELXINOE_CONNECTIONS_ROOT}/media:/media
+      - runtime:/run/thelxinoe:ro
+    networks: [test]
+    depends_on:
+      controller: { condition: service_healthy }
+    labels: { app.thelxinoe.component: server }
+  proxy:
+    image: caddy:2
+    ports: ['127.0.0.1:${THELXINOE_CONNECTIONS_PORT}:9443']
+    volumes: ['./tests/Caddyfile:/etc/caddy/Caddyfile:ro']
+    networks: [test]
+    depends_on:
+      server: { condition: service_healthy }
+networks:
+  test:
+    ipam:
+      config: [{ subnet: 172.31.244.0/24 }]
+volumes:
+  runtime:
+  deployment:
