@@ -36,6 +36,8 @@ if (!existsSync(nzbConfig))
       'TempDir=/config/tmp',
       'ScriptDir=/config/scripts',
       'LogFile=/config/nzbget.log',
+      'WebDir=${AppDir}/webui',
+      'ConfigTemplate=${AppDir}/webui/nzbget.conf.template',
       'ControlIP=0.0.0.0',
       'ControlPort=6789',
       'ControlUsername=fixture',

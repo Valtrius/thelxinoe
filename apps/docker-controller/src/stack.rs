@@ -448,8 +448,10 @@ fn app_config(t: templates::Template, input: &Install, directory: &std::path::Pa
             if input.username != "thelxinoe" {
                 return Err(bad("Use the managed NZBGet account"));
             }
+            // A preseeded config bypasses the image's defaults. NZBGet needs both
+            // paths explicitly to serve its web interface and settings editor.
             format!(
-                "MainDir=/media/downloads\nDestDir=/media/downloads/completed\nInterDir=/media/downloads/intermediate\nNzbDir=/config/nzb\nQueueDir=/config/queue\nTempDir=/config/tmp\nScriptDir=/config/scripts\nLogFile=/config/nzbget.log\nControlIP=0.0.0.0\nControlPort=6789\nControlUsername=thelxinoe\nControlPassword={}\n",
+                "MainDir=/media/downloads\nDestDir=/media/downloads/completed\nInterDir=/media/downloads/intermediate\nNzbDir=/config/nzb\nQueueDir=/config/queue\nTempDir=/config/tmp\nScriptDir=/config/scripts\nLogFile=/config/nzbget.log\nWebDir=${{AppDir}}/webui\nConfigTemplate=${{AppDir}}/webui/nzbget.conf.template\nControlIP=0.0.0.0\nControlPort=6789\nControlUsername=thelxinoe\nControlPassword={}\n",
                 input.secret
             )
         }

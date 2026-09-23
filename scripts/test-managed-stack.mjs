@@ -47,6 +47,27 @@ try {
         { timeout: 240000, intervals: [2000] },
       )
       .toBe('complete');
+    if (kind === 'nzbget') {
+      const provision = last.provisions.find((p) => p.kind === kind);
+      const credentials = await api(
+        `/admin/stack/${provision.id}/login`,
+        'POST',
+      );
+      const native = await b.newContext({ httpCredentials: credentials });
+      try {
+        const page = await native.newPage();
+        const response = await page.goto(`http://localhost:${host_port}`);
+        expect(response.status()).toBe(200);
+        await page.getByRole('link', { name: /^Settings/ }).click();
+        await page.getByRole('link', { name: /^News-Servers/ }).click();
+        await expect(
+          page.getByRole('button', { name: 'Add Server', exact: true }),
+        ).toBeVisible();
+      } finally {
+        await native.close();
+      }
+      console.log('nzbget: web interface and news-server settings available');
+    }
     console.log(kind + ': installed and connected');
   }
   writeFileSync(
