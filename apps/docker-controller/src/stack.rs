@@ -18,6 +18,8 @@ mod adoption;
 mod backups;
 #[path = "product.rs"]
 pub(crate) mod product;
+#[path = "service_recovery.rs"]
+mod recovery;
 #[path = "updates.rs"]
 mod updates;
 pub async fn retain_worker_image() -> anyhow::Result<()> {
@@ -129,7 +131,7 @@ fn services() -> Result<Vec<Managed>> {
         id(&name)?;
         if entry.path().join("service.json").exists() {
             let service = load(&name)?;
-            if service.phase != "returned" {
+            if !matches!(service.phase.as_str(), "returned" | "retired") {
                 if rows.iter().any(|existing| existing.kind == service.kind) {
                     return Err(conflict("Managed state contains duplicate service kinds"));
                 }
@@ -387,17 +389,13 @@ async fn list(State(runtime): State<Runtime>) -> Result<Json<Value>> {
     };
     let mut result = Vec::new();
     for s in services()? {
-        let live = if s.container.is_empty() {
-            Err(unavailable())
+        let identity = if s.container.is_empty() {
+            &s.name
         } else {
-            engine(&format!("/containers/{}/json", s.container)).await
+            &s.container
         };
-        let drift = !s.expected.is_null()
-            && live
-                .as_ref()
-                .map(|v| policy::fingerprint(v) != s.expected)
-                .unwrap_or(true);
-        result.push(json!({"id":s.id,"kind":s.kind,"container_id":s.container,"name":s.name,"image":s.image,"phase":s.phase,"error":s.error,"drift":drift,"running":live.ok().map(|v|v["State"]["Running"].clone()),"transfer_pending":adoption::pending(&s)}));
+        let live = engine(&format!("/containers/{identity}/json")).await;
+        result.push(recovery::observation(&s, &live));
     }
     Ok(Json(
         json!({"deployment_id":d.id,"generation":d.generation,"items":result}),
@@ -512,24 +510,7 @@ async fn install(
         error: None,
     };
     save(&s)?;
-    let created = request(
-        reqwest::Method::POST,
-        &format!("/containers/create?name={name}"),
-        Some(spec),
-    )
-    .await?;
-    s.container = created["Id"].as_str().ok_or_else(unavailable)?.into();
-    save(&s)?;
-    request(
-        reqwest::Method::POST,
-        &format!("/containers/{}/start", s.container),
-        None,
-    )
-    .await?;
-    let raw = engine(&format!("/containers/{}/json", s.container)).await?;
-    s.expected = policy::fingerprint(&raw);
-    s.phase = "active".into();
-    save(&s)?;
+    let _ = recovery::resume_creation(&d, &mut s).await?;
     Ok(Json(
         json!({"id":s.id,"kind":s.kind,"container_id":s.container,"port":t.port,"host_port":input.host_port}),
     ))
@@ -546,10 +527,30 @@ async fn action(
     let _guard = runtime.0.lock().await;
     let d = bootstrap().await?;
     id(&key)?;
+    if input.action == "retire" && !service_path(&key).exists() {
+        let rows = engine("/containers/json?all=true").await?;
+        if rows.as_array().ok_or_else(unavailable)?.iter().any(|row| {
+            row["Labels"]["app.thelxinoe.deployment"] == d.id
+                && row["Labels"]["app.thelxinoe.managed-id"] == key
+        }) {
+            return Err(conflict(
+                "An unrecorded container still owns this installation",
+            ));
+        }
+        return Ok(Json(
+            json!({"accepted":true,"retired":true,"appdata_preserved":true}),
+        ));
+    }
     if input.action == "restore_original" && !service_path(&key).exists() {
         return adoption::cancel_unsubmitted(&d, &key).await;
     }
     let mut s = load(&key)?;
+    if input.action == "retire" {
+        return recovery::retire(&d, &mut s).await;
+    }
+    if input.action == "recreate" {
+        return recovery::recreate(&d, &mut s).await;
+    }
     if input.action == "complete_adoption" {
         return adoption::complete(&d, &mut s).await;
     }
@@ -627,16 +628,45 @@ async fn reconcile(d: &Deployment, s: &mut Managed) -> Result<Json<Value>> {
     if s.phase == "updating" {
         return Err(conflict("Use update recovery for an interrupted update"));
     }
-    let raw = engine(&format!("/containers/{}/json", s.name)).await?;
+    if matches!(s.phase.as_str(), "creating" | "recreating") {
+        return recovery::resume_creation(d, s).await;
+    }
+    let container = recovery::find_container(d, s)
+        .await?
+        .ok_or_else(|| conflict("Container is missing; recreate it or retire the installation"))?;
+    let raw = engine(&format!("/containers/{container}/json")).await?;
+    verify_recorded(d, s, &raw).await?;
+    s.expected = policy::fingerprint(&raw);
+    s.container = raw["Id"].as_str().ok_or_else(unavailable)?.into();
+    s.phase = "active".into();
+    s.error = None;
+    save(s)?;
+    Ok(Json(
+        json!({"accepted":true,"container_id":s.container,"running":raw["State"]["Running"]}),
+    ))
+}
+
+fn verify_ownership(d: &Deployment, s: &Managed, raw: &Value) -> Result<()> {
     if raw["Config"]["Labels"]["app.thelxinoe.deployment"] != d.id
         || raw["Config"]["Labels"]["app.thelxinoe.managed-id"] != s.id
     {
         return Err(conflict("Container name belongs to another owner"));
     }
+    Ok(())
+}
+
+fn verify_fingerprint(d: &Deployment, s: &Managed, raw: &Value) -> Result<()> {
+    verify_ownership(d, s, raw)?;
+    if policy::fingerprint(raw) != s.expected {
+        return Err(conflict("Docker configuration drift blocks reconciliation"));
+    }
+    Ok(())
+}
+
+async fn verify_recorded(d: &Deployment, s: &Managed, raw: &Value) -> Result<()> {
+    verify_ownership(d, s, raw)?;
     if !s.expected.is_null() {
-        if policy::fingerprint(&raw) != s.expected {
-            return Err(conflict("Docker configuration drift blocks reconciliation"));
-        }
+        verify_fingerprint(d, s, raw)?;
     } else {
         if raw["Config"]["Image"] != s.spec["Image"]
             || !subset(&s.spec["HostConfig"], &raw["HostConfig"])
@@ -682,15 +712,8 @@ async fn reconcile(d: &Deployment, s: &mut Managed) -> Result<Json<Value>> {
         if networks.len() != 1 || !networks.contains_key(&d.network) {
             return Err(conflict("Container network changed during provisioning"));
         }
-        s.expected = policy::fingerprint(&raw);
     }
-    s.container = raw["Id"].as_str().ok_or_else(unavailable)?.into();
-    s.phase = "active".into();
-    s.error = None;
-    save(s)?;
-    Ok(Json(
-        json!({"accepted":true,"container_id":s.container,"running":raw["State"]["Running"]}),
-    ))
+    Ok(())
 }
 
 #[cfg(test)]

@@ -20,6 +20,22 @@ An interrupted transfer retains its journal and copied data. **Retry setup** ret
 
 Managed configuration is fingerprinted separately from runtime addresses. External changes block lifecycle mutations. Reconciliation can complete an interrupted recorded operation, but cannot bless arbitrary new configuration.
 
+The service view refreshes runtime status while open. A stopped container, a missing
+container, an unavailable inspection and changed Docker configuration are reported
+separately. **Reconcile** also reconnects the server's API integration to an accepted
+replacement container and queues API verification while preserving the integration ID.
+
+For a missing container, **Recreate and start** uses the recorded image/specification
+and preserved appdata. Interrupted creation can be resumed with **Retry setup** or
+**Reconcile**; the controller checks all container ownership labels before creating
+anything, including renamed containers and ambiguous earlier create results. Missing
+appdata, conflicting ownership and Docker inspection failures block recreation.
+
+**Retire missing installation** releases an orphaned installation and its active API
+connection without deleting appdata or media. Request history and old file ownership
+evidence are retained, and unfinished requests are cancelled. A failed retirement can
+be retried; the controller retains its journal and appdata after releasing ownership.
+
 See [storage and external NAS services](STORAGE.md) for Compose examples, `/media/tv`, and permissions.
 
 ## Deployment recovery

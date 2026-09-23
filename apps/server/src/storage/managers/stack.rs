@@ -13,7 +13,7 @@ pub(super) async fn install(
     key: String,
     credential: Vec<u8>,
 ) -> anyhow::Result<bool> {
-    db.write("managers.stack.install", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;if tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE kind=?1 UNION ALL SELECT 1 FROM manager_services WHERE kind=?1 UNION ALL SELECT 1 FROM support_services WHERE kind=?1)",[&input.kind],|r|r.get::<_,bool>(0))?{return Ok(false);}tx.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,created_at,updated_at,native_url) VALUES (?1,?2,?3,?4,?5,'queued',?6,?6,?7)",params![key,input.kind,p.user.id,input.host_port,credential,now(),input.native_url])?;tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'stack.install',?2,?3,'queued',?4,?4)",params![id(),json!({"id":key}).to_string(),format!("stack:{key}"),now()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'stack.install',?2,?3)",params![p.user.id,key,now()])?;tx.commit()?;Ok(true)}).await
+    db.write("managers.stack.install", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;if tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE kind=?1 UNION ALL SELECT 1 FROM manager_services WHERE kind=?1 AND enabled=1 UNION ALL SELECT 1 FROM support_services WHERE kind=?1)",[&input.kind],|r|r.get::<_,bool>(0))?{return Ok(false);}tx.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,created_at,updated_at,native_url) VALUES (?1,?2,?3,?4,?5,'queued',?6,?6,?7)",params![key,input.kind,p.user.id,input.host_port,credential,now(),input.native_url])?;tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'stack.install',?2,?3,'queued',?4,?4)",params![id(),json!({"id":key}).to_string(),format!("stack:{key}"),now()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'stack.install',?2,?3)",params![p.user.id,key,now()])?;tx.commit()?;Ok(true)}).await
 }
 
 pub(super) async fn action_read_manager_services(
@@ -35,12 +35,61 @@ pub(super) async fn action_read_manager_services(
 pub(super) async fn action_write_stack_provisions(
     db: &Database,
     key: String,
+    container: String,
 ) -> anyhow::Result<()> {
     db.write("managers.stack.action_write_stack_provisions", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        if tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE id=?1 AND state='blocked')",[&key],|r|r.get::<_,bool>(0))? {
+        let (kind, integration, previous, state): (String, Option<String>, Option<String>, String) = tx.query_row(
+            "SELECT kind,service_id,container_id,state FROM stack_provisions WHERE id=?1", [&key],
+            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+        anyhow::ensure!(state != "retiring", "Installation is being retired");
+        if previous.as_deref() != Some(container.as_str()) {
+            let table = if matches!(kind.as_str(), "radarr"|"sonarr"|"lidarr") { "manager_services" } else { "support_services" };
+            if let Some(integration) = integration {
+                tx.execute(&format!("UPDATE {table} SET container_id=?1,generation=?2,checked_at=0,error='Verifying replacement API' WHERE id=?3"), params![container,id(),integration])?;
+            }
+        }
+        tx.execute("UPDATE stack_provisions SET container_id=?1,updated_at=?2 WHERE id=?3", params![container,now(),key])?;
+        if state == "blocked" || previous.as_deref() != Some(container.as_str()) {
             tx.execute("UPDATE stack_provisions SET state='connecting',error=NULL WHERE id=?1",[&key])?;
             tx.execute("UPDATE jobs SET state='queued',error=NULL,available_at=?1 WHERE kind='stack.install' AND json_extract(payload,'$.id')=?2 AND state IN ('failed','complete')",params![now(),key])?;
         }tx.commit()?;Ok(())}).await
+}
+
+pub(super) async fn begin_retirement(db: &Database, key: String) -> anyhow::Result<bool> {
+    db.write("managers.stack.begin_retirement", move |db| {
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let ready: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE id=?1 AND state IN ('complete','blocked','retiring')) AND NOT EXISTS(SELECT 1 FROM jobs WHERE kind='stack.install' AND json_extract(payload,'$.id')=?1 AND state IN ('queued','running')) AND NOT EXISTS(SELECT 1 FROM service_updates WHERE service_id=?1 AND state NOT IN ('committed','rolled-back','blocked'))", [&key], |r|r.get(0))?;
+        if ready {
+            tx.execute("UPDATE stack_provisions SET state='retiring',updated_at=?1 WHERE id=?2",params![now(),key])?;
+        }
+        tx.commit()?;
+        Ok(ready)
+    }).await
+}
+
+pub(super) async fn retire(db: &Database, key: String, actor: String) -> anyhow::Result<()> {
+    db.write("managers.stack.retire", move |db| {
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let integration: Option<(String,Option<String>)> = tx.query_row(
+            "SELECT kind,service_id FROM stack_provisions WHERE id=?1 AND state='retiring'", [&key], |r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+        if let Some((kind, Some(service))) = integration {
+            if matches!(kind.as_str(),"radarr"|"sonarr"|"lidarr") {
+                // Keep historical requests/bindings, but stop acquisition and
+                // leave previously claimed media unresolved until reviewed.
+                tx.execute("UPDATE manager_services SET enabled=0,error='Installation retired',checked_at=0 WHERE id=?1",[&service])?;
+                tx.execute("UPDATE acquisition_requests SET state='cancelled',error='Installation retired',updated_at=?1 WHERE service_id=?2 AND state IN ('pending','approved','adding','searching','uncertain')",params![now(),service])?;
+                tx.execute("UPDATE media_files SET ownership='unresolved' WHERE id IN (SELECT file_id FROM manager_bindings WHERE service_id=?1)",[&service])?;
+            } else {
+                tx.execute("DELETE FROM support_services WHERE id=?1",[&service])?;
+            }
+        }
+        tx.execute("DELETE FROM service_update_policy WHERE service_id=?1",[&key])?;
+        tx.execute("UPDATE jobs SET state='complete',error=NULL WHERE kind='stack.install' AND json_extract(payload,'$.id')=?1",[&key])?;
+        tx.execute("DELETE FROM stack_provisions WHERE id=?1 AND state='retiring'",[&key])?;
+        tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'stack.retire',?2,?3)",params![actor,key,now()])?;
+        tx.commit()?;
+        Ok(())
+    }).await
 }
 
 pub(super) async fn action_write_audit(

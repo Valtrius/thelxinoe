@@ -91,8 +91,13 @@
     name: string;
     phase: string;
     image: string;
-    drift: boolean;
-    running: boolean;
+    drift: boolean | null;
+    running: boolean | null;
+    existence: 'present' | 'missing' | 'unknown';
+    status: 'running' | 'stopped' | 'missing' | 'unavailable' | 'drifted';
+    inspection_error: string | null;
+    can_recreate: boolean;
+    can_retire: boolean;
     error: string | null;
     transfer_pending: boolean;
   };
@@ -389,6 +394,8 @@
     const definition = definitions.find((entry) => entry.kind === kind)!;
     const connected = integration(definition);
     if (item && item.state !== 'complete') return `Setup ${item.state}`;
+    if (live?.status === 'missing') return 'Managed, container missing';
+    if (live?.status === 'unavailable') return 'Managed, status unavailable';
     if (live)
       return live.drift
         ? 'Managed, configuration changed'
@@ -629,7 +636,7 @@
     await refresh();
   }
   async function stackAction(kind: ServiceKind, action: string) {
-    const service = runtime(kind);
+    const service = runtime(kind) ?? provision(kind);
     if (!service) return;
     await api(`/admin/stack/${service.id}/action`, 'POST', { action });
     await refresh();
@@ -674,15 +681,21 @@
 
   onMount(() => {
     void work(refresh);
-    const timer = setInterval(() => {
-      if (busy) return;
-      if (
-        provisions.some((item) =>
-          ['queued', 'installing', 'connecting'].includes(item.state),
+    let polling = false;
+    const timer = setInterval(async () => {
+      if (busy || polling || document.hidden) return;
+      polling = true;
+      try {
+        if (
+          provisions.some((item) =>
+            ['queued', 'installing', 'connecting'].includes(item.state),
+          )
         )
-      )
-        void refresh().catch(() => {});
-      else void loadUpdateData().catch(() => {});
+          await refresh();
+        else await Promise.all([loadStack(), loadUpdateData()]);
+      } finally {
+        polling = false;
+      }
     }, 4000);
     return () => clearInterval(timer);
   });
@@ -1375,12 +1388,19 @@
                   {/if}
                   {#if live}
                     <p>
-                      {live.drift
-                        ? 'Configuration changed outside Thelxinoe'
-                        : live.running
-                          ? 'Running'
-                          : 'Stopped'} · {live.phase}
+                      {live.status === 'missing'
+                        ? 'Container missing'
+                        : live.status === 'unavailable'
+                          ? 'Container status unavailable'
+                          : live.drift
+                            ? 'Configuration changed outside Thelxinoe'
+                            : live.running
+                              ? 'Running'
+                              : 'Stopped'} · {live.phase}
                     </p>
+                    {#if live.inspection_error}<p>
+                        {live.inspection_error}
+                      </p>{/if}
                     {#if live.error}<p>{live.error}</p>{/if}
                     <details>
                       <summary>Installed image</summary>
@@ -1393,15 +1413,52 @@
                           size="sm"
                           disabled={busy ||
                             provisioning ||
+                            live.existence === 'unknown' ||
                             (action !== 'reconcile' &&
-                              (live.drift || live.phase !== 'active'))}
+                              (live.existence !== 'present' ||
+                                live.drift === true ||
+                                live.phase !== 'active'))}
                           onclick={() =>
                             void work(() =>
                               stackAction(definition.kind, action),
                             )}>{action}</Button
                         >
                       {/each}
+                      {#if live.can_recreate}
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          disabled={busy || provisioning}
+                          onclick={() =>
+                            void work(() =>
+                              stackAction(definition.kind, 'recreate'),
+                            )}>Recreate and start</Button
+                        >
+                        <p class="mt-2 text-xs">
+                          Reuses the recorded configuration and preserved
+                          appdata.
+                        </p>
+                      {/if}
                     </div>
+                  {/if}
+                  {#if item && (live?.can_retire || (!live && ['blocked', 'retiring'].includes(item.state)))}
+                    <details class="mt-3">
+                      <summary>Retire missing installation</summary>
+                      <p>
+                        Removes this installation and its active API connection.
+                        Appdata and request history are retained; media files
+                        are kept.
+                      </p>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={busy || provisioning}
+                        onclick={() =>
+                          void work(() =>
+                            stackAction(definition.kind, 'retire'),
+                          )}>Retire installation and keep data</Button
+                      >
+                    </details>
                   {/if}
                 </div>
               </details>

@@ -4,6 +4,9 @@
 mod storage;
 
 use super::*;
+#[cfg(test)]
+#[path = "stack_recovery_tests.rs"]
+mod recovery_tests;
 pub(super) fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/admin/stack", get(list))
@@ -21,6 +24,16 @@ pub(super) fn router() -> Router<AppState> {
         .route("/api/v1/admin/stack/{id}/retry", post(retry))
 }
 pub(crate) async fn controller(state: &AppState, path: &str, body: Option<Value>) -> Result<Value> {
+    #[cfg(test)]
+    if let Some(value) = state
+        .managers
+        .docker
+        .lock()
+        .unwrap()
+        .get(&format!("stack{path}"))
+    {
+        return Ok(value.clone());
+    }
     #[cfg(unix)]
     {
         let client = reqwest::Client::builder()
@@ -126,13 +139,43 @@ async fn action(
     if uuid::Uuid::parse_str(&key).is_err()
         || !matches!(
             input.action.as_str(),
-            "start" | "stop" | "restart" | "reconcile"
+            "start" | "stop" | "restart" | "reconcile" | "recreate" | "retire"
         )
     {
         return Err(ApiError::bad("Invalid managed service action"));
     }
     let _lease = state.media_operations.write().await;
     let _guard = state.managers.guard.lock().await;
+    if input.action == "retire" {
+        let observed = controller(&state, "", None).await?;
+        if observed["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|s| s["id"] == key && s["existence"] != "missing")
+        {
+            return Err(ApiError::conflict(
+                "Only a confirmed missing container can be retired",
+            ));
+        }
+        if !storage::begin_retirement(&state.db, key.clone()).await? {
+            return Err(ApiError::conflict(
+                "Finish the current setup or update before retiring this installation",
+            ));
+        }
+        let result = controller(
+            &state,
+            &format!("/{key}/action"),
+            Some(json!({"action":"retire"})),
+        )
+        .await?;
+        if result["retired"] != true {
+            return Err(ApiError::conflict("Controller did not confirm retirement"));
+        }
+        storage::retire(&state.db, key.clone(), p.user.id).await?;
+        state.emit(None, "stack.changed", json!({"id":key})).await?;
+        return Ok(Json(result));
+    }
     // Media managers can be stopped only after their activity is inspected.
     let container = controller(&state, "", None).await?["items"]
         .as_array()
@@ -141,7 +184,7 @@ async fn action(
         .find(|s| s["id"] == key)
         .cloned()
         .ok_or_else(ApiError::not_found)?;
-    if !matches!(input.action.as_str(), "start" | "reconcile") {
+    if !matches!(input.action.as_str(), "start" | "reconcile" | "recreate") {
         let c = container["container_id"]
             .as_str()
             .unwrap_or_default()
@@ -157,10 +200,22 @@ async fn action(
         Some(json!({"action":input.action})),
     )
     .await?;
-    if input.action == "reconcile" {
+    if matches!(input.action.as_str(), "reconcile" | "recreate") {
+        let container = result["container_id"]
+            .as_str()
+            .ok_or_else(unavailable)?
+            .to_owned();
         let key = key.clone();
-        storage::action_write_stack_provisions(&state.db, key).await?;
+        storage::action_write_stack_provisions(&state.db, key, container).await?;
     }
+    if input.action == "start" {
+        let container = container["container_id"]
+            .as_str()
+            .ok_or_else(unavailable)?
+            .to_owned();
+        storage::action_write_stack_provisions(&state.db, key.clone(), container).await?;
+    }
+    state.emit(None, "stack.changed", json!({"id":key})).await?;
     storage::action_write_audit(&state.db, key, input, p).await?;
     Ok(Json(result))
 }
@@ -185,6 +240,9 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
     let row = storage::provision_read_stack_provisions(lookup, &state.db).await?;
     if row.4 == "complete" {
         return Ok(());
+    }
+    if row.4 == "retiring" {
+        anyhow::bail!("Installation is being retired");
     }
     let actor = row.1.clone();
     let admin = storage::provision_read_users(actor, &state.db).await?;
@@ -211,7 +269,13 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
     let result=async {
   let templates=controller(state,"/templates",None).await?;let template=templates["items"].as_array().into_iter().flatten().find(|t|t["kind"]==row.0).cloned().ok_or_else(unavailable)?;
   let current=controller(state,"",None).await?["items"].as_array().into_iter().flatten().find(|s|s["id"]==key).cloned();
-  let installed=if let Some(current)=current{if (current["phase"]!="active" && !(row.7=="adopted" && current["phase"]=="connecting"))||current["drift"]==true{return Err(ApiError::conflict("Interrupted installation requires controller reconciliation"));}current}else{
+   let installed=if let Some(current)=current{
+    if row.7=="installed" && matches!(current["phase"].as_str(),Some("creating"|"recreating")) {
+        controller(state,&format!("/{key}/action"),Some(json!({"action":"reconcile"}))).await?
+    } else {
+        if (current["phase"]!="active" && !(row.7=="adopted" && current["phase"]=="connecting"))||current["drift"]==true{return Err(ApiError::conflict("Interrupted installation requires controller reconciliation"));}current
+    }
+   }else{
    if row.4!="queued"{return Err(ApiError::conflict("Interrupted Docker submission requires review before retry"));}
    progress(state,&key,"installing",None,None).await?;
    if row.7=="adopted" {
@@ -223,7 +287,7 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
   let container=installed["container_id"].as_str().ok_or_else(unavailable)?.to_owned();progress(state,&key,"connecting",Some(container.clone()),None).await?;
   if row.7=="adopted" {let service_id=row.6.clone().ok_or_else(unavailable)?;let container=container.clone();let kind=row.0.clone();storage::provision_write(service_id, container, kind, &state.db).await?;}
   let mut last=None;let mut registered=None;
-  let service_name=if row.7=="adopted" {let integration=row.6.clone().ok_or_else(unavailable)?;storage::provision_read_manager_services(integration, &state.db).await?}else{format!("Managed {}",row.0)};
+   let service_name=if let Some(integration)=row.6.clone() {storage::provision_read_manager_services(integration, &state.db).await?}else{format!("Managed {}",row.0)};
   for _ in 0..60 {
    let registration=if matches!(row.0.as_str(),"radarr"|"sonarr"|"lidarr") {super::register_with_actor(state.clone(),super::Register{name:service_name.clone(),kind:row.0.clone(),container_id:container.clone(),port:template["port"].as_u64().ok_or_else(unavailable)? as u16,api_key:secret.clone()},row.1.clone()).await}
    else {support::provision(state.clone(),row.1.clone(),json!({"name":service_name,"kind":row.0,"container_id":container,"port":template["port"],"credentials":{"username":credentials.username,"secret":secret},"native_url":row.8})).await};
@@ -429,8 +493,10 @@ async fn retry(
         .into_iter()
         .flatten()
         .find(|s| s["id"] == key)
-        && (!matches!(service["phase"].as_str(), Some("active" | "connecting"))
-            || service["drift"] == true)
+        && (!matches!(
+            service["phase"].as_str(),
+            Some("active" | "connecting" | "creating" | "recreating")
+        ) || service["drift"] == true)
     {
         return Err(ApiError::conflict(
             "Reconcile the controller operation before retrying API connection",
