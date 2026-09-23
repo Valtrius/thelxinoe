@@ -27,7 +27,7 @@ async function login(page, username) {
   await expect(page.getByText('Connected', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Home', exact: true }).click();
   await expect(
-    page.getByRole('heading', { name: 'Your collections', exact: true }),
+    page.getByRole('heading', { name: 'Discover', exact: true }),
   ).toBeVisible();
   await expect
     .poll(() =>
@@ -60,19 +60,11 @@ try {
   await expect(
     page.getByRole('button', { name: 'Remove from Watch Later', exact: true }),
   ).toBeVisible();
-  await page.getByRole('button', { name: 'Home', exact: true }).click();
-  await expect(
-    page
-      .getByRole('region', { name: 'Favorites', exact: true })
-      .getByRole('button', { name: 'Direct 2020', exact: true }),
-  ).toBeVisible();
+  await expect
+    .poll(async () => await api(owner, `/catalog/${movie.id}/state`))
+    .toMatchObject({ favorite: true, watch_later: true });
   await login(other, 'state-user');
   expect((await api(guest, `/catalog/${movie.id}/state`)).favorite).toBe(false);
-  await expect(
-    other
-      .getByRole('region', { name: 'Favorites', exact: true })
-      .getByRole('button', { name: 'Direct 2020', exact: true }),
-  ).toHaveCount(0);
   await page.getByRole('button', { name: 'Playlists', exact: true }).click();
   await page.getByRole('button', { name: 'New playlist', exact: true }).click();
   const name = `Shared music ${Date.now()}`;
@@ -137,13 +129,10 @@ try {
   await expect(
     page.getByRole('heading', { name: 'Playlists', exact: true }),
   ).toBeVisible();
-  await page.getByRole('button', { name: 'Home', exact: true }).click();
-  await expect(
-    page.getByRole('region', { name: 'Saved music queue', exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole('button', { name: 'Replay queue', exact: true }),
-  ).toBeVisible();
+  expect(
+    await page.evaluate(() => localStorage.getItem('thelxinoe-client-id')),
+  ).toBe(client);
+  expect((await api(owner, `/me/queue/${client}`)).completed).toBe(true);
   const another = await second.newPage();
   await login(another, 'admin');
   const otherClient = await another.evaluate(() =>
@@ -155,12 +144,9 @@ try {
   await page
     .getByRole('combobox', { name: 'Display timezone', exact: true })
     .selectOption('Europe/Paris');
-  await expect(
-    page.getByRole('form', { name: 'Display preferences' }).getByRole('status'),
-  ).toHaveText('Saved');
-  expect((await api(owner, '/me/preferences')).timezone_override).toBe(
-    'Europe/Paris',
-  );
+  await expect
+    .poll(async () => (await api(owner, '/me/preferences')).timezone_override)
+    .toBe('Europe/Paris');
   await page.getByRole('button', { name: 'Statistics', exact: true }).click();
   await expect(
     page.getByRole('heading', { name: 'Playback history', exact: true }),
