@@ -25,6 +25,7 @@
   import seerrIcon from './services/icons/seerr.png';
   import QualityProfileEditor from './services/QualityProfileEditor.svelte';
   import IndexerOnboarding from './services/IndexerOnboarding.svelte';
+  import ConnectionTestButton from './ui/ConnectionTestButton.svelte';
   import ServiceConnections, {
     type ServiceConnection,
   } from './ServiceConnections.svelte';
@@ -1642,7 +1643,7 @@
                       >Monitor and search requests</Switch
                     >
                   </AutoSaveForm>{/key}
-                {#if ['radarr', 'sonarr'].includes(definition.kind)}<div
+                {#if ['radarr', 'sonarr', 'lidarr'].includes(definition.kind)}<div
                     class="mt-4"
                   >
                     {#key connected.id}<QualityProfileEditor
@@ -1701,17 +1702,22 @@
                     >
                   </div>
                   <div class="row-actions flex flex-wrap items-center gap-2">
-                    <Button
+                    <ConnectionTestButton
                       size="sm"
-                      variant="secondary"
+                      label="Test"
                       disabled={busy}
-                      onclick={() =>
-                        void work(() =>
-                          supportCommand('prowlarr', 'test', {
-                            item_id: indexer.id,
-                          }),
-                        )}>Test</Button
-                    >
+                      test={async () => {
+                        feedback.prowlarr = '';
+                        await supportCommand('prowlarr', 'test', {
+                          item_id: indexer.id,
+                        });
+                      }}
+                      onError={(error) =>
+                        (feedback.prowlarr =
+                          error instanceof Error
+                            ? error.message
+                            : String(error))}
+                    />
                     <Switch
                       size="sm"
                       checked={indexer.enabled}

@@ -1,9 +1,11 @@
 <script lang="ts">
-  import { Search, Plus, X, ArrowLeft } from '@lucide/svelte';
+  import { Search, Plus, ArrowLeft } from '@lucide/svelte';
   import { api } from '../api';
   import Button from '../ui/Button.svelte';
+  import ConnectionTestButton from '../ui/ConnectionTestButton.svelte';
   import FormField from '../ui/FormField.svelte';
   import Notice from '../ui/Notice.svelte';
+  import Modal from '../ui/Modal.svelte';
   import Switch from '../ui/Switch.svelte';
   import { formControlClass } from '../ui/styles';
   let { serviceId, added } = $props<{
@@ -15,6 +17,7 @@
     label: string;
     type: string;
     value?: unknown;
+    isFloat?: boolean;
     helpText?: string;
     advanced?: boolean;
     hidden?: string;
@@ -34,7 +37,7 @@
     loading = $state(false),
     busy = $state(false),
     error = $state(''),
-    message = $state(''),
+    tested = $state(false),
     query = $state(''),
     protocol = $state('all'),
     definitions = $state<Definition[]>([]),
@@ -55,6 +58,11 @@
   );
   const clean = (text?: string) => (text ?? '').replace(/<[^>]*>/g, '');
   async function start() {
+    selected = null;
+    values = {};
+    query = '';
+    protocol = 'all';
+    tested = false;
     expanded = true;
     loading = true;
     error = '';
@@ -76,20 +84,12 @@
     selected = definition;
     name = definition.name;
     values = Object.fromEntries(
-      definition.fields.map((f) => [
-        f.name,
-        f.value ??
-          (f.type === 'checkbox'
-            ? false
-            : f.type === 'number'
-              ? 0
-              : f.type === 'tagSelect'
-                ? []
-                : ''),
-      ]),
+      // Missing values are optional in Prowlarr. In particular, zero is an
+      // invalid query/grab limit and changes the meaning of torrent defaults.
+      definition.fields.map((f) => [f.name, f.value]),
     );
     error = '';
-    message = '';
+    tested = false;
     advanced = false;
     captchaImages = {};
     for (const field of definition.fields.filter(
@@ -133,17 +133,18 @@
     }
   }
   async function submit(test: boolean) {
-    if (!selected) return;
+    if (!selected) return false;
+    const submitted = JSON.stringify(draft());
     busy = true;
     error = '';
-    message = '';
+    tested = false;
     try {
       await api(
         `/admin/support/${serviceId}/indexers${test ? '/test' : ''}`,
         'POST',
-        draft(),
+        JSON.parse(submitted),
       );
-      if (test) message = 'Connection successful.';
+      if (test) return submitted === JSON.stringify(draft());
       else {
         await added();
         selected = null;
@@ -151,7 +152,8 @@
         expanded = false;
       }
     } catch (caught) {
-      error = String(caught);
+      error = caught instanceof Error ? caught.message : String(caught);
+      return false;
     } finally {
       busy = false;
     }
@@ -176,33 +178,19 @@
   }
 </script>
 
-{#if !expanded}<Button
-    variant="secondary"
-    size="sm"
-    class="mt-4"
-    onclick={() => void start()}><Plus size={14} /> Add indexer</Button
+<Button variant="secondary" size="sm" class="mt-4" onclick={() => void start()}
+  ><Plus size={14} /> Add indexer</Button
+>
+{#if expanded}<Modal
+    title={selected ? `Set up ${selected.name}` : 'Add indexer'}
+    {busy}
+    onClose={() => {
+      expanded = false;
+      selected = null;
+      values = {};
+    }}
   >
-{:else}<section class="mt-4 border border-line p-4" aria-label="Add indexer">
-    <div class="mb-4 flex items-center justify-between">
-      <h4 class="text-sm font-semibold">
-        {selected ? `Set up ${selected.name}` : 'Add indexer'}
-      </h4>
-      <Button
-        variant="ghost"
-        size="sm"
-        disabled={busy}
-        aria-label="Close indexer setup"
-        onclick={() => {
-          expanded = false;
-          selected = null;
-          values = {};
-        }}><X size={15} /></Button
-      >
-    </div>
     {#if error}<Notice variant="error" role="alert">{error}</Notice>{/if}
-    {#if message}<p role="status" class="mb-3 text-xs text-accent">
-        {message}
-      </p>{/if}
     {#if loading}<p role="status" class="text-xs text-muted">
         Loading supported indexers…
       </p>{:else if selected}
@@ -214,10 +202,14 @@
         onclick={() => {
           selected = null;
           values = {};
+          error = '';
+          tested = false;
         }}><ArrowLeft size={14} /> Choose another indexer</Button
       >
       <form
         class="grid gap-3 [&_label]:m-0"
+        oninput={() => (tested = false)}
+        onchange={() => (tested = false)}
         onsubmit={(event) => {
           event.preventDefault();
           void submit(false);
@@ -292,6 +284,9 @@
                   : field.type === 'number'
                     ? 'number'
                     : 'text'}
+                step={field.type === 'number' && field.isFloat
+                  ? 'any'
+                  : undefined}
                 value={Array.isArray(values[field.name])
                   ? (values[field.name] as unknown[]).join(', ')
                   : String(values[field.name] ?? '')}
@@ -332,14 +327,14 @@
             size="sm">Advanced settings</Switch
           >{/if}
         <div class="mt-2 flex flex-wrap gap-2">
-          <Button
-            type="button"
-            variant="secondary"
-            size="form"
+          <ConnectionTestButton
+            bind:succeeded={tested}
             disabled={busy || !profile}
-            onclick={() => void submit(true)}
-            >{busy ? 'Checking…' : 'Test connection'}</Button
-          ><Button
+            test={() => submit(true)}
+            onError={(caught) =>
+              (error =
+                caught instanceof Error ? caught.message : String(caught))}
+          /><Button
             type="submit"
             size="form"
             disabled={busy || !profile || !name.trim()}>Add indexer</Button
@@ -347,8 +342,10 @@
         </div>
       </form>
     {:else}
-      <div class="mb-4 flex gap-2">
-        <label class="relative min-w-0 flex-1"
+      <div
+        class="mb-4 grid grid-cols-[minmax(0,1fr)_8rem] gap-2 compact:grid-cols-1"
+      >
+        <label class="relative block min-w-0"
           ><span class="sr-only">Find an indexer</span><Search
             size={15}
             class="absolute top-3 left-3 text-muted"
@@ -358,7 +355,7 @@
             bind:value={query}
           /></label
         ><select
-          class={`${formControlClass} w-30`}
+          class={formControlClass}
           aria-label="Indexer protocol"
           bind:value={protocol}
           ><option value="all">All types</option><option value="usenet"
@@ -385,4 +382,4 @@
           No indexers match your search.
         </p>{/if}
     {/if}
-  </section>{/if}
+  </Modal>{/if}

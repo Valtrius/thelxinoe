@@ -103,8 +103,10 @@ fn build(
 }
 
 async fn template(c: &Connection<'_>) -> Result<Value> {
-    if !matches!(c.kind.as_str(), "radarr" | "sonarr") {
-        return Err(ApiError::bad("Custom profiles require Radarr or Sonarr"));
+    if !matches!(c.kind.as_str(), "radarr" | "sonarr" | "lidarr") {
+        return Err(ApiError::bad(
+            "Custom profiles require Radarr, Sonarr or Lidarr",
+        ));
     }
     let schema = c.get("qualityprofile/schema").await?;
     // Servarr returns one profile resource, not a list of profiles.
