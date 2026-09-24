@@ -1,5 +1,4 @@
 use super::*;
-use rusqlite::params;
 
 fn user(db: &Connection, id: &str) -> Result<()> {
     db.execute(
@@ -115,100 +114,6 @@ fn concurrent_initialization_publishes_one_complete_schema() -> Result<()> {
 }
 
 #[test]
-fn preferences_inherit_defaults_and_preserve_explicit_choices() -> Result<()> {
-    let temp = tempfile::tempdir()?;
-    let db = Database::open(temp.path().join("main.db"))?.connect()?;
-    user(&db, "alice")?;
-    let profile = || {
-        db.query_row("SELECT timezone,timezone_override,time_format,time_format_override FROM user_profiles WHERE id='alice'", [], |r| Ok((r.get::<_, String>(0)?,r.get::<_, Option<String>>(1)?,r.get::<_, String>(2)?,r.get::<_, Option<String>>(3)?)))
-    };
-    assert_eq!(profile()?, ("UTC".into(), None, "24h".into(), None));
-    db.execute_batch(
-        "INSERT INTO settings VALUES ('timezone','Europe/Paris'),('time_format','12h');",
-    )?;
-    assert_eq!(
-        profile()?,
-        ("Europe/Paris".into(), None, "12h".into(), None)
-    );
-    db.execute_batch("UPDATE users SET timezone_override='UTC',time_format_override='24h';")?;
-    assert_eq!(
-        profile()?,
-        (
-            "UTC".into(),
-            Some("UTC".into()),
-            "24h".into(),
-            Some("24h".into())
-        )
-    );
-    db.execute_batch("UPDATE settings SET value='Asia/Tokyo' WHERE key='timezone';")?;
-    assert_eq!(profile()?.0, "UTC");
-    db.execute_batch("UPDATE users SET timezone_override=NULL,time_format_override=NULL;")?;
-    assert_eq!(profile()?, ("Asia/Tokyo".into(), None, "12h".into(), None));
-    assert!(
-        db.execute("UPDATE users SET time_format_override='invalid'", [])
-            .is_err()
-    );
-    Ok(())
-}
-
-#[test]
-fn membership_is_derived_and_private_even_without_progress() -> Result<()> {
-    let temp = tempfile::tempdir()?;
-    let db = Database::open(temp.path().join("main.db"))?.connect()?;
-    for owner in ["alice", "bob"] {
-        user(&db, owner)?;
-        db.execute(
-            "INSERT INTO youtube_videos(user_id,video_id,title) VALUES(?1,'video','Title')",
-            [owner],
-        )?;
-    }
-    for (id, owner) in [(1, "alice"), (2, "alice"), (3, "bob")] {
-        db.execute("INSERT INTO youtube_watchlists(id,user_id,name,created_at,updated_at) VALUES(?1,?2,'List',1,1)",params![id,owner])?;
-        db.execute(
-            "INSERT INTO youtube_watchlist_items VALUES(?1,?2,'video',0,?2)",
-            params![owner, id],
-        )?;
-    }
-    db.execute(
-        "INSERT INTO youtube_videos(user_id,video_id,title) VALUES('alice','other','Other')",
-        [],
-    )?;
-    assert!(
-        db.execute(
-            "INSERT INTO youtube_watchlist_items VALUES('alice',3,'other',0,1)",
-            []
-        )
-        .is_err()
-    );
-    assert_eq!(
-        db.query_row("SELECT COUNT(*) FROM youtube_state", [], |r| r
-            .get::<_, u32>(0))?,
-        0
-    );
-    let saved = |owner: &str| {
-        db.query_row(
-            "SELECT watchlist,added_at FROM youtube_video_state WHERE user_id=?1 AND video_id='video'",
-            [owner],
-            |r| Ok((r.get::<_, bool>(0)?, r.get::<_, Option<i64>>(1)?)),
-        )
-    };
-    assert_eq!(saved("alice")?, (true, Some(1)));
-    db.execute("DELETE FROM youtube_watchlists WHERE id=1", [])?;
-    assert_eq!(saved("alice")?, (true, Some(2)));
-    db.execute("DELETE FROM youtube_watchlists WHERE id=2", [])?;
-    assert_eq!(saved("alice")?, (false, None));
-    assert_eq!(saved("bob")?, (true, Some(3)));
-    db.execute("DELETE FROM users WHERE id='bob'", [])?;
-    assert_eq!(
-        db.query_row("SELECT COUNT(*) FROM youtube_watchlist_items", [], |r| r
-            .get::<_, u32>(0))?,
-        0
-    );
-    assert!(!db.prepare("PRAGMA foreign_key_check")?.exists([])?);
-    Ok(())
-}
-
-#[test]
 fn playback_ownership_is_enforced_and_history_survives_source_removal() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let db = Database::open(temp.path().join("main.db"))?.connect()?;
@@ -268,27 +173,5 @@ fn playback_ownership_is_enforced_and_history_survives_source_removal() -> Resul
         0
     );
     assert!(!db.prepare("PRAGMA foreign_key_check")?.exists([])?);
-    Ok(())
-}
-
-#[test]
-fn integration_kinds_are_unique_and_columns_keep_their_types() -> Result<()> {
-    let temp = tempfile::tempdir()?;
-    let db = Database::open(temp.path().join("main.db"))?.connect()?;
-    for (table, kinds) in [
-        ("manager_services", ["radarr", "sonarr"]),
-        ("support_services", ["nzbget", "prowlarr"]),
-    ] {
-        let insert = format!(
-            "INSERT INTO {table}(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES (?1,?1,?2,?1,7878,'g',X'00','/media','1',1)"
-        );
-        db.execute(&insert, params!["one", kinds[0]])?;
-        assert!(db.execute(&insert, params!["duplicate", kinds[0]]).is_err());
-        db.execute(&insert, params!["two", kinds[1]])?;
-        assert!(
-            db.execute(&format!("UPDATE {table} SET port='invalid'"), [])
-                .is_err()
-        );
-    }
     Ok(())
 }

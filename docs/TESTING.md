@@ -2,6 +2,8 @@
 
 Run from the repository root after `npm ci`. Install Rust 1.96+, Node 24+, FFmpeg/FFprobe, Docker (Linux containers) and Playwright Chromium (`npx playwright install chromium`).
 
+Follow the [testing rules in AGENTS.md](../AGENTS.md#testing). Prefer complete application workflows; extend an existing scenario when possible.
+
 ```sh
 npm run validate
 npm run ci
@@ -10,6 +12,15 @@ npm run test:ui:player
 ```
 
 [Scripts](../package.json) and [CI runner](../scripts/ci.mjs) define the checks. On Windows, `ci:server` runs Linux checks via [Dockerfile.verify](../scripts/Dockerfile.verify); `ci:desktop` runs native checks. `ci:containers` deletes its disposable `thelxinoe-test` and `thelxinoe-playback` containers/volumes before and after running. UI suites intercept API requests and use no server account; player tests need FFmpeg.
+
+## Test artifacts
+
+Playwright saves an HTML report under `playwright-report/{e2e,layout,player}`
+and machine-readable results and traces under `test-results/{e2e,layout,player}`,
+including successful runs. Open a report with, for example,
+`npx playwright show-report playwright-report/layout`. CI uploads these artifacts
+even when a test fails. The standalone Docker scripts save their fixture
+results and screenshots under `.local/` as specified in each script.
 
 ## Browser fixtures
 
@@ -80,3 +91,24 @@ node scripts/test-pwa-remote.mjs
 ```
 
 For actual Windows update checks, build both fixture versions with that separate identity and matching test signing keys. Supply `THELXINOE_RELEASE_PUBLIC_KEY` at build time; use `THELXINOE_RELEASE_CA_PEM` only for a private publisher CA. Enable updater artifacts/public key via a Tauri override. Put the candidate at `.local/releases/channel/setup.exe` with its `.sig`, and the Tauri public key at `.local/releases/tauri.key.pub`. Rerun `prepare-release-test.mjs`; serve only the channel at `https://localhost:29443`. Install the base in a separate directory/profile, launch with debug port 9224, then run [test-native-update.mjs](../scripts/test-native-update.mjs) and [test-native-compatibility.mjs](../scripts/test-native-compatibility.mjs). Rebuild production in a fresh shell without test key/CA overrides.
+
+## Why isolated coverage remains
+
+These are existing exceptions, not permission to add tests after implementation.
+Before adding an exception, enumerate its failure modes and establish why the
+application workflows cannot reliably exercise them.
+
+| Area                                    | Failure missed by the current application workflows                                                                                                                                                    |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Database, jobs, event writes            | Concurrent readers/writers, queue overload, panic or event-write failure must preserve transaction boundaries and accepted work.                                                                       |
+| Authentication and provider sessions    | Cross-user credentials, forged transports, quota races, and late refresh/authorization replies must not bypass revocation or restore deleted data. Live-provider smoke tests cannot force these races. |
+| Managed services and retention          | Lost upstream replies, ambiguous Docker state, foreign ownership, default quality filtering, changed file generations, and exact deletion eligibility need controlled fault injection.                 |
+| Archives, releases, paths, subprocesses | Malformed packages, traversal, symlinks, corrupt signatures, oversized/truncated output, and child-process escapes are absent from normal fixture inputs.                                              |
+| Playback, catalog, segments, statistics | Conditional client capabilities, replacement/eviction, duplicate music recordings across albums, false intro matches, suspension, and DST boundaries are absent from the ordinary media fixtures.      |
+| Desktop tool selection and updates      | Concurrent saves/downloads, revoked selections, release replacement, rate-limit recovery, leases, and cleanup are not exercised by the native playback smoke tests.                                    |
+| MPV configuration                       | Profiles, negated options, duplicate assignments, unsaved drafts, and imported plugins can corrupt saved configuration; the browser suites do not run the native configuration editor.                 |
+| Frontend transport and defensive inputs | Reconnect cursor ordering, failed discovery retry, malformed provider links/progress, and unsafe service URLs are not supplied by the existing browser fixtures.                                       |
+
+Constant tables, field-copy assertions, fake-DOM geometry, mock call sequences,
+source-layout checks, and happy paths already exercised through the application
+do not justify another test.

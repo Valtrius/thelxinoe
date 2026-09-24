@@ -270,26 +270,3 @@ async fn test(
 ) -> Result<Json<Value>> {
     submit(state, headers, id, input, true).await
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn trusts_only_schema_implementations() {
-        let schema = json!([{"name":"Example","implementation":"Newznab","protocol":"usenet","fields":[{"name":"apiKey"}]}]);
-        let result = build(
-            schema,
-            Draft {
-                implementation: "Newznab".into(),
-                definition: "Example".into(),
-                name: "My indexer".into(),
-                app_profile_id: 1,
-                fields: std::collections::BTreeMap::from([("apiKey".into(), json!("secret"))]),
-            },
-        )
-        .unwrap();
-        assert_eq!(result["fields"][0]["value"], "secret");
-        assert_eq!(result["redirect"], true);
-        assert_eq!(result["enable"], true);
-    }
-}

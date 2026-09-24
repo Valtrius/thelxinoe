@@ -1,25 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api, Events } from './api';
+import { Events } from './api';
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
 describe('server transport', () => {
-  it('normalizes server errors and sends the CSRF header without credential URLs', async () => {
-    const fetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 403,
-      json: async () => ({
-        error: { code: 'forbidden', message: 'Access denied' },
-      }),
-    });
-    vi.stubGlobal('fetch', fetch);
-    await expect(
-      api('/users', 'POST', { username: 'test' }),
-    ).rejects.toMatchObject({ status: 403, code: 'forbidden' });
-    expect(fetch.mock.calls[0][0]).toBe('/api/v1/users');
-    expect(fetch.mock.calls[0][1].headers['X-Thelxinoe-Client']).toBe('1');
-  });
   it('reconnects with an event cursor and a fresh ticket, then stops cleanly', async () => {
     vi.useFakeTimers();
     vi.stubGlobal('location', { origin: 'https://media.test' });

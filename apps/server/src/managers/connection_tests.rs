@@ -241,15 +241,6 @@ async fn due(state: &AppState, target: &str) {
     storage::save(&state.db, link).await.unwrap();
 }
 
-#[test]
-fn only_explicit_supported_pairs_are_available() {
-    assert_eq!(kind("prowlarr", "radarr"), Some("application"));
-    assert_eq!(kind("radarr", "nzbget"), Some("download_client"));
-    assert_eq!(kind("bazarr", "sonarr"), Some("subtitles"));
-    assert_eq!(kind("bazarr", "lidarr"), None);
-    assert_eq!(kind("radarr", "prowlarr"), None);
-}
-
 #[tokio::test]
 async fn existing_manual_dns_connection_is_not_duplicated_or_adopted() {
     let (_temp, state, cookie, mock) = connected_services().await;

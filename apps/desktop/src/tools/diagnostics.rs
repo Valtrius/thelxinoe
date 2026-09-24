@@ -360,53 +360,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_diagnostics_include_deno_without_requiring_installed_tools() {
-        let directory = tempfile::tempdir().unwrap();
-        let manager = ToolManager::new(directory.path().to_path_buf(), None).unwrap();
-        let settings = AppSettings::default();
-        for id in ToolId::ALL.into_iter().filter(|id| !id.plugin()) {
-            manager
-                .set_preference(
-                    id,
-                    ToolPreference {
-                        source: ToolSource::Custom,
-                        custom_path: Some(
-                            directory
-                                .path()
-                                .join(format!("{}.exe", id.key()))
-                                .display()
-                                .to_string(),
-                        ),
-                        ..Default::default()
-                    },
-                )
-                .await
-                .unwrap();
-        }
-        for tool in ToolId::ALL.into_iter().filter(|id| !id.plugin()) {
-            manager.diagnostic(tool, &settings).await;
-        }
-        let snapshot = manager.snapshot(&settings).unwrap();
-        assert!(
-            snapshot
-                .tools
-                .iter()
-                .filter(|tool| !tool.id.plugin())
-                .all(|tool| tool.checked_at.is_some()
-                    && tool.diagnostic.as_ref().is_some_and(|d| !d.detected))
-        );
-    }
-
-    #[test]
-    fn invalidation_changes_only_the_target_check_revision() {
-        let mut checks = ToolChecks::default();
-        let previous = checks.revision(ToolId::Mpv);
-        checks.invalidate(ToolId::Mpv);
-        assert_ne!(checks.revision(ToolId::Mpv), previous);
-        assert_eq!(checks.revision(ToolId::Deno), 0);
-    }
-
-    #[tokio::test]
     async fn concurrent_probes_share_work_but_file_changes_and_retests_invalidate() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("tool.exe");

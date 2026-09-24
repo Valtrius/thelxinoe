@@ -38,6 +38,13 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: npx playwright install --with-deps chromium
       - run: npm run ci:web
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: web-test-evidence
+          path: |
+            playwright-report/
+            test-results/
   containers:
     runs-on: ubuntu-latest
     steps:
@@ -50,6 +57,17 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: npx playwright install --with-deps chromium
       - run: npm run ci:containers
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: container-test-evidence
+          path: |
+            playwright-report/
+            test-results/
+            .local/*-result.json
+            .local/*.png
+            .local/selected-audio.ts
+          include-hidden-files: true
   desktop:
     runs-on: windows-latest
     steps:

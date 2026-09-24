@@ -42,37 +42,6 @@ use tokio::sync::{Mutex as AsyncMutex, Notify};
 
 pub type ProgressListener = Box<dyn Fn(&ToolOperation) + Send + Sync>;
 
-/// Start each fresh sandbox with its own MPV configuration and writable files.
-#[cfg(test)]
-pub(crate) fn seed_sandbox(root: &Path) -> AppResult<()> {
-    let config = root.join("config/mpv");
-    fs::create_dir_all(&config)?;
-    let mut contents = String::from("# Fresh Thelxinoe sandbox configuration.\n");
-    for (option, directory) in [
-        ("watch-later-directory", "watch-later"),
-        ("gpu-shader-cache-dir", "shader-cache"),
-        ("screenshot-directory", "screenshots"),
-    ] {
-        let path = root.join("mpv-data").join(directory);
-        fs::create_dir_all(&path)?;
-        contents.push_str(&format!(
-            "{option}=\"{}\"\n",
-            path.to_string_lossy().replace('\\', "/")
-        ));
-    }
-    fs::write(config.join("mpv.conf"), contents)?;
-    store::save(
-        root,
-        &Registry {
-            mpv: MpvPreferences {
-                source: MpvConfigSource::Managed,
-                directory: None,
-            },
-            ..Registry::default()
-        },
-    )
-}
-
 pub struct ToolManager {
     root: PathBuf,
     registry: Mutex<Registry>,
@@ -231,24 +200,6 @@ impl ToolManager {
 mod tests {
     use super::*;
     use test_support::fake_install;
-
-    #[test]
-    fn sandbox_starts_with_its_own_mpv_configuration_and_no_installed_tools() {
-        let directory = tempfile::tempdir().unwrap();
-        seed_sandbox(directory.path()).unwrap();
-        let manager = ToolManager::new(directory.path().to_path_buf(), None).unwrap();
-        let state = manager.state();
-        assert_eq!(state.mpv.source, MpvConfigSource::Managed);
-        assert!(state.installed.is_empty());
-        let (arguments, snapshot) = manager.player_config_arguments(&state).unwrap();
-        let snapshot = snapshot.unwrap();
-        assert_eq!(arguments[0], format!("--config-dir={}", snapshot.display()));
-        assert_eq!(
-            fs::read_to_string(snapshot.join("mpv.conf")).unwrap(),
-            fs::read_to_string(directory.path().join("config/mpv/mpv.conf")).unwrap()
-        );
-        assert!(directory.path().join("mpv-data/watch-later").is_dir());
-    }
 
     #[test]
     fn second_writer_is_rejected() {

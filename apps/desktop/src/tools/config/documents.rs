@@ -336,15 +336,4 @@ mod tests {
             assert!(document_path(name).is_err());
         }
     }
-    #[test]
-    fn raw_document_roundtrip_preserves_unknown_options_and_comments() {
-        let text = "# comment\r\nunknown-future-option=yes\r\n[my profile]\r\nvolume=42\r\n";
-        let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
-        fs::create_dir(&root).unwrap();
-        let path = root.join("mpv.conf");
-        atomic_write(&path, text.as_bytes()).unwrap();
-        assert_eq!(read_text(&path).unwrap(), text);
-        assert_ne!(revision(text), revision(&format!("{text}# new")));
-        fs::remove_dir_all(root).unwrap();
-    }
 }

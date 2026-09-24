@@ -5,6 +5,7 @@ export default defineConfig({
   testMatch: 'player.spec.ts',
   workers: 1,
   use: {
+    trace: 'on',
     baseURL: 'http://127.0.0.1:18487',
     headless: true,
     viewport: { width: 1280, height: 900 },
@@ -14,5 +15,10 @@ export default defineConfig({
     url: 'http://127.0.0.1:18487',
     reuseExistingServer: false,
   },
-  reporter: 'list',
+  outputDir: 'test-results/player',
+  reporter: [
+    ['list'],
+    ['html', { outputFolder: 'playwright-report/player', open: 'never' }],
+    ['json', { outputFile: 'test-results/player/results.json' }],
+  ],
 });

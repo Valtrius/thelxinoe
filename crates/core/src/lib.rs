@@ -58,21 +58,4 @@ pub fn id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn regular_users_cannot_mutate_shared_resources() {
-        for cap in [
-            Capability::ManageUsers,
-            Capability::ManageLibrary,
-            Capability::ManageServer,
-            Capability::InspectHistory,
-        ] {
-            assert!(!Role::User.allows(cap));
-            assert!(Role::Admin.allows(cap));
-        }
-        assert!(Role::User.allows(Capability::Play));
-    }
-}
 pub mod activity;

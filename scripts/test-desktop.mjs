@@ -30,7 +30,9 @@ try {
     .fill('test-only long passphrase');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await page.getByRole('button', { name: 'Home', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Discover' })).toBeVisible();
+  await expect(
+    page.getByRole('heading', { name: 'Discover', exact: true }),
+  ).toBeVisible();
   await expect(page.getByText('Connected', { exact: true })).toBeVisible();
   const stored = await page.evaluate(() => ({
     cookie: document.cookie,
@@ -45,7 +47,9 @@ try {
   ).toHaveLength(0);
   expect(Object.keys(stored.session)).toHaveLength(0);
   await page.reload();
-  await expect(page.getByRole('heading', { name: 'Discover' })).toBeVisible();
+  await expect(
+    page.getByRole('heading', { name: 'Discover', exact: true }),
+  ).toBeVisible();
   await page
     .getByRole('navigation', { name: 'Main navigation' })
     .getByRole('button', { name: 'Movies', exact: true })
