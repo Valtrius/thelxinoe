@@ -82,32 +82,32 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
     let search_count = searches.clone();
     let stub = Router::new()
         .route(
-            "/api/v3/system/status",
+            "/services/radarr/api/v3/system/status",
             get(|headers: HeaderMap| async move {
                 assert_eq!(headers["x-api-key"], "fixture-manager-secret-key");
-                Json(json!({"appName":"Radarr","version":"6.0"}))
+                Json(json!({"appName":"Radarr","version":"6.0","urlBase":"/services/radarr"}))
             }),
         )
         .route(
-            "/api/v3/rootfolder",
+            "/services/radarr/api/v3/rootfolder",
             get(|| async { Json(json!([{"id":1,"path":"/media/movies"}])) }),
         )
         .route(
-            "/api/v3/moviefile",
+            "/services/radarr/api/v3/moviefile",
             get(|| async {
                 Json(json!([{"id":91,"movieId":17,"path":"/media/movies/fixture.mkv"}]))
             }),
         )
         .route(
-            "/api/v3/qualityprofile",
+            "/services/radarr/api/v3/qualityprofile",
             get(|| async { Json(json!([{"id":1,"name":"HD"}])) }),
         )
         .route(
-            "/api/v3/movie/lookup",
+            "/services/radarr/api/v3/movie/lookup",
             get(|| async { Json(json!([{"title":"Public fixture","tmdbId":603}])) }),
         )
         .route(
-            "/api/v3/movie",
+            "/services/radarr/api/v3/movie",
             get(move || {
                 let m = get_movies.clone();
                 async move { Json(json!(*m.lock().await)) }
@@ -127,7 +127,7 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
             }),
         )
         .route(
-            "/api/v3/command",
+            "/services/radarr/api/v3/command",
             post(move |Json(body): Json<Value>| {
                 let count = search_count.clone();
                 async move {
@@ -154,7 +154,7 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
         .lock()
         .unwrap()
         .insert(format!("containers/{container}"), inspection);
-    let input = json!({"name":"Fixture","kind":"radarr","container_id":container,"port":port,"api_key":"fixture-manager-secret-key"});
+    let input = json!({"name":"Fixture","kind":"radarr","container_id":container,"port":port,"api_key":"fixture-manager-secret-key","url_base":"/services/radarr"});
     assert_eq!(
         call(
             &state,
@@ -179,7 +179,7 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
         &state,
         "/api/v1/admin/managers",
         "POST",
-        json!({"name":"Replacement","kind":"radarr","container_id":replacement,"port":port,"api_key":"fixture-manager-secret-key"}),
+        json!({"name":"Replacement","kind":"radarr","container_id":replacement,"port":port,"api_key":"fixture-manager-secret-key","url_base":"/services/radarr"}),
         &bob,
     )
     .await;
@@ -382,7 +382,7 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
         &state,
         "/api/v1/admin/managers",
         "POST",
-        json!({"name":"Blocked","kind":"radarr","container_id":container,"port":port,"api_key":"fixture-manager-secret-key"}),
+        json!({"name":"Blocked","kind":"radarr","container_id":container,"port":port,"api_key":"fixture-manager-secret-key","url_base":"/services/radarr"}),
         &bob,
     )
     .await;
@@ -402,7 +402,7 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
         &state,
         "/api/v1/admin/managers",
         "POST",
-        json!({"name":"Managed","kind":"radarr","container_id":container,"port":port,"api_key":"fixture-manager-secret-key"}),
+        json!({"name":"Managed","kind":"radarr","container_id":container,"port":port,"api_key":"fixture-manager-secret-key","url_base":"/services/radarr"}),
         &bob,
     )
     .await;

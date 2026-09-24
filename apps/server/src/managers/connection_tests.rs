@@ -71,6 +71,98 @@ async fn removed_target_cleanup_stays_visible_retries_and_removes_only_its_link(
     );
 }
 
+#[tokio::test]
+async fn retired_target_cleanup_preserves_disabled_link_for_reinstall() {
+    let (_temp, state, cookie, mock) = connected_services().await;
+    action(&state, &cookie, "radarr", "connect").await;
+    tick(&state).await.unwrap();
+    assert_eq!(mock.rows.lock().await.len(), 1);
+
+    let key = id();
+    let insert_key = key.clone();
+    state
+        .db
+        .write("test.retire", move |db| {
+            db.execute(
+                "INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,container_id,service_id,created_at,updated_at) VALUES (?1,'radarr','alice',17878,X'01','complete','old','radarr',1,1)",
+                [insert_key],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    state.managers.docker.lock().unwrap().extend([
+        ("stack".into(), json!({"items":[]})),
+        (format!("stack/{key}/action"), json!({"retired":true})),
+    ]);
+
+    let response = call(
+        &state,
+        &format!("/api/v1/admin/stack/{key}/action"),
+        "POST",
+        json!({"action":"retire"}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(response.0, StatusCode::OK, "{}", response.2);
+
+    let pending = storage::load(&state.db, &link_id("prowlarr", "radarr"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!pending.enabled);
+    assert!(pending.cleanup);
+    assert!(pending.retain_missing);
+
+    tick(&state).await.unwrap();
+    assert!(mock.rows.lock().await.is_empty());
+    let retired = storage::load(&state.db, &link_id("prowlarr", "radarr"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(retired.state, "disconnected");
+    assert!(!retired.enabled);
+    assert!(!retired.cleanup);
+    assert!(retired.retain_missing);
+
+    state
+        .db
+        .write("test.reinstall", |db| {
+            db.execute(
+                "UPDATE manager_services SET enabled=1,error=NULL WHERE id='radarr'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    tick(&state).await.unwrap();
+    let restored = storage::load(&state.db, &link_id("prowlarr", "radarr"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!restored.enabled);
+    assert_eq!(restored.state, "disconnected");
+
+    let mut retained = restored;
+    retained.upstream_id = Some(42);
+    retained.applied_hash = Some("old-applied".into());
+    retained.pending_hash = Some("old-pending".into());
+    retained.prepared = true;
+    storage::save(&state.db, retained).await.unwrap();
+    action(&state, &cookie, "radarr", "connect").await;
+    let reconnecting = storage::load(&state.db, &link_id("prowlarr", "radarr"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(reconnecting.enabled);
+    assert!(!reconnecting.retain_missing);
+    assert!(reconnecting.upstream_id.is_none());
+    assert!(reconnecting.applied_hash.is_none());
+    assert!(reconnecting.pending_hash.is_none());
+    assert!(!reconnecting.prepared);
+}
+
 struct Mock {
     rows: Arc<tokio::sync::Mutex<Vec<Value>>>,
     posts: Arc<AtomicUsize>,
@@ -166,7 +258,7 @@ async fn connected_services() -> (tempfile::TempDir, AppState, String, Mock) {
             port
         };
         let container = character.to_string().repeat(64);
-        let inspection = json!({"id":container,"running":true,"mounts":[{"kind":"bind","source":"/media","destination":"/media","writable":true}],"networks":[{"id":"shared","address":"127.0.0.1"}]});
+        let inspection = json!({"id":container,"name":if kind=="prowlarr" {"localhost"} else {kind},"running":true,"mounts":[{"kind":"bind","source":"/media","destination":"/media","writable":true}],"networks":[{"id":"shared","address":"127.0.0.1"}]});
         state
             .managers
             .docker
@@ -199,6 +291,10 @@ async fn connected_services() -> (tempfile::TempDir, AppState, String, Mock) {
             Ok(())
         }).await.unwrap();
     }
+    // Adapter regressions explicitly opt into each link; automatic discovery is
+    // covered against real services in scripts/test-service-connections.mjs.
+    action(&state, &cookie, "radarr", "disconnect").await;
+    action(&state, &cookie, "sonarr", "disconnect").await;
     (
         temp,
         state,
@@ -264,45 +360,6 @@ async fn existing_manual_dns_connection_is_not_duplicated_or_adopted() {
     action(&state, &cookie, "radarr", "disconnect").await;
     tick(&state).await.unwrap();
     assert_eq!(mock.rows.lock().await.len(), 1);
-}
-
-#[tokio::test]
-async fn discovery_is_neutral_and_never_enables_or_writes_connections() {
-    let (_temp, state, cookie, mock) = connected_services().await;
-    running(&state, 'c', false);
-    let response = call(
-        &state,
-        "/api/v1/admin/service-connections",
-        "GET",
-        Value::Null,
-        &cookie,
-    )
-    .await;
-    assert_eq!(response.0, StatusCode::OK);
-    assert_eq!(response.2["items"].as_array().unwrap().len(), 2);
-    assert!(
-        response.2["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|i| i["state"] == "available" && i["enabled"] == false)
-    );
-    tick(&state).await.unwrap();
-    assert_eq!(mock.posts.load(Ordering::SeqCst), 0);
-    assert!(storage::list(&state.db).await.unwrap().is_empty());
-    let unauthorized =
-        thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "test".into())
-            .await
-            .unwrap();
-    let response = call(
-        &state,
-        "/api/v1/admin/service-connections",
-        "POST",
-        json!({"source_id":"prowlarr","target_id":"radarr","action":"connect"}),
-        &format!("thelxinoe_session={unauthorized}"),
-    )
-    .await;
-    assert_eq!(response.0, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

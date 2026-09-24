@@ -273,7 +273,23 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
     response
         .headers_mut()
         .insert("x-frame-options", "DENY".parse().unwrap());
-    response.headers_mut().insert("content-security-policy","default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://image.tmdb.org https://static-cdn.jtvnw.net https://yt3.ggpht.com https://yt3.googleusercontent.com https://kick.com https://*.kick.com https://*.kickcdn.com; media-src 'self' blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'".parse().unwrap());
+    if response
+        .extensions()
+        .get::<crate::managers::access::NativeResponse>()
+        .is_some()
+    {
+        // Native login forms need their same-origin Origin header. no-referrer
+        // makes browsers send Origin: null on form POSTs, which we reject.
+        response
+            .headers_mut()
+            .insert("referrer-policy", "same-origin".parse().unwrap());
+        // Servarr's bootstrap contains inline configuration and native styles.
+        // Its scripts share this origin; only trusted, admin-selected services
+        // are exposed. Service workers must never take control of Thelxinoe.
+        response.headers_mut().insert("content-security-policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; worker-src 'none'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'".parse().unwrap());
+    } else {
+        response.headers_mut().insert("content-security-policy","default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://image.tmdb.org https://static-cdn.jtvnw.net https://yt3.ggpht.com https://yt3.googleusercontent.com https://kick.com https://*.kick.com https://*.kickcdn.com; media-src 'self' blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'".parse().unwrap());
+    }
     if context.secure {
         response.headers_mut().insert(
             "strict-transport-security",

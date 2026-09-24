@@ -8,11 +8,12 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     read_only: true
     cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
     labels: { app.thelxinoe.component: controller }
   server:
     image: thelxinoe-service-server:local
     environment:
-      THELXINOE_PUBLIC_URL: https://localhost:${THELXINOE_CONNECTIONS_PORT}
+      THELXINOE_PUBLIC_URL: ${THELXINOE_CONNECTIONS_URL:-https://localhost:${THELXINOE_CONNECTIONS_PORT}}
       THELXINOE_TRUSTED_PROXIES: 172.31.244.0/24
     volumes:
       - ${THELXINOE_CONNECTIONS_ROOT:?Run scripts/test-service-connections.mjs}/server:/var/lib/thelxinoe
@@ -25,7 +26,7 @@ services:
     labels: { app.thelxinoe.component: server }
   proxy:
     image: caddy:2
-    ports: ['127.0.0.1:${THELXINOE_CONNECTIONS_PORT}:9443']
+    ports: ['127.0.0.1:${THELXINOE_CONNECTIONS_PORT}:${THELXINOE_CONNECTIONS_PROXY_PORT:-9443}']
     volumes: ['./tests/Caddyfile:/etc/caddy/Caddyfile:ro']
     networks: [test]
     depends_on:

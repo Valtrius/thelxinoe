@@ -73,6 +73,63 @@ async fn open_youtube_linking(app: tauri::AppHandle) -> Result<(), String> {
 fn credential(app: &tauri::AppHandle) -> Result<keyring::Entry, String> {
     keyring::Entry::new(&app.config().identifier, "server-session").map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+async fn open_service(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if uuid::Uuid::parse_str(&id).is_err() {
+        return Err("Invalid service".into());
+    }
+    let response = backend_request(
+        app.clone(),
+        format!("/admin/managers/{id}/access-ticket"),
+        "POST".into(),
+        None,
+    )
+    .await?;
+    if response["status"] != 200 {
+        return Err(response["body"]["error"]["message"]
+            .as_str()
+            .unwrap_or("Service access is unavailable")
+            .to_owned());
+    }
+    let path = response["body"]["path"]
+        .as_str()
+        .ok_or("Invalid service link")?;
+    let ticket = response["body"]["ticket"]
+        .as_str()
+        .ok_or("Invalid service link")?;
+    if path != format!("/service-access/{id}")
+        || ticket.is_empty()
+        || ticket.len() > 256
+        || !ticket
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err("Invalid service link".into());
+    }
+    let configured = server_url(app.clone())?;
+    let origin = response["body"]["public_origin"]
+        .as_str()
+        .unwrap_or(&configured);
+    let mut url = url::Url::parse(origin).map_err(|_| "Invalid server address")?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err("Invalid server public address".into());
+    }
+    url.set_path(path);
+    // The fragment is consumed by the browser bootstrap, never sent in the URL
+    // to either server. The device credential stays in the OS keyring.
+    url.set_fragment(Some(ticket));
+    app.opener()
+        .open_url(url.as_str(), None::<&str>)
+        .map_err(|_| "Could not open your browser".into())
+}
 fn config_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -216,6 +273,7 @@ fn main() {
             backend_request,
             open_provider_url,
             open_youtube_linking,
+            open_service,
             open_twitch_activation,
             updates::desktop_update_check,
             updates::desktop_update_install,

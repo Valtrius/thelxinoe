@@ -20,7 +20,10 @@ struct Running {
 }
 enum Input<'a> {
     Local(&'a Source),
-    Remote(&'a RemoteSource),
+    Remote {
+        source: &'a RemoteSource,
+        position: f64,
+    },
 }
 pub struct Pipelines {
     root: PathBuf,
@@ -74,17 +77,20 @@ impl Pipelines {
         if !start.is_finite() || start < 0.0 {
             bail!("Invalid stream position");
         }
-        let start = if mode == "remux" && start > 0.0 {
+        let timeline_start = if mode == "remux" && start > 0.0 {
             remote_keyframe_start(source, start).await?
         } else {
             start
         };
         self.start_input(
             id,
-            Input::Remote(source),
+            Input::Remote {
+                source,
+                position: start,
+            },
             options,
             mode,
-            if source.live { 0.0 } else { start },
+            if source.live { 0.0 } else { timeline_start },
         )
         .await
     }
@@ -118,14 +124,17 @@ impl Pipelines {
         let directory = self.root.join(&revision);
         tokio::fs::create_dir(&directory).await?;
         // Publish online streams sooner, retaining the two-minute live window.
-        let online = matches!(input, Input::Remote(_));
+        let online = matches!(input, Input::Remote { .. });
         let segment_seconds = if online { "2" } else { "6" };
         let mut command = Command::new("ffmpeg");
-        if let Input::Remote(source) = &input {
+        if let Input::Remote { source, position } = &input {
             // FFREPORT may otherwise write signed upstream addresses to disk.
             command.env_remove("FFREPORT");
             command.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y"]);
-            for address in std::iter::once(&source.video).chain(source.audio.iter()) {
+            for (index, address) in std::iter::once(&source.video)
+                .chain(source.audio.iter())
+                .enumerate()
+            {
                 command.args([
                     "-protocol_whitelist",
                     "https,tls,tcp,crypto",
@@ -133,13 +142,23 @@ impl Pipelines {
                     "15000000",
                 ]);
                 if !source.live {
+                    // Repeat the probe's original video seek. Seeking to its returned
+                    // keyframe PTS can select the previous GOP in MP4 inputs. Keep
+                    // both tracks relative to that keyframe, including separate audio.
+                    let seek = if index == 0 {
+                        *position
+                    } else {
+                        timeline_start
+                    };
                     command.args([
                         "-readrate",
                         "1",
                         "-readrate_initial_burst",
                         "30",
                         "-ss",
-                        &timeline_start.to_string(),
+                        &seek.to_string(),
+                        "-itsoffset",
+                        &(seek - timeline_start).to_string(),
                     ]);
                 }
                 command.args(["-i", address]);

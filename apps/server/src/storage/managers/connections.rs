@@ -40,6 +40,27 @@ pub(super) async fn save(db: &Database, link: Link) -> anyhow::Result<()> {
         Ok(())
     }).await
 }
+pub(super) async fn discover(db: &Database, links: Vec<Link>) -> anyhow::Result<()> {
+    if links.is_empty() {
+        return Ok(());
+    }
+    db.write("managers.connections.discover", move |db| {
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        for link in links {
+            // A saved disconnect must win over discovery, including concurrent requests.
+            tx.execute(
+                "INSERT INTO settings(key,value) VALUES (?1,?2) ON CONFLICT(key) DO NOTHING",
+                params![
+                    format!("{PREFIX}{}", link.id),
+                    serde_json::to_string(&link)?
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    })
+    .await
+}
 pub(super) async fn remove(db: &Database, key: String) -> anyhow::Result<()> {
     db.write("managers.connections.remove", move |db| {
         db.execute(

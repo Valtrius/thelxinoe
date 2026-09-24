@@ -15,7 +15,11 @@ export default defineConfig({
   },
   server: {
     strictPort: true,
-    proxy: { '/api': { target: 'http://127.0.0.1:8484', ws: true } },
+    proxy: {
+      '/api': { target: 'http://127.0.0.1:8484', ws: true },
+      '/services': { target: 'http://127.0.0.1:8484', ws: true },
+      '/service-access': { target: 'http://127.0.0.1:8484', ws: true },
+    },
   },
   test: { include: ['src/**/*.test.ts'] },
 });

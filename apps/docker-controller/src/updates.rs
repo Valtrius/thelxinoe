@@ -280,7 +280,20 @@ pub(super) async fn copy_state(
     label: &str,
 ) -> Result<()> {
     let name = format!("thelxinoe-state-{}-{label}", &operation[..8]);
-    let spec = json!({"Image":current_image().await?,"Cmd":[if restore {"snapshot-restore"} else {"snapshot-copy"}],"Healthcheck":{"Test":["NONE"]},"Labels":{"app.thelxinoe.update":operation,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":"none","ReadonlyRootfs":true,"CapDrop":["ALL"],"CapAdd":["CHOWN","FOWNER","DAC_OVERRIDE"],"SecurityOpt":["no-new-privileges:true"],"Memory":536870912,"NanoCpus":1000000000u64,"PidsLimit":32,"Mounts":[{"Type":"bind","Source":source,"Target":"/source","ReadOnly":true},{"Type":"bind","Source":destination,"Target":"/destination"}]}});
+    let command = if label == "takeover" {
+        let service = load(operation)?;
+        vec!["adoption-copy".to_owned(), service.kind]
+    } else {
+        vec![
+            if restore {
+                "snapshot-restore"
+            } else {
+                "snapshot-copy"
+            }
+            .to_owned(),
+        ]
+    };
+    let spec = json!({"Image":current_image().await?,"Cmd":command,"Healthcheck":{"Test":["NONE"]},"Labels":{"app.thelxinoe.update":operation,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":"none","ReadonlyRootfs":true,"CapDrop":["ALL"],"CapAdd":["CHOWN","FOWNER","DAC_OVERRIDE"],"SecurityOpt":["no-new-privileges:true"],"Memory":536870912,"NanoCpus":1000000000u64,"PidsLimit":32,"Mounts":[{"Type":"bind","Source":source,"Target":"/source","ReadOnly":true},{"Type":"bind","Source":destination,"Target":"/destination"}]}});
     let value = request(
         Method::POST,
         &format!("/containers/create?name={name}"),
@@ -387,13 +400,14 @@ async fn check(d: &Deployment, u: &mut Update) -> Result<()> {
     write(u)
 }
 async fn candidate(d: &Deployment, u: &mut Update, config: &str) -> Result<()> {
+    let identity = Identity::service(&u.old.kind, &u.old.spec)?;
     let data = path(&u.id).join("scratch-data");
     for sub in ["movies", "tv", "music", "downloads"] {
         persisted(std::fs::create_dir_all(data.join(sub)).map_err(Into::into))?;
     }
-    let mut spec = json!({"Image":u.candidate,"Env":["PUID=10001","PGID=10001","TZ=UTC"],"Labels":{"app.thelxinoe.update":u.id,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":"none","CapDrop":["ALL"],"CapAdd":["CHOWN","DAC_OVERRIDE","FOWNER","SETUID","SETGID","KILL"],"SecurityOpt":["no-new-privileges:true"],"Memory":2147483648u64,"NanoCpus":2000000000u64,"PidsLimit":256,"Mounts":[{"Type":"bind","Source":config,"Target":"/config"},{"Type":"bind","Source":host_path(d,u,"scratch-data"),"Target":"/media"}]}});
+    let mut spec = json!({"Image":u.candidate,"Env":[format!("PUID={}",identity.uid),format!("PGID={}",identity.gid),"TZ=UTC".to_owned()],"Labels":{"app.thelxinoe.update":u.id,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":"none","CapDrop":["ALL"],"CapAdd":["CHOWN","DAC_OVERRIDE","FOWNER","SETUID","SETGID","KILL"],"SecurityOpt":["no-new-privileges:true"],"Memory":2147483648u64,"NanoCpus":2000000000u64,"PidsLimit":256,"Mounts":[{"Type":"bind","Source":config,"Target":"/config"},{"Type":"bind","Source":host_path(d,u,"scratch-data"),"Target":"/media"}]}});
     if u.old.kind == "seerr" {
-        spec["User"] = json!("10001:10001");
+        spec["User"] = json!(identity.user());
         spec["Env"] = json!(["CONFIG_DIRECTORY=/config", "TZ=UTC"]);
     }
     // Never inherit host ports, sockets, extra mounts, production networks or commands.
@@ -424,7 +438,8 @@ async fn contract(
     container: &str,
     isolated: bool,
 ) -> Result<()> {
-    let checker = json!({"Image":current_image().await?,"User":"10001:10001","Cmd":[if isolated {"adapter-contract"} else {"adapter-health"},u.old.kind],"Healthcheck":{"Test":["NONE"]},"Labels":{"app.thelxinoe.update":u.id,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":format!("container:{container}"),"ReadonlyRootfs":true,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],"Memory":268435456,"NanoCpus":1000000000u64,"PidsLimit":32,"Mounts":[{"Type":"bind","Source":config,"Target":"/config","ReadOnly":true}]}});
+    let identity = Identity::service(&u.old.kind, &u.old.spec)?;
+    let checker = json!({"Image":current_image().await?,"User":identity.user(),"Cmd":[if isolated {"adapter-contract"} else {"adapter-health"},u.old.kind],"Healthcheck":{"Test":["NONE"]},"Labels":{"app.thelxinoe.update":u.id,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":format!("container:{container}"),"ReadonlyRootfs":true,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],"Memory":268435456,"NanoCpus":1000000000u64,"PidsLimit":32,"Mounts":[{"Type":"bind","Source":config,"Target":"/config","ReadOnly":true}]}});
     let raw = request(
         Method::POST,
         &format!("/containers/create?name=thelxinoe-contract-{}", &u.id[..8]),

@@ -6,6 +6,7 @@ use thelxinoe_playback::{Capabilities, RemoteSource};
 pub(super) struct Format {
     pub source: RemoteSource,
     pub native: bool,
+    hls: bool,
     pub height: u64,
     pub fps: u64,
     pub video: String,
@@ -94,6 +95,7 @@ pub(super) fn extract(metadata: &Value) -> Result<Vec<Format>> {
             ApiError::conflict("The extractor returned an unsupported media address")
         })?;
         output.push(Format {
+            hls: matches!(video["protocol"].as_str(), Some("m3u8_native" | "m3u8")),
             native: !live
                 && video["protocol"] == "https"
                 && matches!(video["ext"].as_str(), Some("mp4" | "webm"))
@@ -156,6 +158,16 @@ pub(super) fn choose<'a>(
             })
     };
     selected.ok_or_else(|| ApiError::conflict("This resolution is not available for this player"))
+}
+
+pub(super) fn segmented<'a>(formats: &'a [Format], selected: &Format) -> Option<&'a Format> {
+    formats.iter().rev().find(|f| {
+        f.hls
+            && f.height == selected.height
+            && f.fps == selected.fps
+            && f.video == selected.video
+            && f.audio == selected.audio
+    })
 }
 
 #[cfg(test)]

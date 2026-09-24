@@ -24,6 +24,7 @@
     "test:rust": "cargo test",
     "test:python": "node scripts/python-tests.mjs",
     "test:e2e": "playwright test",
+    "test:service-access": "node scripts/test-service-access.mjs",
     "test:ui:player": "playwright test --config playwright.player.config.ts",
     "test:ui:layout": "playwright test --config playwright.layout.config.ts",
     "lint": "eslint frontend scripts tests --max-warnings=0",

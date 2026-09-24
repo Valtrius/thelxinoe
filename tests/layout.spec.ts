@@ -8,103 +8,6 @@ async function selectRadarr(page: Page) {
     .click();
 }
 
-test('connection checks keep the workspace still and keep feedback on its service', async ({
-  page,
-}) => {
-  const fixture = await installUiFixture(page, {
-    role: 'admin',
-    settingsSection: 'services',
-  });
-  let finish: (() => void) | undefined;
-  let failed = false;
-  let managerReads = 0;
-  await page.route('**/api/v1/admin/managers', async (route) => {
-    managerReads++;
-    if (!failed) return route.fallback();
-    return route.fulfill({
-      json: {
-        items: [
-          {
-            id: 'manager-radarr',
-            name: 'Radarr',
-            kind: 'radarr',
-            container_id: 'container-radarr',
-            port: 7878,
-            version: '6.0.0',
-            defaults: {
-              root_folder: '/media/movies',
-              quality_profile: 1,
-              monitored: true,
-            },
-            error: 'Connection unavailable',
-          },
-        ],
-      },
-    });
-  });
-  await page.route(
-    '**/api/v1/admin/managers/manager-radarr/test',
-    async (route) => {
-      await new Promise<void>((resolve) => {
-        finish = resolve;
-      });
-      await route.fulfill({
-        status: failed ? 409 : 200,
-        json: failed
-          ? { error: { message: 'Connection unavailable' } }
-          : { ok: true },
-      });
-    },
-  );
-  await page.goto('/');
-  await selectRadarr(page);
-  await expect(
-    page.getByRole('combobox', { name: 'Quality profile' }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole('button', { name: 'Refresh services' }),
-  ).toHaveCount(0);
-  const geometry = () =>
-    page.getByRole('combobox', { name: 'Quality profile' }).boundingBox();
-  const before = await geometry();
-  await page
-    .getByRole('button', { name: 'Test connection', exact: true })
-    .click();
-  await expect(
-    page.getByRole('button', { name: 'Testing…', exact: true }),
-  ).toBeVisible();
-  expect(await geometry()).toEqual(before);
-  await expect.poll(() => !!finish).toBe(true);
-  finish!();
-  await expect(
-    page.getByRole('button', { name: 'Connection OK', exact: true }),
-  ).toBeVisible();
-  expect(await geometry()).toEqual(before);
-  failed = true;
-  finish = undefined;
-  await page
-    .getByRole('button', { name: 'Connection OK', exact: true })
-    .click();
-  await expect.poll(() => !!finish).toBe(true);
-  finish!();
-  await expect(
-    page.getByRole('button', { name: 'Test failed', exact: true }),
-  ).toHaveAttribute('title', /Connection unavailable/);
-  expect(await geometry()).toEqual(before);
-  const reads = managerReads;
-  await expect
-    .poll(() => managerReads, { timeout: 7000 })
-    .toBeGreaterThan(reads);
-  expect(await geometry()).toEqual(before);
-  await page.getByRole('button', { name: 'Sonarr', exact: true }).click();
-  await expect(
-    page.getByText('Test failed', { exact: true }),
-  ).not.toBeVisible();
-  await expect(page.locator('.service-workspace > .notice')).toHaveCount(0);
-  expect(fixture.errors).toEqual([]);
-  expect(fixture.unexpected).toEqual([]);
-});
-
 test('installation progress polls automatically without queued banners across tabs', async ({
   page,
 }) => {
@@ -344,10 +247,16 @@ test('an older update poll cannot unlock a newly queued update', async ({
   const fixture = await installUiFixture(page, {
     role: 'admin',
     settingsSection: 'services',
+    stackCapabilities: {
+      can_retire: true,
+      can_remove: true,
+      can_recreate: true,
+    },
   });
   let reads = 0;
   let queued = false;
   let finishOldPoll: (() => void) | undefined;
+  let finishSubmission: (() => void) | undefined;
   await page.route('**/api/v1/admin/service-updates', async (route) => {
     reads++;
     const items = queued
@@ -380,6 +289,9 @@ test('an older update poll cannot unlock a newly queued update', async ({
   await page.route(
     '**/api/v1/admin/service-updates/preflight/managed-radarr',
     async (route) => {
+      await new Promise<void>((resolve) => {
+        finishSubmission = resolve;
+      });
       queued = true;
       await route.fulfill({ json: { id: 'update-radarr', state: 'queued' } });
     },
@@ -393,8 +305,18 @@ test('an older update poll cannot unlock a newly queued update', async ({
   await expect(check).toBeEnabled();
   await expect.poll(() => !!finishOldPoll, { timeout: 7000 }).toBe(true);
   await check.click();
+  await expect.poll(() => !!finishSubmission).toBe(true);
+  const controls = page.getByRole('complementary', {
+    name: 'Service controls',
+  });
+  await expect(controls.getByRole('button')).toHaveCount(0);
+  await expect(
+    page.getByText('Retiring removes the installation', { exact: false }),
+  ).toHaveCount(0);
+  finishSubmission!();
   await expect.poll(() => reads).toBe(3);
   await expect(check).toBeDisabled();
+  await expect(controls.getByRole('button')).toHaveCount(0);
   const staleResponse = page.waitForResponse((response) =>
     response.url().endsWith('/admin/service-updates'),
   );
@@ -410,21 +332,49 @@ test('an older update poll cannot unlock a newly queued update', async ({
   expect(fixture.unexpected).toEqual([]);
 });
 
-for (const state of ['queued', 'preflight', 'activating', 'queued-recover']) {
-  test(`a ${state} update only disables its own service`, async ({ page }) => {
+for (const state of [
+  'queued',
+  'submitting',
+  'preparing',
+  'snapshotting',
+  'preflight',
+  'queued-activate',
+  'recovery-snapshot',
+  'isolated-live-validation',
+  'activating',
+  'queued-recover',
+]) {
+  test(`a ${state} update hides only its own service controls`, async ({
+    page,
+  }, testInfo) => {
     const fixture = await installUiFixture(page, {
       role: 'admin',
       settingsSection: 'services',
       serviceUpdateState: state,
+      stackCapabilities: {
+        can_retire: true,
+        can_remove: true,
+        can_recreate: true,
+      },
     });
     await page.goto('/');
     await selectRadarr(page);
     await expect(
-      page.getByRole('button', { name: 'Restart', exact: true }),
-    ).toBeDisabled();
+      page
+        .getByRole('complementary', { name: 'Service controls' })
+        .getByRole('button'),
+    ).toHaveCount(0);
+    await expect(
+      page.getByText('Retiring removes the installation', { exact: false }),
+    ).toHaveCount(0);
     await expect(
       page.getByRole('button', { name: 'Check compatibility', exact: true }),
     ).toBeDisabled();
+    if (state === 'activating' || state === 'preflight')
+      await testInfo.attach(`service-controls-${state}`, {
+        body: await page.screenshot(),
+        contentType: 'image/png',
+      });
     await page.getByRole('button', { name: 'Sonarr', exact: true }).click();
     await expect(
       page.getByRole('button', { name: 'Install Sonarr', exact: true }),
@@ -814,14 +764,16 @@ test('media services select one workspace and keep desktop rail sections aligned
   ).toHaveText('Running');
   await expect(
     radarr.getByRole('link', { name: /Open Radarr/ }),
-  ).toHaveAttribute('href', 'http://127.0.0.1:17878/');
+  ).toHaveAttribute('href', '/services/radarr');
   await expect(radarr.getByText('6.0.0', { exact: true })).toBeVisible();
   await expect(
     radarr.getByRole('switch', {
       name: 'Monitor and search requests',
     }),
   ).toBeVisible();
-  await expect(page.locator('article details')).toHaveCount(0);
+  await expect(radarr.getByText('Service access', { exact: true })).toHaveCount(
+    0,
+  );
   await radarr
     .getByRole('group', { name: 'Update policy', exact: true })
     .getByRole('button', { name: 'Notify', exact: true })
@@ -1024,12 +976,13 @@ test('NZBGet URL has compact login and password copy buttons', async ({
   const services = page.getByRole('navigation', { name: 'Select service' });
   await services.getByRole('button', { name: 'NZBGet', exact: true }).click();
   const line = page.locator('.rail-identity:not(.inactive) .service-url-line');
-  const url = line.getByRole('link', { name: /Open NZBGet:/ });
+  const url = line.getByRole('link', { name: 'Open NZBGet', exact: true });
   const copyLogin = line.getByRole('button', { name: 'Copy NZBGet login' });
   const copyPassword = line.getByRole('button', {
     name: 'Copy NZBGet password',
   });
   await expect(url).toBeVisible();
+  await expect(url).toHaveAttribute('href', '/services/nzbget');
   await expect(copyLogin).toBeVisible();
   await expect(copyPassword).toBeVisible();
   await expect(page.getByRole('region', { name: 'NZBGet login' })).toHaveCount(
@@ -1067,21 +1020,29 @@ test('NZBGet URL has compact login and password copy buttons', async ({
   expect(fixture.unexpected).toEqual([]);
 });
 
-test('NZBGet copy buttons use managed credentials during installation', async ({
+test('NZBGet copy buttons appear after installation and use managed credentials', async ({
   page,
 }) => {
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
-  const fixture = await installUiFixture(page, {
-    role: 'admin',
+  const options = {
+    role: 'admin' as const,
     settingsSection: 'services',
     managedNzbget: true,
-  });
+    stackProvisionState: 'queued',
+  };
+  const fixture = await installUiFixture(page, options);
   await page.goto('/');
   await page
     .getByRole('navigation', { name: 'Select service' })
     .getByRole('button', { name: 'NZBGet', exact: true })
     .click();
   const line = page.locator('.rail-identity:not(.inactive) .service-url-line');
+  await expect(
+    page
+      .getByRole('complementary', { name: 'Service controls' })
+      .getByRole('button'),
+  ).toHaveCount(0);
+  options.stackProvisionState = 'complete';
   await line.getByRole('button', { name: 'Copy NZBGet login' }).click();
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
@@ -1099,24 +1060,59 @@ test('NZBGet copy buttons use managed credentials during installation', async ({
   expect(fixture.unexpected).toEqual([]);
 });
 
-for (const state of ['blocked', 'committed']) {
+for (const state of [
+  'ready',
+  'blocked',
+  'recovery-required',
+  'runtime-failure',
+  'committed',
+]) {
   test(`service remains running after ${state} update`, async ({ page }) => {
     const fixture = await installUiFixture(page, {
       role: 'admin',
       settingsSection: 'services',
       serviceUpdateState: state,
+      stackCapabilities: {
+        can_retire: true,
+        can_remove: true,
+        can_recreate: true,
+      },
     });
     await page.goto('/');
     await selectRadarr(page);
+    await expect(
+      page.getByRole('button', { name: 'Restart', exact: true }),
+    ).toBeEnabled();
+    await expect(
+      page.getByRole('button', { name: 'Retire and keep data', exact: true }),
+    ).toBeEnabled();
+    await expect(
+      page.getByText('Retiring removes the installation', { exact: false }),
+    ).toBeVisible();
+    if (state === 'ready')
+      await expect(
+        page.getByRole('button', {
+          name: 'Install verified update',
+          exact: true,
+        }),
+      ).toBeEnabled();
+    if (state === 'recovery-required')
+      await expect(
+        page.getByRole('button', {
+          name: 'Recover before activation',
+          exact: true,
+        }),
+      ).toBeEnabled();
     const service = page.getByRole('article', { name: 'Radarr service' });
     await expect(
       service.locator('.rail-identity:not(.inactive) > .service-status'),
     ).toHaveText('Running');
-    await expect(
-      service.getByRole('region', { name: 'Updates' }),
-    ).toContainText(
-      state === 'blocked' ? 'Update incompatible' : 'Update complete',
-    );
+    if (state === 'blocked' || state === 'committed')
+      await expect(
+        service.getByRole('region', { name: 'Updates' }),
+      ).toContainText(
+        state === 'blocked' ? 'Update incompatible' : 'Update complete',
+      );
     expect(fixture.errors).toEqual([]);
     expect(fixture.unexpected).toEqual([]);
   });
@@ -1483,7 +1479,7 @@ test('skipping stays responsive during saves, animates, and reverts a failed lat
   const auto = intro.getByRole('button', { name: 'Auto', exact: true });
   await expect(auto).toBeEnabled();
   const selection = intro.locator('[data-choice-selection]');
-  // Freeze the transition at an intermediate frame to verify actual movement.
+  // Freeze the animation at an intermediate frame to verify actual movement.
   await intro.evaluate((element) => {
     const button = element.querySelector<HTMLButtonElement>(
       'button[aria-label="Auto"]',
@@ -1497,7 +1493,11 @@ test('skipping stays responsive during saves, animates, and reverts a failed lat
     const animation = element
       .getAnimations()
       .find(
-        (item) => (item as CSSTransition).transitionProperty === 'translate',
+        (item) =>
+          item.effect instanceof KeyframeEffect &&
+          item.effect
+            .getKeyframes()
+            .some((frame) => frame.translate !== undefined),
       );
     if (!animation) return null;
     animation.pause();

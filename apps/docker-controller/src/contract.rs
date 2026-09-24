@@ -34,16 +34,36 @@ pub async fn run(kind: &str, isolated: bool) -> anyhow::Result<()> {
         .timeout(std::time::Duration::from_secs(3))
         .build()?;
     let (username, secret) = credential(kind)?;
-    let base = format!("http://127.0.0.1:{}", template.port);
+    let url_base = if matches!(kind, "radarr" | "sonarr" | "lidarr" | "prowlarr") {
+        let config = std::fs::read_to_string("/config/config.xml")?;
+        config
+            .split_once("<UrlBase>")
+            .and_then(|(_, tail)| tail.split_once("</UrlBase>"))
+            .map(|(base, _)| base.to_owned())
+            .unwrap_or_default()
+    } else if kind == "bazarr" {
+        bazarr_peer_base("general")?
+    } else {
+        String::new()
+    };
+    anyhow::ensure!(
+        url_base.is_empty() || url_base.starts_with('/') && !url_base.contains(['?', '#', '\\']),
+        "Invalid service URL base"
+    );
+    let base = format!(
+        "http://127.0.0.1:{}{}",
+        template.port,
+        url_base.trim_end_matches('/')
+    );
     if isolated && kind == "bazarr" {
         // Only version lookups are supported. Other peer requests fail closed so
         // background sync cannot mistake an empty fixture for the real library.
-        for port in [7878, 8989] {
+        for (port, peer) in [(7878, "radarr"), (8989, "sonarr")] {
             let listener =
                 tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
             let stub = axum::Router::new()
                 .route(
-                    "/api/v3/system/status",
+                    &format!("{}/api/v3/system/status", bazarr_peer_base(peer)?),
                     axum::routing::get(|| async {
                         axum::Json(
                             json!({"version":"4.0.0","appName":"Isolated dependency fixture"}),
@@ -294,4 +314,21 @@ fn credential(kind: &str) -> anyhow::Result<(String, String)> {
     };
     anyhow::ensure!(!secret.is_empty(), "Service credential unavailable");
     Ok((username, secret))
+}
+
+fn bazarr_peer_base(kind: &str) -> anyhow::Result<String> {
+    let config = std::fs::read_to_string("/config/config/config.yaml")?;
+    let mut section = false;
+    for line in config.lines() {
+        if !line.starts_with(char::is_whitespace) {
+            section = line.trim() == format!("{kind}:");
+        } else if section && let Some(value) = line.trim().strip_prefix("base_url:") {
+            return Ok(value
+                .trim()
+                .trim_matches(['\'', '\"'])
+                .trim_end_matches('/')
+                .to_owned());
+        }
+    }
+    Ok(String::new())
 }

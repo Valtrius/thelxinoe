@@ -9,6 +9,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     read_only: true
     cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
   server:
     image: thelxinoe-server:0.1.0
     ports: ["127.0.0.1:19292:8484"]

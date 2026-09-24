@@ -12,6 +12,9 @@ serde_json.workspace = true
 thelxinoe-core.workspace = true
 fs2 = "0.4"
 reqwest.workspace = true
+sha2 = "0.10"
+roxmltree = "0.21"
+serde_yaml_ng = "0.10"
 
 serde.workspace = true
 thelxinoe-backup = { path = "../../crates/backup" }

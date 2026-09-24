@@ -49,6 +49,7 @@ const browser = await chromium.launch();
 const context = await browser.newContext({ ignoreHTTPSErrors: true });
 const base = 'https://localhost:25443';
 let deployment;
+let urlBase = '';
 async function response(path, method = 'GET', data) {
   return context.request.fetch(`${base}/api/v1${path}`, {
     method,
@@ -64,7 +65,7 @@ async function api(path, method = 'GET', data) {
 }
 async function radarr(path, method = 'GET', data) {
   const r = await context.request.fetch(
-    `http://localhost:47878/api/v3/${path}`,
+    `http://localhost:47878${urlBase}/api/v3/${path}`,
     { method, data, headers: { 'X-Api-Key': key } },
   );
   if (!r.ok()) throw Error(`Radarr ${path}: ${r.status()}`);
@@ -260,6 +261,7 @@ try {
       { timeout: 180000, intervals: [2000] },
     )
     .toBe('complete');
+  urlBase = '/services/radarr';
   const managed = state.items.find((s) => s.id === success.review_id),
     current = inspect(managed.container_id);
   expect(current.Image).toBe(old.Image);

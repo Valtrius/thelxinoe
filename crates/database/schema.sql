@@ -461,6 +461,8 @@ CREATE TABLE manager_services (
     kind TEXT NOT NULL CHECK(kind IN ('radarr','sonarr','lidarr')),
     container_id TEXT NOT NULL UNIQUE,
     port INTEGER NOT NULL,
+    url_base TEXT NOT NULL DEFAULT '',
+    access_revision TEXT NOT NULL DEFAULT '',
     generation TEXT NOT NULL,
     credential BLOB NOT NULL,
     media_source TEXT NOT NULL,
@@ -534,6 +536,8 @@ CREATE TABLE support_services (
     kind TEXT NOT NULL CHECK(kind IN ('bazarr','prowlarr','nzbget','seerr')),
     container_id TEXT NOT NULL UNIQUE,
     port INTEGER NOT NULL,
+    url_base TEXT NOT NULL DEFAULT '',
+    access_revision TEXT NOT NULL DEFAULT '',
     generation TEXT NOT NULL,
     credential BLOB NOT NULL,
     media_source TEXT NOT NULL,
@@ -569,6 +573,7 @@ CREATE TABLE stack_provisions (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     origin TEXT NOT NULL DEFAULT 'installed' CHECK(origin IN ('installed','adopted')),
+    original_url_base TEXT NOT NULL DEFAULT '',
     native_url TEXT NOT NULL DEFAULT ''
 ) STRICT;
 

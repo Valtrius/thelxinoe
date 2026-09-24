@@ -48,6 +48,7 @@ const browser = await chromium.launch();
 const context = await browser.newContext({ ignoreHTTPSErrors: true });
 const base = `https://localhost:${process.env.THELXINOE_CONNECTIONS_PORT}`;
 const services = {};
+const retirementReconnects = [];
 let deployment,
   passed = false;
 async function api(path, method = 'GET', data) {
@@ -125,7 +126,9 @@ function config(kind) {
       ? 'config/config.yaml'
       : kind === 'nzbget'
         ? 'nzbget.conf'
-        : 'config.xml';
+        : kind === 'seerr'
+          ? 'settings.json'
+          : 'config.xml';
   return compose(
     'exec',
     '-T',
@@ -141,13 +144,26 @@ async function upstream(kind, path, method = 'GET', data) {
   const key =
     kind === 'bazarr'
       ? raw.match(/^\s+apikey:\s*['"]?([a-zA-Z0-9]+)/m)[1]
-      : raw.match(/<ApiKey>(.*?)<\/ApiKey>/)[1];
+      : kind === 'seerr'
+        ? JSON.parse(raw).main.apiKey
+        : raw.match(/<ApiKey>(.*?)<\/ApiKey>/)[1];
   const prefix =
     kind === 'bazarr'
       ? 'api'
-      : `api/v${['lidarr', 'prowlarr'].includes(kind) ? 1 : 3}`;
+      : `api/v${['lidarr', 'prowlarr', 'seerr'].includes(kind) ? 1 : 3}`;
+  const urlBase =
+    kind === 'bazarr'
+      ? (
+          raw.match(
+            /^general:\r?\n(?:[ \t].*\r?\n)*?[ \t]+base_url:\s*([^\r\n]+)/m,
+          )?.[1] ?? ''
+        )
+          .trim()
+          .replace(/^['"]|['"]$/g, '')
+          .replace(/\/$/, '')
+      : (raw.match(/<UrlBase>(.*?)<\/UrlBase>/)?.[1] ?? '');
   const response = await context.request.fetch(
-    `http://localhost:${services[kind].host_port}/${prefix}/${path}`,
+    `http://localhost:${services[kind].host_port}${urlBase}/${prefix}/${path}`,
     {
       method,
       data,
@@ -177,13 +193,56 @@ async function nzbget(method, params = []) {
   expect(result.error).toBeFalsy();
   return result.result;
 }
+async function saveSubtitles(form) {
+  const key = config('bazarr').match(/^\s+apikey:\s*['"]?([a-zA-Z0-9]+)/m)[1];
+  const response = await context.request.post(
+    `${base}/services/bazarr/api/system/settings`,
+    { headers: { Origin: base, 'X-Api-Key': key }, form },
+  );
+  expect(response.status()).toBe(204);
+}
+// Retirement must preserve a surviving Bazarr's ownership evidence, update
+// replacement credentials on explicit reconnect, and reject manual changes.
+async function reconnectSubtitles(kind, checkManualEdit = false) {
+  await waitLink('bazarr', kind, 'disconnected');
+  const before = await upstream('bazarr', 'system/settings');
+  expect(before.general[`use_${kind}`]).toBe(false);
+  expect(Boolean(before[kind].apikey)).toBe(true);
+  if (checkManualEdit) {
+    const customBase = `/manually-edited-${kind}`;
+    await saveSubtitles({ [`settings-${kind}-base_url`]: customBase });
+    await configure('bazarr', kind, 'connect');
+    await waitLink('bazarr', kind, 'conflict');
+    const unchanged = await upstream('bazarr', 'system/settings');
+    expect(unchanged[kind].base_url.replace(/\/$/, '')).toBe(customBase);
+    expect(unchanged.general[`use_${kind}`]).toBe(false);
+    expect(unchanged[kind].apikey === before[kind].apikey).toBe(true);
+    await saveSubtitles({
+      [`settings-${kind}-base_url`]: before[kind].base_url,
+    });
+    await configure('bazarr', kind, 'retry');
+  } else await configure('bazarr', kind, 'connect');
+  await waitLink('bazarr', kind, 'connected');
+  const saved = await upstream('bazarr', 'system/settings');
+  expect(saved.general[`use_${kind}`]).toBe(true);
+  expect(saved[kind].base_url.replace(/\/$/, '')).toBe(`/services/${kind}`);
+  expect(
+    saved[kind].apikey === config(kind).match(/<ApiKey>(.*?)<\/ApiKey>/)[1],
+  ).toBe(true);
+  retirementReconnects.push({ kind, manual_edit_checked: checkManualEdit });
+  console.log(`bazarr -> ${kind}: reconnect after retirement verified`);
+}
 async function idle(kind) {
   await expect
     .poll(
       async () =>
-        (await upstream(kind, 'command')).filter((c) =>
-          ['queued', 'started'].includes(c.status),
-        ).length,
+        kind === 'bazarr'
+          ? (await upstream(kind, 'system/tasks')).data.filter(
+              (job) => job.job_running !== false,
+            ).length
+          : (await upstream(kind, 'command')).filter((c) =>
+              ['queued', 'started'].includes(c.status),
+            ).length,
       { timeout: 120000, intervals: [2000] },
     )
     .toBe(0);
@@ -195,7 +254,46 @@ async function refreshService(kind) {
     latest.items.find((s) => s.id === services[kind].id),
   );
 }
+async function waitUpdate(updateId, stage) {
+  let latest;
+  await expect
+    .poll(
+      async () => {
+        latest = (await api('/admin/service-updates')).items.find(
+          (item) => item.id === updateId,
+        );
+        if (
+          [
+            'blocked',
+            'runtime-failure',
+            'recovery-required',
+            'rolled-back',
+          ].includes(latest?.state)
+        )
+          throw Error(`Update ${latest.state}: ${latest.error}`);
+        return latest?.state;
+      },
+      { timeout: 360000, intervals: [2000] },
+    )
+    .toBe(stage);
+}
+
 try {
+  compose(
+    'run',
+    '--rm',
+    '--no-deps',
+    '--user',
+    '0:0',
+    '--entrypoint',
+    'chown',
+    'server',
+    '-R',
+    '10001:10001',
+    '/var/lib/thelxinoe',
+    '/var/cache/thelxinoe',
+    '/media',
+  );
   compose('up', '-d', '--wait', '--wait-timeout', '180');
   await api('/setup', 'POST', {
     username: 'admin',
@@ -206,8 +304,8 @@ try {
   await idle('prowlarr');
   await action('prowlarr', 'stop');
   await install('radarr');
-  expect((await link('prowlarr', 'radarr')).state).toBe('available');
-  expect((await link('prowlarr', 'radarr')).enabled).toBe(false);
+  await waitLink('prowlarr', 'radarr', 'unavailable');
+  expect((await link('prowlarr', 'radarr')).enabled).toBe(true);
   const page = await context.newPage();
   await page.goto(`${base}/?section=Settings`);
   await page
@@ -221,16 +319,11 @@ try {
     name: 'Applications',
     exact: true,
   });
-  await expect(applications.getByText('Available to connect')).toBeVisible();
-  await applications
-    .getByRole('button', { name: 'Connect', exact: true })
-    .click();
-  await waitLink('prowlarr', 'radarr', 'unavailable');
   await expect(
     applications.getByText('Connection unavailable', { exact: true }),
   ).toBeVisible({ timeout: 15000 });
   await page.screenshot({
-    path: `${root}/optional-connection-outage.png`,
+    path: `${root}/automatic-connection-outage.png`,
     fullPage: true,
   });
   compose('restart', 'server');
@@ -270,11 +363,15 @@ try {
   expect(await upstream('prowlarr', 'applications')).toHaveLength(0);
   await action('radarr', 'start');
   console.log(
-    'Optional connection survives restart; disconnect cleans up with target stopped',
+    'Automatic connection survives restart; disconnect cleans up with target stopped',
   );
 
-  for (const kind of ['sonarr', 'lidarr', 'nzbget', 'bazarr'])
-    await install(kind);
+  for (const kind of ['sonarr', 'lidarr']) await install(kind);
+  for (const kind of ['radarr', 'sonarr', 'lidarr']) {
+    await idle(kind);
+    await action(kind, 'stop');
+  }
+  await install('nzbget');
   const customCategory = await nzbget('loadconfig');
   customCategory.push(
     { Name: 'Category1.Name', Value: 'My custom downloads' },
@@ -297,18 +394,68 @@ try {
       { timeout: 60000 },
     )
     .toBe(true);
-  expect(await links()).toHaveLength(8);
-  expect((await links()).every((l) => !l.enabled)).toBe(true);
-  for (const item of await links())
-    await configure(item.source_kind, item.target_kind, 'connect');
+  for (const kind of ['radarr', 'sonarr', 'lidarr'])
+    await action(kind, 'start');
+  await install('bazarr');
+  compose('restart', 'server');
+  await expect
+    .poll(
+      async () => {
+        try {
+          return (await links()).length;
+        } catch {
+          return 0;
+        }
+      },
+      { timeout: 60000 },
+    )
+    .toBe(8);
+  expect((await link('prowlarr', 'radarr')).enabled).toBe(false);
+  await waitLink('prowlarr', 'radarr', 'disconnected');
+  expect((await links()).filter((l) => l.enabled)).toHaveLength(7);
+  for (const item of (await links()).filter((l) => l.enabled))
+    await waitLink(item.source_kind, item.target_kind, 'connected');
+  expect((await link('prowlarr', 'radarr')).enabled).toBe(false);
+  await configure('prowlarr', 'radarr', 'connect');
   for (const item of await links())
     await waitLink(item.source_kind, item.target_kind, 'connected');
-  expect(await upstream('prowlarr', 'applications')).toHaveLength(3);
+  const prefixedApplications = await upstream('prowlarr', 'applications');
+  expect(prefixedApplications).toHaveLength(3);
+  for (const application of prefixedApplications) {
+    expect(
+      application.fields
+        .find((field) => field.name === 'prowlarrUrl')
+        .value.endsWith('/services/prowlarr'),
+    ).toBe(true);
+    expect(
+      application.fields
+        .find((field) => field.name === 'baseUrl')
+        .value.endsWith(
+          `/services/${application.implementation.toLowerCase()}`,
+        ),
+    ).toBe(true);
+  }
   for (const kind of ['radarr', 'sonarr', 'lidarr'])
     expect(await upstream(kind, 'downloadclient')).toHaveLength(1);
   const subtitles = await upstream('bazarr', 'system/settings');
+  expect(subtitles.general.base_url.replace(/\/$/, '')).toBe(
+    '/services/bazarr',
+  );
   expect(subtitles.general.use_radarr).toBe(true);
   expect(subtitles.general.use_sonarr).toBe(true);
+  for (const kind of ['radarr', 'sonarr']) {
+    expect(subtitles[kind].base_url.replace(/\/$/, '')).toBe(
+      `/services/${kind}`,
+    );
+    const application = (await upstream('prowlarr', 'applications')).find(
+      (entry) => entry.implementation.toLowerCase() === kind,
+    );
+    expect(
+      application.fields
+        .find((field) => field.name === 'baseUrl')
+        .value.endsWith(`/services/${kind}`),
+    ).toBe(true);
+  }
   const savedCategory = await nzbget('loadconfig');
   expect(savedCategory.find((r) => r.Name === 'Category1.Name').Value).toBe(
     'My custom downloads',
@@ -316,117 +463,146 @@ try {
   expect(savedCategory.find((r) => r.Name === 'Category1.DestDir').Value).toBe(
     '/media/downloads/custom',
   );
-  console.log('All eight explicit connections verified against real APIs');
-
-  const changed = (await upstream('prowlarr', 'applications')).find(
-    (r) => r.implementation === 'Radarr',
-  );
-  changed.syncLevel = 'addOnly';
-  await upstream('prowlarr', `applications/${changed.id}`, 'PUT', changed);
-  await configure('prowlarr', 'radarr', 'retry');
-  await waitLink('prowlarr', 'radarr', 'conflict');
-  expect(
-    (await upstream('prowlarr', 'applications')).find(
-      (r) => r.id === changed.id,
-    ).syncLevel,
-  ).toBe('addOnly');
-  await configure('prowlarr', 'radarr', 'disconnect');
-  await waitLink('prowlarr', 'radarr', 'conflict');
-  expect(
-    (await upstream('prowlarr', 'applications')).some(
-      (r) => r.id === changed.id,
-    ),
-  ).toBe(true);
-  await upstream('prowlarr', `applications/${changed.id}`, 'DELETE');
-  await configure('prowlarr', 'radarr', 'retry');
-  await waitLink('prowlarr', 'radarr', 'disconnected');
-  await configure('prowlarr', 'radarr', 'connect');
-  await waitLink('prowlarr', 'radarr', 'connected');
   console.log(
-    'Manual connection edits and custom NZBGet category slots are preserved',
+    'All eight automatic connections verified against real APIs; manual disconnect persists',
   );
 
-  // Real missing-container recovery must preserve config and integration identity.
-  const before = services.radarr.container_id;
-  const identity = (await api('/admin/managers')).items.find(
-    (m) => m.kind === 'radarr',
-  ).id;
-  const sentinel = randomUUID();
-  const appdata = `/var/lib/thelxinoe/deployment/services/${services.radarr.id}/appdata`;
-  compose(
-    'exec',
-    '-T',
-    '-u',
-    '10001:10001',
-    'controller',
-    'sh',
-    '-c',
-    `printf '%s' '${sentinel}' > '${appdata}/recovery-sentinel'`,
-  );
-  await idle('radarr');
-  await action('radarr', 'stop');
-  docker('rm', before);
-  await refreshService('radarr');
-  expect(services.radarr.status).toBe('missing');
-  expect(services.radarr.drift).toBe(null);
-  await action('radarr', 'recreate');
-  await expect
-    .poll(
-      async () =>
-        (await stack()).provisions.find((p) => p.id === services.radarr.id)
-          ?.state,
-      { timeout: 120000, intervals: [2000] },
-    )
-    .toBe('complete');
-  await refreshService('radarr');
-  expect(services.radarr.container_id).not.toBe(before);
-  const manager = (await api('/admin/managers')).items.find(
-    (m) => m.kind === 'radarr',
-  );
-  expect(manager.id).toBe(identity);
-  expect(manager.container_id).toBe(services.radarr.container_id);
-  expect(
+  for (const manager of (await api('/admin/managers')).items.filter((item) =>
+    ['radarr', 'sonarr'].includes(item.kind),
+  ))
+    await api(`/admin/managers/${manager.id}/options`);
+  await install('seerr');
+  await api('/admin/seerr/sync', 'POST');
+  for (const kind of ['radarr', 'sonarr']) {
+    const service = (await upstream('seerr', `settings/${kind}`)).find(
+      (item) => item.name === `Thelxinoe ${kind}`,
+    );
+    expect(service.baseUrl).toBe(`/services/${kind}`);
+  }
+  console.log('Seerr connections use the prefixed Radarr and Sonarr APIs');
+
+  if (!process.argv.includes('--connections-only')) {
+    for (const kind of ['lidarr', 'prowlarr', 'bazarr']) {
+      const group = kind === 'lidarr' ? 'managers' : 'support';
+      const integration = (await api(`/admin/${group}`)).items.find(
+        (s) => s.kind === kind,
+      );
+      const urlBase = `/services/${kind}`;
+      if (kind !== 'lidarr') {
+        const before = services[kind].container_id;
+        await idle(kind);
+        await action(kind, 'stop');
+        docker('rm', before);
+        await action(kind, 'recreate');
+        await expect
+          .poll(
+            async () =>
+              (await stack()).provisions.find((p) => p.id === services[kind].id)
+                ?.state,
+            { timeout: 120000, intervals: [2000] },
+          )
+          .toBe('complete');
+        await refreshService(kind);
+        expect(services[kind].container_id).not.toBe(before);
+        expect(
+          (await api(`/admin/${group}`)).items.find(
+            (s) => s.id === integration.id,
+          ).url_base,
+        ).toBe(urlBase);
+      }
+      await idle(kind);
+      await action(kind, 'stop');
+      const update = await api(
+        `/admin/service-updates/preflight/${services[kind].id}`,
+        'POST',
+        {},
+      );
+      await waitUpdate(update.id, 'ready');
+      await api(`/admin/service-updates/${update.id}/activate`, 'POST', {});
+      await waitUpdate(update.id, 'committed');
+      await refreshService(kind);
+      expect(services[kind].running).toBe(false);
+      expect(
+        (await api(`/admin/${group}`)).items.find(
+          (s) => s.id === integration.id,
+        ).url_base,
+      ).toBe(urlBase);
+      await action(kind, 'start');
+      await expect
+        .poll(
+          async () => {
+            try {
+              return (
+                await context.request.get(`${base}/services/${kind}`, {
+                  maxRedirects: 0,
+                })
+              ).headers().location;
+            } catch {
+              return '';
+            }
+          },
+          { timeout: 90000, intervals: [2000] },
+        )
+        .toBe(`${urlBase}/`);
+      for (const item of await links())
+        await waitLink(item.source_kind, item.target_kind, 'connected');
+      console.log(
+        `${kind}: fixed URL Base survives isolated update; all connections recover`,
+      );
+    }
+
+    const changed = (await upstream('prowlarr', 'applications')).find(
+      (r) => r.implementation === 'Radarr',
+    );
+    changed.syncLevel = 'addOnly';
+    await upstream('prowlarr', `applications/${changed.id}`, 'PUT', changed);
+    await configure('prowlarr', 'radarr', 'retry');
+    await waitLink('prowlarr', 'radarr', 'conflict');
+    expect(
+      (await upstream('prowlarr', 'applications')).find(
+        (r) => r.id === changed.id,
+      ).syncLevel,
+    ).toBe('addOnly');
+    await configure('prowlarr', 'radarr', 'disconnect');
+    await waitLink('prowlarr', 'radarr', 'conflict');
+    expect(
+      (await upstream('prowlarr', 'applications')).some(
+        (r) => r.id === changed.id,
+      ),
+    ).toBe(true);
+    await upstream('prowlarr', `applications/${changed.id}`, 'DELETE');
+    await configure('prowlarr', 'radarr', 'retry');
+    await waitLink('prowlarr', 'radarr', 'disconnected');
+    await configure('prowlarr', 'radarr', 'connect');
+    await waitLink('prowlarr', 'radarr', 'connected');
+    console.log(
+      'Manual connection edits and custom NZBGet category slots are preserved',
+    );
+
+    // Real missing-container recovery must preserve config and integration identity.
+    const before = services.radarr.container_id;
+    const identity = (await api('/admin/managers')).items.find(
+      (m) => m.kind === 'radarr',
+    ).id;
+    const sentinel = randomUUID();
+    const appdata = `/var/lib/thelxinoe/deployment/services/${services.radarr.id}/appdata`;
     compose(
       'exec',
       '-T',
       '-u',
       '10001:10001',
       'controller',
-      'cat',
-      `${appdata}/recovery-sentinel`,
-    ),
-  ).toBe(sentinel);
-  await configure('prowlarr', 'radarr', 'retry');
-  await waitLink('prowlarr', 'radarr', 'connected');
-  expect(await upstream('prowlarr', 'applications')).toHaveLength(3);
-  console.log(
-    'Missing container recreated with preserved config, integration and connection',
-  );
-
-  // A creating journal with a lost create response must accept exactly one
-  // owned container. With no container it must recreate the same saved spec.
-  const journalPath = `/var/lib/thelxinoe/deployment/services/${services.radarr.id}/service.json`;
-  for (const removeContainer of [false, true]) {
+      'sh',
+      '-c',
+      `printf '%s' '${sentinel}' > '${appdata}/recovery-sentinel'`,
+    );
+    await idle('radarr');
+    await action('radarr', 'stop');
+    docker('rm', before);
     await refreshService('radarr');
-    const previous = services.radarr.container_id;
-    if (removeContainer) {
-      await idle('radarr');
-      await action('radarr', 'stop');
-      docker('rm', previous);
-    }
-    const journal = JSON.parse(
-      compose('exec', '-T', 'controller', 'cat', journalPath),
-    );
-    journal.phase = 'creating';
-    journal.container = '';
-    journal.expected = null;
-    writeFileSync(`${root}/interrupted-service.json`, JSON.stringify(journal));
-    docker(
-      'cp',
-      `${root}/interrupted-service.json`,
-      `${compose('ps', '-q', 'controller')}:${journalPath}`,
-    );
-    await action('radarr', 'reconcile');
+    expect(services.radarr.status).toBe('missing');
+    expect(services.radarr.drift).toBe(null);
+    await action('radarr', 'recreate');
     await expect
       .poll(
         async () =>
@@ -436,160 +612,232 @@ try {
       )
       .toBe('complete');
     await refreshService('radarr');
-    expect(services.radarr.container_id === previous).toBe(!removeContainer);
+    expect(services.radarr.container_id).not.toBe(before);
+    const manager = (await api('/admin/managers')).items.find(
+      (m) => m.kind === 'radarr',
+    );
+    expect(manager.id).toBe(identity);
+    expect(manager.container_id).toBe(services.radarr.container_id);
+    expect(manager.url_base).toBe('/services/radarr');
+    expect((await context.request.get(`${base}/services/radarr`)).url()).toBe(
+      `${base}/services/radarr/`,
+    );
+    await api('/admin/seerr/sync', 'POST');
     expect(
-      docker(
-        'ps',
-        '-aq',
-        '--filter',
-        `label=app.thelxinoe.managed-id=${services.radarr.id}`,
-      ).split(/\s+/),
-    ).toHaveLength(1);
-  }
-  console.log(
-    'Interrupted creation recovers before and after the Docker create response',
-  );
+      (await upstream('seerr', 'settings/radarr')).find(
+        (item) => item.name === 'Thelxinoe radarr',
+      ).baseUrl,
+    ).toBe('/services/radarr');
+    expect(
+      compose(
+        'exec',
+        '-T',
+        '-u',
+        '10001:10001',
+        'controller',
+        'cat',
+        `${appdata}/recovery-sentinel`,
+      ),
+    ).toBe(sentinel);
+    await configure('prowlarr', 'radarr', 'retry');
+    await waitLink('prowlarr', 'radarr', 'connected');
+    expect(await upstream('prowlarr', 'applications')).toHaveLength(3);
+    console.log(
+      'Missing container recreated with preserved config, integration and connection',
+    );
 
-  await idle('radarr');
-  await action('radarr', 'stop');
-  await action('radarr', 'stop');
-  await action('radarr', 'restart');
-  await expect
-    .poll(
-      async () => {
-        try {
-          return (await upstream('radarr', 'system/status')).appName;
-        } catch {
-          return '';
-        }
-      },
-      { timeout: 90000 },
-    )
-    .toBe('Radarr');
-  await idle('radarr');
-  await action('radarr', 'stop');
-  let update = await api(
-    `/admin/service-updates/preflight/${services.radarr.id}`,
-    'POST',
-    {},
-  );
-  async function waitUpdate(stage) {
-    let latest;
+    // A creating journal with a lost create response must accept exactly one
+    // owned container. With no container it must recreate the same saved spec.
+    const journalPath = `/var/lib/thelxinoe/deployment/services/${services.radarr.id}/service.json`;
+    for (const removeContainer of [false, true]) {
+      await refreshService('radarr');
+      const previous = services.radarr.container_id;
+      if (removeContainer) {
+        await idle('radarr');
+        await action('radarr', 'stop');
+        docker('rm', previous);
+      }
+      const journal = JSON.parse(
+        compose('exec', '-T', 'controller', 'cat', journalPath),
+      );
+      journal.phase = 'creating';
+      journal.container = '';
+      journal.expected = null;
+      writeFileSync(
+        `${root}/interrupted-service.json`,
+        JSON.stringify(journal),
+      );
+      docker(
+        'cp',
+        `${root}/interrupted-service.json`,
+        `${compose('ps', '-q', 'controller')}:${journalPath}`,
+      );
+      await action('radarr', 'reconcile');
+      await expect
+        .poll(
+          async () =>
+            (await stack()).provisions.find((p) => p.id === services.radarr.id)
+              ?.state,
+          { timeout: 120000, intervals: [2000] },
+        )
+        .toBe('complete');
+      await refreshService('radarr');
+      expect(services.radarr.container_id === previous).toBe(!removeContainer);
+      expect(
+        docker(
+          'ps',
+          '-aq',
+          '--filter',
+          `label=app.thelxinoe.managed-id=${services.radarr.id}`,
+        ).split(/\s+/),
+      ).toHaveLength(1);
+    }
+    console.log(
+      'Interrupted creation recovers before and after the Docker create response',
+    );
+
+    await idle('radarr');
+    await action('radarr', 'stop');
+    await action('radarr', 'stop');
+    await action('radarr', 'restart');
     await expect
       .poll(
         async () => {
-          latest = (await api('/admin/service-updates')).items.find(
-            (item) => item.id === update.id,
-          );
-          if (
-            [
-              'blocked',
-              'runtime-failure',
-              'recovery-required',
-              'rolled-back',
-            ].includes(latest?.state)
-          )
-            throw Error(`Update ${latest.state}: ${latest.error}`);
-          return latest?.state;
+          try {
+            return (await upstream('radarr', 'system/status')).appName;
+          } catch {
+            return '';
+          }
         },
-        { timeout: 360000, intervals: [2000] },
+        { timeout: 90000 },
       )
-      .toBe(stage);
+      .toBe('Radarr');
+    await idle('radarr');
+    await action('radarr', 'stop');
+    let update = await api(
+      `/admin/service-updates/preflight/${services.radarr.id}`,
+      'POST',
+      {},
+    );
+    await waitUpdate(update.id, 'ready');
+    await refreshService('radarr');
+    expect(services.radarr.running).toBe(false);
+    const preUpdate = services.radarr.container_id;
+    await api(`/admin/service-updates/${update.id}/activate`, 'POST', {});
+    await waitUpdate(update.id, 'committed');
+    await refreshService('radarr');
+    expect(services.radarr.container_id).not.toBe(preUpdate);
+    expect(services.radarr.running).toBe(false);
+    expect(
+      (await api('/admin/managers')).items.find((m) => m.id === identity)
+        .container_id,
+    ).toBe(services.radarr.container_id);
+    console.log(
+      'Stopped service completes isolated preflight and activation, remains stopped',
+    );
+
+    await action('radarr', 'start');
+    await expect
+      .poll(
+        async () => {
+          try {
+            return (await upstream('radarr', 'system/status')).appName;
+          } catch {
+            return '';
+          }
+        },
+        { timeout: 90000 },
+      )
+      .toBe('Radarr');
+    await idle('radarr');
+    update = await api(
+      `/admin/service-updates/preflight/${services.radarr.id}`,
+      'POST',
+      {},
+    );
+    await waitUpdate(update.id, 'ready');
+    await refreshService('radarr');
+    expect(services.radarr.running).toBe(true);
+    await idle('radarr');
+    await action('radarr', 'stop');
+    await api(`/admin/service-updates/${update.id}/activate`, 'POST', {});
+    await waitUpdate(update.id, 'committed');
+    await refreshService('radarr');
+    expect(services.radarr.running).toBe(false);
+    console.log(
+      'Activation also respects a deliberate stop made after preflight',
+    );
+
+    // Retained stopped update originals must not be mistaken for the current
+    // missing container or prevent explicit retirement and reinstall.
+    docker('rm', services.radarr.container_id);
+    await action('radarr', 'recreate');
+    await expect
+      .poll(
+        async () =>
+          (await stack()).provisions.find((p) => p.id === services.radarr.id)
+            ?.state,
+        { timeout: 120000, intervals: [2000] },
+      )
+      .toBe('complete');
+    await refreshService('radarr');
+    await idle('radarr');
+    await action('radarr', 'stop');
+    docker('rm', services.radarr.container_id);
+    await action('radarr', 'retire');
+    expect(
+      (await api('/admin/managers')).items.some((m) => m.kind === 'radarr'),
+    ).toBe(false);
+    expect(
+      compose(
+        'exec',
+        '-T',
+        '-u',
+        '10001:10001',
+        'controller',
+        'cat',
+        `${appdata}/recovery-sentinel`,
+      ),
+    ).toBe(sentinel);
+    await install('radarr');
+    expect(
+      (await api('/admin/managers')).items.find((m) => m.kind === 'radarr')
+        .url_base,
+    ).toBe('/services/radarr');
+    expect(
+      (await api('/admin/managers')).items.find((m) => m.kind === 'radarr').id,
+    ).toBe(identity);
+    expect((await link('prowlarr', 'radarr')).enabled).toBe(false);
+    await reconnectSubtitles('radarr');
+    // The replacement's own database is fresh; its NZBGet link must still work.
+    await configure('radarr', 'nzbget', 'connect');
+    await waitLink('radarr', 'nzbget', 'connected');
+    const sonarrIdentity = (await api('/admin/managers')).items.find(
+      (m) => m.kind === 'sonarr',
+    ).id;
+    await idle('sonarr');
+    await action('sonarr', 'stop');
+    docker('rm', services.sonarr.container_id);
+    await action('sonarr', 'retire');
+    await install('sonarr');
+    expect(
+      (await api('/admin/managers')).items.find((m) => m.kind === 'sonarr').id,
+    ).toBe(sonarrIdentity);
+    await reconnectSubtitles('sonarr', true);
+    console.log(
+      'Recovery after update and retirement preserve appdata; reinstall releases the old reservation',
+    );
   }
-  await waitUpdate('ready');
-  await refreshService('radarr');
-  expect(services.radarr.running).toBe(false);
-  const preUpdate = services.radarr.container_id;
-  await api(`/admin/service-updates/${update.id}/activate`, 'POST', {});
-  await waitUpdate('committed');
-  await refreshService('radarr');
-  expect(services.radarr.container_id).not.toBe(preUpdate);
-  expect(services.radarr.running).toBe(false);
-  expect(
-    (await api('/admin/managers')).items.find((m) => m.id === identity)
-      .container_id,
-  ).toBe(services.radarr.container_id);
-  console.log(
-    'Stopped service completes isolated preflight and activation, remains stopped',
-  );
-
-  await action('radarr', 'start');
-  await expect
-    .poll(
-      async () => {
-        try {
-          return (await upstream('radarr', 'system/status')).appName;
-        } catch {
-          return '';
-        }
-      },
-      { timeout: 90000 },
-    )
-    .toBe('Radarr');
-  await idle('radarr');
-  update = await api(
-    `/admin/service-updates/preflight/${services.radarr.id}`,
-    'POST',
-    {},
-  );
-  await waitUpdate('ready');
-  await refreshService('radarr');
-  expect(services.radarr.running).toBe(true);
-  await idle('radarr');
-  await action('radarr', 'stop');
-  await api(`/admin/service-updates/${update.id}/activate`, 'POST', {});
-  await waitUpdate('committed');
-  await refreshService('radarr');
-  expect(services.radarr.running).toBe(false);
-  console.log(
-    'Activation also respects a deliberate stop made after preflight',
-  );
-
-  // Retained stopped update originals must not be mistaken for the current
-  // missing container or prevent explicit retirement and reinstall.
-  docker('rm', services.radarr.container_id);
-  await action('radarr', 'recreate');
-  await expect
-    .poll(
-      async () =>
-        (await stack()).provisions.find((p) => p.id === services.radarr.id)
-          ?.state,
-      { timeout: 120000, intervals: [2000] },
-    )
-    .toBe('complete');
-  await refreshService('radarr');
-  await idle('radarr');
-  await action('radarr', 'stop');
-  docker('rm', services.radarr.container_id);
-  await action('radarr', 'retire');
-  expect(
-    (await api('/admin/managers')).items.some((m) => m.kind === 'radarr'),
-  ).toBe(false);
-  expect(
-    compose(
-      'exec',
-      '-T',
-      '-u',
-      '10001:10001',
-      'controller',
-      'cat',
-      `${appdata}/recovery-sentinel`,
-    ),
-  ).toBe(sentinel);
-  await install('radarr');
-  expect(
-    (await api('/admin/managers')).items.find((m) => m.kind === 'radarr').id,
-  ).toBe(identity);
-  expect((await link('prowlarr', 'radarr')).enabled).toBe(false);
-  console.log(
-    'Recovery after update and retirement preserve appdata; reinstall releases the old reservation',
-  );
   writeFileSync(
     `${root}/result.json`,
     JSON.stringify(
       {
         project,
+        scope: process.argv.includes('--connections-only')
+          ? 'connections'
+          : 'full',
         passed: true,
+        retirement_reconnects: retirementReconnects,
         connections: (await links()).map((l) => ({
           source: l.source_kind,
           target: l.target_kind,

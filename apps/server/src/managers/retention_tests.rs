@@ -22,7 +22,7 @@ async fn reacquisition_restores_exact_episode_ids_and_preserves_foreign_exclusio
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, stub).await.unwrap() });
         state.db.write("test.fixture", move|db|{
-            db.execute("INSERT INTO manager_services VALUES ('sonarr','Fixture','sonarr','container',8989,'g',X'00','[]','{}','1',1,1,NULL)",[])?;
+            db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,defaults,version,enabled,checked_at,error) VALUES ('sonarr','Fixture','sonarr','container',8989,'g',X'00','[]','{}','1',1,1,NULL)",[])?;
             let targets=json!([{"id":"ret-file","generation":"first","path":"fixture","root":"fixture","size":0,"modified":"1","fingerprint":"1","ownership":"managed","claims":[{"service_id":"sonarr","service_generation":"g","manager_file_id":17,"entity_id":9,"manager_path":"fixture","external_id":"42","members":[37],"server_path":"fixture"}]}]);
             db.execute("INSERT INTO media_operations VALUES ('operation',NULL,'ret-movie','delete','complete',?1,1,1,NULL)",[targets.to_string()])?;
             db.execute("INSERT INTO retention_candidates VALUES ('candidate','ret-movie','operation','stamp','alice','complete',1,1,NULL)",[])?;
@@ -33,6 +33,7 @@ async fn reacquisition_restores_exact_episode_ids_and_preserves_foreign_exclusio
         let connection = Connection {
             state: &state,
             base: format!("http://{address}"),
+            url_base: String::new(),
             key: "fixture-key".into(),
             kind: "sonarr".into(),
         };
@@ -221,7 +222,7 @@ async fn season_requires_complete_confirmed_aired_metadata_and_one_users_watched
         db.execute("UPDATE library_roots SET kind='shows'",[])?;
         db.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at,metadata) VALUES ('show','ret-root','show','show','Show',1,?1)",[json!({"refreshed_at":refreshed,"status":"Ended","seasons":[{"season_number":1,"episode_count":2}]}).to_string()])?;
         db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES ('season','ret-root','season','show','season','Season',1,1)",[])?;
-        db.execute("INSERT INTO manager_services VALUES ('sonarr','Fixture Sonarr','sonarr','container-sonarr',8989,'g',X'00','','{}','1',1,1,NULL)",[])?;
+        db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,defaults,version,enabled,checked_at,error) VALUES ('sonarr','Fixture Sonarr','sonarr','container-sonarr',8989,'g',X'00','','{}','1',1,1,NULL)",[])?;
         db.execute("INSERT INTO metadata_bindings VALUES ('show','sonarr','g','42',9,?1)",[refreshed])?;
         for (episode,user,manager_episode) in [("e1","alice",101),("e2","bob",102)] {
             db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,created_at) VALUES (?1,'ret-root','episode','season',?1,?1,1)",[episode])?;

@@ -3,6 +3,7 @@
 #[path = "../storage/managers.rs"]
 mod storage;
 
+pub(crate) mod access;
 mod bindings;
 mod connections;
 mod controls;
@@ -49,6 +50,7 @@ use std::sync::Arc;
 use thelxinoe_core::{Capability, id, now};
 pub(crate) struct Runtime {
     http: reqwest::Client,
+    proxy_http: reqwest::Client,
     guard: thelxinoe_core::operation_locks::OperationLocks,
     maintenance: tokio::sync::Mutex<std::sync::Weak<tokio::sync::OwnedRwLockWriteGuard<()>>>,
     connection_locks:
@@ -72,6 +74,12 @@ impl Runtime {
 
     pub fn new() -> anyhow::Result<Self> {
         Ok(Self {
+            proxy_http: reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .read_timeout(std::time::Duration::from_secs(90))
+                .build()?,
             http: reqwest::Client::builder()
                 .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
@@ -88,6 +96,7 @@ impl Runtime {
 }
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
+        .merge(access::router())
         .merge(requests::router())
         .merge(bindings::router())
         .merge(controls::router())
@@ -300,6 +309,8 @@ struct Service {
     kind: String,
     container: String,
     port: u16,
+    url_base: String,
+    access_revision: String,
     generation: String,
     credential: Vec<u8>,
     media_source: String,
@@ -314,6 +325,7 @@ async fn service(state: &AppState, id: &str) -> Result<Service> {
 struct Connection<'a> {
     state: &'a AppState,
     base: String,
+    url_base: String,
     key: String,
     kind: String,
 }
@@ -334,6 +346,7 @@ impl Connection<'_> {
         Ok(Connection {
             state,
             base,
+            url_base: s.url_base.clone(),
             key,
             kind: s.kind.clone(),
         })
@@ -359,9 +372,14 @@ impl Connection<'_> {
             .request(
                 method,
                 if self.kind == "bazarr" {
-                    format!("{}/api/{path}", self.base)
+                    format!("{}{}/api/{path}", self.base, self.url_base)
                 } else {
-                    format!("{}/api/v{}/{path}", self.base, self.version())
+                    format!(
+                        "{}{}/api/v{}/{path}",
+                        self.base,
+                        self.url_base,
+                        self.version()
+                    )
                 },
             )
             .header("X-Api-Key", &self.key)
@@ -403,6 +421,8 @@ struct Register {
     container_id: String,
     port: u16,
     api_key: String,
+    #[serde(default)]
+    url_base: String,
 }
 async fn register(
     State(state): State<AppState>,
@@ -426,14 +446,17 @@ async fn register_with_actor(
         return Err(ApiError::bad("Enter a manager type, name and API key"));
     }
     let _guard = state.managers.guard.service(&input.kind).await;
+    access::validate_base(&input.kind, &input.url_base)?;
     let (base, media_source) = evidence(&state, &input.container_id, input.port).await?;
     let connection = Connection {
         state: &state,
         base,
+        url_base: input.url_base.clone(),
         key: input.api_key.clone(),
         kind: input.kind.clone(),
     };
     let status = connection.get("system/status").await?;
+    access::check_reported_base(&input.kind, &input.url_base, &status)?;
     if !status["appName"]
         .as_str()
         .is_some_and(|name| name.eq_ignore_ascii_case(&input.kind))

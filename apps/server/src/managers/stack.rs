@@ -269,6 +269,7 @@ async fn action(
             return Err(ApiError::conflict("Controller did not confirm retirement"));
         }
         storage::retire(&state.db, key.clone(), p.user.id, false).await?;
+        state.managers.connection_wake.notify_one();
         state.emit(None, "stack.changed", json!({"id":key})).await?;
         return Ok(Json(result));
     }
@@ -392,8 +393,8 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
   let mut last=None;let mut registered=None;
    let service_name=if let Some(integration)=row.6.clone() {storage::provision_read_manager_services(integration, &state.db).await?}else{format!("Managed {}",row.0)};
   for _ in 0..60 {
-   let registration=if matches!(row.0.as_str(),"radarr"|"sonarr"|"lidarr") {super::register_with_actor(state.clone(),super::Register{name:service_name.clone(),kind:row.0.clone(),container_id:container.clone(),port:template["port"].as_u64().ok_or_else(unavailable)? as u16,api_key:secret.clone()},row.1.clone()).await}
-   else {support::provision(state.clone(),row.1.clone(),json!({"name":service_name,"kind":row.0,"container_id":container,"port":template["port"],"credentials":{"username":credentials.username,"secret":secret},"native_url":row.8})).await};
+   let registration=if matches!(row.0.as_str(),"radarr"|"sonarr"|"lidarr") {super::register_with_actor(state.clone(),super::Register{name:service_name.clone(),kind:row.0.clone(),container_id:container.clone(),port:template["port"].as_u64().ok_or_else(unavailable)? as u16,api_key:secret.clone(),url_base:thelxinoe_core::service_url_base(&row.0).into()},row.1.clone()).await}
+   else {support::provision(state.clone(),row.1.clone(),json!({"name":service_name,"kind":row.0,"container_id":container,"port":template["port"],"credentials":{"username":credentials.username,"secret":secret},"native_url":row.8,"url_base":thelxinoe_core::service_url_base(&row.0)})).await};
    match registration {Ok(Json(value))=>{registered=Some(value);break;},Err(error)=>last=Some(error)};
    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
   }
@@ -432,6 +433,7 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
     progress(state, &key, "complete", None, None)
         .await
         .map_err(|e| anyhow::anyhow!("{}", e.2))?;
+    state.managers.connection_wake.notify_one();
     state.emit(None, "stack.changed", json!({"id":key})).await?;
     Ok(())
 }
@@ -439,7 +441,7 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
 async fn wire(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
     Err(ApiError::conflict(
-        "Choose Connect for each optional connection in the service settings",
+        "Compatible services connect automatically; manage individual connections in service settings",
     ))
 }
 

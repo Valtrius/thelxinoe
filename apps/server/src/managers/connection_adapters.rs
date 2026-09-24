@@ -98,7 +98,7 @@ pub(super) async fn apply(
     let target =
         target.ok_or_else(|| Failure::unavailable("Target service is no longer connected"))?;
     let target_connection = open(state, target).await?;
-    let (source_address, target_address, target_names) = addresses(state, source, target).await?;
+    let (_, target_address, target_names) = addresses(state, source, target).await?;
     if link.kind == "subtitles" {
         return bazarr(
             state,
@@ -114,8 +114,8 @@ pub(super) async fn apply(
             "applications",
             target.kind.clone(),
             json!({
-            "prowlarrUrl":format!("http://{source_address}:{}",source.port),
-            "baseUrl":format!("http://{target_address}:{}",target.port),"apiKey":target_connection.key}),
+            "prowlarrUrl":format!("{}{}",c.base,c.url_base),
+            "baseUrl":format!("http://{target_address}:{}{}",target.port,target_connection.url_base),"apiKey":target_connection.key}),
         )
     } else {
         let download = support::load(state, &target.id).await?;
@@ -469,7 +469,8 @@ fn bazarr_fields(settings: &Value, kind: &str) -> Value {
         .or_else(|| section["port"].as_str()?.parse::<u64>().ok())
         .unwrap_or(0);
     json!({"enabled":enabled,"ip":section["ip"].as_str().unwrap_or(""),"port":port,
-        "apikey":section["apikey"].as_str().unwrap_or(""),"ssl":section["ssl"].as_bool().unwrap_or(false)})
+        "apikey":section["apikey"].as_str().unwrap_or(""),"ssl":section["ssl"].as_bool().unwrap_or(false),
+        "base_url":section["base_url"].as_str().unwrap_or("").trim_end_matches('/')})
 }
 async fn bazarr(
     state: &AppState,
@@ -478,6 +479,11 @@ async fn bazarr(
     target: Option<&Endpoint>,
     target_connection: Option<(&Connection<'_>, String)>,
 ) -> Attempt<()> {
+    // Bazarr persists both manager connections through one shared settings
+    // document. Serialize its read-modify-write cycle so parallel Radarr and
+    // Sonarr links cannot overwrite each other's use_* flag.
+    let mutex = lock(state, &format!("bazarr-config:{}", link.source));
+    let _guard = mutex.lock().await;
     // The target kind is retained even when Disconnect runs with a removed target.
     let target_kind = link.target_kind.clone();
     let settings = c.get("system/settings").await?;
@@ -505,6 +511,7 @@ async fn bazarr(
         wanted["port"] = json!(target.unwrap().port);
         wanted["apikey"] = json!(target_connection.key);
         wanted["ssl"] = json!(false);
+        wanted["base_url"] = json!(target_connection.url_base);
     }
     let hash = digest(&wanted);
     if current_hash != hash {
@@ -516,7 +523,7 @@ async fn bazarr(
             link.enabled.to_string(),
         )];
         if link.enabled {
-            for name in ["ip", "port", "apikey", "ssl"] {
+            for name in ["ip", "port", "apikey", "ssl", "base_url"] {
                 let value = wanted[name]
                     .as_str()
                     .map(str::to_owned)
@@ -527,7 +534,7 @@ async fn bazarr(
         let response = state
             .managers
             .http
-            .post(format!("{}/api/system/settings", c.base))
+            .post(format!("{}{}/api/system/settings", c.base, c.url_base))
             .header("X-API-KEY", &c.key)
             .form(&form)
             .send()

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hasNativeAccess } from './lib/services/presentation';
   import Notice from './lib/ui/Notice.svelte';
   import SectionHeading from './lib/ui/SectionHeading.svelte';
   import FormField from './lib/ui/FormField.svelte';
@@ -282,6 +283,7 @@
         }
       }
       if (user) {
+        if (returnToService()) return;
         await Promise.all([loadAppearance(user.id), loadDisplayPreferences()]);
         restoreNavigation();
         startEvents();
@@ -414,10 +416,19 @@
       password = '';
       passwordConfirmation = '';
       setup = false;
+      if (returnToService()) return;
       await Promise.all([loadAppearance(user.id), loadDisplayPreferences()]);
       restoreNavigation();
       startEvents();
     });
+  }
+  function returnToService() {
+    const kind = new URLSearchParams(location.search).get('service');
+    if (!desktop && user?.role === 'admin' && hasNativeAccess(kind)) {
+      location.replace(`/services/${kind}`);
+      return true;
+    }
+    return false;
   }
   async function logout() {
     await act(async () => {
@@ -640,6 +651,7 @@
     >
       <FormField
         >Username<input
+          {@attach (element) => element.focus()}
           class={formControlClass}
           bind:value={username}
           required

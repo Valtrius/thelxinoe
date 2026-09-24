@@ -5,6 +5,7 @@ mod storage;
 
 use super::*;
 use stack::controller;
+use thelxinoe_core::service_release::ServiceRelease;
 
 #[cfg(test)]
 #[path = "../storage/managers/update_tests.rs"]
@@ -358,13 +359,17 @@ async fn check_releases(state: &AppState, force: bool) -> Result<()> {
         .unwrap_or(Value::Null);
     let stack = controller(state, "", None).await?;
     for (service, kind, _, start, end, _) in pending {
-        let candidate = releases["items"]
+        let discovered = releases["items"]
             .as_array()
             .into_iter()
             .flatten()
-            .find(|r| r["kind"] == kind)
+            .find(|r| r["kind"] == kind);
+        let candidate = discovered
             .and_then(|r| r["image"].as_str())
             .map(str::to_owned);
+        let release = discovered
+            .and_then(|r| serde_json::from_value::<ServiceRelease>(r["release"].clone()).ok())
+            .filter(|r| Some(r.image.as_str()) == candidate.as_deref());
         let current = stack["items"]
             .as_array()
             .into_iter()
@@ -376,7 +381,7 @@ async fn check_releases(state: &AppState, force: bool) -> Result<()> {
         let found = candidate.clone();
         let mode = "inherit".to_owned();
         storage::check_releases_write_service_update_policy(
-            start, end, key, found, mode, &state.db,
+            start, end, key, found, release, mode, &state.db,
         )
         .await?;
         if changed {

@@ -13,7 +13,13 @@ pub(super) async fn policy(
 
 pub(super) async fn list(db: &Database) -> anyhow::Result<Value> {
     db.read("managers.updates.list", |db|{
-        let policies=db.prepare("SELECT service_id,policy,window_start,window_end,candidate,error,checked_at FROM service_update_policy WHERE service_id<>'default'")?.query_map([],|r|Ok(json!({"service_id":r.get::<_,String>(0)?,"policy":r.get::<_,String>(1)?,"window_start":r.get::<_,u8>(2)?,"window_end":r.get::<_,u8>(3)?,"candidate":r.get::<_,Option<String>>(4)?,"error":r.get::<_,Option<String>>(5)?,"checked_at":r.get::<_,i64>(6)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        // One cached release per service kind. Keep the image in the metadata so
+        // a concurrent/new discovery cannot attach an old version to a new image.
+        let policies=db.prepare("SELECT p.service_id,p.policy,p.window_start,p.window_end,p.candidate,p.error,p.checked_at,m.value FROM service_update_policy p LEFT JOIN stack_provisions s ON s.id=p.service_id LEFT JOIN settings m ON m.key='service.release.'||s.kind WHERE p.service_id<>'default'")?.query_map([],|r|{
+            let candidate = r.get::<_,Option<String>>(4)?;
+            let release = r.get::<_,Option<String>>(7)?.and_then(|raw| serde_json::from_str::<ServiceRelease>(&raw).ok()).filter(|release| Some(release.image.as_str()) == candidate.as_deref());
+            Ok(json!({"service_id":r.get::<_,String>(0)?,"policy":r.get::<_,String>(1)?,"window_start":r.get::<_,u8>(2)?,"window_end":r.get::<_,u8>(3)?,"candidate":candidate,"error":r.get::<_,Option<String>>(5)?,"checked_at":r.get::<_,i64>(6)?,"release":release}))
+        })?.collect::<rusqlite::Result<Vec<_>>>()?;
         let items=db.prepare("SELECT id,service_id,state,candidate,error,created_at FROM service_updates ORDER BY created_at DESC LIMIT 100")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"service_id":r.get::<_,String>(1)?,"state":r.get::<_,String>(2)?,"candidate":r.get::<_,Option<String>>(3)?,"error":r.get::<_,Option<String>>(4)?,"created_at":r.get::<_,i64>(5)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let services=db.prepare("SELECT id,kind FROM stack_provisions WHERE state='complete'")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"kind":r.get::<_,String>(1)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(json!({"policies":policies,"items":items,"services":services,"timezone":crate::timezones::server_zone(db)?.name()}))
@@ -168,10 +174,27 @@ pub(super) async fn check_releases_write_service_update_policy(
     end: u32,
     key: String,
     found: Option<String>,
+    release: Option<ServiceRelease>,
     mode: String,
     db: &Database,
 ) -> anyhow::Result<()> {
-    db.write("managers.updates.check_releases_write_service_update_policy", move|db|{db.execute("INSERT INTO service_update_policy(service_id,policy,window_start,window_end,checked_at,candidate,error) VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(service_id) DO UPDATE SET checked_at=excluded.checked_at,candidate=excluded.candidate,error=excluded.error",params![key,mode,start,end,now(),found,if found.is_none(){Some("Stable release discovery unavailable")}else{None}])?;Ok(())}).await
+    let release = release
+        .map(|value| serde_json::to_string(&value))
+        .transpose()?;
+    db.write("managers.updates.check_releases_write_service_update_policy", move|db|{
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute("INSERT INTO service_update_policy(service_id,policy,window_start,window_end,checked_at,candidate,error) VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(service_id) DO UPDATE SET checked_at=excluded.checked_at,candidate=excluded.candidate,error=excluded.error",params![key,mode,start,end,now(),found,if found.is_none(){Some("Stable release discovery unavailable")}else{None}])?;
+        if let Some(kind) = tx.query_row("SELECT kind FROM stack_provisions WHERE id=?1", [&key], |r| r.get::<_,String>(0)).optional()? {
+            let cache_key = format!("service.release.{kind}");
+            if let Some(release) = release {
+                tx.execute("INSERT INTO settings(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![cache_key,release])?;
+            } else {
+                tx.execute("DELETE FROM settings WHERE key=?1", [cache_key])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }).await
 }
 
 pub(super) struct DiscoveredCandidate {

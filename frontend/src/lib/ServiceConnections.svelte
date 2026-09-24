@@ -28,8 +28,26 @@
     onaction: (
       connection: ServiceConnection,
       action: 'connect' | 'disconnect' | 'retry',
-    ) => void;
+    ) => Promise<void>;
   } = $props();
+  const pending = $state<Record<string, string>>({});
+  const errors = $state<Record<string, string>>({});
+  async function run(
+    connection: ServiceConnection,
+    action: 'connect' | 'disconnect' | 'retry',
+  ) {
+    if (pending[connection.id]) return;
+    pending[connection.id] = action;
+    errors[connection.id] = '';
+    try {
+      await onaction(connection, action);
+    } catch (error) {
+      errors[connection.id] =
+        error instanceof Error ? error.message : String(error);
+    } finally {
+      delete pending[connection.id];
+    }
+  }
   const titles: Record<string, string> = {
     prowlarr: 'Applications',
     bazarr: 'Media managers',
@@ -71,6 +89,12 @@
       </p>
     {/if}
     {#each items as connection (connection.id)}
+      {@const connecting =
+        pending[connection.id] === 'connect' ||
+        (connection.enabled && connection.state === 'pending')}
+      {@const disconnecting =
+        pending[connection.id] === 'disconnect' ||
+        connection.state === 'disconnecting'}
       <div
         class="connection-row grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-2 border-b border-line py-3 last:border-b-0"
         aria-label={`${connection.target_name} connection`}
@@ -84,6 +108,11 @@
         {#if connection.error && (connection.enabled || connection.cleanup_pending)}
           <p class="text-[11px] leading-[1.6] col-span-full m-0" role="status">
             {connection.error}
+          </p>
+        {/if}
+        {#if errors[connection.id]}
+          <p class="col-span-full m-0 text-[11px] text-danger" role="alert">
+            {errors[connection.id]}
           </p>
         {/if}
         {#if connection.enabled && connection.state === 'unavailable'}
@@ -101,28 +130,31 @@
         <div
           class="col-start-2 row-start-1 m-0 flex flex-wrap items-center gap-2"
         >
-          {#if connection.enabled}
+          {#if connection.enabled || disconnecting}
             <Button
               variant="secondary"
               size="sm"
-              disabled={busy}
-              onclick={() => onaction(connection, 'disconnect')}
+              disabled={busy || !!pending[connection.id]}
+              loading={disconnecting || connecting}
+              onclick={() => void run(connection, 'disconnect')}
               >Disconnect</Button
             >
           {:else if !connection.cleanup_pending}
             <Button
               variant="secondary"
               size="sm"
-              disabled={busy}
-              onclick={() => onaction(connection, 'connect')}>Connect</Button
+              disabled={busy || !!pending[connection.id]}
+              loading={connecting}
+              onclick={() => void run(connection, 'connect')}>Connect</Button
             >
           {/if}
           {#if ['unavailable', 'conflict'].includes(connection.state) && (connection.enabled || connection.cleanup_pending)}
             <Button
               variant="secondary"
               size="sm"
-              disabled={busy}
-              onclick={() => onaction(connection, 'retry')}>Retry</Button
+              disabled={busy || !!pending[connection.id]}
+              loading={pending[connection.id] === 'retry'}
+              onclick={() => void run(connection, 'retry')}>Retry</Button
             >
           {/if}
         </div>

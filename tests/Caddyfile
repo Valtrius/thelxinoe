@@ -5,3 +5,6 @@ https://localhost:9443 {
     tls internal
     reverse_proxy server:8484
 }
+http://:9080 {
+    reverse_proxy server:8484
+}

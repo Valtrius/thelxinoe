@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import type { HTMLButtonAttributes } from 'svelte/elements';
+  import { LoaderCircle } from '@lucide/svelte';
   import { tv, type VariantProps } from 'tailwind-variants';
 
   const styles = tv({
@@ -33,17 +34,32 @@
 
   type StyleProps = VariantProps<typeof styles>;
   type Props = Omit<HTMLButtonAttributes, 'class'> &
-    StyleProps & { children: Snippet; class?: string };
+    StyleProps & { children: Snippet; class?: string; loading?: boolean };
   let {
     children,
     variant = 'default',
     size = 'default',
     class: className,
     type = 'button',
+    loading = false,
+    disabled = false,
     ...rest
   }: Props = $props();
 </script>
 
-<button {type} class={styles({ variant, size, class: className })} {...rest}>
-  {@render children()}
+<button
+  {type}
+  class={styles({ variant, size, class: [loading && 'relative', className] })}
+  {...rest}
+  disabled={disabled || loading}
+  aria-busy={loading || rest['aria-busy']}
+>
+  {#if loading}
+    <span class="opacity-0">{@render children()}</span>
+    <span class="absolute inset-0 grid place-items-center" aria-hidden="true">
+      <LoaderCircle size={16} class="animate-spin motion-reduce:animate-none" />
+    </span>
+  {:else}
+    {@render children()}
+  {/if}
 </button>

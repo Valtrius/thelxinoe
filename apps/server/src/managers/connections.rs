@@ -1,4 +1,4 @@
-//! Optional, independently retried service connections. Installation never enables a link.
+//! Automatic, independently retried service connections with durable manual disconnection.
 use super::*;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -38,6 +38,8 @@ pub(super) struct Link {
     pending_hash: Option<String>,
     prepared: bool,
     recreate_missing: bool,
+    #[serde(default)]
+    retain_missing: bool,
     updated_at: i64,
 }
 
@@ -67,9 +69,9 @@ impl Link {
             source_kind: source.kind.clone(),
             target_kind: target.kind.clone(),
             kind: kind(&source.kind, &target.kind).unwrap().into(),
-            enabled: false,
+            enabled: true,
             cleanup: false,
-            state: "available".into(),
+            state: "pending".into(),
             error: None,
             attempts: 0,
             next_attempt: 0,
@@ -78,6 +80,7 @@ impl Link {
             pending_hash: None,
             prepared: false,
             recreate_missing: false,
+            retain_missing: false,
             updated_at: now(),
         }
     }
@@ -174,10 +177,20 @@ async fn configure(
     };
     match input.action.as_str() {
         "connect" => {
+            if link.retain_missing && link.kind != "subtitles" {
+                // Servarr replacements own a fresh database. Bazarr disables
+                // retained settings in place, so it still needs their fingerprints
+                // to reconnect or reject manual changes.
+                link.upstream_id = None;
+                link.applied_hash = None;
+                link.pending_hash = None;
+                link.prepared = false;
+            }
             link.enabled = true;
             link.cleanup = false;
             link.state = "pending".into();
             link.recreate_missing = true;
+            link.retain_missing = false;
         }
         "disconnect" => {
             link.enabled = false;
@@ -277,7 +290,7 @@ async fn process(state: &AppState, key: &str) -> anyhow::Result<()> {
             link.attempts = 0;
             link.next_attempt = now() + 30;
             link.recreate_missing = false;
-            if target.is_none() {
+            if target.is_none() && !link.retain_missing {
                 storage::remove(&state.db, link.id).await?;
                 return Ok(());
             }
@@ -302,7 +315,20 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
     {
         return Ok(());
     }
-    let links = storage::list(&state.db).await?;
+    let links = {
+        let _lease = state.media_operations.read().await;
+        let endpoints = storage::endpoints(&state.db).await?;
+        let mut discovered = Vec::new();
+        for source in &endpoints {
+            for target in &endpoints {
+                if kind(&source.kind, &target.kind).is_some() {
+                    discovered.push(Link::new(source, target));
+                }
+            }
+        }
+        storage::discover(&state.db, discovered).await?;
+        storage::list(&state.db).await?
+    };
     let mut work = tokio::task::JoinSet::new();
     for link in links
         .into_iter()

@@ -1,3 +1,18 @@
+export function hasNativeAccess(kind: string | null) {
+  return [
+    'radarr',
+    'sonarr',
+    'lidarr',
+    'prowlarr',
+    'bazarr',
+    'nzbget',
+  ].includes(kind ?? '');
+}
+
+export function hasServiceUrlBase(kind: string | null) {
+  return hasNativeAccess(kind) && kind !== 'nzbget';
+}
+
 export type ContainerPort = {
   PrivatePort: number;
   PublicPort?: number;

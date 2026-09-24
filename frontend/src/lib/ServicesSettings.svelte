@@ -7,15 +7,23 @@
   import Notice from './ui/Notice.svelte';
   import ProgressBar from './ui/ProgressBar.svelte';
   import { onMount } from 'svelte';
-  import { api, serverUrl } from './api';
+  import { api } from './api';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
   import ConfirmDialog from './providers/components/ui/ConfirmDialog.svelte';
   import Switch from './ui/Switch.svelte';
-  import { Copy, ExternalLink, LoaderCircle } from '@lucide/svelte';
+  import { Copy, LoaderCircle } from '@lucide/svelte';
   import DownloadsTable from './services/DownloadsTable.svelte';
+  import NativeServiceLink from './services/NativeServiceLink.svelte';
+  import ServiceUpdateRelease, {
+    type ServiceRelease,
+  } from './services/ServiceUpdateRelease.svelte';
   import type { SupportDownload } from './services/downloads';
-  import { serviceUiUrl, type Container } from './services/presentation';
+  import {
+    hasNativeAccess,
+    hasServiceUrlBase,
+    type Container,
+  } from './services/presentation';
   import radarrIcon from './services/icons/radarr.png';
   import sonarrIcon from './services/icons/sonarr.png';
   import lidarrIcon from './services/icons/lidarr.png';
@@ -25,6 +33,7 @@
   import seerrIcon from './services/icons/seerr.png';
   import QualityProfileEditor from './services/QualityProfileEditor.svelte';
   import IndexerOnboarding from './services/IndexerOnboarding.svelte';
+  import ConnectionTestButton from './ui/ConnectionTestButton.svelte';
   import ServiceConnections, {
     type ServiceConnection,
   } from './ServiceConnections.svelte';
@@ -53,6 +62,8 @@
     kind: ServiceKind;
     container_id: string;
     port: number;
+    url_base: string;
+    access_url: string | null;
     version: string;
     defaults: Partial<ManagerDefaults>;
     checked_at: number;
@@ -65,7 +76,8 @@
     container_id: string;
     port: number;
     version: string;
-    native_url: string;
+    url_base: string;
+    access_url: string | null;
     checked_at: number;
     error?: string | null;
   };
@@ -75,15 +87,7 @@
     profiles: { id: number; name: string }[];
     metadata_profiles: { id: number; name: string }[];
   };
-  type SupportMissing = {
-    movie_id: number | null;
-    series_id: number | null;
-    episode_id: number | null;
-    title: string;
-    missing: unknown[];
-  };
   type SupportSnapshot = {
-    initialized?: boolean;
     health?: ({ message: string; type: string } | string)[];
     indexers?: {
       id: number;
@@ -97,8 +101,6 @@
     limit?: number;
     paused?: boolean;
     free_mb?: number;
-    movies?: SupportMissing[];
-    episodes?: SupportMissing[];
   };
   type StackService = {
     id: string;
@@ -126,7 +128,6 @@
     container_id: string | null;
     service_id: string | null;
     error: string | null;
-    native_url: string;
     origin: string;
   };
   type TransferReview = {
@@ -144,6 +145,7 @@
     window_start: number;
     window_end: number;
     candidate: string | null;
+    release?: ServiceRelease | null;
     checked_at: number;
     error: string | null;
   };
@@ -168,9 +170,9 @@
     port: number;
     username: string;
     secret: string;
-    nativeUrl: string;
+    urlBase: string;
   };
-  type InstallDraft = { hostPort: number; nativeUrl: string };
+  type InstallDraft = { hostPort: number };
   type DefaultsDraft = ManagerDefaults & { loaded: boolean };
   type UpdateDraft = {
     targetId: string | null;
@@ -274,7 +276,7 @@
           port: definition.internalPort,
           username: '',
           secret: '',
-          nativeUrl: '',
+          urlBase: '',
         } satisfies SetupDraft,
       ]),
     ) as Record<ServiceKind, SetupDraft>,
@@ -283,7 +285,7 @@
     Object.fromEntries(
       definitions.map((definition) => [
         definition.kind,
-        { hostPort: definition.hostPort, nativeUrl: '' } satisfies InstallDraft,
+        { hostPort: definition.hostPort } satisfies InstallDraft,
       ]),
     ) as Record<ServiceKind, InstallDraft>,
   );
@@ -330,11 +332,6 @@
   const managerOptions = $state<Partial<Record<ServiceKind, ManagerOptions>>>(
     {},
   );
-  const subtitle = $state({
-    language: 'en',
-    forced: false,
-    hearing: false,
-  });
 
   let managers = $state<ManagerService[]>([]),
     connections = $state<ServiceConnection[]>([]),
@@ -355,12 +352,11 @@
   const pendingActions = $state<
     Partial<Record<ServiceKind | 'general', boolean>>
   >({});
+  const pendingOperations = $state<Partial<Record<ServiceKind, boolean>>>({});
   const copyingCredentials = $state<
     Partial<Record<'username' | 'password', boolean>>
   >({});
   const feedback = $state<Partial<Record<ServiceKind | 'general', string>>>({});
-  const connectionTests = $state<Partial<Record<ServiceKind, string>>>({});
-  const connectionErrors = $state<Partial<Record<ServiceKind, string>>>({});
   let removalKind = $state<ServiceKind | null>(null);
   const loadErrors = $state({
     managers: '',
@@ -483,6 +479,25 @@
       !!activeUpdate(kind)
     );
   }
+  function serviceOperationActive(kind: ServiceKind) {
+    return (
+      !!pendingOperations[kind] ||
+      ['queued', 'installing', 'connecting'].includes(
+        provision(kind)?.state ?? '',
+      ) ||
+      !!activeUpdate(kind)
+    );
+  }
+  function canRetire(kind: ServiceKind) {
+    const item = provision(kind);
+    const live = runtime(kind);
+    return (
+      !serviceOperationActive(kind) &&
+      !!item &&
+      (live?.can_retire ||
+        (!live && ['blocked', 'retiring'].includes(item.state)))
+    );
+  }
   function status(kind: ServiceKind) {
     const item = provision(kind),
       live = runtime(kind);
@@ -530,16 +545,6 @@
       integration(definition)?.container_id;
     return containers.find((container) => container.id === id);
   }
-  function externalUrl(definition: Definition) {
-    const connected = integration(definition);
-    return serviceUiUrl(
-      provision(definition.kind)?.native_url ||
-        supportService(definition.kind)?.native_url,
-      containerFor(definition)?.ports ?? [],
-      connected?.port ?? definition.internalPort,
-      serverUrl() || window.location.origin,
-    );
-  }
   function canControl(kind: ServiceKind, action: string) {
     const live = runtime(kind);
     return (
@@ -562,7 +567,11 @@
     try {
       if (manager(kind) && runtime(kind)?.running !== false)
         await loadManagerOptions(kind);
-      else if (supportService(kind)) await refreshSupport(kind);
+      else if (
+        supportService(kind) &&
+        (kind === 'prowlarr' || kind === 'nzbget')
+      )
+        await refreshSupport(kind);
     } catch (error) {
       detailErrors[kind] = String(error);
     } finally {
@@ -727,12 +736,20 @@
     connection: ServiceConnection,
     action: 'connect' | 'disconnect' | 'retry',
   ) {
-    await api('/admin/service-connections', 'POST', {
-      source_id: connection.source_id,
-      target_id: connection.target_id,
-      action,
-    });
-    await loadConnections();
+    ++connectionLoad;
+    const updated = await api<ServiceConnection>(
+      '/admin/service-connections',
+      'POST',
+      {
+        source_id: connection.source_id,
+        target_id: connection.target_id,
+        action,
+      },
+    );
+    ++connectionLoad;
+    connections = connections.map((item) =>
+      item.id === updated.id ? updated : item,
+    );
   }
   async function work(
     action: () => Promise<void>,
@@ -766,6 +783,7 @@
         container_id: draft.container,
         port: draft.port,
         api_key: draft.secret,
+        url_base: draft.urlBase,
       });
     } else {
       await api('/admin/support', 'POST', {
@@ -777,18 +795,35 @@
           username: definition.kind === 'nzbget' ? draft.username : '',
           secret: draft.secret,
         },
-        native_url: draft.nativeUrl,
+        url_base: draft.urlBase,
       });
     }
     draft.secret = '';
     await refresh();
+  }
+  async function operate(
+    kind: ServiceKind,
+    action: () => Promise<void>,
+    success = '',
+  ) {
+    await work(
+      async () => {
+        pendingOperations[kind] = true;
+        try {
+          await action();
+        } finally {
+          delete pendingOperations[kind];
+        }
+      },
+      success,
+      kind,
+    );
   }
   async function installManaged(definition: Definition) {
     const draft = installs[definition.kind];
     await api('/admin/stack/install', 'POST', {
       kind: definition.kind,
       host_port: draft.hostPort,
-      native_url: draft.nativeUrl,
     });
     await refresh();
   }
@@ -822,19 +857,6 @@
     if (!service) return;
     await api(`/admin/managers/${service.id}/defaults`, 'PUT', value);
     service.defaults = value;
-  }
-  async function testManager(kind: ServiceKind) {
-    const service = manager(kind);
-    if (!service) return;
-    connectionTests[kind] = 'Testing…';
-    connectionErrors[kind] = '';
-    try {
-      await api(`/admin/managers/${service.id}/test`, 'POST');
-      connectionTests[kind] = 'Connection OK';
-    } catch (error) {
-      connectionTests[kind] = 'Test failed';
-      connectionErrors[kind] = String(error);
-    }
   }
   async function refreshSupport(kind: ServiceKind) {
     const service = supportService(kind);
@@ -927,7 +949,6 @@
       if (draft) draft.loaded = false;
       delete managerOptions[kind];
       delete snapshots[kind];
-      delete connectionTests[kind];
     }
     await refresh();
   }
@@ -1051,8 +1072,11 @@
         {@const review = transferReviews[service.kind]}
         {@const container = containerFor(service)}
         {@const state = status(service.kind)}
-        {@const url = externalUrl(service)}
+        {@const url = hasNativeAccess(service.kind)
+          ? attached?.access_url
+          : null}
         {@const progress = activity(service.kind)}
+        {@const operating = serviceOperationActive(service.kind)}
         <div
           class={[
             'rail-identity col-start-1 min-w-0 border-b border-line py-3.5 row-start-1 flex flex-col pt-0 compact:min-h-42.5',
@@ -1073,20 +1097,15 @@
             class="service-status mt-3.75 text-[11px]"
             tone={state.tone}>{state.label}</StatusIndicator
           >
-          {#if url}<div
+          {#if url && attached}<div
               class="service-url-line mt-3 flex min-h-4.5 min-w-0 items-center gap-1"
             >
-              <a
-                class="service-link flex w-fit max-w-full min-w-0 flex-[0_1_auto] items-center gap-1.25 text-[11px] text-accent [&_span]:min-w-0 [&_span]:truncate [&_svg]:shrink-0"
-                href={url}
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label={`Open ${service.label}: ${url}`}
-                ><span
-                  >{url.replace(/^https?:\/\//, '').replace(/\/$/, '')}</span
-                ><ExternalLink size={13} aria-hidden="true" /></a
-              >
-              {#if service.kind === 'nzbget' && nzbgetLoginTarget}
+              <NativeServiceLink
+                id={attached.id}
+                label={service.label}
+                path={url}
+              />
+              {#if service.kind === 'nzbget' && nzbgetLoginTarget && !operating}
                 <div class="ml-auto flex shrink-0 items-center gap-1">
                   <Button
                     variant="secondary"
@@ -1155,107 +1174,99 @@
           ]}
           inert={!active}
         >
-          {#if review}
-            <Button
-              size="form"
-              disabled={isBusy(service.kind) ||
-                (!!review.compose_project && !releasedCompose[service.kind])}
-              onclick={() =>
-                void work(
-                  () => adopt(service),
-                  `${service.label} ownership transfer queued.`,
-                )}>Take ownership</Button
-            >
-            <Button
-              size="form"
-              variant="secondary"
-              disabled={isBusy(service.kind)}
-              onclick={() => (transferReviews[service.kind] = null)}
-              >Cancel</Button
-            >
-          {:else if provisioned?.state === 'blocked'}
-            <Button
-              size="form"
-              disabled={isBusy(service.kind)}
-              onclick={() => void work(() => retryProvision(service.kind))}
-              >Retry setup</Button
-            >
-            {#if provisioned.origin === 'adopted' && !stackServices.some((entry) => entry.id === provisioned.id && !entry.transfer_pending)}<Button
+          {#if !operating}
+            {#if review}
+              <Button
+                size="form"
+                disabled={isBusy(service.kind) ||
+                  (!!review.compose_project && !releasedCompose[service.kind])}
+                onclick={() =>
+                  void operate(
+                    service.kind,
+                    () => adopt(service),
+                    `${service.label} ownership transfer queued.`,
+                  )}>Take ownership</Button
+              >
+              <Button
                 size="form"
                 variant="secondary"
                 disabled={isBusy(service.kind)}
-                onclick={() => void work(() => restoreOriginal(service.kind))}
-                >Restore original</Button
-              >{/if}
-          {:else if runtimeService && runtimeService.registered !== false && !setupActive(service.kind)}
-            {#if runtimeService.existence === 'present'}
-              {#each runtimeService.running ? ['restart', 'stop', 'reconcile'] : ['start', 'reconcile'] as action (action)}
-                <Button
-                  size="form"
-                  variant="secondary"
-                  disabled={!canControl(service.kind, action)}
-                  onclick={() =>
-                    void work(() => stackAction(service.kind, action))}
-                  >{action === 'reconcile'
-                    ? 'Repair configuration'
-                    : action[0].toUpperCase() + action.slice(1)}</Button
-                >
-              {/each}
-            {/if}
-            {#if runtimeService.can_recreate}<Button
+                onclick={() => (transferReviews[service.kind] = null)}
+                >Cancel</Button
+              >
+            {:else if provisioned?.state === 'blocked'}
+              <Button
                 size="form"
                 disabled={isBusy(service.kind)}
                 onclick={() =>
-                  void work(() => stackAction(service.kind, 'recreate'))}
-                >Recreate and start</Button
-              >{/if}
-          {:else if attached && !provisioned}
-            <Button
-              size="form"
-              variant="secondary"
-              disabled={isBusy(service.kind) || !!loadErrors.stack}
-              onclick={() => void work(() => previewAdoption(service))}
-              >Review ownership transfer</Button
-            >
-            {#if service.role === 'manager'}<Button
+                  void operate(service.kind, () =>
+                    retryProvision(service.kind),
+                  )}>Retry setup</Button
+              >
+              {#if provisioned.origin === 'adopted' && !stackServices.some((entry) => entry.id === provisioned.id && !entry.transfer_pending)}<Button
+                  size="form"
+                  variant="secondary"
+                  disabled={isBusy(service.kind)}
+                  onclick={() => void work(() => restoreOriginal(service.kind))}
+                  >Restore original</Button
+                >{/if}
+            {:else if runtimeService && runtimeService.registered !== false && !setupActive(service.kind)}
+              {#if runtimeService.existence === 'present'}
+                {#each runtimeService.running ? ['restart', 'stop', 'reconcile'] : ['start', 'reconcile'] as action (action)}
+                  <Button
+                    size="form"
+                    variant="secondary"
+                    disabled={!canControl(service.kind, action)}
+                    onclick={() =>
+                      void work(() => stackAction(service.kind, action))}
+                    >{action === 'reconcile'
+                      ? 'Repair configuration'
+                      : action[0].toUpperCase() + action.slice(1)}</Button
+                  >
+                {/each}
+              {/if}
+              {#if runtimeService.can_recreate}<Button
+                  size="form"
+                  disabled={isBusy(service.kind)}
+                  onclick={() =>
+                    void operate(service.kind, () =>
+                      stackAction(service.kind, 'recreate'),
+                    )}>Recreate and start</Button
+                >{/if}
+            {:else if attached && !provisioned}
+              <Button
                 size="form"
                 variant="secondary"
-                disabled={isBusy(service.kind)}
-                onclick={() => void work(() => testManager(service.kind))}
-                title={connectionErrors[service.kind] ||
-                  attached?.error ||
-                  undefined}
-                ><span
-                  class="connection-result inline-block w-25"
-                  aria-live="polite"
-                  >{connectionTests[service.kind] || 'Test connection'}</span
-                ></Button
+                disabled={isBusy(service.kind) || !!loadErrors.stack}
+                onclick={() => void work(() => previewAdoption(service))}
+                >Review ownership transfer</Button
+              >
+            {/if}
+            {#if canRetire(service.kind)}
+              <Button
+                size="form"
+                variant="secondary"
+                disabled={isBusy(service.kind) || setupActive(service.kind)}
+                onclick={() =>
+                  void work(() => stackAction(service.kind, 'retire'))}
+                >Retire and keep data</Button
+              >
+            {/if}
+            {#if provisioned && (runtimeService?.can_remove || provisioned.state === 'retiring')}
+              <Button
+                size="form"
+                variant="secondary"
+                disabled={isBusy(service.kind, true)}
+                onclick={() => {
+                  feedback[service.kind] = '';
+                  removalKind = service.kind;
+                }}>Remove service</Button
+              >
+            {/if}
+            {#if !attached && !provisioned && !runtimeService}<span
+                class="text-xs text-muted">Choose how to connect.</span
               >{/if}
           {/if}
-          {#if provisioned && (runtimeService?.can_retire || (!runtimeService && ['blocked', 'retiring'].includes(provisioned.state)))}
-            <Button
-              size="form"
-              variant="secondary"
-              disabled={isBusy(service.kind) || setupActive(service.kind)}
-              onclick={() =>
-                void work(() => stackAction(service.kind, 'retire'))}
-              >Retire and keep data</Button
-            >
-          {/if}
-          {#if provisioned && (runtimeService?.can_remove || provisioned.state === 'retiring')}
-            <Button
-              size="form"
-              variant="secondary"
-              disabled={isBusy(service.kind, true)}
-              onclick={() => {
-                feedback[service.kind] = '';
-                removalKind = service.kind;
-              }}>Remove service</Button
-            >
-          {/if}
-          {#if !attached && !provisioned && !runtimeService}<span
-              class="text-xs text-muted">Choose how to connect.</span
-            >{/if}
         </div>
         <dl
           class={[
@@ -1345,6 +1356,13 @@
             Thelxinoe stops the original container, disables its restart policy,
             copies its configuration, and starts the managed copy.
           </p>
+          {#if hasServiceUrlBase(selectedKind)}
+            <p class="my-2 text-[11px] leading-[1.6] text-muted">
+              The managed copy will use <code>/services/{selectedKind}</code> as its
+              URL Base. Thelxinoe updates connections it manages. Other API clients
+              must include this prefix after the service's address and port.
+            </p>
+          {/if}
           <dl class="review-paths my-3.75 grid gap-3">
             <div>
               <dt class="text-[9px] tracking-[0.07em] text-muted uppercase">
@@ -1391,16 +1409,13 @@
           class="work-section border-b border-line py-4 first-of-type:pt-0 last:border-b-0"
           aria-label="Service setup"
         >
-          <h3 class="mb-3.25 text-[12px] font-[650]">
-            Set up {definition.label}
-          </h3>
           <div class="setup-forms grid gap-5.5">
             <form
               class="grid gap-3 [&_label]:m-0"
               aria-label={`Install managed ${definition.label}`}
               onsubmit={(event) => {
                 event.preventDefault();
-                void work(() => installManaged(definition));
+                void operate(definition.kind, () => installManaged(definition));
               }}
             >
               <strong class="text-xs">Install and own it</strong>
@@ -1413,14 +1428,6 @@
                     max="65535"
                     bind:value={installs[definition.kind].hostPort}
                     required
-                  /></FormField
-                >
-                <FormField
-                  >Advanced UI address<input
-                    class={formControlClass}
-                    type="url"
-                    bind:value={installs[definition.kind].nativeUrl}
-                    placeholder="Optional"
                   /></FormField
                 >
               </div>
@@ -1500,13 +1507,13 @@
                   autocomplete="new-password"
                 /></FormField
               >
-              {#if definition.role === 'support'}
+              {#if hasServiceUrlBase(definition.kind)}
                 <FormField
-                  >Service UI address<input
+                  >Existing URL Base<input
                     class={formControlClass}
-                    type="url"
-                    bind:value={setup[definition.kind].nativeUrl}
-                    placeholder="https://service.example.com"
+                    bind:value={setup[definition.kind].urlBase}
+                    placeholder="Leave empty if the service has no URL Base"
+                    maxlength="160"
                   /></FormField
                 >
               {/if}
@@ -1519,422 +1526,326 @@
             </form>
           </div>
         </section>
-      {:else if setupActive(selectedKind)}
-        <section
-          class="work-section border-b border-line py-4 first-of-type:pt-0 last:border-b-0"
-        >
-          <h3 class="mb-3.25 text-[12px] font-[650]">
-            {activity(selectedKind)}
-          </h3>
-          <p class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted">
-            This view refreshes automatically as the service becomes available.
-          </p>
-        </section>
       {/if}
-      {#if connected}
-        <section
-          class="work-section border-b border-line py-4 first-of-type:pt-0 last:border-b-0"
-          aria-label={definition.role === 'manager'
-            ? 'Acquisition defaults'
-            : definition.kind === 'seerr'
-              ? 'Requests'
+      {#if connected && !setupActive(selectedKind)}
+        {#if definition.role === 'manager' || definition.kind === 'prowlarr' || definition.kind === 'nzbget'}
+          <section
+            class="work-section border-b border-line py-4 first-of-type:pt-0 last:border-b-0"
+            aria-label={definition.role === 'manager'
+              ? 'Acquisition defaults'
               : definition.kind === 'prowlarr'
                 ? 'Indexers'
-                : definition.kind === 'nzbget'
-                  ? 'Downloads'
-                  : 'Missing subtitles'}
-        >
-          <div
-            class="work-head mt-0 mr-7 mb-3 ml-0 flex items-center justify-between gap-3 compact:flex-wrap [&_h3]:m-0"
+                : 'Downloads'}
           >
-            <h3 class="mb-3.25 text-[12px] font-[650]">
-              {definition.role === 'manager'
-                ? 'Acquisition defaults'
-                : definition.kind === 'seerr'
-                  ? 'Requests'
+            <div
+              class="work-head mt-0 mr-7 mb-3 ml-0 flex items-center justify-between gap-3 compact:flex-wrap [&_h3]:m-0"
+            >
+              <h3 class="mb-3.25 text-[12px] font-[650]">
+                {definition.role === 'manager'
+                  ? 'Acquisition defaults'
                   : definition.kind === 'prowlarr'
                     ? 'Indexers'
-                    : definition.kind === 'nzbget'
-                      ? 'Downloads'
-                      : 'Missing subtitles'}
-            </h3>
-            {#if definition.role === 'manager' && (item || live)}
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={busy}
-                onclick={() => void work(() => testManager(selectedKind))}
-                title={connectionErrors[selectedKind] ||
-                  connected?.error ||
-                  undefined}
-                ><span
-                  class="connection-result inline-block w-25"
-                  aria-live="polite"
-                  >{connectionTests[selectedKind] || 'Test connection'}</span
-                ></Button
-              >
-            {/if}
-            {#if definition.kind === 'nzbget' && supportData}<Button
-                variant="secondary"
-                size="sm"
-                disabled={busy}
-                onclick={() =>
-                  void work(() =>
-                    supportCommand(
-                      'nzbget',
-                      supportData.paused ? 'resume_all' : 'pause_all',
-                    ),
-                  )}>{supportData.paused ? 'Resume all' : 'Pause all'}</Button
-              >{/if}
-          </div>
-          {#if detailErrors[selectedKind]}<Notice tone="danger" role="alert">
-              {detailErrors[selectedKind]}
-            </Notice>{/if}
-          {#if detailLoading[selectedKind] && !supportData && !defaults[selectedKind]?.loaded}<p
-              class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
-              role="status"
-            >
-              Loading service settings…
-            </p>{/if}
-          {#if definition.role === 'manager'}
-            {#if defaults[definition.kind]?.loaded}
-              {@const options = managerOptions[definition.kind]}
-              {@const draft = defaults[definition.kind]!}
-              {#if options}
-                {#key connected.id}<AutoSaveForm
-                    class="mt-3 grid gap-3 [&_label]:m-0"
-                    label={`${definition.label} acquisition defaults`}
-                    value={{
-                      root_folder: draft.root_folder,
-                      quality_profile: draft.quality_profile,
-                      metadata_profile: draft.metadata_profile,
-                      monitored: draft.monitored,
-                    }}
-                    onsave={(value) =>
-                      saveManagerDefaults(definition.kind, value)}
-                    onRevert={(value) => Object.assign(draft, value)}
-                    disabled={busy}
-                  >
-                    <p class="text-[11px] text-muted">
-                      Library folder: <code>{draft.root_folder}</code>
-                    </p>
-                    <FormField
-                      >Quality profile<select
-                        class={formControlClass}
-                        bind:value={draft.quality_profile}
-                        required
-                        >{#each options.profiles as option (option.id)}<option
-                            value={option.id}>{option.name}</option
-                          >{/each}</select
-                      ></FormField
-                    >
-                    {#if definition.kind === 'lidarr'}<FormField
-                        >Metadata profile<select
-                          class={formControlClass}
-                          bind:value={draft.metadata_profile}
-                          required
-                          >{#each options.metadata_profiles as option (option.id)}<option
-                              value={option.id}>{option.name}</option
-                            >{/each}</select
-                        ></FormField
-                      >{/if}
-                    <Switch bind:checked={draft.monitored} size="sm"
-                      >Monitor and search requests</Switch
-                    >
-                  </AutoSaveForm>{/key}
-                {#if ['radarr', 'sonarr'].includes(definition.kind)}<div
-                    class="mt-4"
-                  >
-                    {#key connected.id}<QualityProfileEditor
-                        serviceId={connected.id}
-                        created={async () => {
-                          draft.loaded = false;
-                          await loadManagerOptions(definition.kind);
-                        }}
-                      />{/key}
-                  </div>{/if}
-              {/if}
-            {/if}
-          {:else if definition.kind === 'seerr'}
-            <p class="text-xs leading-6 text-muted">
-              Discovery and requests are available on Home. Availability comes
-              from Radarr and Sonarr.
-            </p>
-            {#if supportData?.initialized === false}<Notice tone="warning"
-                >Seerr setup is still in progress.</Notice
-              >{/if}
-            <Button
-              class="mt-3"
-              variant="secondary"
-              size="sm"
-              disabled={busy}
-              onclick={() =>
-                void work(async () => {
-                  await api('/admin/seerr/sync', 'POST');
-                }, 'Service connections refreshed.')}
-              >Refresh Radarr and Sonarr connections</Button
-            >
-          {:else if supportData}
-            {#each supportData.health ?? [] as issue, index (index)}<Notice
-                tone="warning"
-              >
-                {typeof issue === 'string' ? issue : issue.message}
-              </Notice>{/each}
-            {#if selectedKind === 'prowlarr'}
-              {#if !supportData.indexers?.length}<p
-                  class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
-                >
-                  No indexers configured.
-                </p>{/if}
-              {#each supportData.indexers ?? [] as indexer (indexer.id)}
-                <div
-                  class="service-row flex items-center justify-between gap-3 border-b border-line py-3 text-[11px] [&>div]:min-w-0"
-                >
-                  <div>
-                    <strong>{indexer.name}</strong><span
-                      class="row-status mt-1 block text-[10px] text-muted"
-                      >{indexer.disabled_until
-                        ? `Unavailable until ${indexer.disabled_until}`
-                        : indexer.enabled
-                          ? 'Enabled'
-                          : 'Disabled'}</span
-                    >
-                  </div>
-                  <div class="row-actions flex flex-wrap items-center gap-2">
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      disabled={busy}
-                      onclick={() =>
-                        void work(() =>
-                          supportCommand('prowlarr', 'test', {
-                            item_id: indexer.id,
-                          }),
-                        )}>Test</Button
-                    >
-                    <Switch
-                      size="sm"
-                      checked={indexer.enabled}
-                      disabled={busy}
-                      onCheckedChange={(enabled) =>
-                        void work(() =>
-                          supportCommand(
-                            'prowlarr',
-                            enabled ? 'enable' : 'disable',
-                            { item_id: indexer.id },
-                          ),
-                        )}
-                      ><span class="sr-only">Enable {indexer.name}</span
-                      ></Switch
-                    >
-                  </div>
-                </div>
-              {/each}
-              {#key connected.id}<IndexerOnboarding
-                  serviceId={connected.id}
-                  added={() => refreshSupport('prowlarr')}
-                />{/key}
-            {:else if selectedKind === 'nzbget'}
-              <DownloadsTable
-                queue={supportData.queue ?? []}
-                history={supportData.history ?? []}
-                paused={supportData.paused}
-                {busy}
-                onaction={(action, id) =>
-                  void work(() =>
-                    supportCommand('nzbget', action, { item_id: id }),
-                  )}
-              />
-            {:else}
-              <div class="my-3 grid gap-3 [&_label]:m-0">
-                <FormField
-                  >Subtitle language<input
-                    class={formControlClass}
-                    bind:value={subtitle.language}
-                    minlength="2"
-                    maxlength="3"
-                    placeholder="en"
-                  /></FormField
-                >
-                <div class="flex flex-wrap gap-3">
-                  <Switch bind:checked={subtitle.forced} size="sm"
-                    >Forced subtitles</Switch
-                  >
-                  <Switch bind:checked={subtitle.hearing} size="sm"
-                    >Hearing impaired</Switch
-                  >
-                </div>
-              </div>
-              {#if !supportData.movies?.length && !supportData.episodes?.length}<p
-                  class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
-                >
-                  No missing subtitles reported. Configure language profiles and
-                  providers in Bazarr.
-                </p>{/if}
-              {#each [...(supportData.movies ?? []), ...(supportData.episodes ?? [])] as missing (`${missing.movie_id}:${missing.episode_id}`)}
-                <div class="border-t border-line py-2">
-                  <p
-                    class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
-                  >
-                    {missing.title}
-                  </p>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    disabled={busy}
-                    onclick={() =>
-                      void work(() =>
-                        supportCommand('bazarr', 'subtitles', {
-                          item_id: missing.movie_id ?? missing.episode_id,
-                          domain: missing.movie_id ? 'movies' : 'episodes',
-                          language: subtitle.language,
-                          forced: subtitle.forced,
-                          hearing_impaired: subtitle.hearing,
-                        }),
-                      )}>Find subtitles</Button
-                  >
-                </div>
-              {/each}
-            {/if}
-          {/if}
-        </section>
-        {#if !loadErrors.connections}<ServiceConnections
-            kind={selectedKind}
-            {connections}
-            {busy}
-            onaction={(connection, action) =>
-              void work(() => connectionAction(connection, action))}
-          />{/if}
-      {/if}
-      {#if item && (live?.can_retire || (!live && ['blocked', 'retiring'].includes(item.state)))}<Notice
-        >
-          Retiring removes the installation and its API connection. Appdata,
-          request history, and media files are kept.
-        </Notice>{/if}
-      <section
-        class="work-section border-b border-line py-4 first-of-type:pt-0 last:border-b-0"
-        aria-label="Updates"
-      >
-        <h3 class="mb-3.25 text-[12px] font-[650]">Updates</h3>
-        {#if target}
-          {#key target.id}<AutoSaveForm
-              class="grid gap-3 [&_label]:m-0"
-              label={`${definition.label} update settings`}
-              value={{
-                policy: servicePolicy.policy,
-                window_start: servicePolicy.start,
-                window_end: servicePolicy.end,
-              }}
-              onRevert={(previous) => {
-                servicePolicy.policy = previous.policy;
-                servicePolicy.start = previous.window_start;
-                servicePolicy.end = previous.window_end;
-              }}
-              onsave={(submitted) =>
-                api(
-                  `/admin/service-updates/policy/${target.id}`,
-                  'POST',
-                  submitted,
-                )}
-            >
-              {#snippet children(save)}
-                <UpdatePolicyFields
-                  bind:policy={servicePolicy.policy}
-                  bind:start={servicePolicy.start}
-                  bind:end={servicePolicy.end}
-                  {timezone}
-                  inherited={serverPolicy}
-                  onChange={() => void save()}
-                />
-              {/snippet}
-            </AutoSaveForm>{/key}
-          {#if policy?.candidate && policy.candidate !== live?.image}<p
-              class="candidate my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
-            >
-              Available image: <code>{policy.candidate}</code>
-            </p>
-          {:else if policy?.candidate && live?.image}<p
-              class="my-2 text-xs text-muted"
-            >
-              Up to date.
-            </p>
-          {:else if !policy?.checked_at}<p class="my-2 text-xs text-muted">
-              Waiting for the first automatic update check.
-            </p>{/if}
-          {#if policy?.checked_at}<p class="my-2 text-xs text-muted">
-              Last check: {new Date(policy.checked_at * 1000).toLocaleString(
-                undefined,
-                { timeZone: timezone, hour12: timeFormat === '12h' },
-              )}
-            </p>{/if}
-          {#if policy?.error}<Notice tone="warning" role="status">
-              {policy.error}
-            </Notice>{/if}
-          {#if policy?.candidate && policy.candidate !== live?.image && !policy.error}
-            <div class="row-actions flex flex-wrap items-center gap-2">
-              <Button
-                variant="secondary"
-                size="form"
-                disabled={busy}
-                onclick={() => void work(() => preflight(selectedKind))}
-                >Check compatibility</Button
-              >
-            </div>
-          {/if}
-          {#each serviceUpdatesList as update (update.id)}
-            <Notice
-              tone={[
-                'blocked',
-                'recovery-required',
-                'runtime-failure',
-                'rolled-back',
-              ].includes(update.state)
-                ? 'warning'
-                : 'info'}
-              role="status"
-            >
-              <strong
-                >{update.classification === 'incompatible'
-                  ? 'Update incompatible'
-                  : update.classification === 'unable-to-verify'
-                    ? 'Unable to verify update'
-                    : (stages[update.state] ?? update.state)}</strong
-              >
-              {#if update.error}<p
-                  class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
-                >
-                  {update.error}
-                </p>{/if}
-              {#if update.state === 'ready'}<Button
-                  size="sm"
-                  disabled={busy}
-                  onclick={() =>
-                    void work(() => updateAction(update.id, 'activate'))}
-                  >Install verified update</Button
-                >{/if}
-              {#if ['blocked', 'recovery-required'].includes(update.state)}<Button
+                    : 'Downloads'}
+              </h3>
+              {#if definition.kind === 'nzbget' && supportData}<Button
                   variant="secondary"
                   size="sm"
                   disabled={busy}
                   onclick={() =>
-                    void work(() => updateAction(update.id, 'recover'))}
-                  >Recover before activation</Button
+                    void work(() =>
+                      supportCommand(
+                        'nzbget',
+                        supportData.paused ? 'resume_all' : 'pause_all',
+                      ),
+                    )}>{supportData.paused ? 'Resume all' : 'Pause all'}</Button
                 >{/if}
-              {#if update.state === 'runtime-failure'}<p
-                  class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
+            </div>
+            {#if detailErrors[selectedKind]}<Notice tone="danger" role="alert">
+                {detailErrors[selectedKind]}
+              </Notice>{/if}
+            {#if detailLoading[selectedKind] && !supportData && !defaults[selectedKind]?.loaded}<p
+                class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
+                role="status"
+              >
+                Loading service settings…
+              </p>{/if}
+            {#if definition.role === 'manager'}
+              {#if defaults[definition.kind]?.loaded}
+                {@const options = managerOptions[definition.kind]}
+                {@const draft = defaults[definition.kind]!}
+                {#if options}
+                  {#key connected.id}<AutoSaveForm
+                      class="mt-3 grid gap-3 [&_label]:m-0"
+                      label={`${definition.label} acquisition defaults`}
+                      value={{
+                        root_folder: draft.root_folder,
+                        quality_profile: draft.quality_profile,
+                        metadata_profile: draft.metadata_profile,
+                        monitored: draft.monitored,
+                      }}
+                      onsave={(value) =>
+                        saveManagerDefaults(definition.kind, value)}
+                      onRevert={(value) => Object.assign(draft, value)}
+                      disabled={busy}
+                    >
+                      <FormField
+                        >Quality profile<select
+                          class={formControlClass}
+                          bind:value={draft.quality_profile}
+                          required
+                          >{#each options.profiles as option (option.id)}<option
+                              value={option.id}>{option.name}</option
+                            >{/each}</select
+                        ></FormField
+                      >
+                      {#if definition.kind === 'lidarr'}<FormField
+                          >Metadata profile<select
+                            class={formControlClass}
+                            bind:value={draft.metadata_profile}
+                            required
+                            >{#each options.metadata_profiles as option (option.id)}<option
+                                value={option.id}>{option.name}</option
+                              >{/each}</select
+                          ></FormField
+                        >{/if}
+                      <Switch bind:checked={draft.monitored} size="sm"
+                        >Monitor and search requests</Switch
+                      >
+                    </AutoSaveForm>{/key}
+                  {#if ['radarr', 'sonarr', 'lidarr'].includes(definition.kind)}<div
+                      class="mt-4"
+                    >
+                      {#key connected.id}<QualityProfileEditor
+                          serviceId={connected.id}
+                          created={async () => {
+                            draft.loaded = false;
+                            await loadManagerOptions(definition.kind);
+                          }}
+                        />{/key}
+                    </div>{/if}
+                {/if}
+              {/if}
+            {:else if supportData}
+              {#each supportData.health ?? [] as issue, index (index)}<Notice
+                  tone="warning"
                 >
-                  Review the updated service before an explicit restore.
-                </p>{/if}
-            </Notice>
-          {/each}
-        {:else}<p
-            class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
-          >
-            {connected
-              ? 'Take ownership to manage updates here.'
-              : 'Updates become available after managed setup.'}
-          </p>{/if}
-      </section>
+                  {typeof issue === 'string' ? issue : issue.message}
+                </Notice>{/each}
+              {#if selectedKind === 'prowlarr'}
+                {#if !supportData.indexers?.length}<p
+                    class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
+                  >
+                    No indexers configured.
+                  </p>{/if}
+                {#each supportData.indexers ?? [] as indexer (indexer.id)}
+                  <div
+                    class="service-row flex items-center justify-between gap-3 border-b border-line py-3 text-[11px] [&>div]:min-w-0"
+                  >
+                    <div>
+                      <strong>{indexer.name}</strong><span
+                        class="row-status mt-1 block text-[10px] text-muted"
+                        >{indexer.disabled_until
+                          ? `Unavailable until ${indexer.disabled_until}`
+                          : indexer.enabled
+                            ? 'Enabled'
+                            : 'Disabled'}</span
+                      >
+                    </div>
+                    <div class="row-actions flex flex-wrap items-center gap-2">
+                      <ConnectionTestButton
+                        size="sm"
+                        label="Test"
+                        disabled={busy}
+                        test={async () => {
+                          feedback.prowlarr = '';
+                          await supportCommand('prowlarr', 'test', {
+                            item_id: indexer.id,
+                          });
+                        }}
+                        onError={(error) =>
+                          (feedback.prowlarr =
+                            error instanceof Error
+                              ? error.message
+                              : String(error))}
+                      />
+                      <Switch
+                        size="sm"
+                        checked={indexer.enabled}
+                        disabled={busy}
+                        onCheckedChange={(enabled) =>
+                          void work(() =>
+                            supportCommand(
+                              'prowlarr',
+                              enabled ? 'enable' : 'disable',
+                              { item_id: indexer.id },
+                            ),
+                          )}
+                        ><span class="sr-only">Enable {indexer.name}</span
+                        ></Switch
+                      >
+                    </div>
+                  </div>
+                {/each}
+                {#key connected.id}<IndexerOnboarding
+                    serviceId={connected.id}
+                    added={() => refreshSupport('prowlarr')}
+                  />{/key}
+              {:else if selectedKind === 'nzbget'}
+                <DownloadsTable
+                  queue={supportData.queue ?? []}
+                  history={supportData.history ?? []}
+                  paused={supportData.paused}
+                  {busy}
+                  onaction={(action, id) =>
+                    void work(() =>
+                      supportCommand('nzbget', action, { item_id: id }),
+                    )}
+                />
+              {/if}
+            {/if}
+          </section>
+        {/if}
+        {#if !loadErrors.connections}<ServiceConnections
+            kind={selectedKind}
+            {connections}
+            {busy}
+            onaction={connectionAction}
+          />{/if}
+      {/if}
+      {#if canRetire(selectedKind)}<Notice>
+          Retiring removes the installation and its API connection. Appdata,
+          request history, and media files are kept.
+        </Notice>{/if}
+      {#if connected && !setupActive(selectedKind)}
+        <section
+          class="work-section border-b border-line py-4 first-of-type:pt-0 last:border-b-0"
+          aria-label="Updates"
+        >
+          <h3 class="mb-3.25 text-[12px] font-[650]">Updates</h3>
+          {#if target}
+            {#key target.id}<AutoSaveForm
+                class="grid gap-3 [&_label]:m-0"
+                label={`${definition.label} update settings`}
+                value={{
+                  policy: servicePolicy.policy,
+                  window_start: servicePolicy.start,
+                  window_end: servicePolicy.end,
+                }}
+                onRevert={(previous) => {
+                  servicePolicy.policy = previous.policy;
+                  servicePolicy.start = previous.window_start;
+                  servicePolicy.end = previous.window_end;
+                }}
+                onsave={(submitted) =>
+                  api(
+                    `/admin/service-updates/policy/${target.id}`,
+                    'POST',
+                    submitted,
+                  )}
+              >
+                {#snippet children(save)}
+                  <UpdatePolicyFields
+                    bind:policy={servicePolicy.policy}
+                    bind:start={servicePolicy.start}
+                    bind:end={servicePolicy.end}
+                    {timezone}
+                    inherited={serverPolicy}
+                    onChange={() => void save()}
+                  />
+                {/snippet}
+              </AutoSaveForm>{/key}
+            {#if policy?.candidate && policy.candidate !== live?.image}
+              <ServiceUpdateRelease
+                image={policy.candidate}
+                installedVersion={connected?.version}
+                release={policy.release}
+              />
+            {:else if policy?.candidate && live?.image}<p
+                class="my-2 text-xs text-muted"
+              >
+                Up to date.
+              </p>
+            {:else if !policy?.checked_at}<p class="my-2 text-xs text-muted">
+                Waiting for the first automatic update check.
+              </p>{/if}
+            {#if policy?.checked_at}<p class="my-2 text-xs text-muted">
+                Last check: {new Date(policy.checked_at * 1000).toLocaleString(
+                  undefined,
+                  { timeZone: timezone, hour12: timeFormat === '12h' },
+                )}
+              </p>{/if}
+            {#if policy?.error}<Notice tone="warning" role="status">
+                {policy.error}
+              </Notice>{/if}
+            {#if policy?.candidate && policy.candidate !== live?.image && !policy.error}
+              <div class="row-actions flex flex-wrap items-center gap-2">
+                <Button
+                  variant="secondary"
+                  size="form"
+                  disabled={busy}
+                  onclick={() =>
+                    void operate(selectedKind, () => preflight(selectedKind))}
+                  >Check compatibility</Button
+                >
+              </div>
+            {/if}
+            {#each serviceUpdatesList as update (update.id)}
+              <Notice
+                tone={[
+                  'blocked',
+                  'recovery-required',
+                  'runtime-failure',
+                  'rolled-back',
+                ].includes(update.state)
+                  ? 'warning'
+                  : 'info'}
+                role="status"
+              >
+                <strong
+                  >{update.classification === 'incompatible'
+                    ? 'Update incompatible'
+                    : update.classification === 'unable-to-verify'
+                      ? 'Unable to verify update'
+                      : (stages[update.state] ?? update.state)}</strong
+                >
+                {#if update.error}<p
+                    class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
+                  >
+                    {update.error}
+                  </p>{/if}
+                {#if update.state === 'ready'}<Button
+                    size="sm"
+                    disabled={busy}
+                    onclick={() =>
+                      void operate(selectedKind, () =>
+                        updateAction(update.id, 'activate'),
+                      )}>Install verified update</Button
+                  >{/if}
+                {#if ['blocked', 'recovery-required'].includes(update.state)}<Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={busy}
+                    onclick={() =>
+                      void operate(selectedKind, () =>
+                        updateAction(update.id, 'recover'),
+                      )}>Recover before activation</Button
+                  >{/if}
+                {#if update.state === 'runtime-failure'}<p
+                    class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
+                  >
+                    Review the updated service before an explicit restore.
+                  </p>{/if}
+              </Notice>
+            {/each}
+          {:else}<p
+              class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
+            >
+              {connected
+                ? 'Take ownership to manage updates here.'
+                : 'Updates become available after managed setup.'}
+            </p>{/if}
+        </section>
+      {/if}
     </div>
   </article>
   {#if feedback.general || approvalUsers.length}<footer

@@ -1,6 +1,7 @@
 //! Constrained managed-service lifecycle over the private controller socket.
 use crate::{
     docker::{Result, engine, request, unavailable},
+    identity::Identity,
     policy, store, templates,
 };
 use axum::{
@@ -330,6 +331,7 @@ async fn bootstrap() -> Result<Deployment> {
         ));
     }
     let server = candidates.remove(0);
+    Identity::from_user(&server["Config"])?;
     let networks = server["NetworkSettings"]["Networks"]
         .as_object()
         .ok_or_else(unavailable)?;
@@ -459,12 +461,14 @@ fn app_config(t: templates::Template, input: &Install, directory: &std::path::Pa
             )
         }
         "bazarr" => format!(
-            "auth:\n  apikey: {}\ngeneral:\n  ip: 0.0.0.0\n  port: 6767\n  use_sonarr: false\n  use_radarr: false\n",
-            input.secret
+            // Bazarr can parse Docker's hexadecimal hostname as a number and
+            // then reject every settings save. Use a stable string instead.
+            "auth:\n  apikey: {}\ngeneral:\n  hostname: thelxinoe-bazarr\n  ip: 0.0.0.0\n  port: 6767\n  base_url: {}\n  use_sonarr: false\n  use_radarr: false\n",
+            input.secret, thelxinoe_core::service_url_base(t.kind)
         ),
         _ => format!(
-            "<Config><BindAddress>*</BindAddress><Port>{}</Port><EnableSsl>False</EnableSsl><LaunchBrowser>False</LaunchBrowser><ApiKey>{}</ApiKey><AuthenticationMethod>External</AuthenticationMethod><AuthenticationRequired>DisabledForLocalAddresses</AuthenticationRequired><Branch>master</Branch><LogLevel>info</LogLevel><UpdateAutomatically>False</UpdateAutomatically></Config>",
-            t.port, input.secret
+            "<Config><BindAddress>*</BindAddress><Port>{}</Port><UrlBase>{}</UrlBase><EnableSsl>False</EnableSsl><LaunchBrowser>False</LaunchBrowser><ApiKey>{}</ApiKey><AuthenticationMethod>External</AuthenticationMethod><AuthenticationRequired>Enabled</AuthenticationRequired><Branch>master</Branch><LogLevel>info</LogLevel><UpdateAutomatically>False</UpdateAutomatically></Config>",
+            t.port, thelxinoe_core::service_url_base(t.kind), input.secret
         ),
     };
     let file = match t.kind {
@@ -475,9 +479,8 @@ fn app_config(t: templates::Template, input: &Install, directory: &std::path::Pa
     };
     persisted(store::write(&directory.join(file), text.as_bytes()))?;
     if t.kind == "seerr" {
-        // The controller runs as 0:10001 with no capabilities in the test
-        // stack. Group access lets Seerr's 10001:10001 process manage its data
-        // without requiring CAP_CHOWN.
+        // The controller and Seerr share the deployment's configured group.
+        // Group access lets Seerr manage its data without requiring CAP_CHOWN.
         use std::os::unix::fs::PermissionsExt;
         persisted(
             std::fs::set_permissions(directory.join(file), std::fs::Permissions::from_mode(0o660))
@@ -501,6 +504,7 @@ async fn install(
         return Err(bad("Choose a nonprivileged local port"));
     }
     let d = bootstrap().await?;
+    let identity = Identity::from_user(&d.server["Config"])?;
     let containers = ensure_kind_available(&d, &input.kind).await?;
     if t.media {
         // Compose edits must not silently provision with a stale stored layout.
@@ -536,9 +540,9 @@ async fn install(
         mounts.push(json!({"Type":"bind","Source":d.media_source,"Target":"/media"}));
     }
     let port = format!("{}/tcp", t.port);
-    let mut spec = json!({"Image":image,"Env":["PUID=10001","PGID=10001","TZ=UTC"],"Labels":{"app.thelxinoe.managed-id":key,"app.thelxinoe.deployment":d.id,"app.thelxinoe.kind":t.kind},"HostConfig":{"Mounts":mounts,"NetworkMode":d.network,"RestartPolicy":{"Name":"unless-stopped"},"PortBindings":{port:[{"HostIp":"127.0.0.1","HostPort":input.host_port.to_string()}]}},"NetworkingConfig":{"EndpointsConfig":{d.network.clone():{"Aliases":[format!("thelxinoe-{}",t.kind)]}}}});
+    let mut spec = json!({"Image":image,"Env":[format!("PUID={}",identity.uid),format!("PGID={}",identity.gid),"TZ=UTC".to_owned()],"Labels":{"app.thelxinoe.managed-id":key,"app.thelxinoe.deployment":d.id,"app.thelxinoe.kind":t.kind},"HostConfig":{"Mounts":mounts,"NetworkMode":d.network,"RestartPolicy":{"Name":"unless-stopped"},"PortBindings":{port:[{"HostIp":"127.0.0.1","HostPort":input.host_port.to_string()}]}},"NetworkingConfig":{"EndpointsConfig":{d.network.clone():{"Aliases":[format!("thelxinoe-{}",t.kind)]}}}});
     if t.kind == "seerr" {
-        spec["User"] = json!("10001:10001");
+        spec["User"] = json!(identity.user());
         spec["Env"] = json!(["CONFIG_DIRECTORY=/config", "TZ=UTC"]);
     }
     let mut s = Managed {
@@ -694,18 +698,24 @@ async fn pull_image(image: &str) -> Result<()> {
     ))
 }
 async fn releases() -> Result<Json<Value>> {
-    let mut results = Vec::new();
+    let mut pending = tokio::task::JoinSet::new();
     for t in templates::TEMPLATES {
-        let result = engine(&format!("/distribution/{}:latest/json", t.repository)).await;
-        let digest = result
-            .ok()
-            .and_then(|v| v["Descriptor"]["digest"].as_str().map(str::to_owned))
-            .filter(|v| {
-                v.starts_with("sha256:")
-                    && v.len() == 71
-                    && v[7..].bytes().all(|b| b.is_ascii_hexdigit())
-            });
-        results.push(json!({"kind":t.kind,"channel":"stable","image":digest.map(|d|format!("{}@{d}",t.repository)),"tested_image":format!("{}@{}",t.repository,t.digest)}));
+        pending.spawn(async move {
+            let result = engine(&format!("/distribution/{}:latest/json", t.repository)).await;
+            let digest = result.ok()
+                .and_then(|v| v["Descriptor"]["digest"].as_str().map(str::to_owned))
+                .filter(|v| v.starts_with("sha256:") && v.len() == 71 && v[7..].bytes().all(|b| b.is_ascii_hexdigit()));
+            let image = digest.map(|d| format!("{}@{d}", t.repository));
+            let release = match &image {
+                Some(image) => Some(crate::service_releases::metadata(t, image).await),
+                None => None,
+            };
+            json!({"kind":t.kind,"channel":"stable","image":image,"release":release,"tested_image":format!("{}@{}",t.repository,t.digest)})
+        });
+    }
+    let mut results = Vec::new();
+    while let Some(result) = pending.join_next().await {
+        results.push(result.map_err(|_| unavailable())?);
     }
     Ok(Json(json!({"items":results})))
 }

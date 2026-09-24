@@ -556,7 +556,7 @@ async fn sync_manager(c: &Connection<'_>, s: &Service, defaults: &Defaults) -> R
         .into_iter()
         .flatten()
         .find(|v| v["name"] == owned_name);
-    let body = json!({"name":owned_name,"hostname":url.host_str(),"port":s.port,"apiKey":manager.key,"useSsl":false,"baseUrl":"","activeProfileId":defaults.quality_profile,"activeProfileName":name,"activeDirectory":defaults.root_folder,"is4k":false,"isDefault":true,"syncEnabled":true,"preventSearch":!defaults.monitored,"minimumAvailability":"released","enableSeasonFolders":true});
+    let body = json!({"name":owned_name,"hostname":url.host_str(),"port":s.port,"apiKey":manager.key,"useSsl":false,"baseUrl":manager.url_base,"activeProfileId":defaults.quality_profile,"activeProfileName":name,"activeDirectory":defaults.root_folder,"is4k":false,"isDefault":true,"syncEnabled":true,"preventSearch":!defaults.monitored,"minimumAvailability":"released","enableSeasonFolders":true});
     if previous.is_some_and(|previous| {
         body.as_object()
             .unwrap()

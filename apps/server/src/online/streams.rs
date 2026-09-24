@@ -172,6 +172,16 @@ pub(crate) async fn create_with_delivery(
         },
     )
     .await?;
+    // At the beginning, YouTube's segmented input can fill the browser's remux
+    // buffer faster than an open-ended file request. Resumes retain the file
+    // source and its index for keyframe seeking.
+    if start == 0.0 && !native && prepared.remux {
+        let selected = formats::choose(&prepared.formats, &options.quality, &options.capabilities)?;
+        if let Some(segmented) = formats::segmented(&prepared.formats, selected) {
+            prepared.source = segmented.source.clone();
+            prepared.native = segmented.native;
+        }
+    }
     state
         .online
         .streams
@@ -259,11 +269,16 @@ pub(crate) async fn seek(
     if source.source.live {
         return Err(ApiError::bad("Seeking is not available for live streams"));
     }
+    let input = if source.remux && !source.formats.is_empty() {
+        &formats::choose(&source.formats, &options.quality, &options.capabilities)?.source
+    } else {
+        &source.source
+    };
     state
         .playback
         .start_remote(
             id,
-            &source.source,
+            input,
             options,
             if source.remux { "remux" } else { "transcode" },
             position,

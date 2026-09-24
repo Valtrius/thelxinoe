@@ -1,9 +1,23 @@
 use serde::{Deserialize, Serialize};
 
 pub mod operation_locks;
+pub mod service_release;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const API_VERSION: u32 = 1;
+
+/// Native UI mounts for newly provisioned services. Attached services retain
+/// their explicitly configured URL base.
+pub fn service_url_base(kind: &str) -> &'static str {
+    match kind {
+        "radarr" => "/services/radarr",
+        "sonarr" => "/services/sonarr",
+        "lidarr" => "/services/lidarr",
+        "prowlarr" => "/services/prowlarr",
+        "bazarr" => "/services/bazarr",
+        _ => "",
+    }
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

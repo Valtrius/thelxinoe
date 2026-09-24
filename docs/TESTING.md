@@ -9,11 +9,24 @@ npm run validate
 npm run ci
 npm run test:ui:layout
 npm run test:ui:player
+npm run test:service-access
 ```
 
 [Scripts](../package.json) and [CI runner](../scripts/ci.mjs) define the checks. On Windows, `ci:server` runs Linux checks via [Dockerfile.verify](../scripts/Dockerfile.verify); `ci:desktop` runs native checks. `ci:containers` deletes its disposable `thelxinoe-test` and `thelxinoe-playback` containers/volumes before and after running. UI suites intercept API requests and use no server account; player tests need FFmpeg.
 
 ## Test artifacts
+
+Native Radarr/Sonarr/Lidarr/Prowlarr/Bazarr/NZBGet checks use fresh Docker storage and save safe results and
+screenshots in `test-results/service-access`. The [runner](../scripts/test-service-access.mjs)
+builds its images; pass `-- --built` only after building the current server and
+controller as `thelxinoe-service-{server,controller}:local`. See the
+[failure contract](../tests/service-access.md). Native browser traces are omitted
+because service responses contain API keys.
+
+On Windows with Linux Docker available, `npm run test:service-access -- --desktop`
+also builds an isolated Tauri profile and verifies the OS browser handoff from a
+real keyring session. It opens the fixture in the default browser. The regular
+container CI lane runs the portable service/browser checks.
 
 Playwright saves an HTML report under `playwright-report/{e2e,layout,player}`
 and machine-readable results and traces under `test-results/{e2e,layout,player}`,
@@ -21,6 +34,12 @@ including successful runs. Open a report with, for example,
 `npx playwright show-report playwright-report/layout`. CI uploads these artifacts
 even when a test fails. The standalone Docker scripts save their fixture
 results and screenshots under `.local/` as specified in each script.
+
+Run `node scripts/test-container-identity.mjs` to build and verify default/custom
+UID/GID deployments with real Linux file permissions, managed-service updates,
+adoption, product validation and saved Compose recreation. It removes its
+disposable containers/volumes and writes `.local/container-identity-result.json`.
+Use `--built` with current `thelxinoe-service-{server,controller}:local` images.
 
 ## Browser fixtures
 
@@ -68,7 +87,7 @@ node scripts/test-twitch-playback.mjs
 node scripts/test-kick-playback.mjs CURRENTLY_LIVE_CHANNEL
 ```
 
-Live scripts need configured applications, a linked YouTube/Twitch account and available public media. Browser decoding checks do not establish long-running live/ad behavior. Startup measurements: [browser](../scripts/benchmark-online-player.mjs), [native](../scripts/benchmark-native-player.mjs), [Streamlink](../scripts/benchmark-online-startup.py), [YouTube](../scripts/benchmark-youtube-startup.py). Select an idle development instance with `THELXINOE_BENCHMARK_URL`; native measurements also need `THELXINOE_BENCHMARK_CDP`.
+Live scripts need configured applications, a linked YouTube/Twitch account and available public media. Browser decoding checks do not establish long-running live/ad behavior. Startup measurements: [Twitch browser](../scripts/benchmark-online-player.mjs), [YouTube browser](../scripts/benchmark-youtube-player.mjs) (pass watchlist video IDs), [native](../scripts/benchmark-native-player.mjs), [Streamlink](../scripts/benchmark-online-startup.py), [YouTube extraction](../scripts/benchmark-youtube-startup.py). Select an idle development instance with `THELXINOE_BENCHMARK_URL`; native measurements also need `THELXINOE_BENCHMARK_CDP`.
 
 Windows: build with `npm run build:desktop`, set `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9223` and a separate `WEBVIEW2_USER_DATA_FOLDER`, then launch `target/release/thelxinoe-desktop.exe`. Run [test-desktop.mjs](../scripts/test-desktop.mjs) against the proxy fixture or [test-native-playback.mjs](../scripts/test-native-playback.mjs) against the playback fixture. Close the test app afterward. Upstream MPV/plugin qualification: `cargo test -p thelxinoe-desktop qualify_upstream_packages -- --ignored --nocapture`.
 

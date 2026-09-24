@@ -3,9 +3,13 @@ mod contract;
 #[cfg(unix)]
 mod docker;
 #[cfg(unix)]
+mod identity;
+#[cfg(unix)]
 mod lease;
 #[cfg(unix)]
 mod policy;
+#[cfg(unix)]
+mod service_releases;
 #[cfg(unix)]
 mod stack;
 #[cfg(unix)]
@@ -27,6 +31,7 @@ async fn main() -> anyhow::Result<()> {
             }
             "snapshot-copy" => state_copy::run(false),
             "snapshot-restore" => state_copy::run(true),
+            "adoption-copy" => state_copy::adopt(&std::env::args().nth(2).unwrap_or_default()),
             "appdata-remove" => state_copy::remove(),
             "verify-state" => {
                 let root = std::path::Path::new("/state");
@@ -78,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
             );
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         };
+        identity::prepare_runtime(&directory).await?;
         let socket = directory.join("controller.sock");
         stack::retain_worker_image().await?;
         stack::product::startup().await?;

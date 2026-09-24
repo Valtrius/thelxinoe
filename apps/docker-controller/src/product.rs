@@ -256,19 +256,26 @@ async fn worker(u: &Update, label: &str, spec: Value) -> Result<()> {
     result?;
     cleaned
 }
-fn worker_spec(u: &Update, image: &str, command: &str, mounts: Value) -> Value {
-    json!({"Image":image,"Cmd":[command],"Labels":{"app.thelxinoe.product-update":u.id,"app.thelxinoe.deployment":u.old.id},"Healthcheck":{"Test":["NONE"]},"HostConfig":{"NetworkMode":"none","ReadonlyRootfs":true,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],"Memory":1073741824u64,"NanoCpus":2000000000u64,"PidsLimit":64,"Tmpfs":{"/tmp":"rw,noexec,nosuid,size=64m","/var/cache/thelxinoe":"rw,nosuid,size=64m,uid=10001,gid=10001"},"Mounts":mounts}})
+fn worker_spec(u: &Update, image: &str, command: &str, mounts: Value) -> Result<Value> {
+    let identity = Identity::from_user(&u.old.server["Config"])?;
+    let user = if command == "controller-probe" {
+        u.old.controller["Config"]["User"].clone()
+    } else {
+        json!(identity.user())
+    };
+    Ok(
+        json!({"Image":image,"User":user,"Cmd":[command],"Labels":{"app.thelxinoe.product-update":u.id,"app.thelxinoe.deployment":u.old.id},"Healthcheck":{"Test":["NONE"]},"HostConfig":{"NetworkMode":"none","ReadonlyRootfs":true,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],"Memory":1073741824u64,"NanoCpus":2000000000u64,"PidsLimit":64,"Tmpfs":{"/tmp":"rw,noexec,nosuid,size=64m","/var/cache/thelxinoe":format!("rw,nosuid,size=64m,uid={},gid={}",identity.uid,identity.gid)},"Mounts":mounts}}),
+    )
 }
 async fn verify_state(u: &Update, leaf: &str) -> Result<u32> {
-    let mut spec = worker_spec(
+    // SQLite may create WAL/SHM even for a read-only integrity connection.
+    // Every state worker uses the server identity so later validation can write them.
+    let spec = worker_spec(
         u,
         &updates::current_image().await?,
         "verify-state",
         json!([{"Type":"bind","Source":host(u,leaf),"Target":"/state"}]),
-    );
-    // SQLite may create WAL/SHM even for a read-only integrity connection. Use the
-    // server UID so the later isolated migration can write those sidecars.
-    spec["User"] = u.old.server["Config"]["User"].clone();
+    )?;
     worker(u, "verify", spec).await?;
     let report: Value = persisted(store::read(
         &dir(&u.id).join(leaf).join(".snapshot-validation.json"),
@@ -294,7 +301,7 @@ async fn server_check(
         image,
         "validate-state",
         json!([{"Type":"bind","Source":host(u,leaf),"Target":"/var/lib/thelxinoe"}]),
-    );
+    )?;
     worker(u, "validate", spec).await?;
     let value: Value = persisted(store::read(&report))?;
     if value["version"] != version
@@ -371,7 +378,7 @@ async fn prepare(u: &mut Update) -> Result<()> {
         &manifest.controller.config_digest,
         "controller-probe",
         json!([{"Type":"bind","Source":host(u,"probe"),"Target":"/probe"}]),
-    );
+    )?;
     worker(u, "probe", spec).await?;
     let probe: Value = persisted(store::read(&dir(&u.id).join("probe/controller.json")))?;
     if probe["version"] != manifest.version || probe["recovery_protocol"] != 1 {
@@ -508,7 +515,7 @@ async fn replace(u: &mut Update) -> Result<()> {
         &manifest.server.config_digest,
         "validate-state",
         json!([{"Type":"bind","Source":u.source,"Target":"/var/lib/thelxinoe"}]),
-    );
+    )?;
     spec["Labels"]["app.thelxinoe.validation"] = json!("true");
     worker(u, "live-validation", spec).await?;
     // Copy the report with trusted code, then inspect the version/schema contract.

@@ -230,29 +230,70 @@ async fn submit(
         .await
         .map_err(|_| unavailable())?;
     if !response.status().is_success() {
-        // Validation strings may contain submitted secrets. Return only field names.
         let errors = read(response).await.unwrap_or(Value::Null);
-        let fields = errors
+        let has_api_key = body["fields"]
             .as_array()
             .into_iter()
             .flatten()
-            .filter_map(|e| e["propertyName"].as_str())
-            .filter(|v| {
-                v.len() < 100
-                    && v.chars()
-                        .all(|c| c.is_ascii_alphanumeric() || "._[]".contains(c))
-            })
-            .collect::<Vec<_>>();
-        return Err(ApiError::conflict(if fields.is_empty() {
-            "Prowlarr could not validate this indexer. Check its address and credentials.".into()
-        } else {
-            format!("Check these indexer settings: {}", fields.join(", "))
-        }));
+            .any(|field| {
+                field["name"]
+                    .as_str()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("apikey"))
+            });
+        return Err(ApiError::conflict(validation_message(&errors, has_api_key)));
     }
     let result = read(response).await?;
     Ok(Json(
         json!({"tested":test,"id":result["id"],"name":result["name"]}),
     ))
+}
+
+fn validation_message(errors: &Value, has_api_key: bool) -> String {
+    let failures: Vec<_> = errors.as_array().into_iter().flatten().collect();
+    // Prowlarr reports authentication failures with an empty propertyName.
+    // Recognize its messages, but never return remote response text or URLs:
+    // those can contain the submitted key, password or cookie.
+    let invalid_key = failures.iter().any(|error| {
+        error["propertyName"]
+            .as_str()
+            .is_some_and(|field| field.eq_ignore_ascii_case("apikey"))
+    });
+    let invalid_credentials = failures.iter().any(|error| {
+        let message = error["errorMessage"]
+            .as_str()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        [
+            "unable to connect to indexer. incorrect user credentials",
+            "indexer returned result for rss url, credentials appears to be invalid.",
+            "invalid api key",
+            "invalid apikey",
+            "api key is invalid",
+        ]
+        .iter()
+        .any(|prefix| message.starts_with(prefix))
+    });
+    if invalid_key || (has_api_key && invalid_credentials) {
+        return "Invalid API key. Check your indexer API key and try again.".into();
+    }
+    if invalid_credentials {
+        return "The indexer rejected your login credentials. Check them and try again.".into();
+    }
+    let fields = failures
+        .iter()
+        .filter_map(|e| e["propertyName"].as_str())
+        .filter(|v| {
+            !v.is_empty()
+                && v.len() < 100
+                && v.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "._[]".contains(c))
+        })
+        .collect::<Vec<_>>();
+    if fields.is_empty() {
+        "Prowlarr could not connect to this indexer. Check its address and connection settings, then try again.".into()
+    } else {
+        format!("Check these indexer settings: {}", fields.join(", "))
+    }
 }
 async fn create(
     State(state): State<AppState>,
@@ -269,4 +310,59 @@ async fn test(
     Json(input): Json<Draft>,
 ) -> Result<Json<Value>> {
     submit(state, headers, id, input, true).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The browser suite stubs the Thelxinoe API, so it cannot catch Prowlarr
+    // error translation bugs. Nameless authentication errors must retain their
+    // meaning, blank field names must not produce an empty instruction, network
+    // failures must not be called bad keys, and upstream text must not expose
+    // submitted secrets. These cases are exercised before changing the mapper.
+    #[test]
+    fn translates_indexer_authentication_without_echoing_upstream_text() {
+        for error in [
+            json!({"propertyName":"", "errorMessage":"Unable to connect to indexer. Incorrect user credentials (wrong API key)"}),
+            json!({"propertyName":"", "errorMessage":"Indexer returned result for RSS URL, Credentials appears to be invalid. Response: fixture-secret"}),
+            json!({"propertyName":"ApiKey", "errorMessage":"Invalid value: fixture-secret"}),
+        ] {
+            let message = validation_message(&json!([error]), true);
+            assert_eq!(
+                message,
+                "Invalid API key. Check your indexer API key and try again."
+            );
+            assert!(!message.contains("fixture-secret"));
+        }
+        assert_eq!(
+            validation_message(
+                &json!([{"propertyName":"", "errorMessage":"Indexer returned result for RSS URL, Credentials appears to be invalid. Response: fixture-secret"}]),
+                false
+            ),
+            "The indexer rejected your login credentials. Check them and try again."
+        );
+    }
+
+    #[test]
+    fn empty_or_network_errors_do_not_claim_the_api_key_is_invalid() {
+        for errors in [
+            Value::Null,
+            json!([]),
+            json!([{"propertyName":"", "errorMessage":"Unable to connect to indexer. DNS failure at https://example.test/?apikey=fixture-secret"}]),
+        ] {
+            let message = validation_message(&errors, true);
+            assert_eq!(
+                message,
+                "Prowlarr could not connect to this indexer. Check its address and connection settings, then try again."
+            );
+        }
+        assert_eq!(
+            validation_message(
+                &json!([{"propertyName":""},{"propertyName":"BaseSettings.QueryLimit"}]),
+                true
+            ),
+            "Check these indexer settings: BaseSettings.QueryLimit"
+        );
+    }
 }

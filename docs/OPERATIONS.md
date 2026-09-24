@@ -2,7 +2,9 @@
 
 ## Storage and services
 
-Copy [`.env.example`](../.env.example) to `.env` and choose paths before starting [Compose](../compose.yaml). On Linux, pre-create the server, cache, media and backup directories with access for UID/GID `10001:10001`. Keep SQLite on local storage, and state/backups outside media. The controller deployment directory needs a Linux filesystem with atomic rename and symlinks; use a Linux volume on Docker Desktop.
+Copy [`.env.example`](../.env.example) to `.env` and choose paths before starting [Compose](../compose.yaml). Set `THELXINOE_UID` and `THELXINOE_GID` to your host media account's numeric IDs (`id -u` and `id -g`); both default to `10001` and must be nonzero. On Linux, pre-create the server, cache, media and backup directories with access for those IDs. Keep SQLite on local storage, and state/backups outside media. The controller deployment directory needs a Linux filesystem with atomic rename and symlinks; use a Linux volume on Docker Desktop.
+
+The server and newly installed media services use these IDs. The controller runs as root with the configured group and sets access on its private socket directory. Existing services retain their saved identities through adoption, updates and recovery. Choose IDs before initializing the deployment; changing `.env` does not change existing file ownership or saved deployment/service identities.
 
 Every media service must bind the same absolute host directory, writable, at `/media`:
 
@@ -49,6 +51,35 @@ Both **Notify** and **Automatic** check every six hours in the background, with 
 Server updates use a signed release manifest with version and compatibility checks. They do not discover releases through a container `latest` tag. Their background checks require a configured release channel and signing public key; Notify is the default. [Server release policy](../apps/server/src/product.rs).
 
 ## HTTPS and TV access
+
+Radarr, Sonarr, Lidarr, Prowlarr and Bazarr open in a new tab through Thelxinoe's
+administrator session. Fresh managed installs use `/services/<service>` as URL Base.
+The services need only a private Docker connection to Thelxinoe; expose the
+Thelxinoe origin through the reverse proxy. Keep service ports private when
+Thelxinoe supplies their authentication.
+
+Created and adopted Radarr, Sonarr, Lidarr, Prowlarr and Bazarr use fixed
+`/services/<kind>` URL Bases automatically. Adoption changes only the managed
+copy and preserves the original for recovery. Connections managed through
+Thelxinoe follow the new prefix; independently configured clients must be updated.
+There is no URL Base editor in Thelxinoe.
+
+Attached containers use their existing API prefix, entered during connection.
+Their configuration is preserved. Native access also works for attached services
+when that prefix is nonempty and does not overlap Thelxinoe or another service.
+Empty or conflicting prefixes remain usable for API integration.
+These trusted native interfaces share Thelxinoe's browser origin.
+
+Connected NZBGet opens at `/services/nzbget/` using the saved connection credentials.
+Its private API stays at the root, including `/jsonrpc`; no URL Base change is
+needed. Direct service access retains NZBGet's own authentication.
+
+The Windows app opens a single-use browser handoff at the configured public
+origin, or its connected server address when no public origin is configured.
+Browser access is scoped to
+that service and expires after at most eight hours or when its desktop session
+is revoked. Routes, authentication and streaming are implemented in
+[service access](../apps/server/src/managers/access.rs).
 
 Serve the web app and API at one HTTPS origin. Set `THELXINOE_PUBLIC_URL` to that origin and `THELXINOE_TRUSTED_PROXIES` to the proxy's exact IPs/CIDRs. Forward Host, X-Forwarded-Host, X-Forwarded-Proto and X-Forwarded-For; support WebSocket upgrades, Range requests and long streams. [Caddy fixture](../tests/Caddyfile). HTTP localhost works for development. Ordinary web/PWA use needs no CORS; separate browser origins require explicit `THELXINOE_CORS_ORIGINS` and remain subject to cookie restrictions.
 

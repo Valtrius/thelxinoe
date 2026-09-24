@@ -8,6 +8,8 @@ export default defineConfig({
     'provider-setup.spec.ts',
     'settings-details.spec.ts',
     'seerr.spec.ts',
+    'service-onboarding.spec.ts',
+    'service-updates.spec.ts',
   ],
   workers: 1,
   use: {

@@ -462,7 +462,7 @@ async fn episode_manager_numbering_is_explicit_and_complex_mappings_are_marked()
     let cookie = setup(&state).await;
     state.db.write("test.fixture", |db|{db.execute_batch("INSERT INTO library_roots(id,name,kind,path) VALUES ('r','TV','shows','/tv');
 INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES ('show','r','show',NULL,'show','Show',NULL,0),('season','r','season','show','s','Season',1,0),('e1','r','episode','season','e1','First',1,0),('e2','r','episode','season','e2','Second',2,0);
-INSERT INTO manager_services VALUES ('sonarr','Fixture','sonarr','container',8989,'g',X'00','','{}','1',1,1,NULL);
+INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,defaults,version,enabled,checked_at,error) VALUES ('sonarr','Fixture','sonarr','container',8989,'g',X'00','','{}','1',1,1,NULL);
 INSERT INTO metadata_bindings VALUES ('show','sonarr','g','100',NULL,1);
 INSERT INTO manager_episodes VALUES ('sonarr','g','100',201,1,2,1,'{}'),('sonarr','g','100',202,1,1,1,'{}');")?;Ok(())}).await.unwrap();
     assert_eq!(

@@ -14,7 +14,7 @@
 </script>
 
 <button
-  class="group/poster block w-full min-w-0 text-left outline-offset-4 focus-visible:outline-2 focus-visible:outline-accent"
+  class="group/poster block w-full min-w-0 self-start text-left outline-offset-4 focus-visible:outline-2 focus-visible:outline-accent"
   onclick={() => open(item)}
   aria-label={`View ${title(item)}`}
 >

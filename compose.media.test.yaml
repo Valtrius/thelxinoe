@@ -9,6 +9,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     read_only: true
     cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
     labels: {app.thelxinoe.component: controller}
   server:
     image: thelxinoe-media-server:local

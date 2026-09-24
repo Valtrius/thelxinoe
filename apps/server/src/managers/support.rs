@@ -21,6 +21,8 @@ pub(super) struct Support {
     kind: String,
     pub(super) container: String,
     port: u16,
+    pub(super) url_base: String,
+    pub(super) access_revision: String,
     media_source: String,
     pub(super) credentials: Credentials,
 }
@@ -40,6 +42,8 @@ pub(super) async fn load(state: &AppState, key: &str) -> Result<Support> {
         kind: row.1,
         container: row.2,
         port: row.3,
+        url_base: row.6,
+        access_revision: row.7,
         media_source: row.4,
         credentials,
     })
@@ -98,13 +102,7 @@ pub(super) async fn ensure_idle(state: &AppState, key: &str) -> Result<()> {
     Ok(())
 }
 pub(super) async fn connect<'a>(state: &'a AppState, s: &Support) -> Result<Connection<'a>> {
-    let (base, media_source) = evidence_for(
-        state,
-        &s.container,
-        s.port,
-        !matches!(s.kind.as_str(), "prowlarr" | "seerr"),
-    )
-    .await?;
+    let (base, media_source) = api_evidence(state, &s.container, s.port, &s.kind).await?;
     if media_source != s.media_source {
         return Err(ApiError::conflict(
             "Service mounts changed; reconnect the service",
@@ -113,9 +111,42 @@ pub(super) async fn connect<'a>(state: &'a AppState, s: &Support) -> Result<Conn
     Ok(Connection {
         state,
         base,
+        url_base: s.url_base.clone(),
         key: s.credentials.secret.clone(),
         kind: s.kind.clone(),
     })
+}
+pub(super) async fn api_evidence(
+    state: &AppState,
+    container: &str,
+    port: u16,
+    kind: &str,
+) -> Result<(String, String)> {
+    let (mut base, media) = evidence_for(
+        state,
+        container,
+        port,
+        !matches!(kind, "prowlarr" | "seerr"),
+    )
+    .await?;
+    if kind == "prowlarr" {
+        // Prowlarr filters Host against its saved allowlist. Docker names stay
+        // stable when a stopped container receives a different private IP.
+        let observed = docker(state, &format!("containers/{container}")).await?;
+        let name = observed["name"]
+            .as_str()
+            .ok_or_else(unavailable)?
+            .trim_start_matches('/');
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        {
+            return Err(unavailable());
+        }
+        base = format!("http://{name}:{port}");
+    }
+    Ok((base, media))
 }
 pub(super) async fn rpc(
     c: &Connection<'_>,
@@ -183,6 +214,8 @@ struct Register {
     credentials: Credentials,
     #[serde(default)]
     native_url: String,
+    #[serde(default)]
+    url_base: String,
 }
 async fn register(
     State(state): State<AppState>,
@@ -213,20 +246,23 @@ async fn register_with_actor(
         ));
     }
     let _guard = state.managers.guard.service(&input.kind).await;
-    let (base, media_source) = evidence_for(
-        &state,
-        &input.container_id,
-        input.port,
-        !matches!(input.kind.as_str(), "prowlarr" | "seerr"),
-    )
-    .await?;
+    if !access::supported(&input.kind) && !input.url_base.is_empty() {
+        return Err(ApiError::bad("This service does not support a URL Base"));
+    }
+    access::validate_base(&input.kind, &input.url_base)?;
+    let (base, media_source) =
+        api_evidence(&state, &input.container_id, input.port, &input.kind).await?;
     let c = Connection {
         state: &state,
         base,
+        url_base: input.url_base.clone(),
         key: input.credentials.secret.clone(),
         kind: input.kind.clone(),
     };
     let version = version(&c, &input.credentials).await?;
+    if !thelxinoe_core::service_url_base(&input.kind).is_empty() {
+        access::check_connection(&c).await?;
+    }
     let kind = input.kind.clone();
     let key = storage::register_with_actor_read_support_services(kind, &state.db)
         .await?

@@ -211,6 +211,7 @@ pub async fn me(State(state): State<AppState>, headers: HeaderMap) -> Result<Jso
 pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
     let p = security::principal(&state, &headers).await?;
     storage::logout(&state.db, p).await?;
+    state.notify_events();
     let mut response = Json(json!({"ok":true})).into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
@@ -233,6 +234,7 @@ pub async fn revoke(
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
     storage::revoke(&state.db, session, p).await?;
+    state.notify_events();
     Ok(Json(json!({"ok":true})))
 }
 pub async fn users(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {

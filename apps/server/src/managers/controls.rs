@@ -226,6 +226,7 @@ mod tests {
         let connection = Connection {
             state: &state,
             base: format!("http://{address}"),
+            url_base: String::new(),
             key: "fixture".into(),
             kind: "sonarr".into(),
         };

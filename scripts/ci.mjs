@@ -81,6 +81,8 @@ function web() {
 
 function containers() {
   ensurePlaywright();
+  node('scripts/test-service-access.mjs');
+  node('scripts/test-service-connections.mjs');
   cleanup('docker', [
     'compose',
     '-f',

@@ -53,7 +53,6 @@ use std::sync::Arc;
 use thelxinoe_auth::SecretStore;
 use thelxinoe_database::Database;
 use thelxinoe_jobs::Queue;
-use tower_http::services::{ServeDir, ServeFile};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -244,10 +243,7 @@ pub fn router(state: AppState) -> Router {
             get(accounts::settings).put(accounts::save_settings),
         )
         .route("/api/v1/admin/health", get(admin_health))
-        .fallback_service(
-            ServeDir::new(&state.config.web)
-                .not_found_service(ServeFile::new(state.config.web.join("index.html"))),
-        )
+        .fallback(managers::access::fallback)
         .layer(DefaultBodyLimit::max(64 * 1024))
         .layer(middleware::from_fn_with_state(
             state.clone(),

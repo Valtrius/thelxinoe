@@ -11,6 +11,11 @@ export async function installUiFixture(
     approvalUsers?: { id: string; username: string; enabled: boolean }[];
     endpointFailures?: Record<string, string>;
     stackProvisionState?: string;
+    stackCapabilities?: {
+      can_retire: boolean;
+      can_remove: boolean;
+      can_recreate: boolean;
+    };
     managedNzbget?: boolean;
     serviceUpdateState?: string;
   } = {},
@@ -205,6 +210,8 @@ export async function installUiFixture(
             kind: 'radarr',
             container_id: 'container-radarr',
             port: 7878,
+            url_base: '/services/radarr',
+            access_url: '/services/radarr',
             version: '6.0.0',
             defaults: {
               root_folder: '/media/movies',
@@ -227,7 +234,9 @@ export async function installUiFixture(
             container_id: 'container-prowlarr',
             port: 9696,
             version: '2.0.0',
-            native_url: 'https://prowlarr.example.test',
+            native_url: '',
+            url_base: '/services/prowlarr',
+            access_url: '/services/prowlarr',
             checked_at: 1789984800,
             error: null,
           },
@@ -238,7 +247,9 @@ export async function installUiFixture(
             container_id: 'container-nzbget',
             port: 6789,
             version: '25.0',
-            native_url: 'https://nzbget.example.test',
+            native_url: '',
+            url_base: '',
+            access_url: '/services/nzbget',
             checked_at: 1789984800,
             error: null,
           },
@@ -371,6 +382,7 @@ export async function installUiFixture(
             can_retire: false,
             error: null,
             transfer_pending: false,
+            ...options.stackCapabilities,
           },
           {
             id: 'controller-bazarr',
@@ -405,7 +417,7 @@ export async function installUiFixture(
                 {
                   id: 'managed-nzbget',
                   kind: 'nzbget',
-                  state: 'queued',
+                  state: options.stackProvisionState ?? 'queued',
                   host_port: 16789,
                   container_id: null,
                   service_id: null,

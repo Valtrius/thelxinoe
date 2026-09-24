@@ -86,6 +86,57 @@ async function discoverFixture(page: Page, role: 'admin' | 'user' = 'user') {
   return { ...fixture, requests };
 }
 
+test('posters align at the top of discovery rows and search rows with wrapped titles', async ({
+  page,
+}, testInfo) => {
+  const fixture = await discoverFixture(page);
+  const items = [
+    movie,
+    { ...show, name: 'A series with a title that spans two lines' },
+  ];
+  await page.route('**/api/v1/seerr/discover/**', (route) =>
+    route.fulfill({ json: results(items) }),
+  );
+  await page.route('**/api/v1/seerr/search**', (route) =>
+    route.fulfill({ json: results(items) }),
+  );
+  await page.goto('/');
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const search = page.getByRole('textbox', {
+      name: 'Search movies and series',
+    });
+    for (const query of ['', 'title']) {
+      await search.fill(query);
+      const first = page
+        .getByRole('button', { name: 'View Arrival', exact: true })
+        .first();
+      const second = page
+        .getByRole('button', { name: `View ${items[1].name}`, exact: true })
+        .first();
+      await expect(second).toBeVisible();
+      await page.mouse.move(0, 0);
+      expect(
+        (await second.locator('strong').boundingBox())!.height,
+      ).toBeGreaterThan((await first.locator('strong').boundingBox())!.height);
+      await expect
+        .poll(async () =>
+          Math.abs(
+            (await first.locator(':scope > div').boundingBox())!.y -
+              (await second.locator(':scope > div').boundingBox())!.y,
+          ),
+        )
+        .toBeLessThanOrEqual(1);
+      await testInfo.attach(`posters-${query ? 'search' : 'feed'}-${width}`, {
+        body: await page.screenshot(),
+        contentType: 'image/png',
+      });
+    }
+  }
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 test('search opens dedicated details, requests once, and returns to the search', async ({
   page,
 }) => {
@@ -523,8 +574,8 @@ test('custom profiles retain the chosen quality order and become the selected de
   const form = page.getByRole('form', { name: 'New quality profile' });
   await form.getByPlaceholder('Profile name').fill('My profile');
   await form
-    .getByRole('button', { name: 'Lower priority for Bluray-1080p' })
-    .click();
+    .getByRole('button', { name: 'Reorder Bluray-1080p' })
+    .press('ArrowDown');
   await form.getByRole('button', { name: 'Create and use profile' }).click();
   await expect(
     page.getByRole('combobox', { name: 'Quality profile', exact: true }),
@@ -596,7 +647,12 @@ test('indexer onboarding loads provider addresses and retains a rejected draft',
       submissions.push({ path, body: route.request().postDataJSON() });
       return route.fulfill({
         status: 409,
-        json: { error: { message: 'Check these indexer settings: ApiKey' } },
+        json: {
+          error: {
+            message:
+              'Invalid API key. Check your indexer API key and try again.',
+          },
+        },
       });
     },
   );
@@ -626,15 +682,16 @@ test('indexer onboarding loads provider addresses and retains a rejected draft',
     .getByRole('button', { name: 'Test connection', exact: true })
     .click();
   await expect(page.getByRole('alert')).toContainText(
-    'Check these indexer settings',
+    'Invalid API key. Check your indexer API key and try again.',
   );
   await expect(page.getByLabel('API key', { exact: true })).toHaveValue(
     'fixture-secret',
   );
-  await page.getByRole('button', { name: 'Add indexer', exact: true }).click();
-  await expect(page.getByRole('region', { name: 'Add indexer' })).toHaveCount(
-    0,
-  );
+  await page
+    .getByRole('dialog')
+    .getByRole('button', { name: 'Add indexer', exact: true })
+    .click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
   expect(submissions).toHaveLength(2);
   expect(submissions[1].body.fields).toMatchObject({
     baseUrl: 'https://indexer.example.test/',

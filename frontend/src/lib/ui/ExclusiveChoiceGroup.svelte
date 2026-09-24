@@ -1,5 +1,5 @@
 <script lang="ts" generics="Value extends string">
-  import { onMount, type Component } from 'svelte';
+  import { onMount, untrack, type Component } from 'svelte';
   import type { IconProps } from '@lucide/svelte';
 
   type Choice = {
@@ -27,23 +27,48 @@
   } = $props();
   let group = $state<HTMLDivElement>();
   let selection = $state({ left: 0, width: 0 });
+  let highlight: HTMLSpanElement;
+  let requested: Value | undefined;
+  let animation: Animation | undefined;
 
-  function measureSelection() {
+  function measureSelection(animate = false) {
     const button = group?.querySelector<HTMLButtonElement>(
       '[aria-pressed="true"]',
     );
-    if (button)
-      selection = { left: button.offsetLeft, width: button.offsetWidth };
+    if (!button) return;
+    const previous = highlight && getComputedStyle(highlight);
+    const from = previous && {
+      translate: previous.translate,
+      width: previous.width,
+    };
+    animation?.cancel();
+    selection = { left: button.offsetLeft, width: button.offsetWidth };
+    if (
+      animate &&
+      from &&
+      !matchMedia('(prefers-reduced-motion: reduce)').matches
+    )
+      animation = highlight.animate(
+        [
+          from,
+          { translate: `${selection.left}px 0`, width: `${selection.width}px` },
+        ],
+        { duration: 200, easing: 'cubic-bezier(0.22,1,0.36,1)' },
+      );
   }
   $effect(() => {
     void value;
     void choices;
-    measureSelection();
+    untrack(() => measureSelection(requested === value));
+    requested = undefined;
   });
   onMount(() => {
-    const observer = new ResizeObserver(measureSelection);
+    const observer = new ResizeObserver(() => measureSelection());
     if (group) observer.observe(group);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      animation?.cancel();
+    };
   });
 </script>
 
@@ -60,9 +85,10 @@
   aria-label={ariaLabel}
 >
   <span
+    bind:this={highlight}
     aria-hidden="true"
     data-choice-selection
-    class="pointer-events-none absolute inset-y-0 left-0 bg-accent-soft transition-[translate,width] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none"
+    class="pointer-events-none absolute inset-y-0 left-0 bg-accent-soft transition-none"
     style:translate={`${selection.left}px 0`}
     style:width={`${selection.width}px`}
   ></span>
@@ -83,7 +109,10 @@
       title={choice.icon ? choice.label : undefined}
       aria-pressed={value === choice.value}
       onclick={() => {
-        if (value !== choice.value) onChange(choice.value);
+        if (value !== choice.value) {
+          requested = choice.value;
+          onChange(choice.value);
+        }
       }}
     >
       {#if choice.icon}

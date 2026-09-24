@@ -293,7 +293,8 @@ async fn retirement_preserves_history_and_releases_the_kind_for_a_new_installati
                 kind: "radarr".into(),
                 container_id: "replacement".into(),
                 port: 7878,
-                api_key: "unused".into()
+                api_key: "unused".into(),
+                url_base: "/services/radarr".into(),
             },
             "alice".into()
         )
