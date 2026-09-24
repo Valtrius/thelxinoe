@@ -2,6 +2,7 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: 'tests',
   use: {
+    trace: 'on',
     baseURL: process.env.THELXINOE_TEST_URL ?? 'http://127.0.0.1:8484',
     headless: true,
     ignoreHTTPSErrors: !!process.env.THELXINOE_PROXY_TEST,
@@ -20,5 +21,10 @@ export default defineConfig({
             },
           ]
         : [{ name: 'setup', testMatch: 'setup.spec.ts' }],
-  reporter: 'list',
+  outputDir: 'test-results/e2e',
+  reporter: [
+    ['list'],
+    ['html', { outputFolder: 'playwright-report/e2e', open: 'never' }],
+    ['json', { outputFile: 'test-results/e2e/results.json' }],
+  ],
 });

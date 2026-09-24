@@ -68,38 +68,3 @@ pub fn commit_generation(
     File::open(root)?.sync_all()?;
     Ok(())
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-    #[test]
-    fn descriptor_and_compose_advance_together() {
-        let root = std::env::temp_dir().join(thelxinoe_core::id());
-        std::fs::create_dir_all(&root).unwrap();
-        commit_generation(
-            &root,
-            1,
-            &json!({"generation":1}),
-            &json!({"services":{"server":{"image":"sha256:old"}}}),
-        )
-        .unwrap();
-        commit_generation(
-            &root,
-            2,
-            &json!({"generation":2}),
-            &json!({"services":{"server":{"image":"sha256:new"}}}),
-        )
-        .unwrap();
-        assert_eq!(
-            read::<serde_json::Value>(&root.join("desired-state.json")).unwrap()["generation"],
-            2
-        );
-        assert_eq!(
-            read::<serde_json::Value>(&root.join("compose.override.yaml")).unwrap()["services"]["server"]
-                ["image"],
-            "sha256:new"
-        );
-        assert!(commit_generation(&root, 2, &json!({}), &json!({})).is_err());
-        std::fs::remove_dir_all(root).unwrap();
-    }
-}

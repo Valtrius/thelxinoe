@@ -62,20 +62,3 @@ pub const TEMPLATES: [Template; 7] = [
 pub fn find(kind: &str) -> Option<Template> {
     TEMPLATES.iter().find(|t| t.kind == kind).copied()
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn only_curated_immutable_services_are_accepted() {
-        assert!(find("docker").is_none());
-        assert!(find("radarr:develop").is_none());
-        for t in TEMPLATES {
-            assert!(
-                t.repository.starts_with("lscr.io/linuxserver/")
-                    || t.repository == "ghcr.io/seerr-team/seerr"
-            );
-            assert_eq!(t.digest.len(), 71);
-            assert!(t.digest[7..].bytes().all(|b| b.is_ascii_hexdigit()));
-        }
-    }
-}

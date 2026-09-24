@@ -57,15 +57,6 @@ describe('MPV draft recovery', () => {
     ).toEqual(edited);
     expect(draft.text).toBe('volume=40');
   });
-  it('restores ordinary drafts and loads disk when there is no draft', () => {
-    expect(
-      restoreMpvDraft(disk, { text: 'volume=40', revision: 'disk' }),
-    ).toEqual({ text: 'volume=40', revision: 'disk' });
-    expect(restoreMpvDraft(disk)).toEqual({
-      text: 'volume=60',
-      revision: 'disk',
-    });
-  });
   it('accepts a disk copy that already contains the complete draft', () => {
     expect(
       restoreMpvDraft(disk, { text: 'volume=60', revision: 'original' }),

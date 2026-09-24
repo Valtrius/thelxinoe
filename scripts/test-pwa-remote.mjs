@@ -52,7 +52,9 @@ try {
       exact: true,
     })
     .click();
-  await expect(page.getByRole('heading', { name: 'Discover' })).toBeVisible();
+  await expect(
+    page.getByRole('heading', { name: 'Discover', exact: true }),
+  ).toBeVisible();
   expect(
     (await context.cookies()).find((c) => c.name === 'thelxinoe_session'),
   ).toMatchObject({ secure: true, httpOnly: true, sameSite: 'Strict' });
@@ -113,7 +115,9 @@ try {
   ).toBeVisible();
   await context.setOffline(false);
   await page.getByRole('link', { name: 'Reconnect' }).click();
-  await expect(page.getByRole('heading', { name: 'Discover' })).toBeVisible();
+  await expect(
+    page.getByRole('heading', { name: 'Discover', exact: true }),
+  ).toBeVisible();
   expect(
     (
       await context.request.post(origin + '/api/v1/admin/jobs', {

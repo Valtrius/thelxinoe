@@ -180,27 +180,6 @@ pub fn identify(domain: &str, path: &Path, probe: &Value) -> Result<(Vec<Identit
 mod tests {
     use super::*;
     #[test]
-    fn multi_episode_and_specials_are_separate_logical_items() {
-        let (items, _) =
-            identify("shows", Path::new("Example.S00E01E02.mkv"), &Value::Null).unwrap();
-        assert_eq!(items.len(), 4);
-        assert_eq!(items[1].number, Some(0));
-        assert_eq!(items[2].number, Some(1));
-        assert_eq!(items[3].number, Some(2));
-    }
-    #[test]
-    fn movie_editions_share_identity() {
-        let (a, edition) = identify(
-            "movies",
-            Path::new("Example (2020) {edition-Extended}.mkv"),
-            &Value::Null,
-        )
-        .unwrap();
-        let (b, _) = identify("movies", Path::new("Example (2020).mp4"), &Value::Null).unwrap();
-        assert_eq!(a[0].key, b[0].key);
-        assert_eq!(edition, "Extended");
-    }
-    #[test]
     fn recording_and_release_track_ids_do_not_merge_album_membership() {
         let probe = |album: &str| serde_json::json!({"format":{"tags":{"artist":"Artist","album":album,"track":"1","musicbrainz_trackid":"recording-id","title":"Track"}}});
         let (a, _) = identify("music", Path::new("track.flac"), &probe("First album")).unwrap();

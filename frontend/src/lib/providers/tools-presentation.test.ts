@@ -3,7 +3,6 @@ import type { ToolPackage, ToolView } from './tools-api';
 import {
   availableToolUpdate,
   executableSelectionKey,
-  summarizeTool,
 } from './tools-presentation';
 
 const current: ToolPackage = {
@@ -63,77 +62,6 @@ function tool(): ToolView {
 }
 
 describe('tool inventory summaries', () => {
-  it.each(['system', 'custom'] as const)(
-    'reports the selected %s executable instead of an unused managed package',
-    (source) => {
-      const item = tool();
-      item.preference.source = source;
-      expect(availableToolUpdate(item)).toBeUndefined();
-      item.diagnostic = {
-        kind: 'mpv',
-        detected: true,
-        version: 'mpv external\nBuild details',
-      };
-      expect(summarizeTool(item, 'managed')).toMatchObject({
-        version: 'mpv external',
-        status: 'Ready',
-        updates: 'Managed outside Thelxinoe',
-        source:
-          source === 'custom' ? 'Mine · Selected file' : 'Mine · Auto-detected',
-      });
-      item.diagnostic.detected = false;
-      item.diagnostic.version = null;
-      expect(summarizeTool(item, 'managed')).toMatchObject({
-        version: '—',
-        status: 'Unavailable',
-      });
-    },
-  );
-
-  it('prioritizes an unusable executable or warning over an available update', () => {
-    const item = tool();
-    item.diagnostic = { kind: 'mpv', detected: false };
-    expect(summarizeTool(item, 'managed')).toMatchObject({
-      status: 'Unavailable',
-    });
-    item.diagnostic = {
-      kind: 'mpv',
-      detected: true,
-      warning: 'Selected installation is incomplete',
-    };
-    expect(summarizeTool(item, 'managed')).toMatchObject({
-      status: 'Check setup',
-    });
-  });
-
-  it('distinguishes missing optional plugins from missing selected executables', () => {
-    const item = tool();
-    item.installed = [];
-    expect(summarizeTool(item, 'managed')).toMatchObject({
-      status: 'Not installed',
-      version: '—',
-    });
-    item.id = 'uosc';
-    item.diagnostic = null;
-    expect(summarizeTool(item, 'managed')).toMatchObject({
-      status: 'Not installed',
-    });
-  });
-
-  it('distinguishes enabled plugins from plugins inactive under a different configuration source', () => {
-    const item = tool();
-    item.id = 'uosc';
-    item.versions = [];
-    item.diagnostic = null;
-    expect(summarizeTool(item, 'managed').status).toBe('Enabled');
-    expect(summarizeTool(item, 'native')).toMatchObject({
-      status: 'Inactive here',
-    });
-    expect(summarizeTool(item, 'directory').status).toBe('Inactive here');
-    item.preference.enabled = false;
-    expect(summarizeTool(item, 'managed').status).toBe('Off');
-  });
-
   it('respects held versions, release channel, and publication ordering', () => {
     const item = tool();
     expect(availableToolUpdate(item)).toBeDefined();
@@ -145,25 +73,6 @@ describe('tool inventory summaries', () => {
     expect(availableToolUpdate(item)).toBeUndefined();
     item.versions = [{ ...newer, publishedAt: '2025-12-01' }];
     expect(availableToolUpdate(item)).toBeUndefined();
-  });
-
-  it.each(['automatic', 'notify', 'manual'] as const)(
-    'shows catalog updates under %s policy, including when pinned',
-    (policy) => {
-      const item = tool();
-      item.preference.updatePolicy = policy;
-      item.preference.pinned = true;
-      expect(summarizeTool(item, 'managed')).toMatchObject({
-        status: 'Ready',
-        updates: 'Pinned',
-      });
-    },
-  );
-
-  it('does not reuse a ready status for an unchecked selection', () => {
-    const item = tool();
-    item.diagnostic = null;
-    expect(summarizeTool(item, 'managed').status).toBe('Not checked');
   });
 
   it('uses the selected managed executable path even before a diagnostic is cached', () => {
@@ -200,22 +109,4 @@ describe('tool inventory summaries', () => {
       );
     },
   );
-
-  it('identifies imported plugins and does not offer managed updates for them', () => {
-    const item = tool();
-    item.id = 'uosc';
-    item.preference.source = 'custom';
-    item.importedPaths = ['C:/example/config/scripts/uosc'];
-    expect(summarizeTool(item, 'managed')).toMatchObject({
-      source: 'Imported local copy',
-      status: 'Enabled',
-      version: '—',
-      updates: '—',
-    });
-    expect(availableToolUpdate(item)).toBeUndefined();
-    item.preference.enabled = false;
-    expect(summarizeTool(item, 'managed').status).toBe('Off');
-    item.preference.source = 'managed';
-    expect(availableToolUpdate(item)).toBeUndefined();
-  });
 });

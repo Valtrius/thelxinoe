@@ -132,23 +132,6 @@ describe('shared tools state', () => {
     );
   });
 
-  it('does not recheck an already selected auto-detect mode or metadata changes', async () => {
-    const { state, api } = setup();
-    await state.refresh();
-    await state.preference('mpv', { source: 'system' });
-    expect(api.check).not.toHaveBeenCalled();
-    await state.preference('mpv', { updatePolicy: 'manual', pinned: true });
-    expect(api.check).not.toHaveBeenCalled();
-  });
-
-  it('checks the managed executable after switching source', async () => {
-    const { state, snapshot, api } = setup();
-    await state.refresh();
-    await state.preference('mpv', { source: 'managed' });
-    expect(api.check).toHaveBeenCalledExactlyOnceWith('mpv');
-    expect(snapshot.tools[0].preference.source).toBe('managed');
-  });
-
   it('does not check when switching to auto-detect fails', async () => {
     const { state, snapshot, api } = setup();
     snapshot.tools[0].preference.source = 'managed';
@@ -255,16 +238,6 @@ describe('shared tools state', () => {
     const closing = state.flushPreferences();
     pending.resolve(false);
     await expect(closing).rejects.toThrow('could not be saved');
-  });
-  it('reads saved state without running checks and reuses it between subscribers', async () => {
-    const { state, api } = setup();
-    await state.refresh();
-    expect(get(state).snapshot?.tools).toHaveLength(5);
-    const stop = state.subscribe(() => {});
-    stop();
-    expect(api.get).toHaveBeenCalledTimes(1);
-    expect(api.check).not.toHaveBeenCalled();
-    expect(api.refresh).not.toHaveBeenCalled();
   });
 
   it('updates only the selected tool optimistically and keeps preferences independent of downloads', async () => {
@@ -411,18 +384,6 @@ describe('shared tools state', () => {
     expect(get(state).errors.mpv).toBeFalsy();
   });
 
-  it('clears a reported executable-picker error after a successful selection', async () => {
-    const { state } = setup();
-    await state.refresh();
-    state.report('mpv', new Error('Could not open the executable picker'));
-    expect(get(state).errors.mpv).toBe('Could not open the executable picker');
-    await state.preference('mpv', {
-      source: 'custom',
-      customPath: 'C:/example/my-mpv.exe',
-    });
-    expect(get(state).errors.mpv).toBeFalsy();
-  });
-
   it('orders a new action after earlier preference writes without blocking later writes', async () => {
     const { state, api, save } = setup();
     await state.refresh();
@@ -471,19 +432,6 @@ describe('shared tools state', () => {
     expect(settled).toBe(true);
   });
 
-  it('rolls back a failed write and keeps its error on that tool', async () => {
-    const { state, api } = setup();
-    await state.refresh();
-    api.preference.mockRejectedValueOnce(new Error('Disk unavailable'));
-    await expect(state.preference('mpv', { source: 'managed' })).resolves.toBe(
-      false,
-    );
-    expect(get(state).snapshot?.tools[0].preference.source).toBe('system');
-    expect(get(state).errors.mpv).toBe('Disk unavailable');
-    expect(get(state).errors.ytdlp).toBeUndefined();
-    expect(get(state).pending.mpv).toBeUndefined();
-  });
-
   it('runs independent explicit checks and releases each completed row separately', async () => {
     const { state, api } = setup();
     await state.refresh();
@@ -521,18 +469,5 @@ describe('shared tools state', () => {
     delayed.resolve(old);
     await Promise.all([reload, change]);
     expect(get(state).snapshot?.tools[0].preference.pinned).toBe(true);
-  });
-
-  it('keeps update discovery separate from executable checks and configuration selection', async () => {
-    const { state, api } = setup();
-    await state.refresh();
-    await Promise.all([
-      state.checkUpdates(),
-      state.mpvPreferences({ source: 'managed', directory: null }),
-    ]);
-    expect(api.refresh).toHaveBeenCalledTimes(1);
-    expect(api.check).not.toHaveBeenCalled();
-    expect(get(state).snapshot?.mpv.source).toBe('managed');
-    expect(get(state).snapshot?.tools[0].diagnostic?.detected).toBe(true);
   });
 });

@@ -620,30 +620,6 @@ fn quality_allowed(data: &Value, quality: &str) -> bool {
 fn reload_event(message: &Value) -> bool {
     matches!(message["reason"].as_str(), Some("stop" | "redirect"))
 }
-#[cfg(test)]
-mod quality_tests {
-    use super::*;
-    #[test]
-    fn reload_keeps_session_alive_but_eof_and_errors_end_it() {
-        for reason in ["stop", "redirect"] {
-            assert!(reload_event(&json!({"reason":reason})));
-        }
-        for reason in ["eof", "error", "quit"] {
-            assert!(!reload_event(&json!({"reason":reason})));
-        }
-    }
-    #[test]
-    fn menu_can_only_request_server_offered_resolutions() {
-        let data = json!({"qualities":[{"value":"1080p"},{"value":"720p60"}]});
-        for quality in ["auto", "1080p", "720p60"] {
-            assert!(quality_allowed(&data, quality));
-        }
-        for quality in ["2160p", "https://example.org/video", ""] {
-            assert!(!quality_allowed(&data, quality));
-        }
-        assert!(!quality_allowed(&json!({}), "auto"));
-    }
-}
 
 #[cfg(test)]
 #[path = "quality_smoke.rs"]

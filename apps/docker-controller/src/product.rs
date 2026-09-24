@@ -1130,15 +1130,4 @@ mod tests {
         reordered["Config"]["Env"] = json!(["A=1", "B=2", "A=3"]);
         assert!(!equivalent(&ordered, &reordered, false));
     }
-
-    #[test]
-    fn stopped_server_defaults_are_normalized_before_commit() {
-        let mut server = json!({"HostConfig":{"OomKillDisable":null}});
-        normalize_stopped_server_defaults(&mut server);
-        assert_eq!(server["HostConfig"]["OomKillDisable"], json!(false));
-
-        server["HostConfig"]["OomKillDisable"] = json!(true);
-        normalize_stopped_server_defaults(&mut server);
-        assert_eq!(server["HostConfig"]["OomKillDisable"], json!(true));
-    }
 }

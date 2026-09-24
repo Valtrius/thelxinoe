@@ -17,7 +17,9 @@ test('movie, multi-episode and tagged music scan into browsable libraries with s
     .getByLabel('Password', { exact: true })
     .fill('test-only long passphrase');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Discover' })).toBeVisible();
+  await expect(
+    page.getByRole('heading', { name: 'Discover', exact: true }),
+  ).toBeVisible();
   const api = page.request;
   const headers = { 'X-Thelxinoe-Client': '1' };
   const existing = (await (await api.get('/api/v1/catalog/roots')).json())

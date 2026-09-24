@@ -11,6 +11,7 @@ export default defineConfig({
   ],
   workers: 1,
   use: {
+    trace: 'on',
     baseURL: 'http://127.0.0.1:18488',
     headless: true,
     viewport: { width: 1440, height: 1000 },
@@ -20,5 +21,10 @@ export default defineConfig({
     url: 'http://127.0.0.1:18488',
     reuseExistingServer: false,
   },
-  reporter: 'list',
+  outputDir: 'test-results/layout',
+  reporter: [
+    ['list'],
+    ['html', { outputFolder: 'playwright-report/layout', open: 'never' }],
+    ['json', { outputFile: 'test-results/layout/results.json' }],
+  ],
 });
