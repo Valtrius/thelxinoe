@@ -253,6 +253,7 @@ fn compose_service(c: &Value) -> Result<Value> {
     }
     for (source, target) in [
         ("CapAdd", "cap_add"),
+        ("ExtraHosts", "extra_hosts"),
         ("Init", "init"),
         ("PidsLimit", "pids_limit"),
     ] {

@@ -39,6 +39,7 @@ describe('server transport', () => {
     await events.connect();
     expect(Socket.all[0].url).toContain('since=100');
     Socket.all[0].onopen?.();
+    receive.mockClear();
     Socket.all[0].onmessage?.({
       data: JSON.stringify({ id: 107, kind: 'catalog.changed', payload: {} }),
     });

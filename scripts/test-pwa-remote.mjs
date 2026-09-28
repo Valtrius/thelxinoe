@@ -1,10 +1,9 @@
 import { chromium, expect } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
-const origin =
-  process.env.THELXINOE_RELEASE_ORIGIN || 'https://localhost:28443';
-const project = process.env.THELXINOE_RELEASE_PROJECT || 'thelxinoe-release-v6';
-const root = process.env.THELXINOE_RELEASE_STATE || '.local/releases-v6';
+const origin = process.env.THELXINOE_TEST_URL || 'https://localhost:9443';
+const project = process.env.THELXINOE_TEST_PROJECT || 'thelxinoe-test';
+const root = process.env.THELXINOE_TEST_MEDIA_ROOT || '.local/fixtures';
 const browser = await chromium.launch({
   args: ['--ignore-certificate-errors'],
 });
@@ -136,8 +135,8 @@ try {
       })
     ).status(),
   ).toBe(426);
-  mkdirSync(`${root}/data/remote`, { recursive: true });
-  const file = `${root}/data/remote/Remote Fixture (2020).mp4`;
+  mkdirSync(`${root}/remote`, { recursive: true });
+  const file = `${root}/remote/Remote Fixture (2020).mp4`;
   if (!existsSync(file))
     execFileSync(
       'ffmpeg',

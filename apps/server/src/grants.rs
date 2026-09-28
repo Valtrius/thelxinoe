@@ -37,6 +37,6 @@ pub async fn event_ticket(
     let p = security::principal(&state, &headers).await?;
     let cursor = storage::event_ticket(&state.db).await?;
     Ok(Json(
-        json!({"ticket":issue(&state,&p,"events",30).await?,"cursor":cursor}),
+        json!({"ticket":issue(&state,&p,"events",30).await?,"cursor":cursor,"epoch":*state.event_epoch,"version":thelxinoe_core::VERSION}),
     ))
 }

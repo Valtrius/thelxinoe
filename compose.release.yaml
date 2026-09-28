@@ -2,10 +2,7 @@ name: thelxinoe
 services:
   controller:
     container_name: thelxinoe-controller
-    image: ${THELXINOE_CONTROLLER_IMAGE:-thelxinoe-controller:0.1.0}
-    build:
-      context: .
-      target: controller
+    image: ${THELXINOE_CONTROLLER_IMAGE:-ghcr.io/valtrius/thelxinoe-controller:0.1.0}
     restart: unless-stopped
     user: "0:${THELXINOE_GID:-10001}"
     network_mode: none
@@ -25,10 +22,7 @@ services:
       app.thelxinoe.component: controller
   server:
     container_name: thelxinoe-server
-    image: ${THELXINOE_SERVER_IMAGE:-thelxinoe-server:0.1.0}
-    build:
-      context: .
-      target: server
+    image: ${THELXINOE_SERVER_IMAGE:-ghcr.io/valtrius/thelxinoe-server:0.1.0}
     restart: unless-stopped
     user: "${THELXINOE_UID:-10001}:${THELXINOE_GID:-10001}"
     depends_on:

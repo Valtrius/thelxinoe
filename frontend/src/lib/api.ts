@@ -1,4 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { version as clientVersion } from '../../package.json';
 export const desktop = typeof window !== 'undefined' && isTauri();
 let desktopServer = '';
 export async function initializeTransport() {
@@ -75,6 +76,7 @@ export class Events {
   private closed = false;
   private cursor = 0;
   private initialized = false;
+  private epoch?: string;
   private retry = 500;
   constructor(
     private receive: (event: ServerEvent) => void,
@@ -84,15 +86,26 @@ export class Events {
     if (this.closed) return;
     let ticket: string;
     try {
-      const issued = await api<{ ticket: string; cursor?: number }>(
-        '/auth/event-ticket',
-        'POST',
-      );
+      const issued = await api<{
+        ticket: string;
+        cursor?: number;
+        epoch?: string;
+        version?: string;
+      }>('/auth/event-ticket', 'POST');
       ticket = issued.ticket;
-      if (!this.initialized) {
+      if (
+        !this.initialized ||
+        issued.epoch !== this.epoch ||
+        (issued.cursor ?? 0) < this.cursor
+      ) {
         this.cursor = issued.cursor ?? 0;
         this.initialized = true;
       }
+      this.epoch = issued.epoch;
+      if (!desktop && issued.version && issued.version !== clientVersion)
+        window.dispatchEvent(
+          new CustomEvent('thelxinoe-web-update', { detail: issued.version }),
+        );
     } catch {
       if (!this.closed)
         this.timer = setTimeout(() => void this.connect(), 15000);
@@ -107,6 +120,11 @@ export class Events {
     this.socket.onopen = () => {
       this.retry = 500;
       this.status(true);
+      this.receive({
+        id: this.cursor,
+        kind: 'server.reconnected',
+        payload: {},
+      });
     };
     this.socket.onmessage = (message) => {
       const event = JSON.parse(message.data) as ServerEvent;

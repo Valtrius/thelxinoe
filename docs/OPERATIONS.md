@@ -48,7 +48,7 @@ The former “Stable candidate” label displayed the discovered digest even whe
 
 Both **Notify** and **Automatic** check every six hours in the background, with the first check due after initial setup. Notify leaves preparation and installation to an administrator. Automatic queues discovered updates and waits for the server's maintenance window and idle checks before proceeding. Media services can inherit the server policy or override it. Attached services remain under their original owner's update policy. [Scheduler](../apps/server/src/managers/updates.rs).
 
-Server updates use a signed release manifest with version and compatibility checks. They do not discover releases through a container `latest` tag. Their background checks require a configured release channel and signing public key; Notify is the default. [Server release policy](../apps/server/src/product.rs).
+Server updates use a signed release manifest with version and compatibility checks. They do not discover releases through a container `latest` tag. GitHub Releases is the default channel, the signing public key is included in the images, and Notify is the default policy. [Server release policy](../apps/server/src/product.rs).
 
 ## HTTPS and TV access
 
@@ -108,16 +108,7 @@ The fresh [schema](../crates/database/schema.sql) rejects earlier development da
 
 ## Publishing
 
-No public release host or registry is configured. Product updates use a signed HTTPS envelope configured by `THELXINOE_RELEASE_URL`. Notify is the default; Automatic requires an idle maintenance window and successful recovery checks.
-
-1. Change `[workspace.package].version` in [Cargo.toml](../Cargo.toml), then run `npm run version:sync` and the [release checks](TESTING.md#release-checks). Schema source/target must match this baseline; incompatible schema upgrades require an upgrade design.
-2. Build and publish Linux server/controller images, retaining their manifest and platform config digests. Build Windows with `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; a Tauri override must enable `bundle.createUpdaterArtifacts` and set `plugins.updater.pubkey`.
-3. Prepare a manifest matching the [release types and validation](../crates/releases/src/lib.rs), with the final HTTPS installer URL. Keep the Tauri signing key separate from the manifest Ed25519 key. The committed [publisher public key](../releases/release.pub) must match the private manifest key.
-4. Assemble and sign:
-
-```sh
-node scripts/assemble-release.mjs draft.json installer.exe installer.exe.sig updater.pub manifest.json
-node scripts/sign-release.mjs manifest.json private-manifest-key.pem latest.json
-```
-
-Publish the installer, adjacent `.sig`, generated `windows-x64.json` beside the installer URL, and signed `latest.json`. Back up signing keys privately; never put them on the release host.
+See [release workflows, signing setup and local update qualification](UPDATES.md).
+GitHub Releases supplies signed Windows artifacts and publisher metadata; GHCR
+supplies immutable server/controller images. Assembly creates a draft; publication
+is a separate manual workflow.

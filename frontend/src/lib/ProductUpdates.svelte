@@ -39,6 +39,7 @@
     end = $state(5);
   async function load(initial = false) {
     try {
+      message = '';
       status = await api<Status>('/admin/product-update');
       if (initial) {
         policy = status.policy.policy;
@@ -52,7 +53,12 @@
   onMount(() => {
     void load(true);
     const timer = setInterval(() => void load(), 10000);
-    return () => clearInterval(timer);
+    const refresh = () => void load();
+    window.addEventListener('thelxinoe-product-update', refresh);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('thelxinoe-product-update', refresh);
+    };
   });
   async function command(path: string, body: unknown = {}) {
     busy = true;
@@ -60,7 +66,9 @@
     try {
       await api('/admin/product-update/' + path, 'POST', body);
       message =
-        'Request accepted. Preparation and installation can briefly disconnect the server; refresh after it reconnects.';
+        path === 'check'
+          ? ''
+          : 'Preparing the release. The server may disconnect briefly and will reconnect automatically.';
       await load();
     } catch (e) {
       message = String(e);
@@ -76,6 +84,15 @@
 >
   <h3>Server updates</h3>
   {#if status}
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <p class="text-sm text-muted">Installed server: {status.version}</p>
+      <Button
+        size="sm"
+        variant="secondary"
+        disabled={busy || !status.configured}
+        onclick={() => command('check')}>Check server release</Button
+      >
+    </div>
     <AutoSaveForm
       label="Server update settings"
       class="grid gap-3"
@@ -124,8 +141,8 @@
       <h3>Version {status.release.version}</h3>
       <p class="whitespace-pre-wrap">{status.release.notes}</p>
       <p>
-        Declared recovery: {status.release.migration.recovery}. Thelxinoe
-        retains a full verified snapshot before activation.
+        Installation retains a verified snapshot for recovery and briefly stops
+        the server.
       </p>
       <Button
         variant="secondary"

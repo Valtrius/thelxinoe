@@ -95,21 +95,13 @@ TV: generate playback fixtures, then `node scripts/tv-fixtures.mjs`. Start `comp
 
 ## Release checks
 
-Before publishing, run CI plus the applicable real browser, Windows, TV, provider, service-update and backup/recovery fixtures above. Validate supported clients after protocol changes. Use separate release signing keys, state and desktop identity (`app.thelxinoe.releasetest`).
-
-1. Build normal images and tag them `thelxinoe-server:release-base` and `thelxinoe-controller:release-base`. Run [prepare-release-fixture.mjs](../scripts/prepare-release-fixture.mjs); it injects a schema change into a disposable source copy to test incompatible-version recovery.
-2. Build both targets from `.local/release-fixture` and push as `localhost:25000/thelxinoe/server:0.2.0` and `localhost:25000/thelxinoe/controller:0.2.0` to a registry named `thelxinoe-release-registry` bound to `127.0.0.1:25000`.
-3. Run [prepare-release-test.mjs](../scripts/prepare-release-test.mjs), then `docker compose -f compose.release.test.yaml up -d --wait`. Linux bind directories need ownership `10001:10001`. Set `THELXINOE_RELEASE_PROJECT=thelxinoe-release-v6`, `THELXINOE_RELEASE_STATE=.local/releases-v6`, `THELXINOE_RELEASE_ARCHIVE=1`.
-4. Run these in order:
-
-```sh
-node scripts/test-product-release.mjs
-node scripts/test-release-interruption.mjs
-node scripts/test-release-recreation.mjs
-node scripts/test-pwa-remote.mjs
-```
-
-For actual Windows update checks, build both fixture versions with that separate identity and matching test signing keys. Supply `THELXINOE_RELEASE_PUBLIC_KEY` at build time; use `THELXINOE_RELEASE_CA_PEM` only for a private publisher CA. Enable updater artifacts/public key via a Tauri override. Put the candidate at `.local/releases/channel/setup.exe` with its `.sig`, and the Tauri public key at `.local/releases/tauri.key.pub`. Rerun `prepare-release-test.mjs`; serve only the channel at `https://localhost:29443`. Install the base in a separate directory/profile, launch with debug port 9224, then run [test-native-update.mjs](../scripts/test-native-update.mjs) and [test-native-compatibility.mjs](../scripts/test-native-compatibility.mjs). Rebuild production in a fresh shell without test key/CA overrides.
+Use the [local update lab and automated qualification](UPDATES.md) for server and
+Windows updates. The automated suites are included in CI and retain inspectable
+evidence. Continue to qualify the applicable real playback, TV and provider
+workflows above when changing their protocols.
+The optional `node scripts/test-pwa-remote.mjs` checks PWA installation, offline
+reconnect and remote HTTPS playback against the existing `compose.test.yaml`
+fixture (default `https://localhost:9443`).
 
 ## Why isolated coverage remains
 

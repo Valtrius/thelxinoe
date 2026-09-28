@@ -23,6 +23,7 @@
     message: string;
     created_at: number;
     read_at: number | null;
+    target?: 'server' | null;
   };
   let items = $state<Notice[]>([]),
     open = $state(false),
@@ -115,6 +116,18 @@
             : 'border-t border-l-3 border-line border-l-accent py-4 pl-4'}
         >
           <p class="my-[0.2rem]">{item.message}</p>
+          {#if item.target === 'server'}<Button
+              size="sm"
+              variant="secondary"
+              onclick={() => {
+                open = false;
+                window.dispatchEvent(
+                  new CustomEvent('thelxinoe-open-settings', {
+                    detail: 'server',
+                  }),
+                );
+              }}>Open server updates</Button
+            >{/if}
           <small class="text-muted"
             >{item.severity} · {new Date(item.created_at * 1000).toLocaleString(
               undefined,

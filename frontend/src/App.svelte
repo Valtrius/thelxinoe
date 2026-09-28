@@ -78,6 +78,8 @@
   import BackupSettings from './lib/BackupSettings.svelte';
   import ProductUpdates from './lib/ProductUpdates.svelte';
   import DesktopUpdates from './lib/DesktopUpdates.svelte';
+  import ClientUpdateNotice from './lib/ClientUpdateNotice.svelte';
+  import { connectDesktopUpdates } from './lib/desktop-updates';
   import UserAdministration from './lib/UserAdministration.svelte';
   import Player from './lib/Player.svelte';
   import MusicPlayer from './lib/MusicPlayer.svelte';
@@ -332,6 +334,15 @@
             (event.payload as { appearance: Appearance }).appearance,
           );
         if (event.kind === 'notifications.changed') notificationRevision++;
+        if (event.kind === 'server.reconnected') {
+          notificationRevision++;
+          mediaRevision++;
+          catalogRevision++;
+          accountRevision++;
+          if (section === 'Settings') void loadSettings();
+        }
+        if (['product.changed', 'server.reconnected'].includes(event.kind))
+          window.dispatchEvent(new Event('thelxinoe-product-update'));
         if (event.kind === 'online.account.changed') accountRevision++;
         if (
           event.kind === 'preferences.changed' ||
@@ -547,6 +558,7 @@
   }
   onMount(() => {
     document.body.classList.toggle('desktop-app', desktop);
+    const updateConnection = connectDesktopUpdates();
     const toolsConnection = desktop
       ? connectTools()
       : Promise.resolve(() => {});
@@ -560,11 +572,23 @@
       updateRequired = (event as CustomEvent<string>).detail;
       events?.close();
     };
+    const openSettings = (event: Event) => {
+      if (
+        (event as CustomEvent<string>).detail === 'server' &&
+        user?.role === 'admin'
+      ) {
+        settingsSection = 'server';
+        void navigate('Settings');
+      }
+    };
+    window.addEventListener('thelxinoe-open-settings', openSettings);
     window.addEventListener('thelxinoe-update-required', incompatible);
     void boot();
     return () => {
       void toolsConnection.then((disconnect) => disconnect());
+      void updateConnection.then((disconnect) => disconnect());
       window.removeEventListener('thelxinoe-update-required', incompatible);
+      window.removeEventListener('thelxinoe-open-settings', openSettings);
       events?.close();
       clearTimeout(settingsTimer);
       sidebarMotion.destroy();
@@ -576,6 +600,7 @@
 <svelte:document onclick={playYoutubeLink} />
 
 {#if desktop}<WindowTitlebar />{/if}
+<ClientUpdateNotice playing={Boolean(playing)} />
 {#if loading}
   <AuthLayout card={false}>
     <img
@@ -622,6 +647,11 @@
       height="42"
     />
     <h1>{setup ? 'Welcome to Thelxinoe' : 'Welcome back'}</h1>
+    {#if desktop}<details class="w-full">
+        <summary class="cursor-pointer text-sm text-muted"
+          >Desktop updates</summary
+        ><DesktopUpdates />
+      </details>{/if}
     <p class="text-muted">
       {setup
         ? 'Create the administrator account for your media server.'

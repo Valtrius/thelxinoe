@@ -7,7 +7,7 @@ RUN npm ci
 COPY frontend frontend
 COPY scripts/version.mjs scripts/version.mjs
 COPY Cargo.toml Cargo.toml
-COPY compose.yaml compose.test.yaml ./
+COPY compose.yaml compose.test.yaml compose.release.yaml Cargo.lock Dockerfile ./
 COPY apps/desktop/tauri.conf.json apps/desktop/tauri.conf.json
 RUN npm run build:web
 
@@ -24,6 +24,10 @@ RUN python -m venv /opt/streamlink && /opt/streamlink/bin/pip install --no-cache
 
 FROM python:3.11-slim-trixie@sha256:da047cb8f9d1d98e5c070f5300ba9f7274e33b8fc0e5be5ed88740aed1b95ba9 AS server
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates ffmpeg curl tini && rm -rf /var/lib/apt/lists/* && groupadd -g 10001 thelxinoe && useradd -u 10001 -g 10001 thelxinoe && mkdir -p /var/lib/thelxinoe /var/cache/thelxinoe /run/thelxinoe && chown -R 10001:10001 /var/lib/thelxinoe /var/cache/thelxinoe /run/thelxinoe && chmod 2770 /run/thelxinoe
+ARG VERSION=0.1.0
+ARG REVISION=development
+LABEL org.opencontainers.image.source="https://github.com/Valtrius/thelxinoe" org.opencontainers.image.version=$VERSION org.opencontainers.image.revision=$REVISION
+COPY releases/release.pub /etc/thelxinoe/release.pub
 COPY --from=rust /usr/local/bin/thelxinoe-server /usr/local/bin/
 COPY --from=streamlink /opt/streamlink /opt/streamlink
 COPY --from=web /src/frontend/dist /opt/thelxinoe/web
@@ -35,6 +39,10 @@ ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/thelxinoe-server"]
 
 FROM debian:bookworm-slim AS controller
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tini && rm -rf /var/lib/apt/lists/* && mkdir -p /run/thelxinoe && chown 0:10001 /run/thelxinoe && chmod 2770 /run/thelxinoe
+ARG VERSION=0.1.0
+ARG REVISION=development
+LABEL org.opencontainers.image.source="https://github.com/Valtrius/thelxinoe" org.opencontainers.image.version=$VERSION org.opencontainers.image.revision=$REVISION
+COPY releases/release.pub /etc/thelxinoe/release.pub
 COPY --from=rust /usr/local/bin/thelxinoe-docker-controller /usr/local/bin/
 USER 0:10001
 HEALTHCHECK --interval=15s --timeout=3s CMD curl -fsS --unix-socket /run/thelxinoe/controller.sock http://localhost/health || exit 1

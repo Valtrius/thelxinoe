@@ -82,7 +82,6 @@ async function scenario(uid, gid, full) {
           THELXINOE_SERVER_IMAGE: serverImage,
           THELXINOE_CONTROLLER_IMAGE: controllerImage,
           THELXINOE_PUBLIC_URL: '',
-          THELXINOE_RELEASE_URL: '',
           THELXINOE_CORS_ORIGINS: '',
           THELXINOE_TRUSTED_PROXIES: '',
         },
@@ -105,9 +104,13 @@ async function scenario(uid, gid, full) {
         mount.type = 'bind';
         mount.source = `${linuxRoot}/${volumes[mount.target]}`;
       }
-      if (mount.target === '/etc/thelxinoe/release.pub')
-        mount.source = `${root}/release.pub`;
     }
+    service.volumes.push({
+      type: 'bind',
+      source: `${root}/release.pub`,
+      target: '/etc/thelxinoe/release.pub',
+      read_only: true,
+    });
   }
   config.services.server.ports = [
     {
@@ -118,6 +121,7 @@ async function scenario(uid, gid, full) {
     },
   ];
   config.services.server.environment.THELXINOE_DISCOVERY = 'false';
+  config.services.server.environment.THELXINOE_RELEASE_URL = '';
   const composeFile = `${root}/compose.json`;
   writeFileSync(composeFile, JSON.stringify(config, null, 2));
   const compose = (...args) =>
@@ -434,7 +438,6 @@ async function scenario(uid, gid, full) {
           reference: reference.split('@')[0].includes('/')
             ? reference
             : `docker.io/library/${reference}`,
-          config_digest: raw.Id,
         };
       };
       const schema = Number(

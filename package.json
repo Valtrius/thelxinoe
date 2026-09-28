@@ -27,18 +27,21 @@
     "test:service-access": "node scripts/test-service-access.mjs",
     "test:ui:player": "playwright test --config playwright.player.config.ts",
     "test:ui:layout": "playwright test --config playwright.layout.config.ts",
+    "test:updates": "node scripts/updates/test.mjs",
     "lint": "eslint frontend scripts tests --max-warnings=0",
     "format": "prettier --write frontend scripts tests package.json .github README.md docs",
     "format:check": "prettier --check frontend scripts tests package.json .github README.md docs",
     "version:sync": "node scripts/version.mjs --write",
     "version:check": "node scripts/version.mjs",
+    "updates:lab": "node scripts/updates/lab.mjs",
     "validate": "npm run check && npm test && npm run build:web",
     "validate:web": "npm run format:check && npm run lint && npm run check:web && npm run test:web && npm run build:web",
     "ci": "node scripts/ci.mjs",
     "ci:server": "node scripts/ci.mjs server",
     "ci:web": "node scripts/ci.mjs web",
     "ci:containers": "node scripts/ci.mjs containers",
-    "ci:desktop": "node scripts/ci.mjs desktop"
+    "ci:desktop": "node scripts/ci.mjs desktop",
+    "ci:updates": "node scripts/ci.mjs updates"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

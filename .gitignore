@@ -6,6 +6,8 @@ frontend/dist/
 *.log
 test-results/
 playwright-report/
+release-assets/
+release-desktop/
 apps/desktop/gen/
 apps/desktop/icons/
 .serena

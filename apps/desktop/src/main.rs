@@ -244,6 +244,7 @@ fn main() {
         .manage(updates::Runtime::default())
         .setup(|app| {
             tools::initialize(app)?;
+            updates::start(app.handle().clone());
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
@@ -276,6 +277,9 @@ fn main() {
             open_service,
             open_twitch_activation,
             updates::desktop_update_check,
+            updates::desktop_update_status,
+            updates::desktop_update_download,
+            updates::desktop_update_policy,
             updates::desktop_update_install,
             tools::commands::tools_get,
             tools::commands::tools_check,

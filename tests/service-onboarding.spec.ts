@@ -924,12 +924,17 @@ test('quality dragging cancels with Escape and scrolls a long list to its drop t
     exact: true,
   });
   for (const cancel of [true, false]) {
-    await grip.scrollIntoViewIfNeeded();
+    // Hover waits for the restored row to settle and receive pointer events
+    // after cancellation; cached coordinates can hit another animated row.
+    await grip.hover();
+    await page.mouse.down();
+    await expect(grip).toBeFocused();
     const from = (await grip.boundingBox())!,
       bounds = (await list.boundingBox())!;
-    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
-    await page.mouse.down();
     await page.mouse.move(from.x + from.width / 2, bounds.y + 2, { steps: 5 });
+    await expect(list.locator('[data-drop-placeholder]')).toHaveText(
+      'Quality 1',
+    );
     if (cancel) {
       await page.keyboard.press('Escape');
       await page.mouse.up();

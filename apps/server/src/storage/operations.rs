@@ -94,7 +94,7 @@ pub(super) async fn notifications(
     db: &Database,
     p: thelxinoe_core::Principal,
 ) -> anyhow::Result<Vec<Value>> {
-    db.read("operations.notifications", move|db| Ok(db.prepare("SELECT id,severity,message,created_at,read_at FROM notifications WHERE user_id=?1 ORDER BY created_at DESC,id LIMIT 200")?.query_map([p.user.id],|r|Ok(json!({"id":r.get::<_,String>(0)?,"severity":r.get::<_,String>(1)?,"message":r.get::<_,String>(2)?,"created_at":r.get::<_,i64>(3)?,"read_at":r.get::<_,Option<i64>>(4)?})))?.collect::<rusqlite::Result<Vec<_>>>()?)).await
+    db.read("operations.notifications", move|db| Ok(db.prepare("SELECT id,severity,message,created_at,read_at,source FROM notifications WHERE user_id=?1 ORDER BY created_at DESC,id LIMIT 200")?.query_map([p.user.id],|r|Ok(json!({"id":r.get::<_,String>(0)?,"severity":r.get::<_,String>(1)?,"message":r.get::<_,String>(2)?,"created_at":r.get::<_,i64>(3)?,"read_at":r.get::<_,Option<i64>>(4)?,"target":if r.get::<_,String>(5)?.starts_with("product-") {Some("server")} else {None}})))?.collect::<rusqlite::Result<Vec<_>>>()?)).await
 }
 
 pub(super) async fn read(db: &Database, key: String, user: String) -> anyhow::Result<()> {
@@ -117,8 +117,8 @@ pub(super) async fn observe(db: &Database) -> anyhow::Result<Vec<String>> {
           UNION ALL SELECT 'support:'||id,'error','A support service needs attention. Check download and indexer health.' FROM support_services WHERE error IS NOT NULL
           UNION ALL SELECT 'update:'||id||':'||state,'warning','A service update needs attention. Open service updates.' FROM service_updates WHERE state IN ('blocked','failed','incompatible','unable-to-verify','runtime-failure')
           UNION ALL SELECT 'health:'||json_extract(j.value,'$.id'),'warning','An indexer or download service needs attention. Open Support services.' FROM settings s,json_each(s.value,'$.items') j WHERE s.key='operations.support' AND json_extract(j.value,'$.problem')=1
-          UNION ALL SELECT 'product-release:'||json_extract(value,'$.version'),'info','A signed Thelxinoe release is available. Open Product updates.' FROM settings WHERE key='product.release' AND json_extract(value,'$.version') IS NOT NULL
-          UNION ALL SELECT 'product-update:'||json_extract(j.value,'$.id')||':'||json_extract(j.value,'$.stage'),'warning','A Thelxinoe update needs attention. Open Product updates.' FROM settings s,json_each(s.value,'$.items') j WHERE s.key='product.controller' AND json_extract(j.value,'$.stage') IN ('blocked','recovered','recovery-required','runtime-failure')")?.query_map([now()-7*86400],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+          UNION ALL SELECT 'product-release:'||json_extract(value,'$.version'),'info','Server '||json_extract(value,'$.version')||' is available.' FROM settings WHERE key='product.release' AND json_extract(value,'$.version') IS NOT NULL
+          UNION ALL SELECT 'product-update:'||json_extract(j.value,'$.id')||':'||json_extract(j.value,'$.stage'),'warning','A server update needs attention.' FROM settings s,json_each(s.value,'$.items') j WHERE s.key='product.controller' AND json_extract(j.value,'$.stage') IN ('blocked','recovered','recovery-required','runtime-failure')")?.query_map([now()-7*86400],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let admins=tx.prepare("SELECT id FROM users WHERE role='admin'")?.query_map([],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let mut changed=vec![];
         let previous=tx.prepare("SELECT source,occurrence,active FROM notification_conditions")?.query_map([],|r|Ok((r.get::<_,String>(0)?,(r.get::<_,i64>(1)?,r.get::<_,bool>(2)?))))?.collect::<rusqlite::Result<std::collections::HashMap<_,_>>>()?;

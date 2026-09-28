@@ -187,12 +187,16 @@ function desktop() {
 }
 
 const requested = process.argv.slice(2);
+function updates() {
+  ensurePlaywright();
+  node('scripts/updates/test.mjs', ...(isWindows ? [] : ['--server-only']));
+}
 const phases = requested.length
   ? requested
   : isWindows
-    ? ['server', 'web', 'containers', 'desktop']
-    : ['server', 'web', 'containers'];
-const phaseFunctions = { server, web, containers, desktop };
+    ? ['server', 'web', 'containers', 'desktop', 'updates']
+    : ['server', 'web', 'containers', 'updates'];
+const phaseFunctions = { server, web, containers, desktop, updates };
 
 for (const phase of phases) {
   const execute = phaseFunctions[phase];

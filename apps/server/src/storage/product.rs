@@ -2,6 +2,34 @@
 use super::*;
 use thelxinoe_database::Database;
 
+pub(super) async fn discovered(
+    db: &Database,
+    release: Option<(Envelope, Manifest, bool)>,
+    error: Option<String>,
+) -> anyhow::Result<()> {
+    db.write("product.discovered", move |db| {
+        let tx = db.transaction()?;
+        let previous: Value = tx.query_row("SELECT value FROM settings WHERE key='product.observation'", [], |r| r.get::<_, String>(0))
+            .optional()?.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null);
+        let failed = error.is_some();
+        let failures = if failed { previous["failures"].as_u64().unwrap_or(0).saturating_add(1).min(6) } else { 0 };
+        let retry = if failed { (60i64 * (1 << failures.saturating_sub(1))).min(1800) } else { 6 * 3600 };
+        let mut candidate = Value::Null;
+        if let Some((envelope, manifest, available)) = release {
+            tx.execute("INSERT INTO settings VALUES ('product.envelope',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [json!(envelope).to_string()])?;
+            if available { candidate = json!(manifest); }
+        }
+        for (key, value) in [
+            ("product.release", candidate),
+            ("product.observation", json!({"checked_at":now(),"last_success":if failed {previous["last_success"].clone()} else {json!(now())},"next_check":now()+retry,"failures":failures,"error":error})),
+        ] {
+            tx.execute("INSERT INTO settings VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![key, value.to_string()])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }).await
+}
+
 pub(super) async fn setting(key: String, db: &Database) -> anyhow::Result<Option<Value>> {
     db.read("product.setting", move |db| {
         Ok(db

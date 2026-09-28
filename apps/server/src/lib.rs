@@ -57,6 +57,7 @@ use thelxinoe_jobs::Queue;
 #[derive(Clone)]
 pub struct AppState {
     pub server_id: Arc<String>,
+    pub event_epoch: Arc<String>,
     pub db: Database,
     pub secrets: SecretStore,
     pub config: Arc<Config>,
@@ -71,6 +72,7 @@ pub struct AppState {
     pub(crate) media_operations: Arc<tokio::sync::RwLock<()>>,
     pub(crate) release_gate: Arc<tokio::sync::RwLock<()>>,
     pub(crate) release_quiescing: Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) release_check: Arc<tokio::sync::Mutex<()>>,
 }
 impl AppState {
     pub async fn open(config: Config) -> anyhow::Result<Self> {
@@ -89,6 +91,7 @@ impl AppState {
         let secrets = SecretStore::open(&config.state.join("secrets"))?;
         Ok(Self {
             server_id: Arc::new(server_id),
+            event_epoch: Arc::new(thelxinoe_core::id()),
             playback: Arc::new(thelxinoe_playback::Pipelines::open(&config.cache).await?),
             subtitle_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             db,
@@ -102,6 +105,7 @@ impl AppState {
             media_operations: Arc::new(tokio::sync::RwLock::new(())),
             release_gate: Arc::new(tokio::sync::RwLock::new(())),
             release_quiescing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            release_check: Arc::new(tokio::sync::Mutex::new(())),
             dummy_hash: Arc::new(thelxinoe_auth::password_hash(thelxinoe_auth::token()).await?),
         })
     }

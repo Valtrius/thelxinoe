@@ -59,12 +59,31 @@ pub(crate) async fn configured_policy(state: &AppState) -> Result<Policy> {
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default())
 }
+fn channel() -> String {
+    std::env::var("THELXINOE_RELEASE_URL")
+        .unwrap_or_else(|_| thelxinoe_releases::DEFAULT_CHANNEL.into())
+}
+fn key_file() -> String {
+    std::env::var("THELXINOE_RELEASE_KEY_FILE")
+        .unwrap_or_else(|_| "/etc/thelxinoe/release.pub".into())
+}
 fn configured() -> bool {
-    (std::env::var("THELXINOE_RELEASE_URL").is_ok_and(|v| !v.is_empty())
-        || std::env::var("THELXINOE_RELEASE_MANIFEST_FILE")
-            .is_ok_and(|v| std::path::Path::new(&v).is_file()))
-        && std::env::var("THELXINOE_RELEASE_KEY_FILE")
-            .is_ok_and(|v| std::path::Path::new(&v).is_file())
+    (!channel().is_empty() || std::env::var("THELXINOE_RELEASE_MANIFEST_FILE").is_ok())
+        && std::path::Path::new(&key_file()).is_file()
+}
+async fn eligible(state: &AppState) -> Result<Option<Manifest>> {
+    Ok(setting(state, "product.release")
+        .await?
+        .and_then(|value| serde_json::from_value::<Manifest>(value).ok())
+        .filter(|manifest| {
+            manifest
+                .candidate(
+                    thelxinoe_core::VERSION,
+                    thelxinoe_database::SCHEMA_VERSION,
+                    now(),
+                )
+                .is_ok()
+        }))
 }
 async fn status(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
@@ -72,7 +91,7 @@ async fn status(State(state): State<AppState>, headers: HeaderMap) -> Result<Jso
         .await
         .unwrap_or_else(|_| json!({"items":[],"error":"Controller unavailable"}));
     Ok(Json(
-        json!({"version":thelxinoe_core::VERSION,"timezone":storage::server_zone(&state.db).await?.name(),"policy":configured_policy(&state).await?,"release":setting(&state,"product.release").await?,"observation":setting(&state,"product.observation").await?,"configured":configured(),"controller":controller}),
+        json!({"version":thelxinoe_core::VERSION,"timezone":storage::server_zone(&state.db).await?.name(),"policy":configured_policy(&state).await?,"release":eligible(&state).await?,"observation":setting(&state,"product.observation").await?,"configured":configured(),"controller":controller}),
     ))
 }
 pub(crate) async fn observe(state: &AppState) -> Result<()> {
@@ -102,10 +121,8 @@ async fn audit(state: &AppState, user: Option<String>, action: &str, target: &st
     Ok(())
 }
 async fn fetch() -> Result<(Envelope, Manifest)> {
-    let key = std::env::var("THELXINOE_RELEASE_KEY_FILE")
-        .ok()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .ok_or_else(|| ApiError::conflict("Release signing public key is not configured"))?;
+    let key = std::fs::read_to_string(key_file())
+        .map_err(|_| ApiError::conflict("Release signing public key is not configured"))?;
     let bytes = if let Ok(path) = std::env::var("THELXINOE_RELEASE_MANIFEST_FILE") {
         use std::io::Read;
         let file = std::fs::File::open(path)
@@ -119,7 +136,14 @@ async fn fetch() -> Result<(Envelope, Manifest)> {
         }
         bytes
     } else {
-        fetch_bytes().await?
+        let ca = std::env::var("THELXINOE_RELEASE_CA_FILE")
+            .ok()
+            .map(std::fs::read_to_string)
+            .transpose()
+            .map_err(|_| ApiError::conflict("Publisher TLS certificate is unavailable"))?;
+        return thelxinoe_releases::fetch(&channel(), &key, ca.as_deref())
+            .await
+            .map_err(|_| ApiError::conflict("Signed release channel is unavailable or invalid"));
     };
     let envelope: Envelope =
         serde_json::from_slice(&bytes).map_err(|_| ApiError::bad("Invalid release envelope"))?;
@@ -127,65 +151,37 @@ async fn fetch() -> Result<(Envelope, Manifest)> {
         .map_err(|_| ApiError::bad("Release signature or manifest is invalid"))?;
     Ok((envelope, manifest))
 }
-async fn fetch_bytes() -> Result<Vec<u8>> {
-    let source = std::env::var("THELXINOE_RELEASE_URL")
-        .map_err(|_| ApiError::conflict("Release channel is not configured"))?;
-    let url = thelxinoe_releases::https(&source)
-        .map_err(|_| ApiError::bad("Release channel must use HTTPS"))?;
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|_| ApiError::conflict("Release channel is unavailable"))?;
-    let mut response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|_| ApiError::conflict("Release channel is unavailable"))?
-        .error_for_status()
-        .map_err(|_| ApiError::conflict("Release channel is unavailable"))?;
-    let mut bytes = vec![];
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| ApiError::conflict("Release response was interrupted"))?
-    {
-        if bytes.len() + chunk.len() > thelxinoe_releases::MAX_ENVELOPE {
-            return Err(ApiError::bad("Release manifest exceeds the size limit"));
-        }
-        bytes.extend(chunk);
-    }
-    Ok(bytes)
-}
 async fn check_release(state: &AppState) -> Result<()> {
+    let _guard = state.release_check.lock().await;
     let result = async {
         let (envelope, manifest) = fetch().await?;
-        if manifest.version == thelxinoe_core::VERSION {
-            save(state, "product.release", Value::Null).await?;
-            return Ok(());
-        }
         manifest
-            .candidate(
-                thelxinoe_core::VERSION,
-                thelxinoe_database::SCHEMA_VERSION,
-                now(),
-            )
-            .map_err(|_| {
-                ApiError::conflict("Release version, validity or recovery metadata is incompatible")
-            })?;
-        save(state, "product.envelope", json!(envelope)).await?;
-        save(state, "product.release", json!(manifest)).await?;
-        Ok::<_, ApiError>(())
+            .valid_at(now())
+            .map_err(|e| ApiError::conflict(e.to_string()))?;
+        let candidate = manifest
+            .newer_than(thelxinoe_core::VERSION)
+            .map_err(|e| ApiError::conflict(e.to_string()))?;
+        if candidate {
+            manifest
+                .candidate(
+                    thelxinoe_core::VERSION,
+                    thelxinoe_database::SCHEMA_VERSION,
+                    now(),
+                )
+                .map_err(|e| ApiError::conflict(e.to_string()))?;
+        }
+        Ok::<_, ApiError>((envelope, manifest, candidate))
     }
     .await;
-    save(
-        state,
-        "product.observation",
-        json!({"checked_at":now(),"error":result.as_ref().err().map(|e|&e.2)}),
+    storage::discovered(
+        &state.db,
+        result.as_ref().ok().cloned(),
+        result.as_ref().err().map(|e| e.2.clone()),
     )
     .await?;
     state.emit(None, "product.changed", json!({})).await?;
-    result
+    crate::operations::observe(state).await?;
+    result.map(|_| ())
 }
 async fn check(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
@@ -202,6 +198,12 @@ async fn idle(state: &AppState) -> Result<()> {
     Ok(())
 }
 async fn prepare_update(state: &AppState, user: Option<String>) -> Result<Value> {
+    check_release(state).await?;
+    if eligible(state).await?.is_none() {
+        return Err(ApiError::conflict(
+            "No eligible server release is available",
+        ));
+    }
     let envelope = setting(state, "product.envelope")
         .await?
         .ok_or_else(|| ApiError::conflict("Check for a signed release first"))?;
@@ -214,10 +216,12 @@ async fn prepare_update(state: &AppState, user: Option<String>) -> Result<Value>
     .await
 }
 async fn quiesced_command(state: &AppState, path: &str, body: Option<Value>) -> Result<Value> {
-    let _gate = state
-        .release_gate
-        .try_write()
-        .map_err(|_| ApiError::conflict("Wait for current requests to finish and try again"))?;
+    let _gate = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        state.release_gate.write(),
+    )
+    .await
+    .map_err(|_| ApiError::conflict("Wait for current requests to finish and try again"))?;
     if state
         .release_quiescing
         .load(std::sync::atomic::Ordering::SeqCst)
@@ -293,6 +297,23 @@ async fn action(
     {
         return Err(ApiError::bad("Confirm the selected release operation"));
     }
+    if action == "activate" {
+        check_release(&state).await?;
+        let release = eligible(&state).await?.ok_or_else(|| {
+            ApiError::conflict("Check for an eligible server release before installing")
+        })?;
+        let observed = crate::managers::controller_request(&state, "/product", None).await?;
+        if !observed["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|u| u["id"] == key && u["version"] == release.version)
+        {
+            return Err(ApiError::conflict(
+                "The prepared release has been replaced; prepare the current release",
+            ));
+        }
+    }
     idle(&state).await?;
     audit(&state, Some(p.user.id), &action, &key).await?;
     Ok(Json(
@@ -305,8 +326,7 @@ async fn action(
     ))
 }
 async fn release(State(state): State<AppState>) -> Result<Json<Value>> {
-    // Public publisher metadata lets an incompatible desktop update before login.
-    // The desktop independently verifies its embedded publisher trust key.
+    // Expose the last verified publisher envelope for diagnostics and clients.
     Ok(Json(
         json!({"envelope":setting(&state,"product.envelope").await?}),
     ))
@@ -323,11 +343,11 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
 }
 async fn tick(state: &AppState) -> Result<()> {
     let p = configured_policy(state).await?;
-    let checked = setting(state, "product.observation")
+    let next_check = setting(state, "product.observation")
         .await?
-        .and_then(|v| v["checked_at"].as_i64())
+        .and_then(|v| v["next_check"].as_i64())
         .unwrap_or(0);
-    if checked < now() - 6 * 3600 {
+    if next_check <= now() {
         check_release(state).await?;
     }
     if p.policy != "automatic"
@@ -336,10 +356,7 @@ async fn tick(state: &AppState) -> Result<()> {
     {
         return Ok(());
     }
-    let Some(release) = setting(state, "product.release")
-        .await?
-        .filter(|v| !v.is_null())
-    else {
+    let Some(release) = eligible(state).await?.map(|m| json!(m)) else {
         return Ok(());
     };
     let observed = crate::managers::controller_request(state, "/product", None).await?;

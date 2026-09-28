@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 pub const FORMAT: u32 = 1;
 pub const RECOVERY_PROTOCOL: u32 = 1;
 pub const MAX_ENVELOPE: usize = 128 * 1024;
+pub const DEFAULT_CHANNEL: &str =
+    "https://github.com/Valtrius/thelxinoe/releases/latest/download/latest.json";
 const DOMAIN: &[u8] = b"Thelxinoe release manifest v1\0";
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -20,8 +22,6 @@ pub struct Envelope {
 pub struct Image {
     /// Registry reference pinned to its OCI manifest digest.
     pub reference: String,
-    /// Platform-specific image configuration digest checked after pulling.
-    pub config_digest: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -90,7 +90,57 @@ pub fn https(value: &str) -> Result<url::Url> {
     );
     Ok(url)
 }
+
+/// Publisher requests never use a device credential or the connected server's client.
+pub fn publisher_client(ca: Option<&str>) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .timeout(std::time::Duration::from_secs(60));
+    if let Some(ca) = ca {
+        builder = builder.add_root_certificate(reqwest::Certificate::from_pem(ca.as_bytes())?);
+    }
+    Ok(builder.build()?)
+}
+
+pub async fn fetch(
+    source: &str,
+    public_key: &str,
+    ca: Option<&str>,
+) -> Result<(Envelope, Manifest)> {
+    let mut response = publisher_client(ca)?
+        .get(https(source)?)
+        .send()
+        .await?
+        .error_for_status()?;
+    ensure!(
+        response.status().is_success(),
+        "Publisher did not return a release"
+    );
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        ensure!(
+            bytes.len() + chunk.len() <= MAX_ENVELOPE,
+            "Release manifest exceeds the size limit"
+        );
+        bytes.extend_from_slice(&chunk);
+    }
+    let envelope: Envelope = serde_json::from_slice(&bytes)?;
+    let manifest = verify(&envelope, public_key)?;
+    Ok((envelope, manifest))
+}
 impl Manifest {
+    pub fn newer_than(&self, version: &str) -> Result<bool> {
+        Ok(semver::Version::parse(&self.version)? > semver::Version::parse(version)?)
+    }
+    pub fn valid_at(&self, now: i64) -> Result<()> {
+        self.validate()?;
+        ensure!(
+            self.published_at <= now + 300 && self.expires_at > now,
+            "Release manifest has expired or is not valid yet"
+        );
+        Ok(())
+    }
     pub fn validate(&self) -> Result<()> {
         ensure!(self.format == FORMAT, "Unsupported release manifest format");
         let version = semver::Version::parse(&self.version)?;
@@ -127,8 +177,7 @@ impl Manifest {
                     && repo.bytes().all(|b| b.is_ascii_lowercase()
                         || b.is_ascii_digit()
                         || b"./:-_".contains(&b))
-                    && digest(hash)
-                    && digest(&image.config_digest),
+                    && digest(hash),
                 "Invalid immutable image reference"
             );
         }
@@ -201,7 +250,6 @@ mod tests {
                 "registry.example/thelxinoe/server@sha256:{}",
                 "a".repeat(64)
             ),
-            config_digest: format!("sha256:{}", "b".repeat(64)),
         };
         Manifest {
             format: 1,

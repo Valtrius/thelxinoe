@@ -231,7 +231,19 @@ async fn pull(image: &thelxinoe_releases::Image) -> Result<()> {
         }
         Err(e) => return Err(e),
     };
-    if raw["Id"] != image.config_digest || raw["Architecture"] != "amd64" || raw["Os"] != "linux" {
+    // Docker's classic and containerd stores report different local image IDs.
+    // The signed registry digest pins the manifest and its entire content chain.
+    if !raw["RepoDigests"].as_array().is_some_and(|digests| {
+        digests.iter().any(|digest| {
+            digest
+                .as_str()
+                .and_then(|value| value.rsplit_once('@'))
+                .map(|(_, hash)| hash)
+                == image.reference.rsplit_once('@').map(|(_, hash)| hash)
+        })
+    }) || raw["Architecture"] != "amd64"
+        || raw["Os"] != "linux"
+    {
         return Err(conflict(
             "Release image does not match the signed Linux x86-64 identity",
         ));
@@ -357,7 +369,7 @@ async fn prepare(u: &mut Update) -> Result<()> {
     server_check(
         u,
         "clone",
-        &manifest.server.config_digest,
+        &manifest.server.reference,
         &manifest.version,
         manifest.migration.target,
     )
@@ -375,7 +387,7 @@ async fn prepare(u: &mut Update) -> Result<()> {
     private(&dir(&u.id).join("probe"))?;
     let spec = worker_spec(
         u,
-        &manifest.controller.config_digest,
+        &manifest.controller.reference,
         "controller-probe",
         json!([{"Type":"bind","Source":host(u,"probe"),"Target":"/probe"}]),
     )?;
@@ -391,6 +403,9 @@ async fn prepare(u: &mut Update) -> Result<()> {
 fn recreate(raw: &Value, image: &str) -> Result<Value> {
     let mut spec = raw["Config"].clone();
     spec["Image"] = json!(image);
+    if let Some(labels) = spec["Labels"].as_object_mut() {
+        labels.retain(|key, _| !key.starts_with("org.opencontainers.image."));
+    }
     spec["Hostname"] = json!("");
     spec["HostConfig"] = raw["HostConfig"].clone();
     let networks = raw["NetworkSettings"]["Networks"]
@@ -512,7 +527,7 @@ async fn replace(u: &mut Update) -> Result<()> {
     // Migrate the real state while entirely disconnected, after the verified rollback bundle exists.
     let mut spec = worker_spec(
         u,
-        &manifest.server.config_digest,
+        &manifest.server.reference,
         "validate-state",
         json!([{"Type":"bind","Source":u.source,"Target":"/var/lib/thelxinoe"}]),
     )?;
@@ -539,7 +554,7 @@ async fn handoff(u: &mut Update) -> Result<()> {
             .as_ref()
             .ok_or_else(unavailable)?
             .server
-            .config_digest
+            .reference
             .clone()
     };
     let controller_image = if u.restoring_release {
@@ -549,7 +564,7 @@ async fn handoff(u: &mut Update) -> Result<()> {
             .as_ref()
             .ok_or_else(unavailable)?
             .controller
-            .config_digest
+            .reference
             .clone()
     };
     let version = if u.restoring_release {
@@ -722,7 +737,7 @@ pub(super) async fn recover(
         return Ok(Json(public(&u)));
     }
     let d = bootstrap().await?;
-    if !u.snapshot_ready || (!u.restoring_release && Some(d.generation) != u.generation) {
+    if !u.snapshot_ready || (!u.restoring_release && !snapshot_matches(&u, &d)) {
         return Err(conflict(
             "This snapshot does not belong to the accepted release generation",
         ));
@@ -744,6 +759,27 @@ pub(super) async fn recover(
         }
     });
     Ok(Json(result))
+}
+fn snapshot_matches(u: &Update, current: &Deployment) -> bool {
+    let Some(generation) = u.generation else {
+        return false;
+    };
+    if current.generation == generation {
+        return true;
+    }
+    // A verified Compose recreation advances container IDs and the deployment
+    // generation, but retains the same installed release and recovery snapshot.
+    let path = store::root().join(format!("generations/{generation}/desired-state.json"));
+    let Ok(accepted) = store::read::<Deployment>(&path) else {
+        return false;
+    };
+    current.generation > generation
+        && current.id == accepted.id
+        && current.version == accepted.version
+        && current.server["Config"]["Labels"]["app.thelxinoe.product-update"] == u.id
+        && current.controller["Config"]["Labels"]["app.thelxinoe.product-update"] == u.id
+        && equivalent(&accepted.server, &current.server, false)
+        && equivalent(&accepted.controller, &current.controller, false)
 }
 async fn restore_release(u: &mut Update) -> Result<()> {
     // All inputs are retained controller state; the migrated SQLite database is never opened.
