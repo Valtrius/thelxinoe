@@ -22,6 +22,24 @@ export async function freePort() {
   return port;
 }
 
+export async function waitForProxy(client, base) {
+  await expect
+    .poll(
+      async () => {
+        try {
+          const response = await client.get(`${base}/api/v1/health`, {
+            timeout: 5000,
+          });
+          return response.ok() && (await response.json()).status === 'ok';
+        } catch {
+          return false;
+        }
+      },
+      { timeout: 30000, intervals: [500, 1000] },
+    )
+    .toBe(true);
+}
+
 export async function fixture({ scheme = 'https' } = {}) {
   const project = `thelxinoe-access-${Date.now()}`;
   const root = resolve(`.local/${project}`);
@@ -413,6 +431,7 @@ export async function fixture({ scheme = 'https' } = {}) {
       '/media',
     );
     compose('up', '-d', '--wait', '--wait-timeout', '180');
+    await waitForProxy(context.request, base);
     await api('/setup', 'POST', {
       username: 'admin',
       password: 'test-only long passphrase',
@@ -441,7 +460,7 @@ export async function fixture({ scheme = 'https' } = {}) {
     try {
       writeFileSync(
         `${output}/${project}-startup.log`,
-        compose('logs', '--no-color', 'controller', 'server'),
+        compose('logs', '--no-color', 'controller', 'server', 'proxy'),
       );
     } catch (diagnosticError) {
       console.error(

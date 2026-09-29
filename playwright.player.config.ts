@@ -1,4 +1,5 @@
 import { defineConfig } from '@playwright/test';
+const port = process.env.THELXINOE_PLAYER_PORT ?? '18487';
 
 export default defineConfig({
   testDir: 'tests',
@@ -6,13 +7,13 @@ export default defineConfig({
   workers: 1,
   use: {
     trace: 'on',
-    baseURL: 'http://127.0.0.1:18487',
+    baseURL: `http://127.0.0.1:${port}`,
     headless: true,
     viewport: { width: 1280, height: 900 },
   },
   webServer: {
-    command: 'npm run dev:web -- --port 18487',
-    url: 'http://127.0.0.1:18487',
+    command: `npm run dev:web -- --port ${port} --strictPort`,
+    url: `http://127.0.0.1:${port}`,
     reuseExistingServer: false,
   },
   outputDir: 'test-results/player',

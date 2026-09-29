@@ -57,7 +57,7 @@ pub(crate) struct Runtime {
         std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     connection_wake: tokio::sync::Notify,
     #[cfg(test)]
-    docker: std::sync::Mutex<std::collections::HashMap<String, Value>>,
+    pub(crate) docker: std::sync::Mutex<std::collections::HashMap<String, Value>>,
 }
 impl Runtime {
     // Service mutations share one media lease while retaining their own service

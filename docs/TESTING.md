@@ -7,12 +7,27 @@ Follow the [testing rules in AGENTS.md](../AGENTS.md#testing). Prefer complete a
 ```sh
 npm run validate
 npm run ci
+npm run ci:local # Windows: parallel lanes, saved summary, completion notification
+npm run ci:status # Latest local run: lane status and result paths
 npm run test:ui:layout
 npm run test:ui:player
 npm run test:service-access
 ```
 
 [Scripts](../package.json) and [CI runner](../scripts/ci.mjs) define the checks. On Windows, `ci:server` runs Linux checks via [Dockerfile.verify](../scripts/Dockerfile.verify); `ci:desktop` runs native checks. `ci:containers` deletes its disposable `thelxinoe-test` and `thelxinoe-playback` containers/volumes before and after running. UI suites intercept API requests and use no server account; player tests need FFmpeg.
+
+The full local `npm run ci` runs independent lanes concurrently. Each lane gets
+an isolated worktree containing the current files, a clean dependency installation,
+and separate build outputs and evidence. Local runs use unique browser ports and
+Compose project names; one coordinator at a time owns shared Docker fixtures.
+Single-phase commands remain the same commands GitHub runs.
+
+The live summary requests background opening in the default browser at launch
+and updates every five seconds. Browser launch errors are saved in
+`browser-open.log`. Use `npm run ci:status` to reopen its path. Expand a lane's commands to
+see which step is running and how long each completed step took.
+The run retains per-lane logs, `result.json`, source hashes, worktrees and test
+artifacts. Windows displays a completion window with the run ID and lane results.
 
 ## Test artifacts
 
@@ -49,6 +64,8 @@ All integration fixtures below mutate accounts, files or containers. Use their d
 node scripts/fixtures.mjs
 docker compose build
 docker compose -f compose.test.yaml up -d --wait
+docker compose -f compose.test.yaml cp .local/fixtures/. server:/media
+docker compose -f compose.test.yaml exec -T --user 0 server chown -R 10001:10001 /media
 $env:THELXINOE_PROXY_TEST = '1'
 $env:THELXINOE_TEST_URL = 'https://localhost:9443'
 npm run test:e2e
@@ -57,12 +74,14 @@ $env:THELXINOE_UI_TEST = '1'
 npm run test:e2e
 ```
 
-First-run tests: start `npm run dev:fresh`, set `THELXINOE_TEST_URL` to its displayed URL, clear `THELXINOE_PROXY_TEST`/`THELXINOE_UI_TEST`, and run `npm run test:e2e`. Provider interaction tests use a separate fresh instance on port 19487 with `THELXINOE_INTERACTION_TEST=1` and `npx playwright test --workers=1`. Windows bind-mount notification checks can take eleven minutes while waiting for periodic reconciliation.
+First-run tests: start `npm run dev:fresh`, set `THELXINOE_TEST_URL` to its displayed URL, clear `THELXINOE_PROXY_TEST`/`THELXINOE_UI_TEST`, and run `npm run test:e2e`. Provider interaction tests use a separate fresh instance on port 19487 with `THELXINOE_INTERACTION_TEST=1` and `npx playwright test --workers=1`. Catalog watcher checks add and remove files inside the Linux fixture volume, so Docker Desktop runs exercise watching without waiting for periodic reconciliation.
 
 For playback, generate `node scripts/playback-fixtures.mjs`, set `THELXINOE_TEST_HTTP_PORT=18686`, `THELXINOE_TEST_HTTPS_PORT=20443`, `THELXINOE_TEST_SUBNET=172.31.252.0/24`, then run:
 
 ```sh
 docker compose -p thelxinoe-playback -f compose.test.yaml up -d --wait
+docker compose -p thelxinoe-playback -f compose.test.yaml cp .local/fixtures/. server:/media
+docker compose -p thelxinoe-playback -f compose.test.yaml exec -T --user 0 server chown -R 10001:10001 /media
 node scripts/test-playback.mjs
 node scripts/test-playback-tracks.mjs
 node scripts/test-user-media.mjs

@@ -2,7 +2,7 @@ import { request } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
-const origin = 'https://localhost:20443';
+const origin = process.env.THELXINOE_PLAYBACK_URL ?? 'https://localhost:20443';
 const api = await request.newContext({
   baseURL: origin,
   ignoreHTTPSErrors: true,
@@ -20,16 +20,6 @@ try {
     username: 'admin',
     password: 'test-only long passphrase',
   });
-  const root = (await call('/catalog/roots')).items.find(
-    (r) => r.kind === 'movies',
-  );
-  const job = (await call(`/catalog/roots/${root.id}/scan`, 'POST')).job_id;
-  for (let i = 0; i < 120; i++) {
-    const result = (await call('/admin/jobs')).items.find((j) => j.id === job);
-    if (result?.state === 'complete') break;
-    if (result?.state === 'failed') throw new Error(result.error);
-    await new Promise((r) => setTimeout(r, 500));
-  }
   const item = (await call('/catalog?kind=movie')).items.find(
     (i) => i.title === 'Tracks',
   );

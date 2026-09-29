@@ -21,7 +21,9 @@ Open http://127.0.0.1:5173 and create the first administrator (password: 12+ cha
 | `npm run dev:online`           | Windows: reuse existing `.local/online/server` database and key at https://localhost:22443; containers keep running          |
 | `docker compose up --build -d` | Deploy using [Compose](compose.yaml) and [.env.example](.env.example); read [storage and recovery](docs/OPERATIONS.md) first |
 | `npm run validate`             | Formatting, lint, Rust/web checks, unit tests and web build                                                                  |
-| `npm run ci`                   | [CI phases](scripts/ci.mjs), including Docker fixtures and Windows desktop checks                                            |
+| `npm run ci`                   | Parallel local [CI phases](scripts/ci.mjs), including Docker fixtures and Windows desktop checks                             |
+| `npm run ci:local`             | Windows CI with a completion notification, live summary and lane logs under `.local/ci`                                      |
+| `npm run ci:status`            | Latest local CI lane results and report paths                                                                                |
 
 New `dev:online` profiles use separate controller storage, even when a data folder is reused after a reset. Keep `server/controller-storage-id` with the saved database and key so later launches reconnect to the same controller state.
 

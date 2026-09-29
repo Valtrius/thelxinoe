@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { copyFile, unlink } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 test('movie, multi-episode and tagged music scan into browsable libraries with stable identities', async ({
   page,
 }) => {
@@ -7,10 +7,8 @@ test('movie, multi-episode and tagged music scan into browsable libraries with s
     !process.env.THELXINOE_PROXY_TEST,
     'Requires generated media and isolated Compose fixture',
   );
-  // Docker Desktop may not forward host file events into Linux bind mounts.
-  // Allow the server's five-minute reconciliation fallback on Windows hosts.
-  const watchTimeout = process.platform === 'win32' ? 330_000 : 15_000;
-  test.setTimeout(watchTimeout * 2 + 30_000);
+  const watchTimeout = 15_000;
+  test.setTimeout(60_000);
   await page.goto('/');
   await page.getByLabel('Username', { exact: true }).fill('admin');
   await page
@@ -126,10 +124,27 @@ test('movie, multi-episode and tagged music scan into browsable libraries with s
     }),
   ).toBeVisible();
   await page.screenshot({ path: '.local/library.png', fullPage: true });
-  const watchedCopy = '.local/fixtures/movies/Watch Fixture (2020).mp4';
-  await copyFile(
-    '.local/fixtures/movies/Thelxinoe Fixture (2020).mp4',
-    watchedCopy,
+  // Change files on Linux so this checks the real watcher on Docker Desktop too.
+  // Host bind-mount events can otherwise wait for five-minute reconciliation.
+  const watchedCopy = '/media/movies/Watch Fixture (2020).mp4';
+  const change = (action: string) =>
+    execFileSync(
+      'docker',
+      [
+        'compose',
+        '-f',
+        'compose.test.yaml',
+        'exec',
+        '-T',
+        'server',
+        'python3',
+        '-c',
+        action,
+      ],
+      { stdio: 'pipe' },
+    );
+  change(
+    `from shutil import copyfile; copyfile('/media/movies/Thelxinoe Fixture (2020).mp4', ${JSON.stringify(watchedCopy)})`,
   );
   let copiedId: string | undefined;
   try {
@@ -150,7 +165,9 @@ test('movie, multi-episode and tagged music scan into browsable libraries with s
       .toBe(true);
     expect(copiedId).not.toBe(movieId);
   } finally {
-    await unlink(watchedCopy);
+    change(
+      `from pathlib import Path; Path(${JSON.stringify(watchedCopy)}).unlink()`,
+    );
   }
   await expect
     .poll(

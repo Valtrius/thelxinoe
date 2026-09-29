@@ -1,7 +1,14 @@
 import { spawnSync } from 'node:child_process';
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { requestedPhases } from './ci-phases.mjs';
 
 const isWindows = process.platform === 'win32';
 let playwrightReady = false;
+const steps = [];
+function saveSteps() {
+  mkdirSync('.local', { recursive: true });
+  writeFileSync('.local/ci-steps.json', JSON.stringify(steps, null, 2) + '\n');
+}
 
 function commandForSpawn(command, args) {
   if (isWindows && command.toLowerCase().endsWith('.cmd')) {
@@ -16,12 +23,26 @@ function commandForSpawn(command, args) {
 function run(command, args, options = {}) {
   const display = [command, ...args].join(' ');
   console.log(`\n> ${display}`);
+  const step = {
+    command: display,
+    started: new Date().toISOString(),
+    finished: null,
+    passed: null,
+  };
+  steps.push(step);
+  saveSteps();
   const invocation = commandForSpawn(command, args);
   const result = spawnSync(invocation.command, invocation.args, {
     cwd: options.cwd,
     env: options.env ?? process.env,
     stdio: 'inherit',
   });
+  step.finished = new Date().toISOString();
+  step.passed = !result.error && result.status === 0;
+  saveSteps();
+  console.log(
+    `${step.passed ? 'PASS' : 'FAIL'} ${display} (${Math.round((Date.parse(step.finished) - Date.parse(step.started)) / 1000)} s)`,
+  );
   if (result.error) throw result.error;
   if (result.status !== 0) {
     throw new Error(`${display} exited with code ${result.status ?? 1}`);
@@ -69,7 +90,7 @@ function server() {
     npm('run', 'check:rust');
     npm('run', 'test:rust');
   }
-  npm('run', 'test:python');
+  if (!isWindows) npm('run', 'test:python');
 }
 
 function web() {
@@ -80,8 +101,25 @@ function web() {
 }
 
 function containers() {
+  const playbackProject = process.env.COMPOSE_PROJECT_NAME
+    ? `${process.env.COMPOSE_PROJECT_NAME}-playback`
+    : 'thelxinoe-playback';
   ensurePlaywright();
-  node('scripts/test-service-access.mjs');
+  const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
+  run(isWindows ? 'npm.cmd' : 'npm', ['run', 'build:containers'], {
+    env: {
+      ...process.env,
+      THELXINOE_SERVER_IMAGE: `thelxinoe-server:${version}`,
+      THELXINOE_CONTROLLER_IMAGE: `thelxinoe-controller:${version}`,
+    },
+  });
+  for (const component of ['server', 'controller'])
+    docker(
+      'tag',
+      `thelxinoe-${component}:${version}`,
+      `thelxinoe-service-${component}:local`,
+    );
+  npm('run', 'test:service-access', '--', '--built');
   node('scripts/test-service-connections.mjs');
   cleanup('docker', [
     'compose',
@@ -94,7 +132,7 @@ function containers() {
   cleanup('docker', [
     'compose',
     '-p',
-    'thelxinoe-playback',
+    playbackProject,
     '-f',
     'compose.test.yaml',
     'down',
@@ -102,16 +140,16 @@ function containers() {
     '--remove-orphans',
   ]);
   node('scripts/fixtures.mjs');
-  npm('run', 'build:containers');
   docker('compose', 'config', '--quiet');
 
   try {
     docker('compose', '-f', 'compose.test.yaml', 'up', '-d', '--wait');
+    populateMedia(['compose', '-f', 'compose.test.yaml']);
     run(isWindows ? 'npm.cmd' : 'npm', ['run', 'test:e2e'], {
       env: {
         ...process.env,
         THELXINOE_PROXY_TEST: '1',
-        THELXINOE_TEST_URL: 'https://localhost:9443',
+        THELXINOE_TEST_URL: `https://localhost:${process.env.THELXINOE_TEST_HTTPS_PORT ?? '9443'}`,
       },
     });
   } finally {
@@ -128,8 +166,11 @@ function containers() {
   node('scripts/playback-fixtures.mjs');
   const playbackEnvironment = {
     ...process.env,
-    THELXINOE_TEST_HTTP_PORT: '18686',
-    THELXINOE_TEST_HTTPS_PORT: '20443',
+    THELXINOE_TEST_HTTP_PORT:
+      process.env.THELXINOE_PLAYBACK_HTTP_PORT ?? '18686',
+    THELXINOE_TEST_HTTPS_PORT:
+      process.env.THELXINOE_PLAYBACK_HTTPS_PORT ?? '20443',
+    THELXINOE_PLAYBACK_URL: `https://localhost:${process.env.THELXINOE_PLAYBACK_HTTPS_PORT ?? '20443'}`,
     THELXINOE_TEST_SUBNET: '172.31.252.0/24',
   };
   try {
@@ -138,7 +179,7 @@ function containers() {
       [
         'compose',
         '-p',
-        'thelxinoe-playback',
+        playbackProject,
         '-f',
         'compose.test.yaml',
         'up',
@@ -147,14 +188,26 @@ function containers() {
       ],
       { env: playbackEnvironment },
     );
-    node('scripts/test-playback.mjs');
-    node('scripts/test-playback-tracks.mjs');
-    node('scripts/test-user-media.mjs');
+    populateMedia([
+      'compose',
+      '-p',
+      playbackProject,
+      '-f',
+      'compose.test.yaml',
+    ]);
+    for (const script of [
+      'test-playback.mjs',
+      'test-playback-tracks.mjs',
+      'test-user-media.mjs',
+    ])
+      run(process.execPath, ['scripts/' + script], {
+        env: playbackEnvironment,
+      });
   } finally {
     cleanup('docker', [
       'compose',
       '-p',
-      'thelxinoe-playback',
+      playbackProject,
       '-f',
       'compose.test.yaml',
       'down',
@@ -162,6 +215,22 @@ function containers() {
       '--remove-orphans',
     ]);
   }
+}
+
+function populateMedia(compose) {
+  docker(...compose, 'cp', '.local/fixtures/.', 'server:/media');
+  docker(
+    ...compose,
+    'exec',
+    '-T',
+    '--user',
+    '0',
+    'server',
+    'chown',
+    '-R',
+    '10001:10001',
+    '/media',
+  );
 }
 
 function desktop() {
@@ -184,19 +253,42 @@ function desktop() {
     '-D',
     'warnings',
   ]);
+  run('cargo', ['test', '--locked', '-p', 'thelxinoe-desktop']);
 }
 
 const requested = process.argv.slice(2);
-function updates() {
-  ensurePlaywright();
-  node('scripts/updates/test.mjs', ...(isWindows ? [] : ['--server-only']));
+if (!process.env.CI && requested.length === 0) {
+  if (isWindows)
+    run('powershell.exe', [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      'scripts/ci-local.ps1',
+    ]);
+  else node('scripts/ci-local.mjs');
+  process.exit(0);
 }
-const phases = requested.length
-  ? requested
-  : isWindows
-    ? ['server', 'web', 'containers', 'desktop', 'updates']
-    : ['server', 'web', 'containers', 'updates'];
-const phaseFunctions = { server, web, containers, desktop, updates };
+function updatesServer() {
+  ensurePlaywright();
+  node('scripts/updates/test.mjs', '--server-only');
+}
+function updatesDesktop() {
+  if (!isWindows)
+    throw new Error('Desktop update qualification requires Windows.');
+  ensurePlaywright();
+  node('scripts/updates/test.mjs', '--desktop-only');
+}
+const phases = requestedPhases(requested);
+const phaseFunctions = {
+  server,
+  web,
+  containers,
+  desktop,
+  'updates-server': updatesServer,
+  'updates-desktop': updatesDesktop,
+};
+const results = [];
 
 for (const phase of phases) {
   const execute = phaseFunctions[phase];
@@ -204,5 +296,15 @@ for (const phase of phases) {
     throw new Error(`Unknown CI phase: ${phase}`);
   }
   console.log(`\n=== ${phase} ===`);
-  execute();
+  try {
+    execute();
+    results.push({ phase, passed: true });
+  } catch (error) {
+    console.error(error);
+    results.push({ phase, passed: false });
+    process.exitCode = 1;
+  }
 }
+console.log('\nCI results:');
+for (const { phase, passed } of results)
+  console.log(`${passed ? 'PASS' : 'FAIL'} ${phase}`);

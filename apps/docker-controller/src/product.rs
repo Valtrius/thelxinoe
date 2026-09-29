@@ -50,7 +50,7 @@ fn write(u: &Update) -> Result<()> {
     persisted(store::write_json(&dir(&u.id).join("update.json"), u))
 }
 fn public(u: &Update) -> Value {
-    json!({"id":u.id,"created_at":u.created_at,"stage":u.stage,"download":u.download,"error":u.error,"version":u.manifest.as_ref().map(|m|m.version.as_str()).unwrap_or(&u.old.version),"previous_version":u.old.version,"recovery":"full-state-restore","snapshot_ready":u.snapshot_ready,"recovery_tested":u.recovery_tested,"activation_crossed":u.activation_crossed,"generation":u.generation,"archive":u.archive})
+    json!({"id":u.id,"created_at":u.created_at,"stage":u.stage,"download":u.download,"error":u.error,"version":u.manifest.as_ref().map(|m|m.version.as_str()).unwrap_or(&u.old.version),"previous_version":u.old.version,"recovery":"full-state-restore","snapshot_ready":u.snapshot_ready,"recovery_tested":u.recovery_tested,"activation_crossed":u.activation_crossed,"generation":u.generation,"source_generation":u.old.generation,"archive":u.archive})
 }
 fn all() -> Result<Vec<Update>> {
     let mut items = vec![];
@@ -147,9 +147,22 @@ pub(super) fn deployment_matches(expected: &Value, actual: &Value) -> bool {
     };
     normalized(expected) == normalized(actual)
 }
-pub(super) async fn list() -> Result<Json<Value>> {
+pub(super) async fn list(State(runtime): State<Runtime>) -> Result<Json<Value>> {
+    // A missing journal is conclusive only when no command still owns the gate.
+    // Keep the guard until after the journal read to reconcile lost POST replies.
+    let guard = runtime.0.try_lock_owned().ok();
+    let generation = if store::root().join("desired-state.json").is_file() {
+        Some(
+            persisted(store::read::<Deployment>(
+                &store::root().join("desired-state.json"),
+            ))?
+            .generation,
+        )
+    } else {
+        None
+    };
     Ok(Json(
-        json!({"items":all()?.iter().map(public).collect::<Vec<_>>(),"configured":trust().is_ok()}),
+        json!({"items":all()?.iter().map(public).collect::<Vec<_>>(),"configured":trust().is_ok(),"generation":generation,"busy":guard.is_none()}),
     ))
 }
 #[derive(Deserialize)]
@@ -185,7 +198,13 @@ pub(super) async fn preflight(
     if all()?.iter().any(|u| {
         !matches!(
             u.stage.as_str(),
-            "ready" | "blocked" | "recovered" | "committed" | "restored" | "runtime-failure"
+            "ready"
+                | "blocked"
+                | "recovered"
+                | "committed"
+                | "restored"
+                | "runtime-failure"
+                | "superseded"
         )
     }) {
         return Err(conflict("Recover the unfinished product update first"));
@@ -202,6 +221,13 @@ pub(super) async fn preflight(
         return Err(conflict(
             "Server state must be isolated from media and system files",
         ));
+    }
+    for mut previous in all()? {
+        if previous.stage == "ready" && !owns_pre_activation(&previous, &d) {
+            previous.stage = "superseded".into();
+            previous.error = Some("A newer deployment superseded this preflight".into());
+            write(&previous)?;
+        }
     }
     let mut u = Update {
         id: key,
@@ -265,7 +291,7 @@ async fn pull(u: &mut Update, component: &str, image: &thelxinoe_releases::Image
                             "Already exists" | "Download complete" | "Pull complete"
                         ) {
                             layer.2 = true;
-                            layer.0 = layer.1.unwrap_or(0);
+                            layer.0 = layer.1.unwrap_or(layer.0);
                         } else if status == "Downloading" {
                             layer.1 = total.or(layer.1);
                             layer.0 = event["progressDetail"]["current"]
@@ -282,7 +308,7 @@ async fn pull(u: &mut Update, component: &str, image: &thelxinoe_releases::Image
                 .then(|| {
                     layers
                         .values()
-                        .map(|(_, total, _)| total.unwrap_or(0))
+                        .map(|(current, total, _)| total.unwrap_or(*current))
                         .sum()
                 });
                 u.download = Some(Download {
@@ -741,6 +767,17 @@ async fn clean_workers(u: &Update) -> Result<()> {
     }
     Ok(())
 }
+fn owns_pre_activation(u: &Update, current: &Deployment) -> bool {
+    current.id == u.old.id
+        && ((current.generation == u.old.generation
+            && current.server["Id"] == u.old.server["Id"]
+            && current.controller["Id"] == u.old.controller["Id"])
+            || (u.generation == Some(current.generation)
+                && u.next_server.is_some()
+                && u.next_controller.is_some()
+                && current.server["Id"].as_str() == u.next_server.as_deref()
+                && current.controller["Id"].as_str() == u.next_controller.as_deref()))
+}
 async fn recover_old(u: &mut Update) -> Result<()> {
     if u.restoring_release {
         return Err(conflict(
@@ -749,6 +786,12 @@ async fn recover_old(u: &mut Update) -> Result<()> {
     }
     if u.activation_crossed {
         return Err(conflict("Production activation requires explicit recovery"));
+    }
+    let current = bootstrap().await?;
+    if !owns_pre_activation(u, &current) {
+        return Err(conflict(
+            "This attempt no longer owns the accepted deployment",
+        ));
     }
     u.stage = "recovering".into();
     write(u)?;
@@ -776,7 +819,6 @@ async fn recover_old(u: &mut Update) -> Result<()> {
         name(&u.old.controller)?,
     )
     .await?;
-    let current = bootstrap().await?;
     if current.generation != u.old.generation {
         let mut restored = u.old.clone();
         restored.generation = next_generation()?;
@@ -805,6 +847,15 @@ pub(super) async fn recover(
         .try_lock_owned()
         .map_err(|_| conflict("Another Docker operation is active"))?;
     let mut u = read(&key)?;
+    // Completed recovery is idempotent; never erase subsequent user changes.
+    if matches!(u.stage.as_str(), "recovered" | "restored") {
+        return Ok(Json(public(&u)));
+    }
+    if u.stage == "superseded" {
+        return Err(conflict(
+            "This attempt no longer owns the accepted deployment",
+        ));
+    }
     if !u.activation_crossed && !u.restoring_release {
         recover_old(&mut u).await?;
         return Ok(Json(public(&u)));
@@ -1078,6 +1129,7 @@ pub(crate) async fn startup() -> anyhow::Result<()> {
                 | "restored"
                 | "runtime-failure"
                 | "recovery-required"
+                | "superseded"
         ) {
             continue;
         }
@@ -1139,6 +1191,12 @@ pub(crate) async fn startup() -> anyhow::Result<()> {
             restore_release(&mut u)
                 .await
                 .map_err(|(_, e)| anyhow::anyhow!(e))?;
+        } else if !owns_pre_activation(&u, &d) && d.generation > u.old.generation {
+            // Historical attempts must not stop the accepted controller starting.
+            // No Docker or appdata mutation is permitted for this old generation.
+            u.stage = "superseded".into();
+            u.error = Some("A newer deployment superseded this attempt".into());
+            write(&u).map_err(|(_, e)| anyhow::anyhow!(e))?;
         } else {
             recover_old(&mut u)
                 .await
@@ -1190,6 +1248,34 @@ pub(crate) async fn watchdog(runtime: &std::path::Path) -> anyhow::Result<bool> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn recovery_ownership_allows_its_handoff_but_rejects_later_deployments() {
+        let mut update: Update = serde_json::from_value(json!({
+            "id":"attempt", "stage":"ready", "error":null,"manifest":null,"envelope":null,
+            "old":{"id":"deployment","generation":2,"version":"0.1.0",
+                "server":{"Id":"old-server"},"controller":{"Id":"old-controller"},
+                "network":"media","media_source":"/media","appdata_source":"/deployment"},
+            "source":"/state","snapshot_ready":false,"recovery_tested":true,
+            "activation_crossed":false,"next_server":null,"next_controller":null,"generation":null
+        }))
+        .unwrap();
+        let mut current = update.old.clone();
+        assert!(owns_pre_activation(&update, &current));
+        current.generation = 3;
+        assert!(!owns_pre_activation(&update, &current));
+        update.generation = Some(3);
+        update.next_server = Some("successor-server".into());
+        update.next_controller = Some("successor-controller".into());
+        current.server["Id"] = json!("successor-server");
+        current.controller["Id"] = json!("successor-controller");
+        assert!(owns_pre_activation(&update, &current));
+        current.generation = 4;
+        assert!(!owns_pre_activation(&update, &current));
+        current.generation = 3;
+        current.id = "other-deployment".into();
+        assert!(!owns_pre_activation(&update, &current));
+    }
+
     #[test]
     fn default_oom_reporting_is_stable_but_disabling_it_is_drift() {
         let before = json!({"HostConfig":{"OomKillDisable":null}});

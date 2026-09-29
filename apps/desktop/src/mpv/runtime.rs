@@ -63,6 +63,9 @@ pub struct Player {
     run: Mutex<Option<Run>>,
 }
 impl Player {
+    pub async fn restart_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.operation.lock().await
+    }
     pub async fn view(&self) -> View {
         let run = self.run.lock().await;
         if let Some(run) = run.as_ref() {
@@ -624,3 +627,26 @@ fn reload_event(message: &Value) -> bool {
 #[cfg(test)]
 #[path = "quality_smoke.rs"]
 mod quality_smoke;
+
+#[cfg(test)]
+mod restart_tests {
+    use super::*;
+    #[tokio::test]
+    async fn installation_waits_for_playback_preparation_and_fences_new_starts() {
+        let player = Player::default();
+        // play() owns this lock even before a Run has been published.
+        let preparing = player.operation.lock().await;
+        assert_eq!(player.view().await.status, "stopped");
+        let mut install = std::pin::pin!(player.restart_guard());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut install)
+                .await
+                .is_err()
+        );
+        drop(preparing);
+        let installing = install.await;
+        assert!(player.operation.try_lock().is_err());
+        drop(installing);
+        assert!(player.operation.try_lock().is_ok());
+    }
+}

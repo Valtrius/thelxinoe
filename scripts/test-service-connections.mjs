@@ -6,6 +6,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createServer } from 'node:net';
 import { randomUUID } from 'node:crypto';
+import { waitForProxy } from './service-access-fixture.mjs';
 
 const docker = (...args) =>
   execFileSync('docker', args, {
@@ -295,6 +296,7 @@ try {
     '/media',
   );
   compose('up', '-d', '--wait', '--wait-timeout', '180');
+  await waitForProxy(context.request, base);
   await api('/setup', 'POST', {
     username: 'admin',
     password: 'test-only long passphrase',

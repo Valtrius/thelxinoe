@@ -9,6 +9,6 @@
 - Until an official release is done, no migration shall be necessary either in DB or code.
 
 
-## Testing
+## Workflow
 
-- Always launch the CI tests locally before commiting or pushing to make sure CI will pass. Once launched, end your turn with a user-facing notification window programmed for CI end. User will tell you when noification appears so you can check the results.
+- Before pushing changes, always run the format `npm run format` and local CI `npm run ci:local` to make sure CI will pass. Once launched, end your turn as the `npm run ci:local` has a end notification built-in. User will tell you when noification appears so you can check the results.

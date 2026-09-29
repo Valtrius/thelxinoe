@@ -5,6 +5,7 @@ import {
   readFileSync,
   openSync,
   closeSync,
+  appendFileSync,
 } from 'node:fs';
 import { resolve, join, dirname, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -88,6 +89,24 @@ function background(lab, name, command, args, env = {}) {
     stdio: ['ignore', log, log],
     env: { ...process.env, ...env },
   });
+  child.once('spawn', () =>
+    appendFileSync(
+      join(lab.root, `${name}.log`),
+      `Started ${name} PID ${child.pid}\n`,
+    ),
+  );
+  child.once('error', (error) =>
+    appendFileSync(
+      join(lab.root, `${name}.log`),
+      `Launch failed: ${error.message}\n`,
+    ),
+  );
+  child.once('exit', (code, signal) =>
+    appendFileSync(
+      join(lab.root, `${name}.log`),
+      `Exited: code=${code} signal=${signal}\n`,
+    ),
+  );
   child.unref();
   closeSync(log);
   return child.pid;
@@ -215,7 +234,7 @@ export async function createLab({
 } = {}) {
   if (desktop && process.platform !== 'win32')
     throw Error('The native update lab requires Windows');
-  const id = `thelxinoe-update-${Date.now()}`;
+  const id = `thelxinoe-update-${Date.now()}${String(process.pid).padStart(10, '0')}`;
   const root = resolve(repository, '.local', id);
   mkdirSync(root, { recursive: true });
   const base = JSON.parse(
@@ -491,7 +510,7 @@ export async function resetLab(lab) {
   if (lab.desktop) installBase(lab);
   save(join(lab.root, 'lab.json'), lab);
 }
-async function refreshDownloads(lab) {
+export async function refreshDownloads(lab) {
   const images = {};
   for (const part of ['server', 'controller'])
     images[part] = await downloadFixture(

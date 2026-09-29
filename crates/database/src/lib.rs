@@ -6,7 +6,7 @@ use rusqlite::Connection;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// Fresh schema identity, also used by signed releases and backups.
@@ -61,6 +61,26 @@ fn connection(path: &Path, read_only: bool) -> Result<Connection> {
     Ok(conn)
 }
 
+fn enable_wal(conn: &Connection) -> Result<()> {
+    let started = Instant::now();
+    loop {
+        match conn.pragma_update(None, "journal_mode", "WAL") {
+            Ok(()) => return Ok(()),
+            Err(rusqlite::Error::SqliteFailure(error, _))
+                if matches!(
+                    error.code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                ) && started.elapsed() < Duration::from_secs(10) =>
+            {
+                // Journal-mode changes may return BUSY without invoking SQLite's
+                // busy handler when another opener has started its schema check.
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(error) => return Err(error).context("Enable database WAL"),
+        }
+    }
+}
+
 impl Database {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::open_with_options(path, Options::default())
@@ -97,7 +117,7 @@ impl Database {
             );
         }
         tx.commit()?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
+        enable_wal(&conn)?;
         let readers = (0..options.readers)
             .map(|_| connection(path, true))
             .collect::<Result<Vec<_>>>()?;

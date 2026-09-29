@@ -194,12 +194,45 @@ impl ToolManager {
     pub async fn wait_for_operations(&self) {
         let _guard = self.operations.lock().await;
     }
+    pub async fn restart_guard(
+        &self,
+    ) -> (
+        tokio::sync::MutexGuard<'_, ()>,
+        tokio::sync::MutexGuard<'_, ()>,
+    ) {
+        // Installation takes these locks in the same order. Keep both until the
+        // installer starts, so neither packages nor configuration can be changed.
+        let operations = self.operations.lock().await;
+        let configuration = self.configuration.lock().await;
+        (operations, configuration)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use test_support::fake_install;
+
+    #[tokio::test]
+    async fn installation_drains_tool_writes_and_failure_releases_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let manager = ToolManager::new(directory.path().to_path_buf(), None).unwrap();
+        let writing = manager.configuration.lock().await;
+        let mut install = std::pin::pin!(manager.restart_guard());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut install)
+                .await
+                .is_err()
+        );
+        assert!(manager.operations.try_lock().is_err());
+        drop(writing);
+        let installing = install.await;
+        assert!(manager.operations.try_lock().is_err());
+        assert!(manager.configuration.try_lock().is_err());
+        drop(installing);
+        assert!(manager.operations.try_lock().is_ok());
+        assert!(manager.configuration.try_lock().is_ok());
+    }
 
     #[test]
     fn second_writer_is_rejected() {

@@ -109,7 +109,12 @@ test-only. Failure points are injected solely into disposable candidate sources.
 No production migrations or test switches are added.
 
 The regular CI includes separate Linux server and Windows desktop lanes. Local
-`npm run ci` runs the combined suite on Windows. The Linux lane uses an unused
+`npm run ci` runs both qualification lanes separately on Windows, using the same
+entry points as GitHub: `ci:updates:server` and `ci:updates:desktop`.
+The full local run starts independent CI lanes concurrently in separate worktrees,
+with clean dependencies and separate builds. `npm run ci:local` retains the live
+summary and lane logs under `.local/ci` and displays an identified completion
+notification; `npm run ci:status` prints progress. The Linux lane uses an unused
 desktop placeholder; the Windows lane tests real signed installer bytes.
 
 ## Release setup and operation

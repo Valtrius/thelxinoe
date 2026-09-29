@@ -49,6 +49,23 @@ let value: Model = {
 let publish: (value: Model) => void = () => {};
 let loading = false;
 let sourceServer = '';
+let uncertainInstall: {
+  source: string;
+  version: string;
+  previousId?: string;
+  alreadyPending: boolean;
+} | null = null;
+function installAcknowledged(status: ServerUpdateStatus, source: string) {
+  const attempt = uncertainInstall;
+  const request = status.request;
+  return Boolean(
+    attempt &&
+    request &&
+    attempt.source === source &&
+    request.version === attempt.version &&
+    (request.id !== attempt.previousId || attempt.alreadyPending),
+  );
+}
 export function isServerUpdateInterruption(error: unknown): boolean {
   if (error instanceof ApiError && error.code === 'maintenance') return true;
   if (
@@ -87,6 +104,7 @@ export const serverUpdates = readable(value, (set) => {
   // The desktop can switch servers without restarting the process.
   if (sourceServer !== serverUrl()) {
     sourceServer = serverUrl();
+    uncertainInstall = null;
     update({ status: null, offlineSince: 0, error: '' });
   }
   void refreshServerUpdate();
@@ -112,7 +130,12 @@ export async function refreshServerUpdate() {
         requestedWebVersion() === status.request.version
       )
         clearRequestedWebVersion();
+      // A lost POST response is superseded by the durable matching intent.
+      // Actual operation failures remain in request.error/controller state.
+      const acknowledged = installAcknowledged(status, source);
+      if (acknowledged) uncertainInstall = null;
       update({
+        ...(acknowledged ? { error: '' } : {}),
         status,
         offlineSince: status.controller.error
           ? value.offlineSince || Date.now()
@@ -141,6 +164,17 @@ export async function serverUpdateAction(
   if (value.action) return;
   const version = value.status?.release?.version;
   if (action === 'install' && !version) return;
+  const source = serverUrl();
+  const attempt =
+    action === 'install'
+      ? {
+          source,
+          version: version!,
+          previousId: value.status?.request?.id,
+          alreadyPending: value.status?.request?.state === 'pending',
+        }
+      : null;
+  uncertainInstall = null;
   update({ action, error: '' });
   // Record before sending: losing the response during restart still reconnects.
   if (action === 'install' && !desktop)
@@ -158,7 +192,12 @@ export async function serverUpdateAction(
     );
     return true;
   } catch (e) {
-    update({ error: e instanceof Error ? e.message : String(e) });
+    if (source === serverUrl()) {
+      // Rejections are authoritative; transport/server failures may follow acceptance.
+      if (!(e instanceof ApiError) || e.status >= 500)
+        uncertainInstall = attempt;
+      update({ error: e instanceof Error ? e.message : String(e) });
+    }
     return false;
   } finally {
     await refreshServerUpdate();

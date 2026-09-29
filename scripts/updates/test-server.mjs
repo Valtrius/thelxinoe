@@ -1,8 +1,8 @@
 import { expect } from '@playwright/test';
 import { join } from 'node:path';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { docker, save } from './build.mjs';
-import { until } from './lab.mjs';
+import { docker, save, envelope } from './build.mjs';
+import { until, refreshDownloads } from './lab.mjs';
 
 export async function serverScenarios({
   lab,
@@ -42,7 +42,10 @@ export async function serverScenarios({
       const operation = (await state()).controller.items.find(
         (item) => item.id === id,
       );
-      if (operation?.stage === wanted) return operation;
+      if (operation?.stage === wanted) {
+        // The journal can settle before the restarted server reconciles its fence.
+        return (await request('/setup')).ok() && operation;
+      }
       if (
         ['blocked', 'recovery-required', 'runtime-failure'].includes(
           operation?.stage,
@@ -51,15 +54,84 @@ export async function serverScenarios({
         throw Object.assign(Error(JSON.stringify(operation)), { fatal: true });
       return false;
     }, 300000);
+  const idleWaits = [];
+  const commandWhenIdle = (path, body) =>
+    until(async () => {
+      try {
+        const response = await request(path, 'POST', body);
+        const value = await response.json();
+        if (response.ok()) return value;
+        if (
+          response.status() === 409 &&
+          value.error?.message ===
+            'Wait for playback, downloads and background work to finish'
+        ) {
+          const jobs = (await api('/admin/jobs')).items.map(
+            ({ id, kind, state }) => ({ id, kind, state }),
+          );
+          idleWaits.push({ at: new Date().toISOString(), path, jobs });
+          save(join(output, 'preflight-idle-waits.json'), idleWaits);
+          return false;
+        }
+        throw Error(
+          `${path}: HTTP ${response.status()} ${JSON.stringify(value)}`,
+        );
+      } catch (error) {
+        // Response loss is ambiguous: never replay an accepted mutation.
+        throw Object.assign(error, { fatal: true });
+      }
+    }, 90000);
   const ready = async () => {
-    const update = await api('/admin/product-update/prepare', 'POST');
+    const update = await commandWhenIdle('/admin/product-update/prepare');
     await stage(update.id, 'ready');
     return update;
   };
   const activate = (update) =>
-    api(`/admin/product-update/${update.id}/activate`, 'POST', {
+    commandWhenIdle(`/admin/product-update/${update.id}/activate`, {
       confirm: true,
     });
+  const recreate = async (version) => {
+    const directory = join(lab.root, 'accepted');
+    mkdirSync(directory, { recursive: true });
+    for (const file of [
+      'compose.yaml',
+      'compose.override.yaml',
+      'desired-state.json',
+    ])
+      writeFileSync(
+        join(directory, file),
+        docker(
+          'exec',
+          component('controller'),
+          'cat',
+          '/var/lib/thelxinoe/deployment/' + file,
+        ),
+      );
+    const before = controller('/stack/product').generation;
+    save(join(directory, 'compose.yaml'), {
+      name: lab.id,
+      services: {
+        server: { image: 'thelxinoe-server:stale-bootstrap' },
+        controller: { image: 'thelxinoe-controller:stale-bootstrap' },
+      },
+    });
+    docker(
+      'compose',
+      '--project-directory',
+      directory,
+      'up',
+      '-d',
+      '--force-recreate',
+      '--no-build',
+      '--pull',
+      'never',
+    );
+    await until(async () => (await api('/health')).version === version);
+    await until(() => controller('/health').version === version);
+    const after = controller('/stack/product').generation;
+    expect(after).toBeGreaterThan(before);
+    return after;
+  };
   await api('/admin/product-update/policy', 'POST', {
     policy: 'notify',
     window_start: 0,
@@ -176,26 +248,74 @@ export async function serverScenarios({
   );
   await api('/admin/settings', 'PUT', { timezone: 'Europe/Paris' });
   await scenario(
+    'Automatic updates requalify a ready preflight after Compose recreation',
+    async () => {
+      const previous = await ready();
+      const generation = await recreate(lab.base);
+      // Retain the activation generation check independently of scheduling.
+      expect(
+        (
+          await request(
+            `/admin/product-update/${previous.id}/activate`,
+            'POST',
+            { confirm: true },
+          )
+        ).status(),
+      ).toBe(409);
+      await until(async () => (await request('/setup')).ok());
+      await api('/admin/product-update/policy', 'POST', {
+        policy: 'automatic',
+        window_start: 0,
+        window_end: 0,
+      });
+      const replacement = await until(
+        async () =>
+          (await state()).controller.items.find(
+            (item) =>
+              item.id !== previous.id &&
+              item.version === lab.next &&
+              item.source_generation === generation,
+          ),
+        300000,
+      );
+      await stage(replacement.id, 'committed');
+      expect((await api('/health')).version).toBe(lab.next);
+      expect(controller('/health').version).toBe(lab.next);
+      expect(
+        (await state()).controller.items.find((item) => item.id === previous.id)
+          .stage,
+      ).toBe('superseded');
+      await page.screenshot({
+        path: join(output, 'server-automatic-after-recreation.png'),
+      });
+      await api('/admin/product-update/policy', 'POST', {
+        policy: 'notify',
+        window_start: 0,
+        window_end: 0,
+      });
+      await commandWhenIdle(`/admin/product-update/${replacement.id}/recover`, {
+        confirm: true,
+      });
+      await stage(replacement.id, 'restored');
+      expect((await api('/health')).version).toBe(lab.base);
+      await api('/admin/product-update/policy', 'POST', {
+        policy: 'notify',
+        window_start: 0,
+        window_end: 0,
+      });
+    },
+  );
+  await scenario(
     'One web click waits for playback, survives restart, and recovers failed validation',
     async () => {
+      // The earlier upgrade may retain blobs after image references are removed.
+      // Publish fresh signed, registry-only layers so both pulls transfer bytes.
+      await refreshDownloads(lab);
+      envelope(lab, lab.next, lab.images[lab.next]);
+      save(join(lab.root, 'lab.json'), lab);
       await mode('slow-download');
-      // Remove only this lab's candidate references so preparation must stream
-      // real pulls from its registry instead of taking the local-image shortcut.
+      await api('/admin/product-update/check', 'POST');
       for (const part of ['server', 'controller']) {
-        try {
-          docker(
-            'image',
-            'rm',
-            `localhost:${lab.registryPort}/${lab.id}/${part}:${lab.next}`,
-          );
-        } catch {
-          /* A retained lab may have only the digest reference. */
-        }
-        try {
-          docker('image', 'rm', lab.images[lab.next][part].reference);
-        } catch {
-          /* Removing the only tag may already have removed the digest. */
-        }
         expect(() =>
           docker('image', 'inspect', lab.images[lab.next][part].reference),
         ).toThrow();
@@ -261,7 +381,7 @@ export async function serverScenarios({
       );
       await page
         .getByRole('button', {
-          name: `Update server to ${lab.next}`,
+          name: 'Retry server update',
           exact: true,
         })
         .click();
@@ -302,22 +422,46 @@ export async function serverScenarios({
         .getByRole('navigation', { name: 'Settings navigation' })
         .getByRole('button', { name: 'Server', exact: true })
         .click();
-      const progress = page
-        .getByLabel('Product version', { exact: true })
-        .getByRole('progressbar');
-      await expect
-        .poll(
-          async () =>
-            Number(
-              await progress.getAttribute('aria-valuenow', { timeout: 15000 }),
-            ),
-          { timeout: 45000 },
-        )
-        .toBeGreaterThan(0);
-      expect(Number(await progress.getAttribute('aria-valuenow'))).toBeLessThan(
-        100,
-      );
+      const downloading = await until(async () => {
+        const operation = (await state()).controller.items.find(
+          (item) => item.id === update.id,
+        );
+        return (
+          operation?.stage === 'preparing' &&
+          operation.download?.received > 0 &&
+          (!operation.download.total ||
+            operation.download.received < operation.download.total) &&
+          operation
+        );
+      }, 45000);
+      const version = page.getByLabel('Product version', { exact: true });
+      await expect(
+        version.getByRole('button', {
+          name: `Downloading ${downloading.download.component} update`,
+          exact: true,
+        }),
+      ).toBeVisible();
+      const progress = version.getByRole('progressbar');
+      if (downloading.download.total) {
+        await expect
+          .poll(async () =>
+            Number(await progress.getAttribute('aria-valuenow')),
+          )
+          .toBeGreaterThan(0);
+        expect(
+          Number(await progress.getAttribute('aria-valuenow')),
+        ).toBeLessThan(100);
+      } else {
+        await expect(progress).toHaveCount(0);
+      }
       await page.screenshot({ path: join(output, 'server-downloading.png') });
+      // Restart after controller acceptance, while slow image pulls are ongoing.
+      docker('restart', component('server'));
+      await until(async () => (await request('/health')).ok());
+      expect((await request('/playback', 'POST', {})).status()).toBe(503);
+      expect(
+        (await request('/catalog/roots/missing/scan', 'POST', {})).status(),
+      ).toBe(503);
       const recovered = await stage(update.id, 'recovered');
       expect(recovered.download.component).toBe('controller');
       expect(recovered.download.received).toBeGreaterThan(0);
@@ -385,6 +529,7 @@ export async function serverScenarios({
       marker('hold-live-validation', 'p.unlink(missing_ok=True)');
     },
   );
+  const obsoletePreflight = await ready();
   await scenario(
     'UI installs both server and controller and preserves sessions and preferences',
     async () => {
@@ -396,7 +541,10 @@ export async function serverScenarios({
       const previous = (await state()).request?.id;
       const client = native?.page ?? page;
       await client
-        .getByRole('button', { name: 'Retry server update', exact: true })
+        .getByRole('button', {
+          name: `Update server to ${lab.next}`,
+          exact: true,
+        })
         .click();
       const update = await until(async () => {
         const intent = (await state()).request;
@@ -444,6 +592,33 @@ export async function serverScenarios({
         page.getByRole('button', { name: 'Reload web app', exact: true }),
       ).toHaveCount(0);
       lab.committed = update.id;
+    },
+  );
+  await scenario(
+    'Obsolete recovery is rejected without poisoning the journal or controller startup',
+    async () => {
+      expect(
+        (
+          await request(
+            `/admin/product-update/${obsoletePreflight.id}/recover`,
+            'POST',
+            { confirm: true },
+          )
+        ).status(),
+      ).toBe(409);
+      expect(
+        (await state()).controller.items.find(
+          (item) => item.id === obsoletePreflight.id,
+        ).stage,
+      ).toBe('ready');
+      docker('restart', component('controller'));
+      await until(() => controller('/health').version === lab.next);
+      expect(
+        (await state()).controller.items.find(
+          (item) => item.id === obsoletePreflight.id,
+        ).stage,
+      ).toBe('ready');
+      expect((await api('/health')).version).toBe(lab.next);
     },
   );
   await scenario(
@@ -505,7 +680,9 @@ export async function serverScenarios({
       expect(after.server.Image).toBe(before.server.Image);
       expect(after.controller.Image).toBe(before.controller.Image);
       expect(after.server.Id).not.toBe(before.server.Id);
-      await expect(page.getByText('Connected', { exact: true })).toBeVisible({
+      await expect(
+        page.locator('header').getByText('Connected', { exact: true }),
+      ).toBeVisible({
         timeout: 45000,
       });
     },
@@ -555,6 +732,8 @@ export async function serverScenarios({
         }),
       ).toHaveValue('America/New_York', { timeout: 45000 });
       await page.screenshot({ path: join(output, 'server-restored.png') });
+      // Old obsolete attempts must not block another update after recovery.
+      await ready();
     },
   );
 }

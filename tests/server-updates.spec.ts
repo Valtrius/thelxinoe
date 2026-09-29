@@ -2,7 +2,57 @@ import { expect, test, type Page } from '@playwright/test';
 import { installUiFixture } from './helpers/ui-fixture';
 import type { ServerUpdateStatus } from '../frontend/src/lib/server-updates';
 
-async function setup(page: Page) {
+async function setup(
+  page: Page,
+  options: { desktop?: boolean; loseInstallResponse?: boolean } = {},
+) {
+  if (options.desktop)
+    await page.addInitScript(() => {
+      const bridge = window as unknown as {
+        isTauri: boolean;
+        __TAURI_INTERNALS__: unknown;
+        __TAURI_EVENT_PLUGIN_INTERNALS__: unknown;
+      };
+      bridge.isTauri = true;
+      bridge.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
+      let callback = 0;
+      bridge.__TAURI_INTERNALS__ = {
+        metadata: {
+          currentWindow: { label: 'main' },
+          currentWebview: { label: 'main' },
+        },
+        transformCallback: () => ++callback,
+        unregisterCallback() {},
+        async invoke(command: string, args: Record<string, unknown> = {}) {
+          if (command === 'server_url') return location.origin;
+          if (command === 'backend_request') {
+            const response = await fetch(`/api/v1${args.path}`, {
+              method: String(args.method),
+              headers: { 'Content-Type': 'application/json' },
+              ...(args.body ? { body: JSON.stringify(args.body) } : {}),
+            });
+            return { status: response.status, body: await response.json() };
+          }
+          if (command === 'mpv_state')
+            return { status: 'stopped', media_id: '' };
+          if (command === 'tools_get') return { tools: [], mpv: {} };
+          if (command === 'plugin:app|version') return '0.1.0';
+          if (command === 'desktop_update_status')
+            return {
+              installed: '0.1.0',
+              phase: 'idle',
+              policy: 'notify',
+              release: null,
+              error: null,
+              received: 0,
+              total: 0,
+              checked_at: null,
+            };
+          if (command === 'plugin:event|listen') return ++callback;
+          return false;
+        },
+      };
+    });
   const fixture = await installUiFixture(page, {
     role: 'admin',
     settingsSection: 'server',
@@ -31,10 +81,19 @@ async function setup(page: Page) {
           state: 'pending',
           error: null,
         };
+      if (action === 'install' && options.loseInstallResponse)
+        return route.abort('connectionreset');
       return route.fulfill({ json: status.request ?? {} });
     }
     return route.fulfill({ json: status });
   });
+  if (options.desktop)
+    await page.addInitScript(() => {
+      localStorage.setItem(
+        `thelxinoe:${location.origin}:layout-fixture:navigation`,
+        JSON.stringify({ section: 'Settings', settingsSection: 'server' }),
+      );
+    });
   await page.goto('/');
   const version = page.getByLabel('Product version', { exact: true });
   await expect(
@@ -73,6 +132,41 @@ async function setup(page: Page) {
     },
   };
 }
+
+test('desktop reconciles a lost install acceptance response through pending and committed status', async ({
+  page,
+}, testInfo) => {
+  const flow = await setup(page, { desktop: true, loseInstallResponse: true });
+  let reloads = 0;
+  page.on('framenavigated', (frame) => {
+    if (frame === page.mainFrame()) reloads++;
+  });
+  await flow.version
+    .getByRole('button', { name: 'Update server to 0.1.1', exact: true })
+    .click();
+  await expect(flow.version.getByRole('button').first()).toHaveAccessibleName(
+    'Waiting for the server to be idle',
+  );
+  flow.stage('preparing');
+  await flow.refresh();
+  await expect(flow.version.getByRole('button').first()).toHaveAccessibleName(
+    'Downloading server update',
+  );
+  flow.status.version = '0.1.1';
+  flow.status.release = null;
+  flow.status.request!.state = 'completed';
+  flow.stage('committed');
+  await flow.refresh();
+  await expect(flow.version.getByRole('status')).toHaveText('Updated to 0.1.1');
+  await expect(flow.version.locator('strong')).toHaveText('0.1.1');
+  await expect(flow.version).not.toContainText('Update could not complete');
+  expect(reloads).toBe(0);
+  expect(flow.fixture.errors).toEqual([]);
+  await testInfo.attach('desktop-response-loss-committed', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+});
 
 test('Orbit carries the full flow in one fixed, keyboard-accessible control', async ({
   page,

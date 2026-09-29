@@ -222,11 +222,11 @@ pub async fn desktop_update_install(app: tauri::AppHandle) -> Result<Value, Stri
         .operation
         .try_lock()
         .map_err(|_| "A desktop update operation is running")?;
-    install(&app).await
+    install(&app, false).await
 }
+#[cfg(windows)]
 async fn playback_active(app: &tauri::AppHandle) -> bool {
-    #[cfg(windows)]
-    return !matches!(
+    !matches!(
         app.state::<crate::mpv::DesktopPlayback>()
             .player
             .view()
@@ -234,19 +234,30 @@ async fn playback_active(app: &tauri::AppHandle) -> bool {
             .status
             .as_str(),
         "stopped" | "ended" | "error" | "failed" | ""
-    );
-    #[cfg(not(windows))]
-    {
-        let _ = app;
-        false
-    }
+    )
 }
-async fn install(app: &tauri::AppHandle) -> Result<Value, String> {
+async fn install(app: &tauri::AppHandle, wait_for_playback: bool) -> Result<Value, String> {
     let runtime = app.state::<Runtime>();
     let result = async {
-        if playback_active(app).await {
-            return Err("Stop desktop playback before restarting to install the update".into());
-        }
+        #[cfg(windows)]
+        let playback = app.state::<crate::mpv::DesktopPlayback>();
+        // Also waits for an accepted play request still resolving tools. New
+        // playback cannot start after the idle check and before installer exit.
+        #[cfg(windows)]
+        let _playback_guard = loop {
+            let guard = playback.player.restart_guard().await;
+            if !playback_active(app).await {
+                break guard;
+            }
+            if !wait_for_playback {
+                return Err("Stop desktop playback before restarting to install the update".into());
+            }
+            drop(guard);
+            change(app, json!({"phase":"waiting"}));
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        };
+        #[cfg(not(windows))]
+        let _ = wait_for_playback;
         let mut prepared = runtime.prepared.lock().await;
         let pending = prepared
             .as_ref()
@@ -256,7 +267,10 @@ async fn install(app: &tauri::AppHandle) -> Result<Value, String> {
             .valid_at(thelxinoe_core::now())
             .map_err(|e| e.to_string())?;
         compatibility(app, &pending.release).await?;
-        // The Windows installer exits the process without the normal close event.
+        // The updater bypasses CloseRequested. Drain package/configuration writes
+        // and keep their locks until installation starts or fails.
+        let tools = &app.state::<crate::tools::DesktopTools>().tools;
+        let _tools_guard = tools.restart_guard().await;
         app.save_window_state(StateFlags::POSITION | StateFlags::SIZE | StateFlags::MAXIMIZED)
             .map_err(|_| "Could not save desktop window state before restarting")?;
         change(app, json!({"phase":"installing","error":null}));
@@ -336,11 +350,7 @@ async fn apply(app: &tauri::AppHandle, expected: Option<String>) -> Result<(), S
         );
         download(app, release).await?;
     }
-    while playback_active(app).await {
-        change(app, json!({"phase":"waiting"}));
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    }
-    install(app).await?;
+    install(app, true).await?;
     Ok(())
 }
 #[tauri::command]
@@ -350,6 +360,12 @@ pub fn desktop_update_policy(app: tauri::AppHandle, policy: String) -> Result<Va
     }
     std::fs::write(policy_path(&app)?, &policy).map_err(|e| e.to_string())?;
     Ok(change(&app, json!({"policy":policy})))
+}
+fn automatic_candidate(status: &Value) -> bool {
+    status["policy"] == "automatic"
+        && matches!(status["phase"].as_str(), Some("idle" | "ready"))
+        && status["error"].is_null()
+        && !status["release"].is_null()
 }
 pub fn start(app: tauri::AppHandle) {
     change(&app, json!({}));
@@ -365,11 +381,7 @@ pub fn start(app: tauri::AppHandle) {
                 let _ = desktop_update_check(app.clone()).await;
             }
             let status = desktop_update_status(app.clone());
-            if status["policy"] == "automatic"
-                && status["phase"] == "idle"
-                && status["error"].is_null()
-                && !status["release"].is_null()
-            {
+            if automatic_candidate(&status) {
                 // Personal update preferences apply only to an authenticated desktop.
                 if let Ok(session) =
                     crate::backend_request(app.clone(), "/auth/me".into(), "GET".into(), None).await
@@ -385,4 +397,29 @@ pub fn start(app: tauri::AppHandle) {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn automatic_resumes_a_verified_download_but_preserves_error_and_policy_guards() {
+        let mut status = json!({"policy":"automatic","phase":"ready","error":null,"release":{"version":"1.0.0"}});
+        assert!(automatic_candidate(&status));
+        status["phase"] = json!("idle");
+        assert!(automatic_candidate(&status));
+        for phase in ["checking", "downloading", "waiting", "installing"] {
+            status["phase"] = json!(phase);
+            assert!(!automatic_candidate(&status));
+        }
+        status["phase"] = json!("ready");
+        status["error"] = json!("Incompatible server");
+        assert!(!automatic_candidate(&status));
+        status["error"] = Value::Null;
+        status["policy"] = json!("notify");
+        assert!(!automatic_candidate(&status));
+        status["policy"] = json!("automatic");
+        status["release"] = Value::Null;
+        assert!(!automatic_candidate(&status));
+    }
 }

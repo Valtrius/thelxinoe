@@ -13,6 +13,10 @@ import { createServer } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 
 export const repository = resolve(import.meta.dirname, '../..');
+const updateTarget = join(
+  process.env.CARGO_TARGET_DIR ?? join(repository, 'target'),
+  'update-lab',
+);
 export function run(command, args, options = {}) {
   return execFileSync(command, args, {
     cwd: repository,
@@ -178,6 +182,50 @@ export function source(lab, version) {
     let name = format!("thelxinoe-product-`,
     ),
   );
+  if (lab.desktop) {
+    const fault = (file, needle, replacement) => {
+      const path = join(directory, file);
+      const code = readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
+      if (code.split(needle).length !== 2)
+        throw Error(`Missing update qualification boundary: ${file}`);
+      writeFileSync(path, code.replace(needle, replacement));
+    };
+    const held = (name, failure) => `
+        let hold = std::path::Path::new(${JSON.stringify(join(lab.root, `hold-${name}`))});
+        if hold.exists() {
+            std::fs::write(hold.with_extension("entered"), b"entered")?;
+            while hold.exists() { tokio::time::sleep(std::time::Duration::from_millis(100)).await; }
+            ${failure}
+        }
+`;
+    fault(
+      'apps/desktop/src/mpv/runtime.rs',
+      '        self.stop_inner().await;\n        let (settings, launch) = tools',
+      held(
+        'playback',
+        'anyhow::bail!("Update lab playback preparation released");',
+      ) +
+        '        self.stop_inner().await;\n        let (settings, launch) = tools',
+    );
+    fault(
+      'apps/desktop/src/tools/installation.rs',
+      '        self.install_locked(id, settings).await',
+      held(
+        'tools',
+        'return Err(AppError::validation("Update lab tool operation released"));',
+      ) + '        self.install_locked(id, settings).await',
+    );
+    fault(
+      'apps/desktop/src/updates.rs',
+      '        let _tools_guard = tools.restart_guard().await;',
+      `        let _tools_guard = tools.restart_guard().await;
+        let fault = std::path::Path::new(${JSON.stringify(join(lab.root, 'reject-install'))});
+        if fault.exists() {
+            std::fs::write(fault.with_extension("entered"), b"drained").map_err(|e| e.to_string())?;
+            return Err("Update lab installation rejected after draining work".into());
+        }`,
+    );
+  }
   if (version === lab.next) {
     const validation = join(directory, 'apps/server/src/validation.rs');
     writeFileSync(
@@ -267,7 +315,7 @@ function nativeArtifacts(lab, version, directory) {
       join(directory, 'frontend/node_modules'),
       process.platform === 'win32' ? 'junction' : 'dir',
     );
-  const target = join(repository, 'target/update-lab');
+  const target = updateTarget;
   const config = join(lab.root, `desktop-${version}.json`);
   save(config, {
     identifier: lab.identifier,
@@ -287,6 +335,11 @@ function nativeArtifacts(lab, version, directory) {
           width: 1360,
           height: 900,
           visible: !lab.headless,
+          // Wry supplies browser options itself; configure CDP on the lab WebView
+          // rather than depending on an environment override surviving that layer.
+          devtools: true,
+          additionalBrowserArgs: `--remote-debugging-port=${lab.cdpPort} --remote-debugging-address=127.0.0.1`,
+          dataDirectory: join(lab.root, 'webview'),
           decorations: false,
         },
       ],
@@ -323,6 +376,8 @@ function nativeArtifacts(lab, version, directory) {
     [
       join(repository, 'node_modules/@tauri-apps/cli/tauri.js'),
       'build',
+      '--features',
+      'tauri/devtools',
       '--config',
       config,
     ],
@@ -426,7 +481,7 @@ export function envelope(lab, version, images) {
         cwd: lab.sources[version],
         env: {
           ...process.env,
-          CARGO_TARGET_DIR: join(repository, 'target/update-lab'),
+          CARGO_TARGET_DIR: updateTarget,
         },
       },
     );

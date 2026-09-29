@@ -25,7 +25,11 @@ The automated scenarios must catch these failures through actual processes:
 - A desktop check starts downloading without a second click, or updater exit
   loses the current window position, size or maximized state.
 - Cached lab layers hide server download progress; slow-download must exercise
-  actual registry transfers and show a partial orbit before installation.
+  actual registry transfers before installation. Show a partial percentage only
+  when Docker supplies total bytes, otherwise keep the orbit indeterminate.
+  Completing a layer with an unknown size must preserve its observed byte count.
+  Refresh registry-only layers after an earlier upgrade; deleting image references
+  alone does not guarantee that Docker's content store will transfer bytes again.
 - Lab stop leaves its Windows uninstall entry behind, fails when repeated, or
   removes another lab's installation or the normal desktop app.
 - A lab installer kills another desktop by executable name, or concurrent lab
@@ -42,9 +46,27 @@ The automated scenarios must catch these failures through actual processes:
   or reload during playback after an accepted server update.
 - Candidate validation fails after modifying copied/live state, or the controller
   is interrupted, and the original state cannot recover with cached images.
+- A recovered server's startup scan is still running when the next qualification
+  asks for preflight or activation. Wait only after the explicit idle-gate 409;
+  fail immediately on transport ambiguity or any other rejection, and retain the
+  observed jobs so retries cannot hide unfinished work.
 - A desktop needs its server to discover updates, downloads the wrong bytes,
   accepts corrupt signatures/metadata, restarts during playback, or loses its
   login/configuration across the real Windows installer and relaunch.
+- Obsolete preflight recovery poisons the journal or controller restart, or a
+  ready preflight invalidated by Compose recreation stalls Automatic. Recreate
+  before activation, qualify a new generation, then commit and restore it.
+- Server restart during image pulls admits playback or scan jobs before its
+  snapshot. A lost controller acknowledgement must keep maintenance until a
+  complete, settled controller observation establishes rejection or readiness.
+- Installation races an accepted desktop play request still resolving tools,
+  or terminates an active package operation. Hold those actual command boundaries
+  in disposable builds and reject installation only after both have drained.
+- Automatic leaves a retained verified installer unused after compatibility
+  recovers. Corrupt the publisher's download after retention so a successful
+  installation also proves that it reused the verified bytes.
+- A desktop retains a lost install-response error after authoritative pending
+  and committed polls. Verify its final success presentation without a reload.
 
 Server tests use disposable Docker deployments and the production HTTP/UI paths.
 Windows tests install an independently named app with its own keyring identity.

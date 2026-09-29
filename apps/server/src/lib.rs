@@ -90,6 +90,7 @@ impl AppState {
             );
         }
         let secrets = SecretStore::open(&config.state.join("secrets"))?;
+        let release_pending = product::maintenance_pending(&db).await?;
         Ok(Self {
             server_id: Arc::new(server_id),
             event_epoch: Arc::new(thelxinoe_core::id()),
@@ -105,7 +106,7 @@ impl AppState {
             managers: Arc::new(managers::Runtime::new()?),
             media_operations: Arc::new(tokio::sync::RwLock::new(())),
             release_gate: Arc::new(tokio::sync::RwLock::new(())),
-            release_quiescing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            release_quiescing: Arc::new(std::sync::atomic::AtomicBool::new(release_pending)),
             release_check: Arc::new(tokio::sync::Mutex::new(())),
             release_install: Arc::new(tokio::sync::Mutex::new(())),
             dummy_hash: Arc::new(thelxinoe_auth::password_hash(thelxinoe_auth::token()).await?),

@@ -345,13 +345,30 @@ pub(crate) async fn fallback(State(state): State<AppState>, request: Request) ->
     {
         ApiError::not_found().into_response()
     } else {
-        ServeDir::new(&state.config.web)
-            .not_found_service(ServeFile::new(state.config.web.join("index.html")))
-            .oneshot(request)
-            .await
-            .unwrap()
-            .into_response()
+        web_files(&state.config.web, request).await
     }
+}
+
+async fn web_files(root: &std::path::Path, mut request: Request) -> Response {
+    let unversioned = !request.uri().path().starts_with("/assets/");
+    if unversioned {
+        // A rollback can install an older index.html. Its modification time
+        // must not validate cached HTML that names a newer release's assets.
+        request.headers_mut().remove(header::IF_MODIFIED_SINCE);
+        request.headers_mut().remove(header::IF_NONE_MATCH);
+    }
+    let mut response = ServeDir::new(root)
+        .not_found_service(ServeFile::new(root.join("index.html")))
+        .oneshot(request)
+        .await
+        .unwrap()
+        .into_response();
+    if unversioned {
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    }
+    response
 }
 
 async fn native(State(state): State<AppState>, request: Request) -> Response {
@@ -514,4 +531,46 @@ async fn exchange(
         .headers_mut()
         .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
     Ok(response)
+}
+
+#[cfg(test)]
+mod web_cache_tests {
+    use super::*;
+    use axum::body::{Body, to_bytes};
+
+    #[tokio::test]
+    async fn rollback_serves_current_html_despite_newer_browser_validators() {
+        let directory = tempfile::tempdir().unwrap();
+        let html = "<script src='/assets/base.js'></script>";
+        std::fs::write(directory.path().join("index.html"), html).unwrap();
+        for path in ["/", "/?section=Settings", "/index.html"] {
+            let request = Request::builder()
+                .uri(path)
+                .header(header::IF_MODIFIED_SINCE, "Thu, 01 Jan 2099 00:00:00 GMT")
+                .header(header::IF_NONE_MATCH, "\"newer-release\"")
+                .body(Body::empty())
+                .unwrap();
+            let response = web_files(directory.path(), request).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            assert_eq!(
+                to_bytes(response.into_body(), 4096).await.unwrap().as_ref(),
+                html.as_bytes()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn versioned_assets_still_support_conditional_requests() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("assets")).unwrap();
+        std::fs::write(directory.path().join("assets/base.js"), "// base").unwrap();
+        let request = Request::builder()
+            .uri("/assets/base.js")
+            .header(header::IF_MODIFIED_SINCE, "Thu, 01 Jan 2099 00:00:00 GMT")
+            .body(Body::empty())
+            .unwrap();
+        let response = web_files(directory.path(), request).await;
+        assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+    }
 }

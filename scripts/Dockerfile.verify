@@ -1,8 +1,14 @@
 # syntax=docker/dockerfile:1
+FROM node:24-bookworm-slim AS node
 FROM rust:1.98-bookworm
 WORKDIR /src
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/* && rustup component add clippy rustfmt
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg python3 && rm -rf /var/lib/apt/lists/* && rustup component add clippy rustfmt && ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
 COPY apps apps
-RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/src/target cargo fmt --all --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked
+COPY package.json ./
+COPY scripts scripts
+COPY tests tests
+RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/src/target,id=thelxinoe-verification-target,sharing=locked node scripts/ci.mjs server

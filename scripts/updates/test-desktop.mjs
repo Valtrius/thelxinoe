@@ -1,7 +1,8 @@
 import { chromium, expect } from '@playwright/test';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
-import { until } from './lab.mjs';
+import { existsSync, writeFileSync, rmSync } from 'node:fs';
+import { until, installBase } from './lab.mjs';
 
 export async function connectDesktop(lab) {
   return until(async () => {
@@ -239,6 +240,121 @@ export async function desktopScenarios({
         await native.page.reload();
         await new Promise((done) => incompatible.close(done));
       }
+    },
+  );
+  await scenario(
+    'Installation drains accepted playback preparation and tool operations',
+    async () => {
+      await login();
+      const rejection = join(lab.root, 'reject-install');
+      const drained = rejection + '.entered';
+      writeFileSync(rejection, 'reject');
+      try {
+        for (const [work, command, args] of [
+          [
+            'playback',
+            'mpv_play',
+            {
+              choice: { id: 'lab-preparing', title: 'Lab preparation' },
+              music: false,
+            },
+          ],
+          ['tools', 'tools_install', { packageId: 'lab-held-operation' }],
+        ]) {
+          const hold = join(lab.root, `hold-${work}`);
+          const entered = hold + '.entered';
+          rmSync(drained, { force: true });
+          writeFileSync(hold, 'hold');
+          const working = native.invoke(command, args).then(
+            () => 'completed',
+            () => 'rejected',
+          );
+          try {
+            await until(() => existsSync(entered));
+            let settled = false;
+            const installing = native
+              .invoke('desktop_update_install')
+              .then(
+                () => null,
+                (error) => String(error),
+              )
+              .finally(() => {
+                settled = true;
+              });
+            await native.page.waitForTimeout(1000);
+            expect(settled, `Installer bypassed accepted ${work}`).toBe(false);
+            expect(existsSync(drained)).toBe(false);
+            rmSync(hold);
+            expect(await working).toBe('rejected');
+            expect(await installing).toContain('after draining work');
+            expect(existsSync(drained)).toBe(true);
+            expect((await native.invoke('desktop_update_status')).phase).toBe(
+              'ready',
+            );
+          } finally {
+            rmSync(hold, { force: true });
+            rmSync(entered, { force: true });
+            await working;
+          }
+        }
+        await native.page.screenshot({
+          path: join(output, 'desktop-work-drained.png'),
+        });
+      } finally {
+        rmSync(rejection, { force: true });
+        rmSync(drained, { force: true });
+      }
+    },
+  );
+  await scenario(
+    'Automatic consumes a retained verified installer after compatibility recovers',
+    async () => {
+      // If apply downloads again, the publisher now returns corrupt bytes.
+      await mode('corrupt');
+      expect((await check()).phase).toBe('ready');
+      await native.context.tracing.stop({
+        path: join(output, 'desktop-retained-before-trace.zip'),
+      });
+      await native.invoke('desktop_update_policy', { policy: 'automatic' });
+      const previous = native;
+      native = await until(async () => {
+        const connected = await connectDesktop(lab);
+        if (
+          (await connected.invoke('desktop_update_status')).installed !==
+          lab.next
+        ) {
+          await connected.close();
+          return false;
+        }
+        return connected;
+      }, 180000);
+      await previous.close().catch(() => {});
+      expect((await native.invoke('desktop_update_status')).installed).toBe(
+        lab.next,
+      );
+      expect(
+        (
+          await native.invoke('backend_request', {
+            path: '/auth/me',
+            method: 'GET',
+          })
+        ).status,
+      ).toBe(200);
+      await native.page.screenshot({
+        path: join(output, 'desktop-retained-installed.png'),
+      });
+      await native.invoke('desktop_update_policy', { policy: 'notify' });
+      await mode('base');
+      await native.close();
+      installBase(lab);
+      native = await connectDesktop(lab);
+      await native.context.tracing.start({
+        screenshots: true,
+        snapshots: true,
+      });
+      expect((await native.invoke('desktop_update_status')).installed).toBe(
+        lab.base,
+      );
     },
   );
   await scenario(

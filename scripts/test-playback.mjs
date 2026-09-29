@@ -1,7 +1,7 @@
 import { request, chromium } from '@playwright/test';
 import { writeFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
-const origin = 'https://localhost:20443';
+const origin = process.env.THELXINOE_PLAYBACK_URL ?? 'https://localhost:20443';
 const api = await request.newContext({
   baseURL: origin,
   ignoreHTTPSErrors: true,

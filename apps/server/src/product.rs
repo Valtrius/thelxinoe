@@ -20,6 +20,63 @@ use serde_json::{Value, json};
 use thelxinoe_core::{Capability, now};
 use thelxinoe_releases::{Envelope, Manifest};
 
+#[cfg(test)]
+mod tests;
+
+pub(crate) async fn maintenance_pending(db: &thelxinoe_database::Database) -> anyhow::Result<bool> {
+    Ok(storage::setting("product.maintenance".into(), db).await? == Some(json!(true)))
+}
+fn controller_requires_maintenance(observed: &Value) -> Result<bool> {
+    let items = observed["items"]
+        .as_array()
+        .ok_or_else(|| ApiError::conflict("Controller returned an invalid update journal"))?;
+    let busy = observed["busy"]
+        .as_bool()
+        .ok_or_else(|| ApiError::conflict("Controller update ownership is unavailable"))?;
+    Ok(busy
+        || items.iter().any(|u| {
+            matches!(
+                u["stage"].as_str(),
+                Some(
+                    "preparing"
+                        | "snapshotting"
+                        | "validating"
+                        | "preparing-activation"
+                        | "isolated-migration"
+                        | "creating-successor"
+                        | "handoff"
+                        | "activating"
+                        | "recovering"
+                        | "restoring-release"
+                )
+            )
+        }))
+}
+async fn reconcile_maintenance(state: &AppState) -> Result<()> {
+    // Only a submitted release command fences the server. Service operations
+    // alone must not put an otherwise available server into maintenance.
+    if !state
+        .release_quiescing
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return Ok(());
+    }
+    let _gate = state.release_gate.write().await;
+    let observed = controller_status(state).await?;
+    if !controller_requires_maintenance(&observed)? {
+        save(state, "product.maintenance", json!(false)).await?;
+        state
+            .release_quiescing
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+    Ok(())
+}
+fn current_preflight(operation: &Value, observed: &Value) -> bool {
+    operation["source_generation"]
+        .as_u64()
+        .is_some_and(|generation| observed["generation"].as_u64() == Some(generation))
+}
+
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/admin/product-update", get(status))
@@ -257,11 +314,19 @@ async fn advance_install(state: &AppState) -> Result<bool> {
         return Ok(false);
     };
     let observed = controller_status(state).await?;
-    let operation = observed["items"]
+    let mut operation = observed["items"]
         .as_array()
         .into_iter()
         .flatten()
         .find(|u| u["id"] == intent["id"]);
+    if operation.is_some_and(|u| {
+        u["stage"] == "superseded" || (u["stage"] == "ready" && !current_preflight(u, &observed))
+    }) {
+        // Preserve the selected release, but qualify it against the new containers.
+        intent["id"] = json!(thelxinoe_core::id());
+        save(state, "product.install", intent.clone()).await?;
+        operation = None;
+    }
     if let Some(u) = operation {
         match u["stage"].as_str().unwrap_or("") {
             "committed" if u["version"] == thelxinoe_core::VERSION => {
@@ -363,51 +428,15 @@ async fn quiesced_command(state: &AppState, path: &str, body: Option<Value>) -> 
         ));
     }
     idle(state).await?;
+    // This record travels with snapshots and is read before new work is admitted
+    // after a restart. A failed response does not prove controller rejection.
+    save(state, "product.maintenance", json!(true)).await?;
     state
         .release_quiescing
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    match crate::managers::controller_request(state, path, body).await {
-        Err(e) => {
-            state
-                .release_quiescing
-                .store(false, std::sync::atomic::Ordering::SeqCst);
-            Err(e)
-        }
-        Ok(value) => {
-            let operation = value["id"].clone();
-            let state = state.clone();
-            tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    if let Ok(observed) =
-                        crate::managers::controller_request(&state, "/product", None).await
-                        && observed["items"].as_array().into_iter().flatten().any(|u| {
-                            u["id"] == operation
-                                && matches!(
-                                    u["stage"].as_str(),
-                                    Some(
-                                        "blocked"
-                                            | "ready"
-                                            | "recovered"
-                                            | "recovery-required"
-                                            | "runtime-failure"
-                                            | "committed"
-                                            | "restored"
-                                    )
-                                )
-                        })
-                    {
-                        state
-                            .release_quiescing
-                            .store(false, std::sync::atomic::Ordering::SeqCst);
-                        break;
-                    }
-                }
-            });
-            Ok(value)
-        }
-    }
+    crate::managers::controller_request(state, path, body).await
 }
+
 async fn prepare(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
     Ok(Json(prepare_update(&state, Some(p.user.id)).await?))
@@ -465,6 +494,9 @@ async fn release(State(state): State<AppState>) -> Result<Json<Value>> {
 }
 pub async fn run(state: AppState) -> anyhow::Result<()> {
     loop {
+        if let Err(e) = reconcile_maintenance(&state).await {
+            tracing::warn!(code = e.1, "Release maintenance reconciliation will retry");
+        }
         if configured()
             && let Err(e) = tick(&state).await
         {
@@ -512,7 +544,11 @@ async fn tick(state: &AppState) -> Result<()> {
         .as_array()
         .into_iter()
         .flatten()
-        .find(|u| u["version"] == release["version"]);
+        .find(|u| {
+            u["version"] == release["version"]
+                && u["stage"] != "superseded"
+                && (u["stage"] != "ready" || current_preflight(u, &observed))
+        });
     idle(state).await?;
     match candidate {
         None => {

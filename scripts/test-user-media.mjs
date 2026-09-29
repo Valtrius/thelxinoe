@@ -6,7 +6,7 @@ const guest = await browser.newContext({ ignoreHTTPSErrors: true });
 const second = await browser.newContext({ ignoreHTTPSErrors: true });
 const page = await owner.newPage(),
   other = await guest.newPage();
-const origin = 'https://localhost:20443';
+const origin = process.env.THELXINOE_PLAYBACK_URL ?? 'https://localhost:20443';
 let playlist, originalFlags, originalZone, movie;
 async function api(context, path, method = 'GET', data) {
   const response = await context.request.fetch(`${origin}/api/v1${path}`, {
