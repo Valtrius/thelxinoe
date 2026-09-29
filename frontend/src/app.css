@@ -1,6 +1,17 @@
 @import 'tailwindcss';
 
 @theme {
+  --animate-update-nudge: update-nudge 2.7s ease-in-out infinite;
+  @keyframes update-nudge {
+    0%,
+    60%,
+    100% {
+      transform: translateY(0);
+    }
+    30% {
+      transform: translateY(-2px);
+    }
+  }
   --animate-progress-travel: progress-travel 1.8s ease-in-out infinite;
   --animate-status-pulse: status-pulse 1.5s ease-in-out infinite;
   @keyframes progress-travel {

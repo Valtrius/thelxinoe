@@ -8,7 +8,9 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { createPublicKey, generateKeyPairSync } from 'node:crypto';
+import { createHash, createPublicKey, generateKeyPairSync } from 'node:crypto';
+import { createServer } from 'node:net';
+import { setTimeout as delay } from 'node:timers/promises';
 
 export const repository = resolve(import.meta.dirname, '../..');
 export function run(command, args, options = {}) {
@@ -151,7 +153,31 @@ export function source(lab, version) {
     join(lab.root, 'release.pub'),
     join(directory, 'releases/release.pub'),
   );
+  const capabilityPath = join(
+    directory,
+    'apps/desktop/capabilities/default.json',
+  );
+  const capability = JSON.parse(readFileSync(capabilityPath, 'utf8'));
+  capability.permissions.push(
+    'core:window:allow-set-position',
+    'core:window:allow-set-size',
+  );
+  save(capabilityPath, capability);
   // Fault points exist only in disposable source copies, never production.
+  // Distinguish the live-state check from preflight copies, so a fault can be
+  // armed before the one-click flow without failing the wrong phase.
+  const controller = join(directory, 'apps/docker-controller/src/product.rs');
+  writeFileSync(
+    controller,
+    readFileSync(controller, 'utf8').replace(
+      '    let name = format!("thelxinoe-product-',
+      `    let mut spec = spec;
+    if label == "live-validation" {
+        spec["Env"] = json!(["THELXINOE_LAB_LIVE_VALIDATION=1"]);
+    }
+    let name = format!("thelxinoe-product-`,
+    ),
+  );
   if (version === lab.next) {
     const validation = join(directory, 'apps/server/src/validation.rs');
     writeFileSync(
@@ -159,11 +185,11 @@ export function source(lab, version) {
       readFileSync(validation, 'utf8').replace(
         '    let report =',
         `
-    if state.config.state.join("hold-live-validation").exists() {
+    if std::env::var_os("THELXINOE_LAB_LIVE_VALIDATION").is_some() && state.config.state.join("hold-live-validation").exists() {
         std::fs::write(state.config.state.join("held-validation-entered"), b"held")?;
         tokio::time::sleep(std::time::Duration::from_secs(120)).await;
     }
-    if state.config.state.join("fail-live-validation").exists() {
+    if std::env::var_os("THELXINOE_LAB_LIVE_VALIDATION").is_some() && state.config.state.join("fail-live-validation").exists() {
         std::fs::write(state.config.state.join("failed-validation-mutated"), b"candidate wrote state")?;
         anyhow::bail!("Deliberate update lab validation failure");
     }
@@ -197,7 +223,34 @@ export function containerBuild(lab, version, directory) {
   }
   return images;
 }
-export function nativeBuild(lab, version, directory) {
+export async function nativeBuild(lab, version, directory) {
+  // Cargo releases its lock before NSIS packaging reads the binary and writes
+  // its shared staging files. Hold an OS-owned lock through artifact copying.
+  const pipe = `\\\\.\\pipe\\thelxinoe-update-build-${createHash('sha256').update(repository.toLowerCase()).digest('hex').slice(0, 16)}`;
+  let lock;
+  let waiting = false;
+  while (!lock) {
+    const server = createServer();
+    try {
+      await new Promise((done, reject) => {
+        server.once('error', reject);
+        server.listen(pipe, done);
+      });
+      lock = server;
+    } catch (error) {
+      if (error.code !== 'EADDRINUSE') throw error;
+      if (!waiting) console.log('Waiting for another lab desktop build');
+      waiting = true;
+      await delay(500);
+    }
+  }
+  try {
+    nativeArtifacts(lab, version, directory);
+  } finally {
+    await new Promise((done) => lock.close(done));
+  }
+}
+function nativeArtifacts(lab, version, directory) {
   const dependencies = join(directory, 'node_modules');
   if (!existsSync(dependencies))
     symlinkSync(
@@ -218,6 +271,7 @@ export function nativeBuild(lab, version, directory) {
   const config = join(lab.root, `desktop-${version}.json`);
   save(config, {
     identifier: lab.identifier,
+    mainBinaryName: lab.id,
     productName: `Thelxinoe Update Lab ${lab.id.slice(-8)}`,
     bundle: { createUpdaterArtifacts: true },
     plugins: {

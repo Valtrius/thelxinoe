@@ -6,6 +6,7 @@
   }>();
   import { onMount } from 'svelte';
   import { api } from './api';
+  import { isServerUpdateInterruption } from './server-updates';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
   import { rowClass, statsClass } from './ui/styles';
@@ -53,8 +54,9 @@
     try {
       data = await api<Dashboard>('/admin/operations');
       devices = (await api<{ items: typeof devices }>('/admin/devices')).items;
+      error = '';
     } catch (e) {
-      error = String(e);
+      if (!isServerUpdateInterruption(e)) error = String(e);
     } finally {
       busy = false;
     }

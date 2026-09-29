@@ -1,7 +1,8 @@
 import { createServer } from 'node:https';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { sign } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { compile } from '@tailwindcss/node';
 import { repository } from './build.mjs';
 
@@ -15,8 +16,9 @@ const modes = [
   'expired',
   'mismatch',
   'corrupt',
+  'slow-download',
 ];
-const page = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Thelxinoe update lab</title><style>STYLES</style><body class="bg-slate-950 text-slate-100 p-6"><main class="max-w-3xl mx-auto grid gap-6"><h1 class="text-3xl font-semibold">Thelxinoe update lab</h1><p>Base ${lab.base} → candidate ${lab.next}. Each choice changes the signed feed served to this lab.</p><a class="text-sky-300 underline" href="${lab.baseUrl}" target="_blank" rel="noreferrer">Open the test server</a><p>Sign in with <strong>admin</strong> and the test password printed by the lab command.</p><form class="grid gap-3"><label for="mode">Publisher response</label><select id="mode" class="bg-slate-800 border border-slate-600 p-3">${modes.map((v) => `<option>${v}</option>`).join('')}</select><button class="bg-sky-300 text-slate-950 px-4 py-3 font-semibold" type="submit">Apply publisher response</button></form><p role="status" id="status"></p><p>Use Check server release or Check desktop release after changing the publisher. Base withdraws the candidate. Unavailable returns HTTP 503; tampered changes the signed envelope; expired signs an expired envelope; mismatch changes installer metadata; corrupt changes installer bytes.</p><p>Preparation briefly stops the server. Installation replaces the server and controller. Keep the web tab open to observe reconnection and recovery.</p><p>Run the printed reset command to start again from the base version. All installations and keys belong to this lab.</p></main><script>const status=document.querySelector('#status');fetch('/status').then(r=>r.json()).then(v=>{document.querySelector('#mode').value=v.mode;status.textContent='Serving '+v.mode;});document.querySelector('form').onsubmit=async e=>{e.preventDefault();const r=await fetch('/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:document.querySelector('#mode').value})});status.textContent=r.ok?'Serving '+document.querySelector('#mode').value:'Publisher change failed';};</script></body></html>`;
+const page = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Thelxinoe update lab</title><style>STYLES</style><body class="bg-slate-950 text-slate-100 p-6"><main class="max-w-3xl mx-auto grid gap-6"><h1 class="text-3xl font-semibold">Thelxinoe update lab</h1><p>Base ${lab.base} → candidate ${lab.next}. Each choice changes the signed feed served to this lab.</p><a class="text-sky-300 underline" href="${lab.baseUrl}" target="_blank" rel="noreferrer">Open the test server</a><p>Sign in with <strong>admin</strong> and the test password printed by the lab command.</p><form class="grid gap-3"><label for="mode">Publisher response</label><select id="mode" class="bg-slate-800 border border-slate-600 p-3">${modes.map((v) => `<option>${v}</option>`).join('')}</select><button class="bg-sky-300 text-slate-950 px-4 py-3 font-semibold" type="submit">Apply publisher response</button></form><p role="status" id="status"></p><p>After changing the publisher, use the icon beside Product version in Settings / Server, or Desktop version in Settings / Desktop. Use the quiet icon to check, then click the available-update arrow. Base withdraws the candidate. Unavailable returns HTTP 503; tampered changes the signed envelope; expired signs an expired envelope; mismatch changes installer metadata; corrupt changes installer bytes; slow-download lets you inspect server and desktop download progress.</p><p>Preparation briefly stops the server. Installation replaces the server and controller. Keep the web tab open to observe reconnection and recovery.</p><p>Run the printed reset command to start again from the base version. All installations and keys belong to this lab.</p></main><script>const status=document.querySelector('#status');fetch('/status').then(r=>r.json()).then(v=>{document.querySelector('#mode').value=v.mode;status.textContent='Serving '+v.mode;});document.querySelector('form').onsubmit=async e=>{e.preventDefault();const r=await fetch('/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:document.querySelector('#mode').value})});status.textContent=r.ok?'Serving '+document.querySelector('#mode').value:'Publisher change failed';};</script></body></html>`;
 const compiler = await compile('@import "tailwindcss";', {
   base: repository,
   onDependency: () => {},
@@ -58,6 +60,11 @@ const server = createServer(
         const value = JSON.parse(data);
         if (!modes.includes(value.mode)) throw Error('Invalid mode');
         mode = value.mode;
+        if (existsSync(join(lab.root, 'registry-control'))) {
+          const path = join(lab.root, 'registry-control/mode.json');
+          writeFileSync(path + '.tmp', JSON.stringify({ mode }));
+          renameSync(path + '.tmp', path);
+        }
         response
           .writeHead(200, { 'Content-Type': 'application/json' })
           .end(JSON.stringify({ mode }));
@@ -145,14 +152,24 @@ const server = createServer(
           bytes[bytes.length - 1] ^= 1;
         }
       }
-      response
-        .writeHead(200, {
-          'Content-Type': url.pathname.endsWith('.json')
-            ? 'application/json'
-            : 'application/octet-stream',
-          'Content-Length': bytes.length,
-        })
-        .end(bytes);
+      response.writeHead(200, {
+        'Content-Type': url.pathname.endsWith('.json')
+          ? 'application/json'
+          : 'application/octet-stream',
+        'Content-Length': bytes.length,
+      });
+      if (mode === 'slow-download' && url.pathname.endsWith('/setup.exe')) {
+        const size = Math.ceil(bytes.length / 50);
+        for (
+          let offset = 0;
+          offset < bytes.length && !response.destroyed;
+          offset += size
+        ) {
+          response.write(bytes.subarray(offset, offset + size));
+          await delay(100);
+        }
+        response.end();
+      } else response.end(bytes);
     } catch {
       response.writeHead(404).end();
     }

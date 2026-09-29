@@ -73,6 +73,7 @@ pub struct AppState {
     pub(crate) release_gate: Arc<tokio::sync::RwLock<()>>,
     pub(crate) release_quiescing: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) release_check: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) release_install: Arc<tokio::sync::Mutex<()>>,
 }
 impl AppState {
     pub async fn open(config: Config) -> anyhow::Result<Self> {
@@ -106,6 +107,7 @@ impl AppState {
             release_gate: Arc::new(tokio::sync::RwLock::new(())),
             release_quiescing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             release_check: Arc::new(tokio::sync::Mutex::new(())),
+            release_install: Arc::new(tokio::sync::Mutex::new(())),
             dummy_hash: Arc::new(thelxinoe_auth::password_hash(thelxinoe_auth::token()).await?),
         })
     }

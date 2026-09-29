@@ -16,6 +16,63 @@ pub(crate) fn unavailable() -> (StatusCode, &'static str) {
 pub(crate) async fn engine(path: &str) -> Result<Value> {
     request(reqwest::Method::GET, path, None).await
 }
+pub(crate) async fn pull_image(
+    image: &str,
+    mut progress: impl FnMut(&Value) -> Result<()>,
+) -> Result<()> {
+    if !crate::lease::active() {
+        return Err((
+            StatusCode::CONFLICT,
+            "Controller does not hold the Docker mutation lease",
+        ));
+    }
+    let client = reqwest::Client::builder()
+        .unix_socket("/var/run/docker.sock")
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(3600))
+        .build()
+        .map_err(|_| unavailable())?;
+    let mut response = client
+        .post("http://docker/images/create")
+        .query(&[("fromImage", image)])
+        .send()
+        .await
+        .map_err(|_| unavailable())?;
+    if !response.status().is_success() {
+        return Err(unavailable());
+    }
+    let mut pending = Vec::new();
+    loop {
+        let chunk = tokio::time::timeout(std::time::Duration::from_secs(120), response.chunk())
+            .await
+            .map_err(|_| unavailable())?
+            .map_err(|_| unavailable())?;
+        let Some(chunk) = chunk else { break };
+        for byte in chunk {
+            if byte == b'\n' {
+                pull_event(&pending, &mut progress)?;
+                pending.clear();
+            } else {
+                if pending.len() >= 64 * 1024 {
+                    return Err(unavailable());
+                }
+                pending.push(byte);
+            }
+        }
+    }
+    pull_event(&pending, &mut progress)
+}
+fn pull_event(bytes: &[u8], progress: &mut impl FnMut(&Value) -> Result<()>) -> Result<()> {
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return Ok(());
+    }
+    let value: Value = serde_json::from_slice(bytes).map_err(|_| unavailable())?;
+    if value.get("error").is_some() || value.get("errorDetail").is_some() {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "Image download failed"));
+    }
+    progress(&value)
+}
 pub(crate) async fn request(
     method: reqwest::Method,
     path: &str,

@@ -126,7 +126,7 @@
                     detail: 'server',
                   }),
                 );
-              }}>Open server updates</Button
+              }}>View server version</Button
             >{/if}
           <small class="text-muted"
             >{item.severity} · {new Date(item.created_at * 1000).toLocaleString(

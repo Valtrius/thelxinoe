@@ -6,7 +6,8 @@ import { desktop } from './api';
 export type DesktopUpdateStatus = {
   installed: string;
   policy: 'notify' | 'automatic';
-  phase: 'idle' | 'checking' | 'downloading' | 'ready' | 'installing';
+  phase:
+    'idle' | 'checking' | 'downloading' | 'ready' | 'waiting' | 'installing';
   release: { version: string; notes: string; bytes: number } | null;
   checked_at: number | null;
   error: string | null;
@@ -30,7 +31,7 @@ export async function connectDesktopUpdates() {
   return stop;
 }
 export async function desktopUpdate(
-  action: 'check' | 'download' | 'install' | 'policy',
+  action: 'apply' | 'check' | 'download' | 'install' | 'policy',
   args = {},
 ) {
   desktopUpdates.set(

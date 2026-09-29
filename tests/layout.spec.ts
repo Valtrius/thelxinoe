@@ -655,7 +655,7 @@ test('long admin navigation scrolls independently and keeps its last item reacha
   expect(fixture.unexpected).toEqual([]);
 });
 
-test('server settings contain display defaults and server updates', async ({
+test('server settings contain display defaults and the version update icon', async ({
   page,
 }) => {
   const fixture = await installUiFixture(page, {
@@ -685,6 +685,9 @@ test('server settings contain display defaults and server updates', async ({
   ).toHaveValue('24h');
   await expect(
     page.getByRole('heading', { name: 'Server updates', exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Check for server updates', exact: true }),
   ).toBeVisible();
   for (const text of [
     'Controls server maintenance windows and server activity times.',

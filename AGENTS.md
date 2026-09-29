@@ -11,4 +11,4 @@
 
 ## Testing
 
-- Always launch the CI tests locally before commiting or pushing to make sure CI will pass. Once launched, end your turn with a user-facing end notification window. User will tell you when it's done so you can check the results.
+- Always launch the CI tests locally before commiting or pushing to make sure CI will pass. Once launched, end your turn with a user-facing notification window programmed for CI end. User will tell you when noification appears so you can check the results.

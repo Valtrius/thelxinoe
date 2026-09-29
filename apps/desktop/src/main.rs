@@ -152,13 +152,16 @@ async fn change_server(app: tauri::AppHandle, value: String) -> Result<String, S
     {
         return Err("Enter an HTTP(S) origin without a path or credentials".into());
     }
+    let origin = url.origin().ascii_serialization();
+    if server_url(app.clone())?.trim_end_matches('/') == origin {
+        return Ok(origin);
+    }
     #[cfg(windows)]
     app.state::<mpv::DesktopPlayback>().player.stop().await;
     match credential(&app)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => {}
         Err(e) => return Err(e.to_string()),
     }
-    let origin = url.origin().ascii_serialization();
     std::fs::write(config_path(&app)?, &origin).map_err(|e| e.to_string())?;
     Ok(origin)
 }
@@ -281,6 +284,7 @@ fn main() {
             updates::desktop_update_download,
             updates::desktop_update_policy,
             updates::desktop_update_install,
+            updates::desktop_update_apply,
             tools::commands::tools_get,
             tools::commands::tools_check,
             tools::commands::tools_updates,

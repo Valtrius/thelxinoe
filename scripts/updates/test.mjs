@@ -1,7 +1,15 @@
 import { chromium, expect } from '@playwright/test';
-import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, copyFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { join, resolve } from 'node:path';
-import { createLab, readLab, stopLab, publisher } from './lab.mjs';
+import {
+  createLab,
+  readLab,
+  stopLab,
+  publisher,
+  desktopInstallation,
+} from './lab.mjs';
 import { docker, save } from './build.mjs';
 import { serverScenarios } from './test-server.mjs';
 import { desktopScenarios, connectDesktop } from './test-desktop.mjs';
@@ -15,8 +23,19 @@ const report = {
   started: new Date().toISOString(),
   scenarios: [],
 };
-let lab, browser, context, native;
+let lab, browser, context, native, unrelatedDesktop;
 try {
+  if (process.platform === 'win32' && !arguments_.includes('--server-only')) {
+    // NSIS used to kill all processes with the production executable name.
+    // A harmless long-lived process makes that installer regression observable.
+    const executable = join(output, 'thelxinoe-desktop.exe');
+    copyFileSync(join(process.env.SystemRoot, 'System32/ping.exe'), executable);
+    unrelatedDesktop = spawn(executable, ['-t', '127.0.0.1'], {
+      windowsHide: true,
+      stdio: 'ignore',
+    });
+    await once(unrelatedDesktop, 'spawn');
+  }
   lab =
     reuse >= 0
       ? readLab(arguments_[reuse + 1])
@@ -28,6 +47,14 @@ try {
           headless: true,
         });
   report.lab = lab.id;
+  if (lab.desktop) {
+    expect(
+      unrelatedDesktop.exitCode,
+      'Installing the lab closed another desktop',
+    ).toBeNull();
+    report.installed = desktopInstallation(lab);
+    expect(report.installed).toEqual({ registered: true, executable: true });
+  }
   browser = await chromium.launch();
   context = await browser.newContext({
     viewport: { width: 1440, height: 1000 },
@@ -166,11 +193,31 @@ try {
   await browser?.close().catch(() => {});
   await native?.close().catch(() => {});
   if (lab && !arguments_.includes('--keep'))
-    await stopLab(lab).catch((error) => {
+    await (async () => {
+      await stopLab(lab);
+      if (lab.desktop) {
+        report.uninstalled = desktopInstallation(lab);
+        expect(report.uninstalled).toEqual({
+          registered: false,
+          executable: false,
+        });
+        await stopLab(lab);
+      }
+    })().catch((error) => {
       report.cleanupError = String(error);
       report.passed = false;
       process.exitCode = 1;
     });
+  if (unrelatedDesktop) {
+    report.unrelatedDesktopSurvived = unrelatedDesktop.exitCode === null;
+    if (!report.unrelatedDesktopSurvived) {
+      report.passed = false;
+      report.isolationError =
+        'A lab installer closed an unrelated desktop process';
+      process.exitCode = 1;
+    }
+    unrelatedDesktop.kill();
+  }
   save(join(output, 'result.json'), report);
   console.log(`Update evidence: ${output}`);
   if (arguments_.includes('--keep') && lab)

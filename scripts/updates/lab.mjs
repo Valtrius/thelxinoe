@@ -11,6 +11,7 @@ import { pathToFileURL } from 'node:url';
 import { createServer } from 'node:net';
 import { request as https } from 'node:https';
 import { setTimeout as delay } from 'node:timers/promises';
+import { downloadFixture } from './registry.mjs';
 import {
   run,
   docker,
@@ -231,6 +232,7 @@ export async function createLab({
     desktop,
     headless,
     identifier: `app.thelxinoe.updatelab${id.split('-').at(-1)}`,
+    desktopExecutable: `${id}.exe`,
     serverPort: await freePort(),
     publisherPort: await freePort(),
     registryPort: await freePort(),
@@ -245,6 +247,18 @@ export async function createLab({
   keys(lab);
   try {
     if (server) {
+      mkdirSync(join(root, 'registry-control'), { recursive: true });
+      save(join(root, 'registry-control/mode.json'), { mode: 'base' });
+    }
+    await startPublisher(lab);
+    if (server) {
+      docker(
+        'network',
+        'create',
+        '--label',
+        `app.thelxinoe.update-lab=${id}`,
+        `${id}-registry`,
+      );
       docker(
         'run',
         '-d',
@@ -252,9 +266,32 @@ export async function createLab({
         `${id}-registry`,
         '--label',
         `app.thelxinoe.update-lab=${id}`,
+        '--network',
+        `${id}-registry`,
+        'registry:2',
+      );
+      docker(
+        'run',
+        '-d',
+        '--name',
+        `${id}-registry-proxy`,
+        '--label',
+        `app.thelxinoe.update-lab=${id}`,
+        '--network',
+        `${id}-registry`,
         '-p',
         `127.0.0.1:${lab.registryPort}:5000`,
-        'registry:2',
+        '--read-only',
+        '-v',
+        `${join(repository, 'scripts/updates/registry.mjs')}:/registry.mjs:ro`,
+        '-v',
+        `${join(root, 'registry-control')}:/control:ro`,
+        'node:24-bookworm-slim',
+        'node',
+        '/registry.mjs',
+        'serve',
+        `${id}-registry`,
+        '/control/mode.json',
       );
       await until(
         async () =>
@@ -266,12 +303,15 @@ export async function createLab({
       const directory = source(lab, version);
       lab.sources[version] = directory;
       if (server) lab.images[version] = containerBuild(lab, version, directory);
-      if (desktop) nativeBuild(lab, version, directory);
+      if (server && version === lab.next) {
+        lab.downloadSources = lab.images[version];
+        await refreshDownloads(lab);
+      }
+      if (desktop) await nativeBuild(lab, version, directory);
       envelope(lab, version, lab.images[version]);
       save(join(root, 'lab.json'), lab);
     }
     if (server) writeCompose(lab);
-    await startPublisher(lab);
     if (server) compose(lab, 'up', '-d', '--wait');
     else {
       for (const dir of ['state', 'cache', 'media'])
@@ -306,6 +346,8 @@ export async function createLab({
   }
 }
 export function installBase(lab) {
+  if (!lab.desktopExecutable)
+    throw Error('Start a new lab to use isolated desktop installers');
   stopDesktop(lab);
   const directory = join(lab.root, 'installed');
   mkdirSync(directory, { recursive: true });
@@ -316,7 +358,7 @@ export function installBase(lab) {
   lab.processes.desktop = background(
     lab,
     'desktop',
-    join(directory, 'thelxinoe-desktop.exe'),
+    join(directory, lab.desktopExecutable ?? 'thelxinoe-desktop.exe'),
     [],
     {
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${lab.cdpPort}`,
@@ -329,7 +371,7 @@ export function stopDesktop(lab) {
   const executable = join(
     lab.root,
     'installed',
-    'thelxinoe-desktop.exe',
+    lab.desktopExecutable ?? 'thelxinoe-desktop.exe',
   ).replaceAll("'", "''");
   run(
     'powershell.exe',
@@ -353,7 +395,13 @@ function removeContainers(lab, keepRegistry = false) {
   const containers = new Set();
   for (const id of owned) {
     const [container] = JSON.parse(docker('inspect', id));
-    if (keepRegistry && container.Name === `/${lab.id}-registry`) continue;
+    if (
+      keepRegistry &&
+      [`/${lab.id}-registry`, `/${lab.id}-registry-proxy`].includes(
+        container.Name,
+      )
+    )
+      continue;
     containers.add(id);
     const deployment = container.Config.Labels['app.thelxinoe.deployment'];
     if (deployment)
@@ -371,10 +419,21 @@ function removeContainers(lab, keepRegistry = false) {
 }
 export async function stopLab(lab) {
   stopDesktop(lab);
+  if (lab.desktop) desktopInstallation(lab, false);
   if (lab.server) {
     removeContainers(lab);
     if (existsSync(join(lab.root, 'compose.json')))
       compose(lab, 'down', '--volumes');
+    const networks = docker(
+      'network',
+      'ls',
+      '-q',
+      '--filter',
+      `label=app.thelxinoe.update-lab=${lab.id}`,
+    )
+      .split(/\s+/)
+      .filter(Boolean);
+    if (networks.length) docker('network', 'rm', ...networks);
   } else if (lab.processes.server) {
     const executable = join(lab.root, 'server.exe').replaceAll("'", "''");
     run(
@@ -393,16 +452,53 @@ export async function stopLab(lab) {
       process.kill(lab.processes.publisher);
   }
 }
+export function desktopInstallation(lab, inspect = true) {
+  // Validate the descriptor before running the installer-owned removal flow.
+  readLab(join(lab.root, 'lab.json'));
+  return JSON.parse(
+    run(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        join(repository, 'scripts/updates/uninstall-desktop.ps1'),
+        '-LabRoot',
+        lab.root,
+        '-ExecutableName',
+        lab.desktopExecutable ?? 'thelxinoe-desktop.exe',
+        ...(inspect ? ['-Inspect'] : []),
+      ],
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    ),
+  );
+}
 export async function resetLab(lab) {
+  if (lab.desktop && !lab.desktopExecutable)
+    throw Error('Start a new lab to use isolated desktop installers');
   await publisher(lab, '/control', { mode: 'base' });
   if (lab.server) {
     removeContainers(lab, true);
     compose(lab, 'down', '--volumes');
     writeCompose(lab);
     compose(lab, 'up', '-d', '--wait');
+    if (lab.downloadSources) {
+      await refreshDownloads(lab);
+      envelope(lab, lab.next, lab.images[lab.next]);
+    }
   }
   if (lab.desktop) installBase(lab);
   save(join(lab.root, 'lab.json'), lab);
+}
+async function refreshDownloads(lab) {
+  const images = {};
+  for (const part of ['server', 'controller'])
+    images[part] = await downloadFixture(
+      lab,
+      lab.downloadSources[part].reference,
+    );
+  lab.images[lab.next] = images;
 }
 export function serverFailure(lab, enabled) {
   if (!lab.server) throw Error('Validation failure requires the Docker lab');

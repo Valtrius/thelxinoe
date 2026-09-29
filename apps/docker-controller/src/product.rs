@@ -7,6 +7,8 @@ use thelxinoe_releases::{Envelope, Manifest};
 #[derive(Clone, Serialize, Deserialize)]
 struct Update {
     id: String,
+    #[serde(default)]
+    created_at: i64,
     stage: String,
     error: Option<String>,
     manifest: Option<Manifest>,
@@ -25,6 +27,14 @@ struct Update {
     retiring: Option<Deployment>,
     #[serde(default)]
     archive: Option<String>,
+    #[serde(default)]
+    download: Option<Download>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+struct Download {
+    component: String,
+    received: u64,
+    total: Option<u64>,
 }
 fn root() -> PathBuf {
     store::root().join("product-updates")
@@ -40,7 +50,7 @@ fn write(u: &Update) -> Result<()> {
     persisted(store::write_json(&dir(&u.id).join("update.json"), u))
 }
 fn public(u: &Update) -> Value {
-    json!({"id":u.id,"stage":u.stage,"error":u.error,"version":u.manifest.as_ref().map(|m|m.version.as_str()).unwrap_or(&u.old.version),"previous_version":u.old.version,"recovery":"full-state-restore","snapshot_ready":u.snapshot_ready,"recovery_tested":u.recovery_tested,"activation_crossed":u.activation_crossed,"generation":u.generation,"archive":u.archive})
+    json!({"id":u.id,"created_at":u.created_at,"stage":u.stage,"download":u.download,"error":u.error,"version":u.manifest.as_ref().map(|m|m.version.as_str()).unwrap_or(&u.old.version),"previous_version":u.old.version,"recovery":"full-state-restore","snapshot_ready":u.snapshot_ready,"recovery_tested":u.recovery_tested,"activation_crossed":u.activation_crossed,"generation":u.generation,"archive":u.archive})
 }
 fn all() -> Result<Vec<Update>> {
     let mut items = vec![];
@@ -52,6 +62,7 @@ fn all() -> Result<Vec<Update>> {
             }
         }
     }
+    items.sort_by_key(|u| std::cmp::Reverse(u.created_at));
     Ok(items)
 }
 pub(super) fn recovery_stage(key: &str) -> Option<String> {
@@ -67,6 +78,7 @@ pub(super) async fn restore_archive(
 ) -> Result<()> {
     let mut u = Update {
         id: operation,
+        created_at: thelxinoe_core::now(),
         stage: "restoring-release".into(),
         error: None,
         manifest: None,
@@ -82,6 +94,7 @@ pub(super) async fn restore_archive(
         restoring_release: true,
         retiring: Some(current),
         archive: Some(archive),
+        download: None,
     };
     private(&dir(&u.id))?;
     // Capture the authenticated archive state, never the migrated database.
@@ -142,6 +155,7 @@ pub(super) async fn list() -> Result<Json<Value>> {
 #[derive(Deserialize)]
 pub(super) struct Prepare {
     envelope: Envelope,
+    request_id: Option<String>,
 }
 pub(super) async fn preflight(
     State(runtime): State<Runtime>,
@@ -151,6 +165,12 @@ pub(super) async fn preflight(
         .0
         .try_lock_owned()
         .map_err(|_| conflict("Another Docker operation is active"))?;
+    let key = input.request_id.unwrap_or_else(thelxinoe_core::id);
+    id(&key)?;
+    // A server restart or lost response must not create a second operation.
+    if dir(&key).join("update.json").is_file() {
+        return Ok(Json(public(&read(&key)?)));
+    }
     let manifest = thelxinoe_releases::verify(&input.envelope, &trust()?)
         .map_err(|_| bad("Release signature or manifest is invalid"))?;
     let d = bootstrap().await?;
@@ -184,7 +204,8 @@ pub(super) async fn preflight(
         ));
     }
     let mut u = Update {
-        id: thelxinoe_core::id(),
+        id: key,
+        created_at: thelxinoe_core::now(),
         stage: "preparing".into(),
         error: None,
         manifest: Some(manifest),
@@ -200,6 +221,7 @@ pub(super) async fn preflight(
         restoring_release: false,
         retiring: None,
         archive: None,
+        download: None,
     };
     private(&dir(&u.id))?;
     write(&u)?;
@@ -216,17 +238,66 @@ pub(super) async fn preflight(
     });
     Ok(Json(result))
 }
-async fn pull(image: &thelxinoe_releases::Image) -> Result<()> {
+async fn pull(u: &mut Update, component: &str, image: &thelxinoe_releases::Image) -> Result<()> {
+    u.download = Some(Download {
+        component: component.into(),
+        received: 0,
+        total: None,
+    });
+    write(u)?;
     // Cached immutable images also support offline recovery and release fixtures.
     let raw = match engine(&format!("/images/{}/json", image.reference)).await {
         Ok(v) => v,
         Err((StatusCode::NOT_FOUND, _)) => {
-            request(
-                Method::POST,
-                &format!("/images/create?fromImage={}", image.reference),
-                None,
-            )
+            let mut layers = std::collections::BTreeMap::<String, (u64, Option<u64>, bool)>::new();
+            let mut published = std::time::Instant::now();
+            crate::docker::pull_image(&image.reference, |event| {
+                let status = event["status"].as_str().unwrap_or("");
+                if let Some(id) = event["id"].as_str() {
+                    let total = event["progressDetail"]["total"].as_u64().filter(|v| *v > 0);
+                    if layers.contains_key(id)
+                        || total.is_some()
+                        || matches!(status, "Pulling fs layer" | "Waiting" | "Already exists")
+                    {
+                        let layer = layers.entry(id.into()).or_insert((0, None, false));
+                        if matches!(
+                            status,
+                            "Already exists" | "Download complete" | "Pull complete"
+                        ) {
+                            layer.2 = true;
+                            layer.0 = layer.1.unwrap_or(0);
+                        } else if status == "Downloading" {
+                            layer.1 = total.or(layer.1);
+                            layer.0 = event["progressDetail"]["current"]
+                                .as_u64()
+                                .unwrap_or(layer.0)
+                                .min(layer.1.unwrap_or(u64::MAX));
+                        }
+                    }
+                }
+                let total = (!layers.is_empty()
+                    && layers
+                        .values()
+                        .all(|(_, total, done)| total.is_some() || *done))
+                .then(|| {
+                    layers
+                        .values()
+                        .map(|(_, total, _)| total.unwrap_or(0))
+                        .sum()
+                });
+                u.download = Some(Download {
+                    component: component.into(),
+                    received: layers.values().map(|(current, _, _)| *current).sum(),
+                    total,
+                });
+                if published.elapsed() >= Duration::from_secs(1) {
+                    write(u)?;
+                    published = std::time::Instant::now();
+                }
+                Ok(())
+            })
             .await?;
+            write(u)?;
             engine(&format!("/images/{}/json", image.reference)).await?
         }
         Err(e) => return Err(e),
@@ -337,8 +408,8 @@ async fn copy(u: &Update, source: &str, leaf: &str, restore: bool) -> Result<()>
 }
 async fn prepare(u: &mut Update) -> Result<()> {
     let manifest = u.manifest.clone().ok_or_else(unavailable)?;
-    pull(&manifest.server).await?;
-    pull(&manifest.controller).await?;
+    pull(u, "server", &manifest.server).await?;
+    pull(u, "controller", &manifest.controller).await?;
     // Retain old images independently of mutable bootstrap tags.
     for (component, raw) in [("server", &u.old.server), ("controller", &u.old.controller)] {
         let image = immutable(raw)?;
@@ -679,6 +750,8 @@ async fn recover_old(u: &mut Update) -> Result<()> {
     if u.activation_crossed {
         return Err(conflict("Production activation requires explicit recovery"));
     }
+    u.stage = "recovering".into();
+    write(u)?;
     clean_workers(u).await?;
     clean_successors(u, &u.old).await?;
     if u.snapshot_ready {
@@ -1023,7 +1096,7 @@ pub(crate) async fn startup() -> anyhow::Result<()> {
             let activated = async {
                 let key = u.next_server.as_deref().ok_or_else(unavailable)?;
                 updates::start(key).await?;
-                for _ in 0..90 {
+                for _ in 0..180 {
                     let raw = engine(&format!("/containers/{key}/json")).await?;
                     if raw["State"]["Health"]["Status"] == "healthy" {
                         return Ok(());

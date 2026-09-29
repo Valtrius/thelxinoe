@@ -25,6 +25,7 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/api/v1/admin/product-update", get(status))
         .route("/api/v1/admin/product-update/policy", post(policy))
         .route("/api/v1/admin/product-update/check", post(check))
+        .route("/api/v1/admin/product-update/install", post(install))
         .route("/api/v1/admin/product-update/prepare", post(prepare))
         .route("/api/v1/admin/product-update/{id}/{action}", post(action))
         .route("/api/v1/release", get(release))
@@ -87,12 +88,26 @@ async fn eligible(state: &AppState) -> Result<Option<Manifest>> {
 }
 async fn status(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
-    let controller = crate::managers::controller_request(&state, "/product", None)
+    let controller = controller_status(&state)
         .await
         .unwrap_or_else(|_| json!({"items":[],"error":"Controller unavailable"}));
     Ok(Json(
-        json!({"version":thelxinoe_core::VERSION,"timezone":storage::server_zone(&state.db).await?.name(),"policy":configured_policy(&state).await?,"release":eligible(&state).await?,"observation":setting(&state,"product.observation").await?,"configured":configured(),"controller":controller}),
+        json!({"version":thelxinoe_core::VERSION,"timezone":storage::server_zone(&state.db).await?.name(),"policy":configured_policy(&state).await?,"release":eligible(&state).await?,"request":setting(&state,"product.install").await?,"observation":setting(&state,"product.observation").await?,"configured":configured(),"controller":controller}),
     ))
+}
+async fn controller_status(state: &AppState) -> Result<Value> {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        crate::managers::controller_request(state, "/product", None),
+    )
+    .await
+    .map_err(|_| {
+        ApiError(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "controller_unavailable",
+            "Controller did not respond".into(),
+        )
+    })?
 }
 pub(crate) async fn observe(state: &AppState) -> Result<()> {
     let value = crate::managers::controller_request(state, "/product", None).await?;
@@ -187,6 +202,123 @@ async fn check(State(state): State<AppState>, headers: HeaderMap) -> Result<Json
     security::require(&state, &headers, Capability::ManageServer).await?;
     check_release(&state).await?;
     Ok(Json(json!({"checked":true})))
+}
+
+#[derive(Deserialize)]
+struct Install {
+    version: String,
+}
+async fn install(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<Install>,
+) -> Result<Json<Value>> {
+    let p = security::require(&state, &headers, Capability::ManageServer).await?;
+    let _guard = state.release_install.lock().await;
+    if let Some(request) = setting(&state, "product.install").await?
+        && request["state"] == "pending"
+    {
+        let observed = controller_status(&state).await?;
+        let finished = observed["items"].as_array().into_iter().flatten().any(|u| {
+            u["id"] == request["id"]
+                && matches!(
+                    u["stage"].as_str(),
+                    Some("blocked" | "recovered" | "restored" | "committed")
+                )
+        });
+        if !finished {
+            return Ok(Json(request));
+        }
+    }
+    check_release(&state).await?;
+    let release = eligible(&state)
+        .await?
+        .ok_or_else(|| ApiError::conflict("No eligible server release is available"))?;
+    if release.version != input.version {
+        return Err(ApiError::conflict(
+            "The available release changed. Check the version and try again.",
+        ));
+    }
+    let request = json!({"id":thelxinoe_core::id(),"version":release.version,"previous_version":thelxinoe_core::VERSION,"release":release,"state":"pending","error":null});
+    audit(&state, Some(p.user.id), "install", &input.version).await?;
+    save(&state, "product.install", request.clone()).await?;
+    state.emit(None, "product.changed", json!({})).await?;
+    Ok(Json(request))
+}
+
+// The intent lives in server state before the first snapshot. The controller's
+// durable operation ID makes resuming it safe after response loss or rollback.
+async fn advance_install(state: &AppState) -> Result<bool> {
+    let _guard = state.release_install.lock().await;
+    let Some(mut intent) = setting(state, "product.install")
+        .await?
+        .filter(|v| v["state"] == "pending")
+    else {
+        return Ok(false);
+    };
+    let observed = controller_status(state).await?;
+    let operation = observed["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|u| u["id"] == intent["id"]);
+    if let Some(u) = operation {
+        match u["stage"].as_str().unwrap_or("") {
+            "committed" if u["version"] == thelxinoe_core::VERSION => {
+                intent["state"] = json!("completed");
+            }
+            "blocked" | "recovered" | "restored" | "runtime-failure" | "recovery-required" => {
+                intent["state"] = json!("failed");
+                intent["error"] = u["error"].clone();
+            }
+            "ready" => (),
+            _ => return Ok(true),
+        }
+        if intent["state"] != "pending" {
+            save(state, "product.install", intent).await?;
+            state.emit(None, "product.changed", json!({})).await?;
+            return Ok(true);
+        }
+    }
+    // A ready preflight can coexist with new activity after the snapshot restart.
+    // Wait again, then quiesced_command checks idle under the write gate.
+    if storage::idle(&state.db).await?
+        || state
+            .release_quiescing
+            .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return Ok(true);
+    }
+    let result = async {
+        check_release(state).await?;
+        let release = eligible(state).await?.ok_or_else(|| ApiError::conflict("The queued release is no longer available"))?;
+        // Pin the signed identity the user selected, including images and schema.
+        if json!(release) != intent["release"] {
+            return Err(ApiError::conflict("The queued release changed. Review the available version and try again."));
+        }
+        let (path, body) = if let Some(u) = operation {
+            (format!("/product/{}/activate", u["id"].as_str().unwrap_or("")), json!({"confirm":true}))
+        } else {
+            ("/product/preflight".into(), json!({"envelope":setting(state,"product.envelope").await?,"request_id":intent["id"]}))
+        };
+        quiesced_command(state, &path, Some(body)).await?;
+        Ok::<_, ApiError>(())
+    }.await;
+    if let Err(e) = result {
+        // Contention and a lost controller response are retryable with the same ID.
+        // Discovery errors are definitive and require another explicit click.
+        if e.2.starts_with("Wait for")
+            || e.2.contains("Another Docker operation is active")
+            || e.0 == axum::http::StatusCode::SERVICE_UNAVAILABLE
+        {
+            return Ok(true);
+        }
+        intent["state"] = json!("failed");
+        intent["error"] = json!(e.2);
+        save(state, "product.install", intent).await?;
+        state.emit(None, "product.changed", json!({})).await?;
+    }
+    Ok(true)
 }
 async fn idle(state: &AppState) -> Result<()> {
     let busy = storage::idle(&state.db).await?;
@@ -338,10 +470,13 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
         {
             tracing::warn!(code = e.1, "Product update check did not complete");
         }
-        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 }
 async fn tick(state: &AppState) -> Result<()> {
+    if advance_install(state).await? {
+        return Ok(());
+    }
     let p = configured_policy(state).await?;
     let next_check = setting(state, "product.observation")
         .await?

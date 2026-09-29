@@ -3,6 +3,7 @@
   import { formControlClass } from './ui/styles';
   import { onMount } from 'svelte';
   import { api } from './api';
+  import { isServerUpdateInterruption } from './server-updates';
   import Button from './ui/Button.svelte';
 
   let {
@@ -19,6 +20,8 @@
   let zones = $state<string[]>([]),
     loading = $state(true),
     error = $state('');
+  let retry: ReturnType<typeof setTimeout>;
+  let active = true;
 
   async function load() {
     loading = true;
@@ -26,12 +29,21 @@
     try {
       zones = (await api<{ timezones: string[] }>('/timezones')).timezones;
     } catch (e) {
-      error = String(e);
+      if (!active) return;
+      if (isServerUpdateInterruption(e))
+        retry = setTimeout(() => void load(), 3000);
+      else error = String(e);
     } finally {
       loading = false;
     }
   }
-  onMount(() => void load());
+  onMount(() => {
+    void load();
+    return () => {
+      active = false;
+      clearTimeout(retry);
+    };
+  });
 </script>
 
 <FormField>

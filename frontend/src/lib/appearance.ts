@@ -1,6 +1,7 @@
 import type { YoutubeCardShortcut } from './providers/types';
 import { get, writable } from 'svelte/store';
 import { api } from './api';
+import { isServerUpdateInterruption } from './server-updates';
 export type Theme = 'light' | 'system' | 'dark';
 export type Appearance = {
   provider_preferences: Record<string, string>;
@@ -82,7 +83,8 @@ export async function loadAppearance(userId: string) {
       acceptAppearance(value);
       appearanceError.set('');
     }
-  } catch {
+  } catch (error) {
+    if (isServerUpdateInterruption(error)) return;
     if (current === generation) {
       appearance.set({ ...defaults, theme: get(appearance).theme });
       appearanceError.set('Appearance preferences could not be loaded.');
@@ -103,7 +105,8 @@ export async function refreshAppearance(userId: string) {
       acceptAppearance(value);
       appearanceError.set('');
     }
-  } catch {
+  } catch (error) {
+    if (isServerUpdateInterruption(error)) return;
     if (current === generation && owner === userId)
       appearanceError.set('Appearance preferences could not be loaded.');
   }

@@ -8,13 +8,19 @@ Server **Notify** discovers releases and adds an administrator notification that
 opens Settings → Server. **Automatic** also prepares and installs during the
 configured idle maintenance window. Preparation tests copied state and recovery;
 installation replaces both containers. Failed activation restores the snapshot.
-An open web client reconnects and offers to reload its bundle after an upgrade.
+Click the icon beside **Product version** once to queue the full server update.
+It waits for playback and background work, prepares, installs and reconnects;
+closing Settings or restarting the server does not cancel it. Hover or focus the
+icon for its current step. Idle web tabs reload automatically after acceptance.
+Update preferences sit below the version cards. **Rollback** on the version card
+opens snapshot recovery.
 Restoring a snapshot also resets the event connection and refreshes client state.
 
 Desktop checks the publisher directly, including before login or while the server
-is unavailable. **Automatic** downloads and verifies the installer. **Restart and
-install** is explicit and requires playback to stop. A reachable incompatible
-server blocks installation. Downloads are held for the current desktop session.
+is unavailable. In Settings → Desktop, the quiet version icon checks for updates;
+the available-update arrow downloads and installs. **Automatic** does this after
+login. Restart waits for playback to stop. A reachable incompatible server blocks
+installation. Downloads are held for the current desktop session.
 See [server policy](../apps/server/src/product.rs),
 [controller recovery](../apps/docker-controller/src/product.rs) and
 [desktop updater](../apps/desktop/src/updates.rs).
@@ -35,8 +41,9 @@ npm run updates:lab -- start --desktop-only
 ```
 
 The command prints the publisher URL, server URL and `lab.json` path. The Windows
-lab opens a separately named desktop with its own installation, keyring identity
-and WebView profile. It starts at the repository version and offers the next patch
+lab opens a separately named desktop with its own executable, installation,
+keyring identity and WebView profile. Concurrent lab builds wait for each other's
+Windows packaging step. It starts at the repository version and offers the next patch
 version. Test keys, source copies and artifacts stay under `.local/<lab-id>`.
 Production sources, trust keys and product version are not changed by the lab.
 
@@ -46,19 +53,23 @@ Production sources, trust keys and product version are not changed by the lab.
    disposable local certificate; the lab apps trust its generated CA explicitly.
    Select **candidate** and apply. Alternatively:
    `npm run updates:lab -- candidate "<lab.json>"`.
-3. In either web or desktop, open Settings → Server → **Check server release**.
-   Follow the notification's **Open server updates** action. Use **Prepare and
-   test release**, then **Install prepared release**. Keep both clients open to
-   review progress, reconnection and the web reload notice.
-4. In the desktop notice, choose **View desktop update**, then **Download desktop
-   update** and **Restart and install desktop update**. Check the displayed version
-   and retained login after the installer relaunches it.
+3. In either web or desktop, open Settings → Server. The quiet icon beside
+   **Product version** checks for a release; once available it becomes an animated
+   arrow. The notification's **View server version** action opens this screen.
+   Click the arrow once and keep both clients open to review progress and reconnect.
+   Repeat after a lab reset from the other client. Start playback before clicking
+   to review the queued state, then stop playback and let the update continue.
+4. In Settings → Desktop, use the quiet icon beside **Desktop version** to check,
+   then click the available-update arrow. Check the version, retained login and
+   window position after the installer relaunches it.
 5. Publisher choices also exercise unavailable/expired/forged feeds and mismatched
    metadata/corrupted installers. Use **Check** after changing the publisher.
+   Choose **slow-download** to inspect server and desktop download progress.
+   Reset regenerates uncached server layers so the next run downloads again.
    Review playback gating with actual playback in the lab if relevant to UI work.
 
-To review server recovery, first prepare a release, then run
-`npm run updates:lab -- fail-validation "<lab.json>"` before installing it.
+To review server recovery, run
+`npm run updates:lab -- fail-validation "<lab.json>"` before clicking the update icon.
 The candidate deliberately fails validation and the controller restores the
 snapshot. Run `npm run updates:lab -- clear-failure "<lab.json>"` before retrying.
 
@@ -69,9 +80,9 @@ npm run updates:lab -- stop "<lab.json>"
 
 Reset recreates the Docker baseline and reinstalls the base desktop. Complete
 server setup again after a Docker reset. In desktop-only mode it keeps the native
-server data. Stop terminates lab processes and removes its Docker containers and
-volumes; bind-mounted state, build artifacts and the isolated Windows
-installation/profile are kept. Each Docker reset uses a new state directory.
+server data. Stop uninstalls that lab's Windows app, terminates lab processes and
+removes its Docker containers and volumes; bind-mounted state, build artifacts
+and the isolated Windows profile are kept. Each Docker reset uses a new state directory.
 The lab publisher listens on the host so Docker can reach it; its control endpoint
 accepts loopback requests only. No private signing key is mounted in containers.
 

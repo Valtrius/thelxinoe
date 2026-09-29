@@ -15,8 +15,7 @@
   ];
   const native = [
     ['mpv', 'MPV'],
-    ['connection', 'Connection'],
-    ['updates', 'Desktop updates'],
+    ['connection', 'Desktop'],
   ];
   const admin = [
     ['server', 'Server'],

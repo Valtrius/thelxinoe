@@ -74,9 +74,6 @@ export async function desktopLaunch(fixture, output, kinds = ['radarr']) {
       .toBe(true);
     page = browser.contexts()[0].pages()[0];
     await page.getByLabel('Server address').fill(fixture.base);
-    await page
-      .getByRole('button', { name: 'Connect to server', exact: true })
-      .click();
     await page.getByLabel('Username', { exact: true }).fill('admin');
     await page
       .getByLabel('Password', { exact: true })

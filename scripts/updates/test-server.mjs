@@ -111,23 +111,29 @@ export async function serverScenarios({
         .getByRole('button', { name: 'Notifications', exact: true })
         .click();
       await page
-        .getByRole('button', { name: 'Open server updates', exact: true })
+        .getByRole('button', { name: 'View server version', exact: true })
         .first()
         .click();
       await expect(
-        page.getByRole('region', { name: 'Product updates' }),
-      ).toContainText(`Version ${lab.next}`);
+        page.getByRole('button', {
+          name: `Update server to ${lab.next}`,
+          exact: true,
+        }),
+      ).toBeVisible();
       if (native) {
         await native.page
           .getByRole('button', { name: 'Notifications', exact: true })
           .click();
         await native.page
-          .getByRole('button', { name: 'Open server updates', exact: true })
+          .getByRole('button', { name: 'View server version', exact: true })
           .first()
           .click();
         await expect(
-          native.page.getByRole('region', { name: 'Product updates' }),
-        ).toContainText(`Version ${lab.next}`);
+          native.page.getByRole('button', {
+            name: `Update server to ${lab.next}`,
+            exact: true,
+          }),
+        ).toBeVisible();
       }
       await page.screenshot({ path: join(output, 'server-notice.png') });
     },
@@ -151,9 +157,9 @@ export async function serverScenarios({
         expect(
           (
             await request(
-              '/admin/product-update/prepare',
+              '/admin/product-update/install',
               'POST',
-              {},
+              { version: lab.next },
               ordinary.request,
             )
           ).status(),
@@ -170,16 +176,153 @@ export async function serverScenarios({
   );
   await api('/admin/settings', 'PUT', { timezone: 'Europe/Paris' });
   await scenario(
-    'Failed live validation restores state and open clients reconnect',
+    'One web click waits for playback, survives restart, and recovers failed validation',
     async () => {
-      const update = await ready();
+      await mode('slow-download');
+      // Remove only this lab's candidate references so preparation must stream
+      // real pulls from its registry instead of taking the local-image shortcut.
+      for (const part of ['server', 'controller']) {
+        try {
+          docker(
+            'image',
+            'rm',
+            `localhost:${lab.registryPort}/${lab.id}/${part}:${lab.next}`,
+          );
+        } catch {
+          /* A retained lab may have only the digest reference. */
+        }
+        try {
+          docker('image', 'rm', lab.images[lab.next][part].reference);
+        } catch {
+          /* Removing the only tag may already have removed the digest. */
+        }
+        expect(() =>
+          docker('image', 'inspect', lab.images[lab.next][part].reference),
+        ).toThrow();
+      }
+      // Real direct-play session: the queue must wait without holding up playback.
+      docker(
+        'exec',
+        component('server'),
+        'ffmpeg',
+        '-v',
+        'error',
+        '-f',
+        'lavfi',
+        '-i',
+        'color=c=black:s=160x90:r=1',
+        '-t',
+        '4',
+        '-c:v',
+        'libx264',
+        '-pix_fmt',
+        'yuv420p',
+        '-y',
+        '/media/Update Lab.mp4',
+      );
+      const root = await api('/catalog/roots', 'POST', {
+        name: 'Update lab',
+        kind: 'movies',
+        path: '/media',
+      });
+      const scan = await api(`/catalog/roots/${root.id}/scan`, 'POST');
+      await until(
+        async () =>
+          (await api('/admin/jobs')).items.find((job) => job.id === scan.job_id)
+            ?.state === 'complete',
+      );
+      const media = (await api('/catalog?kind=movie')).items[0];
+      const playback = await api('/playback', 'POST', {
+        media_id: media.id,
+        position: 0,
+        options: {
+          quality: 'auto',
+          audio: null,
+          subtitle: null,
+          capabilities: {
+            containers: ['mp4'],
+            video: ['h264'],
+            audio: ['aac'],
+            hls: true,
+          },
+        },
+      });
+      expect(
+        (
+          await request('/admin/product-update/install', 'POST', {
+            version: '99.0.0',
+          })
+        ).status(),
+      ).toBe(409);
       const epoch = (await api('/auth/event-ticket', 'POST')).epoch;
       marker(
         'fail-live-validation',
         "p.write_text('fail after state mutation')",
       );
-      await activate(update);
-      await stage(update.id, 'recovered');
+      await page
+        .getByRole('button', {
+          name: `Update server to ${lab.next}`,
+          exact: true,
+        })
+        .click();
+      await expect(
+        page.getByRole('button', {
+          name: 'Waiting for the server to be idle',
+          exact: true,
+        }),
+      ).toBeVisible();
+      const update = (await state()).request;
+      const duplicate = await api('/admin/product-update/install', 'POST', {
+        version: lab.next,
+      });
+      expect(duplicate.id).toBe(update.id);
+      // More than one coordinator tick must pass with no controller operation.
+      const untilTime = Date.now() + 11000;
+      await until(async () => {
+        if (
+          (await state()).controller.items.some((item) => item.id === update.id)
+        )
+          throw Object.assign(Error('Update started during playback'), {
+            fatal: true,
+          });
+        return Date.now() >= untilTime;
+      });
+      await page
+        .getByRole('navigation', { name: 'Settings navigation' })
+        .getByRole('button', { name: 'Account', exact: true })
+        .click();
+      await api(`/playback/${playback.id}/progress`, 'POST', {
+        sequence: 0,
+        position: 0,
+        state: 'stopped',
+      });
+      docker('restart', component('server'));
+      await until(async () => (await state()).request?.id === update.id);
+      await page
+        .getByRole('navigation', { name: 'Settings navigation' })
+        .getByRole('button', { name: 'Server', exact: true })
+        .click();
+      const progress = page
+        .getByLabel('Product version', { exact: true })
+        .getByRole('progressbar');
+      await expect
+        .poll(
+          async () =>
+            Number(
+              await progress.getAttribute('aria-valuenow', { timeout: 15000 }),
+            ),
+          { timeout: 45000 },
+        )
+        .toBeGreaterThan(0);
+      expect(Number(await progress.getAttribute('aria-valuenow'))).toBeLessThan(
+        100,
+      );
+      await page.screenshot({ path: join(output, 'server-downloading.png') });
+      const recovered = await stage(update.id, 'recovered');
+      expect(recovered.download.component).toBe('controller');
+      expect(recovered.download.received).toBeGreaterThan(0);
+      expect(recovered.download.received).toBe(recovered.download.total);
+      await mode('candidate');
       expect((await api('/health')).version).toBe(lab.base);
       expect((await api('/admin/diagnostics')).database_ok).toBe(true);
       expect((await api('/admin/settings')).timezone).toBe('Europe/Paris');
@@ -187,9 +330,16 @@ export async function serverScenarios({
         'False',
       );
       expect((await api('/auth/event-ticket', 'POST')).epoch).not.toBe(epoch);
+      await page
+        .getByRole('navigation', { name: 'Settings navigation' })
+        .getByRole('button', { name: 'Server', exact: true })
+        .click();
       await expect(
-        page.getByRole('region', { name: 'Product updates' }),
-      ).toContainText('recovered', { timeout: 45000 });
+        page.getByRole('button', { name: 'Retry server update', exact: true }),
+      ).toBeVisible({ timeout: 45000 });
+      await expect(
+        page.getByLabel('Product version', { exact: true }).locator('strong'),
+      ).toHaveText(lab.base);
       marker('fail-live-validation', 'p.unlink(missing_ok=True)');
     },
   );
@@ -238,31 +388,20 @@ export async function serverScenarios({
   await scenario(
     'UI installs both server and controller and preserves sessions and preferences',
     async () => {
-      const region = page.getByRole('region', { name: 'Product updates' });
-      await region
-        .getByRole('button', { name: 'Prepare and test release', exact: true })
-        .click();
-      await expect(
-        region.getByRole('button', {
-          name: 'Install prepared release',
-          exact: true,
-        }),
-      ).toBeVisible({ timeout: 300000 });
-      const update = (await state()).controller.items.find(
-        (u) => u.stage === 'ready',
-      );
-      const client = native
-        ? native.page.getByRole('region', { name: 'Product updates' })
-        : region;
-      await expect(
-        client.getByRole('button', {
-          name: 'Install prepared release',
-          exact: true,
-        }),
-      ).toBeVisible({ timeout: 30000 });
+      let webReloads = 0;
+      const navigated = (frame) => {
+        if (frame === page.mainFrame()) webReloads++;
+      };
+      page.on('framenavigated', navigated);
+      const previous = (await state()).request?.id;
+      const client = native?.page ?? page;
       await client
-        .getByRole('button', { name: 'Install prepared release', exact: true })
+        .getByRole('button', { name: 'Retry server update', exact: true })
         .click();
+      const update = await until(async () => {
+        const intent = (await state()).request;
+        return intent?.id !== previous && intent;
+      });
       await stage(update.id, 'committed');
       expect((await api('/health')).version).toBe(lab.next);
       expect(controller('/health').version).toBe(lab.next);
@@ -283,13 +422,21 @@ export async function serverScenarios({
             })
           ).status,
         ).toBe(200);
+      if (native) {
+        await expect(
+          native.page
+            .getByLabel('Product version', { exact: true })
+            .locator('strong'),
+        ).toHaveText(lab.next, { timeout: 45000 });
+      }
+      await expect
+        .poll(() => webReloads, { timeout: 45000 })
+        .toBeGreaterThan(0);
+      page.off('framenavigated', navigated);
       await expect(
-        page.getByRole('button', { name: 'Reload web app', exact: true }),
-      ).toBeVisible({ timeout: 45000 });
+        page.getByLabel('Product version', { exact: true }).locator('strong'),
+      ).toHaveText(lab.next, { timeout: 45000 });
       await page.screenshot({ path: join(output, 'server-committed.png') });
-      await page
-        .getByRole('button', { name: 'Reload web app', exact: true })
-        .click();
       await expect(
         page.getByRole('button', { name: 'Settings', exact: true }),
       ).toBeVisible();
@@ -380,9 +527,16 @@ export async function serverScenarios({
           exact: true,
         }),
       ).toHaveValue('Asia/Tokyo', { timeout: 45000 });
-      await api(`/admin/product-update/${lab.committed}/recover`, 'POST', {
-        confirm: true,
-      });
+      await page
+        .getByLabel('Product version', { exact: true })
+        .getByRole('button', { name: 'Rollback', exact: true })
+        .click();
+      const restore = page.getByRole('dialog');
+      await expect(restore).toContainText(`Rollback to ${lab.base}`);
+      await restore.getByLabel('Type RESTORE to continue').fill('RESTORE');
+      await restore
+        .getByRole('button', { name: `Restore ${lab.base}`, exact: true })
+        .click();
       await stage(lab.committed, 'restored');
       expect((await api('/health')).version).toBe(lab.base);
       expect(controller('/health').version).toBe(lab.base);

@@ -76,9 +76,12 @@
   import TimezoneSelect from './lib/TimezoneSelect.svelte';
   import AdminOperations from './lib/AdminOperations.svelte';
   import BackupSettings from './lib/BackupSettings.svelte';
-  import ProductUpdates from './lib/ProductUpdates.svelte';
-  import DesktopUpdates from './lib/DesktopUpdates.svelte';
-  import ClientUpdateNotice from './lib/ClientUpdateNotice.svelte';
+  import ProductVersion from './lib/ProductVersion.svelte';
+  import { isServerUpdateInterruption } from './lib/server-updates';
+  import ProductUpdatePreferences from './lib/ProductUpdatePreferences.svelte';
+  import DesktopVersion from './lib/DesktopVersion.svelte';
+  import DesktopUpdatePreferences from './lib/DesktopUpdatePreferences.svelte';
+  import WebUpdateReload from './lib/WebUpdateReload.svelte';
   import { connectDesktopUpdates } from './lib/desktop-updates';
   import UserAdministration from './lib/UserAdministration.svelte';
   import Player from './lib/Player.svelte';
@@ -209,6 +212,8 @@
         settingsSection = saved.settingsSection;
       if (settingsSection === 'library') settingsSection = 'services';
       if (settingsSection === 'server-updates') settingsSection = 'server';
+      if (desktop && settingsSection === 'updates')
+        settingsSection = 'connection';
       if (!desktop && ['mpv', 'connection'].includes(settingsSection))
         settingsSection = 'account';
       if (!desktop && settingsSection === 'updates')
@@ -257,26 +262,30 @@
       busy = false;
     }
   }
+  async function checkServer() {
+    updateRequired = '';
+    const contract = await api<{
+      api_version: number;
+      api_min?: number;
+      api_max?: number;
+    }>('/health');
+    if (
+      !Number.isInteger(contract.api_version) ||
+      (contract.api_min ?? contract.api_version) > 1 ||
+      (contract.api_max ?? contract.api_version) < 1
+    ) {
+      updateRequired =
+        'This client cannot use the server’s API version. Update the client or connect to a compatible server.';
+      return false;
+    }
+    setup = (await api<{ setup_required: boolean }>('/setup')).setup_required;
+    return true;
+  }
   async function boot() {
     try {
       await initializeTransport();
       serverAddress = serverUrl();
-      updateRequired = '';
-      const contract = await api<{
-        api_version: number;
-        api_min?: number;
-        api_max?: number;
-      }>('/health');
-      if (
-        !Number.isInteger(contract.api_version) ||
-        (contract.api_min ?? contract.api_version) > 1 ||
-        (contract.api_max ?? contract.api_version) < 1
-      ) {
-        updateRequired =
-          'This client cannot use the server’s API version. Update the client or connect to a compatible server.';
-        return;
-      }
-      setup = (await api<{ setup_required: boolean }>('/setup')).setup_required;
+      if (!(await checkServer())) return;
       if (!setup) {
         try {
           user = (await api<{ user: User }>('/auth/me')).user;
@@ -413,11 +422,18 @@
     events.connect();
   }
   async function authenticate() {
-    if (setup && password !== passwordConfirmation) {
-      error = 'Passwords do not match.';
-      return;
-    }
     await act(async () => {
+      if (desktop) {
+        await changeServer(serverAddress);
+        serverAddress = serverUrl();
+      }
+      if (!(await checkServer())) return;
+      if (setup && password !== passwordConfirmation) {
+        error = passwordConfirmation
+          ? 'Passwords do not match.'
+          : 'Confirm your password to create the administrator account.';
+        return;
+      }
       user = (
         await api<{ user: User }>(setup ? '/setup' : '/auth/login', 'POST', {
           username,
@@ -455,24 +471,26 @@
     if (settingsLoading) return;
     settingsLoading = true;
     try {
-      await act(async () => {
-        const result = await api<{ items: Session[]; current: string }>(
-          '/auth/sessions',
-        );
-        sessions = result.items;
-        currentSession = result.current;
-        if (user?.role === 'admin') {
-          users = (await api<{ items: User[] }>('/users')).items;
-          jobs = (await api<{ items: Job[] }>('/admin/jobs')).items;
-          health = await api('/admin/health');
-          const settings = await api<{
-            timezone: string;
-            time_format: '12h' | '24h';
-          }>('/admin/settings');
-          timezone = settings.timezone;
-          serverTimeFormat = settings.time_format;
-        }
-      });
+      error = '';
+      const result = await api<{ items: Session[]; current: string }>(
+        '/auth/sessions',
+      );
+      sessions = result.items;
+      currentSession = result.current;
+      if (user?.role === 'admin') {
+        users = (await api<{ items: User[] }>('/users')).items;
+        jobs = (await api<{ items: Job[] }>('/admin/jobs')).items;
+        health = await api('/admin/health');
+        const settings = await api<{
+          timezone: string;
+          time_format: '12h' | '24h';
+        }>('/admin/settings');
+        timezone = settings.timezone;
+        serverTimeFormat = settings.time_format;
+      }
+    } catch (e) {
+      if (!isServerUpdateInterruption(e))
+        error = e instanceof Error ? e.message : String(e);
     } finally {
       settingsLoading = false;
     }
@@ -600,7 +618,7 @@
 <svelte:document onclick={playYoutubeLink} />
 
 {#if desktop}<WindowTitlebar />{/if}
-<ClientUpdateNotice playing={Boolean(playing)} />
+<WebUpdateReload playing={Boolean(playing)} admin={user?.role === 'admin'} />
 {#if loading}
   <AuthLayout card={false}>
     <img
@@ -616,7 +634,8 @@
   <AuthLayout>
     <h1>Update required</h1>
     <p>{updateRequired}</p>
-    {#if desktop}<DesktopUpdates /><FormField
+    {#if desktop}<div class={statsClass}><DesktopVersion /></div>
+      <FormField
         >Server address<input
           class={formControlClass}
           bind:value={serverAddress}
@@ -647,38 +666,25 @@
       height="42"
     />
     <h1>{setup ? 'Welcome to Thelxinoe' : 'Welcome back'}</h1>
-    {#if desktop}<details class="w-full">
-        <summary class="cursor-pointer text-sm text-muted"
-          >Desktop updates</summary
-        ><DesktopUpdates />
-      </details>{/if}
     <p class="text-muted">
       {setup
         ? 'Create the administrator account for your media server.'
         : 'Sign in to pick up where you left off.'}
     </p>
-    {#if desktop}<FormField
-        >Server address<input
-          class={formControlClass}
-          bind:value={serverAddress}
-          placeholder="https://media.example.com"
-        /></FormField
-      ><Button
-        size="form"
-        variant="secondary"
-        type="button"
-        onclick={() =>
-          act(async () => {
-            await changeServer(serverAddress);
-            await boot();
-          })}>Connect to server</Button
-      >{/if}
     <form
       onsubmit={(event) => {
         event.preventDefault();
         void authenticate();
       }}
     >
+      {#if desktop}<FormField
+          >Server address<input
+            class={formControlClass}
+            bind:value={serverAddress}
+            placeholder="https://media.example.com"
+            required
+          /></FormField
+        >{/if}
       <FormField
         >Username<input
           {@attach (element) => element.focus()}
@@ -851,10 +857,10 @@
                 username={user.username}
               />{/if}
             {#if desktop && settingsSection === 'mpv'}<MpvSettings />{/if}
-            {#if desktop && settingsSection === 'updates'}<DesktopUpdates
-              />{/if}
             {#if desktop && settingsSection === 'connection'}<Panel>
-                <h2>Server connection</h2>
+                <h2>Desktop</h2>
+                <div class={statsClass}><DesktopVersion /></div>
+                <DesktopUpdatePreferences />
                 <form
                   class={inlineFormClass}
                   onsubmit={(e) => {
@@ -933,13 +939,16 @@
                   {timeFormat}
                 />{/if}
               {#if settingsSection === 'server'}<Panel>
-                  <h2><ShieldCheck size={20} /> Server</h2>
-                  <div class={statsClass}>
-                    <div>
-                      <strong>{health?.version ?? '—'}</strong><small
-                        >Product version</small
-                      >
-                    </div>
+                  <div class="flex items-center justify-between gap-3">
+                    <h2><ShieldCheck size={20} /> Server</h2>
+                  </div>
+                  <div
+                    class={[
+                      statsClass,
+                      'grid-cols-[repeat(auto-fit,minmax(min(100%,250px),1fr))]!',
+                    ]}
+                  >
+                    <ProductVersion installed={health?.version ?? '—'} />
                     <div>
                       <strong
                         >{health?.controller
@@ -955,6 +964,7 @@
                       ><small>Cache space available</small>
                     </div>
                   </div>
+                  <ProductUpdatePreferences />
                   <AutoSaveForm
                     label="Server display defaults"
                     class={inlineFormClass}
@@ -983,7 +993,6 @@
                       ></FormField
                     >
                   </AutoSaveForm>
-                  <ProductUpdates {timeFormat} />
                 </Panel>
                 <AdminOperations {timezone} {timeFormat} />
               {/if}

@@ -2,7 +2,7 @@
 
 `npm run updates:lab -- start` leaves an isolated installation running for manual
 review. `npm run test:updates` uses the same publisher, keys and builds, then
-removes its containers. See [commands](../docs/UPDATES.md).
+removes its containers and uninstalls its Windows app. See [commands](../docs/UPDATES.md).
 
 The automated scenarios must catch these failures through actual processes:
 
@@ -12,10 +12,38 @@ The automated scenarios must catch these failures through actual processes:
   gets update controls, or restored event IDs leave an open client stale.
 - Preparation damages running state; activation loses settings/credentials;
   server and controller run different versions; accepted Compose pins are lost.
+- One click requires another confirmation, queues a different release, starts
+  during playback, duplicates an operation on retry, or loses its intent when
+  Settings closes or the server restarts between preparation and activation.
+- The version icon reports success before acceptance, hides a failed check,
+  treats a disconnect as an install failure, or reinstalls/restores state when
+  the user only asks to check the connection. Keyboard and reduced-motion users
+  must be able to inspect the same state without a shifting version label.
+- A controller handoff bypasses the two-minute reconnect grace period, pointer
+  clicks leave tooltips stuck open, or download rings invent progress instead
+  of using Docker layer bytes / signed installer bytes.
+- A desktop check starts downloading without a second click, or updater exit
+  loses the current window position, size or maximized state.
+- Cached lab layers hide server download progress; slow-download must exercise
+  actual registry transfers and show a partial orbit before installation.
+- Lab stop leaves its Windows uninstall entry behind, fails when repeated, or
+  removes another lab's installation or the normal desktop app.
+- A lab installer kills another desktop by executable name, or concurrent lab
+  builds package each other's binary or installer. Keep an unrelated process
+  with the production executable name alive through installation and cleanup.
+- Update status changes move the settings below the version card, or expected
+  maintenance responses insert page-wide errors during preparation/reconnect.
+- Desktop one-click updates lose their intent after navigation, restart during
+  playback, install a changed or corrupt candidate, or run automatic installs
+  before sign-in. The login page must expose updates only for incompatibility.
+- Sign-in sends credentials to the previous server, skips the newly entered
+  server's compatibility/setup check, or requires a separate connection click.
+- Web clients require a second reload click, retain newer assets after rollback,
+  or reload during playback after an accepted server update.
 - Candidate validation fails after modifying copied/live state, or the controller
   is interrupted, and the original state cannot recover with cached images.
 - A desktop needs its server to discover updates, downloads the wrong bytes,
-  accepts corrupt signatures/metadata, installs without the restart action, or loses its
+  accepts corrupt signatures/metadata, restarts during playback, or loses its
   login/configuration across the real Windows installer and relaunch.
 
 Server tests use disposable Docker deployments and the production HTTP/UI paths.
@@ -26,5 +54,5 @@ desktop placeholder; the separate Windows lane qualifies actual NSIS artifacts.
 
 Keep results, screenshots, sanitized operation states and browser traces under
 `test-results/updates`. The fixtures contain only generated test accounts.
-Assertions verify outcomes and recovery, not timing, UI geometry or implementation
+Assertions verify outcomes and recovery, not timing, pixel layout or implementation
 structure. Manual review covers wording, transitions and visual details.

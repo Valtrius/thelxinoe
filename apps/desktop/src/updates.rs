@@ -3,11 +3,12 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
+use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 use thelxinoe_releases::Manifest;
 
 #[derive(Default)]
 pub struct Runtime {
-    operation: tokio::sync::Mutex<()>,
+    operation: std::sync::Arc<tokio::sync::Mutex<()>>,
     status: std::sync::Mutex<Value>,
     prepared: tokio::sync::Mutex<Option<Prepared>>,
 }
@@ -125,10 +126,7 @@ pub async fn desktop_update_check(app: tauri::AppHandle) -> Result<Value, String
         }
     }
 }
-async fn download(app: &tauri::AppHandle) -> Result<(), String> {
-    let release = candidate(app)
-        .await?
-        .ok_or("No newer signed desktop release is available")?;
+async fn download(app: &tauri::AppHandle, release: Manifest) -> Result<(), String> {
     let endpoint = thelxinoe_releases::https(&release.windows_x64.url)
         .and_then(|url| Ok(url.join("windows-x64.json")?))
         .map_err(|_| "Invalid desktop release endpoint")?;
@@ -137,7 +135,7 @@ async fn download(app: &tauri::AppHandle) -> Result<(), String> {
         .pubkey(&release.windows_x64.updater_public_key)
         .endpoints(vec![endpoint])
         .map_err(|_| "Invalid desktop release endpoint")?
-        .timeout(std::time::Duration::from_secs(60));
+        .timeout(std::time::Duration::from_secs(1800));
     let certificate = CA
         .map(|pem| reqwest::Certificate::from_pem(pem.as_bytes()))
         .transpose()
@@ -208,7 +206,14 @@ pub async fn desktop_update_download(app: tauri::AppHandle) -> Result<Value, Str
         &app,
         json!({"phase":"downloading","error":null,"received":0,"total":0}),
     );
-    finish(&app, download(&app).await, "ready")
+    let result = async {
+        let release = candidate(&app)
+            .await?
+            .ok_or("No newer signed desktop release is available")?;
+        download(&app, release).await
+    }
+    .await;
+    finish(&app, result, "ready")
 }
 #[tauri::command]
 pub async fn desktop_update_install(app: tauri::AppHandle) -> Result<Value, String> {
@@ -217,17 +222,29 @@ pub async fn desktop_update_install(app: tauri::AppHandle) -> Result<Value, Stri
         .operation
         .try_lock()
         .map_err(|_| "A desktop update operation is running")?;
+    install(&app).await
+}
+async fn playback_active(app: &tauri::AppHandle) -> bool {
+    #[cfg(windows)]
+    return !matches!(
+        app.state::<crate::mpv::DesktopPlayback>()
+            .player
+            .view()
+            .await
+            .status
+            .as_str(),
+        "stopped" | "ended" | "error" | "failed" | ""
+    );
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        false
+    }
+}
+async fn install(app: &tauri::AppHandle) -> Result<Value, String> {
+    let runtime = app.state::<Runtime>();
     let result = async {
-        #[cfg(windows)]
-        if !matches!(
-            app.state::<crate::mpv::DesktopPlayback>()
-                .player
-                .view()
-                .await
-                .status
-                .as_str(),
-            "stopped" | "ended" | "error" | "failed" | ""
-        ) {
+        if playback_active(app).await {
             return Err("Stop desktop playback before restarting to install the update".into());
         }
         let mut prepared = runtime.prepared.lock().await;
@@ -238,8 +255,11 @@ pub async fn desktop_update_install(app: tauri::AppHandle) -> Result<Value, Stri
             .release
             .valid_at(thelxinoe_core::now())
             .map_err(|e| e.to_string())?;
-        compatibility(&app, &pending.release).await?;
-        change(&app, json!({"phase":"installing","error":null}));
+        compatibility(app, &pending.release).await?;
+        // The Windows installer exits the process without the normal close event.
+        app.save_window_state(StateFlags::POSITION | StateFlags::SIZE | StateFlags::MAXIMIZED)
+            .map_err(|_| "Could not save desktop window state before restarting")?;
+        change(app, json!({"phase":"installing","error":null}));
         let pending = prepared.take().ok_or("Desktop download is unavailable")?;
         pending
             .update
@@ -253,12 +273,75 @@ pub async fn desktop_update_install(app: tauri::AppHandle) -> Result<Value, Stri
         "idle"
     };
     match result {
-        Ok(()) => Ok(change(&app, json!({"phase":"installing"}))),
+        Ok(()) => Ok(change(app, json!({"phase":"installing"}))),
         Err(error) => {
-            change(&app, json!({"phase":phase,"error":error}));
+            change(app, json!({"phase":phase,"error":error}));
             Err(error)
         }
     }
+}
+#[tauri::command]
+pub async fn desktop_update_apply(
+    app: tauri::AppHandle,
+    version: Option<String>,
+) -> Result<Value, String> {
+    let guard = app
+        .state::<Runtime>()
+        .operation
+        .clone()
+        .try_lock_owned()
+        .map_err(|_| "A desktop update operation is running")?;
+    let status = change(&app, json!({"phase":"checking","error":null}));
+    // Keep the accepted operation alive when settings closes or the webview reloads.
+    tauri::async_runtime::spawn(async move {
+        let _guard = guard;
+        let result = apply(&app, version).await;
+        if let Err(error) = result {
+            let _ = finish(&app, Err(error), "idle");
+        }
+    });
+    Ok(status)
+}
+async fn apply(app: &tauri::AppHandle, expected: Option<String>) -> Result<(), String> {
+    let release = candidate(app).await?;
+    change(app, json!({"checked_at":thelxinoe_core::now()}));
+    let Some(release) = release else {
+        app.state::<Runtime>().prepared.lock().await.take();
+        change(app, json!({"phase":"idle","release":null}));
+        return Ok(());
+    };
+    if expected.as_ref().is_some_and(|v| *v != release.version) {
+        change(
+            app,
+            json!({"release":{"version":release.version,"notes":release.notes,"bytes":release.windows_x64.bytes}}),
+        );
+        return Err("The available version changed. Click to install the new release".into());
+    }
+    compatibility(app, &release).await?;
+    let ready = app
+        .state::<Runtime>()
+        .prepared
+        .lock()
+        .await
+        .as_ref()
+        .is_some_and(|p| {
+            p.release.version == release.version
+                && p.release.windows_x64.sha256 == release.windows_x64.sha256
+        });
+    if !ready {
+        app.state::<Runtime>().prepared.lock().await.take();
+        change(
+            app,
+            json!({"phase":"downloading","received":0,"total":release.windows_x64.bytes}),
+        );
+        download(app, release).await?;
+    }
+    while playback_active(app).await {
+        change(app, json!({"phase":"waiting"}));
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+    install(app).await?;
+    Ok(())
 }
 #[tauri::command]
 pub fn desktop_update_policy(app: tauri::AppHandle, policy: String) -> Result<Value, String> {
@@ -287,7 +370,17 @@ pub fn start(app: tauri::AppHandle) {
                 && status["error"].is_null()
                 && !status["release"].is_null()
             {
-                let _ = desktop_update_download(app.clone()).await;
+                // Personal update preferences apply only to an authenticated desktop.
+                if let Ok(session) =
+                    crate::backend_request(app.clone(), "/auth/me".into(), "GET".into(), None).await
+                    && session["status"] == 200
+                {
+                    let _ = desktop_update_apply(
+                        app.clone(),
+                        status["release"]["version"].as_str().map(str::to_owned),
+                    )
+                    .await;
+                }
             }
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         }

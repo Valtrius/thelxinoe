@@ -41,9 +41,6 @@ try {
   await page
     .getByLabel('Server address', { exact: true })
     .fill('http://127.0.0.1:18686');
-  await page
-    .getByRole('button', { name: 'Connect to server', exact: true })
-    .click();
   await page.getByLabel('Username', { exact: true }).fill('admin');
   await page
     .getByLabel('Password', { exact: true })

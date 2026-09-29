@@ -18,9 +18,6 @@ try {
   )
     await page.getByRole('button', { name: 'Sign out', exact: true }).click();
   await page.getByLabel('Server address').fill('http://127.0.0.1:18484');
-  await page
-    .getByRole('button', { name: 'Connect to server', exact: true })
-    .click();
   await expect(
     page.getByRole('heading', { name: 'Welcome back' }),
   ).toBeVisible();
@@ -92,10 +89,11 @@ try {
   await expect(
     page.getByRole('button', { name: 'Sign in', exact: true }),
   ).toBeVisible();
-  await page.getByLabel('Server address').fill('http://127.0.0.1:8484');
-  await page
-    .getByRole('button', { name: 'Connect to server', exact: true })
-    .click();
+  await page.evaluate(() =>
+    window.__TAURI_INTERNALS__.invoke('change_server', {
+      value: 'http://127.0.0.1:8484',
+    }),
+  );
   console.log(
     'Desktop login, keyring persistence, catalog, event reconnect and revocation passed.',
   );

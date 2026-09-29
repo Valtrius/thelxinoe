@@ -10,6 +10,8 @@ export default defineConfig({
     'seerr.spec.ts',
     'service-onboarding.spec.ts',
     'service-updates.spec.ts',
+    'server-updates.spec.ts',
+    'authentication.spec.ts',
   ],
   workers: 1,
   use: {
