@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { existsSync, writeFileSync, rmSync } from 'node:fs';
 import { until, installBase } from './lab.mjs';
 
-export async function connectDesktop(lab) {
+export async function connectDesktop(lab, version) {
   return until(async () => {
     const browser = await chromium.connectOverCDP(
       `http://127.0.0.1:${lab.cdpPort}`,
@@ -24,7 +24,11 @@ export async function connectDesktop(lab) {
         { command, args },
       );
     try {
-      await invoke('desktop_update_status');
+      const status = await invoke('desktop_update_status');
+      if (version && status.installed !== version) {
+        await browser.close();
+        return false;
+      }
     } catch {
       await browser.close();
       return false;
@@ -349,7 +353,7 @@ export async function desktopScenarios({
       await mode('base');
       await native.close();
       installBase(lab);
-      native = await connectDesktop(lab);
+      native = await connectDesktop(lab, lab.base);
       onConnect(native);
       await native.context.tracing.start({
         screenshots: true,

@@ -1,6 +1,6 @@
 services:
   controller:
-    image: thelxinoe-service-controller:local
+    image: ${THELXINOE_CONTROLLER_IMAGE:-thelxinoe-service-controller:local}
     network_mode: none
     volumes:
       - runtime:/run/thelxinoe
@@ -11,7 +11,7 @@ services:
     cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
     labels: { app.thelxinoe.component: controller }
   server:
-    image: thelxinoe-service-server:local
+    image: ${THELXINOE_SERVER_IMAGE:-thelxinoe-service-server:local}
     environment:
       THELXINOE_PUBLIC_URL: ${THELXINOE_CONNECTIONS_URL:-https://localhost:${THELXINOE_CONNECTIONS_PORT}}
       THELXINOE_TRUSTED_PROXIES: 172.31.244.0/24

@@ -3,24 +3,14 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { resolve } from 'node:path';
-import { createServer } from 'node:net';
+import { composeFixture, fixtureId, freePort } from './ci-resources.mjs';
+export { freePort } from './ci-resources.mjs';
 
 export const docker = (...args) =>
   execFileSync('docker', args, {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   }).trim();
-
-export async function freePort() {
-  const listener = createServer();
-  await new Promise((done, reject) => {
-    listener.once('error', reject);
-    listener.listen(0, '127.0.0.1', done);
-  });
-  const port = listener.address().port;
-  await new Promise((done) => listener.close(done));
-  return port;
-}
 
 export async function waitForProxy(client, base) {
   await expect
@@ -41,7 +31,7 @@ export async function waitForProxy(client, base) {
 }
 
 export async function fixture({ scheme = 'https' } = {}) {
-  const project = `thelxinoe-access-${Date.now()}`;
+  const project = fixtureId('access');
   const root = resolve(`.local/${project}`);
   const port = await freePort();
   const base = `${scheme}://localhost:${port}`;
@@ -61,19 +51,8 @@ export async function fixture({ scheme = 'https' } = {}) {
     'media/downloads',
   ])
     mkdirSync(`${root}/${directory}`, { recursive: true });
-  const compose = (...args) =>
-    execFileSync(
-      'docker',
-      [
-        'compose',
-        '-p',
-        project,
-        '-f',
-        'compose.connections.test.yaml',
-        ...args,
-      ],
-      { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-    ).trim();
+  let infrastructure;
+  const compose = (...args) => infrastructure.compose(...args);
   const browser = await chromium.launch();
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
   const services = {};
@@ -86,7 +65,12 @@ export async function fixture({ scheme = 'https' } = {}) {
       data,
       headers: { 'X-Thelxinoe-Client': '1' },
     });
-    if (!response.ok()) throw Error(`${path}: HTTP ${response.status()}`);
+    if (!response.ok()) {
+      const body = await response.json().catch(() => ({}));
+      throw Error(
+        `${path}: HTTP ${response.status()} ${body.error?.message ?? ''}`,
+      );
+    }
     return response.json();
   }
   const stack = () => api('/admin/stack');
@@ -184,7 +168,7 @@ export async function fixture({ scheme = 'https' } = {}) {
   async function close() {
     if (closed) return;
     closed = true;
-    await browser.close();
+    await browser.close().catch(() => {});
     if (attachedContainers.length) docker('rm', '-f', ...attachedContainers);
     if (deployment) {
       const containers = docker(
@@ -197,7 +181,7 @@ export async function fixture({ scheme = 'https' } = {}) {
         .filter(Boolean);
       if (containers.length) docker('rm', '-f', ...containers);
     }
-    compose('down', '-v');
+    infrastructure?.close();
   }
   async function attach(kind, urlBase, image) {
     const name = `${project}-attached-${kind}-${attachedContainers.length}`;
@@ -232,6 +216,8 @@ export async function fixture({ scheme = 'https' } = {}) {
     const container = docker(
       'run',
       '-d',
+      '--label',
+      `io.thelxinoe.ci-run=${env.THELXINOE_CI_RUN_ID ?? project}`,
       '--name',
       name,
       '--network',
@@ -248,6 +234,7 @@ export async function fixture({ scheme = 'https' } = {}) {
       image,
     );
     attachedContainers.push(container);
+    infrastructure.update({ containers: attachedContainers });
     const direct = async (path, method = 'GET', data) => {
       if (kind === 'nzbget') {
         const response = await context.request.post(
@@ -366,6 +353,8 @@ export async function fixture({ scheme = 'https' } = {}) {
     const container = docker(
       'run',
       '-d',
+      '--label',
+      `io.thelxinoe.ci-run=${env.THELXINOE_CI_RUN_ID ?? project}`,
       '--name',
       `${project}-peer`,
       '--network',
@@ -379,6 +368,7 @@ export async function fixture({ scheme = 'https' } = {}) {
       '/peer.mjs',
     );
     attachedContainers.push(container);
+    infrastructure.update({ containers: attachedContainers });
     let registered;
     await expect
       .poll(
@@ -415,6 +405,12 @@ export async function fixture({ scheme = 'https' } = {}) {
     return source;
   }
   try {
+    infrastructure = composeFixture({
+      project,
+      file: 'compose.connections.test.yaml',
+      root,
+      env,
+    });
     compose(
       'run',
       '--rm',
@@ -437,6 +433,7 @@ export async function fixture({ scheme = 'https' } = {}) {
       password: 'test-only long passphrase',
     });
     deployment = (await stack()).deployment_id;
+    infrastructure.update({ deployment });
     return {
       project,
       root,

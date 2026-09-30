@@ -1,7 +1,7 @@
 name: thelxinoe-test
 services:
   controller:
-    image: thelxinoe-controller:0.1.0
+    image: ${THELXINOE_CONTROLLER_IMAGE:-thelxinoe-controller:0.1.0}
     network_mode: none
     volumes:
       - runtime:/run/thelxinoe
@@ -11,7 +11,7 @@ services:
     cap_drop: [ALL]
     cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
   server:
-    image: thelxinoe-server:0.1.0
+    image: ${THELXINOE_SERVER_IMAGE:-thelxinoe-server:0.1.0}
     ports:
       - "127.0.0.1:${THELXINOE_TEST_HTTP_PORT:-18484}:8484"
       - "127.0.0.1:${THELXINOE_TEST_HTTP_PORT:-18484}:7359/udp"

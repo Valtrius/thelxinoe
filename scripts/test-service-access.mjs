@@ -1,23 +1,20 @@
-// Real service/browser E2E. See tests/service-access.md for the failure contract.
 import { expect } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { fixtureImages, resourceRecord } from './ci-resources.mjs';
 import { docker, fixture } from './service-access-fixture.mjs';
 import { additionalAccess } from './service-access-additional.mjs';
 import { nzbgetAccess } from './service-access-nzbget.mjs';
 
 if (!process.argv.includes('--built')) {
+  const images = fixtureImages();
+  process.env.THELXINOE_SERVER_IMAGE = images.server;
+  process.env.THELXINOE_CONTROLLER_IMAGE = images.controller;
+  resourceRecord({ images: Object.values(images), closed: false });
   for (const target of ['server', 'controller']) {
     execFileSync(
       'docker',
-      [
-        'build',
-        '--target',
-        target,
-        '-t',
-        `thelxinoe-service-${target}:local`,
-        '.',
-      ],
+      ['build', '--target', target, '-t', images[target], '.'],
       { stdio: 'inherit' },
     );
   }
