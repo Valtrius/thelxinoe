@@ -18,7 +18,23 @@ export function atomicWrite(path, contents) {
   const temporary = `${path}.${process.pid}-${randomUUID()}.tmp`;
   try {
     writeFileSync(temporary, contents);
-    renameSync(temporary, path);
+    const deadline = Date.now() + 1000;
+    const pause = new Int32Array(new SharedArrayBuffer(4));
+    for (;;) {
+      try {
+        renameSync(temporary, path);
+        break;
+      } catch (error) {
+        // Windows readers can briefly deny replacement of the live report.
+        if (
+          process.platform !== 'win32' ||
+          !['EPERM', 'EACCES', 'EBUSY'].includes(error.code) ||
+          Date.now() >= deadline
+        )
+          throw error;
+        Atomics.wait(pause, 0, 0, 50);
+      }
+    }
   } finally {
     if (existsSync(temporary)) unlinkSync(temporary);
   }

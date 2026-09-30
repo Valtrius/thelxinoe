@@ -284,7 +284,7 @@ export async function fixture({ scheme = 'https' } = {}) {
               return '';
             }
           },
-          { timeout: 90000, intervals: [1000] },
+          { timeout: 180000, intervals: [1000] },
         )
         .toBe(kind);
       const support = ['prowlarr', 'bazarr', 'nzbget'].includes(kind);

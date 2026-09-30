@@ -363,6 +363,8 @@ try {
       );
       expect(range.status()).toBe(directRange.status());
       expect(await range.body()).toEqual(await directRange.body());
+      const before = await f.upstream('radarr', 'system/status');
+      expect(before.startTime).toBeTruthy();
       const restored = await f.context.request.post(
         `${f.base}/services/radarr/api/v3/system/backup/restore/upload`,
         {
@@ -379,18 +381,33 @@ try {
       expect(restored.status()).toBe(200);
       expect((await restored.json()).restartRequired).toBe(true);
       await native('command', 'POST', { name: 'Restart' });
+      let restarted;
       await expect
         .poll(
           async () => {
             try {
-              return (await f.upstream('radarr', 'system/status')).urlBase;
+              const response = await f.context.request.get(
+                `${f.base}/services/radarr/api/v3/system/status`,
+                { headers: { 'X-Api-Key': key }, timeout: 5000 },
+              );
+              restarted = response.ok() ? await response.json() : null;
+              return (
+                !!restarted?.startTime &&
+                restarted.startTime !== before.startTime &&
+                restarted.urlBase === '/services/radarr'
+              );
             } catch {
-              return '';
+              return false;
             }
           },
           { timeout: 90000, intervals: [2000] },
         )
-        .toBe('/services/radarr');
+        .toBe(true);
+      result.backup_restore = {
+        before_start: before.startTime,
+        after_start: restarted.startTime,
+        url_base: restarted.urlBase,
+      };
       await page.goto(`${f.base}/services/radarr/settings/ui`);
       await expect(
         page.getByRole('group', { name: 'Calendar', exact: true }),

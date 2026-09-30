@@ -436,7 +436,13 @@ try {
     pid: process.pid,
   });
   if (!noOpen) openReport();
-  refresh = setInterval(view.save, 5000);
+  refresh = setInterval(() => {
+    try {
+      view.save();
+    } catch (error) {
+      console.error('Could not refresh the CI report:', error.message);
+    }
+  }, 5000);
   await Promise.all(report.lanes.map((item) => lane(item, source)));
   report.passed =
     !stopping && report.lanes.every((item) => item.state === 'passed');
