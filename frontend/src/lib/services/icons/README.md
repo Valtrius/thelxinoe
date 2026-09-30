@@ -9,5 +9,6 @@ SVG assets from [Dashboard Icons](https://dashboardicons.com/), used to identify
 - [Prowlarr](https://dashboardicons.com/icons/prowlarr)
 - [NZBGet](https://dashboardicons.com/icons/nzbget)
 - [Seerr](https://dashboardicons.com/icons/seerr)
+- [Recyclarr](https://dashboardicons.com/icons/recyclarr)
 
 The collection is distributed under the [Apache 2.0 license](LICENSE). Names and logos remain the property of their respective projects.
