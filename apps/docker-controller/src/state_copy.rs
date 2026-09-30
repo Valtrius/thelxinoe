@@ -8,8 +8,18 @@ use std::{
 const MAX_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 const MAX_FILES: u64 = 500_000;
 
-pub fn adopt(kind: &str) -> anyhow::Result<()> {
+pub fn adopt(kind: &str, name: &str) -> anyhow::Result<()> {
     anyhow::ensure!(crate::templates::find(kind).is_some(), "Unknown service");
+    if kind == "prowlarr" {
+        anyhow::ensure!(
+            !name.is_empty()
+                && name.len() <= 63
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')),
+            "Invalid managed service hostname"
+        );
+    }
     if kind == "recyclarr" {
         use sha2::{Digest, Sha256};
         let actual = format!("{:x}", Sha256::digest(fs::read("/source/recyclarr.yml")?));
@@ -84,13 +94,17 @@ pub fn adopt(kind: &str) -> anyhow::Result<()> {
             anyhow::ensure!(entries.next().is_none(), "Duplicate allowed hosts setting");
             if let Some(entry) = entry {
                 let hosts = entry.text().unwrap_or("").trim();
-                // Preserve existing restrictions while allowing the replacement's
-                // stable name, which is used by API calls and service links.
-                if !hosts.is_empty()
-                    && !hosts.split([',', ';']).any(|host| {
-                        host.trim() == "*" || host.trim().eq_ignore_ascii_case("thelxinoe-prowlarr")
+                let additions = [name, "thelxinoe-prowlarr"]
+                    .into_iter()
+                    .filter(|name| {
+                        !hosts.split([',', ';']).any(|host| {
+                            host.trim() == "*" || host.trim().eq_ignore_ascii_case(name)
+                        })
                     })
-                {
+                    .collect::<Vec<_>>();
+                // Preserve existing restrictions while allowing the replacement's
+                // name and its stable network alias for API calls and service links.
+                if !hosts.is_empty() && !additions.is_empty() {
                     let hosts = hosts
                         .replace('&', "&amp;")
                         .replace('<', "&lt;")
@@ -98,7 +112,10 @@ pub fn adopt(kind: &str) -> anyhow::Result<()> {
                     let range = entry.range();
                     text.replace_range(
                         range,
-                        &format!("<AllowedHosts>{hosts};thelxinoe-prowlarr</AllowedHosts>"),
+                        &format!(
+                            "<AllowedHosts>{hosts};{}</AllowedHosts>",
+                            additions.join(";")
+                        ),
                     );
                 }
             }

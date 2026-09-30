@@ -1,9 +1,10 @@
-import { chromium, expect } from '@playwright/test';
+import { expect } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { resolve } from 'node:path';
 import { composeFixture, fixtureId, freePort } from './ci-resources.mjs';
+import { launchBrowser } from './ci-browser.mjs';
 export { freePort } from './ci-resources.mjs';
 
 export const docker = (...args) =>
@@ -53,7 +54,7 @@ export async function fixture({ scheme = 'https' } = {}) {
     mkdirSync(`${root}/${directory}`, { recursive: true });
   let infrastructure;
   const compose = (...args) => infrastructure.compose(...args);
-  const browser = await chromium.launch();
+  const browser = await launchBrowser();
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
   const services = {};
   const attachedContainers = [];

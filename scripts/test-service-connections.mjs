@@ -1,12 +1,13 @@
 // Isolated real Docker/API/browser checks. Build Dockerfile's server/controller
 // targets as thelxinoe-service-{server,controller}:local before running.
-import { chromium, expect } from '@playwright/test';
+import { expect } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { composeFixture, fixtureId, freePort } from './ci-resources.mjs';
 import { randomUUID } from 'node:crypto';
 import { waitForProxy } from './service-access-fixture.mjs';
+import { launchBrowser } from './ci-browser.mjs';
 
 const docker = (...args) =>
   execFileSync('docker', args, {
@@ -28,7 +29,7 @@ for (const dir of [
   mkdirSync(`${root}/${dir}`, { recursive: true });
 let infrastructure;
 const compose = (...args) => infrastructure.compose(...args);
-const browser = await chromium.launch();
+const browser = await launchBrowser();
 const context = await browser.newContext({ ignoreHTTPSErrors: true });
 const base = `https://localhost:${process.env.THELXINOE_CONNECTIONS_PORT}`;
 const services = {};

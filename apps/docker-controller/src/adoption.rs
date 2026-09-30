@@ -196,7 +196,7 @@ pub(super) async fn adopt(
     }
     let t = templates::find(&input.kind).ok_or_else(unavailable)?;
     let key = &input.operation_id;
-    let name = choose_service_name(t.kind, key, &containers, None)?;
+    let name = choose_service_name(t.kind, key, &containers)?;
     let source = mount(&review.original, "/config")?["Source"]
         .as_str()
         .ok_or_else(unavailable)?

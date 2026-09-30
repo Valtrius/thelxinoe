@@ -27,6 +27,9 @@ const result = {
   }).trim(),
   command: `npm run test:service-access${process.argv.includes('--desktop') ? ' -- --desktop' : ''}`,
   scenarios: [],
+  browser_network: process.env.THELXINOE_CI_BROWSER_WS_ENDPOINT
+    ? 'isolated Docker bridge'
+    : 'host',
   images: {},
   passed: false,
 };
@@ -42,6 +45,40 @@ async function scenario(name, run) {
   console.log(`PASS ${name}`);
 }
 try {
+  await scenario(
+    'parallel deployments install and clean up the same service independently',
+    async () => {
+      const parallel = await fixture();
+      try {
+        const installations = await Promise.allSettled([
+          f.install('radarr'),
+          parallel.install('radarr'),
+        ]);
+        for (const installation of installations)
+          if (installation.status === 'rejected') throw installation.reason;
+        expect(f.services.radarr.container_id).not.toBe(
+          parallel.services.radarr.container_id,
+        );
+        for (const deployment of [f, parallel])
+          expect(
+            (await deployment.upstream('radarr', 'system/status')).appName,
+          ).toBe('Radarr');
+        result.parallel_deployments = {
+          projects: [f.project, parallel.project],
+          containers: [
+            f.services.radarr.container_id,
+            parallel.services.radarr.container_id,
+          ],
+        };
+      } finally {
+        await parallel.close();
+      }
+      expect((await f.upstream('radarr', 'system/status')).appName).toBe(
+        'Radarr',
+      );
+      result.parallel_deployments.remaining_service_healthy = true;
+    },
+  );
   for (const kind of [
     'radarr',
     'sonarr',
@@ -50,7 +87,7 @@ try {
     'bazarr',
     'nzbget',
   ]) {
-    await f.install(kind);
+    if (kind !== 'radarr') await f.install(kind);
     result.images[kind] = docker(
       'inspect',
       '--format',
@@ -598,7 +635,19 @@ try {
       (
         await f.context.request.get(`${f.base}/services/radarr/activity`)
       ).json();
-    result.logout_stream = {};
+    result.logout_stream = { logout_requested: false, request_failures: [] };
+    tab.on('requestfailed', (request) => {
+      const path = new URL(request.url()).pathname;
+      if (
+        path === '/services/radarr/stream' ||
+        path === '/services/radarr/pending'
+      )
+        result.logout_stream.request_failures.push({
+          path,
+          error: request.failure()?.errorText,
+          logout_requested: result.logout_stream.logout_requested,
+        });
+    });
     try {
       await tab.goto(f.base);
       await tab.evaluate(() => {
@@ -634,6 +683,7 @@ try {
         pending: 1,
       });
       result.logout_stream.before_logout = await activity();
+      result.logout_stream.logout_requested = true;
       await f.api('/auth/logout', 'POST', undefined, client.request);
       await expect
         .poll(() => tab.evaluate(() => window.streamClosed), {

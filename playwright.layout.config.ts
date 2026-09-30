@@ -23,7 +23,7 @@ export default defineConfig({
     viewport: { width: 1440, height: 1000 },
   },
   webServer: {
-    command: `npm run dev:web -- --port ${port} --strictPort`,
+    command: `npm run build:web && npm exec --workspace frontend -- vite preview --host 127.0.0.1 --port ${port} --strictPort`,
     url: `http://127.0.0.1:${port}`,
     reuseExistingServer: false,
   },

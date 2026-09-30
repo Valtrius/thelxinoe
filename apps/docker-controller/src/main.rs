@@ -36,7 +36,10 @@ async fn main() -> anyhow::Result<()> {
             }
             "snapshot-copy" => state_copy::run(false),
             "snapshot-restore" => state_copy::run(true),
-            "adoption-copy" => state_copy::adopt(&std::env::args().nth(2).unwrap_or_default()),
+            "adoption-copy" => state_copy::adopt(
+                &std::env::args().nth(2).unwrap_or_default(),
+                &std::env::args().nth(3).unwrap_or_default(),
+            ),
             "appdata-remove" => state_copy::remove(),
             "verify-state" => {
                 let root = std::path::Path::new("/state");

@@ -1,10 +1,11 @@
-import { chromium, expect } from '@playwright/test';
+import { expect } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { composeFixture, fixtureId, freePort } from './ci-resources.mjs';
 import { randomUUID } from 'node:crypto';
 import { waitForProxy } from './service-access-fixture.mjs';
+import { launchBrowser } from './ci-browser.mjs';
 
 const project = fixtureId('recyclarr');
 const adoptionOnly = process.argv.includes('--adoption-only');
@@ -39,13 +40,7 @@ for (const folder of [
   mkdirSync(`${root}/${folder}`, { recursive: true });
 let infrastructure;
 const compose = (...args) => infrastructure.compose(...args);
-const browserEndpoint = process.env.THELXINOE_RECYCLARR_BROWSER_WS_ENDPOINT;
-const browser = browserEndpoint
-  ? await chromium.connect(browserEndpoint, {
-      exposeNetwork: '<loopback>',
-      timeout: 30000,
-    })
-  : await chromium.launch();
+const browser = await launchBrowser();
 const context = await browser.newContext({ ignoreHTTPSErrors: true });
 await context.tracing.start({ screenshots: true, snapshots: true });
 const base = `https://localhost:${process.env.THELXINOE_CONNECTIONS_PORT}`;
@@ -55,7 +50,9 @@ const externalContainers = [];
 const evidence = {
   project,
   root,
-  browser_network: browserEndpoint ? 'isolated Docker bridge' : 'host',
+  browser_network: process.env.THELXINOE_CI_BROWSER_WS_ENDPOINT
+    ? 'isolated Docker bridge'
+    : 'host',
   scope: adoptionOnly ? 'adoption' : 'complete',
   started: new Date().toISOString(),
   finished: null,

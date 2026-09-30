@@ -282,7 +282,7 @@ pub(super) async fn copy_state(
     let name = format!("thelxinoe-state-{}-{label}", &operation[..8]);
     let command = if label == "takeover" {
         let service = load(operation)?;
-        vec!["adoption-copy".to_owned(), service.kind]
+        vec!["adoption-copy".to_owned(), service.kind, service.name]
     } else {
         vec![
             if restore {
