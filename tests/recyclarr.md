@@ -32,6 +32,13 @@ Failure cases to cover before implementation:
   status polling retains the catalog error and manual refresh recovers. Reject
   authoritative client errors without retrying; catalog recovery must not sync
   or change the selected guide.
+- Each disposable CLI worker changes the GitHub host's network interfaces,
+  exhausting the browser's retry budget while both real catalogs remain healthy.
+  CI runs the version-matched Playwright server in its own Docker bridge namespace
+  and connects with `exposeNetwork: '<loopback>'` to reach the runner's existing
+  loopback-only proxy. Keep the explicit transport-failure assertions against the
+  real CLI, record the browser topology in the result, retain browser server logs,
+  and remove the browser container even when fixture startup or assertions fail.
 - Preview writes Arr settings; repeated application duplicates profiles or CFs.
 - Arr answers HTTP before initializing its built-in profiles; an empty baseline
   then mistakes native startup writes for preview writes. Wait for populated,

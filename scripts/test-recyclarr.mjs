@@ -56,7 +56,13 @@ const compose = (...args) =>
     'compose.connections.test.yaml',
     ...args,
   );
-const browser = await chromium.launch();
+const browserEndpoint = process.env.THELXINOE_RECYCLARR_BROWSER_WS_ENDPOINT;
+const browser = browserEndpoint
+  ? await chromium.connect(browserEndpoint, {
+      exposeNetwork: '<loopback>',
+      timeout: 30000,
+    })
+  : await chromium.launch();
 const context = await browser.newContext({ ignoreHTTPSErrors: true });
 await context.tracing.start({ screenshots: true, snapshots: true });
 const base = `https://localhost:${process.env.THELXINOE_CONNECTIONS_PORT}`;
@@ -66,6 +72,7 @@ const externalContainers = [];
 const evidence = {
   project,
   root,
+  browser_network: browserEndpoint ? 'isolated Docker bridge' : 'host',
   scope: interruptAfterInstall
     ? 'cleanup'
     : adoptionOnly
