@@ -565,38 +565,78 @@ try {
       ).toHaveCount(0);
     }
     evidence.ui_catalogs = [];
-    const catalogResponses = Promise.all(
-      ['radarr', 'sonarr'].map((kind) =>
-        page
-          .waitForResponse(
-            (response) =>
-              new URL(response.url()).pathname ===
-              `/api/v1/admin/recyclarr/catalog/${kind}`,
-            { timeout: 180000 },
-          )
-          .then(async (response) => {
-            const catalog = await response.json();
-            evidence.ui_catalogs.push({
-              path: new URL(response.url()).pathname,
-              status: response.status(),
-              items: catalog.items?.length,
-              error: catalog.error,
-            });
-            saveEvidence();
-            expect(response.ok(), JSON.stringify(catalog.error)).toBe(true);
-            expect(catalog.items.length).toBeGreaterThan(10);
-          }),
-      ),
+    evidence.ui_catalog_failures = [];
+    let catalogFailuresRemaining = 1;
+    let catalogFailureStatus = 0;
+    let rejectedCatalogReads = 0;
+    page.on('requestfailed', (request) => {
+      if (new URL(request.url()).pathname.includes('/recyclarr/catalog/')) {
+        evidence.ui_catalog_failures.push({
+          path: new URL(request.url()).pathname,
+          error: request.failure()?.errorText,
+        });
+        saveEvidence();
+      }
+    });
+    await page.route(
+      '**/api/v1/admin/recyclarr/catalog/radarr',
+      async (route) => {
+        if (catalogFailureStatus) {
+          rejectedCatalogReads++;
+          return route.fulfill({
+            status: catalogFailureStatus,
+            json: {
+              error: { code: 'forbidden', message: 'Catalog access denied' },
+            },
+          });
+        }
+        if (catalogFailuresRemaining > 0) {
+          catalogFailuresRemaining--;
+          rejectedCatalogReads++;
+          return route.abort('connectionreset');
+        }
+        return route.continue();
+      },
     );
-    await Promise.all([
-      catalogResponses,
-      navigation
-        .getByRole('button', { name: 'Recyclarr', exact: true })
-        .click(),
-    ]);
     const guideRegion = page.getByRole('region', {
       name: 'Recyclarr guide configuration',
     });
+    const catalogResponses = () =>
+      Promise.all(
+        ['radarr', 'sonarr'].map((kind) =>
+          page
+            .waitForResponse(
+              (response) =>
+                new URL(response.url()).pathname ===
+                `/api/v1/admin/recyclarr/catalog/${kind}`,
+              { timeout: 180000 },
+            )
+            .then(async (response) => {
+              const catalog = await response.json();
+              evidence.ui_catalogs.push({
+                path: new URL(response.url()).pathname,
+                status: response.status(),
+                items: catalog.items?.length,
+                error: catalog.error,
+              });
+              saveEvidence();
+              expect(response.ok(), JSON.stringify(catalog.error)).toBe(true);
+              expect(catalog.items.length).toBeGreaterThan(10);
+            }),
+        ),
+      );
+    await Promise.all([
+      catalogResponses(),
+      (async () => {
+        await navigation
+          .getByRole('button', { name: 'Recyclarr', exact: true })
+          .click();
+        await expect(guideRegion.getByRole('alert')).toContainText(
+          'Guide profiles could not be loaded',
+        );
+      })(),
+    ]);
+    await expect(guideRegion.getByRole('alert')).toHaveCount(0);
     await expect(
       guideRegion.getByText('TRaSH Guides', { exact: true }),
     ).toBeVisible();
@@ -614,6 +654,61 @@ try {
         { timeout: 45000 },
       )
       .toBeGreaterThan(10);
+    const targetsBeforeCatalogRecovery = (await settings()).targets;
+    const waitForStatusPoll = () =>
+      page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === '/api/v1/admin/recyclarr',
+        { timeout: 15000 },
+      );
+    rejectedCatalogReads = 0;
+    catalogFailuresRemaining = Infinity;
+    await guideRegion
+      .getByRole('button', { name: 'Refresh profiles', exact: true })
+      .click();
+    await expect.poll(() => rejectedCatalogReads, { timeout: 20000 }).toBe(3);
+    for (let poll = 0; poll < 2; poll++) await waitForStatusPoll();
+    expect(rejectedCatalogReads).toBe(3);
+    await expect(guideRegion.getByRole('alert')).toContainText(
+      'Guide profiles could not be loaded',
+    );
+    await page.screenshot({
+      path: `${root}/catalog-retries-exhausted.png`,
+      fullPage: true,
+    });
+    catalogFailuresRemaining = 0;
+    await Promise.all([
+      catalogResponses(),
+      guideRegion
+        .getByRole('button', { name: 'Refresh profiles', exact: true })
+        .click(),
+    ]);
+    await expect(guideRegion.getByRole('alert')).toHaveCount(0);
+    rejectedCatalogReads = 0;
+    catalogFailureStatus = 403;
+    await guideRegion
+      .getByRole('button', { name: 'Refresh profiles', exact: true })
+      .click();
+    await expect(guideRegion.getByRole('alert')).toContainText(
+      'Catalog access denied',
+    );
+    for (let poll = 0; poll < 2; poll++) await waitForStatusPoll();
+    expect(rejectedCatalogReads).toBe(1);
+    await expect(guideRegion.getByRole('alert')).toContainText(
+      'Catalog access denied',
+    );
+    catalogFailureStatus = 0;
+    await Promise.all([
+      catalogResponses(),
+      guideRegion
+        .getByRole('button', { name: 'Refresh profiles', exact: true })
+        .click(),
+    ]);
+    await expect(guideRegion.getByRole('alert')).toHaveCount(0);
+    expect((await settings()).targets).toEqual(targetsBeforeCatalogRecovery);
+    record(
+      'Catalog reads recover automatically after a transport failure; exhausted retries and access denials stay visible through status polling and recover on manual refresh without changing guide selections',
+    );
     await page.screenshot({
       path: `${root}/recyclarr-profiles.png`,
       fullPage: true,

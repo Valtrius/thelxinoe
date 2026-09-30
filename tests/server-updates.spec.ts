@@ -342,13 +342,13 @@ test('server settings keep their layout through update states and maintenance re
 test('Orbit survives lost connections, checks without reinstalling, and retries recovered releases', async ({
   page,
 }, testInfo) => {
+  await page.clock.install();
   const flow = await setup(page);
   const button = flow.version.getByRole('button');
   await button.click();
   flow.stage('validating');
   await flow.refresh();
   await expect(button).toHaveAccessibleName('Checking the update');
-  await page.clock.install();
   flow.offline(true);
   await flow.refresh();
   await expect(button).toHaveAccessibleName('Reconnecting to the server');
@@ -378,6 +378,7 @@ test('Orbit survives lost connections, checks without reinstalling, and retries 
 test('download tracks bytes without pinning its tooltip, and controller reconnect gets two minutes', async ({
   page,
 }, testInfo) => {
+  await page.clock.install();
   const flow = await setup(page);
   const button = flow.version.getByRole('button').first();
   await button.hover();
@@ -405,17 +406,48 @@ test('download tracks bytes without pinning its tooltip, and controller reconnec
   }
   await page.mouse.move(0, 0);
   await expect(flow.version.getByRole('tooltip')).toHaveCSS('opacity', '0');
-  await page.clock.install();
+  let releaseObservation!: () => void;
+  const observation = new Promise<void>((resolve) => {
+    releaseObservation = resolve;
+  });
+  let observations = 0;
+  await page.route('**/api/v1/admin/product-update', async (route) => {
+    observations++;
+    await observation;
+    await route.fallback();
+  });
   flow.status.controller.error = 'Controller unavailable';
-  await flow.refresh();
+  try {
+    await flow.refresh();
+    await expect.poll(() => observations).toBeGreaterThan(0);
+    await expect(button).toHaveAccessibleName('Downloading server update');
+  } finally {
+    releaseObservation();
+  }
+  await expect(button).toHaveAccessibleName('Reconnecting to the server');
+  const deadlineStates = [
+    { stage: 'observed', time: await page.evaluate(() => Date.now()) },
+  ];
   await page.clock.fastForward(115000);
   await expect(button).toHaveAccessibleName('Reconnecting to the server');
+  deadlineStates.push({
+    stage: 'before-deadline',
+    time: await page.evaluate(() => Date.now()),
+  });
   await testInfo.attach('reconnecting', {
     body: await page.screenshot(),
     contentType: 'image/png',
   });
   await page.clock.fastForward(10000);
   await expect(button).toHaveAccessibleName('Check server connection');
+  deadlineStates.push({
+    stage: 'after-deadline',
+    time: await page.evaluate(() => Date.now()),
+  });
+  await testInfo.attach('controller-reconnect-deadline', {
+    body: JSON.stringify(deadlineStates, null, 2),
+    contentType: 'application/json',
+  });
   delete flow.status.controller.error;
   flow.stage('committed');
   flow.status.version = '0.1.1';
@@ -450,6 +482,7 @@ test('download tracks bytes without pinning its tooltip, and controller reconnec
 test('web clients reload accepted updates and rollbacks without a popup', async ({
   page,
 }, testInfo) => {
+  await page.clock.install();
   const flow = await setup(page);
   let reloads = 0;
   page.on('framenavigated', (frame) => {
@@ -463,7 +496,6 @@ test('web clients reload accepted updates and rollbacks without a popup', async 
       new CustomEvent('thelxinoe-web-update', { detail: '0.1.1' }),
     ),
   );
-  await page.clock.install();
   await page.clock.fastForward(6000);
   expect(reloads).toBe(0);
   await expect(page.getByLabel('Client update available')).toHaveCount(0);

@@ -26,6 +26,12 @@ Failure cases to cover before implementation:
   dropdown-count deadline expires. Observe both real catalog HTTP responses
   before asserting the choices, fail on rejected responses, and retain response
   status, a failure screenshot, and the browser trace in GitHub artifacts.
+- Chromium aborts a catalog read after Docker changes the runner's network.
+  Abort the first real browser request and verify bounded automatic read retries
+  populate both selectors through the real CLI. Exhaust the retries and verify
+  status polling retains the catalog error and manual refresh recovers. Reject
+  authoritative client errors without retrying; catalog recovery must not sync
+  or change the selected guide.
 - Preview writes Arr settings; repeated application duplicates profiles or CFs.
 - Arr answers HTTP before initializing its built-in profiles; an empty baseline
   then mistakes native startup writes for preview writes. Wait for populated,

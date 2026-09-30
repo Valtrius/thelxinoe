@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api } from '../api';
+  import { api, ApiError } from '../api';
   import AutoSaveForm from '../ui/AutoSaveForm.svelte';
   import FormField from '../ui/FormField.svelte';
   import Switch from '../ui/Switch.svelte';
@@ -28,6 +28,10 @@
     Record<string, { revision: string; value?: unknown; error?: string }>
   >({});
   let error = $state('');
+  let catalogError = $state('');
+  let catalogLoading = false;
+  let catalogAttempts = 0;
+  let catalogRetryable = true;
   let feedback = $state('');
   let feedbackRun = $state('');
   let schedule = $state({ paused: false, hour: 4 });
@@ -81,14 +85,21 @@
     }
   }
   async function refreshCatalogs() {
+    if (catalogLoading) return;
+    catalogLoading = true;
+    catalogAttempts++;
     try {
       for (const kind of ['radarr', 'sonarr'])
         catalogs[kind] = (
           await api<{ items: Guide[] }>(`/admin/recyclarr/catalog/${kind}`)
         ).items;
-      error = '';
+      catalogError = '';
     } catch (failure) {
-      error = String(failure);
+      catalogError = `Guide profiles could not be loaded. ${String(failure)}`;
+      catalogRetryable =
+        !(failure instanceof ApiError) || failure.status >= 500;
+    } finally {
+      catalogLoading = false;
     }
   }
   async function run(preview = false) {
@@ -106,9 +117,24 @@
     }
   }
   onMount(() => {
-    void refresh().then(refreshCatalogs);
-    const timer = setInterval(() => void refresh(), 4000);
-    return () => clearInterval(timer);
+    let active = true;
+    const refreshData = async () => {
+      await refresh();
+      if (
+        active &&
+        !catalogLoading &&
+        catalogAttempts < 3 &&
+        catalogRetryable &&
+        (catalogError || ['radarr', 'sonarr'].some((kind) => !catalogs[kind]))
+      )
+        await refreshCatalogs();
+    };
+    void refreshData();
+    const timer = setInterval(() => void refreshData(), 4000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
   });
 </script>
 
@@ -122,7 +148,11 @@
       <Button
         size="form"
         variant="secondary"
-        onclick={() => void refreshCatalogs()}>Refresh profiles</Button
+        onclick={() => {
+          catalogAttempts = 0;
+          catalogRetryable = true;
+          void refreshCatalogs();
+        }}>Refresh profiles</Button
       >
       <Button size="form" variant="secondary" onclick={() => void run(true)}
         >Preview</Button
@@ -136,6 +166,8 @@
     assigned profile.
   </p>
   {#if error}<Notice tone="danger" role="alert">{error}</Notice>{/if}
+  {#if catalogError}<Notice tone="danger" role="alert">{catalogError}</Notice
+    >{/if}
   {#if feedback}<span class="text-[10px] text-muted" role="status"
       >{feedback}</span
     >{/if}

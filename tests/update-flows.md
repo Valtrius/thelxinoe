@@ -26,6 +26,16 @@ The automated scenarios must catch these failures through actual processes:
 - A controller handoff bypasses the two-minute reconnect grace period, pointer
   clicks leave tooltips stuck open, or download rings invent progress instead
   of using Docker layer bytes / signed installer bytes.
+- The reconnect test advances its clock before the controller failure reaches
+  the browser, so the grace period begins after the jump on a slower GitHub
+  runner. Install the clock before navigation starts polling, hold the failure
+  response to verify the preceding state, and observe reconnect before advancing
+  time. Retain the browser trace, clock observations and reconnect screenshot.
+  Service onboarding's polling and feedback timers must likewise start with the
+  installed clock; installing it after navigation leaves native timers running
+  while the test advances or pauses a different clock. Pause a fixed clock on
+  the blank page before navigation; pausing at the host's current time can race
+  ahead of the browser and attempt to move its clock backwards.
 - A desktop check starts downloading without a second click, or updater exit
   loses the current window position, size or maximized state.
 - Cached lab layers hide server download progress; slow-download must exercise

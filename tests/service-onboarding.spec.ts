@@ -1,5 +1,10 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { installUiFixture } from './helpers/ui-fixture';
+
+async function installPausedClock(page: Page) {
+  await page.clock.install({ time: new Date('2026-01-01T00:00:00Z') });
+  await page.clock.pauseAt(new Date('2026-01-01T01:00:00Z'));
+}
 
 for (const setup of [false, true]) {
   test(`${setup ? 'administrator registration' : 'login'} focuses the username`, async ({
@@ -103,6 +108,7 @@ test('installation keeps the workspace empty until the API is connected', async 
 test('connection actions spin locally, survive polling, and show errors in their row', async ({
   page,
 }, testInfo) => {
+  await installPausedClock(page);
   const fixture = await installUiFixture(page, {
     role: 'admin',
     settingsSection: 'services',
@@ -157,8 +163,6 @@ test('connection actions spin locally, survive polling, and show errors in their
   await expect(
     page.getByText('Fixture indexer', { exact: true }),
   ).toBeVisible();
-  await page.clock.install();
-  await page.clock.pauseAt(new Date());
   const before = reads.length;
   const button = row.getByRole('button', { name: 'Disconnect', exact: true });
   const bounds = await button.boundingBox();
@@ -277,6 +281,7 @@ for (const reducedMotion of ['no-preference', 'reduce'] as const) {
 test('saved Prowlarr indexers use the same one-second test feedback as setup', async ({
   page,
 }, testInfo) => {
+  await installPausedClock(page);
   const fixture = await installUiFixture(page, {
     role: 'admin',
     settingsSection: 'services',
@@ -305,8 +310,6 @@ test('saved Prowlarr indexers use the same one-second test feedback as setup', a
     .locator('.service-row')
     .filter({ hasText: 'Fixture indexer' });
   const button = row.getByRole('button', { name: 'Test', exact: true });
-  await page.clock.install();
-  await page.clock.pauseAt(new Date());
   const bounds = await button.boundingBox();
   await button.click();
   const checking = row.getByRole('button', {
@@ -452,6 +455,7 @@ for (const reducedMotion of ['no-preference', 'reduce'] as const) {
 test('indexer test success briefly replaces the button without moving the form', async ({
   page,
 }, testInfo) => {
+  await installPausedClock(page);
   const fixture = await installUiFixture(page, {
     role: 'admin',
     settingsSection: 'services',
@@ -515,8 +519,6 @@ test('indexer test success briefly replaces the button without moving the form',
   await expect(input).toHaveValue('invalid-fixture-key');
   invalid = false;
   await input.fill('valid-fixture-key');
-  await page.clock.install();
-  await page.clock.pauseAt(new Date());
   await testButton.click();
   const busy = dialog.getByRole('button', {
     name: 'Testing connection',
