@@ -73,7 +73,7 @@ jobs:
             --publish 127.0.0.1:3000:3000 \
             "$image" node node_modules/playwright/cli.js run-server --port 3000 --host 0.0.0.0
           for attempt in $(seq 1 30); do
-            if docker logs thelxinoe-ci-browser 2>&1 | rg -q 'Listening on ws://'; then exit 0; fi
+            if [[ "$(docker logs thelxinoe-ci-browser 2>&1)" == *"Listening on ws://"* ]]; then exit 0; fi
             sleep 1
           done
           docker logs thelxinoe-ci-browser
