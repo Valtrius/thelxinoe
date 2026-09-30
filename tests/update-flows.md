@@ -65,6 +65,15 @@ The automated scenarios must catch these failures through actual processes:
 - Automatic leaves a retained verified installer unused after compatibility
   recovers. Corrupt the publisher's download after retention so a successful
   installation also proves that it reused the verified bytes.
+- Restoring the base desktop preserves its session but reconnects before the UI
+  finishes booting. Wait for the authenticated controls or the sign-in form before
+  choosing whether to sign out; otherwise the test fills Settings' server field
+  and waits for a login form that never appears.
+- The fixture finishes its slow download before progress assertions run, so a
+  successful installer closes the page being inspected. Hold the real HTTP stream
+  after its first chunk until progress evidence is captured, and always release it.
+- Failure evidence follows the previous desktop connection after a relaunch.
+  Keep the current connection available to the scenario runner's cleanup.
 - A desktop retains a lost install-response error after authoritative pending
   and committed polls. Verify its final success presentation without a reload.
 

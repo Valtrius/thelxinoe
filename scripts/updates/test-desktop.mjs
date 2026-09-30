@@ -40,6 +40,7 @@ export async function desktopScenarios({
   mode,
   output,
   credentials,
+  onConnect,
 }) {
   const idle = () =>
     until(
@@ -53,14 +54,14 @@ export async function desktopScenarios({
     return native.invoke('desktop_update_check');
   };
   const login = async () => {
-    if (
-      await native.page
-        .getByRole('button', { name: 'Sign out', exact: true })
-        .isVisible()
-    )
-      await native.page
-        .getByRole('button', { name: 'Sign out', exact: true })
-        .click();
+    const signOut = native.page.getByRole('button', {
+      name: 'Sign out',
+      exact: true,
+    });
+    const username = native.page.getByLabel('Username', { exact: true });
+    await expect(signOut.or(username).first()).toBeVisible();
+    if (await signOut.isVisible()) await signOut.click();
+    await expect(username).toBeVisible();
     await native.page
       .getByLabel('Server address', { exact: true })
       .fill(lab.baseUrl);
@@ -328,6 +329,7 @@ export async function desktopScenarios({
         }
         return connected;
       }, 180000);
+      onConnect(native);
       await previous.close().catch(() => {});
       expect((await native.invoke('desktop_update_status')).installed).toBe(
         lab.next,
@@ -348,6 +350,7 @@ export async function desktopScenarios({
       await native.close();
       installBase(lab);
       native = await connectDesktop(lab);
+      onConnect(native);
       await native.context.tracing.start({
         screenshots: true,
         snapshots: true,
@@ -355,6 +358,15 @@ export async function desktopScenarios({
       expect((await native.invoke('desktop_update_status')).installed).toBe(
         lab.base,
       );
+      expect(
+        (
+          await native.invoke('backend_request', {
+            path: '/auth/me',
+            method: 'GET',
+          })
+        ).status,
+      ).toBe(200);
+      await native.page.reload();
     },
   );
   await scenario(
@@ -406,31 +418,37 @@ export async function desktopScenarios({
       const expectedWindow = await windowState();
       expect(expectedWindow.position).toEqual({ x: 97, y: 61 });
       await native.page.screenshot({ path: join(output, 'desktop-ready.png') });
-      await update.click();
-      await expect(
-        native.page.getByRole('progressbar', { name: 'Update download' }),
-      ).toBeAttached({ timeout: 10000 });
-      await expect
-        .poll(async () =>
-          Number(
-            await native.page
-              .getByRole('progressbar', { name: 'Update download' })
-              .getAttribute('aria-valuenow'),
-          ),
-        )
-        .toBeGreaterThan(0);
-      await native.page.mouse.move(0, 0);
-      await expect(
-        native.page
-          .getByLabel('Desktop version', { exact: true })
-          .getByRole('tooltip'),
-      ).toHaveCSS('opacity', '0');
-      await native.page.screenshot({
-        path: join(output, 'desktop-downloading.png'),
-      });
-      await native.context.tracing.stop({
-        path: join(output, 'desktop-before-trace.zip'),
-      });
+      const hold = join(lab.root, 'hold-desktop-download');
+      writeFileSync(hold, 'hold');
+      try {
+        await update.click();
+        await expect(
+          native.page.getByRole('progressbar', { name: 'Update download' }),
+        ).toBeAttached({ timeout: 10000 });
+        await expect
+          .poll(async () =>
+            Number(
+              await native.page
+                .getByRole('progressbar', { name: 'Update download' })
+                .getAttribute('aria-valuenow'),
+            ),
+          )
+          .toBeGreaterThan(0);
+        await native.page.mouse.move(0, 0);
+        await expect(
+          native.page
+            .getByLabel('Desktop version', { exact: true })
+            .getByRole('tooltip'),
+        ).toHaveCSS('opacity', '0');
+        await native.page.screenshot({
+          path: join(output, 'desktop-downloading.png'),
+        });
+        await native.context.tracing.stop({
+          path: join(output, 'desktop-before-trace.zip'),
+        });
+      } finally {
+        rmSync(hold, { force: true });
+      }
       await until(async () => {
         let connected;
         try {
@@ -442,6 +460,7 @@ export async function desktopScenarios({
           }
           await native.close().catch(() => {});
           native = connected;
+          onConnect(native);
           return true;
         } catch {
           await connected?.close().catch(() => {});

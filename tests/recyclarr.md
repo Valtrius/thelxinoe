@@ -7,6 +7,9 @@ snapshots, redacted output, and browser trace directory.
 
 Failure cases to cover before implementation:
 
+- The Linux runner owns the fixture directories with a UID other than 1000.
+  Run the qualification CLI and Arr fixtures with the invoking process's UID/GID
+  so bind mounts remain writable and their generated keys can be removed.
 - A command exits successfully but an idle installation is reported unhealthy.
 - Installation or recreation starts the job definition's `--version` command.
   Immediate preflight can observe it running and attempt an HTTP activity check

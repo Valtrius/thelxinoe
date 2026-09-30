@@ -135,6 +135,9 @@ try {
       mode,
       output,
       credentials,
+      onConnect: (connection) => {
+        native = connection;
+      },
     });
   await mode('base');
   report.passed = true;

@@ -10,6 +10,8 @@ const image =
 const project = `thelxinoe-recyclarr-qualification-${Date.now()}`;
 const root = resolve(`.local/${project}`);
 const key = randomBytes(16).toString('hex');
+const uid = process.getuid?.() ?? 1000;
+const gid = process.getgid?.() ?? 1000;
 const docker = (...args) =>
   execFileSync('docker', args, {
     encoding: 'utf8',
@@ -69,7 +71,7 @@ function run(...args) {
     '--rm',
     '-t',
     '--user',
-    '1000:1000',
+    `${uid}:${gid}`,
     '--network',
     project,
     '-e',
@@ -105,9 +107,9 @@ try {
         '-v',
         `${root}/${kind}:/config`,
         '-e',
-        'PUID=1000',
+        `PUID=${uid}`,
         '-e',
-        'PGID=1000',
+        `PGID=${gid}`,
         spec.image,
       ),
     );

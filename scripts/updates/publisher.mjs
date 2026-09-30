@@ -166,6 +166,11 @@ const server = createServer(
           offset += size
         ) {
           response.write(bytes.subarray(offset, offset + size));
+          while (
+            existsSync(join(lab.root, 'hold-desktop-download')) &&
+            !response.destroyed
+          )
+            await delay(100);
           await delay(100);
         }
         response.end();
