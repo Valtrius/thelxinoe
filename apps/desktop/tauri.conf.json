@@ -13,11 +13,28 @@
     "windows": [
       {
         "title": "Thelxinoe",
+        "label": "main",
         "width": 1360,
         "height": 900,
         "minWidth": 760,
         "minHeight": 560,
-        "decorations": false
+        "decorations": false,
+        "visible": false
+      },
+      {
+        "title": "Thelxinoe",
+        "label": "splashscreen",
+        "url": "splashscreen.html",
+        "backgroundColor": "#05070b",
+        "width": 420,
+        "height": 240,
+        "resizable": false,
+        "decorations": false,
+        "center": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": true,
+        "visible": false
       }
     ],
     "security": {

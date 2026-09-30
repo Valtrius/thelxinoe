@@ -1,0 +1,16 @@
+@import 'tailwindcss' source(none);
+@source '../splashscreen.html';
+
+@custom-variant light (@media (prefers-color-scheme: light));
+
+@theme {
+  --animate-splash-load: splash-load 1.2s ease-in-out infinite;
+  @keyframes splash-load {
+    from {
+      transform: translateX(-110%);
+    }
+    to {
+      transform: translateX(350%);
+    }
+  }
+}

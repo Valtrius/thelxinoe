@@ -9,6 +9,9 @@ export default defineConfig({
     rolldownOptions: {
       input: {
         app: fileURLToPath(new URL('./index.html', import.meta.url)),
+        splashscreen: fileURLToPath(
+          new URL('./splashscreen.html', import.meta.url),
+        ),
         offline: fileURLToPath(new URL('./offline.html', import.meta.url)),
       },
     },

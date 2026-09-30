@@ -6,9 +6,32 @@ mod tools;
 mod updates;
 mod utils;
 use serde_json::Value;
-use tauri::Manager;
+use tauri::{Manager, webview::PageLoadEvent};
 use tauri_plugin_opener::OpenerExt;
-use tauri_plugin_window_state::{AppHandleExt, StateFlags};
+use tauri_plugin_window_state::{AppHandleExt, StateFlags, WindowExt};
+
+#[tauri::command]
+fn finish_startup(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("Only the main window can finish application startup".into());
+    }
+    if window.is_visible().map_err(|e| e.to_string())? {
+        return Ok(());
+    }
+    if let Err(error) = window.restore_state(StateFlags::MAXIMIZED) {
+        tracing::warn!(%error, "Could not restore desktop maximized state");
+    }
+    window.show().map_err(|e| e.to_string())?;
+    if let Some(splashscreen) = app.get_webview_window("splashscreen")
+        && let Err(error) = splashscreen.close()
+    {
+        tracing::warn!(%error, "Could not close desktop splashscreen");
+    }
+    if let Err(error) = window.set_focus() {
+        tracing::warn!(%error, "Could not focus desktop window");
+    }
+    Ok(())
+}
 
 #[tauri::command]
 fn open_provider_url(app: tauri::AppHandle, value: String) -> Result<(), String> {
@@ -240,7 +263,8 @@ fn main() {
     tauri::Builder::default()
         .plugin(
             tauri_plugin_window_state::Builder::default()
-                .with_state_flags(window_state)
+                .with_state_flags(StateFlags::POSITION | StateFlags::SIZE)
+                .with_denylist(&["splashscreen"])
                 .build(),
         )
         .manage(mpv::DesktopPlayback::default())
@@ -254,7 +278,18 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .on_page_load(|webview, payload| {
+            if webview.label() == "splashscreen"
+                && matches!(payload.event(), PageLoadEvent::Finished)
+                && let Err(error) = webview.window().show()
+            {
+                tracing::warn!(%error, "Could not show desktop splashscreen");
+            }
+        })
         .on_window_event(move |window, event| {
+            if window.label() != "main" {
+                return;
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let app = window.app_handle().clone();
@@ -272,6 +307,7 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            finish_startup,
             server_url,
             change_server,
             backend_request,
