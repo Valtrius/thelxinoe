@@ -17,9 +17,12 @@ export async function installUiFixture(
       can_recreate: boolean;
     };
     managedNzbget?: boolean;
+    managerKind?: 'radarr' | 'sonarr' | 'lidarr';
     serviceUpdateState?: string;
   } = {},
 ) {
+  const managerKind = options.managerKind ?? 'radarr';
+  const managerName = managerKind[0].toUpperCase() + managerKind.slice(1);
   const user = {
     id: 'layout-fixture',
     username: 'Layout viewer',
@@ -205,13 +208,13 @@ export async function installUiFixture(
       return json({
         items: [
           {
-            id: 'manager-radarr',
-            name: 'Radarr',
-            kind: 'radarr',
-            container_id: 'container-radarr',
-            port: 7878,
-            url_base: '/services/radarr',
-            access_url: '/services/radarr',
+            id: `manager-${managerKind}`,
+            name: managerName,
+            kind: managerKind,
+            container_id: `container-${managerKind}`,
+            port: { radarr: 7878, sonarr: 8989, lidarr: 8686 }[managerKind],
+            url_base: `/services/${managerKind}`,
+            access_url: `/services/${managerKind}`,
             version: '6.0.0',
             defaults: {
               root_folder: '/media/movies',
@@ -255,7 +258,7 @@ export async function installUiFixture(
           },
         ],
       });
-    if (path === '/admin/managers/manager-radarr/options')
+    if (path === `/admin/managers/manager-${managerKind}/options`)
       return json({
         roots: [{ id: 1, path: '/media/movies' }],
         profiles: [{ id: 1, name: 'HD-1080p' }],

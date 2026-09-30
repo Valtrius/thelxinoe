@@ -199,6 +199,7 @@ async fn release_notes(client: &Client, kind: &str, version: &str) -> Option<Str
         "bazarr" => "morpheus65535/bazarr",
         "nzbget" => "nzbgetcom/nzbget",
         "seerr" => "seerr-team/seerr",
+        "recyclarr" => "recyclarr/recyclarr",
         _ => return None,
     };
     let tag = format!("v{version}");

@@ -319,6 +319,20 @@ async fn request(
         false,
     )
     .await?;
+    let kind = if input.media_type == "movie" {
+        "radarr"
+    } else {
+        "sonarr"
+    };
+    let configured = c.get(&format!("settings/{kind}")).await?;
+    body["is4k"] = json!(
+        configured
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|entry| entry["name"] == format!("Thelxinoe {kind}"))
+            .is_some_and(|entry| entry["is4k"] == true)
+    );
     if input.media_type == "tv" {
         body["seasons"] = json!(input.seasons);
     }
@@ -541,13 +555,20 @@ async fn sync_manager(c: &Connection<'_>, s: &Service, defaults: &Defaults) -> R
     let manager = Connection::open(state, s).await?;
     let url = url::Url::parse(&manager.base).map_err(|_| unavailable())?;
     let profiles = manager.get("qualityprofile").await?;
-    let name = profiles
+    let profile = profiles
         .as_array()
         .into_iter()
         .flatten()
         .find(|p| p["id"] == defaults.quality_profile)
-        .and_then(|p| p["name"].as_str())
         .ok_or_else(unavailable)?;
+    let name = profile["name"].as_str().ok_or_else(unavailable)?;
+    fn uhd(items: &Value) -> bool {
+        items.as_array().into_iter().flatten().any(|item| {
+            item["allowed"] == true
+                && (item["quality"]["resolution"] == 2160 || uhd(&item["items"]))
+        })
+    }
+    let is4k = uhd(&profile["items"]);
     let path = format!("settings/{}", s.kind);
     let existing = c.get(&path).await?;
     let owned_name = format!("Thelxinoe {}", s.kind);
@@ -556,7 +577,7 @@ async fn sync_manager(c: &Connection<'_>, s: &Service, defaults: &Defaults) -> R
         .into_iter()
         .flatten()
         .find(|v| v["name"] == owned_name);
-    let body = json!({"name":owned_name,"hostname":url.host_str(),"port":s.port,"apiKey":manager.key,"useSsl":false,"baseUrl":manager.url_base,"activeProfileId":defaults.quality_profile,"activeProfileName":name,"activeDirectory":defaults.root_folder,"is4k":false,"isDefault":true,"syncEnabled":true,"preventSearch":!defaults.monitored,"minimumAvailability":"released","enableSeasonFolders":true});
+    let body = json!({"name":owned_name,"hostname":url.host_str(),"port":s.port,"apiKey":manager.key,"useSsl":false,"baseUrl":manager.url_base,"activeProfileId":defaults.quality_profile,"activeProfileName":name,"activeDirectory":defaults.root_folder,"is4k":is4k,"isDefault":true,"syncEnabled":true,"preventSearch":!defaults.monitored,"minimumAvailability":"released","enableSeasonFolders":true});
     if previous.is_some_and(|previous| {
         body.as_object()
             .unwrap()

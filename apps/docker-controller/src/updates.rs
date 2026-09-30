@@ -158,7 +158,7 @@ pub(super) async fn preflight(
     }
     let raw = verified(&s, &d).await?;
     let t = templates::find(&s.kind).ok_or_else(unavailable)?;
-    let discovered = engine(&format!("/distribution/{}:latest/json", t.repository)).await?;
+    let discovered = engine(&format!("/distribution/{}:{}/json", t.repository, t.tag)).await?;
     let digest = discovered["Descriptor"]["digest"]
         .as_str()
         .ok_or_else(unavailable)?;
@@ -293,7 +293,16 @@ pub(super) async fn copy_state(
             .to_owned(),
         ]
     };
-    let spec = json!({"Image":current_image().await?,"Cmd":command,"Healthcheck":{"Test":["NONE"]},"Labels":{"app.thelxinoe.update":operation,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":"none","ReadonlyRootfs":true,"CapDrop":["ALL"],"CapAdd":["CHOWN","FOWNER","DAC_OVERRIDE"],"SecurityOpt":["no-new-privileges:true"],"Memory":536870912,"NanoCpus":1000000000u64,"PidsLimit":32,"Mounts":[{"Type":"bind","Source":source,"Target":"/source","ReadOnly":true},{"Type":"bind","Source":destination,"Target":"/destination"}]}});
+    let mut spec = json!({"Image":current_image().await?,"Cmd":command,"Healthcheck":{"Test":["NONE"]},"Labels":{"app.thelxinoe.update":operation,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":"none","ReadonlyRootfs":true,"CapDrop":["ALL"],"CapAdd":["CHOWN","FOWNER","DAC_OVERRIDE"],"SecurityOpt":["no-new-privileges:true"],"Memory":536870912,"NanoCpus":1000000000u64,"PidsLimit":32,"Mounts":[{"Type":"bind","Source":source,"Target":"/source","ReadOnly":true},{"Type":"bind","Source":destination,"Target":"/destination"}]}});
+    if label == "takeover" && load(operation)?.kind == "recyclarr" {
+        let hash = std::fs::read_to_string(
+            store::root()
+                .join("adoption-reviews")
+                .join(format!("{operation}.config-hash")),
+        )
+        .map_err(|_| unavailable())?;
+        spec["Env"] = json!([format!("THELXINOE_RECYCLARR_IMPORT_HASH={hash}")]);
+    }
     let value = request(
         Method::POST,
         &format!("/containers/create?name={name}"),
@@ -400,6 +409,9 @@ async fn check(d: &Deployment, u: &mut Update) -> Result<()> {
     write(u)
 }
 async fn candidate(d: &Deployment, u: &mut Update, config: &str) -> Result<()> {
+    if u.old.kind == "recyclarr" {
+        return recyclarr::qualify(d, &u.id, &u.old, &u.candidate, config).await;
+    }
     let identity = Identity::service(&u.old.kind, &u.old.spec)?;
     let data = path(&u.id).join("scratch-data");
     for sub in ["movies", "tv", "music", "downloads"] {
@@ -569,7 +581,7 @@ async fn replace(d: &Deployment, u: &mut Update) -> Result<()> {
     accepted.phase = "active".into();
     save(&accepted)?;
     started?;
-    if u.was_running {
+    if u.was_running && u.old.kind != "recyclarr" {
         contract(d, u, &source, &container, false).await?;
     }
     u.stage = "committed".into();

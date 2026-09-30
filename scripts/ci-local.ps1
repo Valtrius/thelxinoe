@@ -1,6 +1,7 @@
 param(
     [string[]]$Phases = @(),
-    [string]$OutputDirectory = ''
+    [string]$OutputDirectory = '',
+    [switch]$Background
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,6 +12,20 @@ $runDirectory = if ($OutputDirectory) {
     Join-Path (Get-Location) ('.local/ci/' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + $PID)
 }
 New-Item -ItemType Directory -Path $runDirectory -Force | Out-Null
+if ($Background) {
+    foreach ($phase in $Phases) {
+        if ($phase -notmatch '^[a-z-]+$') { throw "Invalid CI phase: $phase" }
+    }
+    $arguments = @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass',
+        '-File', ('"' + $PSCommandPath + '"'),
+        '-OutputDirectory', ('"' + $runDirectory + '"')
+    ) + $Phases
+    $runner = Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -WindowStyle Hidden -PassThru
+    Write-Output "Local CI started independently (PID $($runner.Id))."
+    Write-Output "Report: $runDirectory\index.html"
+    exit 0
+}
 $logPath = Join-Path $runDirectory 'output.log'
 $resultPath = Join-Path $runDirectory 'result.json'
 $started = (Get-Date).ToUniversalTime().ToString('o')
@@ -23,7 +38,13 @@ try {
 } catch {
     $_ | Out-String | Add-Content -LiteralPath $logPath
 } finally {
-    if (-not (Test-Path -LiteralPath $resultPath)) {
+    if (Test-Path -LiteralPath $resultPath) {
+        $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+        if (-not $result.finished) {
+            & node scripts/ci-interrupted.mjs $runDirectory
+            $exitCode = 1
+        }
+    } else {
         @{
             passed = $false
             exit_code = $exitCode

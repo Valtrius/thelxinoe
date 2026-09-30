@@ -716,7 +716,7 @@ test('server settings contain display defaults and the version update icon', asy
   expect(fixture.unexpected).toEqual([]);
 });
 
-test('all seven media service tabs stay on one row at desktop and mobile widths', async ({
+test('all eight media service tabs stay on one row at desktop and mobile widths', async ({
   page,
 }) => {
   const fixture = await installUiFixture(page, {
@@ -726,7 +726,7 @@ test('all seven media service tabs stay on one row at desktop and mobile widths'
   await page.goto('/');
   const nav = page.getByRole('navigation', { name: 'Select service' });
   const tabs = nav.getByRole('button');
-  await expect(tabs).toHaveCount(7);
+  await expect(tabs).toHaveCount(8);
   for (const width of [1440, 1024, 390]) {
     await page.setViewportSize({ width, height: 900 });
     const geometry = await tabs.evaluateAll((nodes) =>

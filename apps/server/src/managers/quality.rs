@@ -120,6 +120,11 @@ pub(super) async fn ensure_defaults(state: &AppState, service: &Service) -> Resu
     if serde_json::from_value::<Defaults>(service.defaults.clone()).is_ok() {
         return Ok(());
     }
+    if matches!(service.kind.as_str(), "radarr" | "sonarr")
+        && recyclarr::owns(state, &service.id).await?
+    {
+        return Ok(());
+    }
     let c = Connection::open(state, service).await?;
     let profiles = c.get("qualityprofile").await?;
     let profile = if matches!(service.kind.as_str(), "radarr" | "sonarr") {
@@ -175,6 +180,9 @@ async fn schema(
 ) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
     let service = service(&state, &id).await?;
+    if recyclarr::owns(&state, &id).await? {
+        return Err(ApiError::conflict("Configure guide profiles in Recyclarr"));
+    }
     let c = Connection::open(&state, &service).await?;
     Ok(Json(
         json!({"qualities":available(&template(&c).await?).iter().map(|r| r["quality"].clone()).collect::<Vec<_>>()}),
@@ -196,6 +204,9 @@ async fn create(
     Json(input): Json<Create>,
 ) -> Result<Json<Value>> {
     let actor = security::require(&state, &headers, Capability::ManageServer).await?;
+    if recyclarr::owns(&state, &id).await? {
+        return Err(ApiError::conflict("Configure guide profiles in Recyclarr"));
+    }
     let service = service(&state, &id).await?;
     let _guard = state.managers.guard.service(&service.kind).await;
     let c = Connection::open(&state, &service).await?;

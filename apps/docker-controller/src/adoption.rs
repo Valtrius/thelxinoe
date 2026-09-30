@@ -69,7 +69,11 @@ async fn inspect(d: &Deployment, input: &Preview) -> Result<(Value, String)> {
     }
     if raw["HostConfig"]["PortBindings"]
         .as_object()
-        .is_some_and(|ports| ports.keys().any(|p| p != &format!("{}/tcp", t.port)))
+        .is_some_and(|ports| {
+            ports
+                .keys()
+                .any(|p| Some(p.clone()) != t.port.map(|port| format!("{port}/tcp")))
+        })
     {
         return Err(conflict(
             "Transfer supports only the service's standard HTTP port",
@@ -91,12 +95,14 @@ pub(super) async fn preview(
         kind: input.kind,
         original: raw,
         image,
-        deployment: d.id,
+        deployment: d.id.clone(),
     };
     persisted(store::write_json(&review_path(&review.id), &review))?;
-    Ok(Json(
-        json!({"review_id":review.id,"kind":review.kind,"container_id":review.original["Id"],"name":review.original["Name"].as_str().unwrap_or("").trim_start_matches('/'),"image":review.image,"source_config":mount(&review.original,"/config")?["Source"],"managed_config":format!("{}/services/{}/appdata",d.appdata_source,review.id),"media":d.media_source,"compose_project":review.original["Config"]["Labels"]["com.docker.compose.project"],"compose_service":review.original["Config"]["Labels"]["com.docker.compose.service"],"ports":review.original["HostConfig"]["PortBindings"]}),
-    ))
+    let mut value = json!({"review_id":review.id,"kind":review.kind,"container_id":review.original["Id"],"name":review.original["Name"].as_str().unwrap_or("").trim_start_matches('/'),"image":review.image,"source_config":mount(&review.original,"/config")?["Source"],"managed_config":format!("{}/services/{}/appdata",d.appdata_source,review.id),"media":d.media_source,"compose_project":review.original["Config"]["Labels"]["com.docker.compose.project"],"compose_service":review.original["Config"]["Labels"]["com.docker.compose.service"],"ports":review.original["HostConfig"]["PortBindings"]});
+    if review.kind == "recyclarr" {
+        value["configuration"] = recyclarr::review_config(&d, &review.id, &review.original).await?;
+    }
+    Ok(Json(value))
 }
 #[derive(Deserialize)]
 pub(super) struct Adopt {
@@ -133,6 +139,9 @@ async fn checked(d: &Deployment, input: &Adopt) -> Result<Review> {
         return Err(conflict(
             "The source changed after review; review the transfer again",
         ));
+    }
+    if review.kind == "recyclarr" {
+        let _ = recyclarr::review_config(d, &review.id, &current).await?;
     }
     Ok(Review {
         original: current,
@@ -217,7 +226,13 @@ pub(super) async fn adopt(
     aliases.sort();
     aliases.dedup();
     aliases.retain(|alias| !alias.is_empty());
-    let spec = json!({"Image":review.image,"Env":review.original["Config"]["Env"],"Labels":{"app.thelxinoe.managed-id":key,"app.thelxinoe.deployment":d.id,"app.thelxinoe.kind":t.kind},"HostConfig":{"Mounts":mounts,"NetworkMode":d.network,"RestartPolicy":{"Name":"unless-stopped"},"PortBindings":review.original["HostConfig"]["PortBindings"]},"NetworkingConfig":{"EndpointsConfig":{d.network.clone():{"Aliases":aliases}}}});
+    let mut spec = json!({"Image":review.image,"Env":review.original["Config"]["Env"],"Labels":{"app.thelxinoe.managed-id":key,"app.thelxinoe.deployment":d.id,"app.thelxinoe.kind":t.kind},"HostConfig":{"Mounts":mounts,"NetworkMode":d.network,"RestartPolicy":{"Name":"unless-stopped"},"PortBindings":review.original["HostConfig"]["PortBindings"]},"NetworkingConfig":{"EndpointsConfig":{d.network.clone():{"Aliases":aliases}}}});
+    if t.kind == "recyclarr" {
+        spec["User"] = review.original["Config"]["User"].clone();
+        spec["Cmd"] = json!(["--version"]);
+        spec["Env"] = json!(["TZ=UTC", "TERM=dumb"]);
+        spec["HostConfig"]["RestartPolicy"] = json!({"Name":"no"});
+    }
     let mut s = Managed {
         id: key.clone(),
         kind: input.kind,
@@ -301,7 +316,7 @@ pub(super) async fn complete(d: &Deployment, s: &mut Managed) -> Result<Json<Val
         return Err(conflict("Transfer is not ready for API acceptance"));
     }
     let raw = updates::verified(s, d).await?;
-    if raw["State"]["Running"] != true {
+    if s.kind != "recyclarr" && raw["State"]["Running"] != true {
         return Err(conflict("Managed replacement is not running"));
     }
     original_stopped(&transfer).await?;

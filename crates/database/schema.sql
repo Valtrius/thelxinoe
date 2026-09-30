@@ -564,8 +564,8 @@ CREATE TABLE stack_provisions (
     id TEXT NOT NULL PRIMARY KEY,
     kind TEXT NOT NULL UNIQUE,
     actor_id TEXT NOT NULL REFERENCES users(id),
-    host_port INTEGER NOT NULL,
-    credential BLOB NOT NULL,
+    host_port INTEGER,
+    credential BLOB,
     state TEXT NOT NULL,
     container_id TEXT,
     service_id TEXT,
@@ -575,6 +575,41 @@ CREATE TABLE stack_provisions (
     origin TEXT NOT NULL DEFAULT 'installed' CHECK(origin IN ('installed','adopted')),
     original_url_base TEXT NOT NULL DEFAULT '',
     native_url TEXT NOT NULL DEFAULT ''
+) STRICT;
+
+CREATE TABLE recyclarr_settings (
+    timezone TEXT NOT NULL,
+    provision_id TEXT PRIMARY KEY REFERENCES stack_provisions(id) ON DELETE CASCADE,
+    paused INTEGER NOT NULL DEFAULT 0 CHECK(paused IN (0,1)),
+    hour INTEGER NOT NULL DEFAULT 4 CHECK(hour BETWEEN 0 AND 23),
+    next_run INTEGER NOT NULL,
+    actor_id TEXT NOT NULL REFERENCES users(id)
+) STRICT;
+
+CREATE TABLE recyclarr_targets (
+    service_id TEXT PRIMARY KEY REFERENCES manager_services(id) ON DELETE CASCADE,
+    provision_id TEXT NOT NULL REFERENCES recyclarr_settings(provision_id) ON DELETE CASCADE,
+    trash_id TEXT NOT NULL,
+    revision TEXT NOT NULL,
+    profile_id INTEGER,
+    profile_name TEXT,
+    applied_revision TEXT,
+    error TEXT,
+    quality_sizes INTEGER NOT NULL DEFAULT 0 CHECK(quality_sizes IN (0,1)),
+    reset_scores INTEGER NOT NULL DEFAULT 1 CHECK(reset_scores IN (0,1)),
+    groups TEXT NOT NULL DEFAULT '{"add":[],"skip":[]}',
+    overrides TEXT NOT NULL DEFAULT '{}'
+) STRICT;
+
+CREATE TABLE recyclarr_runs (
+    id TEXT PRIMARY KEY,
+    provision_id TEXT NOT NULL REFERENCES recyclarr_settings(provision_id) ON DELETE CASCADE,
+    actor_id TEXT NOT NULL REFERENCES users(id),
+    state TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    evidence TEXT NOT NULL DEFAULT '{}',
+    error TEXT
 ) STRICT;
 
 CREATE TABLE service_update_policy (

@@ -148,6 +148,11 @@ async fn idle(state: &AppState, provision: &str) -> Result<()> {
     if stack::confirmed_stopped(live)? {
         return Ok(());
     }
+    if kind == "recyclarr" {
+        return Err(ApiError::conflict(
+            "Stop the Recyclarr job definition before updating",
+        ));
+    }
     if ["radarr", "sonarr", "lidarr"].contains(&kind.as_str()) {
         operations::ensure_idle(state, &service).await
     } else {

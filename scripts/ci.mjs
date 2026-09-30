@@ -121,6 +121,9 @@ function containers() {
     );
   npm('run', 'test:service-access', '--', '--built');
   node('scripts/test-service-connections.mjs');
+  node('scripts/qualify-recyclarr.mjs');
+  node('scripts/test-recyclarr-cleanup.mjs');
+  node('scripts/test-recyclarr.mjs');
   cleanup('docker', [
     'compose',
     '-f',

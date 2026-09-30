@@ -11,6 +11,7 @@ mod indexers;
 mod metadata;
 mod operations;
 mod quality;
+pub(crate) mod recyclarr;
 mod requests;
 mod retention;
 mod seerr;
@@ -56,6 +57,7 @@ pub(crate) struct Runtime {
     connection_locks:
         std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     connection_wake: tokio::sync::Notify,
+    recyclarr_tick: std::sync::atomic::AtomicI64,
     #[cfg(test)]
     pub(crate) docker: std::sync::Mutex<std::collections::HashMap<String, Value>>,
 }
@@ -89,6 +91,7 @@ impl Runtime {
             maintenance: Default::default(),
             connection_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
             connection_wake: tokio::sync::Notify::new(),
+            recyclarr_tick: std::sync::atomic::AtomicI64::new(0),
             #[cfg(test)]
             docker: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
@@ -101,6 +104,7 @@ pub(crate) fn router() -> Router<AppState> {
         .merge(bindings::router())
         .merge(controls::router())
         .merge(quality::router())
+        .merge(recyclarr::router())
         .merge(seerr::router())
         .merge(indexers::router())
         .merge(metadata::router())
@@ -601,12 +605,17 @@ async fn defaults(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(input): Json<Defaults>,
+    Json(mut input): Json<Defaults>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
     let kind = service(&state, &id).await?.kind;
     let _guard = state.managers.guard.service(&kind).await;
     let s = service(&state, &id).await?;
+    if recyclarr::owns(&state, &id).await? {
+        input.quality_profile = s.defaults["quality_profile"]
+            .as_i64()
+            .ok_or_else(|| ApiError::conflict("Wait for Recyclarr's initial sync"))?;
+    }
     let c = Connection::open(&state, &s).await?;
     if input.root_folder != canonical_root(&s.kind)
         || !c.get("qualityprofile").await?.as_array().is_some_and(|a| {

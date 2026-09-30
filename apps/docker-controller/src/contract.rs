@@ -2,6 +2,86 @@
 use serde_json::{Value, json};
 use std::path::Path;
 
+/// Read-only preview validation in a disposable worker, with no Docker socket.
+pub async fn recyclarr() -> anyhow::Result<()> {
+    use sha2::{Digest, Sha256};
+    anyhow::ensure!(
+        !Path::new("/var/run/docker.sock").exists()
+            && !Path::new("/run/thelxinoe/controller.sock").exists(),
+        "Privileged socket exposed"
+    );
+    let targets: Vec<Value> = serde_json::from_str(&std::env::args().nth(2).unwrap_or_default())?;
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let mut hashes = json!({});
+    for target in targets {
+        let service = target["service_id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing target identity"))?;
+        anyhow::ensure!(
+            service.len() == 36 && service.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'),
+            "Invalid target identity"
+        );
+        let secret = std::fs::read_to_string(format!("/runtime/{service}"))?;
+        let url = target["url"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing target URL"))?;
+        let mut state = json!({});
+        for endpoint in ["qualityprofile", "customformat", "qualitydefinition"] {
+            let mut response = client
+                .get(format!("{url}/api/v3/{endpoint}"))
+                .header("X-Api-Key", &secret)
+                .send()
+                .await?;
+            anyhow::ensure!(
+                ![401, 403].contains(&response.status().as_u16()),
+                "Target API authorization failed"
+            );
+            anyhow::ensure!(
+                response.status().is_success(),
+                "Target settings unavailable"
+            );
+            let mut bytes = Vec::new();
+            while let Some(chunk) = response.chunk().await? {
+                anyhow::ensure!(
+                    bytes.len() + chunk.len() <= 16 * 1024 * 1024,
+                    "Target settings exceeded their limit"
+                );
+                bytes.extend(chunk);
+            }
+            let mut value: Value = serde_json::from_slice(&bytes)?;
+            if let Some(rows) = value.as_array_mut() {
+                rows.sort_by_key(|r| r["id"].as_i64().unwrap_or(0));
+            }
+            if endpoint == "qualityprofile" {
+                let matching = value
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|p| p["name"] == target["name"])
+                    .collect::<Vec<_>>();
+                anyhow::ensure!(
+                    matching.len() <= 1
+                        && matching.first().is_none_or(|p| target["tracked_id"]
+                            .as_i64()
+                            .is_some_and(|id| p["id"] == id)),
+                    "Guide profile name collides with an unowned profile"
+                );
+            }
+            state[endpoint] = value;
+        }
+        hashes[service] = json!(format!(
+            "{:x}",
+            Sha256::digest(state.to_string().as_bytes())
+        ));
+    }
+    println!("{hashes}");
+    Ok(())
+}
+
 pub async fn run(kind: &str, isolated: bool) -> anyhow::Result<()> {
     let template =
         crate::templates::find(kind).ok_or_else(|| anyhow::anyhow!("Unsupported adapter"))?;
@@ -52,7 +132,9 @@ pub async fn run(kind: &str, isolated: bool) -> anyhow::Result<()> {
     );
     let base = format!(
         "http://127.0.0.1:{}{}",
-        template.port,
+        template
+            .port
+            .ok_or_else(|| anyhow::anyhow!("Job workloads have no HTTP endpoint"))?,
         url_base.trim_end_matches('/')
     );
     if isolated && kind == "bazarr" {

@@ -76,6 +76,9 @@ test('installation keeps the workspace empty until the API is connected', async 
   ).toBeVisible();
   await expect(
     page.getByRole('combobox', { name: 'Quality profile', exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Configure guide profile in Recyclarr' }),
   ).toBeVisible();
   await expect(
     page.getByRole('button', { name: 'Test connection', exact: true }),
@@ -343,6 +346,7 @@ for (const reducedMotion of ['no-preference', 'reduce'] as const) {
     const fixture = await installUiFixture(page, {
       role: 'admin',
       settingsSection: 'services',
+      managerKind: 'lidarr',
     });
     const qualities = [
       { id: 1, name: 'WEBDL-1080p', resolution: 1080 },
@@ -351,13 +355,13 @@ for (const reducedMotion of ['no-preference', 'reduce'] as const) {
       { id: 4, name: 'Remux-2160p', resolution: 2160 },
     ];
     await page.route(
-      '**/api/v1/admin/managers/manager-radarr/quality-profiles',
+      '**/api/v1/admin/managers/manager-lidarr/quality-profiles',
       (route) => route.fulfill({ json: { qualities } }),
     );
     await page.goto('/');
     await page
       .getByRole('navigation', { name: 'Select service' })
-      .getByRole('button', { name: 'Radarr', exact: true })
+      .getByRole('button', { name: 'Lidarr', exact: true })
       .click();
     await page.getByRole('button', { name: 'Create quality profile' }).click();
     const dialog = page.getByRole('dialog');
@@ -717,7 +721,7 @@ for (const width of [1440, 390]) {
   });
 }
 
-for (const kind of ['radarr', 'sonarr', 'lidarr']) {
+for (const kind of ['lidarr']) {
   test(`${kind} creates and selects a quality profile through a modal`, async ({
     page,
   }, testInfo) => {
@@ -900,6 +904,7 @@ test('quality dragging cancels with Escape and scrolls a long list to its drop t
   const fixture = await installUiFixture(page, {
     role: 'admin',
     settingsSection: 'services',
+    managerKind: 'lidarr',
   });
   const qualities = Array.from({ length: 24 }, (_, i) => ({
     id: i + 1,
@@ -907,13 +912,13 @@ test('quality dragging cancels with Escape and scrolls a long list to its drop t
     resolution: 1080,
   }));
   await page.route(
-    '**/api/v1/admin/managers/manager-radarr/quality-profiles',
+    '**/api/v1/admin/managers/manager-lidarr/quality-profiles',
     (route) => route.fulfill({ json: { qualities } }),
   );
   await page.goto('/');
   await page
     .getByRole('navigation', { name: 'Select service' })
-    .getByRole('button', { name: 'Radarr', exact: true })
+    .getByRole('button', { name: 'Lidarr', exact: true })
     .click();
   await page.getByRole('button', { name: 'Create quality profile' }).click();
   const dialog = page.getByRole('dialog');

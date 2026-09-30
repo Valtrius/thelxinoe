@@ -23,6 +23,11 @@ mod templates;
 async fn main() -> anyhow::Result<()> {
     if let Some(command) = std::env::args().nth(1) {
         return match command.as_str() {
+            "recyclarr-check" => contract::recyclarr().await,
+            "recyclarr-fixture" => {
+                std::future::pending::<()>().await;
+                Ok(())
+            }
             "adapter-contract" => {
                 contract::run(&std::env::args().nth(2).unwrap_or_default(), true).await
             }

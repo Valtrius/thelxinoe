@@ -18,6 +18,10 @@ fn runtime_state(expected: &Value, live: &Result<Value>) -> Value {
 
 pub(super) fn observation(s: &Managed, live: &Result<Value>) -> Value {
     let mut value = runtime_state(&s.expected, live);
+    if s.kind == "recyclarr" && value["status"] == "stopped" && s.phase == "active" {
+        value["status"] = json!("ready");
+    }
+    value["workload"] = json!(templates::find(&s.kind).map(|t| t.workload));
     let transfer = adoption::pending(s);
     let can_recreate = recoverable(s) && !transfer && value["existence"] == "missing";
     let can_remove = !transfer
@@ -153,7 +157,9 @@ pub(super) async fn resume_creation(d: &Deployment, s: &mut Managed) -> Result<J
     verify_recorded(d, s, &raw).await?;
     s.container = container;
     save(s)?;
-    updates::start(&s.container).await?;
+    if !templates::find(&s.kind).is_some_and(|template| template.workload == "job") {
+        updates::start(&s.container).await?;
+    }
     let raw = engine(&format!("/containers/{}/json", s.container)).await?;
     verify_recorded(d, s, &raw).await?;
     s.expected = policy::fingerprint(&raw);

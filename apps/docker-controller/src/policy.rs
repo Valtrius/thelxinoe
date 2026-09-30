@@ -177,6 +177,11 @@ pub fn validate_adoption(
     }
     let config = &container["Config"];
     for key in ["Cmd", "Entrypoint", "User", "WorkingDir", "Healthcheck"] {
+        if t.kind == "recyclarr" && key == "User" {
+            crate::identity::Identity::from_user(config)
+                .map_err(|_| "Recyclarr requires a numeric non-root user")?;
+            continue;
+        }
         if !same_default(&config[key], &image["Config"][key]) {
             return Err("Custom commands, users or health checks are not supported");
         }
@@ -194,7 +199,8 @@ pub fn validate_adoption(
             continue;
         }
         let (key, value) = value.split_once('=').ok_or("Invalid environment entry")?;
-        if !matches!(key, "PUID" | "PGID" | "TZ" | "UMASK")
+        if !(matches!(key, "PUID" | "PGID" | "TZ" | "UMASK")
+            || (t.kind == "recyclarr" && key == "CRON_SCHEDULE"))
             || value.len() > 100
             || value.contains(['\n', '\r'])
         {

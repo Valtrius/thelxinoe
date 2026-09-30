@@ -138,7 +138,7 @@ async fn login(
 #[derive(Deserialize)]
 struct Install {
     kind: String,
-    host_port: u16,
+    host_port: Option<u16>,
     #[serde(default)]
     native_url: String,
 }
@@ -150,20 +150,33 @@ async fn install(
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
     if !support::native_url(&input.native_url)
         || input.native_url.len() > 2000
-        || input.host_port < 1024
+        || (input.kind != "recyclarr" && !input.host_port.is_some_and(|p| p >= 1024))
+        || (input.kind == "recyclarr"
+            && (input.host_port.is_some() || !input.native_url.is_empty()))
         || !matches!(
             input.kind.as_str(),
-            "radarr" | "sonarr" | "lidarr" | "bazarr" | "prowlarr" | "nzbget" | "seerr"
+            "radarr"
+                | "sonarr"
+                | "lidarr"
+                | "bazarr"
+                | "prowlarr"
+                | "nzbget"
+                | "seerr"
+                | "recyclarr"
         )
     {
         return Err(ApiError::bad("Choose a supported service and local port"));
     }
     let key = id();
     let returned = key.clone();
-    let credential = state.secrets.encrypt(
-        &format!("provision:{key}"),
-        id().replace('-', "").as_bytes(),
-    )?;
+    let credential = if input.kind == "recyclarr" {
+        None
+    } else {
+        Some(state.secrets.encrypt(
+            &format!("provision:{key}"),
+            id().replace('-', "").as_bytes(),
+        )?)
+    };
     let inserted = storage::install(&state.db, input, p, key, credential).await?;
     if !inserted {
         return Err(ApiError::conflict(
@@ -282,7 +295,10 @@ async fn action(
         .find(|s| s["id"] == key)
         .cloned()
         .ok_or_else(ApiError::not_found)?;
-    if matches!(input.action.as_str(), "stop" | "restart") && !confirmed_stopped(&container)? {
+    if matches!(input.action.as_str(), "stop" | "restart")
+        && !confirmed_stopped(&container)?
+        && container["workload"] != "job"
+    {
         let c = container["container_id"]
             .as_str()
             .unwrap_or_default()
@@ -362,8 +378,15 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
         .map_err(|e| anyhow::anyhow!("{}", e.2))?;
         anyhow::bail!("Provisioning administrator no longer has access");
     }
-    let secret_input =
-        String::from_utf8(state.secrets.decrypt(&format!("provision:{key}"), &row.3)?)?;
+    let secret_input = if let Some(encrypted) = &row.3 {
+        String::from_utf8(
+            state
+                .secrets
+                .decrypt(&format!("provision:{key}"), encrypted)?,
+        )?
+    } else {
+        String::new()
+    };
     let credentials: support::Credentials =
         serde_json::from_str(&secret_input).unwrap_or(support::Credentials {
             username: "thelxinoe".into(),
@@ -389,6 +412,10 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
    } else {controller(state,"/install",Some(json!({"operation_id":key,"kind":row.0,"host_port":row.2,"username":"thelxinoe","secret":secret}))).await?}
   };
   let container=installed["container_id"].as_str().ok_or_else(unavailable)?.to_owned();progress(state,&key,"connecting",Some(container.clone()),None).await?;
+  if row.0 == "recyclarr" {
+    super::recyclarr::installed(state, &key, &row.1, row.7=="adopted").await?;
+    return Ok(());
+  }
   if row.7=="adopted" {let service_id=row.6.clone().ok_or_else(unavailable)?;let container=container.clone();let kind=row.0.clone();storage::provision_write(service_id, container, kind, &state.db).await?;}
   let mut last=None;let mut registered=None;
    let service_name=if let Some(integration)=row.6.clone() {storage::provision_read_manager_services(integration, &state.db).await?}else{format!("Managed {}",row.0)};

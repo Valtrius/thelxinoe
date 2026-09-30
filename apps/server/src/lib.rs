@@ -294,10 +294,10 @@ pub async fn run_jobs(state: AppState) -> anyhow::Result<()> {
 }
 
 async fn run_service_job(state: AppState, job: thelxinoe_jobs::Job) -> anyhow::Result<()> {
-    let result = if job.kind == "stack.install" {
-        managers::provision(&state, &job).await.map(|()| true)
-    } else {
-        managers::update_service(&state, &job).await
+    let result = match job.kind.as_str() {
+        "stack.install" => managers::provision(&state, &job).await.map(|()| true),
+        "recyclarr.sync" => managers::recyclarr::run_job(&state, &job).await,
+        _ => managers::update_service(&state, &job).await,
     };
     if !matches!(result, Ok(false)) {
         Queue(state.db.clone())
@@ -314,6 +314,7 @@ async fn run_service_jobs(state: AppState) -> anyhow::Result<()> {
     let queue = Queue(state.db.clone());
     let mut running = tokio::task::JoinSet::new();
     loop {
+        managers::recyclarr::tick(&state).await?;
         while let Some(result) = running.try_join_next() {
             result??;
         }

@@ -517,16 +517,17 @@ test('service defaults save eagerly and roll back a rejected edit', async ({
   expect(fixture.errors).toEqual([]);
 });
 
-test('custom profiles retain the chosen quality order and become the selected default', async ({
+test('Lidarr custom profiles retain the chosen quality order and become the selected default', async ({
   page,
 }) => {
   const fixture = await installUiFixture(page, {
     role: 'admin',
     settingsSection: 'services',
+    managerKind: 'lidarr',
   });
   const created: Record<string, unknown>[] = [];
   await page.route(
-    '**/api/v1/admin/managers/manager-radarr/quality-profiles',
+    '**/api/v1/admin/managers/manager-lidarr/quality-profiles',
     async (route) => {
       if (route.request().method() === 'POST') {
         created.push(route.request().postDataJSON());
@@ -544,7 +545,7 @@ test('custom profiles retain the chosen quality order and become the selected de
     },
   );
   await page.route(
-    '**/api/v1/admin/managers/manager-radarr/options',
+    '**/api/v1/admin/managers/manager-lidarr/options',
     async (route) =>
       route.fulfill({
         json: {
@@ -566,7 +567,7 @@ test('custom profiles retain the chosen quality order and become the selected de
   await page.goto('/');
   await page
     .getByRole('navigation', { name: 'Select service' })
-    .getByRole('button', { name: /Radarr/ })
+    .getByRole('button', { name: /Lidarr/ })
     .click();
   await page
     .getByRole('button', { name: 'Create quality profile', exact: true })

@@ -20,6 +20,8 @@ mod backups;
 pub(crate) mod product;
 #[path = "service_recovery.rs"]
 mod recovery;
+#[path = "recyclarr.rs"]
+mod recyclarr;
 #[path = "service_removal.rs"]
 mod removal;
 #[path = "updates.rs"]
@@ -407,6 +409,13 @@ pub fn router() -> Router {
         .route("/stack/adopt/check", post(adoption::check))
         .route("/stack/adopt", post(adoption::adopt))
         .route("/stack/{id}/action", post(action))
+        .route("/stack/{id}/recyclarr/catalog", post(recyclarr::catalog))
+        .route("/stack/{id}/recyclarr/run", post(recyclarr::run))
+        .route(
+            "/stack/{id}/recyclarr/results/{run}",
+            get(recyclarr::result),
+        )
+        .route("/stack/{id}/recyclarr/import", post(recyclarr::import))
         .with_state(Runtime(Default::default()))
 }
 async fn list(State(runtime): State<Runtime>) -> Result<Json<Value>> {
@@ -434,12 +443,17 @@ async fn list(State(runtime): State<Runtime>) -> Result<Json<Value>> {
 struct Install {
     operation_id: String,
     kind: String,
-    host_port: u16,
+    host_port: Option<u16>,
+    #[serde(default)]
     secret: String,
     #[serde(default)]
     username: String,
 }
 fn app_config(t: templates::Template, input: &Install, directory: &std::path::Path) -> Result<()> {
+    if t.workload == "job" {
+        persisted(std::fs::create_dir_all(directory).map_err(Into::into))?;
+        return Ok(());
+    }
     if !(24..=128).contains(&input.secret.len())
         || !input.secret.bytes().all(|b| b.is_ascii_alphanumeric())
     {
@@ -469,7 +483,7 @@ fn app_config(t: templates::Template, input: &Install, directory: &std::path::Pa
         ),
         _ => format!(
             "<Config><BindAddress>*</BindAddress><Port>{}</Port><UrlBase>{}</UrlBase><EnableSsl>False</EnableSsl><LaunchBrowser>False</LaunchBrowser><ApiKey>{}</ApiKey><AuthenticationMethod>External</AuthenticationMethod><AuthenticationRequired>Enabled</AuthenticationRequired><Branch>master</Branch><LogLevel>info</LogLevel><UpdateAutomatically>False</UpdateAutomatically></Config>",
-            t.port, thelxinoe_core::service_url_base(t.kind), input.secret
+            t.port.ok_or_else(unavailable)?, thelxinoe_core::service_url_base(t.kind), input.secret
         ),
     };
     let file = match t.kind {
@@ -501,7 +515,9 @@ async fn install(
 ) -> Result<Json<Value>> {
     let _guard = runtime.0.service(&input.kind).await;
     let t = templates::find(&input.kind).ok_or_else(|| bad("Unknown curated service"))?;
-    if input.host_port < 1024 {
+    if (t.port.is_some() && !input.host_port.is_some_and(|p| p >= 1024))
+        || (t.port.is_none() && input.host_port.is_some())
+    {
         return Err(bad("Choose a nonprivileged local port"));
     }
     let d = bootstrap().await?;
@@ -540,8 +556,21 @@ async fn install(
     if t.media {
         mounts.push(json!({"Type":"bind","Source":d.media_source,"Target":"/media"}));
     }
-    let port = format!("{}/tcp", t.port);
-    let mut spec = json!({"Image":image,"Env":[format!("PUID={}",identity.uid),format!("PGID={}",identity.gid),"TZ=UTC".to_owned()],"Labels":{"app.thelxinoe.managed-id":key,"app.thelxinoe.deployment":d.id,"app.thelxinoe.kind":t.kind},"HostConfig":{"Mounts":mounts,"NetworkMode":d.network,"RestartPolicy":{"Name":"unless-stopped"},"PortBindings":{port:[{"HostIp":"127.0.0.1","HostPort":input.host_port.to_string()}]}},"NetworkingConfig":{"EndpointsConfig":{d.network.clone():{"Aliases":[format!("thelxinoe-{}",t.kind)]}}}});
+    let mut spec = json!({"Image":image,"Env":[format!("PUID={}",identity.uid),format!("PGID={}",identity.gid),"TZ=UTC".to_owned()],"Labels":{"app.thelxinoe.managed-id":key,"app.thelxinoe.deployment":d.id,"app.thelxinoe.kind":t.kind},"HostConfig":{"Mounts":mounts,"NetworkMode":d.network,"RestartPolicy":{"Name":"unless-stopped"}},"NetworkingConfig":{"EndpointsConfig":{d.network.clone():{"Aliases":[format!("thelxinoe-{}",t.kind)]}}}});
+    if let Some(port) = t.port {
+        spec["HostConfig"]["PortBindings"] = json!({format!("{port}/tcp"):[{"HostIp":"127.0.0.1","HostPort":input.host_port.ok_or_else(unavailable)?.to_string()}]});
+    } else {
+        spec["User"] = json!(identity.user());
+        spec["Env"] = json!(["TZ=UTC", "TERM=dumb"]);
+        spec["Cmd"] = json!(["--version"]);
+        spec["HostConfig"]["RestartPolicy"] = json!({"Name":"no"});
+        spec["HostConfig"]["CapDrop"] = json!(["ALL"]);
+        spec["HostConfig"]["SecurityOpt"] = json!(["no-new-privileges:true"]);
+        persisted(
+            std::os::unix::fs::chown(&directory, Some(identity.uid), Some(identity.gid))
+                .map_err(Into::into),
+        )?;
+    }
     if t.kind == "seerr" {
         spec["User"] = json!(identity.user());
         spec["Env"] = json!(["CONFIG_DIRECTORY=/config", "TZ=UTC"]);
@@ -661,7 +690,8 @@ async fn action(
 
 async fn stable_image(t: templates::Template) -> Result<String> {
     for attempt in 0..3 {
-        if let Ok(descriptor) = engine(&format!("/distribution/{}:latest/json", t.repository)).await
+        if let Ok(descriptor) =
+            engine(&format!("/distribution/{}:{}/json", t.repository, t.tag)).await
             && let Some(digest) = descriptor["Descriptor"]["digest"].as_str().filter(|v| {
                 v.starts_with("sha256:")
                     && v.len() == 71
@@ -702,7 +732,7 @@ async fn releases() -> Result<Json<Value>> {
     let mut pending = tokio::task::JoinSet::new();
     for t in templates::TEMPLATES {
         pending.spawn(async move {
-            let result = engine(&format!("/distribution/{}:latest/json", t.repository)).await;
+            let result = engine(&format!("/distribution/{}:{}/json", t.repository, t.tag)).await;
             let digest = result.ok()
                 .and_then(|v| v["Descriptor"]["digest"].as_str().map(str::to_owned))
                 .filter(|v| v.starts_with("sha256:") && v.len() == 71 && v[7..].bytes().all(|b| b.is_ascii_hexdigit()));

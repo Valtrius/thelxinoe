@@ -10,7 +10,35 @@ const MAX_FILES: u64 = 500_000;
 
 pub fn adopt(kind: &str) -> anyhow::Result<()> {
     anyhow::ensure!(crate::templates::find(kind).is_some(), "Unknown service");
+    if kind == "recyclarr" {
+        use sha2::{Digest, Sha256};
+        let actual = format!("{:x}", Sha256::digest(fs::read("/source/recyclarr.yml")?));
+        anyhow::ensure!(
+            std::env::var("THELXINOE_RECYCLARR_IMPORT_HASH")? == actual,
+            "Recyclarr configuration changed after review"
+        );
+    }
     run(false)?;
+    if kind == "recyclarr" {
+        // Accepted imports retain state while plaintext API keys from the old
+        // scheduler are removed from the managed copy before it can run.
+        let path = Path::new("/destination/recyclarr.yml");
+        let mut config: serde_yaml_ng::Value = serde_yaml_ng::from_str(&fs::read_to_string(path)?)?;
+        for kind in ["radarr", "sonarr"] {
+            for (_, instance) in config
+                .get_mut(kind)
+                .and_then(|v| v.as_mapping_mut())
+                .into_iter()
+                .flatten()
+            {
+                if let Some(map) = instance.as_mapping_mut() {
+                    map.insert("api_key".into(), "REDACTED_REGENERATED_AT_SYNC".into());
+                }
+            }
+        }
+        fs::write(path, serde_yaml_ng::to_string(&config)?)?;
+        return Ok(());
+    }
     let base = thelxinoe_core::service_url_base(kind);
     if base.is_empty() {
         return Ok(());

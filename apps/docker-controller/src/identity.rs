@@ -35,7 +35,7 @@ impl Identity {
     }
 
     pub fn service(kind: &str, spec: &Value) -> Result<Self> {
-        if kind == "seerr" {
+        if matches!(kind, "seerr" | "recyclarr") {
             return Self::from_user(spec);
         }
         let variable = |key: &str| {

@@ -22,6 +22,9 @@ Failures to cover before implementation:
 - A hidden coordinator hides its report too, or activates the user's browser.
   Request background opening through the default browser, retain launch errors,
   and never bring an existing window forward.
+- The terminal session ends during a long container lane, killing the coordinator
+  and leaving its report running. Launch the local coordinator in an independent
+  hidden process; preserve an interrupted result if it exits without finishing.
 - Detached Windows PowerShell exits successfully without executing its report
   helper. Keep that helper hidden but attached, and retain its shell acknowledgement.
 - Parallel Docker builds share a Cargo output directory after Cargo releases

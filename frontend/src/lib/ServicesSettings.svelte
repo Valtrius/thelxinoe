@@ -12,7 +12,9 @@
   import Panel from './ui/Panel.svelte';
   import ConfirmDialog from './providers/components/ui/ConfirmDialog.svelte';
   import Switch from './ui/Switch.svelte';
-  import { Copy, LoaderCircle } from '@lucide/svelte';
+  import { Copy, LoaderCircle, Recycle } from '@lucide/svelte';
+  import RecyclarrSettings from './services/RecyclarrSettings.svelte';
+  import RecyclarrSetup from './services/RecyclarrSetup.svelte';
   import DownloadsTable from './services/DownloadsTable.svelte';
   import NativeServiceLink from './services/NativeServiceLink.svelte';
   import ServiceUpdateRelease, {
@@ -41,13 +43,20 @@
   let { timeFormat = '24h' } = $props<{ timeFormat?: '12h' | '24h' }>();
 
   type ServiceKind =
-    'radarr' | 'sonarr' | 'lidarr' | 'bazarr' | 'prowlarr' | 'nzbget' | 'seerr';
+    | 'radarr'
+    | 'sonarr'
+    | 'lidarr'
+    | 'bazarr'
+    | 'prowlarr'
+    | 'nzbget'
+    | 'seerr'
+    | 'recyclarr';
   type Definition = {
     kind: ServiceKind;
     label: string;
-    role: 'manager' | 'support';
-    internalPort: number;
-    hostPort: number;
+    role: 'manager' | 'support' | 'job';
+    internalPort: number | null;
+    hostPort: number | null;
     description: string;
   };
   type ManagerDefaults = {
@@ -112,7 +121,8 @@
     drift: boolean | null;
     running: boolean | null;
     existence: 'present' | 'missing' | 'unknown';
-    status: 'running' | 'stopped' | 'missing' | 'unavailable' | 'drifted';
+    status:
+      'running' | 'stopped' | 'missing' | 'unavailable' | 'drifted' | 'ready';
     inspection_error: string | null;
     can_recreate: boolean;
     can_retire: boolean;
@@ -124,7 +134,7 @@
     id: string;
     kind: ServiceKind;
     state: string;
-    host_port: number;
+    host_port: number | null;
     container_id: string | null;
     service_id: string | null;
     error: string | null;
@@ -167,12 +177,12 @@
   type SetupDraft = {
     name: string;
     container: string;
-    port: number;
+    port: number | null;
     username: string;
     secret: string;
     urlBase: string;
   };
-  type InstallDraft = { hostPort: number };
+  type InstallDraft = { hostPort: number | null };
   type DefaultsDraft = ManagerDefaults & { loaded: boolean };
   type UpdateDraft = {
     targetId: string | null;
@@ -182,6 +192,14 @@
   };
 
   const definitions: Definition[] = [
+    {
+      kind: 'recyclarr',
+      label: 'Recyclarr',
+      role: 'job',
+      internalPort: null,
+      hostPort: null,
+      description: 'TRaSH Guides sync',
+    },
     {
       kind: 'seerr',
       label: 'Seerr',
@@ -401,6 +419,7 @@
       : [];
   }
   const icons = {
+    recyclarr: '',
     radarr: radarrIcon,
     sonarr: sonarrIcon,
     lidarr: lidarrIcon,
@@ -524,6 +543,7 @@
       return { label: 'Status unavailable', tone: 'warn' };
     if (live?.status === 'missing')
       return { label: 'Container missing', tone: 'bad' };
+    if (live?.status === 'ready') return { label: 'Ready', tone: 'ok' };
     if (live?.running === false) return { label: 'Stopped', tone: 'muted' };
     if (connected?.error) return { label: 'API unavailable', tone: 'warn' };
     if (live?.running) return { label: 'Running', tone: 'ok' };
@@ -1017,7 +1037,7 @@
     }}
   />
   <nav
-    class="service-strip mb-5.5 grid grid-cols-[repeat(7,minmax(8.5rem,1fr))] overflow-x-auto border-b border-line"
+    class="service-strip mb-5.5 grid grid-flow-col auto-cols-[minmax(8.5rem,1fr)] overflow-x-auto border-b border-line"
     aria-label="Select service"
   >
     {#each definitions as service (service.kind)}
@@ -1028,7 +1048,10 @@
         aria-label={service.label}
         onclick={() => selectService(service.kind)}
       >
-        <img src={icons[service.kind]} alt="" />
+        {#if service.kind === 'recyclarr'}<Recycle
+            size={20}
+            aria-hidden="true"
+          />{:else}<img src={icons[service.kind]} alt="" />{/if}
         <span
           ><strong>{service.label}</strong><StatusIndicator
             class="service-status mt-1.5"
@@ -1087,7 +1110,10 @@
           <div
             class="rail-heading flex items-center gap-2.5 [&_img]:size-10.5 [&_img]:object-contain [&_span]:text-[9px] [&_span]:tracking-[0.07em] [&_span]:text-muted [&_span]:uppercase [&_h2]:mt-0.5 [&_h2]:mb-0 [&_h2]:text-[20px]"
           >
-            <img src={icons[service.kind]} alt="" />
+            {#if service.kind === 'recyclarr'}<Recycle
+                size={40}
+                aria-hidden="true"
+              />{:else}<img src={icons[service.kind]} alt="" />{/if}
             <div>
               <span>{service.description}</span>
               <h2>{service.label}</h2>
@@ -1212,7 +1238,7 @@
                 >{/if}
             {:else if runtimeService && runtimeService.registered !== false && !setupActive(service.kind)}
               {#if runtimeService.existence === 'present'}
-                {#each runtimeService.running ? ['restart', 'stop', 'reconcile'] : ['start', 'reconcile'] as action (action)}
+                {#each service.role === 'job' ? ['reconcile'] : runtimeService.running ? ['restart', 'stop', 'reconcile'] : ['start', 'reconcile'] as action (action)}
                   <Button
                     size="form"
                     variant="secondary"
@@ -1410,120 +1436,131 @@
           aria-label="Service setup"
         >
           <div class="setup-forms grid gap-5.5">
-            <form
-              class="grid gap-3 [&_label]:m-0"
-              aria-label={`Install managed ${definition.label}`}
-              onsubmit={(event) => {
-                event.preventDefault();
-                void operate(definition.kind, () => installManaged(definition));
-              }}
-            >
-              <strong class="text-xs">Install and own it</strong>
-              <div class="grid grid-cols-2 gap-3 compact:grid-cols-1">
+            {#if definition.role === 'job'}<RecyclarrSetup
+                {containers}
+                install={async () => {
+                  await installManaged(definition);
+                }}
+                changed={refresh}
+              />{:else}
+              <form
+                class="grid gap-3 [&_label]:m-0"
+                aria-label={`Install managed ${definition.label}`}
+                onsubmit={(event) => {
+                  event.preventDefault();
+                  void operate(definition.kind, () =>
+                    installManaged(definition),
+                  );
+                }}
+              >
+                <strong class="text-xs">Install and own it</strong>
+                {#if definition.internalPort !== null}<div
+                    class="grid grid-cols-2 gap-3 compact:grid-cols-1"
+                  >
+                    <FormField
+                      >Local port<input
+                        class={formControlClass}
+                        type="number"
+                        min="1024"
+                        max="65535"
+                        bind:value={installs[definition.kind].hostPort}
+                        required
+                      /></FormField
+                    >
+                  </div>{/if}
+                <Button
+                  type="submit"
+                  variant="secondary"
+                  size="form"
+                  disabled={busy || Boolean(loadErrors.stack)}
+                  >Install {definition.label}</Button
+                >
+              </form>{/if}
+            {#if definition.role !== 'job'}<form
+                class="grid gap-3 border-t border-line pt-3 [&_label]:m-0"
+                aria-label={`Connect existing ${definition.label}`}
+                onsubmit={(event) => {
+                  event.preventDefault();
+                  void work(
+                    () => connectExternal(definition),
+                    `${definition.label} connected.`,
+                  );
+                }}
+              >
+                <strong class="text-xs">Connect an existing container</strong>
                 <FormField
-                  >Local port<input
+                  >Name<input
                     class={formControlClass}
-                    type="number"
-                    min="1024"
-                    max="65535"
-                    bind:value={installs[definition.kind].hostPort}
+                    bind:value={setup[definition.kind].name}
                     required
+                    maxlength="100"
                   /></FormField
                 >
-              </div>
-              <Button
-                type="submit"
-                variant="secondary"
-                size="form"
-                disabled={busy || Boolean(loadErrors.stack)}
-                >Install {definition.label}</Button
-              >
-            </form>
-            <form
-              class="grid gap-3 border-t border-line pt-3 [&_label]:m-0"
-              aria-label={`Connect existing ${definition.label}`}
-              onsubmit={(event) => {
-                event.preventDefault();
-                void work(
-                  () => connectExternal(definition),
-                  `${definition.label} connected.`,
-                );
-              }}
-            >
-              <strong class="text-xs">Connect an existing container</strong>
-              <FormField
-                >Name<input
-                  class={formControlClass}
-                  bind:value={setup[definition.kind].name}
-                  required
-                  maxlength="100"
-                /></FormField
-              >
-              <div class="grid grid-cols-2 gap-3 compact:grid-cols-1">
+                <div class="grid grid-cols-2 gap-3 compact:grid-cols-1">
+                  <FormField
+                    >Container<select
+                      class={formControlClass}
+                      bind:value={setup[definition.kind].container}
+                      required
+                      ><option value="">Select container</option
+                      >{#each containers as container (container.id)}
+                        <option value={container.id}
+                          >{container.names[0]}{container.state
+                            ? ` (${container.state})`
+                            : ''}</option
+                        >
+                      {/each}</select
+                    ></FormField
+                  >
+                  <FormField
+                    >Internal port<input
+                      class={formControlClass}
+                      type="number"
+                      min="1"
+                      max="65535"
+                      bind:value={setup[definition.kind].port}
+                      required
+                    /></FormField
+                  >
+                </div>
+                {#if definition.kind === 'nzbget'}
+                  <FormField
+                    >NZBGet username<input
+                      class={formControlClass}
+                      bind:value={setup.nzbget.username}
+                      required
+                      autocomplete="off"
+                    /></FormField
+                  >
+                {/if}
                 <FormField
-                  >Container<select
+                  >{definition.kind === 'nzbget'
+                    ? 'NZBGet password'
+                    : 'API key'}<input
                     class={formControlClass}
-                    bind:value={setup[definition.kind].container}
+                    type="password"
+                    bind:value={setup[definition.kind].secret}
                     required
-                    ><option value="">Select container</option
-                    >{#each containers as container (container.id)}
-                      <option value={container.id}
-                        >{container.names[0]}{container.state
-                          ? ` (${container.state})`
-                          : ''}</option
-                      >
-                    {/each}</select
-                  ></FormField
-                >
-                <FormField
-                  >Internal port<input
-                    class={formControlClass}
-                    type="number"
-                    min="1"
-                    max="65535"
-                    bind:value={setup[definition.kind].port}
-                    required
+                    autocomplete="new-password"
                   /></FormField
                 >
-              </div>
-              {#if definition.kind === 'nzbget'}
-                <FormField
-                  >NZBGet username<input
-                    class={formControlClass}
-                    bind:value={setup.nzbget.username}
-                    required
-                    autocomplete="off"
-                  /></FormField
+                {#if hasServiceUrlBase(definition.kind)}
+                  <FormField
+                    >Existing URL Base<input
+                      class={formControlClass}
+                      bind:value={setup[definition.kind].urlBase}
+                      placeholder="Leave empty if the service has no URL Base"
+                      maxlength="160"
+                    /></FormField
+                  >
+                {/if}
+                <Button
+                  type="submit"
+                  size="form"
+                  disabled={busy || !containers.length}
+                  >Connect {definition.label}</Button
                 >
-              {/if}
-              <FormField
-                >{definition.kind === 'nzbget'
-                  ? 'NZBGet password'
-                  : 'API key'}<input
-                  class={formControlClass}
-                  type="password"
-                  bind:value={setup[definition.kind].secret}
-                  required
-                  autocomplete="new-password"
-                /></FormField
-              >
-              {#if hasServiceUrlBase(definition.kind)}
-                <FormField
-                  >Existing URL Base<input
-                    class={formControlClass}
-                    bind:value={setup[definition.kind].urlBase}
-                    placeholder="Leave empty if the service has no URL Base"
-                    maxlength="160"
-                  /></FormField
-                >
-              {/if}
-              <Button
-                type="submit"
-                size="form"
-                disabled={busy || !containers.length}
-                >Connect {definition.label}</Button
-              >
-            </form>
+              </form>{/if}
           </div>
         </section>
       {/if}
@@ -1588,16 +1625,16 @@
                       onRevert={(value) => Object.assign(draft, value)}
                       disabled={busy}
                     >
-                      <FormField
-                        >Quality profile<select
-                          class={formControlClass}
-                          bind:value={draft.quality_profile}
-                          required
-                          >{#each options.profiles as option (option.id)}<option
-                              value={option.id}>{option.name}</option
-                            >{/each}</select
-                        ></FormField
-                      >
+                      {#if definition.kind === 'lidarr'}<FormField
+                          >Quality profile<select
+                            class={formControlClass}
+                            bind:value={draft.quality_profile}
+                            required
+                            >{#each options.profiles as option (option.id)}<option
+                                value={option.id}>{option.name}</option
+                              >{/each}</select
+                          ></FormField
+                        >{/if}
                       {#if definition.kind === 'lidarr'}<FormField
                           >Metadata profile<select
                             class={formControlClass}
@@ -1612,9 +1649,15 @@
                         >Monitor and search requests</Switch
                       >
                     </AutoSaveForm>{/key}
-                  {#if ['radarr', 'sonarr', 'lidarr'].includes(definition.kind)}<div
-                      class="mt-4"
-                    >
+                  {#if definition.kind === 'radarr' || definition.kind === 'sonarr'}<Button
+                      variant="ghost"
+                      size="sm"
+                      onclick={() => {
+                        selectedKind = 'recyclarr';
+                        void loadSelectedData();
+                      }}>Configure guide profile in Recyclarr</Button
+                    >{/if}
+                  {#if definition.kind === 'lidarr'}<div class="mt-4">
                       {#key connected.id}<QualityProfileEditor
                           serviceId={connected.id}
                           created={async () => {
@@ -1716,7 +1759,9 @@
           Retiring removes the installation and its API connection. Appdata,
           request history, and media files are kept.
         </Notice>{/if}
-      {#if connected && !setupActive(selectedKind)}
+      {#if selectedKind === 'recyclarr' && item?.state === 'complete'}<RecyclarrSettings
+        />{/if}
+      {#if (connected || (definition.role === 'job' && live)) && !setupActive(selectedKind)}
         <section
           class="work-section border-b border-line py-4 first-of-type:pt-0 last:border-b-0"
           aria-label="Updates"
