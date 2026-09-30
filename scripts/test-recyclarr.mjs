@@ -322,7 +322,7 @@ try {
   expect(services.recyclarr.status).toBe('ready');
   const raw = JSON.parse(docker('inspect', services.recyclarr.container_id))[0];
   expect(raw.Config.User).toBe('10001:10001');
-  expect(raw.HostConfig.PortBindings).toEqual({});
+  expect(Object.keys(raw.HostConfig.PortBindings ?? {})).toHaveLength(0);
   expect(raw.Mounts.map((m) => m.Destination)).toEqual(['/config']);
   expect(raw.Config.Cmd).toEqual(['--version']);
   evidence.image = raw.Config.Image;

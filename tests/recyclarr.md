@@ -19,6 +19,8 @@ Failure cases to cover before implementation:
   be stopped without API credentials. Pause its real process to retain the busy
   state, verify preflight blocks with a job-specific idle error, then stop it.
 - A job accidentally exposes a port, mounts media, starts cron, or writes as root.
+- Docker reports no published ports as either `null` or an empty object.
+  Verify zero binding keys instead of requiring one JSON representation.
 - Catalog labels change or a selected TRaSH ID disappears.
 - Preview writes Arr settings; repeated application duplicates profiles or CFs.
 - Arr answers HTTP before initializing its built-in profiles; an empty baseline
