@@ -594,41 +594,72 @@ try {
       client.request,
     );
     const tab = await client.newPage();
-    await tab.goto(f.base);
-    await tab.evaluate(() => {
-      window.streamChunks = 0;
-      window.streamClosed = false;
-      window.pendingClosed = false;
-      void fetch('/services/radarr/pending', {
-        method: 'POST',
-        body: 'fixture',
-      })
-        .finally(() => {
-          window.pendingClosed = true;
+    const activity = async () =>
+      (
+        await f.context.request.get(`${f.base}/services/radarr/activity`)
+      ).json();
+    result.logout_stream = {};
+    try {
+      await tab.goto(f.base);
+      await tab.evaluate(() => {
+        window.streamMessages = 0;
+        window.streamClosed = false;
+        window.pendingClosed = false;
+        void fetch('/services/radarr/pending', {
+          method: 'POST',
+          body: 'fixture',
         })
-        .catch(() => {});
-      void (async () => {
-        try {
-          const reader = (
-            await fetch('/services/radarr/stream')
-          ).body.getReader();
-          while (!(await reader.read()).done) window.streamChunks++;
-        } finally {
+          .finally(() => {
+            window.pendingClosed = true;
+          })
+          .catch(() => {});
+        const stream = new EventSource('/services/radarr/stream');
+        stream.onmessage = ({ data }) => {
+          if (data === 'fixture') window.streamMessages++;
+        };
+        stream.onerror = () => {
           window.streamClosed = true;
-        }
-      })().catch(() => {});
-    });
-    await expect
-      .poll(() => tab.evaluate(() => window.streamChunks))
-      .toBeGreaterThan(2);
-    await f.api('/auth/logout', 'POST', undefined, client.request);
-    await expect
-      .poll(() => tab.evaluate(() => window.streamClosed), { timeout: 15000 })
-      .toBe(true);
-    await expect
-      .poll(() => tab.evaluate(() => window.pendingClosed), { timeout: 15000 })
-      .toBe(true);
-    await client.close();
+          stream.close();
+        };
+      });
+      await expect
+        .poll(() => tab.evaluate(() => window.streamMessages), {
+          timeout: 30000,
+        })
+        .toBeGreaterThan(2);
+      expect(await tab.evaluate(() => window.streamClosed)).toBe(false);
+      expect(await tab.evaluate(() => window.pendingClosed)).toBe(false);
+      await expect.poll(activity, { timeout: 30000 }).toEqual({
+        streams: 1,
+        pending: 1,
+      });
+      result.logout_stream.before_logout = await activity();
+      await f.api('/auth/logout', 'POST', undefined, client.request);
+      await expect
+        .poll(() => tab.evaluate(() => window.streamClosed), {
+          timeout: 15000,
+        })
+        .toBe(true);
+      await expect
+        .poll(() => tab.evaluate(() => window.pendingClosed), {
+          timeout: 15000,
+        })
+        .toBe(true);
+      await expect.poll(activity, { timeout: 15000 }).toEqual({
+        streams: 0,
+        pending: 0,
+      });
+      result.logout_stream.after_logout = await activity();
+    } finally {
+      result.logout_stream.browser = await tab
+        .evaluate(() => ({
+          messages: window.streamMessages,
+          stream_closed: window.streamClosed,
+          pending_closed: window.pendingClosed,
+        }))
+        .catch(() => null);
+      await client.close();
+    }
   });
   await scenario(
     'current administrator role is checked again on each native request',
