@@ -872,6 +872,26 @@ try {
     ),
   );
   passed = true;
+} catch (error) {
+  writeFileSync(
+    `${root}/result.json`,
+    JSON.stringify(
+      {
+        project,
+        passed: false,
+        error: String(error),
+        connections: (await links().catch(() => [])).map((l) => ({
+          source: l.source_kind,
+          target: l.target_kind,
+          state: l.state,
+          error: l.error,
+        })),
+      },
+      null,
+      2,
+    ),
+  );
+  throw error;
 } finally {
   await browser.close();
   if (passed || process.env.THELXINOE_KEEP_FAILED_FIXTURE !== '1') {
