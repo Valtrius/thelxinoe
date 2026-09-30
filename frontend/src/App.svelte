@@ -601,7 +601,22 @@
     };
     window.addEventListener('thelxinoe-open-settings', openSettings);
     window.addEventListener('thelxinoe-update-required', incompatible);
-    void boot();
+    void boot().then(async () => {
+      if (!desktop) return;
+      await tick();
+      await document.fonts.ready;
+      await Promise.all(
+        Array.from(
+          document.querySelectorAll<HTMLImageElement>('img[src="/icon.svg"]'),
+          (image) => image.decode().catch(() => {}),
+        ),
+      );
+      try {
+        await invoke('finish_startup');
+      } catch (e) {
+        error = String(e);
+      }
+    });
     return () => {
       void toolsConnection.then((disconnect) => disconnect());
       void updateConnection.then((disconnect) => disconnect());

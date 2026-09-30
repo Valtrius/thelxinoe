@@ -13,6 +13,7 @@ export default defineConfig({
     'service-updates.spec.ts',
     'server-updates.spec.ts',
     'authentication.spec.ts',
+    'desktop-startup.spec.ts',
   ],
   workers: 1,
   use: {

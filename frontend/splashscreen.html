@@ -1,0 +1,44 @@
+<!doctype html>
+<html
+  lang="en"
+  class="h-full w-full overflow-hidden scheme-dark light:scheme-light"
+>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#05070b" />
+    <title>Thelxinoe</title>
+    <link rel="stylesheet" href="/src/splashscreen.css" />
+  </head>
+  <body
+    class="m-0 grid h-full w-full select-none place-items-stretch overflow-hidden border border-[#bcecff]/34 bg-[linear-gradient(rgba(238,247,251,0.025)_1px,transparent_1px),linear-gradient(90deg,rgba(238,247,251,0.025)_1px,transparent_1px)] bg-[#05070b] [background-size:32px_32px] font-[Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe_UI',sans-serif] leading-[normal] text-[#eef7fb] light:border-[#137494]/42 light:bg-[linear-gradient(rgba(17,23,27,0.035)_1px,transparent_1px),linear-gradient(90deg,rgba(17,23,27,0.035)_1px,transparent_1px)] light:bg-[#edf1f3] light:text-[#11171b]"
+  >
+    <main
+      class="relative flex flex-col px-[26px] py-6 after:absolute after:right-[-70px] after:bottom-[-120px] after:size-[280px] after:rotate-[34deg] after:border after:border-[#bcecff]/8 after:content-[''] light:after:border-[#087e9f]/12"
+    >
+      <div
+        class="flex items-center gap-[11px] text-[0.7rem] font-[650] tracking-[0.16em] uppercase"
+        aria-label="Thelxinoe"
+      >
+        <img class="size-7" src="/icon.svg" alt="" aria-hidden="true" />
+        <span>Thelxinoe</span>
+      </div>
+      <div class="mt-auto" role="status">
+        <h1
+          class="mt-2 mb-[18px] text-[1.45rem] font-medium tracking-[-0.04em]"
+        >
+          Preparing your library
+        </h1>
+        <div
+          class="h-0.5 w-full overflow-hidden bg-[#eef7fb]/9 light:bg-[#11171b]/10"
+          aria-label="Loading"
+        >
+          <i
+            class="block h-full w-[42%] animate-splash-load bg-[#bcecff] shadow-[0_0_12px_rgba(188,236,255,0.7)] motion-reduce:w-full motion-reduce:animate-none light:bg-[#087e9f] light:shadow-[0_0_12px_rgba(8,126,159,0.55)]"
+          ></i>
+        </div>
+      </div>
+    </main>
+    <script type="module" src="/src/splashscreen.ts"></script>
+  </body>
+</html>
