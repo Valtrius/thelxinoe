@@ -515,6 +515,9 @@ async fn bazarr(
     }
     let hash = digest(&wanted);
     if current_hash != hash {
+        // A restart can happen after checkpointing but before Bazarr receives
+        // the POST. Retain the unchanged settings as valid recovery evidence.
+        link.applied_hash = Some(current_hash);
         link.pending_hash = Some(hash.clone());
         link.prepared = true;
         checkpoint(state, link).await?;

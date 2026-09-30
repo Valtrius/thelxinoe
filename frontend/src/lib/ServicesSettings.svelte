@@ -12,7 +12,7 @@
   import Panel from './ui/Panel.svelte';
   import ConfirmDialog from './providers/components/ui/ConfirmDialog.svelte';
   import Switch from './ui/Switch.svelte';
-  import { Copy, LoaderCircle, Recycle } from '@lucide/svelte';
+  import { Copy, LoaderCircle } from '@lucide/svelte';
   import RecyclarrSettings from './services/RecyclarrSettings.svelte';
   import RecyclarrSetup from './services/RecyclarrSetup.svelte';
   import DownloadsTable from './services/DownloadsTable.svelte';
@@ -26,13 +26,14 @@
     hasServiceUrlBase,
     type Container,
   } from './services/presentation';
-  import radarrIcon from './services/icons/radarr.png';
-  import sonarrIcon from './services/icons/sonarr.png';
-  import lidarrIcon from './services/icons/lidarr.png';
-  import bazarrIcon from './services/icons/bazarr.png';
-  import prowlarrIcon from './services/icons/prowlarr.png';
-  import nzbgetIcon from './services/icons/nzbget.png';
-  import seerrIcon from './services/icons/seerr.png';
+  import radarrIcon from './services/icons/radarr.svg';
+  import sonarrIcon from './services/icons/sonarr.svg';
+  import lidarrIcon from './services/icons/lidarr.svg';
+  import bazarrIcon from './services/icons/bazarr.svg';
+  import prowlarrIcon from './services/icons/prowlarr.svg';
+  import nzbgetIcon from './services/icons/nzbget.svg';
+  import seerrIcon from './services/icons/seerr.svg';
+  import recyclarrIcon from './services/icons/recyclarr.svg';
   import QualityProfileEditor from './services/QualityProfileEditor.svelte';
   import IndexerOnboarding from './services/IndexerOnboarding.svelte';
   import ConnectionTestButton from './ui/ConnectionTestButton.svelte';
@@ -419,7 +420,7 @@
       : [];
   }
   const icons = {
-    recyclarr: '',
+    recyclarr: recyclarrIcon,
     radarr: radarrIcon,
     sonarr: sonarrIcon,
     lidarr: lidarrIcon,
@@ -1048,10 +1049,7 @@
         aria-label={service.label}
         onclick={() => selectService(service.kind)}
       >
-        {#if service.kind === 'recyclarr'}<Recycle
-            size={20}
-            aria-hidden="true"
-          />{:else}<img src={icons[service.kind]} alt="" />{/if}
+        <img src={icons[service.kind]} alt="" />
         <span
           ><strong>{service.label}</strong><StatusIndicator
             class="service-status mt-1.5"
@@ -1110,10 +1108,7 @@
           <div
             class="rail-heading flex items-center gap-2.5 [&_img]:size-10.5 [&_img]:object-contain [&_span]:text-[9px] [&_span]:tracking-[0.07em] [&_span]:text-muted [&_span]:uppercase [&_h2]:mt-0.5 [&_h2]:mb-0 [&_h2]:text-[20px]"
           >
-            {#if service.kind === 'recyclarr'}<Recycle
-                size={40}
-                aria-hidden="true"
-              />{:else}<img src={icons[service.kind]} alt="" />{/if}
+            <img src={icons[service.kind]} alt="" />
             <div>
               <span>{service.description}</span>
               <h2>{service.label}</h2>

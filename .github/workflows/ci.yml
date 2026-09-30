@@ -97,6 +97,7 @@ jobs:
             playwright-report/
             test-results/
             .local/*-result.json
+            .local/thelxinoe-connections-*/result.json
             .local/thelxinoe-recyclarr-*/result.json
             .local/thelxinoe-recyclarr-*/trace.zip
             .local/thelxinoe-recyclarr-*/services.log
