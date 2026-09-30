@@ -11,4 +11,5 @@
 
 ## Workflow
 
+- Always design CI tests to run on GitHub Actions and account for the runner's platform, permissions, resource limits, networking, Docker behavior, and empty caches.
 - Before pushing changes, always run the format `npm run format` and local CI `npm run ci:local` to make sure CI will pass. Once launched, end your turn as the `npm run ci:local` has a end notification built-in. User will tell you when noification appears so you can check the results.

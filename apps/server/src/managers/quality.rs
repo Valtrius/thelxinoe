@@ -24,35 +24,6 @@ fn available(schema: &Value) -> Vec<Value> {
     rows
 }
 
-fn standard_order(schema: &Value) -> Vec<i64> {
-    let mut rows = available(schema);
-    rows.retain(|r| {
-        matches!(r["quality"]["resolution"].as_i64(), Some(1080 | 2160))
-            && !matches!(r["quality"]["name"].as_str(), Some("Raw-HD" | "BR-DISK"))
-    });
-    rows.sort_by_key(|r| {
-        let name = r["quality"]["name"]
-            .as_str()
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        let source = if name.contains("remux") {
-            4
-        } else if name.contains("bluray") {
-            3
-        } else if name.contains("webdl") {
-            2
-        } else if name.contains("webrip") {
-            1
-        } else {
-            0
-        };
-        (r["quality"]["resolution"].as_i64().unwrap_or(0), source)
-    });
-    rows.iter()
-        .filter_map(|r| r["quality"]["id"].as_i64())
-        .collect()
-}
-
 fn build(
     mut schema: Value,
     name: &str,
@@ -127,37 +98,7 @@ pub(super) async fn ensure_defaults(state: &AppState, service: &Service) -> Resu
     }
     let c = Connection::open(state, service).await?;
     let profiles = c.get("qualityprofile").await?;
-    let profile = if matches!(service.kind.as_str(), "radarr" | "sonarr") {
-        if let Some(profile) = profiles
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|p| p["name"] == "Thelxinoe 1080p–2160p")
-        {
-            profile.clone()
-        } else {
-            let schema = template(&c).await?;
-            let order = standard_order(&schema);
-            let cutoff = *order.last().ok_or_else(|| {
-                ApiError::conflict("The service offers no 1080p or 2160p qualities")
-            })?;
-            c.call(
-                reqwest::Method::POST,
-                "qualityprofile",
-                &[],
-                Some(build(
-                    schema,
-                    "Thelxinoe 1080p–2160p",
-                    &order,
-                    cutoff,
-                    true,
-                )?),
-            )
-            .await?
-        }
-    } else {
-        profiles[0].clone()
-    };
+    let profile = &profiles[0];
     let metadata = if service.kind == "lidarr" {
         c.get("metadataprofile").await?[0]["id"].as_i64()
     } else {
@@ -235,20 +176,6 @@ async fn create(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn standard_profile_excludes_disc_images_and_raw_captures() {
-        let qualities = [
-            (1, "HDTV-720p", 720),
-            (2, "WEBDL-2160p", 2160),
-            (3, "Raw-HD", 1080),
-            (4, "BR-DISK", 1080),
-            (5, "WEBDL-1080p", 1080),
-            (6, "WEBRip-1080p", 1080),
-            (7, "Remux-2160p", 2160),
-        ];
-        let schema = json!({"items":qualities.iter().map(|(id,name,resolution)|json!({"quality":{"id":id,"name":name,"resolution":resolution}})).collect::<Vec<_>>()});
-        assert_eq!(standard_order(&schema), vec![6, 5, 2, 7]);
-    }
     #[test]
     fn preserves_schema_fields_and_orders_enabled_qualities() {
         let schema = json!({"id":0,"minUpgradeFormatScore":1,"formatItems":[{"format":7,"score":0}],"items":[{"quality":{"id":1},"allowed":true},{"items":[{"quality":{"id":2}},{"quality":{"id":3}}]}]});

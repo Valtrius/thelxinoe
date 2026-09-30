@@ -6,6 +6,10 @@ removes its containers and uninstalls its Windows app. See [commands](../docs/UP
 
 The automated scenarios must catch these failures through actual processes:
 
+- A fresh GitHub runner has no registry/proxy images, and Docker Hub resets its
+  token connection during an implicit `docker run` pull. Explicitly fetch both
+  fixture images with bounded retries and command timeouts before creating the
+  lab's containers; an exhausted pull must still fail qualification.
 - Signed feed redirects fail, signatures/expiry are ignored, unavailable feeds
   are reported as current, or a fresh current server hides publisher metadata.
 - A new server release never reaches an administrator's inbox, a normal user

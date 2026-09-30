@@ -50,6 +50,7 @@ const context = await browser.newContext({ ignoreHTTPSErrors: true });
 const base = `https://localhost:${process.env.THELXINOE_CONNECTIONS_PORT}`;
 const services = {};
 const retirementReconnects = [];
+const bootstrapProfiles = {};
 let deployment,
   passed = false;
 async function api(path, method = 'GET', data) {
@@ -194,6 +195,27 @@ async function nzbget(method, params = []) {
   expect(result.error).toBeFalsy();
   return result.result;
 }
+async function verifyNativeProfiles(kind) {
+  const manager = (await api('/admin/managers')).items.find(
+    (item) => item.kind === kind,
+  );
+  const before = await upstream(kind, 'qualityprofile');
+  expect(before.some((profile) => profile.name.startsWith('Thelxinoe'))).toBe(
+    false,
+  );
+  let options;
+  for (let read = 0; read < 2; read++)
+    options = await api(`/admin/managers/${manager.id}/options`);
+  expect(await upstream(kind, 'qualityprofile')).toEqual(before);
+  expect(before.map((profile) => profile.id)).toContain(
+    options.defaults.quality_profile,
+  );
+  bootstrapProfiles[kind] = {
+    profiles: before.map(({ id, name }) => ({ id, name })),
+    defaults: options.defaults,
+  };
+  console.log(`${kind}: installation and options reuse native profiles`);
+}
 async function saveSubtitles(form) {
   const key = config('bazarr').match(/^\s+apikey:\s*['"]?([a-zA-Z0-9]+)/m)[1];
   const response = await context.request.post(
@@ -306,6 +328,7 @@ try {
   await idle('prowlarr');
   await action('prowlarr', 'stop');
   await install('radarr');
+  await verifyNativeProfiles('radarr');
   await waitLink('prowlarr', 'radarr', 'unavailable');
   expect((await link('prowlarr', 'radarr')).enabled).toBe(true);
   const page = await context.newPage();
@@ -369,6 +392,7 @@ try {
   );
 
   for (const kind of ['sonarr', 'lidarr']) await install(kind);
+  await verifyNativeProfiles('sonarr');
   for (const kind of ['radarr', 'sonarr', 'lidarr']) {
     await idle(kind);
     await action(kind, 'stop');
@@ -469,10 +493,6 @@ try {
     'All eight automatic connections verified against real APIs; manual disconnect persists',
   );
 
-  for (const manager of (await api('/admin/managers')).items.filter((item) =>
-    ['radarr', 'sonarr'].includes(item.kind),
-  ))
-    await api(`/admin/managers/${manager.id}/options`);
   await install('seerr');
   await api('/admin/seerr/sync', 'POST');
   for (const kind of ['radarr', 'sonarr']) {
@@ -839,6 +859,7 @@ try {
           ? 'connections'
           : 'full',
         passed: true,
+        bootstrap_profiles: bootstrapProfiles,
         retirement_reconnects: retirementReconnects,
         connections: (await links()).map((l) => ({
           source: l.source_kind,

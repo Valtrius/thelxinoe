@@ -22,6 +22,10 @@ Failure cases to cover before implementation:
 - Docker reports no published ports as either `null` or an empty object.
   Verify zero binding keys instead of requiring one JSON representation.
 - Catalog labels change or a selected TRaSH ID disappears.
+- Catalog loading is pending or rejected when a GitHub runner's browser
+  dropdown-count deadline expires. Observe both real catalog HTTP responses
+  before asserting the choices, fail on rejected responses, and retain response
+  status, a failure screenshot, and the browser trace in GitHub artifacts.
 - Preview writes Arr settings; repeated application duplicates profiles or CFs.
 - Arr answers HTTP before initializing its built-in profiles; an empty baseline
   then mistakes native startup writes for preview writes. Wait for populated,
@@ -41,6 +45,9 @@ Failure cases to cover before implementation:
   browser controls, exports, logs, or retained evidence.
 - A queued actor loses administrator permission but the operation still applies.
 - Radarr/Sonarr profile controls remain available and compete with Recyclarr.
+- Installing Radarr/Sonarr before Recyclarr creates a competing custom profile.
+  The service-connections fixture checks fresh installs and repeated options
+  reads against the real Arr profiles; initial defaults reuse a built-in profile.
 - A Docker command or HTTP request never returns, leaving the test unbounded.
 - Browser trace shutdown fails and skips container cleanup or the result file.
   `node scripts/test-recyclarr-cleanup.mjs` interrupts the real fixture after

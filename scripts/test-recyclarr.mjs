@@ -564,9 +564,36 @@ try {
         page.getByLabel('Quality profile', { exact: true }),
       ).toHaveCount(0);
     }
-    await navigation
-      .getByRole('button', { name: 'Recyclarr', exact: true })
-      .click();
+    evidence.ui_catalogs = [];
+    const catalogResponses = Promise.all(
+      ['radarr', 'sonarr'].map((kind) =>
+        page
+          .waitForResponse(
+            (response) =>
+              new URL(response.url()).pathname ===
+              `/api/v1/admin/recyclarr/catalog/${kind}`,
+            { timeout: 180000 },
+          )
+          .then(async (response) => {
+            const catalog = await response.json();
+            evidence.ui_catalogs.push({
+              path: new URL(response.url()).pathname,
+              status: response.status(),
+              items: catalog.items?.length,
+              error: catalog.error,
+            });
+            saveEvidence();
+            expect(response.ok(), JSON.stringify(catalog.error)).toBe(true);
+            expect(catalog.items.length).toBeGreaterThan(10);
+          }),
+      ),
+    );
+    await Promise.all([
+      catalogResponses,
+      navigation
+        .getByRole('button', { name: 'Recyclarr', exact: true })
+        .click(),
+    ]);
     const guideRegion = page.getByRole('region', {
       name: 'Recyclarr guide configuration',
     });
@@ -1224,6 +1251,17 @@ try {
     for (const key of keys) logs = logs.replaceAll(key, '[redacted]');
     writeFileSync(`${root}/services.log`, logs);
   });
+  if (!evidence.passed)
+    await cleanup('failure screenshot', () =>
+      context
+        .pages()
+        .at(-1)
+        ?.screenshot({
+          path: `${root}/failure.png`,
+          fullPage: true,
+          timeout: 10000,
+        }),
+    );
   await cleanup('browser trace', () =>
     context.tracing.stop({ path: `${root}/trace.zip` }),
   );

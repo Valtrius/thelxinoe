@@ -16,6 +16,7 @@ import { downloadFixture } from './registry.mjs';
 import {
   run,
   docker,
+  pullFixtureImage,
   save,
   keys,
   source,
@@ -266,6 +267,8 @@ export async function createLab({
   keys(lab);
   try {
     if (server) {
+      await pullFixtureImage('registry:2');
+      await pullFixtureImage('node:24-bookworm-slim');
       mkdirSync(join(root, 'registry-control'), { recursive: true });
       save(join(root, 'registry-control/mode.json'), { mode: 'base' });
     }
@@ -280,6 +283,8 @@ export async function createLab({
       );
       docker(
         'run',
+        '--pull',
+        'never',
         '-d',
         '--name',
         `${id}-registry`,
@@ -291,6 +296,8 @@ export async function createLab({
       );
       docker(
         'run',
+        '--pull',
+        'never',
         '-d',
         '--name',
         `${id}-registry-proxy`,
