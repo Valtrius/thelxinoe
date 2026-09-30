@@ -26,13 +26,13 @@
     hasServiceUrlBase,
     type Container,
   } from './services/presentation';
-  import radarrIcon from './services/icons/radarr.png';
-  import sonarrIcon from './services/icons/sonarr.png';
-  import lidarrIcon from './services/icons/lidarr.png';
-  import bazarrIcon from './services/icons/bazarr.png';
-  import prowlarrIcon from './services/icons/prowlarr.png';
-  import nzbgetIcon from './services/icons/nzbget.png';
-  import seerrIcon from './services/icons/seerr.png';
+  import radarrIcon from './services/icons/radarr.svg';
+  import sonarrIcon from './services/icons/sonarr.svg';
+  import lidarrIcon from './services/icons/lidarr.svg';
+  import bazarrIcon from './services/icons/bazarr.svg';
+  import prowlarrIcon from './services/icons/prowlarr.svg';
+  import nzbgetIcon from './services/icons/nzbget.svg';
+  import seerrIcon from './services/icons/seerr.svg';
   import QualityProfileEditor from './services/QualityProfileEditor.svelte';
   import IndexerOnboarding from './services/IndexerOnboarding.svelte';
   import ConnectionTestButton from './ui/ConnectionTestButton.svelte';
