@@ -68,7 +68,7 @@ pub(crate) async fn extract(state: &AppState, media: &str) -> Result<RemoteSourc
     let address = state
         .online
         .streamlink
-        .resolve(if kick { "kick" } else { "twitch" }, &login)
+        .resolve(state, if kick { "kick" } else { "twitch" }, &login)
         .await
         .map_err(|_| {
             ApiError::conflict(

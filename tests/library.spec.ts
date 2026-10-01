@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
+import { budgets, waitForServerTools } from '../scripts/ci-readiness.mjs';
 test('movie, multi-episode and tagged music scan into browsable libraries with stable identities', async ({
   page,
 }) => {
@@ -8,7 +9,7 @@ test('movie, multi-episode and tagged music scan into browsable libraries with s
     'Requires generated media and isolated Compose fixture',
   );
   const watchTimeout = 15_000;
-  test.setTimeout(60_000);
+  test.setTimeout(budgets.startup + 60_000);
   await page.goto('/');
   await page.getByLabel('Username', { exact: true }).fill('admin');
   await page
@@ -19,6 +20,11 @@ test('movie, multi-episode and tagged music scan into browsable libraries with s
     page.getByRole('heading', { name: 'Discover', exact: true }),
   ).toBeVisible();
   const api = page.request;
+  await waitForServerTools(async (timeout) => {
+    const response = await api.get('/api/v1/admin/tools', { timeout });
+    expect(response.ok()).toBe(true);
+    return response.json();
+  });
   const headers = { 'X-Thelxinoe-Client': '1' };
   const existing = (await (await api.get('/api/v1/catalog/roots')).json())
     .items as { id: string; kind: string }[];

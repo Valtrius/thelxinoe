@@ -33,7 +33,7 @@ try {
     password:
       process.env.THELXINOE_BENCHMARK_PASSWORD ?? 'test-only long passphrase',
   });
-  const tools = await api('/admin/online/tools');
+  const tools = await api('/admin/tools');
   const feed = await api('/online/youtube/feed?watchlist=true');
   const page = await context.newPage();
   // Disposable public-video fixtures need no Google account. Only expose the
@@ -54,7 +54,11 @@ try {
       throw new Error(`${id}: expected an undownloaded watchlist video`);
     for (const repeat of [0, 1]) {
       const requests = new Map();
-      const row = { video: id, repeat, yt_dlp: tools.yt_dlp };
+      const row = {
+        video: id,
+        repeat,
+        yt_dlp: tools.items.find((item) => item.id === 'yt-dlp')?.installed,
+      };
       const mediaRequests = [];
       const request = (r) => {
         const path = new URL(r.url()).pathname;

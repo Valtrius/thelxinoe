@@ -52,7 +52,7 @@ pub(crate) fn server_zone(db: &rusqlite::Connection) -> anyhow::Result<Tz> {
         .map_err(|_| anyhow::anyhow!("Invalid server timezone"))
 }
 
-pub(super) fn maintenance_window(
+pub(crate) fn maintenance_window(
     db: &rusqlite::Connection,
     instant: DateTime<Utc>,
     start: u32,

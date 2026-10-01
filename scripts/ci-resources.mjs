@@ -355,6 +355,14 @@ function cleanupRecord(record) {
         throw Error('Network ownership changed');
       docker('network', 'rm', name);
     });
+  for (const name of record.volumes ?? [])
+    attempt(() => {
+      const volume = inspect('volume', name);
+      if (!volume) return;
+      if (volume.Labels?.['io.thelxinoe.ci-run'] !== owner)
+        throw Error('Volume ownership changed');
+      docker('volume', 'rm', name);
+    });
   if (record.bindRoot && record.cleanupImage && !errors.length)
     attempt(() => {
       const root = resolve(record.bindRoot);

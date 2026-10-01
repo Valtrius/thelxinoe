@@ -231,6 +231,15 @@ async function containers() {
     ['image-staging'],
   );
   await evidence.group(
+    'server-tools',
+    () =>
+      run(process.execPath, ['scripts/test-server-tools.mjs', '--built'], {
+        env: { ...process.env, THELXINOE_TOOLS_TEST_IMAGE: images.server },
+      }),
+    ['container-build'],
+    'test-results/server-tools/results.json',
+  );
+  await evidence.group(
     'service-access',
     () => pnpm('run', 'test:service-access', '--built'),
     ['container-build', 'browser-runtime'],

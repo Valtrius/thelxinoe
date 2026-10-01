@@ -15,7 +15,7 @@ pub(crate) mod relay;
 mod streamlink_worker;
 pub(crate) mod streams;
 mod sync;
-pub(crate) mod tools;
+use crate::tools;
 mod twitch;
 pub(crate) mod watchlists;
 mod youtube;
@@ -35,7 +35,8 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 pub async fn run(state: AppState) -> anyhow::Result<()> {
-    state.online.streamlink.warm().await;
+    state.tools.wait_ready().await;
+    state.online.streamlink.warm(&state).await;
     tokio::try_join!(
         sync::run(state.clone()),
         sync::run_classifications(state.clone()),
@@ -45,6 +46,9 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
         state.online.youtube_worker.run(&state)
     )?;
     Ok(())
+}
+pub(crate) async fn refresh_tools(state: &AppState) {
+    state.online.streamlink.warm(state).await;
 }
 use thelxinoe_core::{Capability, now};
 
@@ -145,7 +149,7 @@ pub struct Runtime {
     api: String,
     slots: tokio::sync::Semaphore,
     refresh: tokio::sync::Mutex<()>,
-    extraction: tokio::sync::Semaphore,
+    pub(crate) extraction: tokio::sync::Semaphore,
     streamlink: streamlink_worker::Pool,
     youtube_worker: youtube_worker::Pool,
     pub(crate) streams: streams::Runtime,
@@ -179,10 +183,6 @@ pub fn router() -> Router<AppState> {
         .merge(twitch::router())
         .merge(kick::router())
         .route("/api/v1/admin/online", get(configuration).put(configure))
-        .route(
-            "/api/v1/admin/online/tools",
-            get(tools::status).post(tools::request_install),
-        )
         .route("/api/v1/online/youtube", get(account).delete(disconnect))
         .route("/api/v1/online/youtube/connect", post(oauth::start))
         .route("/api/v1/online/youtube/callback", get(oauth::callback))

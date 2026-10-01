@@ -45,7 +45,8 @@
     "ci:updates": "node scripts/ci.mjs updates",
     "ci:updates:server": "node scripts/ci.mjs updates-server",
     "ci:updates:desktop": "node scripts/ci.mjs updates-desktop",
-    "test:ui": "pnpm run build:web && playwright test --config playwright.ui.config.ts"
+    "test:ui": "pnpm run build:web && playwright test --config playwright.ui.config.ts",
+    "test:server-tools": "node scripts/test-server-tools.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

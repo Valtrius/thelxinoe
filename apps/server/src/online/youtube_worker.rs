@@ -1,5 +1,5 @@
 //! Two resident yt-dlp instances share the existing public extraction limit.
-use super::tools::{self, Bundle, Executable};
+use super::tools::{self, Executable, OnlineSnapshot};
 use crate::AppState;
 use anyhow::{Context, Result, ensure};
 use process_wrap::tokio::*;
@@ -11,10 +11,10 @@ use tokio::{
     sync::{Mutex, RwLock},
 };
 
-const PYTHON: &str = "/opt/streamlink/bin/python";
+const PYTHON: &str = "/usr/local/bin/python3";
 const SCRIPT: &str = include_str!("youtube_worker.py");
 struct Snapshot {
-    bundle: Bundle,
+    bundle: OnlineSnapshot,
     module: Executable,
 }
 
@@ -38,12 +38,14 @@ impl Pool {
             tokio::time::sleep(Duration::from_secs(30)).await;
         }
     }
-    async fn warm(&self, state: &AppState, bundle: Bundle) -> Result<()> {
+    async fn warm(&self, _state: &AppState, mut bundle: OnlineSnapshot) -> Result<()> {
+        bundle.leases.retain(|g| g.candidate.tool != "ffmpeg");
         let current = self.snapshot.read().await.clone();
         let snapshot = if let Some(snapshot) = current.filter(|s| s.bundle == bundle) {
             snapshot
         } else {
-            let module = tools::python_module(state, &bundle).await?;
+            let module = bundle.module.clone();
+            tools::verify(&module).await?;
             tools::verify(&bundle.deno).await?;
             Arc::new(Snapshot { bundle, module })
         };
@@ -65,9 +67,9 @@ impl Pool {
         *self.snapshot.write().await = Some(snapshot);
         Ok(())
     }
-    /// None selects the existing CLI while a matching module is being prepared.
+    /// None selects the existing CLI while matching resident workers warm up.
     /// A worker's provider errors are responses, not reasons to retry via CLI.
-    pub async fn resolve(&self, bundle: &Bundle, id: &str) -> Result<Option<Value>> {
+    pub async fn resolve(&self, bundle: &OnlineSnapshot, id: &str) -> Result<Option<Value>> {
         let Some(snapshot) = self
             .snapshot
             .read()
@@ -137,7 +139,7 @@ impl Worker {
     async fn start(python: &Path, snapshot: Arc<Snapshot>) -> Result<Self> {
         let home = tempfile::tempdir()?;
         let mut command = CommandWrap::with_new(python, |cmd| {
-            cmd.args(["-I", "-u", "-c", SCRIPT])
+            cmd.args(["-I", "-B", "-u", "-c", SCRIPT])
                 .arg(&snapshot.module.path)
                 .arg(&snapshot.bundle.deno.path)
                 .arg(&snapshot.bundle.yt_dlp.version)
@@ -278,9 +280,14 @@ mod tests {
             path: "missing".into(),
             digest: String::new(),
         };
-        let mut bundle = Bundle {
+        let mut bundle = OnlineSnapshot {
             yt_dlp: executable.clone(),
             deno: executable.clone(),
+            module: executable.clone(),
+            ffmpeg: executable.clone(),
+            ffprobe: executable.clone(),
+            generations: Vec::new(),
+            leases: Vec::new(),
         };
         let pool = Pool::default();
         assert!(

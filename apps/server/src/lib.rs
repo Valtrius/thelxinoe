@@ -25,6 +25,7 @@ pub mod security;
 pub mod segments;
 mod statistics;
 mod timezones;
+pub mod tools;
 pub mod user_media;
 pub mod validation;
 pub use jellyfin::discovery::run as run_discovery;
@@ -65,6 +66,7 @@ pub struct AppState {
     pub password_slots: Arc<tokio::sync::Semaphore>,
     pub dummy_hash: Arc<String>,
     pub playback: Arc<thelxinoe_playback::Pipelines>,
+    pub tools: Arc<tools::Manager>,
     pub subtitle_slots: Arc<tokio::sync::Semaphore>,
     pub compatibility_audio: Arc<tokio::sync::Mutex<()>>,
     pub online: Arc<online::Runtime>,
@@ -91,10 +93,14 @@ impl AppState {
         }
         let secrets = SecretStore::open(&config.state.join("secrets"))?;
         let release_pending = product::maintenance_pending(&db).await?;
+        let tools = Arc::new(tools::Manager::new(&config.state));
         Ok(Self {
             server_id: Arc::new(server_id),
             event_epoch: Arc::new(thelxinoe_core::id()),
-            playback: Arc::new(thelxinoe_playback::Pipelines::open(&config.cache).await?),
+            playback: Arc::new(
+                thelxinoe_playback::Pipelines::open(&config.cache, tools.runtime.clone()).await?,
+            ),
+            tools,
             subtitle_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             db,
             secrets,
@@ -132,6 +138,7 @@ impl AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(product::router())
+        .merge(tools::router())
         .merge(jellyfin::router())
         .merge(online::router())
         .merge(managers::router())
@@ -344,6 +351,7 @@ async fn run_service_jobs(state: AppState) -> anyhow::Result<()> {
 }
 
 async fn run_general_jobs(state: AppState) -> anyhow::Result<()> {
+    state.tools.wait_ready().await;
     let queue = Queue(state.db.clone());
     loop {
         let job = {
@@ -366,12 +374,6 @@ async fn run_general_jobs(state: AppState) -> anyhow::Result<()> {
                         .finish(&job, result.err().map(|e| e.to_string()))
                         .await?;
                 }
-                "online.tools.install" => {
-                    let result = online::tools::install(&state, &job).await;
-                    queue
-                        .finish(&job, result.err().map(|e| e.to_string()))
-                        .await?;
-                }
                 "metadata.match" | "metadata.refresh" => {
                     let result = managers::run_metadata(&state, &job.payload).await;
                     queue
@@ -388,11 +390,14 @@ async fn run_general_jobs(state: AppState) -> anyhow::Result<()> {
                         state
                             .emit(None, "catalog.scan.started", json!({"root_id":root.id}))
                             .await?;
-                        let result = thelxinoe_catalog::scan_with_progress(&state.db, root.clone(), |completed, total| {
+                        let result = match state.tools.runtime.media() {
+                            Ok(tools) => thelxinoe_catalog::scan_with_progress(&state.db, root.clone(), tools, |completed, total| {
                             let state = state.clone();
                             let root_id = root.id.clone();
                             async move { state.emit(None, "catalog.scan.progress", json!({"root_id":root_id,"completed":completed,"total":total})).await.map(|_| ()) }
-                        }).await;
+                        }).await,
+                            Err(error) => Err(error),
+                        };
                         let succeeded = result.is_ok();
                         let error = result.err().map(|e| e.to_string());
                         if let Some(error) = error.clone() {

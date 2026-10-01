@@ -27,12 +27,13 @@ async fn collect(mut pipe: impl AsyncRead + Unpin, limit: usize) -> anyhow::Resu
 }
 
 pub(super) async fn run(
+    home: tempfile::TempDir,
     executable: &Path,
     args: &[OsString],
     timeout: Duration,
     output_limit: usize,
 ) -> anyhow::Result<Output> {
-    run_progress(executable, args, timeout, output_limit, None).await
+    run_progress(home, executable, args, timeout, output_limit, None).await
 }
 
 async fn collect_progress(
@@ -71,13 +72,13 @@ async fn collect_progress(
 }
 
 pub(super) async fn run_progress(
+    home: tempfile::TempDir,
     executable: &Path,
     args: &[OsString],
     timeout: Duration,
     output_limit: usize,
     progress: Option<tokio::sync::mpsc::Sender<String>>,
 ) -> anyhow::Result<Output> {
-    let home = tempfile::tempdir()?;
     let mut command = CommandWrap::with_new(executable, |cmd| {
         cmd.args(args)
             .env_clear()
@@ -186,7 +187,7 @@ mod tests {
     async fn windows_environment_isolated_and_tree_killed() {
         let shell = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
             .join("System32/WindowsPowerShell/v1.0/powershell.exe");
-        let output = run(&shell, &["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(), "if ($env:HOME -ne $env:APPDATA -or $env:HOME -ne $env:TEMP -or $env:PATH) { exit 9 }; Write-Output 'isolated'".into()], Duration::from_secs(60), 1024).await.unwrap();
+        let output = run(tempfile::tempdir().unwrap(), &shell, &["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(), "if ($env:HOME -ne $env:APPDATA -or $env:HOME -ne $env:TEMP -or $env:PATH) { exit 9 }; Write-Output 'isolated'".into()], Duration::from_secs(60), 1024).await.unwrap();
         assert!(output.success);
         assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), "isolated");
         let marker = tempfile::tempdir().unwrap();
@@ -209,6 +210,7 @@ mod tests {
             ready.display()
         );
         let failure = run(
+            tempfile::tempdir().unwrap(),
             &shell,
             &[
                 "-NoProfile".into(),
@@ -233,6 +235,7 @@ mod tests {
             "$child = Get-Process -Id {pid} -ErrorAction SilentlyContinue; if ($child -and -not $child.WaitForExit(30000)) {{ Stop-Process -InputObject $child -Force; exit 9 }}; Write-Output 'killed'"
         );
         let result = run(
+            tempfile::tempdir().unwrap(),
             &shell,
             &[
                 "-NoProfile".into(),
@@ -251,6 +254,7 @@ mod tests {
     #[tokio::test]
     async fn isolated_environment_and_timeout() {
         let output = run(
+            tempfile::tempdir().unwrap(),
             Path::new("/bin/sh"),
             &[
                 "-c".into(),
@@ -270,6 +274,7 @@ mod tests {
         );
         assert!(
             run(
+                tempfile::tempdir().unwrap(),
                 Path::new("/bin/sh"),
                 &["-c".into(), "sleep 30 & wait".into()],
                 Duration::from_millis(100),

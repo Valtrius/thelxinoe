@@ -6066,6 +6066,7 @@ dependencies = [
  "tempfile",
  "thelxinoe-core",
  "thelxinoe-database",
+ "thelxinoe-tools",
  "tokio",
  "walkdir",
 ]
@@ -6176,7 +6177,9 @@ dependencies = [
  "fs2",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
+ "thelxinoe-tools",
  "tokio",
  "url",
  "uuid",
@@ -6228,6 +6231,7 @@ dependencies = [
  "thelxinoe-jobs",
  "thelxinoe-playback",
  "thelxinoe-releases",
+ "thelxinoe-tools",
  "tokio",
  "tokio-tungstenite",
  "tower",
@@ -6238,6 +6242,17 @@ dependencies = [
  "uuid",
  "windows 0.62.2",
  "zip 8.6.0",
+]
+
+[[package]]
+name = "thelxinoe-tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
 ]
 
 [[package]]

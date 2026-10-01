@@ -7,7 +7,7 @@ use crate::{
     error::{ApiError, Result},
     security,
 };
-use anyhow::{Context, ensure};
+use anyhow::ensure;
 use axum::{
     Json,
     extract::{Path, State},
@@ -158,6 +158,7 @@ pub(crate) use storage::record_state;
 pub async fn run(state: AppState) -> anyhow::Result<()> {
     // The exclusive server state lock means a prior downloading owner is gone.
     storage::recover_downloads(&state.db).await?;
+    state.tools.wait_ready().await;
     loop {
         if cleanup(&state).await.is_err() {
             tracing::warn!("Online download cleanup could not complete; it will retry");
@@ -206,19 +207,6 @@ async fn cleanup(state: &AppState) -> anyhow::Result<()> {
     storage::cleanup(root, &state.db).await
 }
 
-fn system_tool(name: &str) -> anyhow::Result<PathBuf> {
-    let file = if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_owned()
-    };
-    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .map(|p| p.join(&file))
-        .find(|p| p.is_file())
-        .context("Required FFmpeg tools are unavailable")?
-        .canonicalize()
-        .map_err(Into::into)
-}
 fn parse_progress(line: &str) -> Option<(i64, Option<i64>, Option<i64>, &'static str)> {
     let parts = line
         .strip_prefix("THELXINOE_PROGRESS:")?
@@ -264,7 +252,10 @@ async fn download(
     generation: &str,
     bundle: &str,
 ) -> anyhow::Result<&'static str> {
-    let bundle: tools::Bundle = serde_json::from_str(bundle)?;
+    let mut bundle: tools::OnlineSnapshot = serde_json::from_str(bundle)?;
+    state.tools.runtime.restore_online(&mut bundle)?;
+    tools::verify(&bundle.ffmpeg).await?;
+    tools::verify(&bundle.ffprobe).await?;
     tools::verify(&bundle.yt_dlp).await?;
     tools::verify(&bundle.deno).await?;
     let retained = storage::cache_size(&state.db).await?;
@@ -309,7 +300,7 @@ async fn download(
         ]
         .map(Into::into),
     );
-    args.push(system_tool("ffmpeg")?.into_os_string());
+    args.push(bundle.ffmpeg.path.clone().into_os_string());
     args.push("-o".into());
     args.push(target.clone().into_os_string());
     args.extend([
@@ -318,6 +309,7 @@ async fn download(
     ]);
     let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(16);
     let execution = process::run_progress(
+        state.tools.temporary()?,
         &bundle.yt_dlp.path,
         &args,
         Duration::from_secs(1800),
@@ -360,7 +352,8 @@ async fn download(
         "Download exceeds size limit"
     );
     let probe = process::run(
-        &system_tool("ffprobe")?,
+        state.tools.temporary()?,
+        &bundle.ffprobe.path,
         &[
             "-v".into(),
             "error".into(),

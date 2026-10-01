@@ -382,7 +382,7 @@ test('download tracks bytes without pinning its tooltip, and controller reconnec
   const flow = await setup(page);
   const button = flow.version.getByRole('button').first();
   await button.hover();
-  await expect(flow.version.getByRole('tooltip')).toHaveCSS('opacity', '1');
+  await expect(flow.version.getByRole('tooltip')).toBeVisible();
   await button.click();
   flow.stage('preparing');
   for (const received of [25, 65, 100]) {
@@ -405,7 +405,7 @@ test('download tracks bytes without pinning its tooltip, and controller reconnec
     );
   }
   await page.mouse.move(0, 0);
-  await expect(flow.version.getByRole('tooltip')).toHaveCSS('opacity', '0');
+  await expect(flow.version.getByRole('tooltip')).toBeHidden();
   let releaseObservation!: () => void;
   const observation = new Promise<void>((resolve) => {
     releaseObservation = resolve;

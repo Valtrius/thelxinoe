@@ -1,3 +1,5 @@
+#[path = "../../../tests/helpers/tool-runtime.rs"]
+mod tool_runtime;
 use axum::{
     body::Body,
     extract::ConnectInfo,
@@ -76,15 +78,20 @@ async fn replacement_and_restart_keep_resume_but_invalidate_old_playback_generat
         controller_socket: temp.path().join("socket"),
     };
     let state = AppState::open(config.clone()).await.unwrap();
+    tool_runtime::install(&state.tools.runtime, &state.config.state.join("tools"));
     state.db.write("test.fixture", move|db|{
         db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Movies','movies',?1)",[root.to_string_lossy().to_string()])?;
         db.execute("INSERT INTO users(id,username,password_hash,role,created_at) VALUES ('user','viewer','unused','user',?1)",[now()])?;
         db.execute("INSERT INTO sessions VALUES ('device','user','unused','device','test',?1,?2,?1)",rusqlite::params![now(),now()+3600])?;Ok(())
     }).await.unwrap();
     let root = thelxinoe_catalog::roots(&state.db).await.unwrap().remove(0);
-    thelxinoe_catalog::scan(&state.db, root.clone())
-        .await
-        .unwrap();
+    thelxinoe_catalog::scan(
+        &state.db,
+        root.clone(),
+        state.tools.runtime.media().unwrap(),
+    )
+    .await
+    .unwrap();
     let principal = Principal {
         user: User {
             id: "user".into(),
@@ -153,7 +160,9 @@ async fn replacement_and_restart_keep_resume_but_invalidate_old_playback_generat
             .status(),
         StatusCode::CONFLICT
     );
-    thelxinoe_catalog::scan(&state.db, root).await.unwrap();
+    thelxinoe_catalog::scan(&state.db, root, state.tools.runtime.media().unwrap())
+        .await
+        .unwrap();
     let fid = file_id.clone();
     let new_generation = state
         .db
@@ -169,6 +178,7 @@ async fn replacement_and_restart_keep_resume_but_invalidate_old_playback_generat
     assert_ne!(new_generation, generation);
     drop(state);
     let state = AppState::open(config).await.unwrap();
+    tool_runtime::install(&state.tools.runtime, &state.config.state.join("tools"));
     let resumed = create_for(
         &state,
         &principal,

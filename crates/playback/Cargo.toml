@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+thelxinoe-tools.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -14,4 +15,5 @@ fs2 = "0.4"
 url = "2"
 
 [dev-dependencies]
+sha2 = "0.11"
 tempfile = "3"

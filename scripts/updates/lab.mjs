@@ -199,6 +199,7 @@ function writeCompose(lab) {
         restart: 'unless-stopped',
         ports: [`127.0.0.1:${lab.serverPort}:8484`],
         environment: {
+          THELXINOE_TOOLS_CATALOG: '/opt/thelxinoe/tools/catalog.json',
           THELXINOE_RELEASE_URL: `https://host.docker.internal:${lab.publisherPort}/latest.json`,
           THELXINOE_RELEASE_KEY_FILE: '/publisher/release.pub',
           THELXINOE_RELEASE_CA_FILE: '/publisher/tls.pem',
@@ -351,7 +352,15 @@ export async function createLab({
       save(join(root, 'lab.json'), lab);
     }
     if (server) writeCompose(lab);
-    if (server) compose(lab, 'up', '-d', '--wait');
+    if (server)
+      compose(
+        lab,
+        'up',
+        '-d',
+        '--wait',
+        '--wait-timeout',
+        String(budgets.startup / 1000),
+      );
     else {
       for (const dir of ['state', 'cache', 'media'])
         mkdirSync(join(root, dir), { recursive: true });
@@ -387,6 +396,26 @@ export async function createLab({
     return lab;
   } catch (error) {
     save(join(root, 'lab.json'), lab);
+    if (server) {
+      try {
+        save(join(root, 'startup-state.json'), {
+          server: JSON.parse(
+            docker('inspect', '--format', '{{json .State}}', `${id}-server`),
+          ),
+          controller: JSON.parse(
+            docker(
+              'inspect',
+              '--format',
+              '{{json .State}}',
+              `${id}-controller`,
+            ),
+          ),
+          logs: compose(lab, 'logs', '--no-color'),
+        });
+      } catch {
+        /* A build failure may occur before the containers exist. */
+      }
+    }
     await stopLab(lab).catch(() => {});
     throw error;
   }
@@ -617,7 +646,14 @@ export async function resetLab(lab) {
     removeContainers(lab, true);
     compose(lab, 'down', '--volumes');
     writeCompose(lab);
-    compose(lab, 'up', '-d', '--wait');
+    compose(
+      lab,
+      'up',
+      '-d',
+      '--wait',
+      '--wait-timeout',
+      String(budgets.startup / 1000),
+    );
     if (lab.downloadSources) {
       await refreshDownloads(lab);
       envelope(lab, lab.next, lab.images[lab.next]);

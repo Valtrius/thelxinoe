@@ -59,6 +59,24 @@ export async function waitForProvision(read, id, label) {
   return { stack, provision };
 }
 
+export function serverToolsReady({ supported, items }) {
+  return (
+    supported &&
+    items.length > 0 &&
+    items.every(
+      (tool) =>
+        tool.installed &&
+        !tool.integrity_error &&
+        (!['bootstrap', 'validate'].includes(tool.job?.action) ||
+          ['complete', 'failed', 'canceled'].includes(tool.job.stage)),
+    )
+  );
+}
+
+export function waitForServerTools(read) {
+  return waitForState('Server tools ready', read, serverToolsReady);
+}
+
 export function waitForRestart(read, before, urlBase) {
   return waitForState(
     'Service restart',

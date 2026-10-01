@@ -11,6 +11,7 @@ pub async fn run(config: Config) -> Result<()> {
         "Validation requires the original credential key"
     );
     let state = AppState::open(config).await?;
+    crate::tools::validate_installed(&state).await?;
     let schema =
         thelxinoe_database::verify_snapshot(&state.config.state.join("thelxinoe.sqlite3"))?;
     ensure!(

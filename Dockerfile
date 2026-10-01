@@ -20,18 +20,21 @@ COPY apps apps
 # Refresh local inputs and hold the cache until both binaries are copied out.
 RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/src/target,sharing=locked find apps crates -type f -exec touch {} + && cargo build --locked --release -p thelxinoe-server -p thelxinoe-docker-controller && cp target/release/thelxinoe-server target/release/thelxinoe-docker-controller /usr/local/bin/
 
-FROM python:3.11-slim-trixie@sha256:da047cb8f9d1d98e5c070f5300ba9f7274e33b8fc0e5be5ed88740aed1b95ba9 AS streamlink
-COPY scripts/streamlink-requirements.txt /requirements.txt
-RUN python -m venv /opt/streamlink && /opt/streamlink/bin/pip install --no-cache-dir --require-hashes -r /requirements.txt
+FROM python:3.11-slim-trixie@sha256:da047cb8f9d1d98e5c070f5300ba9f7274e33b8fc0e5be5ed88740aed1b95ba9 AS tools
+WORKDIR /src
+COPY apps/server/src/tools/package.py apps/server/src/tools/package.py
+COPY apps/server/src/online/youtube_worker.py apps/server/src/online/streamlink_worker.py apps/server/src/online/
+COPY scripts/prepare-server-tools.py scripts/server-tools.lock.json scripts/
+RUN python scripts/prepare-server-tools.py /opt/thelxinoe/tools --compact
 
 FROM python:3.11-slim-trixie@sha256:da047cb8f9d1d98e5c070f5300ba9f7274e33b8fc0e5be5ed88740aed1b95ba9 AS server
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates ffmpeg curl tini && rm -rf /var/lib/apt/lists/* && groupadd -g 10001 thelxinoe && useradd -u 10001 -g 10001 thelxinoe && mkdir -p /var/lib/thelxinoe /var/cache/thelxinoe /run/thelxinoe && chown -R 10001:10001 /var/lib/thelxinoe /var/cache/thelxinoe /run/thelxinoe && chmod 2770 /run/thelxinoe
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tini && rm -rf /var/lib/apt/lists/* && groupadd -g 10001 thelxinoe && useradd -u 10001 -g 10001 thelxinoe && mkdir -p /var/lib/thelxinoe /var/cache/thelxinoe /run/thelxinoe && chown -R 10001:10001 /var/lib/thelxinoe /var/cache/thelxinoe /run/thelxinoe && chmod 2770 /run/thelxinoe
 ARG VERSION=0.1.0
 ARG REVISION=development
 LABEL org.opencontainers.image.source="https://github.com/Valtrius/thelxinoe" org.opencontainers.image.version=$VERSION org.opencontainers.image.revision=$REVISION
 COPY releases/release.pub /etc/thelxinoe/release.pub
 COPY --from=rust /usr/local/bin/thelxinoe-server /usr/local/bin/
-COPY --from=streamlink /opt/streamlink /opt/streamlink
+COPY --from=tools /opt/thelxinoe/tools /opt/thelxinoe/tools
 COPY --from=web /src/frontend/dist /opt/thelxinoe/web
 ENV THELXINOE_BIND=0.0.0.0:8484 THELXINOE_STATE=/var/lib/thelxinoe THELXINOE_CACHE=/var/cache/thelxinoe THELXINOE_WEB=/opt/thelxinoe/web THELXINOE_MEDIA=/media
 USER 10001:10001

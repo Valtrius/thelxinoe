@@ -70,7 +70,7 @@ pub(super) async fn maintain_watchlists_read_youtube_watchlist_items(
 }
 
 pub(super) async fn maintain_watchlists_write_youtube_media(
-    bundle: tools::Bundle,
+    bundle: tools::OnlineSnapshot,
     video: String,
     db: &Database,
 ) -> anyhow::Result<()> {
@@ -91,7 +91,7 @@ pub(super) async fn status(db: &Database, video: String) -> anyhow::Result<Optio
 }
 
 pub(super) async fn request_for(
-    bundle: tools::Bundle,
+    bundle: tools::OnlineSnapshot,
     p: Principal,
     db: &Database,
     video: String,

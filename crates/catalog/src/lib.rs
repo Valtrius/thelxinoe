@@ -44,14 +44,20 @@ struct IndexedFile {
     identities: Vec<identity::Identity>,
     edition: String,
 }
-pub async fn scan(db: &Database, root: Root) -> Result<usize> {
-    scan_with_progress(db, root, |_, _| async { Ok(()) }).await
+pub async fn scan(db: &Database, root: Root, tools: thelxinoe_tools::MediaTools) -> Result<usize> {
+    scan_with_progress(db, root, tools, |_, _| async { Ok(()) }).await
 }
-pub async fn scan_with_progress<F, Fut>(db: &Database, root: Root, mut progress: F) -> Result<usize>
+pub async fn scan_with_progress<F, Fut>(
+    db: &Database,
+    root: Root,
+    tools: thelxinoe_tools::MediaTools,
+    mut progress: F,
+) -> Result<usize>
 where
     F: FnMut(usize, usize) -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
+    tools.ffprobe.verify().await?;
     let base = PathBuf::from(&root.path)
         .canonicalize()
         .context("Library is unavailable")?;
@@ -89,7 +95,7 @@ where
         {
             (old.2, serde_json::from_str(&old.3)?)
         } else {
-            let mut command = tokio::process::Command::new("ffprobe");
+            let mut command = tokio::process::Command::new(&tools.ffprobe.path);
             command
                 .args([
                     "-v",

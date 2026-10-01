@@ -23,7 +23,7 @@
     message: string;
     created_at: number;
     read_at: number | null;
-    target?: 'server' | null;
+    target?: 'server' | 'tools' | null;
   };
   let items = $state<Notice[]>([]),
     open = $state(false),
@@ -116,7 +116,7 @@
             : 'border-t border-l-3 border-line border-l-accent py-4 pl-4'}
         >
           <p class="my-[0.2rem]">{item.message}</p>
-          {#if item.target === 'server'}<Button
+          {#if item.target === 'server' || item.target === 'tools'}<Button
               size="sm"
               variant="secondary"
               onclick={() => {
@@ -126,7 +126,10 @@
                     detail: 'server',
                   }),
                 );
-              }}>View server version</Button
+              }}
+              >{item.target === 'tools'
+                ? 'View tools'
+                : 'View server version'}</Button
             >{/if}
           <small class="text-muted"
             >{item.severity} · {new Date(item.created_at * 1000).toLocaleString(

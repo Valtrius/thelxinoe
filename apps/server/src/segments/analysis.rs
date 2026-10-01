@@ -10,6 +10,7 @@ async fn idle(state: &AppState) -> anyhow::Result<bool> {
 }
 pub async fn run(state: AppState) -> anyhow::Result<()> {
     storage::run_write_segment_analysis(&state.db).await?;
+    state.tools.wait_ready().await;
     loop {
         if idle(&state).await? {
             let cfg = config(&state).await.map_err(|e| anyhow::anyhow!(e.2))?;
@@ -43,16 +44,18 @@ async fn extract(
     src: &Source,
     offset: f64,
     length: f64,
+    tools: &thelxinoe_tools::MediaTools,
 ) -> anyhow::Result<Vec<u32>> {
     src.validate().await?;
+    tools.ffmpeg.verify().await?;
     #[cfg(unix)]
     let mut command = {
         let mut c = tokio::process::Command::new("nice");
-        c.args(["-n", "15", "ffmpeg"]);
+        c.args(["-n", "15"]).arg(&tools.ffmpeg.path);
         c
     };
     #[cfg(not(unix))]
-    let mut command = tokio::process::Command::new("ffmpeg");
+    let mut command = tokio::process::Command::new(&tools.ffmpeg.path);
     #[cfg(windows)]
     command.creation_flags(0x08000000);
     command
@@ -113,6 +116,7 @@ async fn analyze(
     cfg: Config,
 ) -> anyhow::Result<()> {
     let _lease = state.media_operations.read().await;
+    let tools = state.tools.runtime.media()?;
     let src = playback::source(state, media, Some(file))
         .await
         .map_err(|e| anyhow::anyhow!(e.2))?;
@@ -130,7 +134,7 @@ async fn analyze(
     if cfg.local {
         let length = (src.duration() * 0.25).min(600.0);
         for (kind, offset) in [("Intro", 0.0), ("Credits", src.duration() - length)] {
-            let hashes = extract(state, &src, offset, length).await?;
+            let hashes = extract(state, &src, offset, length, &tools).await?;
             let saved = src.clone();
             let serialized = serde_json::to_string(&hashes)?;
             let peers = storage::analyze_write_segment_fingerprints(

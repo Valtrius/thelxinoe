@@ -1,7 +1,8 @@
 """Run inside the server image. Input JSON contains public Twitch logins only.
 
 Prints timings, never signed stream URLs. Uses temporary isolated tool homes.
-Usage: /opt/streamlink/bin/python benchmark-online-startup.py inputs.json
+Usage: <selected Streamlink env/bin/python> benchmark-online-startup.py inputs.json
+Input includes "tools": <GET admin/tools> so FFmpeg uses the same recorded selection.
 """
 
 import json
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from benchmark_tools import installed_tools
 
 
 def isolated(home):
@@ -22,9 +24,9 @@ def isolated(home):
     }
 
 
-def pipeline(url, seconds, probe, directory):
+def pipeline(url, seconds, probe, directory, tools):
     path = Path(directory)
-    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+    command = [str(tools["ffmpeg"]), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
                "-protocol_whitelist", "https,tls,tcp,crypto", "-rw_timeout", "15000000"]
     if probe:
         command += ["-probesize", "524288", "-analyzeduration", "1000000"]
@@ -53,6 +55,7 @@ def pipeline(url, seconds, probe, directory):
 
 def main():
     inputs = json.loads(Path(sys.argv[1]).read_text())
+    tools = installed_tools(inputs)
     with tempfile.TemporaryDirectory(prefix="thelxinoe-benchmark-") as home:
         os.environ.clear()
         os.environ.update(isolated(home))
@@ -70,7 +73,7 @@ def main():
                     try:
                         if mode == "cli":
                             with tempfile.TemporaryDirectory(prefix="cli-", dir=home) as cli_home:
-                                output = subprocess.run(["/opt/streamlink/bin/streamlink", "--no-config", "--loglevel", "error",
+                                output = subprocess.run([str(tools["python"]), "-I", "-B", "-m", "streamlink", "--no-config", "--loglevel", "error",
                                     "--stream-url", "--http-timeout", "15", address,
                                     "1080p,1080p60,720p,720p60,480p,best"], env=isolated(cli_home), capture_output=True, timeout=45)
                             if output.returncode:
@@ -91,7 +94,7 @@ def main():
                         variants.reverse()
                     for seconds, probe in variants:
                         with tempfile.TemporaryDirectory(prefix="hls-", dir=home) as directory:
-                            elapsed = pipeline(stream_url, seconds, probe, directory)
+                            elapsed = pipeline(stream_url, seconds, probe, directory, tools)
                         result = {"channel": index, "repeat": repeat, "stage": f"hls-{seconds}s-{'short-probe' if probe else 'default'}", "seconds": elapsed}
                         results.append(result)
                         print(json.dumps(result), flush=True)

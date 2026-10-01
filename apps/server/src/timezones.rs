@@ -15,8 +15,7 @@ use serde_json::{Value, json};
 
 pub(crate) use storage::server_zone;
 
-#[cfg(test)]
-use storage::maintenance_window;
+pub(crate) use storage::maintenance_window;
 
 pub(crate) async fn in_server_window(
     state: &AppState,

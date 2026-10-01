@@ -9,6 +9,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use thelxinoe_tools::{MediaTools, Runtime};
 use tokio::{
     io::AsyncReadExt,
     process::Command,
@@ -16,6 +17,7 @@ use tokio::{
 };
 
 struct Run {
+    tools: MediaTools,
     revision: String,
     directory: PathBuf,
     source: Source,
@@ -38,15 +40,17 @@ impl Drop for RemoteWork {
     }
 }
 pub struct VodCache {
+    tools: Runtime,
     root: PathBuf,
     runs: Mutex<HashMap<String, Arc<Run>>>,
     slots: Arc<Semaphore>,
 }
 impl VodCache {
-    pub async fn open(root: &Path, slots: Arc<Semaphore>) -> Result<Self> {
+    pub async fn open(root: &Path, slots: Arc<Semaphore>, tools: Runtime) -> Result<Self> {
         let root = root.join("vod");
         tokio::fs::create_dir_all(&root).await?;
         Ok(Self {
+            tools,
             root,
             runs: Mutex::new(HashMap::new()),
             slots,
@@ -97,6 +101,9 @@ impl VodCache {
         if remote.is_none() {
             source.validate().await?;
         }
+        let tools = self.tools.media()?;
+        tools.ffmpeg.verify().await?;
+        tools.ffprobe.verify().await?;
         let duration = source.duration();
         if !duration.is_finite() || !(0.0..=86400.0).contains(&duration) || duration == 0.0 {
             bail!("Seekable conversion requires a duration of at most 24 hours");
@@ -110,7 +117,7 @@ impl VodCache {
                 .clone()
                 .try_acquire_owned()
                 .context("All conversion slots are busy")?;
-            keyframes(source).await?
+            keyframes(source, &tools).await?
         } else {
             (
                 (0..(duration / segment).ceil() as usize)
@@ -156,6 +163,7 @@ impl VodCache {
         runs.insert(
             id.to_owned(),
             Arc::new(Run {
+                tools,
                 revision: revision.clone(),
                 directory,
                 source: source.clone(),
@@ -224,7 +232,7 @@ impl VodCache {
         let start = run.boundaries[index];
         let duration = run.boundaries[index + 1] - start;
         let remux_video = run.mode == "remux" && run.source.video_codec().is_some();
-        let mut command = Command::new("ffmpeg");
+        let mut command = Command::new(&run.tools.ffmpeg.path);
         command.args([
             "-hide_banner",
             "-loglevel",
@@ -401,7 +409,7 @@ impl VodCache {
             let end = (index + 8).min(run.boundaries.len() - 1);
             let start = run.boundaries[index];
             let duration = run.boundaries[end] - start;
-            let mut command = Command::new("ffmpeg");
+            let mut command = Command::new(&run.tools.ffmpeg.path);
             command.env_clear();
             for name in ["PATH", "SystemRoot", "WINDIR"] {
                 if let Some(value) = std::env::var_os(name) {
@@ -570,8 +578,8 @@ async fn trim(directory: &Path, current: &Path) -> Result<()> {
     }
     Ok(())
 }
-async fn keyframes(source: &Source) -> Result<(Vec<f64>, f64)> {
-    let mut command = Command::new("ffprobe");
+async fn keyframes(source: &Source, tools: &MediaTools) -> Result<(Vec<f64>, f64)> {
+    let mut command = Command::new(&tools.ffprobe.path);
     command
         .args([
             "-v",
@@ -721,7 +729,7 @@ async fn select_part(run: &Run, start: f64, duration: f64) -> Result<PathBuf> {
         // The segment muxer reports zero for its first entry even when input
         // seeking starts later. Read that entry's first video packet instead.
         if index == 0 {
-            let mut command = Command::new("ffprobe");
+            let mut command = Command::new(&run.tools.ffprobe.path);
             command
                 .args([
                     "-v",
