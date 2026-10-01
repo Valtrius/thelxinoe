@@ -87,7 +87,12 @@ fn resources(key: &str, kind: &str, folder: &str) -> Result<Vec<Value>> {
     for entry in std::fs::read_dir(path).map_err(|_| unavailable())? {
         let entry = entry.map_err(|_| unavailable())?;
         if entry.path().extension().is_some_and(|e| e == "json") {
-            rows.push(persisted(store::read(&entry.path()))?);
+            let mut value: Value = persisted(store::read(&entry.path()))?;
+            value["source_url"] = json!(format!(
+                "https://github.com/TRaSH-Guides/Guides/blob/master/docs/json/{kind}/{folder}/{}",
+                entry.file_name().to_string_lossy()
+            ));
+            rows.push(value);
         }
     }
     Ok(rows)
@@ -252,7 +257,7 @@ pub(super) async fn catalog(
             .map(|g| json!({"trash_id":g["trash_id"],"name":g["name"],"default":g["default"]}))
             .collect::<Vec<_>>();
         items.push(
-            json!({"trash_id":trash,"name":row["name"],"url":row["trash_url"],"groups":groups}),
+            json!({"trash_id":trash,"name":row["name"],"url":row["source_url"],"groups":groups}),
         );
     }
     if items.is_empty() {
@@ -332,36 +337,89 @@ fn config(key: &str, targets: &[(Target, String)]) -> Result<String> {
             continue;
         }
         text.push_str(&format!("{kind}:\n"));
-        for (target, url) in rows {
-            let guide = profile(key, kind, &target.trash_id)?;
-            let name = format!("Thelxinoe {kind} {}", &target.trash_id[..8]);
-            text.push_str(&format!("  managed_{}:\n    base_url: {}\n    api_key: !file /runtime/{}\n    delete_old_custom_formats: false\n    quality_profiles:\n      - trash_id: {}\n        name: {}\n        reset_unmatched_scores:\n          enabled: {}\n",target.service_id.replace('-', ""),quote(url),target.service_id,quote(&target.trash_id),quote(&name),target.reset_scores));
-            if let Some(value) = target.overrides.get("min_format_score") {
-                text.push_str(&format!("        min_format_score: {value}\n"));
-            }
-            if target.overrides.get("upgrade_allowed").is_some()
-                || target.overrides.get("upgrade_until_score").is_some()
-            {
-                let allowed = target
-                    .overrides
-                    .get("upgrade_allowed")
-                    .unwrap_or(&guide["upgradeAllowed"]);
-                if !allowed.is_boolean() {
-                    return Err(conflict("Guide upgrade settings are unavailable"));
+        let mut managers = std::collections::BTreeMap::<&str, Vec<&(Target, String)>>::new();
+        for row in rows {
+            managers.entry(&row.0.service_id).or_default().push(row);
+        }
+        for profiles in managers.values() {
+            let (manager, url) = profiles[0];
+            text.push_str(&format!("  managed_{}:\n    base_url: {}\n    api_key: !file /runtime/{}\n    delete_old_custom_formats: false\n    quality_profiles:\n",manager.service_id.replace('-', ""),quote(url),manager.service_id));
+            for (target, _) in profiles {
+                let guide = profile(key, kind, &target.trash_id)?;
+                let name = guide["name"].as_str().ok_or_else(unavailable)?;
+                text.push_str(&format!("      - trash_id: {}\n        name: {}\n        reset_unmatched_scores:\n          enabled: {}\n",quote(&target.trash_id),quote(name),target.reset_scores));
+                if let Some(value) = target.overrides.get("min_format_score") {
+                    text.push_str(&format!("        min_format_score: {value}\n"));
                 }
-                text.push_str(&format!("        upgrade:\n          allowed: {allowed}\n"));
-                if let Some(value) = target.overrides.get("upgrade_until_score") {
-                    text.push_str(&format!("          until_score: {value}\n"));
+                if target.overrides.get("upgrade_allowed").is_some()
+                    || target.overrides.get("upgrade_until_score").is_some()
+                {
+                    let allowed = target
+                        .overrides
+                        .get("upgrade_allowed")
+                        .unwrap_or(&guide["upgradeAllowed"]);
+                    if !allowed.is_boolean() {
+                        return Err(conflict("Guide upgrade settings are unavailable"));
+                    }
+                    text.push_str(&format!("        upgrade:\n          allowed: {allowed}\n"));
+                    if let Some(value) = target.overrides.get("upgrade_until_score") {
+                        text.push_str(&format!("          until_score: {value}\n"));
+                    }
                 }
             }
-            if target.quality_sizes {
+            if profiles.iter().any(|(target, _)| target.quality_sizes) {
                 text.push_str(&format!(
                     "    quality_definition:\n      type: {}\n",
                     if kind == "radarr" { "movie" } else { "series" }
                 ));
             }
-            if target.groups != json!({"add":[],"skip":[]}) {
-                text.push_str(&format!("    custom_format_groups: {}\n", target.groups));
+            let skip = profiles
+                .iter()
+                .flat_map(|(target, _)| {
+                    target.groups["skip"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                })
+                .collect::<std::collections::BTreeSet<_>>();
+            let mut add = std::collections::BTreeMap::<String, Vec<Value>>::new();
+            for (target, _) in profiles {
+                for group in target.groups["add"].as_array().into_iter().flatten() {
+                    let trash = group["trash_id"].as_str().ok_or_else(unavailable)?;
+                    add.entry(trash.into())
+                        .or_default()
+                        .push(json!({"trash_id":target.trash_id}));
+                }
+            }
+            if !skip.is_empty() {
+                for group in resources(key, kind, "cf-groups")? {
+                    let trash = group["trash_id"].as_str().ok_or_else(unavailable)?;
+                    if !skip.contains(trash)
+                        || !(group["default"] == true || group["default"] == "true")
+                    {
+                        continue;
+                    }
+                    for (target, _) in profiles {
+                        if group["quality_profiles"]["include"]
+                            .get(&target.trash_id)
+                            .is_some()
+                            && !target.groups["skip"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .any(|id| id == trash)
+                        {
+                            add.entry(trash.into())
+                                .or_default()
+                                .push(json!({"trash_id":target.trash_id}));
+                        }
+                    }
+                }
+            }
+            if !add.is_empty() || !skip.is_empty() {
+                let groups = json!({"skip":skip,"add":add.into_iter().map(|(trash,mut profiles)|{profiles.sort_by_key(Value::to_string);profiles.dedup();json!({"trash_id":trash,"assign_scores_to":profiles})}).collect::<Vec<_>>()});
+                text.push_str(&format!("    custom_format_groups: {groups}\n"));
             }
         }
     }
@@ -442,7 +500,18 @@ async fn upstream_hashes(
     operation: &str,
 ) -> Result<Value> {
     let identity = Identity::service("recyclarr", &s.spec)?;
-    let rows=targets.iter().map(|(t,url)|json!({"service_id":t.service_id,"url":url,"name":format!("Thelxinoe {} {}",t.kind,&t.trash_id[..8]),"tracked_id":tracked_profile(&s.id,t,url).ok().flatten()})).collect::<Vec<_>>();
+    let mut rows = std::collections::BTreeMap::<String, Value>::new();
+    for (target, url) in targets {
+        let guide = profile(&s.id, &target.kind, &target.trash_id)?;
+        let row = rows
+            .entry(target.service_id.clone())
+            .or_insert_with(|| json!({"service_id":target.service_id,"url":url,"profiles":[]}));
+        row["profiles"]
+            .as_array_mut()
+            .ok_or_else(unavailable)?
+            .push(json!({"name":guide["name"],"tracked_id":tracked_profile(&s.id,target,url)?}));
+    }
+    let rows = rows.into_values().collect::<Vec<_>>();
     let spec = json!({"Image":updates::current_image().await?,"User":identity.user(),"Cmd":["recyclarr-check",serde_json::to_string(&rows).map_err(|_|unavailable())?],"Tty":true,"Healthcheck":{"Test":["NONE"]},"Labels":{"app.thelxinoe.deployment":d.id,"app.thelxinoe.recyclarr-service":s.id,"app.thelxinoe.recyclarr-run":operation},"HostConfig":{"NetworkMode":d.network,"ReadonlyRootfs":true,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],"Memory":268435456u64,"PidsLimit":32,"Mounts":[{"Type":"bind","Source":runtime_host,"Target":"/runtime","ReadOnly":true}]}});
     let container = request(Method::POST, "/containers/create", Some(spec)).await?["Id"]
         .as_str()
@@ -527,7 +596,9 @@ pub(super) async fn run(
             let (applied, log) = command(&d,&s,&input.operation_id,&["sync".into(),"--log".into(),"info".into()],Some(&runtime_host)).await?;
             evidence["state"] = json!(if applied && !log.contains("[ERR]") {"applied"} else {"partial"});
             evidence["apply"] = json!(log);
-            evidence["targets"] = json!(targets.iter().map(|(t,url)|json!({"service_id":t.service_id,"generation":t.generation,"revision":t.revision,"trash_id":t.trash_id,"profile_id":tracked_profile(&key,t,url).ok().flatten(),"profile_name":format!("Thelxinoe {} {}",t.kind,&t.trash_id[..8])})).collect::<Vec<_>>());
+            let mut applied_targets=Vec::new();
+            for (t,url) in &targets { applied_targets.push(json!({"service_id":t.service_id,"generation":t.generation,"revision":t.revision,"trash_id":t.trash_id,"profile_id":tracked_profile(&key,t,url)?})); }
+            evidence["targets"]=json!(applied_targets);
         }
         // Never persist a key in evidence, including an upstream error response.
         let mut serialized = evidence.to_string();
@@ -798,136 +869,183 @@ pub(super) async fn review_config(d: &Deployment, review: &str, raw: &Value) -> 
                 }
                 let profiles = instance["quality_profiles"]
                     .as_array()
-                    .filter(|p| p.len() == 1)
+                    .filter(|p| !p.is_empty())
                     .ok_or_else(|| {
-                        conflict("Import requires one guide-backed profile per instance")
+                        conflict("Import requires guide-backed profiles per instance")
                     })?;
-                let profile = &profiles[0];
-                if profile.as_object().is_none_or(|p| {
-                    p.keys().any(|k| {
-                        !matches!(
-                            k.as_str(),
-                            "trash_id"
-                                | "name"
-                                | "reset_unmatched_scores"
-                                | "min_format_score"
-                                | "upgrade"
-                        )
-                    })
-                }) || profile["reset_unmatched_scores"]["enabled"] == true
-                {
-                    return Err(conflict("Unsupported imported profile overrides"));
-                }
-                let trash = profile["trash_id"]
-                    .as_str()
-                    .filter(|id| id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()))
-                    .ok_or_else(|| conflict("Import requires guide trash_id selections"))?;
-                let guide_dir = path.join(format!(
-                    "resources/trash-guides/git/official/docs/json/{kind}/quality-profiles"
-                ));
-                let guides=std::fs::read_dir(guide_dir).map_err(|_|conflict("Run the original Recyclarr once to populate official guide resources before importing"))?;
-                let selected = guides
-                    .filter_map(|e| e.ok())
-                    .filter_map(|e| std::fs::read(e.path()).ok())
-                    .filter_map(|b| serde_json::from_slice::<Value>(&b).ok())
-                    .find(|g| g["trash_id"] == trash)
-                    .ok_or_else(|| conflict("Imported guide is absent from official resources"))?;
-                let mut groups = if instance["custom_format_groups"].is_null() {
-                    json!({"add":[],"skip":[]})
-                } else {
-                    instance["custom_format_groups"].clone()
-                };
-                if groups
-                    .as_object()
-                    .is_none_or(|g| g.keys().any(|k| !matches!(k.as_str(), "add" | "skip")))
-                {
-                    return Err(conflict("Unsupported imported custom-format groups"));
-                }
-                for field in ["add", "skip"] {
-                    if groups.get(field).is_none() {
-                        groups[field] = json!([]);
-                    }
-                    for group in groups[field]
-                        .as_array()
-                        .ok_or_else(|| conflict("Unsupported imported custom-format groups"))?
+                let mut seen = std::collections::HashSet::new();
+                for profile in profiles {
+                    if profile.as_object().is_none_or(|p| {
+                        p.keys().any(|k| {
+                            !matches!(
+                                k.as_str(),
+                                "trash_id"
+                                    | "name"
+                                    | "reset_unmatched_scores"
+                                    | "min_format_score"
+                                    | "upgrade"
+                            )
+                        })
+                    }) || profile["reset_unmatched_scores"]["enabled"] == true
                     {
-                        let group_id = if field == "add" {
-                            group["trash_id"].as_str()
-                        } else {
-                            group.as_str()
-                        };
-                        if group_id.is_none()
-                            || (field == "add" && group.as_object().is_none_or(|g| g.len() != 1))
-                        {
-                            return Err(conflict("Unsupported imported group override"));
-                        }
-                        let group_dir = path.join(format!(
-                            "resources/trash-guides/git/official/docs/json/{kind}/cf-groups"
-                        ));
-                        let compatible = std::fs::read_dir(group_dir)
-                            .map_err(|_| unavailable())?
-                            .filter_map(|e| e.ok())
-                            .filter_map(|e| std::fs::read(e.path()).ok())
-                            .filter_map(|b| serde_json::from_slice::<Value>(&b).ok())
-                            .any(|g| {
-                                g["trash_id"].as_str() == group_id
-                                    && g["quality_profiles"]["include"].get(trash).is_some()
-                            });
-                        if !compatible {
-                            return Err(conflict(
-                                "Imported custom-format group is incompatible with its profile",
-                            ));
-                        }
+                        return Err(conflict("Unsupported imported profile overrides"));
                     }
-                }
-                if !instance["quality_definition"].is_null()
-                    && (instance["quality_definition"]
-                        .as_object()
-                        .is_none_or(|m| m.len() != 1)
-                        || instance["quality_definition"]["type"]
-                            != if kind == "radarr" { "movie" } else { "series" })
-                {
-                    return Err(conflict(
-                        "Imported quality-size overrides cannot be represented",
+                    let trash = profile["trash_id"]
+                        .as_str()
+                        .filter(|id| id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()))
+                        .ok_or_else(|| conflict("Import requires guide trash_id selections"))?;
+                    if !seen.insert(trash) {
+                        return Err(conflict("Imported guide IDs must be unique per instance"));
+                    }
+                    let guide_dir = path.join(format!(
+                        "resources/trash-guides/git/official/docs/json/{kind}/quality-profiles"
                     ));
-                }
-                let mut overrides = json!({});
-                let upgrade = &profile["upgrade"];
-                if !upgrade.is_null()
-                    && upgrade.as_object().is_none_or(|m| {
-                        m.keys()
-                            .any(|k| !matches!(k.as_str(), "allowed" | "until_score"))
-                            || !upgrade["allowed"].is_boolean()
-                    })
-                {
-                    return Err(conflict("Unsupported imported upgrade settings"));
-                }
-                for (field, value) in [
-                    ("min_format_score", profile.get("min_format_score")),
-                    ("upgrade_until_score", upgrade.get("until_score")),
-                    ("upgrade_allowed", upgrade.get("allowed")),
-                ] {
-                    if let Some(value) = value {
-                        if !(if field == "upgrade_allowed" {
-                            value.is_boolean()
-                        } else {
-                            value
-                                .as_i64()
-                                .is_some_and(|v| (-100000..=100000).contains(&v))
-                        }) {
-                            return Err(conflict("Invalid imported profile override"));
-                        }
-                        overrides[field] = value.clone();
+                    let guides=std::fs::read_dir(guide_dir).map_err(|_|conflict("Run the original Recyclarr once to populate official guide resources before importing"))?;
+                    let selected = guides
+                        .filter_map(|e| e.ok())
+                        .filter_map(|e| std::fs::read(e.path()).ok())
+                        .filter_map(|b| serde_json::from_slice::<Value>(&b).ok())
+                        .find(|g| g["trash_id"] == trash)
+                        .ok_or_else(|| {
+                            conflict("Imported guide is absent from official resources")
+                        })?;
+                    let mut groups = if instance["custom_format_groups"].is_null() {
+                        json!({"add":[],"skip":[]})
+                    } else {
+                        instance["custom_format_groups"].clone()
+                    };
+                    if groups
+                        .as_object()
+                        .is_none_or(|g| g.keys().any(|k| !matches!(k.as_str(), "add" | "skip")))
+                    {
+                        return Err(conflict("Unsupported imported custom-format groups"));
                     }
+                    if let Some(add) = groups["add"].as_array_mut() {
+                        for group in add.iter() {
+                            if group.as_object().is_none_or(|g| {
+                                g.keys().any(|key| {
+                                    !matches!(key.as_str(), "trash_id" | "assign_scores_to")
+                                })
+                            }) {
+                                return Err(conflict("Unsupported imported group override"));
+                            }
+                            if let Some(assign) = group.get("assign_scores_to") {
+                                let assign =
+                                    assign.as_array().filter(|a| !a.is_empty()).ok_or_else(
+                                        || conflict("Unsupported imported score assignments"),
+                                    )?;
+                                if assign.iter().any(|a| {
+                                    a.as_object().is_none_or(|o| o.len() != 1)
+                                        || !profiles.iter().any(|p| p["trash_id"] == a["trash_id"])
+                                }) {
+                                    return Err(conflict(
+                                        "Imported score assignments must reference configured guide IDs",
+                                    ));
+                                }
+                            }
+                        }
+                        add.retain(|group| {
+                            group.get("assign_scores_to").is_none_or(|assign| {
+                                assign
+                                    .as_array()
+                                    .into_iter()
+                                    .flatten()
+                                    .any(|p| p["trash_id"] == trash)
+                            })
+                        });
+                        for group in add {
+                            if let Some(map) = group.as_object_mut() {
+                                map.remove("assign_scores_to");
+                            }
+                        }
+                    }
+                    for field in ["add", "skip"] {
+                        if groups.get(field).is_none() {
+                            groups[field] = json!([]);
+                        }
+                        for group in groups[field]
+                            .as_array()
+                            .ok_or_else(|| conflict("Unsupported imported custom-format groups"))?
+                        {
+                            let group_id = if field == "add" {
+                                group["trash_id"].as_str()
+                            } else {
+                                group.as_str()
+                            };
+                            if group_id.is_none()
+                                || (field == "add"
+                                    && group.as_object().is_none_or(|g| g.len() != 1))
+                            {
+                                return Err(conflict("Unsupported imported group override"));
+                            }
+                            let group_dir = path.join(format!(
+                                "resources/trash-guides/git/official/docs/json/{kind}/cf-groups"
+                            ));
+                            let compatible = std::fs::read_dir(group_dir)
+                                .map_err(|_| unavailable())?
+                                .filter_map(|e| e.ok())
+                                .filter_map(|e| std::fs::read(e.path()).ok())
+                                .filter_map(|b| serde_json::from_slice::<Value>(&b).ok())
+                                .any(|g| {
+                                    g["trash_id"].as_str() == group_id
+                                        && g["quality_profiles"]["include"].get(trash).is_some()
+                                });
+                            if !compatible {
+                                return Err(conflict(
+                                    "Imported custom-format group is incompatible with its profile",
+                                ));
+                            }
+                        }
+                    }
+                    if !instance["quality_definition"].is_null()
+                        && (instance["quality_definition"]
+                            .as_object()
+                            .is_none_or(|m| m.len() != 1)
+                            || instance["quality_definition"]["type"]
+                                != if kind == "radarr" { "movie" } else { "series" })
+                    {
+                        return Err(conflict(
+                            "Imported quality-size overrides cannot be represented",
+                        ));
+                    }
+                    let mut overrides = json!({});
+                    let upgrade = &profile["upgrade"];
+                    if !upgrade.is_null()
+                        && upgrade.as_object().is_none_or(|m| {
+                            m.keys()
+                                .any(|k| !matches!(k.as_str(), "allowed" | "until_score"))
+                                || !upgrade["allowed"].is_boolean()
+                        })
+                    {
+                        return Err(conflict("Unsupported imported upgrade settings"));
+                    }
+                    for (field, value) in [
+                        ("min_format_score", profile.get("min_format_score")),
+                        ("upgrade_until_score", upgrade.get("until_score")),
+                        ("upgrade_allowed", upgrade.get("allowed")),
+                    ] {
+                        if let Some(value) = value {
+                            if !(if field == "upgrade_allowed" {
+                                value.is_boolean()
+                            } else {
+                                value
+                                    .as_i64()
+                                    .is_some_and(|v| (-100000..=100000).contains(&v))
+                            }) {
+                                return Err(conflict("Invalid imported profile override"));
+                            }
+                            overrides[field] = value.clone();
+                        }
+                    }
+                    let secret = instance["api_key"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| conflict("Import requires directly configured API keys"))?;
+                    let url = instance["base_url"]
+                        .as_str()
+                        .ok_or_else(|| conflict("Import requires an explicit target URL"))?;
+                    targets.push(json!({"kind":kind,"trash_id":trash,"secret":secret,"url":url,"quality_sizes":!instance["quality_definition"].is_null(),"groups":groups,"overrides":overrides,"guide_name":selected["name"]}));
                 }
-                let secret = instance["api_key"]
-                    .as_str()
-                    .filter(|s| !s.is_empty())
-                    .ok_or_else(|| conflict("Import requires directly configured API keys"))?;
-                let url = instance["base_url"]
-                    .as_str()
-                    .ok_or_else(|| conflict("Import requires an explicit target URL"))?;
-                targets.push(json!({"kind":kind,"trash_id":trash,"secret":secret,"url":url,"quality_sizes":!instance["quality_definition"].is_null(),"groups":groups,"overrides":overrides,"guide_name":selected["name"]}));
             }
         }
         if targets.is_empty() {
@@ -1011,7 +1129,13 @@ pub(super) async fn import(
             .into_iter()
             .flatten()
             .map(|(_, v)| v)
-            .find(|v| v["quality_profiles"][0]["trash_id"] == target["trash_id"])
+            .find(|v| {
+                v["quality_profiles"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|profile| profile["trash_id"] == target["trash_id"])
+            })
             .ok_or_else(unavailable)?;
         bindings[service] = json!(state_directory(
             instance["base_url"].as_str().ok_or_else(unavailable)?

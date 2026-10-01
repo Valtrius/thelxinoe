@@ -14,6 +14,7 @@ pub(super) fn router() -> Router<AppState> {
         .route("/api/v1/seerr/status", get(status))
         .route("/api/v1/seerr/discover/{feed}", get(discover))
         .route("/api/v1/seerr/search", get(search))
+        .route("/api/v1/seerr/profiles/{kind}", get(request_profiles))
         .route("/api/v1/seerr/{kind}/{id}", get(details))
         .route(
             "/api/v1/seerr/{kind}/{id}/recommendations",
@@ -99,6 +100,14 @@ fn public(mut value: Value) -> Value {
             for item in map.values_mut() {
                 *item = public(item.take());
             }
+            if let Some(uhd) = map
+                .get("status4k")
+                .and_then(Value::as_u64)
+                .filter(|status| (1..=5).contains(status))
+            {
+                let hd = map.get("status").and_then(Value::as_u64).unwrap_or(1);
+                map.insert("status".into(), json!(hd.max(uhd)));
+            }
         }
         Value::Array(items) => {
             for item in items {
@@ -152,7 +161,8 @@ async fn user(c: &Connection<'_>, service: &str, principal: &Principal) -> Resul
     };
     let admin = principal.user.role == Role::Admin;
     let automatic = admin || storage::auto_approve(&c.state.db, principal.user.id.clone()).await?;
-    let permissions = 32 | if automatic { 128 } else { 0 } | if admin { 16 } else { 0 };
+    let permissions =
+        32 | 1024 | 8192 | if automatic { 128 | 32768 } else { 0 } | if admin { 16 } else { 0 };
     call(
         c,
         reqwest::Method::POST,
@@ -292,6 +302,124 @@ struct RequestMedia {
     media_id: i64,
     #[serde(default)]
     seasons: Vec<u32>,
+    profile: Option<ProfileRef>,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+enum ProfileRef {
+    Guide {
+        service_id: String,
+        trash_id: String,
+    },
+    Custom {
+        service_id: String,
+        profile_id: i64,
+    },
+}
+impl ProfileRef {
+    fn service_id(&self) -> &str {
+        match self {
+            Self::Guide { service_id, .. } | Self::Custom { service_id, .. } => service_id,
+        }
+    }
+}
+#[derive(Deserialize)]
+struct ProfileQuery {
+    media_id: i64,
+}
+async fn request_manager(state: &AppState, kind: &str) -> Result<Service> {
+    for key in storage::managers(&state.db).await? {
+        let service = super::service(state, &key).await?;
+        if service.kind == kind {
+            return Ok(service);
+        }
+    }
+    Err(ApiError::conflict(format!(
+        "Connect {kind} in Media services before requesting this media"
+    )))
+}
+async fn existing_series_profile(
+    c: &Connection<'_>,
+    seerr: &Connection<'_>,
+    media_id: i64,
+) -> Result<Option<i64>> {
+    let media = seerr.get(&format!("tv/{media_id}")).await?;
+    let tvdb = media["externalIds"]["tvdbId"]
+        .as_i64()
+        .or_else(|| media["mediaInfo"]["tvdbId"].as_i64());
+    let Some(tvdb) = tvdb.filter(|id| *id > 0) else {
+        return Ok(None);
+    };
+    let series = c
+        .call(
+            reqwest::Method::GET,
+            "series",
+            &[("tvdbId", tvdb.to_string())],
+            None,
+        )
+        .await?;
+    Ok(series
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|s| s["tvdbId"] == tvdb)
+        .and_then(|s| s["qualityProfileId"].as_i64()))
+}
+fn is_uhd(items: &Value) -> bool {
+    items.as_array().into_iter().flatten().any(|item| {
+        item["allowed"] == true && (item["quality"]["resolution"] == 2160 || is_uhd(&item["items"]))
+    })
+}
+async fn request_profiles(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(kind): Path<String>,
+    Query(input): Query<ProfileQuery>,
+) -> Result<Json<Value>> {
+    security::principal(&state, &headers).await?;
+    media_path(&kind, input.media_id)?;
+    let manager_kind = if kind == "movie" { "radarr" } else { "sonarr" };
+    let service = request_manager(&state, manager_kind).await?;
+    let c = Connection::open(&state, &service).await?;
+    let profiles = c.get("qualityprofile").await?;
+    let mappings = recyclarr::profiles(&state, &service.id).await?;
+    let mut items = Vec::new();
+    for profile in profiles.as_array().ok_or_else(unavailable)? {
+        let id = profile["id"].as_i64().ok_or_else(unavailable)?;
+        let mapping = mappings.iter().find(|m| m.profile_id == id);
+        let reference = if let Some(mapping) = mapping {
+            ProfileRef::Guide {
+                service_id: service.id.clone(),
+                trash_id: mapping.trash_id.clone(),
+            }
+        } else {
+            ProfileRef::Custom {
+                service_id: service.id.clone(),
+                profile_id: id,
+            }
+        };
+        let default = if let Some(trash) = service.defaults["quality_profile_trash_id"].as_str() {
+            mapping.is_some_and(|m| m.trash_id == trash)
+        } else {
+            service.defaults["quality_profile"] == id
+        };
+        items.push(json!({"name":profile["name"],"default":default,"profile":reference}));
+    }
+    items.sort_by(|a, b| {
+        b["default"]
+            .as_bool()
+            .cmp(&a["default"].as_bool())
+            .then_with(|| a["name"].as_str().cmp(&b["name"].as_str()))
+    });
+    let locked = if kind == "tv" {
+        let (_, seerr) = connection(&state).await?;
+        existing_series_profile(&c, &seerr, input.media_id)
+            .await?
+            .is_some()
+    } else {
+        false
+    };
+    Ok(Json(json!({"items":items,"locked":locked})))
 }
 async fn request(
     State(state): State<AppState>,
@@ -307,35 +435,81 @@ async fn request(
         return Err(ApiError::bad("Select the seasons to request"));
     }
     let (service, c) = connection(&state).await?;
-    let user = user(&c, &service, &principal).await?;
-    let mut body = json!({"mediaType":input.media_type,"mediaId":input.media_id,"is4k":false});
-    sync_connections(
-        &state,
-        Some(if input.media_type == "movie" {
-            "radarr"
-        } else {
-            "sonarr"
-        }),
-        false,
-    )
-    .await?;
     let kind = if input.media_type == "movie" {
         "radarr"
     } else {
         "sonarr"
     };
+    let _guard = state.managers.guard.service(kind).await;
+    let manager = request_manager(&state, kind).await?;
+    let native = Connection::open(&state, &manager).await?;
+    let profiles = native.get("qualityprofile").await?;
+    let mappings = recyclarr::profiles(&state, &manager.id).await?;
+    let requested = if let Some(reference) = &input.profile {
+        if reference.service_id() != manager.id {
+            return Err(ApiError::bad("Choose a profile from this media's manager"));
+        }
+        match reference {
+            ProfileRef::Guide { trash_id, .. } => mappings
+                .iter()
+                .find(|m| m.trash_id == *trash_id)
+                .map(|m| m.profile_id),
+            ProfileRef::Custom { profile_id, .. } => {
+                if mappings.iter().any(|m| m.profile_id == *profile_id) {
+                    None
+                } else {
+                    Some(*profile_id)
+                }
+            }
+        }
+    } else if let Some(trash) = manager.defaults["quality_profile_trash_id"].as_str() {
+        mappings
+            .iter()
+            .find(|m| m.trash_id == trash)
+            .map(|m| m.profile_id)
+    } else {
+        manager.defaults["quality_profile"].as_i64()
+    };
+    let existing = if kind == "sonarr" {
+        existing_series_profile(&native, &c, input.media_id).await?
+    } else {
+        None
+    };
+    let selected = if let Some(existing) = existing {
+        if input.profile.is_some() && requested != Some(existing) {
+            return Err(ApiError::conflict(
+                "This series already has a profile; change it in Sonarr",
+            ));
+        }
+        existing
+    } else {
+        requested.ok_or_else(|| {
+            ApiError::conflict("The request profile is unavailable; select an existing profile")
+        })?
+    };
+    let profile = profiles
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|p| p["id"] == selected)
+        .ok_or_else(|| {
+            ApiError::conflict("The request profile was removed; select an existing profile")
+        })?;
+    let mut body = json!({"mediaType":input.media_type,"mediaId":input.media_id,"is4k":is_uhd(&profile["items"]),"profileId":selected});
+    sync_connections(&state, Some(kind), false).await?;
     let configured = c.get(&format!("settings/{kind}")).await?;
-    body["is4k"] = json!(
-        configured
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|entry| entry["name"] == format!("Thelxinoe {kind}"))
-            .is_some_and(|entry| entry["is4k"] == true)
-    );
+    body["serverId"] = configured
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|entry| entry["name"] == format!("Thelxinoe {kind}"))
+        .and_then(|entry| entry["id"].as_i64())
+        .map(Value::from)
+        .ok_or_else(unavailable)?;
     if input.media_type == "tv" {
         body["seasons"] = json!(input.seasons);
     }
+    let user = user(&c, &service, &principal).await?;
     Ok(Json(public(
         call(
             &c,
@@ -562,13 +736,7 @@ async fn sync_manager(c: &Connection<'_>, s: &Service, defaults: &Defaults) -> R
         .find(|p| p["id"] == defaults.quality_profile)
         .ok_or_else(unavailable)?;
     let name = profile["name"].as_str().ok_or_else(unavailable)?;
-    fn uhd(items: &Value) -> bool {
-        items.as_array().into_iter().flatten().any(|item| {
-            item["allowed"] == true
-                && (item["quality"]["resolution"] == 2160 || uhd(&item["items"]))
-        })
-    }
-    let is4k = uhd(&profile["items"]);
+    let is4k = is_uhd(&profile["items"]);
     let path = format!("settings/{}", s.kind);
     let existing = c.get(&path).await?;
     let owned_name = format!("Thelxinoe {}", s.kind);

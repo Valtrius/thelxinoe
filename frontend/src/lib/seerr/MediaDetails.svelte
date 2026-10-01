@@ -2,7 +2,6 @@
   import {
     ArrowLeft,
     Check,
-    Plus,
     LoaderCircle,
     Star,
     Play,
@@ -13,6 +12,7 @@
   import Button from '../ui/Button.svelte';
   import Notice from '../ui/Notice.svelte';
   import MediaRow from './MediaRow.svelte';
+  import RequestButton, { type ProfileRef } from './RequestButton.svelte';
   import {
     artwork,
     availability,
@@ -102,7 +102,7 @@
     void load();
   });
   onDestroy(() => generation++);
-  async function requestMedia() {
+  async function requestMedia(profile?: ProfileRef) {
     if (!canRequest || busy) return;
     busy = true;
     error = '';
@@ -115,6 +115,7 @@
         media_type: requestKind,
         media_id: requestId,
         seasons: requestKind === 'tv' ? selected : [],
+        ...(profile ? { profile } : {}),
       });
       if (version !== generation) return;
       message =
@@ -323,21 +324,17 @@
           {#if !seasons.length}<p class="mb-4 text-xs text-muted">
               No seasons are available to request yet.
             </p>{/if}
-        {:else}<p class="mb-4 text-xs leading-5 text-muted">
-            {status || 'Request this movie with the server’s quality settings.'}
+        {:else if status}<p class="mb-4 text-xs leading-5 text-muted">
+            {status}
           </p>{/if}
-        <Button
-          class="mt-4 w-full justify-center"
-          size="form"
+        <RequestButton
+          {mediaKind}
+          {id}
+          {busy}
           disabled={!canRequest || busy}
-          onclick={() => void requestMedia()}
-          >{#if busy}<LoaderCircle size={15} class="animate-spin" /> Sending…{:else if canRequest}<Plus
-              size={15}
-            />{mediaKind === 'tv'
-              ? `Request ${selected.length} season${selected.length === 1 ? '' : 's'}`
-              : 'Request movie'}{:else}<Check size={15} />{status ||
-              'Select seasons'}{/if}</Button
-        >
+          inactiveLabel={status || 'Select seasons'}
+          request={(profile) => void requestMedia(profile)}
+        />
         {#if message}<p role="status" class="mt-3 text-xs text-accent">
             {message}
           </p>{/if}

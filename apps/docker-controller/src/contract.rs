@@ -57,19 +57,24 @@ pub async fn recyclarr() -> anyhow::Result<()> {
                 rows.sort_by_key(|r| r["id"].as_i64().unwrap_or(0));
             }
             if endpoint == "qualityprofile" {
-                let matching = value
+                for profile in target["profiles"]
                     .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter(|p| p["name"] == target["name"])
-                    .collect::<Vec<_>>();
-                anyhow::ensure!(
-                    matching.len() <= 1
-                        && matching.first().is_none_or(|p| target["tracked_id"]
-                            .as_i64()
-                            .is_some_and(|id| p["id"] == id)),
-                    "Guide profile name collides with an unowned profile"
-                );
+                    .ok_or_else(|| anyhow::anyhow!("Missing guide profiles"))?
+                {
+                    let matching = value
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|p| p["name"] == profile["name"])
+                        .collect::<Vec<_>>();
+                    anyhow::ensure!(
+                        matching.len() <= 1
+                            && matching.first().is_none_or(|p| profile["tracked_id"]
+                                .as_i64()
+                                .is_some_and(|id| p["id"] == id)),
+                        "Guide profile name collides with an unowned profile"
+                    );
+                }
             }
             state[endpoint] = value;
         }

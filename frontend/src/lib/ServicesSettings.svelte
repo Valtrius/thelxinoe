@@ -7,7 +7,7 @@
   import Notice from './ui/Notice.svelte';
   import ProgressBar from './ui/ProgressBar.svelte';
   import { onMount } from 'svelte';
-  import { api } from './api';
+  import { api, desktop } from './api';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
   import ConfirmDialog from './providers/components/ui/ConfirmDialog.svelte';
@@ -94,7 +94,12 @@
   type ManagerOptions = {
     defaults: ManagerDefaults;
     roots: { id: number; path: string }[];
-    profiles: { id: number; name: string }[];
+    profiles: {
+      id: number;
+      name: string;
+      trash_id?: string | null;
+      url?: string | null;
+    }[];
     metadata_profiles: { id: number; name: string }[];
   };
   type SupportSnapshot = {
@@ -1620,16 +1625,18 @@
                       onRevert={(value) => Object.assign(draft, value)}
                       disabled={busy}
                     >
-                      {#if definition.kind === 'lidarr'}<FormField
-                          >Quality profile<select
-                            class={formControlClass}
-                            bind:value={draft.quality_profile}
-                            required
-                            >{#each options.profiles as option (option.id)}<option
-                                value={option.id}>{option.name}</option
-                              >{/each}</select
-                          ></FormField
-                        >{/if}
+                      <FormField
+                        >{definition.kind === 'lidarr'
+                          ? 'Quality profile'
+                          : 'Default request profile'}<select
+                          class={formControlClass}
+                          bind:value={draft.quality_profile}
+                          required
+                          >{#each options.profiles as option (option.id)}<option
+                              value={option.id}>{option.name}</option
+                            >{/each}</select
+                        ></FormField
+                      >
                       {#if definition.kind === 'lidarr'}<FormField
                           >Metadata profile<select
                             class={formControlClass}
@@ -1644,14 +1651,28 @@
                         >Monitor and search requests</Switch
                       >
                     </AutoSaveForm>{/key}
-                  {#if definition.kind === 'radarr' || definition.kind === 'sonarr'}<Button
-                      variant="ghost"
-                      size="sm"
-                      onclick={() => {
-                        selectedKind = 'recyclarr';
-                        void loadSelectedData();
-                      }}>Configure guide profile in Recyclarr</Button
-                    >{/if}
+                  {#if definition.kind === 'radarr' || definition.kind === 'sonarr'}
+                    {@const selectedProfile = options.profiles.find(
+                      (profile) => profile.id === draft.quality_profile,
+                    )}
+                    <div
+                      class="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-[11px]"
+                    >
+                      {#if connected.access_url && !desktop}<a
+                          class="text-foreground underline decoration-accent underline-offset-4"
+                          href={`${connected.access_url.replace(/\/$/, '')}/settings/profiles`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          >Manage profiles in {definition.label}</a
+                        >{/if}
+                      {#if selectedProfile?.url?.startsWith('https://')}<a
+                          class="text-foreground underline decoration-accent underline-offset-4"
+                          href={selectedProfile.url}
+                          target="_blank"
+                          rel="noopener noreferrer">View TRaSH profile</a
+                        >{/if}
+                    </div>
+                  {/if}
                   {#if definition.kind === 'lidarr'}<div class="mt-4">
                       {#key connected.id}<QualityProfileEditor
                           serviceId={connected.id}

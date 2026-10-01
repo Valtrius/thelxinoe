@@ -587,18 +587,21 @@ CREATE TABLE recyclarr_settings (
 ) STRICT;
 
 CREATE TABLE recyclarr_targets (
-    service_id TEXT PRIMARY KEY REFERENCES manager_services(id) ON DELETE CASCADE,
+    service_id TEXT NOT NULL REFERENCES manager_services(id) ON DELETE CASCADE,
     provision_id TEXT NOT NULL REFERENCES recyclarr_settings(provision_id) ON DELETE CASCADE,
     trash_id TEXT NOT NULL,
     revision TEXT NOT NULL,
     profile_id INTEGER,
     profile_name TEXT,
+    guide_url TEXT,
     applied_revision TEXT,
     error TEXT,
     quality_sizes INTEGER NOT NULL DEFAULT 0 CHECK(quality_sizes IN (0,1)),
     reset_scores INTEGER NOT NULL DEFAULT 1 CHECK(reset_scores IN (0,1)),
     groups TEXT NOT NULL DEFAULT '{"add":[],"skip":[]}',
-    overrides TEXT NOT NULL DEFAULT '{}'
+    overrides TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY(service_id, trash_id),
+    UNIQUE(service_id, profile_id)
 ) STRICT;
 
 CREATE TABLE recyclarr_runs (

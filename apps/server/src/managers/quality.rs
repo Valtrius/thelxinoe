@@ -107,6 +107,7 @@ pub(super) async fn ensure_defaults(state: &AppState, service: &Service) -> Resu
     let defaults = Defaults {
         root_folder: canonical_root(&service.kind).into(),
         quality_profile: profile["id"].as_i64().ok_or_else(unavailable)?,
+        quality_profile_trash_id: None,
         metadata_profile: metadata,
         monitored: true,
     };
