@@ -1,51 +1,29 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, ApiError } from '../api';
+  import { api } from '../api';
   import AutoSaveForm from '../ui/AutoSaveForm.svelte';
   import FormField from '../ui/FormField.svelte';
   import Switch from '../ui/Switch.svelte';
   import Button from '../ui/Button.svelte';
   import Notice from '../ui/Notice.svelte';
   import { formControlClass } from '../ui/styles';
-  import RecyclarrTarget from './RecyclarrTarget.svelte';
-  import type { Guide, Target } from './recyclarr';
-  type Run = {
-    id: string;
-    state: string;
-    created_at: number;
-    updated_at: number;
-    error: string | null;
-  };
+
   type Snapshot = {
-    settings: { paused: boolean; hour: number; next_run: number } | null;
-    targets: Target[];
-    runs: Run[];
+    settings: { paused: boolean; hour: number } | null;
+    runs: { id: string; state: string; error: string | null }[];
     timezone: string;
   };
-  let snapshot = $state<Snapshot | null>(null);
-  let catalogs = $state<Record<string, Guide[]>>({});
-  let evidence = $state<
-    Record<string, { revision: string; value?: unknown; error?: string }>
-  >({});
-  let error = $state('');
-  let catalogError = $state('');
-  let catalogLoading = false;
-  let catalogAttempts = 0;
-  let catalogRetryable = true;
-  let feedback = $state('');
-  let feedbackRun = $state('');
-  let schedule = $state({ paused: false, hour: 4 });
-  let loaded = $state(false);
+  let snapshot = $state<Snapshot | null>(null),
+    error = $state(''),
+    loadError = $state(''),
+    busy = $state(false),
+    loaded = $state(false),
+    schedule = $state({ paused: false, hour: 4 });
+  let feedbackRun = '';
   async function refresh() {
     try {
       snapshot = await api<Snapshot>('/admin/recyclarr');
-      for (const run of snapshot.runs) {
-        if (
-          evidence[run.id] &&
-          evidence[run.id].revision !== `${run.updated_at}:${run.state}`
-        )
-          void loadEvidence(run);
-      }
+      loadError = '';
       if (!loaded && snapshot.settings) {
         schedule = {
           paused: snapshot.settings.paused,
@@ -53,88 +31,40 @@
         };
         loaded = true;
       }
-      if (
-        snapshot.runs.some(
-          (r) =>
-            r.id === feedbackRun &&
-            !['queued', 'running', 'retrying'].includes(r.state),
-        )
-      ) {
-        feedback = '';
+      const run = snapshot.runs.find((run) => run.id === feedbackRun);
+      if (run && !['queued', 'running', 'retrying'].includes(run.state)) {
+        busy = false;
         feedbackRun = '';
+        error =
+          run.error ??
+          (run.state === 'complete'
+            ? ''
+            : 'Sync did not finish. Retry the sync.');
       }
-      error = '';
-    } catch (failure) {
-      error = String(failure);
+    } catch (caught) {
+      loadError = String(caught);
     }
   }
-  async function loadEvidence(run: Run) {
-    const revision = `${run.updated_at}:${run.state}`;
-    if (evidence[run.id]?.revision === revision && !evidence[run.id]?.error)
-      return;
-    evidence[run.id] = { revision };
-    try {
-      const detail = await api<{ evidence: unknown }>(
-        `/admin/recyclarr/runs/${run.id}`,
-      );
-      if (evidence[run.id]?.revision === revision)
-        evidence[run.id] = { revision, value: detail.evidence };
-    } catch (failure) {
-      if (evidence[run.id]?.revision === revision)
-        evidence[run.id] = { revision, error: String(failure) };
-    }
-  }
-  async function refreshCatalogs() {
-    if (catalogLoading) return;
-    catalogLoading = true;
-    catalogAttempts++;
-    try {
-      for (const kind of ['radarr', 'sonarr'])
-        catalogs[kind] = (
-          await api<{ items: Guide[] }>(`/admin/recyclarr/catalog/${kind}`)
-        ).items;
-      catalogError = '';
-    } catch (failure) {
-      catalogError = `Guide profiles could not be loaded. ${String(failure)}`;
-      catalogRetryable =
-        !(failure instanceof ApiError) || failure.status >= 500;
-    } finally {
-      catalogLoading = false;
-    }
-  }
-  async function run(preview = false) {
+  async function sync() {
+    busy = true;
+    error = '';
     try {
       const queued = await api<{ id: string }>(
-        `/admin/recyclarr/${preview ? 'preview' : 'sync'}`,
+        '/admin/recyclarr/sync',
         'POST',
         {},
       );
       feedbackRun = queued.id;
-      feedback = preview ? 'Preview queued' : 'Sync queued';
       await refresh();
-    } catch (failure) {
-      error = String(failure);
+    } catch (caught) {
+      busy = false;
+      error = String(caught);
     }
   }
   onMount(() => {
-    let active = true;
-    const refreshData = async () => {
-      await refresh();
-      if (
-        active &&
-        !catalogLoading &&
-        catalogAttempts < 3 &&
-        catalogRetryable &&
-        (catalogError || ['radarr', 'sonarr'].some((kind) => !catalogs[kind]))
-      )
-        await refreshCatalogs();
-    };
-    void refreshData();
-    const timer = setInterval(() => void refreshData(), 4000);
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), 4000);
+    return () => clearInterval(timer);
   });
 </script>
 
@@ -144,39 +74,14 @@
 >
   <div class="flex flex-wrap items-center justify-between gap-3">
     <strong class="text-xs">TRaSH Guides</strong>
-    <div class="flex flex-wrap gap-2">
-      <Button
-        size="form"
-        variant="secondary"
-        onclick={() => {
-          catalogAttempts = 0;
-          catalogRetryable = true;
-          void refreshCatalogs();
-        }}>Refresh profiles</Button
-      >
-      <Button size="form" variant="secondary" onclick={() => void run(true)}
-        >Preview</Button
-      >
-      <Button size="form" onclick={() => void run()}>Sync now</Button>
-    </div>
+    <Button size="form" loading={busy} onclick={() => void sync()}
+      >Sync now</Button
+    >
   </div>
-  <p class="text-[11px] leading-5 text-muted">
-    Guide changes apply automatically to custom formats and quality profiles.
-    Defaults apply to new additions. Existing movies and series keep their
-    assigned profile.
-  </p>
-  {#if error}<Notice tone="danger" role="alert">{error}</Notice>{/if}
-  {#if catalogError}<Notice tone="danger" role="alert">{catalogError}</Notice
+  {#if error || loadError}<Notice tone="danger" role="alert"
+      >{error || loadError}</Notice
     >{/if}
-  {#if feedback}<span class="text-[10px] text-muted" role="status"
-      >{feedback}</span
-    >{/if}
-  {#if snapshot?.runs[0]}<span class="text-[10px] text-muted"
-      >Latest run: {snapshot.runs[0].state} &middot; {new Date(
-        snapshot.runs[0].created_at * 1000,
-      ).toLocaleString()}</span
-    >{/if}
-  {#if snapshot?.settings && loaded}
+  {#if loaded && snapshot?.settings}
     <AutoSaveForm
       value={schedule}
       label="Daily guide sync"
@@ -196,52 +101,12 @@
         >Daily sync hour ({snapshot.timezone})<select
           class={formControlClass}
           bind:value={schedule.hour}
-          >{#each Array.from({ length: 24 }, (_, i) => i) as hour (hour)}<option
+        >
+          {#each Array.from({ length: 24 }, (_, i) => i) as hour (hour)}<option
               value={hour}>{String(hour).padStart(2, '0')}:00</option
-            >{/each}</select
-        ></FormField
-      >
-      <span class="text-[10px] text-muted"
-        >Next sync: {schedule.paused
-          ? 'Paused'
-          : new Date(snapshot.settings.next_run * 1000).toLocaleString()}</span
+            >{/each}
+        </select></FormField
       >
     </AutoSaveForm>
   {/if}
-  {#each snapshot?.targets ?? [] as target (target.service_id)}
-    <RecyclarrTarget
-      {target}
-      guides={catalogs[target.kind] ?? []}
-      changed={refresh}
-    />
-  {:else}
-    <p class="text-[11px] text-muted">
-      Connect Radarr or Sonarr to apply guide defaults.
-    </p>
-  {/each}
-  <details class="border-t border-line pt-3 text-[11px]">
-    <summary class="cursor-pointer">Sync history</summary>
-    {#each snapshot?.runs ?? [] as run (run.id)}
-      <details
-        class="border-b border-line py-3"
-        ontoggle={(event) => {
-          if (event.currentTarget.open) void loadEvidence(run);
-        }}
-      >
-        <summary class="cursor-pointer"
-          >{new Date(run.created_at * 1000).toLocaleString()} · {run.state}</summary
-        >
-        {#if run.error}<Notice tone="danger">{run.error}</Notice>{/if}
-        {#if evidence[run.id]?.error}<Notice tone="danger"
-            >{evidence[run.id].error}</Notice
-          >{/if}
-        <pre
-          class="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-all text-[10px] text-muted">{JSON.stringify(
-            evidence[run.id]?.value ?? 'Loading evidence…',
-            null,
-            2,
-          )}</pre>
-      </details>
-    {:else}<p class="py-3 text-muted">No syncs yet.</p>{/each}
-  </details>
 </section>

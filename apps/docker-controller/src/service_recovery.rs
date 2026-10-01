@@ -137,12 +137,7 @@ pub(super) async fn resume_creation(d: &Deployment, s: &mut Managed) -> Result<J
     } else {
         // Creation intent and spec are already durable. Retry the exact image,
         // never regenerate configuration or credentials over retained appdata.
-        request(
-            reqwest::Method::POST,
-            &format!("/images/create?fromImage={}", s.image),
-            None,
-        )
-        .await?;
+        crate::docker::ensure_pinned_image(&s.image).await?;
         request(
             reqwest::Method::POST,
             &format!("/containers/create?name={}", s.name),

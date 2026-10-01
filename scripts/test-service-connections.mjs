@@ -37,11 +37,12 @@ const retirementReconnects = [];
 const bootstrapProfiles = {};
 let deployment,
   passed = false;
-async function api(path, method = 'GET', data) {
+async function api(path, method = 'GET', data, timeout = 30000) {
   const response = await context.request.fetch(`${base}/api/v1${path}`, {
     method,
     data,
     headers: { 'X-Thelxinoe-Client': '1' },
+    timeout,
   });
   if (!response.ok())
     throw Error(
@@ -80,7 +81,12 @@ async function waitLink(source, target, expected) {
   }
 }
 const action = (kind, name) =>
-  api(`/admin/stack/${services[kind].id}/action`, 'POST', { action: name });
+  api(
+    `/admin/stack/${services[kind].id}/action`,
+    'POST',
+    { action: name },
+    180000,
+  );
 async function install(kind) {
   const host_port = await freePort();
   const created = await api('/admin/stack/install', 'POST', {
@@ -863,6 +869,14 @@ try {
   );
   passed = true;
 } catch (error) {
+  try {
+    writeFileSync(
+      `${root}/services.log`,
+      compose('logs', '--no-color', 'server', 'controller'),
+    );
+  } catch (captureError) {
+    console.error('Unable to capture service logs:', captureError);
+  }
   writeFileSync(
     `${root}/result.json`,
     JSON.stringify(

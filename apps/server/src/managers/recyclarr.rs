@@ -14,6 +14,14 @@ struct Target {
     groups: Value,
     overrides: Value,
 }
+pub(super) struct Profile {
+    pub trash_id: String,
+    pub profile_id: i64,
+    pub url: Option<String>,
+}
+pub(super) async fn profiles(state: &AppState, service: &str) -> Result<Vec<Profile>> {
+    Ok(storage::profiles(&state.db, service.into()).await?)
+}
 #[derive(Deserialize)]
 struct Schedule {
     paused: bool,
@@ -329,21 +337,26 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
         .await?;
         return Ok(true);
     }
-    let targets = storage::targets(&state.db, key.clone()).await?;
+    let mut targets = storage::targets(&state.db, key.clone()).await?;
     let result=async {
         if !authorized { return Err(ApiError::forbidden()); }
         if targets.is_empty() { return Err(ApiError::conflict("Connect Radarr or Sonarr before syncing")); }
         storage::progress(&state.db,run.into(),"running".into(),json!({}),None).await?;
         let mut catalogs=std::collections::HashMap::new();
+        let mut enrolled=std::collections::HashSet::new();
+        for target in &targets {
+            if !catalogs.contains_key(&target.kind) { catalogs.insert(target.kind.clone(),fetch_catalog(state,&key,&target.kind).await?); }
+            if enrolled.insert(target.service_id.clone()) { storage::enroll(&state.db,key.clone(),target.service_id.clone(),catalogs[&target.kind].clone()).await?; }
+        }
+        targets=storage::targets(&state.db,key.clone()).await?;
         let mut remote=Vec::new();
         let mut before=serde_json::Map::new();
         for target in &targets {
-            if !catalogs.contains_key(&target.kind) { catalogs.insert(target.kind.clone(),fetch_catalog(state,&key,&target.kind).await?); }
             let catalog=&catalogs[&target.kind];
             if !catalog["items"].as_array().into_iter().flatten().any(|p|p["trash_id"]==target.trash_id) { return Err(ApiError::conflict("Selected guide disappeared; choose another guide")); }
             let s=service(state,&target.service_id).await?;
             let c=Connection::open(state,&s).await?;
-            before.insert(s.id.clone(),snapshot(&c).await?);
+            if !before.contains_key(&s.id) { before.insert(s.id.clone(),snapshot(&c).await?); }
             remote.push(json!({"service_id":s.id,"kind":s.kind,"container_id":s.container,"port":s.port,"url_base":s.url_base,"generation":s.generation,"trash_id":target.trash_id,"revision":target.revision,"profile_id":target.profile_id,"quality_sizes":target.quality_sizes,"reset_scores":target.reset_scores,"groups":target.groups,"overrides":target.overrides,"secret":c.key}));
         }
         let catalog=catalogs.values().next().ok_or_else(unavailable)?;
@@ -356,7 +369,7 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
         };
         evidence["before"]=json!(before);
         let mut after=serde_json::Map::new();
-        for target in &targets { after.insert(target.service_id.clone(),snapshot(&Connection::open(state,&service(state,&target.service_id).await?).await?).await?); }
+        for target in &targets { if !after.contains_key(&target.service_id) { after.insert(target.service_id.clone(),snapshot(&Connection::open(state,&service(state,&target.service_id).await?).await?).await?); } }
         evidence["after"]=json!(after);
         if evidence["state"]=="previewed" {
             if evidence["before"]!=evidence["after"] { return Err(ApiError::conflict("Preview unexpectedly changed Arr settings")); }
@@ -369,7 +382,7 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
             return Err(ApiError::conflict("Recyclarr reported errors; the last valid acquisition defaults were retained"));
         }
         for target in &targets {
-            let applied=evidence["targets"].as_array().into_iter().flatten().find(|t|t["service_id"]==target.service_id).ok_or_else(unavailable)?;
+            let applied=evidence["targets"].as_array().into_iter().flatten().find(|t|t["service_id"]==target.service_id && t["trash_id"]==target.trash_id).ok_or_else(unavailable)?;
             let profile=applied["profile_id"].as_i64().ok_or_else(||ApiError::conflict("Recyclarr did not record the synchronized profile ID"))?;
             let selected=evidence["after"][&target.service_id]["profiles"].as_array().into_iter().flatten().find(|p|p["id"]==profile).ok_or_else(||ApiError::conflict("Synchronized profile is missing from the target"))?;
             let generation=applied["generation"].as_str().ok_or_else(unavailable)?;

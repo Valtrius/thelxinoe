@@ -2,6 +2,279 @@ import { expect, test, type Page } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { installUiFixture } from './helpers/ui-fixture';
 
+test('Recyclarr installs with one click and no dialog', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+  });
+  let installed = false;
+  let finishInstall!: () => void;
+  const installs: unknown[] = [];
+  await page.route('**/api/v1/admin/stack', (route) =>
+    route.fulfill({
+      json: {
+        items: installed
+          ? [
+              {
+                id: 'managed-recyclarr',
+                kind: 'recyclarr',
+                name: 'Managed Recyclarr',
+                phase: 'active',
+                status: 'ready',
+                existence: 'present',
+                running: false,
+                drift: false,
+              },
+            ]
+          : [],
+        provisions: installed
+          ? [
+              {
+                id: 'managed-recyclarr',
+                kind: 'recyclarr',
+                state: 'complete',
+                host_port: null,
+                service_id: null,
+                origin: 'installed',
+              },
+            ]
+          : [],
+      },
+    }),
+  );
+  await page.route('**/api/v1/admin/recyclarr', (route) =>
+    route.fulfill({
+      json: { settings: { paused: false, hour: 4 }, runs: [], timezone: 'UTC' },
+    }),
+  );
+  await page.route('**/api/v1/admin/stack/install', async (route) => {
+    installs.push(route.request().postDataJSON());
+    await new Promise<void>((resolve) => {
+      finishInstall = resolve;
+    });
+    installed = true;
+    await route.fulfill({ json: { id: 'managed-recyclarr' } });
+  });
+  await page.route('**/api/v1/admin/managers/containers', (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          {
+            id: 'existing-recyclarr',
+            names: ['/recyclarr'],
+            image: 'recyclarr/recyclarr',
+            state: 'running',
+            ports: [],
+          },
+        ],
+      },
+    }),
+  );
+  await page.route('**/api/v1/admin/recyclarr/adopt/preview', (route) =>
+    route.fulfill({
+      json: {
+        review_id: 'review-recyclarr',
+        targets: [
+          {
+            service_id: 'manager-radarr',
+            kind: 'radarr',
+            name: 'Radarr',
+            trash_id: 'guide-hd',
+            guide_name: 'WEB1080p',
+          },
+          {
+            service_id: 'manager-radarr',
+            kind: 'radarr',
+            name: 'Radarr',
+            trash_id: 'guide-4k',
+            guide_name: 'WEB2160p (Combined)',
+          },
+        ],
+      },
+    }),
+  );
+  await page.goto('/');
+  await page
+    .getByRole('navigation', { name: 'Select service' })
+    .getByRole('button', { name: 'Recyclarr', exact: true })
+    .click();
+  await page
+    .getByRole('button', { name: 'Import existing Recyclarr', exact: true })
+    .click();
+  const importDialog = page.getByRole('dialog', { name: 'Import Recyclarr' });
+  await importDialog
+    .getByRole('combobox', { name: 'Existing container' })
+    .selectOption('existing-recyclarr');
+  await importDialog
+    .getByRole('button', { name: 'Review import', exact: true })
+    .click();
+  await expect(
+    importDialog.getByText('Radarr: WEB1080p', { exact: true }),
+  ).toBeVisible();
+  await expect(
+    importDialog.getByText('Radarr: WEB2160p (Combined)', { exact: true }),
+  ).toBeVisible();
+  await expect(
+    importDialog.getByRole('button', {
+      name: 'Transfer ownership',
+      exact: true,
+    }),
+  ).toBeDisabled();
+  for (const [width, height] of [
+    [1440, 1000],
+    [390, 844],
+  ]) {
+    await page.setViewportSize({ width, height });
+    const path = testInfo.outputPath(`recyclarr-import-${width}.png`);
+    await page.screenshot({ path });
+    await testInfo.attach(`recyclarr-import-${width}`, {
+      path,
+      contentType: 'image/png',
+    });
+  }
+  await importDialog
+    .getByRole('button', { name: 'Close', exact: true })
+    .click();
+  const install = page.getByRole('button', {
+    name: 'Install Recyclarr',
+    exact: true,
+  });
+  await install.click();
+  await expect.poll(() => installs.length).toBe(1);
+  expect(installs[0]).toEqual({ kind: 'recyclarr', host_port: null });
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(install).toBeDisabled();
+  await expect(install.locator('svg.animate-spin')).toBeVisible();
+  for (const [width, height] of [
+    [1440, 1000],
+    [390, 844],
+  ]) {
+    await page.setViewportSize({ width, height });
+    await install.scrollIntoViewIfNeeded();
+    const path = testInfo.outputPath(`recyclarr-install-${width}.png`);
+    await page.screenshot({ path });
+    await testInfo.attach(`recyclarr-install-${width}`, {
+      path,
+      contentType: 'image/png',
+    });
+  }
+  finishInstall();
+  await expect(
+    page.getByRole('region', { name: 'Recyclarr guide configuration' }),
+  ).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  expect(fixture.errors).toEqual([]);
+});
+
+test('Recyclarr sync uses only button progress and retains failures', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+  });
+  let state = 'queued';
+  let run = '';
+  let syncs = 0;
+  await page.clock.install({ time: new Date('2026-01-01T00:00:00Z') });
+  await page.clock.pauseAt(new Date('2026-01-01T01:00:00Z'));
+  await page.route('**/api/v1/admin/stack', (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          {
+            id: 'managed-recyclarr',
+            kind: 'recyclarr',
+            name: 'Managed Recyclarr',
+            phase: 'active',
+            status: 'ready',
+            existence: 'present',
+            running: false,
+            drift: false,
+          },
+        ],
+        provisions: [
+          {
+            id: 'managed-recyclarr',
+            kind: 'recyclarr',
+            state: 'complete',
+            host_port: null,
+            service_id: null,
+            origin: 'installed',
+          },
+        ],
+      },
+    }),
+  );
+  await page.route('**/api/v1/admin/recyclarr', (route) =>
+    route.fulfill({
+      json: {
+        settings: { paused: false, hour: 4 },
+        runs: run
+          ? [
+              {
+                id: run,
+                state,
+                error: state === 'blocked' ? 'Radarr is unavailable' : null,
+              },
+            ]
+          : [],
+        timezone: 'UTC',
+      },
+    }),
+  );
+  await page.route('**/api/v1/admin/recyclarr/sync', (route) => {
+    run = `sync-${++syncs}`;
+    return route.fulfill({ json: { id: run } });
+  });
+  await page.goto('/');
+  await page
+    .getByRole('navigation', { name: 'Select service' })
+    .getByRole('button', { name: 'Recyclarr', exact: true })
+    .click();
+  const region = page.getByRole('region', {
+    name: 'Recyclarr guide configuration',
+  });
+  const sync = region.getByRole('button', { name: 'Sync now', exact: true });
+  await sync.click();
+  for (const progress of ['queued', 'running', 'retrying']) {
+    state = progress;
+    await page.clock.runFor(4000);
+    await expect(sync).toBeDisabled();
+    await expect(sync.locator('svg.animate-spin')).toBeVisible();
+    await expect(region.getByRole('status')).toHaveCount(0);
+    await expect(
+      region.getByText(/Sync queued|Sync complete|Sync running|Sync retrying/),
+    ).toHaveCount(0);
+  }
+  for (const [width, height] of [
+    [1440, 1000],
+    [390, 844],
+  ]) {
+    await page.setViewportSize({ width, height });
+    await sync.scrollIntoViewIfNeeded();
+    const path = testInfo.outputPath(`recyclarr-sync-${width}.png`);
+    await page.screenshot({ path });
+    await testInfo.attach(`recyclarr-sync-${width}`, {
+      path,
+      contentType: 'image/png',
+    });
+  }
+  state = 'complete';
+  await page.clock.runFor(4000);
+  await expect(sync).toBeEnabled();
+  await expect(region.getByRole('status')).toHaveCount(0);
+  state = 'blocked';
+  await sync.click();
+  await expect(region.getByRole('alert')).toContainText(
+    'Radarr is unavailable',
+  );
+  await expect(sync).toBeEnabled();
+  expect(fixture.errors).toEqual([]);
+});
+
 const movie = {
   id: 11,
   mediaType: 'movie',
@@ -56,6 +329,34 @@ async function discoverFixture(page: Page, role: 'admin' | 'user' = 'user') {
       });
     if (path.endsWith('/recommendations'))
       return route.fulfill({ json: results([]) });
+    if (path.startsWith('/profiles/'))
+      return route.fulfill({
+        json: {
+          locked: false,
+          items: [
+            {
+              name: 'WEB 2160p (Combined)',
+              default: true,
+              profile: {
+                source: 'guide',
+                service_id:
+                  'manager-' + (path.endsWith('/movie') ? 'radarr' : 'sonarr'),
+                trash_id: '05fbf054ac8ad0303335026cc2632f1a',
+              },
+            },
+            {
+              name: 'My HD profile',
+              default: false,
+              profile: {
+                source: 'custom',
+                service_id:
+                  'manager-' + (path.endsWith('/movie') ? 'radarr' : 'sonarr'),
+                profile_id: 7,
+              },
+            },
+          ],
+        },
+      });
     if (path === '/movie/11')
       return route.fulfill({
         json: { ...movie, ...(requested ? { mediaInfo: { status: 2 } } : {}) },
@@ -150,9 +451,7 @@ test('search opens dedicated details, requests once, and returns to the search',
   await expect(
     page.getByRole('heading', { name: 'Arrival', exact: true }),
   ).toBeVisible();
-  await page
-    .getByRole('button', { name: 'Request movie', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Request', exact: true }).click();
   await expect(page.getByText('Request sent for approval.')).toBeVisible();
   await expect(
     page.getByRole('button', { name: 'Pending approval', exact: true }),
@@ -166,6 +465,130 @@ test('search opens dedicated details, requests once, and returns to the search',
   ).toHaveValue('Arrival');
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
+});
+
+test('request menu puts the default first and sends a native profile override without exposing the default on the main button', async ({
+  page,
+}, testInfo) => {
+  const fixture = await discoverFixture(page);
+  await page.goto('/#discover/movie/11');
+  const request = page.getByRole('button', { name: 'Request', exact: true });
+  await expect(request).toBeVisible();
+  await expect(request).not.toContainText('2160p');
+  await page.getByRole('button', { name: 'Choose request profile' }).click();
+  const entries = page.getByRole('menuitem');
+  await expect(entries.first()).toContainText('WEB 2160p (Combined)');
+  await expect(entries.first()).toContainText('Default');
+  for (const [width, height] of [
+    [1440, 1000],
+    [390, 844],
+  ]) {
+    await page.setViewportSize({ width, height });
+    const bounds = await entries.first().boundingBox();
+    expect(bounds!.x).toBeGreaterThanOrEqual(0);
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+    const path = testInfo.outputPath(`request-profile-${width}.png`);
+    await page.screenshot({ path });
+    await testInfo.attach(`request-profile-menu-${width}`, {
+      path,
+      contentType: 'image/png',
+    });
+  }
+  await page
+    .getByRole('searchbox', { name: 'Search request profiles' })
+    .focus();
+  await page.keyboard.press('ArrowDown');
+  await expect(entries.first()).toBeFocused();
+  await page.keyboard.press('End');
+  await expect(
+    page.getByRole('menuitem', { name: 'My HD profile', exact: true }),
+  ).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.getByText('Request sent for approval.')).toBeVisible();
+  expect(fixture.requests).toEqual([
+    {
+      media_type: 'movie',
+      media_id: 11,
+      seasons: [],
+      profile: {
+        source: 'custom',
+        service_id: 'manager-radarr',
+        profile_id: 7,
+      },
+    },
+  ]);
+  expect(fixture.errors).toEqual([]);
+});
+
+test('request profiles survive guide renames', async ({ page }, testInfo) => {
+  const fixture = await discoverFixture(page, 'admin');
+  await page.route('**/api/v1/seerr/profiles/movie?**', (route) =>
+    route.fulfill({
+      json: {
+        locked: false,
+        items: [
+          {
+            name: 'Renamed guide',
+            default: true,
+            profile: {
+              source: 'guide',
+              service_id: 'manager-radarr',
+              trash_id: '05fbf054ac8ad0303335026cc2632f1a',
+            },
+          },
+        ],
+      },
+    }),
+  );
+  await page.goto('/#discover/movie/11');
+  await page.getByRole('button', { name: 'Choose request profile' }).click();
+  await page.getByRole('menuitem', { name: /Renamed guide/ }).click();
+  await expect.poll(() => fixture.requests.length).toBe(1);
+  expect(fixture.requests[0]).toMatchObject({
+    profile: { source: 'guide', trash_id: '05fbf054ac8ad0303335026cc2632f1a' },
+  });
+  await testInfo.attach('renamed-guide-request', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+  expect(fixture.errors).toEqual([]);
+});
+
+test('existing series keep their profile and a failed profile lookup leaves the primary request usable', async ({
+  page,
+}, testInfo) => {
+  const fixture = await discoverFixture(page);
+  await page.route('**/api/v1/seerr/profiles/tv?**', (route) =>
+    route.fulfill({ json: { locked: true, items: [] } }),
+  );
+  await page.goto('/#discover/tv/22');
+  await expect(
+    page.getByRole('button', { name: 'Request', exact: true }),
+  ).toBeEnabled();
+  await expect(
+    page.getByRole('button', { name: 'Choose request profile' }),
+  ).toHaveCount(0);
+  await page.route('**/api/v1/seerr/profiles/movie?**', (route) =>
+    route.fulfill({
+      status: 503,
+      json: { error: { message: 'Profiles unavailable' } },
+    }),
+  );
+  await page.goto('/#discover/movie/11');
+  await expect(
+    page.getByRole('button', { name: 'Request', exact: true }),
+  ).toBeEnabled();
+  await page.getByRole('button', { name: 'Request', exact: true }).click();
+  await expect.poll(() => fixture.requests.length).toBe(1);
+  expect(fixture.requests[0]).toEqual({
+    media_type: 'movie',
+    media_id: 11,
+    seasons: [],
+  });
+  await testInfo.attach('default-request-after-profile-error', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
 });
 
 test('a trailer resolves an uncached video and plays in the shared player without leaving details', async ({
@@ -412,9 +835,7 @@ test('season requests exclude available seasons and preserve explicit selection 
   ).toBeVisible();
   await expect(page.getByRole('checkbox', { name: /Season 1/ })).toBeDisabled();
   await page.getByRole('checkbox', { name: /Season 3/ }).uncheck();
-  await page
-    .getByRole('button', { name: 'Request 1 season', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Request', exact: true }).click();
   await expect(page.getByText('Request sent for approval.')).toBeVisible();
   expect(fixture.requests).toEqual([
     { media_type: 'tv', media_id: 22, seasons: [2] },
@@ -471,6 +892,88 @@ test('regular users see their requests without administrator approval controls',
   await expect(
     page.getByRole('button', { name: 'Cancel', exact: true }),
   ).toBeVisible();
+  expect(fixture.errors).toEqual([]);
+});
+
+test('manager defaults allow guide and native profiles and roll back a removed profile', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+  });
+  const writes: Record<string, unknown>[] = [];
+  await page.route('**/api/v1/admin/managers/manager-radarr/options', (route) =>
+    route.fulfill({
+      json: {
+        roots: [{ id: 1, path: '/media/movies' }],
+        metadata_profiles: [],
+        profiles: [
+          {
+            id: 1,
+            name: 'Guide HD + 4K',
+            trash_id: '05fbf054ac8ad0303335026cc2632f1a',
+            url: 'https://github.com/TRaSH-Guides/Guides/blob/master/docs/json/radarr/quality-profiles/web-2160p-combined.json',
+          },
+          { id: 7, name: 'My HD profile' },
+        ],
+      },
+    }),
+  );
+  let reject = false;
+  await page.route(
+    '**/api/v1/admin/managers/manager-radarr/defaults',
+    (route) => {
+      writes.push(route.request().postDataJSON());
+      return route.fulfill(
+        reject
+          ? { status: 409, json: { error: { message: 'Profile was removed' } } }
+          : { json: { saved: true } },
+      );
+    },
+  );
+  await page.goto('/');
+  await page
+    .getByRole('navigation', { name: 'Select service' })
+    .getByRole('button', { name: /Radarr/ })
+    .click();
+  const form = page.getByRole('form', { name: 'Radarr acquisition defaults' });
+  const profile = form.getByRole('combobox', {
+    name: 'Default request profile',
+  });
+  await expect(
+    page.getByRole('link', { name: 'View TRaSH profile', exact: true }),
+  ).toHaveAttribute(
+    'href',
+    'https://github.com/TRaSH-Guides/Guides/blob/master/docs/json/radarr/quality-profiles/web-2160p-combined.json',
+  );
+  for (const [width, height] of [
+    [1440, 1000],
+    [390, 844],
+  ]) {
+    await page.setViewportSize({ width, height });
+    await profile.scrollIntoViewIfNeeded();
+    const path = testInfo.outputPath(`manager-guide-${width}.png`);
+    await page.screenshot({ path });
+    await testInfo.attach(`manager-guide-${width}`, {
+      path,
+      contentType: 'image/png',
+    });
+  }
+  await profile.selectOption('7');
+  await expect.poll(() => writes.length).toBe(1);
+  expect(writes[0].quality_profile).toBe(7);
+  reject = true;
+  await profile.selectOption('1');
+  await expect(form.getByRole('alert')).toContainText('Profile was removed');
+  await expect(profile).toHaveValue('7');
+  await expect(
+    page.getByText('Configure guide profile in Recyclarr', { exact: true }),
+  ).toHaveCount(0);
+  await testInfo.attach('manager-profile-default', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
   expect(fixture.errors).toEqual([]);
 });
 

@@ -9,6 +9,7 @@ import { launchBrowser } from './ci-browser.mjs';
 
 const project = fixtureId('recyclarr');
 const adoptionOnly = process.argv.includes('--adoption-only');
+const profilesOnly = process.argv.includes('--profiles-only');
 const root = resolve(`.local/${project}`);
 const docker = (...args) => {
   try {
@@ -41,7 +42,10 @@ for (const folder of [
 let infrastructure;
 const compose = (...args) => infrastructure.compose(...args);
 const browser = await launchBrowser();
-const context = await browser.newContext({ ignoreHTTPSErrors: true });
+const context = await browser.newContext({
+  ignoreHTTPSErrors: true,
+  viewport: { width: 1440, height: 1000 },
+});
 await context.tracing.start({ screenshots: true, snapshots: true });
 const base = `https://localhost:${process.env.THELXINOE_CONNECTIONS_PORT}`;
 const services = {};
@@ -53,7 +57,7 @@ const evidence = {
   browser_network: process.env.THELXINOE_CI_BROWSER_WS_ENDPOINT
     ? 'isolated Docker bridge'
     : 'host',
-  scope: adoptionOnly ? 'adoption' : 'complete',
+  scope: profilesOnly ? 'profiles' : adoptionOnly ? 'adoption' : 'complete',
   started: new Date().toISOString(),
   finished: null,
   passed: null,
@@ -171,6 +175,20 @@ async function snapshot(kind) {
   };
 }
 const settings = () => api('/admin/recyclarr');
+async function defaultTarget(kind) {
+  const [state, managers] = await Promise.all([
+    settings(),
+    api('/admin/managers'),
+  ]);
+  const manager = managers.items.find((m) => m.kind === kind);
+  return (
+    state.targets.find(
+      (t) =>
+        t.service_id === manager.id &&
+        t.profile_id === manager.defaults.quality_profile,
+    ) ?? state.targets.find((t) => t.service_id === manager.id)
+  );
+}
 async function waitRun(id, stage = 'complete') {
   let last;
   await expect
@@ -210,7 +228,7 @@ async function waitUpdate(id, stage) {
     )
     .toBe(stage);
 }
-try {
+scenario: try {
   infrastructure = composeFixture({
     project,
     file: 'compose.connections.test.yaml',
@@ -246,7 +264,7 @@ try {
     JSON.parse(docker('inspect', services.recyclarr.container_id))[0].State
       .Status,
   ).toBe('created');
-  if (!adoptionOnly) {
+  if (!adoptionOnly && !profilesOnly) {
     await expect
       .poll(
         async () => {
@@ -323,12 +341,10 @@ try {
   const initialManagers = (await api('/admin/managers')).items;
   for (const kind of ['radarr', 'sonarr']) {
     evidence.snapshots[`${kind}-before`] = await snapshot(kind);
-    expect(
-      (await settings()).targets.find((t) => t.kind === kind).trash_id,
-    ).toBe(
+    expect((await defaultTarget(kind)).trash_id).toBe(
       kind === 'radarr'
-        ? 'd1d67249d3890e49bc12e275d989a7e9'
-        : '72dae194fc92bf828f32cde7744e51a1',
+        ? '05fbf054ac8ad0303335026cc2632f1a'
+        : 'c4cadd6b35b95f62c3d47a408e53e2f7',
     );
     const catalog = await api(`/admin/recyclarr/catalog/${kind}`);
     expect(catalog.items.length).toBeGreaterThan(10);
@@ -352,33 +368,50 @@ try {
   evidence.run = await waitRun(runs[0].id);
   const current = (await api('/admin/managers')).items;
   for (const kind of ['radarr', 'sonarr']) {
-    const target = (await settings()).targets.find((t) => t.kind === kind);
-    expect(target.profile_id).toBe(
-      current.find((m) => m.kind === kind).defaults.quality_profile,
+    const catalog = await api(`/admin/recyclarr/catalog/${kind}`);
+    const targets = (await settings()).targets.filter((t) => t.kind === kind);
+    expect(targets.map((t) => t.trash_id).sort()).toEqual(
+      catalog.items.map((p) => p.trash_id).sort(),
     );
-    expect(target.profile_id).not.toBe(
-      initialManagers.find((m) => m.kind === kind).defaults.quality_profile,
-    );
+    const manager = current.find((m) => m.kind === kind);
+    const previous = initialManagers.find((m) => m.kind === kind).defaults
+      .quality_profile;
+    if (previous) expect(manager.defaults.quality_profile).toBe(previous);
     const snapshotValue = await snapshot(kind);
     expect(snapshotValue.formats.length).toBeGreaterThan(8);
+    for (const target of targets) {
+      expect(target.profile_id).toBeGreaterThan(0);
+      expect(
+        snapshotValue.profiles.some((p) => p.id === target.profile_id),
+      ).toBe(true);
+    }
+    const combined = targets.find(
+      (t) =>
+        t.trash_id ===
+        (kind === 'radarr'
+          ? '05fbf054ac8ad0303335026cc2632f1a'
+          : 'c4cadd6b35b95f62c3d47a408e53e2f7'),
+    );
     expect(
       snapshotValue.profiles
-        .find((p) => p.id === target.profile_id)
+        .find((p) => p.id === combined.profile_id)
         .formatItems.some((f) => f.score > 0),
     ).toBe(true);
+    await api(`/admin/managers/${manager.id}/defaults`, 'PUT', {
+      ...manager.defaults,
+      quality_profile: combined.profile_id,
+    });
     evidence.snapshots[`${kind}-applied`] = snapshotValue;
   }
   await waitRun((await api('/admin/recyclarr/sync', 'POST', {})).id);
   for (const kind of ['radarr', 'sonarr'])
     expect(await snapshot(kind)).toEqual(evidence.snapshots[`${kind}-applied`]);
   record(
-    'CLI catalogs contain curated IDs; preview is read-only; sync defaults, CFs and QPs are idempotent; concurrent manual requests deduplicate',
+    'The full official catalog and profile scores sync idempotently while preserving defaults; concurrent manual requests deduplicate; internal preview is read-only',
   );
   if (!adoptionOnly) {
     // A real CLI parsing error may exit zero; it must still block before apply.
-    const invalidTarget = (await settings()).targets.find(
-      (target) => target.kind === 'radarr',
-    );
+    const invalidTarget = await defaultTarget('radarr');
     const invalidManager = (await api('/admin/managers')).items.find(
       (manager) => manager.id === invalidTarget.service_id,
     );
@@ -437,7 +470,7 @@ try {
     record(
       'CLI errors are detected even with a zero exit status and block application without changing Arr settings',
     );
-    const owner = (await settings()).targets.find((t) => t.kind === 'radarr');
+    const owner = await defaultTarget('radarr');
     const format = structuredClone((await arr('radarr', 'customformat'))[0]);
     delete format.id;
     format.name = 'Recyclarr fixture unmatched';
@@ -445,8 +478,13 @@ try {
     const managedProfile = (await arr('radarr', 'qualityprofile')).find(
       (p) => p.id === owner.profile_id,
     );
+    const managedIds = new Set(
+      (await settings()).targets
+        .filter((t) => t.kind === 'radarr')
+        .map((t) => t.profile_id),
+    );
     const unmanagedProfile = (await arr('radarr', 'qualityprofile')).find(
-      (p) => p.id !== owner.profile_id,
+      (p) => !managedIds.has(p.id),
     );
     for (const [profile, score] of [
       [managedProfile, 999],
@@ -494,13 +532,21 @@ try {
     const collisionGuide = (
       await api('/admin/recyclarr/catalog/radarr')
     ).items.find((g) => g.trash_id !== owner.trash_id);
+    const collisionTarget = (await settings()).targets.find(
+      (t) => t.kind === 'radarr' && t.trash_id === collisionGuide.trash_id,
+    );
+    await arr(
+      'radarr',
+      `qualityprofile/${collisionTarget.profile_id}`,
+      'DELETE',
+    );
     const collisionProfile = structuredClone(
       (await arr('radarr', 'qualityprofile')).find(
         (p) => p.id === owner.profile_id,
       ),
     );
     delete collisionProfile.id;
-    collisionProfile.name = `Thelxinoe radarr ${collisionGuide.trash_id.slice(0, 8)}`;
+    collisionProfile.name = collisionGuide.name;
     const collision = await arr(
       'radarr',
       'qualityprofile',
@@ -545,171 +591,105 @@ try {
     const navigation = page.getByRole('navigation', { name: 'Select service' });
     for (const kind of ['Radarr', 'Sonarr']) {
       await navigation.getByRole('button', { name: kind, exact: true }).click();
+      const profiles = page.getByRole('combobox', {
+        name: 'Default request profile',
+        exact: true,
+      });
+      const mapped = (await settings()).targets.filter(
+        (t) => t.kind === kind.toLowerCase(),
+      );
+      await expect(profiles).toBeVisible();
+      await expect
+        .poll(() => profiles.getByRole('option').count())
+        .toBeGreaterThan(mapped.length);
       await expect(
-        page.getByLabel('Quality profile', { exact: true }),
-      ).toHaveCount(0);
+        page.getByRole('link', { name: 'View TRaSH profile', exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole('link', {
+          name: `Manage profiles in ${kind}`,
+          exact: true,
+        }),
+      ).toBeVisible();
+      await page.screenshot({
+        path: `${root}/${kind.toLowerCase()}-profiles.png`,
+        fullPage: true,
+      });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await profiles.scrollIntoViewIfNeeded();
+      await page.screenshot({
+        path: `${root}/${kind.toLowerCase()}-profiles-mobile.png`,
+        fullPage: true,
+      });
+      await page.setViewportSize({ width: 1440, height: 1000 });
     }
-    evidence.ui_catalogs = [];
-    evidence.ui_catalog_failures = [];
-    let catalogFailuresRemaining = 1;
-    let catalogFailureStatus = 0;
-    let rejectedCatalogReads = 0;
-    page.on('requestfailed', (request) => {
-      if (new URL(request.url()).pathname.includes('/recyclarr/catalog/')) {
-        evidence.ui_catalog_failures.push({
-          path: new URL(request.url()).pathname,
-          error: request.failure()?.errorText,
-        });
-        saveEvidence();
-      }
-    });
-    await page.route(
-      '**/api/v1/admin/recyclarr/catalog/radarr',
-      async (route) => {
-        if (catalogFailureStatus) {
-          rejectedCatalogReads++;
-          return route.fulfill({
-            status: catalogFailureStatus,
-            json: {
-              error: { code: 'forbidden', message: 'Catalog access denied' },
-            },
-          });
-        }
-        if (catalogFailuresRemaining > 0) {
-          catalogFailuresRemaining--;
-          rejectedCatalogReads++;
-          return route.abort('connectionreset');
-        }
-        return route.continue();
-      },
-    );
     const guideRegion = page.getByRole('region', {
       name: 'Recyclarr guide configuration',
     });
-    const catalogResponses = () =>
-      Promise.all(
-        ['radarr', 'sonarr'].map((kind) =>
-          page
-            .waitForResponse(
-              (response) =>
-                new URL(response.url()).pathname ===
-                `/api/v1/admin/recyclarr/catalog/${kind}`,
-              { timeout: 180000 },
-            )
-            .then(async (response) => {
-              const catalog = await response.json();
-              evidence.ui_catalogs.push({
-                path: new URL(response.url()).pathname,
-                status: response.status(),
-                items: catalog.items?.length,
-                error: catalog.error,
-              });
-              saveEvidence();
-              expect(response.ok(), JSON.stringify(catalog.error)).toBe(true);
-              expect(catalog.items.length).toBeGreaterThan(10);
-            }),
-        ),
-      );
-    await Promise.all([
-      catalogResponses(),
-      (async () => {
-        await navigation
-          .getByRole('button', { name: 'Recyclarr', exact: true })
-          .click();
-        await expect(guideRegion.getByRole('alert')).toContainText(
-          'Guide profiles could not be loaded',
-        );
-      })(),
-    ]);
-    await expect(guideRegion.getByRole('alert')).toHaveCount(0);
+    await navigation
+      .getByRole('button', { name: 'Recyclarr', exact: true })
+      .click();
     await expect(
-      guideRegion.getByText('TRaSH Guides', { exact: true }),
+      guideRegion.getByRole('button', { name: 'Sync now', exact: true }),
     ).toBeVisible();
     await expect(
-      guideRegion.getByRole('combobox', { name: /^Guide profile for/ }),
-    ).toHaveCount(2);
+      guideRegion.getByRole('switch', {
+        name: 'Pause automatic sync',
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(
+      guideRegion.getByRole('combobox', { name: /^Daily sync hour/ }),
+    ).toBeVisible();
+    await expect(guideRegion.getByRole('combobox')).toHaveCount(1);
+    await expect(guideRegion.getByRole('link')).toHaveCount(0);
+    await expect(
+      guideRegion.getByText(
+        /Preview|Sync history|Last sync|Next sync|Synced profiles/,
+      ),
+    ).toHaveCount(0);
+    await page.screenshot({
+      path: `${root}/recyclarr-settings.png`,
+      fullPage: true,
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await guideRegion.getByRole('combobox').scrollIntoViewIfNeeded();
+    await page.screenshot({
+      path: `${root}/recyclarr-settings-mobile.png`,
+      fullPage: true,
+    });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const runCount = (await settings()).runs.length;
+    await guideRegion
+      .getByRole('button', { name: 'Sync now', exact: true })
+      .click();
     await expect
       .poll(
-        async () =>
-          guideRegion
-            .getByRole('combobox', { name: /^Guide profile for/ })
-            .first()
-            .getByRole('option')
-            .count(),
-        { timeout: 45000 },
+        async () => {
+          const runs = (await settings()).runs;
+          return runs.length > runCount && runs[0].state === 'complete';
+        },
+        { timeout: 300000, intervals: [1500] },
       )
-      .toBeGreaterThan(10);
-    const targetsBeforeCatalogRecovery = (await settings()).targets;
-    const waitForStatusPoll = () =>
-      page.waitForResponse(
-        (response) =>
-          new URL(response.url()).pathname === '/api/v1/admin/recyclarr',
-        { timeout: 15000 },
-      );
-    rejectedCatalogReads = 0;
-    catalogFailuresRemaining = Infinity;
-    await guideRegion
-      .getByRole('button', { name: 'Refresh profiles', exact: true })
-      .click();
-    await expect.poll(() => rejectedCatalogReads, { timeout: 20000 }).toBe(3);
-    for (let poll = 0; poll < 2; poll++) await waitForStatusPoll();
-    expect(rejectedCatalogReads).toBe(3);
-    await expect(guideRegion.getByRole('alert')).toContainText(
-      'Guide profiles could not be loaded',
-    );
-    await page.screenshot({
-      path: `${root}/catalog-retries-exhausted.png`,
-      fullPage: true,
-    });
-    catalogFailuresRemaining = 0;
-    await Promise.all([
-      catalogResponses(),
-      guideRegion
-        .getByRole('button', { name: 'Refresh profiles', exact: true })
-        .click(),
-    ]);
-    await expect(guideRegion.getByRole('alert')).toHaveCount(0);
-    rejectedCatalogReads = 0;
-    catalogFailureStatus = 403;
-    await guideRegion
-      .getByRole('button', { name: 'Refresh profiles', exact: true })
-      .click();
-    await expect(guideRegion.getByRole('alert')).toContainText(
-      'Catalog access denied',
-    );
-    for (let poll = 0; poll < 2; poll++) await waitForStatusPoll();
-    expect(rejectedCatalogReads).toBe(1);
-    await expect(guideRegion.getByRole('alert')).toContainText(
-      'Catalog access denied',
-    );
-    catalogFailureStatus = 0;
-    await Promise.all([
-      catalogResponses(),
-      guideRegion
-        .getByRole('button', { name: 'Refresh profiles', exact: true })
-        .click(),
-    ]);
-    await expect(guideRegion.getByRole('alert')).toHaveCount(0);
-    expect((await settings()).targets).toEqual(targetsBeforeCatalogRecovery);
+      .toBe(true);
+    await expect(
+      guideRegion.getByRole('button', { name: 'Sync now', exact: true }),
+    ).toBeEnabled();
+    await expect(guideRegion.getByRole('status')).toHaveCount(0);
+    expect((await settings()).runs.length).toBeGreaterThan(runCount);
+    expect(
+      fixtureSQL(
+        "SELECT count(*) FROM audit WHERE action='recyclarr.complete'",
+      )[0][0],
+    ).toBeGreaterThan(0);
     record(
-      'Catalog reads recover automatically after a transport failure; exhausted retries and access denials stay visible through status polling and recover on manual refresh without changing guide selections',
-    );
-    await page.screenshot({
-      path: `${root}/recyclarr-profiles.png`,
-      fullPage: true,
-    });
-    await guideRegion.getByText('Sync history', { exact: true }).click();
-    const entry = guideRegion.locator('details details').first();
-    await entry.locator('summary').click();
-    await expect(entry.locator('pre')).toContainText('"config_hash"');
-    record(
-      'Recyclarr exposes per-instance guide selectors, schedule and history; competing Radarr/Sonarr profile controls are absent',
+      'Radarr and Sonarr expose their full profile lists and native management links; Recyclarr contains only manual sync and scheduling, with results in global history',
     );
     await install('seerr');
     await api('/admin/seerr/sync', 'POST', {});
     const assigned = {};
     for (const kind of ['radarr', 'sonarr']) {
-      const target = (await settings()).targets.find((t) => t.kind === kind);
+      const target = await defaultTarget(kind);
       const body =
         kind === 'radarr'
           ? {
@@ -749,31 +729,37 @@ try {
         (p) => /UHD|2160p/.test(p.name) && p.trash_id !== target.trash_id,
       );
       expect(uhd).toBeTruthy();
+      const selected = (await settings()).targets.find(
+        (t) =>
+          t.service_id === target.service_id && t.trash_id === uhd.trash_id,
+      );
+      const manager = (await api('/admin/managers')).items.find(
+        (m) => m.id === target.service_id,
+      );
       if (kind === 'sonarr') {
+        await navigation
+          .getByRole('button', { name: 'Sonarr', exact: true })
+          .click();
         const saved = page.waitForResponse(
           (r) =>
-            r.url().endsWith(`/admin/recyclarr/targets/${target.service_id}`) &&
-            r.request().method() === 'POST',
+            r.url().endsWith(`/admin/managers/${target.service_id}/defaults`) &&
+            r.request().method() === 'PUT',
         );
-        await guideRegion
-          .getByRole('combobox', { name: `Guide profile for ${target.name}` })
-          .selectOption(uhd.trash_id);
-        const response = await saved;
-        expect(response.ok()).toBe(true);
-        await waitRun((await response.json()).id);
+        await page
+          .getByRole('combobox', {
+            name: 'Default request profile',
+            exact: true,
+          })
+          .selectOption(String(selected.profile_id));
+        expect((await saved).ok()).toBe(true);
       } else {
-        await waitRun(
-          (
-            await api(`/admin/recyclarr/targets/${target.service_id}`, 'POST', {
-              trash_id: uhd.trash_id,
-              quality_sizes: false,
-              groups: { add: [], skip: [] },
-              overrides: {},
-            })
-          ).id,
-        );
+        await api(`/admin/managers/${target.service_id}/defaults`, 'PUT', {
+          ...manager.defaults,
+          quality_profile: selected.profile_id,
+        });
       }
-      const changed = (await settings()).targets.find((t) => t.kind === kind);
+      await waitRun((await api('/admin/recyclarr/sync', 'POST', {})).id);
+      const changed = await defaultTarget(kind);
       expect(changed.profile_id).not.toBe(target.profile_id);
       const existing = await arr(
         kind,
@@ -810,17 +796,179 @@ try {
         },
       );
       expect(deniedGuide.status()).toBe(400);
-      expect(
-        (await settings()).targets.find((t) => t.kind === kind).profile_id,
-      ).toBe(changed.profile_id);
+      expect((await defaultTarget(kind)).profile_id).toBe(changed.profile_id);
       evidence.snapshots[`${kind}-applied`] = await snapshot(kind);
     }
     record(
       'Profile switches affect new defaults only; existing media assignments and global size limits remain; Seerr receives numeric IDs, names and UHD classification; missing selections preserve defaults',
     );
-    const optionsTarget = (await settings()).targets.find(
-      (t) => t.kind === 'radarr',
+    const requestDefault = await defaultTarget('radarr');
+    const sonarrDefault = await defaultTarget('sonarr');
+    const choices = await api('/seerr/profiles/movie?media_id=11');
+    expect(choices.items[0]).toMatchObject({
+      default: true,
+      profile: {
+        source: 'guide',
+        service_id: requestDefault.service_id,
+        trash_id: requestDefault.trash_id,
+      },
+    });
+    expect(
+      choices.items.filter((p) => p.profile.source === 'guide'),
+    ).toHaveLength((await api('/admin/recyclarr/catalog/radarr')).items.length);
+    const seriesChoices = await api('/seerr/profiles/tv?media_id=1399');
+    expect(seriesChoices.locked).toBe(true);
+    for (const [profile, status] of [
+      [
+        {
+          source: 'guide',
+          service_id: sonarrDefault.service_id,
+          trash_id: sonarrDefault.trash_id,
+        },
+        400,
+      ],
+      [
+        {
+          source: 'guide',
+          service_id: requestDefault.service_id,
+          trash_id: '00000000000000000000000000000000',
+        },
+        409,
+      ],
+      [
+        {
+          source: 'custom',
+          service_id: requestDefault.service_id,
+          profile_id: requestDefault.profile_id,
+        },
+        409,
+      ],
+      [
+        {
+          source: 'custom',
+          service_id: requestDefault.service_id,
+          profile_id: 999999,
+        },
+        409,
+      ],
+    ]) {
+      const denied = await context.request.post(
+        `${base}/api/v1/seerr/requests`,
+        {
+          headers: { 'X-Thelxinoe-Client': '1' },
+          data: { media_type: 'movie', media_id: 11, seasons: [], profile },
+        },
+      );
+      expect(denied.status()).toBe(status);
+    }
+    const changedSeries = await context.request.post(
+      `${base}/api/v1/seerr/requests`,
+      {
+        headers: { 'X-Thelxinoe-Client': '1' },
+        data: {
+          media_type: 'tv',
+          media_id: 1399,
+          seasons: [1],
+          profile: {
+            source: 'guide',
+            service_id: sonarrDefault.service_id,
+            trash_id: sonarrDefault.trash_id,
+          },
+        },
+      },
     );
+    expect(changedSeries.status()).toBe(409);
+    const defaultRequest = await api('/seerr/requests', 'POST', {
+      media_type: 'movie',
+      media_id: 11,
+      seasons: [],
+    });
+    expect(defaultRequest).toMatchObject({
+      profileId: requestDefault.profile_id,
+      is4k: true,
+    });
+    expect((await api('/seerr/movie/11')).mediaInfo.status).toBeGreaterThan(1);
+    const hd = (await settings()).targets.find(
+      (t) =>
+        t.kind === 'radarr' &&
+        t.trash_id === 'd1d67249d3890e49bc12e275d989a7e9',
+    );
+    const renamed = await arr('radarr', `qualityprofile/${hd.profile_id}`);
+    renamed.name = 'Renamed fixture guide';
+    await arr('radarr', `qualityprofile/${hd.profile_id}`, 'PUT', renamed);
+    const guideRequest = await api('/seerr/requests', 'POST', {
+      media_type: 'movie',
+      media_id: 238,
+      seasons: [],
+      profile: {
+        source: 'guide',
+        service_id: hd.service_id,
+        trash_id: hd.trash_id,
+      },
+    });
+    expect(guideRequest).toMatchObject({
+      profileId: hd.profile_id,
+      is4k: false,
+    });
+    const custom = structuredClone(renamed);
+    delete custom.id;
+    custom.name = 'Native custom fixture';
+    const nativeCustom = await arr('radarr', 'qualityprofile', 'POST', custom);
+    const customRequest = await api('/seerr/requests', 'POST', {
+      media_type: 'movie',
+      media_id: 550,
+      seasons: [],
+      profile: {
+        source: 'custom',
+        service_id: hd.service_id,
+        profile_id: nativeCustom.id,
+      },
+    });
+    expect(customRequest).toMatchObject({
+      profileId: nativeCustom.id,
+      is4k: false,
+    });
+    expect((await defaultTarget('radarr')).profile_id).toBe(
+      requestDefault.profile_id,
+    );
+    const managerDefaults = (await api('/admin/managers')).items.find(
+      (m) => m.id === hd.service_id,
+    ).defaults;
+    await api(`/admin/managers/${hd.service_id}/defaults`, 'PUT', {
+      ...managerDefaults,
+      quality_profile: nativeCustom.id,
+    });
+    await waitRun((await api('/admin/recyclarr/sync', 'POST', {})).id);
+    expect(
+      (await api('/admin/managers')).items.find((m) => m.id === hd.service_id)
+        .defaults.quality_profile,
+    ).toBe(nativeCustom.id);
+    expect(
+      (await api('/seerr/profiles/movie?media_id=680')).items[0],
+    ).toMatchObject({
+      default: true,
+      profile: {
+        source: 'custom',
+        service_id: hd.service_id,
+        profile_id: nativeCustom.id,
+      },
+    });
+    await api(
+      `/admin/managers/${hd.service_id}/defaults`,
+      'PUT',
+      managerDefaults,
+    );
+    for (const kind of ['radarr', 'sonarr'])
+      evidence.snapshots[`${kind}-applied`] = await snapshot(kind);
+    record(
+      'Seerr receives default, guide-ID and native-ID profile choices per request; invalid and cross-manager profiles are rejected; existing series are locked; guide renames and custom defaults survive sync',
+    );
+    if (profilesOnly) {
+      evidence.passed = true;
+      console.log(`Profile E2E passed: ${root}`);
+      break scenario;
+    }
+    const optionsTarget = await defaultTarget('radarr');
     const optionsGuide = (
       await api('/admin/recyclarr/catalog/radarr')
     ).items.find((g) => g.trash_id === optionsTarget.trash_id);
@@ -858,9 +1006,7 @@ try {
     await expect
       .poll(() => arr('radarr', 'qualitydefinition'), { timeout: 15000 })
       .not.toEqual(evidence.snapshots['radarr-before'].sizes);
-    expect(
-      (await settings()).targets.find((t) => t.kind === 'radarr').groups,
-    ).toEqual(selectedGroups);
+    expect((await defaultTarget('radarr')).groups).toEqual(selectedGroups);
     evidence.snapshots['radarr-applied'] = await snapshot('radarr');
     record(
       'Compatible groups, focused score/upgrade overrides and explicitly enabled global quality-size limits apply',
@@ -874,18 +1020,14 @@ try {
         { timeout: 45000 },
       )
       .toBe('retrying');
-    const duringOutage = (await settings()).targets.find(
-      (t) => t.kind === 'sonarr',
-    ).profile_id;
+    const duringOutage = (await defaultTarget('sonarr')).profile_id;
     docker('start', services.sonarr.container_id);
     fixtureSQL(
       "UPDATE jobs SET available_at=0 WHERE kind='recyclarr.sync' AND json_extract(payload,'$.id')=?",
       [outage],
     );
     await waitRun(outage);
-    expect(
-      (await settings()).targets.find((t) => t.kind === 'sonarr').profile_id,
-    ).toBe(duringOutage);
+    expect((await defaultTarget('sonarr')).profile_id).toBe(duringOutage);
     // Advance the persisted schedule clock in the disposable DB to exercise overdue catch-up.
     await api('/admin/recyclarr/schedule', 'POST', { paused: false, hour: 4 });
     const oldRuns = new Set((await settings()).runs.map((r) => r.id));

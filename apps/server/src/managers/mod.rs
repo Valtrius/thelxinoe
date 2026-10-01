@@ -518,6 +518,7 @@ async fn options(
     let roots = c.get("rootfolder").await?;
     validate_roots(&s.kind, &roots)?;
     let profiles = c.get("qualityprofile").await?;
+    let guides = recyclarr::profiles(&state, &id).await?;
     let metadata = if s.kind == "lidarr" {
         c.get("metadataprofile").await?
     } else {
@@ -532,7 +533,8 @@ async fn options(
                         if root {
                             json!({"id":r["id"],"path":r["path"]})
                         } else {
-                            json!({"id":r["id"],"name":r["name"]})
+                            let guide=guides.iter().find(|p|r["id"].as_i64()==Some(p.profile_id));
+                            json!({"id":r["id"],"name":r["name"],"trash_id":guide.map(|p|&p.trash_id),"url":guide.and_then(|p|p.url.as_ref())})
                         }
                     })
                     .collect::<Vec<_>>()
@@ -547,6 +549,8 @@ async fn options(
 struct Defaults {
     root_folder: String,
     quality_profile: i64,
+    #[serde(default)]
+    quality_profile_trash_id: Option<String>,
     metadata_profile: Option<i64>,
     #[serde(default = "yes")]
     monitored: bool,
@@ -611,11 +615,11 @@ async fn defaults(
     let kind = service(&state, &id).await?.kind;
     let _guard = state.managers.guard.service(&kind).await;
     let s = service(&state, &id).await?;
-    if recyclarr::owns(&state, &id).await? {
-        input.quality_profile = s.defaults["quality_profile"]
-            .as_i64()
-            .ok_or_else(|| ApiError::conflict("Wait for Recyclarr's initial sync"))?;
-    }
+    input.quality_profile_trash_id = recyclarr::profiles(&state, &id)
+        .await?
+        .into_iter()
+        .find(|p| p.profile_id == input.quality_profile)
+        .map(|p| p.trash_id);
     let c = Connection::open(&state, &s).await?;
     if input.root_folder != canonical_root(&s.kind)
         || !c.get("qualityprofile").await?.as_array().is_some_and(|a| {

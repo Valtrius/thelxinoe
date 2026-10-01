@@ -16,6 +16,17 @@ pub(crate) fn unavailable() -> (StatusCode, &'static str) {
 pub(crate) async fn engine(path: &str) -> Result<Value> {
     request(reqwest::Method::GET, path, None).await
 }
+pub(crate) async fn ensure_pinned_image(image: &str) -> Result<Value> {
+    let path = format!("/images/{image}/json");
+    match engine(&path).await {
+        Ok(value) => Ok(value),
+        Err((StatusCode::NOT_FOUND, _)) => {
+            pull_image(image, |_| Ok(())).await?;
+            engine(&path).await
+        }
+        Err(error) => Err(error),
+    }
+}
 pub(crate) async fn pull_image(
     image: &str,
     mut progress: impl FnMut(&Value) -> Result<()>,

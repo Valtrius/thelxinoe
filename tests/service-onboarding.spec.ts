@@ -80,10 +80,13 @@ test('installation keeps the workspace empty until the API is connected', async 
     page.getByRole('region', { name: 'Updates', exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole('combobox', { name: 'Quality profile', exact: true }),
-  ).toHaveCount(0);
+    page.getByRole('combobox', {
+      name: 'Default request profile',
+      exact: true,
+    }),
+  ).toBeVisible();
   await expect(
-    page.getByRole('button', { name: 'Configure guide profile in Recyclarr' }),
+    page.getByRole('link', { name: 'Manage profiles in Radarr', exact: true }),
   ).toBeVisible();
   await expect(
     page.getByRole('button', { name: 'Test connection', exact: true }),
