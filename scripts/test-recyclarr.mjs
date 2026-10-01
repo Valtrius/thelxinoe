@@ -663,9 +663,19 @@ scenario: try {
     await guideRegion
       .getByRole('button', { name: 'Sync now', exact: true })
       .click();
-    await expect(guideRegion.getByRole('status')).toHaveText('Sync complete', {
-      timeout: 300000,
-    });
+    await expect
+      .poll(
+        async () => {
+          const runs = (await settings()).runs;
+          return runs.length > runCount && runs[0].state === 'complete';
+        },
+        { timeout: 300000, intervals: [1500] },
+      )
+      .toBe(true);
+    await expect(
+      guideRegion.getByRole('button', { name: 'Sync now', exact: true }),
+    ).toBeEnabled();
+    await expect(guideRegion.getByRole('status')).toHaveCount(0);
     expect((await settings()).runs.length).toBeGreaterThan(runCount);
     expect(
       fixtureSQL(

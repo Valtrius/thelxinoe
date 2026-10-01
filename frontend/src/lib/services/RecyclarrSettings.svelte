@@ -16,7 +16,6 @@
   let snapshot = $state<Snapshot | null>(null),
     error = $state(''),
     loadError = $state(''),
-    feedback = $state(''),
     busy = $state(false),
     loaded = $state(false),
     schedule = $state({ paused: false, hour: 4 });
@@ -36,7 +35,6 @@
       if (run && !['queued', 'running', 'retrying'].includes(run.state)) {
         busy = false;
         feedbackRun = '';
-        feedback = run.state === 'complete' ? 'Sync complete' : '';
         error =
           run.error ??
           (run.state === 'complete'
@@ -49,7 +47,6 @@
   }
   async function sync() {
     busy = true;
-    feedback = '';
     error = '';
     try {
       const queued = await api<{ id: string }>(
@@ -58,7 +55,6 @@
         {},
       );
       feedbackRun = queued.id;
-      feedback = 'Sync queued';
       await refresh();
     } catch (caught) {
       busy = false;
@@ -84,9 +80,6 @@
   </div>
   {#if error || loadError}<Notice tone="danger" role="alert"
       >{error || loadError}</Notice
-    >{/if}
-  {#if feedback}<span class="text-[10px] text-muted" role="status"
-      >{feedback}</span
     >{/if}
   {#if loaded && snapshot?.settings}
     <AutoSaveForm

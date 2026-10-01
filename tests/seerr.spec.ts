@@ -2,6 +2,279 @@ import { expect, test, type Page } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { installUiFixture } from './helpers/ui-fixture';
 
+test('Recyclarr installs with one click and no dialog', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+  });
+  let installed = false;
+  let finishInstall!: () => void;
+  const installs: unknown[] = [];
+  await page.route('**/api/v1/admin/stack', (route) =>
+    route.fulfill({
+      json: {
+        items: installed
+          ? [
+              {
+                id: 'managed-recyclarr',
+                kind: 'recyclarr',
+                name: 'Managed Recyclarr',
+                phase: 'active',
+                status: 'ready',
+                existence: 'present',
+                running: false,
+                drift: false,
+              },
+            ]
+          : [],
+        provisions: installed
+          ? [
+              {
+                id: 'managed-recyclarr',
+                kind: 'recyclarr',
+                state: 'complete',
+                host_port: null,
+                service_id: null,
+                origin: 'installed',
+              },
+            ]
+          : [],
+      },
+    }),
+  );
+  await page.route('**/api/v1/admin/recyclarr', (route) =>
+    route.fulfill({
+      json: { settings: { paused: false, hour: 4 }, runs: [], timezone: 'UTC' },
+    }),
+  );
+  await page.route('**/api/v1/admin/stack/install', async (route) => {
+    installs.push(route.request().postDataJSON());
+    await new Promise<void>((resolve) => {
+      finishInstall = resolve;
+    });
+    installed = true;
+    await route.fulfill({ json: { id: 'managed-recyclarr' } });
+  });
+  await page.route('**/api/v1/admin/managers/containers', (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          {
+            id: 'existing-recyclarr',
+            names: ['/recyclarr'],
+            image: 'recyclarr/recyclarr',
+            state: 'running',
+            ports: [],
+          },
+        ],
+      },
+    }),
+  );
+  await page.route('**/api/v1/admin/recyclarr/adopt/preview', (route) =>
+    route.fulfill({
+      json: {
+        review_id: 'review-recyclarr',
+        targets: [
+          {
+            service_id: 'manager-radarr',
+            kind: 'radarr',
+            name: 'Radarr',
+            trash_id: 'guide-hd',
+            guide_name: 'WEB1080p',
+          },
+          {
+            service_id: 'manager-radarr',
+            kind: 'radarr',
+            name: 'Radarr',
+            trash_id: 'guide-4k',
+            guide_name: 'WEB2160p (Combined)',
+          },
+        ],
+      },
+    }),
+  );
+  await page.goto('/');
+  await page
+    .getByRole('navigation', { name: 'Select service' })
+    .getByRole('button', { name: 'Recyclarr', exact: true })
+    .click();
+  await page
+    .getByRole('button', { name: 'Import existing Recyclarr', exact: true })
+    .click();
+  const importDialog = page.getByRole('dialog', { name: 'Import Recyclarr' });
+  await importDialog
+    .getByRole('combobox', { name: 'Existing container' })
+    .selectOption('existing-recyclarr');
+  await importDialog
+    .getByRole('button', { name: 'Review import', exact: true })
+    .click();
+  await expect(
+    importDialog.getByText('Radarr: WEB1080p', { exact: true }),
+  ).toBeVisible();
+  await expect(
+    importDialog.getByText('Radarr: WEB2160p (Combined)', { exact: true }),
+  ).toBeVisible();
+  await expect(
+    importDialog.getByRole('button', {
+      name: 'Transfer ownership',
+      exact: true,
+    }),
+  ).toBeDisabled();
+  for (const [width, height] of [
+    [1440, 1000],
+    [390, 844],
+  ]) {
+    await page.setViewportSize({ width, height });
+    const path = testInfo.outputPath(`recyclarr-import-${width}.png`);
+    await page.screenshot({ path });
+    await testInfo.attach(`recyclarr-import-${width}`, {
+      path,
+      contentType: 'image/png',
+    });
+  }
+  await importDialog
+    .getByRole('button', { name: 'Close', exact: true })
+    .click();
+  const install = page.getByRole('button', {
+    name: 'Install Recyclarr',
+    exact: true,
+  });
+  await install.click();
+  await expect.poll(() => installs.length).toBe(1);
+  expect(installs[0]).toEqual({ kind: 'recyclarr', host_port: null });
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(install).toBeDisabled();
+  await expect(install.locator('svg.animate-spin')).toBeVisible();
+  for (const [width, height] of [
+    [1440, 1000],
+    [390, 844],
+  ]) {
+    await page.setViewportSize({ width, height });
+    await install.scrollIntoViewIfNeeded();
+    const path = testInfo.outputPath(`recyclarr-install-${width}.png`);
+    await page.screenshot({ path });
+    await testInfo.attach(`recyclarr-install-${width}`, {
+      path,
+      contentType: 'image/png',
+    });
+  }
+  finishInstall();
+  await expect(
+    page.getByRole('region', { name: 'Recyclarr guide configuration' }),
+  ).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  expect(fixture.errors).toEqual([]);
+});
+
+test('Recyclarr sync uses only button progress and retains failures', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+  });
+  let state = 'queued';
+  let run = '';
+  let syncs = 0;
+  await page.clock.install({ time: new Date('2026-01-01T00:00:00Z') });
+  await page.clock.pauseAt(new Date('2026-01-01T01:00:00Z'));
+  await page.route('**/api/v1/admin/stack', (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          {
+            id: 'managed-recyclarr',
+            kind: 'recyclarr',
+            name: 'Managed Recyclarr',
+            phase: 'active',
+            status: 'ready',
+            existence: 'present',
+            running: false,
+            drift: false,
+          },
+        ],
+        provisions: [
+          {
+            id: 'managed-recyclarr',
+            kind: 'recyclarr',
+            state: 'complete',
+            host_port: null,
+            service_id: null,
+            origin: 'installed',
+          },
+        ],
+      },
+    }),
+  );
+  await page.route('**/api/v1/admin/recyclarr', (route) =>
+    route.fulfill({
+      json: {
+        settings: { paused: false, hour: 4 },
+        runs: run
+          ? [
+              {
+                id: run,
+                state,
+                error: state === 'blocked' ? 'Radarr is unavailable' : null,
+              },
+            ]
+          : [],
+        timezone: 'UTC',
+      },
+    }),
+  );
+  await page.route('**/api/v1/admin/recyclarr/sync', (route) => {
+    run = `sync-${++syncs}`;
+    return route.fulfill({ json: { id: run } });
+  });
+  await page.goto('/');
+  await page
+    .getByRole('navigation', { name: 'Select service' })
+    .getByRole('button', { name: 'Recyclarr', exact: true })
+    .click();
+  const region = page.getByRole('region', {
+    name: 'Recyclarr guide configuration',
+  });
+  const sync = region.getByRole('button', { name: 'Sync now', exact: true });
+  await sync.click();
+  for (const progress of ['queued', 'running', 'retrying']) {
+    state = progress;
+    await page.clock.runFor(4000);
+    await expect(sync).toBeDisabled();
+    await expect(sync.locator('svg.animate-spin')).toBeVisible();
+    await expect(region.getByRole('status')).toHaveCount(0);
+    await expect(
+      region.getByText(/Sync queued|Sync complete|Sync running|Sync retrying/),
+    ).toHaveCount(0);
+  }
+  for (const [width, height] of [
+    [1440, 1000],
+    [390, 844],
+  ]) {
+    await page.setViewportSize({ width, height });
+    await sync.scrollIntoViewIfNeeded();
+    const path = testInfo.outputPath(`recyclarr-sync-${width}.png`);
+    await page.screenshot({ path });
+    await testInfo.attach(`recyclarr-sync-${width}`, {
+      path,
+      contentType: 'image/png',
+    });
+  }
+  state = 'complete';
+  await page.clock.runFor(4000);
+  await expect(sync).toBeEnabled();
+  await expect(region.getByRole('status')).toHaveCount(0);
+  state = 'blocked';
+  await sync.click();
+  await expect(region.getByRole('alert')).toContainText(
+    'Radarr is unavailable',
+  );
+  await expect(sync).toBeEnabled();
+  expect(fixture.errors).toEqual([]);
+});
+
 const movie = {
   id: 11,
   mediaType: 'movie',
