@@ -7,6 +7,7 @@ import { resolve } from 'node:path';
 import { composeFixture, fixtureId, freePort } from './ci-resources.mjs';
 import { randomUUID } from 'node:crypto';
 import { waitForProxy } from './service-access-fixture.mjs';
+import { requestBudget, waitForProvision } from './ci-readiness.mjs';
 import { launchBrowser } from './ci-browser.mjs';
 
 const docker = (...args) =>
@@ -34,8 +35,13 @@ const base = `https://localhost:${process.env.THELXINOE_CONNECTIONS_PORT}`;
 const services = {};
 const retirementReconnects = [];
 const bootstrapProfiles = {};
+function saveProductResult(value) {
+  const result = JSON.stringify(value, null, 2);
+  writeFileSync(`${root}/result.json`, result);
+  writeFileSync('.local/connections-result.json', result);
+}
 let deployment;
-async function api(path, method = 'GET', data, timeout = 30000) {
+async function api(path, method = 'GET', data, timeout = requestBudget(path)) {
   const response = await context.request.fetch(`${base}/api/v1${path}`, {
     method,
     data,
@@ -92,18 +98,13 @@ async function install(kind) {
     host_port,
   });
   let latest;
-  await expect
-    .poll(
-      async () => {
-        latest = await stack();
-        const provision = latest.provisions.find((p) => p.id === created.id);
-        if (provision?.state === 'blocked')
-          throw Error(`${kind}: ${provision.error}`);
-        return provision?.state;
-      },
-      { timeout: 300000, intervals: [2000] },
+  latest = (
+    await waitForProvision(
+      (timeout) => api('/admin/stack', 'GET', undefined, timeout),
+      created.id,
+      kind,
     )
-    .toBe('complete');
+  ).stack;
   services[kind] = {
     ...latest.items.find((s) => s.id === created.id),
     host_port,
@@ -846,27 +847,18 @@ try {
       'Recovery after update and retirement preserve appdata; reinstall releases the old reservation',
     );
   }
-  writeFileSync(
-    `${root}/result.json`,
-    JSON.stringify(
-      {
-        project,
-        scope: process.argv.includes('--connections-only')
-          ? 'connections'
-          : 'full',
-        passed: true,
-        bootstrap_profiles: bootstrapProfiles,
-        retirement_reconnects: retirementReconnects,
-        connections: (await links()).map((l) => ({
-          source: l.source_kind,
-          target: l.target_kind,
-          state: l.state,
-        })),
-      },
-      null,
-      2,
-    ),
-  );
+  saveProductResult({
+    project,
+    scope: process.argv.includes('--connections-only') ? 'connections' : 'full',
+    passed: true,
+    bootstrap_profiles: bootstrapProfiles,
+    retirement_reconnects: retirementReconnects,
+    connections: (await links()).map((l) => ({
+      source: l.source_kind,
+      target: l.target_kind,
+      state: l.state,
+    })),
+  });
 } catch (error) {
   try {
     writeFileSync(
@@ -876,24 +868,17 @@ try {
   } catch (captureError) {
     console.error('Unable to capture service logs:', captureError);
   }
-  writeFileSync(
-    `${root}/result.json`,
-    JSON.stringify(
-      {
-        project,
-        passed: false,
-        error: String(error),
-        connections: (await links().catch(() => [])).map((l) => ({
-          source: l.source_kind,
-          target: l.target_kind,
-          state: l.state,
-          error: l.error,
-        })),
-      },
-      null,
-      2,
-    ),
-  );
+  saveProductResult({
+    project,
+    passed: false,
+    error: String(error),
+    connections: (await links().catch(() => [])).map((l) => ({
+      source: l.source_kind,
+      target: l.target_kind,
+      state: l.state,
+      error: l.error,
+    })),
+  });
   throw error;
 } finally {
   try {

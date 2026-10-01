@@ -158,20 +158,11 @@ pub(super) async fn preflight(
     }
     let raw = verified(&s, &d).await?;
     let t = templates::find(&s.kind).ok_or_else(unavailable)?;
-    let discovered = engine(&format!("/distribution/{}:{}/json", t.repository, t.tag)).await?;
-    let digest = discovered["Descriptor"]["digest"]
-        .as_str()
-        .ok_or_else(unavailable)?;
-    if digest.len() != 71
-        || !digest.starts_with("sha256:")
-        || !digest[7..].bytes().all(|b| b.is_ascii_hexdigit())
-    {
-        return Err(unavailable());
-    }
+    let candidate = crate::stack::stable_image(t).await?;
     let mut u = Update {
         id: input.operation_id,
         service: s.id.clone(),
-        candidate: format!("{}@{digest}", t.repository),
+        candidate,
         stage: "preparing".into(),
         classification: "pending".into(),
         error: None,

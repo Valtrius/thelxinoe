@@ -755,8 +755,9 @@ pub(super) async fn qualify(
     let outcome=async {
         for kind in ["radarr","sonarr"] {
             let t=templates::find(kind).ok_or_else(unavailable)?;
-            pull_image(&format!("{}@{}",t.repository,t.digest)).await?;
-            let fixture=request(Method::POST,"/containers/create",Some(json!({"Image":format!("{}@{}",t.repository,t.digest),"Labels":labels,"Env":["PUID=1000","PGID=1000"],"Healthcheck":{"Test":["NONE"]},"HostConfig":{"NetworkMode":format!("container:{anchor}"),"Mounts":[{"Type":"bind","Source":format!("{host}/{kind}"),"Target":"/config"}]}}))).await?["Id"].as_str().ok_or_else(unavailable)?.to_owned();
+            let image=templates::pinned_image(t)?.unwrap_or_else(|| format!("{}@{}",t.repository,t.digest));
+            pull_image(&image).await?;
+            let fixture=request(Method::POST,"/containers/create",Some(json!({"Image":image,"Labels":labels,"Env":["PUID=1000","PGID=1000"],"Healthcheck":{"Test":["NONE"]},"HostConfig":{"NetworkMode":format!("container:{anchor}"),"Mounts":[{"Type":"bind","Source":format!("{host}/{kind}"),"Target":"/config"}]}}))).await?["Id"].as_str().ok_or_else(unavailable)?.to_owned();
             updates::start(&fixture).await?;
             let checker=request(Method::POST,"/containers/create",Some(json!({"Image":updates::current_image().await?,"Cmd":["adapter-health",kind],"User":"1000:1000","Tty":true,"Labels":labels,"Healthcheck":{"Test":["NONE"]},"HostConfig":{"NetworkMode":format!("container:{anchor}"),"ReadonlyRootfs":true,"CapDrop":["ALL"],"Mounts":[{"Type":"bind","Source":format!("{host}/{kind}"),"Target":"/config","ReadOnly":true}]}}))).await?["Id"].as_str().ok_or_else(unavailable)?.to_owned();
             updates::start(&checker).await?;

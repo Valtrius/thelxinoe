@@ -22,7 +22,7 @@ env:
 
 jobs:
   server:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -30,16 +30,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Ensure FFmpeg is available
-        timeout-minutes: 8
-        run: bash scripts/ci-install-media.sh
       - run: pnpm run ci:server
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: server-test-evidence
+          path: |
+            .local/ci-*.json
+            .local/ci-command.log
+            .local/server-verification/
+          include-hidden-files: true
   web:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -59,10 +61,14 @@ jobs:
         with:
           name: web-test-evidence
           path: |
+            .local/ci-*.json
+            .local/ci-command.log
+            .local/ci-browser*.log
             playwright-report/
             test-results/
+          include-hidden-files: true
   containers:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -75,39 +81,7 @@ jobs:
       - name: Ensure FFmpeg is available
         timeout-minutes: 8
         run: bash scripts/ci-install-media.sh
-      - run: pnpm exec playwright install --with-deps chromium
-      - name: Start isolated container-test browser
-        timeout-minutes: 10
-        run: |
-          version=$(node -p 'require("@playwright/test/package.json").version')
-          image="mcr.microsoft.com/playwright:v${version}-noble"
-          for attempt in 1 2 3 4; do
-            if timeout 120s docker pull "$image"; then break; fi
-            if [ "$attempt" -eq 4 ]; then exit 1; fi
-            sleep "$((attempt * 3))"
-          done
-          docker run --detach --pull never --name thelxinoe-ci-browser \
-            --init --ipc=host --user pwuser --workdir /opt/playwright \
-            --mount "type=bind,source=$GITHUB_WORKSPACE/node_modules,target=/opt/playwright/node_modules,readonly" \
-            --publish 127.0.0.1:3000:3000 \
-            "$image" node node_modules/playwright/cli.js run-server --port 3000 --host 0.0.0.0
-          for attempt in $(seq 1 30); do
-            if [[ "$(docker logs thelxinoe-ci-browser 2>&1)" == *"Listening on ws://"* ]]; then exit 0; fi
-            sleep 1
-          done
-          docker logs thelxinoe-ci-browser
-          exit 1
       - run: pnpm run ci:containers
-        env:
-          THELXINOE_CI_BROWSER_WS_ENDPOINT: ws://127.0.0.1:3000/
-      - name: Stop isolated container-test browser
-        if: always()
-        run: |
-          mkdir -p .local
-          if docker inspect thelxinoe-ci-browser > /dev/null 2>&1; then
-            docker logs thelxinoe-ci-browser > .local/ci-browser.log 2>&1
-            docker rm --force thelxinoe-ci-browser
-          fi
       - name: Clean owned test resources
         if: always()
         run: node scripts/ci-clean-resources.mjs
@@ -116,21 +90,25 @@ jobs:
         with:
           name: container-test-evidence
           path: |
+            .local/ci-*.json
+            .local/ci-command.log
+            .local/ci-browser*.log
             playwright-report/
             test-results/
             .local/*-result.json
             .local/thelxinoe-connections-*/result.json
+            .local/thelxinoe-connections-*/services.log
+            .local/thelxinoe-access-*/services.log
             .local/thelxinoe-recyclarr-*/result.json
             .local/thelxinoe-recyclarr-*/trace.zip
             .local/thelxinoe-recyclarr-*/services.log
             .local/thelxinoe-recyclarr-*/*.png
             .local/*.png
             .local/selected-audio.ts
-            .local/ci-browser.log
             .local/ci-resources/
           include-hidden-files: true
   desktop:
-    runs-on: windows-latest
+    runs-on: windows-2025
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -139,12 +117,20 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
       - run: pnpm install --frozen-lockfile
       - run: pnpm run ci:desktop
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-test-evidence
+          path: |
+            .local/ci-*.json
+            .local/ci-command.log
+            test-results/
+          include-hidden-files: true
   updates-server:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -154,7 +140,6 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm run ci:updates:server
       - name: Clean owned test resources
         if: always()
@@ -164,11 +149,14 @@ jobs:
         with:
           name: server-update-evidence
           path: |
+            .local/ci-*.json
+            .local/ci-command.log
+            .local/ci-browser*.log
             test-results/updates/
             .local/ci-resources/
           include-hidden-files: true
   updates-desktop:
-    runs-on: windows-latest
+    runs-on: windows-2025
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -177,8 +165,7 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install chromium
       - run: pnpm run ci:updates:desktop
@@ -190,6 +177,9 @@ jobs:
         with:
           name: desktop-update-evidence
           path: |
+            .local/ci-*.json
+            .local/ci-command.log
+            .local/ci-browser*.log
             test-results/updates/
             .local/ci-resources/
           include-hidden-files: true

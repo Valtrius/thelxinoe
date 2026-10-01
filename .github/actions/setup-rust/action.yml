@@ -1,0 +1,13 @@
+name: Set up pinned Rust
+description: Install the repository toolchain and restore its build cache
+runs:
+  using: composite
+  steps:
+    - id: version
+      shell: bash
+      run: node --input-type=module -e "import fs from 'node:fs'; const version=fs.readFileSync('rust-toolchain.toml','utf8').match(/channel = \"([^\"]+)\"/)[1]; fs.appendFileSync(process.env.GITHUB_OUTPUT,'toolchain='+version+'\n');"
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ steps.version.outputs.toolchain }}
+        components: rustfmt, clippy
+    - uses: Swatinem/rust-cache@v2

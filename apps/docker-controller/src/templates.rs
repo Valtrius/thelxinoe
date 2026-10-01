@@ -87,3 +87,55 @@ pub const TEMPLATES: [Template; 8] = [
 pub fn find(kind: &str) -> Option<Template> {
     TEMPLATES.iter().find(|t| t.kind == kind).copied()
 }
+
+pub(crate) fn pinned_image(template: Template) -> crate::docker::Result<Option<String>> {
+    let Ok(raw) = std::env::var("THELXINOE_CURATED_IMAGES") else {
+        return Ok(None);
+    };
+    let invalid = || {
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "Invalid curated image manifest",
+        )
+    };
+    let manifest: serde_json::Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
+    let entries = manifest.as_object().ok_or_else(invalid)?;
+    if entries.len() != TEMPLATES.len() {
+        return Err(invalid());
+    }
+    for (kind, value) in entries {
+        let curated = find(kind).ok_or_else(invalid)?;
+        let reference = value.as_str().ok_or_else(invalid)?;
+        let (repository, digest) = reference.split_once('@').ok_or_else(invalid)?;
+        if repository != curated.repository
+            || !digest.starts_with("sha256:")
+            || digest.len() != 71
+            || !digest[7..].bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(invalid());
+        }
+    }
+    Ok(Some(
+        entries[template.kind]
+            .as_str()
+            .ok_or_else(invalid)?
+            .to_owned(),
+    ))
+}
+
+pub(crate) fn configured() -> crate::docker::Result<serde_json::Value> {
+    let mut items = Vec::new();
+    for template in TEMPLATES {
+        let mut value = serde_json::to_value(template).map_err(|_| crate::docker::unavailable())?;
+        if let Some(image) = pinned_image(template)? {
+            value["digest"] = serde_json::json!(
+                image
+                    .split_once('@')
+                    .ok_or_else(crate::docker::unavailable)?
+                    .1
+            );
+        }
+        items.push(value);
+    }
+    Ok(serde_json::json!({"items": items}))
+}

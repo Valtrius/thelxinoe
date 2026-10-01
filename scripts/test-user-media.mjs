@@ -1,6 +1,7 @@
-import { chromium, expect } from '@playwright/test';
+import { expect } from '@playwright/test';
+import { launchBrowser } from './ci-browser.mjs';
 import { writeFileSync } from 'node:fs';
-const browser = await chromium.launch();
+const browser = await launchBrowser();
 const owner = await browser.newContext({ ignoreHTTPSErrors: true });
 const guest = await browser.newContext({ ignoreHTTPSErrors: true });
 const second = await browser.newContext({ ignoreHTTPSErrors: true });

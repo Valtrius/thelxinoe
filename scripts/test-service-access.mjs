@@ -1,5 +1,7 @@
 import { expect } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
+import { waitForRestart } from './ci-readiness.mjs';
+import { imageManifest } from './ci-images.mjs';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { fixtureImages, resourceRecord } from './ci-resources.mjs';
 import { docker, fixture } from './service-access-fixture.mjs';
@@ -27,6 +29,7 @@ const result = {
   }).trim(),
   command: `pnpm run test:service-access${process.argv.includes('--desktop') ? ' --desktop' : ''}`,
   scenarios: [],
+  image_manifest: imageManifest.services,
   browser_network: process.env.THELXINOE_CI_BROWSER_WS_ENDPOINT
     ? 'isolated Docker bridge'
     : 'host',
@@ -35,10 +38,13 @@ const result = {
 };
 const f = await fixture();
 async function scenario(name, run) {
+  result.current_scenario = name;
+  writeFileSync(`${output}/result.json`, JSON.stringify(result, null, 2));
   try {
     await run();
   } catch (error) {
-    result.scenarios.push({ name, passed: false });
+    result.error = error.message;
+    result.scenarios.push({ name, passed: false, error: error.message });
     throw error;
   }
   result.scenarios.push({ name, passed: true });
@@ -88,6 +94,14 @@ try {
     'nzbget',
   ]) {
     if (kind !== 'radarr') await f.install(kind);
+    expect(
+      docker(
+        'inspect',
+        '--format',
+        '{{.Config.Image}}',
+        f.services[kind].container_id,
+      ),
+    ).toBe(imageManifest.services[kind]);
     result.images[kind] = docker(
       'inspect',
       '--format',
@@ -381,28 +395,17 @@ try {
       expect(restored.status()).toBe(200);
       expect((await restored.json()).restartRequired).toBe(true);
       await native('command', 'POST', { name: 'Restart' });
-      let restarted;
-      await expect
-        .poll(
-          async () => {
-            try {
-              const response = await f.context.request.get(
-                `${f.base}/services/radarr/api/v3/system/status`,
-                { headers: { 'X-Api-Key': key }, timeout: 5000 },
-              );
-              restarted = response.ok() ? await response.json() : null;
-              return (
-                !!restarted?.startTime &&
-                restarted.startTime !== before.startTime &&
-                restarted.urlBase === '/services/radarr'
-              );
-            } catch {
-              return false;
-            }
-          },
-          { timeout: 90000, intervals: [2000] },
-        )
-        .toBe(true);
+      const restarted = await waitForRestart(
+        async (timeout) => {
+          const response = await f.context.request.get(
+            `${f.base}/services/radarr/api/v3/system/status`,
+            { headers: { 'X-Api-Key': key }, timeout },
+          );
+          return response.ok() ? response.json() : null;
+        },
+        before.startTime,
+        '/services/radarr',
+      );
       result.backup_restore = {
         before_start: before.startTime,
         after_start: restarted.startTime,

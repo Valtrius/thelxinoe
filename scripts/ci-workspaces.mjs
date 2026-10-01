@@ -35,7 +35,7 @@ export function archiveWorkspace(report, lane) {
       const path = join(source, entry.name);
       if (
         entry.isFile() &&
-        /(?:result\.json|ci-(?:images|steps)\.json|\.(?:png|zip|log|ts))$/.test(
+        /(?:result\.json|ci-[\w-]+\.json|\.(?:png|zip|log|ts))$/.test(
           entry.name,
         )
       ) {
@@ -45,7 +45,8 @@ export function archiveWorkspace(report, lane) {
         entry.isDirectory() &&
         (depth > 0 ||
           entry.name.startsWith('thelxinoe-') ||
-          entry.name === 'player-ui')
+          entry.name === 'player-ui' ||
+          entry.name === 'server-verification')
       ) {
         collect(path, join(destination, entry.name), depth + 1);
       }

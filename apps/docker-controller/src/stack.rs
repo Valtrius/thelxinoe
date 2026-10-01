@@ -377,7 +377,7 @@ pub fn router() -> Router {
     Router::new()
         .route(
             "/stack/templates",
-            get(|| async { Json(json!({"items":templates::TEMPLATES})) }),
+            get(|| async { templates::configured().map(Json) }),
         )
         .route("/stack", get(list))
         .route("/stack/install", post(install))
@@ -675,7 +675,10 @@ async fn action(
     Ok(Json(json!({"accepted":true})))
 }
 
-async fn stable_image(t: templates::Template) -> Result<String> {
+pub(crate) async fn stable_image(t: templates::Template) -> Result<String> {
+    if let Some(image) = templates::pinned_image(t)? {
+        return Ok(image);
+    }
     for attempt in 0..3 {
         if let Ok(descriptor) =
             engine(&format!("/distribution/{}:{}/json", t.repository, t.tag)).await
@@ -696,34 +699,40 @@ async fn stable_image(t: templates::Template) -> Result<String> {
     ))
 }
 async fn pull_image(image: &str) -> Result<()> {
+    if engine(&format!("/images/{image}/json")).await.is_ok() {
+        return Ok(());
+    }
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(240);
+    let mut last = unavailable();
     for attempt in 0..3 {
-        if request(
-            reqwest::Method::POST,
-            &format!("/images/create?fromImage={image}"),
-            None,
-        )
-        .await
-        .is_ok()
+        match tokio::time::timeout_at(deadline, crate::docker::pull_image(image, |_| Ok(()))).await
         {
-            return Ok(());
+            Ok(Ok(())) => return Ok(()),
+            Ok(Err(error)) => last = error,
+            Err(_) => {
+                return Err((
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    "Image download retry budget expired",
+                ));
+            }
+        }
+        if ["authorization", "not found", "storage is full"]
+            .iter()
+            .any(|reason| last.1.contains(reason))
+        {
+            return Err(last);
         }
         if attempt < 2 {
             tokio::time::sleep(std::time::Duration::from_secs(2 * (attempt + 1))).await;
         }
     }
-    Err(conflict(
-        "Docker could not pull the service image. Check registry access and retry setup",
-    ))
+    Err(last)
 }
 async fn releases() -> Result<Json<Value>> {
     let mut pending = tokio::task::JoinSet::new();
     for t in templates::TEMPLATES {
         pending.spawn(async move {
-            let result = engine(&format!("/distribution/{}:{}/json", t.repository, t.tag)).await;
-            let digest = result.ok()
-                .and_then(|v| v["Descriptor"]["digest"].as_str().map(str::to_owned))
-                .filter(|v| v.starts_with("sha256:") && v.len() == 71 && v[7..].bytes().all(|b| b.is_ascii_hexdigit()));
-            let image = digest.map(|d| format!("{}@{d}", t.repository));
+            let image = stable_image(t).await.ok();
             let release = match &image {
                 Some(image) => Some(crate::service_releases::metadata(t, image).await),
                 None => None,

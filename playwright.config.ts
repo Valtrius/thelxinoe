@@ -1,4 +1,5 @@
 import { defineConfig } from '@playwright/test';
+import { browserConnection } from './scripts/ci-browser.mjs';
 export default defineConfig({
   testDir: 'tests',
   workers: 1,
@@ -6,6 +7,7 @@ export default defineConfig({
   expect: { timeout: 15000 },
   use: {
     trace: 'on',
+    connectOptions: browserConnection(),
     baseURL: process.env.THELXINOE_TEST_URL ?? 'http://127.0.0.1:8484',
     headless: true,
     ignoreHTTPSErrors: !!process.env.THELXINOE_PROXY_TEST,
