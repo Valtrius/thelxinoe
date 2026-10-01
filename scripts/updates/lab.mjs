@@ -1,18 +1,25 @@
-import { resourceRecord } from '../ci-resources.mjs';
+import { stopProcess } from '../ci-processes.mjs';
+import {
+  resourceRecord,
+  freePort,
+  resourceScope,
+  removeFixtureImages,
+} from '../ci-resources.mjs';
 const resourceOwners = new Map();
 import { spawn } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   openSync,
   closeSync,
   appendFileSync,
+  rmSync,
 } from 'node:fs';
 import { resolve, join, dirname, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
-import { createServer } from 'node:net';
 import { request as https } from 'node:https';
 import { setTimeout as delay } from 'node:timers/promises';
 import { downloadFixture } from './registry.mjs';
@@ -29,16 +36,7 @@ import {
   repository,
 } from './build.mjs';
 
-export async function freePort() {
-  const server = createServer();
-  await new Promise((done, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', done);
-  });
-  const port = server.address().port;
-  await new Promise((done) => server.close(done));
-  return port;
-}
+export { freePort } from '../ci-resources.mjs';
 export async function until(fn, timeout = 90000) {
   const deadline = Date.now() + timeout;
   let last;
@@ -154,6 +152,10 @@ function writeCompose(lab) {
   docker(
     'run',
     '--rm',
+    '--name',
+    `${lab.id}-permissions`,
+    '--label',
+    `app.thelxinoe.update-lab=${lab.id}`,
     '--network',
     'none',
     '--read-only',
@@ -278,8 +280,8 @@ export async function createLab({
       closed: false,
     }),
   );
-  keys(lab);
   try {
+    keys(lab);
     if (server) {
       await pullFixtureImage('registry:2');
       await pullFixtureImage('node:24-bookworm-slim');
@@ -335,7 +337,11 @@ export async function createLab({
       );
       await until(
         async () =>
-          (await fetch(`http://127.0.0.1:${lab.registryPort}/v2/`)).ok,
+          (
+            await fetch(`http://127.0.0.1:${lab.registryPort}/v2/`, {
+              signal: AbortSignal.timeout(5000),
+            })
+          ).ok,
       );
     }
     for (const version of [lab.base, lab.next]) {
@@ -375,7 +381,14 @@ export async function createLab({
       );
     }
     save(join(root, 'lab.json'), lab);
-    await until(async () => (await fetch(`${lab.baseUrl}/api/v1/health`)).ok);
+    await until(
+      async () =>
+        (
+          await fetch(`${lab.baseUrl}/api/v1/health`, {
+            signal: AbortSignal.timeout(5000),
+          })
+        ).ok,
+    );
     if (desktop) installBase(lab);
     save(join(root, 'lab.json'), lab);
     return lab;
@@ -433,6 +446,7 @@ function removeContainers(lab, keepRegistry = false) {
     .split(/\s+/)
     .filter(Boolean);
   const containers = new Set();
+  const deployments = new Set();
   for (const id of owned) {
     const [container] = JSON.parse(docker('inspect', id));
     if (
@@ -444,53 +458,140 @@ function removeContainers(lab, keepRegistry = false) {
       continue;
     containers.add(id);
     const deployment = container.Config.Labels['app.thelxinoe.deployment'];
-    if (deployment)
-      for (const worker of docker(
-        'ps',
-        '-aq',
-        '--filter',
-        `label=app.thelxinoe.deployment=${deployment}`,
-      )
-        .split(/\s+/)
-        .filter(Boolean))
-        containers.add(worker);
+    if (deployment) deployments.add(deployment);
   }
+  // Stop controllers before inventorying children, so they cannot create more.
   if (containers.size) docker('rm', '-f', '-v', ...containers);
-}
-export async function stopLab(lab) {
-  stopDesktop(lab);
-  if (lab.desktop) desktopInstallation(lab, false);
-  if (lab.server) {
-    removeContainers(lab);
-    if (existsSync(join(lab.root, 'compose.json')))
-      compose(lab, 'down', '--volumes');
-    const networks = docker(
-      'network',
-      'ls',
-      '-q',
+  for (const deployment of deployments) {
+    const children = docker(
+      'ps',
+      '-aq',
       '--filter',
-      `label=app.thelxinoe.update-lab=${lab.id}`,
+      `label=app.thelxinoe.deployment=${deployment}`,
     )
       .split(/\s+/)
       .filter(Boolean);
-    if (networks.length) docker('network', 'rm', ...networks);
-  } else if (lab.processes.server) {
-    const executable = join(lab.root, 'server.exe').replaceAll("'", "''");
-    run(
-      'powershell.exe',
-      [
-        '-NoProfile',
-        '-Command',
-        `Get-Process | Where-Object { $_.Id -eq ${Number(lab.processes.server)} -and $_.Path -eq '${executable}' } | Stop-Process -Force`,
-      ],
-      { stdio: 'ignore' },
+    if (children.length) docker('rm', '-f', '-v', ...children);
+  }
+}
+export async function stopLab(lab) {
+  readLab(join(lab.root, 'lab.json'));
+  const errors = [];
+  const attempt = async (action) => {
+    try {
+      await action();
+    } catch (error) {
+      errors.push(error);
+    }
+  };
+  await attempt(() => stopDesktop(lab));
+  if (lab.desktop) await attempt(() => desktopInstallation(lab, false));
+  // Publishers must be stopped even when Docker or an uninstaller fails.
+  await attempt(() =>
+    stopProcess(lab.processes.publisher, [
+      'scripts/updates/publisher.mjs',
+      join(lab.root, 'lab.json'),
+    ]),
+  );
+  if (!lab.server)
+    await attempt(() =>
+      stopProcess(lab.processes.server, [join(lab.root, 'server.exe')]),
     );
+  if (lab.server) {
+    await attempt(() => removeContainers(lab));
+    if (existsSync(join(lab.root, 'compose.json')))
+      await attempt(() =>
+        compose(lab, 'down', '--volumes', '--remove-orphans'),
+      );
+    await attempt(() => {
+      const networks = docker(
+        'network',
+        'ls',
+        '-q',
+        '--filter',
+        `label=app.thelxinoe.update-lab=${lab.id}`,
+      )
+        .split(/\s+/)
+        .filter(Boolean);
+      for (const network of networks)
+        awaitSync(() => docker('network', 'rm', network));
+    });
+    // Clear every reset's UID-owned bind data before dropping its cleanup image.
+    if (!errors.length && lab.storage) {
+      const storageRoot =
+        process.platform === 'win32'
+          ? resolve(tmpdir(), lab.id)
+          : resolve(lab.root);
+      if (!resolve(lab.storage).startsWith(storageRoot + sep))
+        errors.push(Error('Update lab storage escaped its root'));
+      else if (
+        existsSync(storageRoot) &&
+        readdirSync(storageRoot).some((name) => /^storage-\d+$/.test(name))
+      )
+        await attempt(() => {
+          docker(
+            'run',
+            '--rm',
+            '--name',
+            `${lab.id}-cleanup`,
+            '--label',
+            `app.thelxinoe.update-lab=${lab.id}`,
+            '--network',
+            'none',
+            '--read-only',
+            '--user',
+            '0:0',
+            '--volume',
+            `${storageRoot}:/lab`,
+            '--entrypoint',
+            'sh',
+            lab.images[lab.base].controller.reference,
+            '-c',
+            'find /lab -mindepth 1 -maxdepth 1 -type d -name "storage-*" -exec rm -rf -- {} +',
+          );
+          if (process.platform === 'win32')
+            rmSync(storageRoot, {
+              recursive: true,
+              force: true,
+              maxRetries: 5,
+            });
+        });
+    }
+    // Match this registry namespace, including downloaded digest-only candidates.
+    if (!errors.length)
+      await attempt(() => {
+        const references = docker(
+          'image',
+          'ls',
+          '--digests',
+          '--format',
+          '{{.Repository}} {{.Tag}} {{.Digest}}',
+        ).split(/\r?\n/);
+        const owned = new Set();
+        for (const line of references) {
+          const [repository, tag, digest] = line.split(' ');
+          if (
+            !repository?.startsWith(`localhost:${lab.registryPort}/${lab.id}/`)
+          )
+            continue;
+          if (tag !== '<none>') owned.add(`${repository}:${tag}`);
+          if (digest !== '<none>') owned.add(`${repository}@${digest}`);
+        }
+        removeFixtureImages(owned);
+      });
   }
-  if (lab.processes.publisher) {
-    const alive = await publisher(lab).catch(() => null);
-    if (alive?.id === lab.id && alive.pid === lab.processes.publisher)
-      process.kill(lab.processes.publisher);
+  function awaitSync(action) {
+    try {
+      action();
+    } catch (error) {
+      errors.push(error);
+    }
   }
+  if (errors.length)
+    throw new AggregateError(
+      errors,
+      errors.map((error) => error.message).join('; '),
+    );
   resourceOwners.get(lab.root)?.({ closed: true });
 }
 export function desktopInstallation(lab, inspect = true) {
@@ -562,13 +663,14 @@ if (
 ) {
   const [command = 'start', file] = process.argv.slice(2);
   if (command === 'start') {
+    resourceScope({ cleanupOnExit: false });
     const lab = await createLab({
       server: !process.argv.includes('--desktop-only'),
       desktop:
         process.platform === 'win32' && !process.argv.includes('--server-only'),
     });
     console.log(
-      `\nPublisher: ${lab.publisher}\nServer: ${lab.baseUrl}\nCreate admin with password: update lab passphrase\nDescriptor: ${join(lab.root, 'lab.json')}\nReset: npm run updates:lab -- reset "${join(lab.root, 'lab.json')}"\nStop: npm run updates:lab -- stop "${join(lab.root, 'lab.json')}"`,
+      `\nPublisher: ${lab.publisher}\nServer: ${lab.baseUrl}\nCreate admin with password: update lab passphrase\nDescriptor: ${join(lab.root, 'lab.json')}\nReset: pnpm run updates:lab reset "${join(lab.root, 'lab.json')}"\nStop: pnpm run updates:lab stop "${join(lab.root, 'lab.json')}"`,
     );
   } else {
     const lab = readLab(file);

@@ -41,12 +41,7 @@ for (const folder of [
   mkdirSync(`${root}/${folder}`, { recursive: true });
 let infrastructure;
 const compose = (...args) => infrastructure.compose(...args);
-const browser = await launchBrowser();
-const context = await browser.newContext({
-  ignoreHTTPSErrors: true,
-  viewport: { width: 1440, height: 1000 },
-});
-await context.tracing.start({ screenshots: true, snapshots: true });
+let browser, context;
 const base = `https://localhost:${process.env.THELXINOE_CONNECTIONS_PORT}`;
 const services = {};
 const keys = [];
@@ -77,13 +72,37 @@ function record(message) {
 }
 saveEvidence();
 let deployment;
+async function request(path, method = 'GET', data) {
+  // Restore verifies a full archive, and both adoption endpoints copy appdata
+  // before responding (even when rejecting a stale or unsupported review).
+  const copiesState =
+    path.startsWith('/admin/recyclarr/adopt') ||
+    /^\/admin\/backups\/[^/]+\/restore$/.test(path);
+  const started = Date.now();
+  let status = null;
+  try {
+    const response = await context.request.fetch(`${base}/api/v1${path}`, {
+      method,
+      data,
+      headers: { 'X-Thelxinoe-Client': '1' },
+      timeout: copiesState ? 300000 : 30000,
+    });
+    status = response.status();
+    return response;
+  } finally {
+    if (copiesState) {
+      (evidence.state_requests ??= []).push({
+        path,
+        method,
+        status,
+        elapsed_ms: Date.now() - started,
+      });
+      saveEvidence();
+    }
+  }
+}
 async function api(path, method = 'GET', data) {
-  const response = await context.request.fetch(`${base}/api/v1${path}`, {
-    method,
-    data,
-    headers: { 'X-Thelxinoe-Client': '1' },
-    timeout: 30000,
-  });
+  const response = await request(path, method, data);
   const value = await response
     .json()
     .catch(() => ({ error: { message: 'unavailable' } }));
@@ -229,6 +248,12 @@ async function waitUpdate(id, stage) {
     .toBe(stage);
 }
 scenario: try {
+  browser = await launchBrowser();
+  context = await browser.newContext({
+    ignoreHTTPSErrors: true,
+    viewport: { width: 1440, height: 1000 },
+  });
+  await context.tracing.start({ screenshots: true, snapshots: true });
   infrastructure = composeFixture({
     project,
     file: 'compose.connections.test.yaml',
@@ -236,6 +261,10 @@ scenario: try {
   });
   compose(
     'run',
+    '--label',
+    `com.docker.compose.project=${project}`,
+    '--label',
+    `io.thelxinoe.ci-run=${process.env.THELXINOE_CI_RUN_ID}`,
     '--rm',
     '--no-deps',
     '--user',
@@ -423,6 +452,10 @@ scenario: try {
     const invalidResult = JSON.parse(
       docker(
         'run',
+        '--label',
+        `com.docker.compose.project=${project}`,
+        '--label',
+        `io.thelxinoe.ci-run=${process.env.THELXINOE_CI_RUN_ID}`,
         '--rm',
         '--network',
         'none',
@@ -1206,6 +1239,7 @@ scenario: try {
       passphrase: 'recyclarr fixture backup passphrase',
       confirm: true,
     });
+    evidence.backup_id = backup.id;
     async function waitBackup(stage) {
       await expect
         .poll(
@@ -1228,10 +1262,18 @@ scenario: try {
     }
     await waitBackup('complete');
     await api('/admin/recyclarr/schedule', 'POST', { paused: true, hour: 17 });
-    await api(`/admin/backups/${backup.id}/restore`, 'POST', {
-      passphrase: 'recyclarr fixture backup passphrase',
-      confirm: true,
-    });
+    const restoreStarted = Date.now();
+    // The controller decrypts and verifies the entire archive before accepting
+    // restore. Managed appdata on a bind mount can exceed the normal API budget.
+    try {
+      await api(`/admin/backups/${backup.id}/restore`, 'POST', {
+        passphrase: 'recyclarr fixture backup passphrase',
+        confirm: true,
+      });
+    } finally {
+      evidence.restore_request_ms = Date.now() - restoreStarted;
+      saveEvidence();
+    }
     await waitBackup('restored');
     await waitForProxy(context.request, base);
     expect((await settings()).settings.hour).toBe(backupBefore.settings.hour);
@@ -1279,6 +1321,10 @@ scenario: try {
   mkdirSync(volume, { recursive: true });
   docker(
     'run',
+    '--label',
+    `com.docker.compose.project=${project}`,
+    '--label',
+    `io.thelxinoe.ci-run=${process.env.THELXINOE_CI_RUN_ID}`,
     '--rm',
     '--network',
     'none',
@@ -1321,6 +1367,10 @@ scenario: try {
   function externalConfig(yaml, settingsText = '{}') {
     docker(
       'run',
+      '--label',
+      `com.docker.compose.project=${project}`,
+      '--label',
+      `io.thelxinoe.ci-run=${process.env.THELXINOE_CI_RUN_ID}`,
       '--rm',
       '--network',
       'none',
@@ -1338,6 +1388,8 @@ scenario: try {
     );
   }
   externalConfig(originalYaml);
+  externalContainers.push(`${project}-external`);
+  infrastructure.update({ containers: externalContainers });
   const external = docker(
     'run',
     '-d',
@@ -1355,8 +1407,6 @@ scenario: try {
     `${volume}:/config`,
     evidence.image,
   );
-  externalContainers.push(external);
-  infrastructure.update({ containers: externalContainers });
   await api(`/admin/stack/${services.recyclarr.id}/action`, 'POST', {
     action: 'remove',
   });
@@ -1368,13 +1418,9 @@ scenario: try {
     originalYaml,
     'resource_providers: [{name: custom, type: trash-guides, path: /custom}]',
   );
-  const unsupported = await context.request.post(
-    `${base}/api/v1/admin/recyclarr/adopt/preview`,
-    {
-      headers: { 'X-Thelxinoe-Client': '1' },
-      data: { container_id: external },
-    },
-  );
+  const unsupported = await request('/admin/recyclarr/adopt/preview', 'POST', {
+    container_id: external,
+  });
   expect(unsupported.status()).toBe(409);
   expect(JSON.parse(docker('inspect', external))[0].State.Running).toBe(true);
   externalConfig(originalYaml);
@@ -1382,17 +1428,11 @@ scenario: try {
     container_id: external,
   });
   externalConfig(`${originalYaml}\n# changed after review\n`);
-  const rejected = await context.request.post(
-    `${base}/api/v1/admin/recyclarr/adopt`,
-    {
-      headers: { 'X-Thelxinoe-Client': '1' },
-      data: {
-        review_id: stale.review_id,
-        container_id: external,
-        released_compose: true,
-      },
-    },
-  );
+  const rejected = await request('/admin/recyclarr/adopt', 'POST', {
+    review_id: stale.review_id,
+    container_id: external,
+    released_compose: true,
+  });
   expect(rejected.status()).toBe(409);
   expect(JSON.parse(docker('inspect', external))[0].State.Running).toBe(true);
   externalConfig(originalYaml);
@@ -1477,10 +1517,30 @@ scenario: try {
     for (const key of keys) logs = logs.replaceAll(key, '[redacted]');
     writeFileSync(`${root}/services.log`, logs);
   });
+  if (evidence.backup_id)
+    await cleanup('backup state', () => {
+      const state = JSON.parse(
+        compose(
+          'exec',
+          '-T',
+          'controller',
+          'curl',
+          '-fsS',
+          '--max-time',
+          '10',
+          '--unix-socket',
+          '/run/thelxinoe/controller.sock',
+          'http://localhost/stack/backups',
+        ),
+      );
+      evidence.backup = state.items.find(
+        (item) => item.id === evidence.backup_id,
+      );
+    });
   if (!evidence.passed)
     await cleanup('failure screenshot', () =>
       context
-        .pages()
+        ?.pages()
         .at(-1)
         ?.screenshot({
           path: `${root}/failure.png`,
@@ -1489,27 +1549,9 @@ scenario: try {
         }),
     );
   await cleanup('browser trace', () =>
-    context.tracing.stop({ path: `${root}/trace.zip` }),
+    context?.tracing.stop({ path: `${root}/trace.zip` }),
   );
-  await cleanup('browser close', () => browser.close());
-  const containers = deployment
-    ? await cleanup('owned container inventory', () =>
-        docker(
-          'ps',
-          '-aq',
-          '--filter',
-          `label=app.thelxinoe.deployment=${deployment}`,
-        ),
-      )
-    : '';
-  for (const container of (containers ?? '').split(/\s+/).filter(Boolean))
-    await cleanup(`owned container ${container}`, () =>
-      docker('rm', '-f', container),
-    );
-  for (const container of externalContainers)
-    await cleanup(`external fixture ${container}`, () =>
-      docker('rm', '-f', container),
-    );
+  await cleanup('browser close', () => browser?.close());
   await cleanup('compose deployment', () => infrastructure?.close());
   evidence.finished = new Date().toISOString();
   if (evidence.cleanup_errors.length) {

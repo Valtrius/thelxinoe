@@ -1,7 +1,7 @@
 import { chromium, expect } from '@playwright/test';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
-import { existsSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { until, installBase } from './lab.mjs';
 
 export async function connectDesktop(lab, version) {
@@ -176,8 +176,10 @@ export async function desktopScenarios({
       await mode('candidate');
       await check();
       await native.invoke('desktop_update_policy', { policy: 'automatic' });
-      // Observe a complete native scheduler interval while signed out.
-      await native.page.waitForTimeout(65000);
+      const ticks = () =>
+        Number(readFileSync(join(lab.root, 'desktop-scheduler-ticks'), 'utf8'));
+      const before = ticks();
+      await until(() => ticks() >= before + 2);
       expect((await native.invoke('desktop_update_status')).phase).toBe('idle');
       expect((await native.invoke('desktop_update_status')).installed).toBe(
         lab.base,

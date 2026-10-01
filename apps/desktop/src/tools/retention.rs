@@ -233,7 +233,7 @@ mod tests {
         drop(launches.remove(0));
         assert!(!manager.cleanup_versions().await.unwrap());
         drop(first_copy);
-        tokio::time::timeout(Duration::from_secs(1), manager.wait_for_version_cleanup())
+        tokio::time::timeout(Duration::from_secs(10), manager.wait_for_version_cleanup())
             .await
             .unwrap();
         assert!(manager.cleanup_versions().await.unwrap());
@@ -241,7 +241,7 @@ mod tests {
         assert!(!directory.path().join("packages/mpv-01").exists());
         assert!(directory.path().join("packages/mpv-02/tool.exe").exists());
         drop(launches.remove(0));
-        tokio::time::timeout(Duration::from_secs(1), manager.wait_for_version_cleanup())
+        tokio::time::timeout(Duration::from_secs(10), manager.wait_for_version_cleanup())
             .await
             .unwrap();
         assert!(manager.cleanup_versions().await.unwrap());

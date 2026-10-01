@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "app.thelxinoe.desktop",
   "build": {
-    "beforeDevCommand": "npm --prefix .. run dev:web",
+    "beforeDevCommand": "pnpm --dir .. run dev:web",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "npm --prefix .. run build:web",
+    "beforeBuildCommand": "pnpm --dir .. run build:web",
     "frontendDist": "../../frontend/dist"
   },
   "app": {

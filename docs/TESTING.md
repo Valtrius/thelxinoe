@@ -1,49 +1,49 @@
 # Test commands
 
-Run from the repository root after `npm ci`. Install Rust 1.96+, Node 24+, FFmpeg/FFprobe, Docker (Linux containers) and Playwright Chromium (`npx playwright install chromium`).
+Run from the repository root after `pnpm install --frozen-lockfile`. Install Rust 1.96+, Node 24+, pnpm 10.33.2, FFmpeg/FFprobe, Docker (Linux containers) and Playwright Chromium (`pnpm exec playwright install chromium`).
 
 Follow the [testing rules in AGENTS.md](../AGENTS.md#testing). Prefer complete application workflows; extend an existing scenario when possible.
 
 ```sh
-npm run validate
-npm run ci
-npm run ci:local # Windows: parallel lanes, saved summary, completion notification
-npm run ci:status # Latest local run: lane status and result paths
-npm run test:ui:layout
-npm run test:ui:player
-npm run test:service-access
+pnpm run validate
+pnpm run ci
+pnpm run ci:local # Windows: parallel lanes, saved summary, completion notification
+pnpm run ci:status # Latest local run: lane status and result paths
+pnpm run test:ui:layout
+pnpm run test:ui:player
+pnpm run test:service-access
 ```
 
 [Scripts](../package.json) and [CI runner](../scripts/ci.mjs) define the checks.
 On Windows, Linux checks require Docker Desktop running Linux containers.
-Use `npm run ci:status` to locate the latest report, then run these commands
+Use `pnpm run ci:status` to locate the latest report, then run these commands
 from the originating worktree when needed:
 
 ```sh
 node scripts/ci-local.mjs --stop <run-directory>
 node scripts/ci-local.mjs --recover <run-directory> # After a coordinator crash
-npm run ci:clean -- <finished-run-directory>
+pnpm run ci:clean <finished-run-directory>
 ```
 
 ## Test artifacts
 
 Native Radarr/Sonarr/Lidarr/Prowlarr/Bazarr/NZBGet checks use fresh Docker storage and save safe results and
 screenshots in `test-results/service-access`. The [runner](../scripts/test-service-access.mjs)
-builds uniquely tagged images; pass `-- --built` only after setting
+builds uniquely tagged images; pass `--built` only after setting
 `THELXINOE_SERVER_IMAGE` and `THELXINOE_CONTROLLER_IMAGE` to the current built
 references (the legacy `thelxinoe-service-{server,controller}:local` defaults
 remain available for manual fixtures). Native browser traces are omitted
 because service responses contain API keys.
 
-On Windows with Linux Docker available, `npm run test:service-access -- --desktop`
+On Windows with Linux Docker available, `pnpm run test:service-access --desktop`
 also builds an isolated Tauri profile and verifies the OS browser handoff from a
 real keyring session. It opens the fixture in the default browser. The regular
 container CI lane runs the portable service/browser checks.
 
-Playwright saves an HTML report under `playwright-report/{e2e,layout,player}`
-and machine-readable results and traces under `test-results/{e2e,layout,player}`,
+Playwright saves an HTML report under `playwright-report/{e2e,ui}`
+and machine-readable results and traces under `test-results/{e2e,ui}`,
 including successful runs. Open a report with, for example,
-`npx playwright show-report playwright-report/layout`. CI uploads these artifacts
+`pnpm exec playwright show-report playwright-report/ui`. CI uploads these artifacts
 even when a test fails. The standalone Docker scripts save their fixture
 results and screenshots under `.local/` as specified in each script.
 
@@ -65,13 +65,13 @@ docker compose -f compose.test.yaml cp .local/fixtures/. server:/media
 docker compose -f compose.test.yaml exec -T --user 0 server chown -R 10001:10001 /media
 $env:THELXINOE_PROXY_TEST = '1'
 $env:THELXINOE_TEST_URL = 'https://localhost:9443'
-npm run test:e2e
+pnpm run test:e2e
 # Add appearance checks to this same disposable catalog fixture:
 $env:THELXINOE_UI_TEST = '1'
-npm run test:e2e
+pnpm run test:e2e
 ```
 
-First-run tests: start `npm run dev:fresh`, set `THELXINOE_TEST_URL` to its displayed URL, clear `THELXINOE_PROXY_TEST`/`THELXINOE_UI_TEST`, and run `npm run test:e2e`. Provider interaction tests use a separate fresh instance on port 19487 with `THELXINOE_INTERACTION_TEST=1` and `npx playwright test --workers=1`. Catalog watcher checks add and remove files inside the Linux fixture volume, so Docker Desktop runs exercise watching without waiting for periodic reconciliation.
+First-run tests: start `pnpm run dev:fresh`, set `THELXINOE_TEST_URL` to its displayed URL, clear `THELXINOE_PROXY_TEST`/`THELXINOE_UI_TEST`, and run `pnpm run test:e2e`. Provider interaction tests use a separate fresh instance on port 19487 with `THELXINOE_INTERACTION_TEST=1` and `pnpm exec playwright test --workers=1`. Catalog watcher checks add and remove files inside the Linux fixture volume, so Docker Desktop runs exercise watching without waiting for periodic reconciliation.
 
 For playback, generate `node scripts/playback-fixtures.mjs`, set `THELXINOE_TEST_HTTP_PORT=18686`, `THELXINOE_TEST_HTTPS_PORT=20443`, `THELXINOE_TEST_SUBNET=172.31.252.0/24`, then run:
 
@@ -88,7 +88,7 @@ node scripts/test-user-media.mjs
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Shared mounts and managed stack   | [media mounts](../scripts/test-media-mounts.mjs), [stack](../scripts/test-managed-stack.mjs), [wiring](../scripts/test-managed-wiring.mjs), [UI](../scripts/test-managed-ui.mjs), [adoption](../scripts/test-managed-adoption.mjs)                                                                                                                                                                                                                                                                     |
 | Acquisition and external services | [Compose](../compose.acquisition.test.yaml), [fixture generator](../scripts/acquisition-fixtures.mjs), [acquisition](../scripts/test-acquisition.mjs), [download setup](../scripts/configure-acquisition-downloads.mjs), [downloads/import](../scripts/test-acquisition-downloads.mjs), [files](../scripts/test-manager-files.mjs), [TV/music](../scripts/test-manager-tv-music.mjs), [support services](../scripts/test-support-services.mjs), [connections](../scripts/test-service-connections.mjs) |
-| Service updates                   | [preflights](../scripts/test-service-preflights.mjs), [commit](../scripts/test-service-update-commit.mjs), [rollback](../scripts/test-service-update-rollback.mjs), [deployment recreation](../scripts/test-deployment-compose.mjs)                                                                                                                                                                                                                                                                    |
+| Service updates                   | [preflights](../scripts/test-service-preflights.mjs), [commit](../scripts/test-service-update-commit.mjs), [rollback](../scripts/test-service-update-rollback.mjs), [deployment recreation](../scripts/test-container-identity.mjs)                                                                                                                                                                                                                                                                    |
 | Retention and segments            | [retention](../scripts/test-retention.mjs), [segment fixtures](../scripts/generate-segment-fixtures.mjs), [segments](../scripts/test-segments.mjs), [native segments](../scripts/test-native-segments.mjs)                                                                                                                                                                                                                                                                                             |
 | Administration/backups            | [Compose](../compose.operations.test.yaml), [admin UI](../scripts/test-admin-ui.mjs), [backup/restore](../scripts/test-operations.mjs), [interruption recovery](../scripts/test-backup-interruption.mjs)                                                                                                                                                                                                                                                                                               |
 
@@ -105,7 +105,7 @@ node scripts/test-kick-playback.mjs CURRENTLY_LIVE_CHANNEL
 
 Live scripts need configured applications, a linked YouTube/Twitch account and available public media. Browser decoding checks do not establish long-running live/ad behavior. Startup measurements: [Twitch browser](../scripts/benchmark-online-player.mjs), [YouTube browser](../scripts/benchmark-youtube-player.mjs) (pass watchlist video IDs), [native](../scripts/benchmark-native-player.mjs), [Streamlink](../scripts/benchmark-online-startup.py), [YouTube extraction](../scripts/benchmark-youtube-startup.py). Select an idle development instance with `THELXINOE_BENCHMARK_URL`; native measurements also need `THELXINOE_BENCHMARK_CDP`.
 
-Windows: build with `npm run build:desktop`, set `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9223` and a separate `WEBVIEW2_USER_DATA_FOLDER`, then launch `target/release/thelxinoe-desktop.exe`. Run [test-desktop.mjs](../scripts/test-desktop.mjs) against the proxy fixture or [test-native-playback.mjs](../scripts/test-native-playback.mjs) against the playback fixture. Close the test app afterward. Upstream MPV/plugin qualification: `cargo test -p thelxinoe-desktop qualify_upstream_packages -- --ignored --nocapture`.
+Windows: build with `pnpm run build:desktop`, set `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9223` and a separate `WEBVIEW2_USER_DATA_FOLDER`, then launch `target/release/thelxinoe-desktop.exe`. Run [test-desktop.mjs](../scripts/test-desktop.mjs) against the proxy fixture or [test-native-playback.mjs](../scripts/test-native-playback.mjs) against the playback fixture. Close the test app afterward. Upstream MPV/plugin qualification: `cargo test -p thelxinoe-desktop qualify_upstream_packages -- --ignored --nocapture`.
 
 TV: generate playback fixtures, then `node scripts/tv-fixtures.mjs`. Start `compose.test.yaml` as `thelxinoe-compat` with HTTP 18787 / HTTPS 21443 / subnet `172.31.253.0/24`, then `node scripts/test-jellyfin.mjs --tv`. An Android TV emulator reaches the host at `http://10.0.2.2:18787`; [test-tv-quick-connect.mjs](../scripts/test-tv-quick-connect.mjs) approves its displayed code. Repeat login/Quick Connect, browsing, direct/remux/transcode, seek/resume/subtitles, music, playlists and online playback in actual clients. Protocol tests alone do not establish client compatibility; check UDP discovery on a real LAN.
 

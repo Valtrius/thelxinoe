@@ -13,6 +13,8 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve, relative, isAbsolute, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { archiveWorkspace } from './ci-workspaces.mjs';
+import { stopProcess } from './ci-processes.mjs';
 import { requestedPhases, ciPhases } from './ci-phases.mjs';
 import { reporter } from './ci-report.mjs';
 import {
@@ -32,10 +34,9 @@ if (['--stop', '--recover'].includes(args[0])) {
   const recoveryDirectory = resolve(args[1]);
   const previous = jsonRead(join(recoveryDirectory, 'result.json'));
   if (args[0] === '--stop') {
-    const active = await requestRun(previous.origin);
-    if (active.id !== previous.id)
-      throw Error('This run no longer owns its worktree');
-    await requestRun(previous.origin, 'stop');
+    const active = await requestRun(previous.origin, previous.id);
+    if (active.id !== previous.id) throw Error('This run is no longer active');
+    await requestRun(previous.origin, previous.id, 'stop');
   } else if (!previous.finished) {
     if (alive(previous.pid)) throw Error('The coordinator is still alive');
     const release = await acquireRun(previous.origin, {
@@ -44,12 +45,26 @@ if (['--stop', '--recover'].includes(args[0])) {
       pid: process.pid,
     });
     try {
-      terminateChildren(previous);
-      const errors = cleanupResources(previous.resources, previous.id);
+      const errors = terminateChildren(previous);
+      errors.push(
+        ...cleanupResources(previous.resources, previous.id, {
+          removeImages: true,
+        }),
+      );
       failPending(
         previous,
         'The local CI coordinator exited without finishing this run.',
       );
+      if (!errors.length) {
+        for (const lane of previous.lanes) {
+          try {
+            archiveWorkspace(previous, lane);
+          } catch (error) {
+            errors.push(`${lane.phase}: ${error.message}`);
+          }
+        }
+      }
+      if (!errors.length) previous.cleaned = new Date().toISOString();
       previous.cleanup_errors = errors;
       const view = reporter(recoveryDirectory, previous);
       view.save();
@@ -97,6 +112,9 @@ mkdirSync(report.resources, { recursive: true });
 const environment = {
   ...process.env,
   CI: 'true',
+  CARGO_INCREMENTAL: '0',
+  CARGO_PROFILE_DEV_DEBUG: '0',
+  CARGO_PROFILE_TEST_DEBUG: '0',
   THELXINOE_CI_RUN_ID: id,
   THELXINOE_CI_RESOURCE_DIRECTORY: report.resources,
   PLAYWRIGHT_BROWSERS_PATH: join(repository, '.local/ci-browsers'),
@@ -105,41 +123,21 @@ const children = new Set();
 let refresh, browsers, release, stopping;
 
 function terminateChildren(run) {
-  if (!existsSync(run.resources)) return;
+  const errors = [];
+  if (!existsSync(run.resources)) return errors;
   for (const file of readdirSync(run.resources)) {
     if (!file.endsWith('.json')) continue;
-    const record = jsonRead(join(run.resources, file));
-    if (
-      !record.process ||
-      record.closed ||
-      record.owner !== run.id ||
-      !alive(record.process)
-    )
-      continue;
-    const commandLine =
-      process.platform === 'win32'
-        ? execFileSync(
-            'powershell.exe',
-            [
-              '-NoProfile',
-              '-Command',
-              `(Get-CimInstance Win32_Process -Filter "ProcessId = ${Number(record.process)}").CommandLine`,
-            ],
-            { encoding: 'utf8', windowsHide: true },
-          )
-        : execFileSync('ps', ['-p', String(record.process), '-o', 'args='], {
-            encoding: 'utf8',
-          });
-    if (!commandLine.includes(run.id) || !commandLine.includes('ci-child.mjs'))
-      throw Error('Refusing to terminate a process whose ownership changed');
-    if (process.platform === 'win32')
-      execFileSync(
-        'taskkill.exe',
-        ['/PID', String(record.process), '/T', '/F'],
-        { windowsHide: true, stdio: 'pipe' },
-      );
-    else process.kill(-record.process, 'SIGKILL');
+    try {
+      const path = join(run.resources, file);
+      const record = jsonRead(path);
+      if (!record.process || record.closed || record.owner !== run.id) continue;
+      stopProcess(record.process, [run.id, 'ci-child.mjs']);
+      jsonWrite(path, { ...record, closed: true });
+    } catch (error) {
+      errors.push(`${file}: ${error.message}`);
+    }
   }
+  return errors;
 }
 function failPending(run, error) {
   run.finished = new Date().toISOString();
@@ -165,11 +163,8 @@ function stop() {
   if (stopping) return;
   stopping = true;
   report.error = 'Local CI was stopped.';
-  try {
-    terminateChildren(report);
-  } catch (error) {
-    report.error += ` ${error.message}`;
-  }
+  const errors = terminateChildren(report);
+  if (errors.length) report.error += ` ${errors.join('; ')}`;
 }
 process.on('SIGINT', stop);
 process.on('SIGTERM', stop);
@@ -351,11 +346,12 @@ async function lane(item, source) {
     if (process.platform === 'win32') {
       await command(
         process.env.ComSpec ?? 'cmd.exe',
-        ['/d', '/s', '/c', 'npm ci'],
+        ['/d', '/s', '/c', 'pnpm install --frozen-lockfile'],
         workspace,
         log,
       );
-    } else await command('npm', ['ci'], workspace, log);
+    } else
+      await command('pnpm', ['install', '--frozen-lockfile'], workspace, log);
     await view
       .style(workspace)
       .catch((error) => console.error(`Report styling: ${error.message}`));
@@ -377,11 +373,11 @@ async function lane(item, source) {
     item.tests_started = new Date().toISOString();
     const laneEnvironment = {
       ...environment,
-      CARGO_TARGET_DIR: join(repository, '.local/ci-targets', phase),
+      CARGO_TARGET_DIR: join(workspace, 'target'),
+      CARGO_BUILD_JOBS: environment.CARGO_BUILD_JOBS ?? '2',
     };
     if (phase === 'web') {
-      laneEnvironment.THELXINOE_LAYOUT_PORT = String(await freePort());
-      laneEnvironment.THELXINOE_PLAYER_PORT = String(await freePort());
+      laneEnvironment.THELXINOE_UI_PORT = String(await freePort());
     }
     item.ports = Object.fromEntries(
       Object.entries(laneEnvironment).filter(
@@ -443,7 +439,11 @@ try {
       console.error('Could not refresh the CI report:', error.message);
     }
   }, 5000);
-  await Promise.all(report.lanes.map((item) => lane(item, source)));
+  const outcomes = await Promise.allSettled(
+    report.lanes.map((item) => lane(item, source)),
+  );
+  const failure = outcomes.find((item) => item.status === 'rejected');
+  if (failure) throw failure.reason;
   report.passed =
     !stopping && report.lanes.every((item) => item.state === 'passed');
 } catch (error) {
@@ -452,13 +452,38 @@ try {
 } finally {
   clearInterval(refresh);
   if (stopping || report.error) {
-    while (children.size) await new Promise((done) => setTimeout(done, 50));
-    report.cleanup_errors = cleanupResources(report.resources, id);
+    stopping = true;
+    report.cleanup_errors = terminateChildren(report);
+    // Failed process ownership checks must not prevent other cleanup or hang the report.
+    const deadline = Date.now() + 30000;
+    while (children.size && Date.now() < deadline)
+      await new Promise((done) => setTimeout(done, 50));
+    if (children.size)
+      report.cleanup_errors.push('Child processes did not exit');
+    report.cleanup_errors.push(
+      ...cleanupResources(report.resources, id, {
+        removeImages: true,
+      }),
+    );
     failPending(report, report.error);
   } else {
-    report.cleanup_errors = cleanupResources(report.resources, id);
+    report.cleanup_errors = cleanupResources(report.resources, id, {
+      removeImages: true,
+    });
     if (report.cleanup_errors.length) report.passed = false;
   }
+  if (!report.cleanup_errors.length) {
+    for (const item of report.lanes) {
+      try {
+        archiveWorkspace(report, item);
+      } catch (error) {
+        report.cleanup_errors.push(`${item.phase}: ${error.message}`);
+      }
+    }
+    if (!report.cleanup_errors.length)
+      report.cleaned = new Date().toISOString();
+  }
+  if (report.cleanup_errors.length) report.passed = false;
   report.finished = new Date().toISOString();
   view.save();
   if (release) await release();

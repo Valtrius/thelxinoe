@@ -3,7 +3,12 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { resolve } from 'node:path';
-import { composeFixture, fixtureId, freePort } from './ci-resources.mjs';
+import {
+  composeFixture,
+  fixtureId,
+  freePort,
+  resourceScope,
+} from './ci-resources.mjs';
 import { launchBrowser } from './ci-browser.mjs';
 export { freePort } from './ci-resources.mjs';
 
@@ -32,6 +37,7 @@ export async function waitForProxy(client, base) {
 }
 
 export async function fixture({ scheme = 'https' } = {}) {
+  resourceScope();
   const project = fixtureId('access');
   const root = resolve(`.local/${project}`);
   const port = await freePort();
@@ -54,8 +60,7 @@ export async function fixture({ scheme = 'https' } = {}) {
     mkdirSync(`${root}/${directory}`, { recursive: true });
   let infrastructure;
   const compose = (...args) => infrastructure.compose(...args);
-  const browser = await launchBrowser();
-  const context = await browser.newContext({ ignoreHTTPSErrors: true });
+  let browser, context;
   const services = {};
   const attachedContainers = [];
   let closed = false;
@@ -82,18 +87,65 @@ export async function fixture({ scheme = 'https' } = {}) {
       host_port,
     });
     let latest;
-    await expect
-      .poll(
-        async () => {
-          latest = await stack();
-          const provision = latest.provisions.find((p) => p.id === created.id);
-          if (provision?.state === 'blocked')
-            throw Error(`${kind}: ${provision.error}`);
-          return provision?.state;
-        },
-        { timeout: 300000, intervals: [2000] },
-      )
-      .toBe('complete');
+    try {
+      await expect
+        .poll(
+          async () => {
+            latest = await stack();
+            const provision = latest.provisions.find(
+              (p) => p.id === created.id,
+            );
+            if (provision?.state === 'blocked')
+              throw Error(`${kind}: ${provision.error}`);
+            return provision?.state;
+          },
+          { timeout: 300000, intervals: [2000] },
+        )
+        .toBe('complete');
+    } catch (error) {
+      const containers = [];
+      for (const item of latest?.items ?? []) {
+        if (!item.container_id) continue;
+        try {
+          const [raw] = JSON.parse(docker('inspect', item.container_id));
+          const {
+            Status,
+            Running,
+            Restarting,
+            OOMKilled,
+            ExitCode,
+            Error: failure,
+            StartedAt,
+            FinishedAt,
+          } = raw.State;
+          containers.push({
+            kind: item.kind,
+            id: raw.Id,
+            image: raw.Image,
+            Status,
+            Running,
+            Restarting,
+            OOMKilled,
+            ExitCode,
+            failure,
+            StartedAt,
+            FinishedAt,
+          });
+        } catch (inspection) {
+          containers.push({ kind: item.kind, error: inspection.message });
+        }
+      }
+      mkdirSync('test-results/service-access', { recursive: true });
+      writeFileSync(
+        `test-results/service-access/${project}-${kind}-failure.json`,
+        JSON.stringify(
+          { project, kind, error: error.message, stack: latest, containers },
+          null,
+          2,
+        ),
+      );
+      throw error;
+    }
     services[kind] = {
       ...latest.items.find((s) => s.id === created.id),
       host_port,
@@ -168,22 +220,14 @@ export async function fixture({ scheme = 'https' } = {}) {
   }
   async function close() {
     if (closed) return;
-    closed = true;
-    await browser.close().catch(() => {});
-    if (attachedContainers.length) docker('rm', '-f', ...attachedContainers);
-    if (deployment) {
-      const containers = docker(
-        'ps',
-        '-aq',
-        '--filter',
-        `label=app.thelxinoe.deployment=${deployment}`,
-      )
-        .split(/\s+/)
-        .filter(Boolean);
-      if (containers.length) docker('rm', '-f', ...containers);
+    try {
+      await browser?.close();
+    } finally {
+      infrastructure?.close();
     }
-    infrastructure?.close();
+    closed = true;
   }
+
   async function attach(kind, urlBase, image) {
     const name = `${project}-attached-${kind}-${attachedContainers.length}`;
     const directory = `${root}/attached-${kind}-${attachedContainers.length}`;
@@ -214,6 +258,8 @@ export async function fixture({ scheme = 'https' } = {}) {
         `${directory}/config.xml`,
         `<Config><BindAddress>*</BindAddress><Port>${internalPort}</Port><UrlBase>${urlBase}</UrlBase>${kind === 'prowlarr' ? `<AllowedHosts>${name}</AllowedHosts>` : ''}<EnableSsl>False</EnableSsl><LaunchBrowser>False</LaunchBrowser><ApiKey>${key}</ApiKey><AuthenticationMethod>External</AuthenticationMethod><AuthenticationRequired>Enabled</AuthenticationRequired><UpdateAutomatically>False</UpdateAutomatically></Config>`,
       );
+    attachedContainers.push(name);
+    infrastructure.update({ containers: attachedContainers });
     const container = docker(
       'run',
       '-d',
@@ -234,8 +280,6 @@ export async function fixture({ scheme = 'https' } = {}) {
       `127.0.0.1:${port}:${internalPort}`,
       image,
     );
-    attachedContainers.push(container);
-    infrastructure.update({ containers: attachedContainers });
     const direct = async (path, method = 'GET', data) => {
       if (kind === 'nzbget') {
         const response = await context.request.post(
@@ -322,6 +366,10 @@ export async function fixture({ scheme = 'https' } = {}) {
           'docker',
           [
             'run',
+            '--label',
+            `com.docker.compose.project=${project}`,
+            '--label',
+            `io.thelxinoe.ci-run=${process.env.THELXINOE_CI_RUN_ID}`,
             '--rm',
             '-i',
             '--network',
@@ -351,13 +399,16 @@ export async function fixture({ scheme = 'https' } = {}) {
     };
   }
   async function peer() {
+    const name = `${project}-peer`;
+    attachedContainers.push(name);
+    infrastructure.update({ containers: attachedContainers });
     const container = docker(
       'run',
       '-d',
       '--label',
       `io.thelxinoe.ci-run=${env.THELXINOE_CI_RUN_ID ?? project}`,
       '--name',
-      `${project}-peer`,
+      name,
       '--network',
       `${project}_test`,
       '-v',
@@ -368,8 +419,6 @@ export async function fixture({ scheme = 'https' } = {}) {
       'node',
       '/peer.mjs',
     );
-    attachedContainers.push(container);
-    infrastructure.update({ containers: attachedContainers });
     let registered;
     await expect
       .poll(
@@ -406,6 +455,8 @@ export async function fixture({ scheme = 'https' } = {}) {
     return source;
   }
   try {
+    browser = await launchBrowser();
+    context = await browser.newContext({ ignoreHTTPSErrors: true });
     infrastructure = composeFixture({
       project,
       file: 'compose.connections.test.yaml',

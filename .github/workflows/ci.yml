@@ -13,11 +13,20 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  THELXINOE_CI_RUN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+  THELXINOE_CI_RESOURCE_DIRECTORY: ${{ github.workspace }}/.local/ci-resources
+
 jobs:
   server:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -26,19 +35,21 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      - run: npm run ci:server
+      - run: pnpm run ci:server
   web:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
-      - run: npm ci
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      - run: npx playwright install --with-deps chromium
-      - run: npm run ci:web
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm run ci:web
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -48,15 +59,17 @@ jobs:
             test-results/
   containers:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
-      - run: npm ci
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      - run: npx playwright install --with-deps chromium
+      - run: pnpm exec playwright install --with-deps chromium
       - name: Start isolated container-test browser
         timeout-minutes: 10
         run: |
@@ -78,7 +91,7 @@ jobs:
           done
           docker logs thelxinoe-ci-browser
           exit 1
-      - run: npm run ci:containers
+      - run: pnpm run ci:containers
         env:
           THELXINOE_CI_BROWSER_WS_ENDPOINT: ws://127.0.0.1:3000/
       - name: Stop isolated container-test browser
@@ -89,6 +102,9 @@ jobs:
             docker logs thelxinoe-ci-browser > .local/ci-browser.log 2>&1
             docker rm --force thelxinoe-ci-browser
           fi
+      - name: Clean owned test resources
+        if: always()
+        run: node scripts/ci-clean-resources.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -105,50 +121,69 @@ jobs:
             .local/*.png
             .local/selected-audio.ts
             .local/ci-browser.log
+            .local/ci-resources/
           include-hidden-files: true
   desktop:
     runs-on: windows-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: npm ci
-      - run: npm run ci:desktop
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run ci:desktop
   updates-server:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npx playwright install --with-deps chromium
-      - run: npm run ci:updates:server
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm run ci:updates:server
+      - name: Clean owned test resources
+        if: always()
+        run: node scripts/ci-clean-resources.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: server-update-evidence
-          path: test-results/updates/
+          path: |
+            test-results/updates/
+            .local/ci-resources/
+          include-hidden-files: true
   updates-desktop:
     runs-on: windows-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: npm ci
-      - run: npx playwright install chromium
-      - run: npm run ci:updates:desktop
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install chromium
+      - run: pnpm run ci:updates:desktop
+      - name: Clean owned test resources
+        if: always()
+        run: node scripts/ci-clean-resources.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: desktop-update-evidence
-          path: test-results/updates/
+          path: |
+            test-results/updates/
+            .local/ci-resources/
+          include-hidden-files: true

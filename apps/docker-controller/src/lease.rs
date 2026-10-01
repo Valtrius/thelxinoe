@@ -49,7 +49,8 @@ mod tests {
     use super::*;
     #[test]
     fn mutation_lease_excludes_a_second_writer_and_releases_cleanly() {
-        let root = std::env::temp_dir().join(thelxinoe_core::id());
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_path_buf();
         std::fs::create_dir_all(root.join("runtime")).unwrap();
         let first = Lease::acquire_in(&root.join("runtime"), &root.join("deployment")).unwrap();
         assert!(active());
@@ -59,6 +60,5 @@ mod tests {
         let next = Lease::acquire_in(&root.join("runtime"), &root.join("deployment")).unwrap();
         assert!(active());
         drop(next);
-        std::fs::remove_dir_all(root).unwrap();
     }
 }

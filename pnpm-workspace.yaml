@@ -1,0 +1,8 @@
+packages:
+  - frontend
+
+onlyBuiltDependencies:
+  - '@tailwindcss/oxide'
+  - '@tauri-apps/cli'
+  - esbuild
+  - msw

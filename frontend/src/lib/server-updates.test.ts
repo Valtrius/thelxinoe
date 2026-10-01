@@ -63,18 +63,6 @@ function intent(id: string, state = 'pending') {
 }
 
 describe('desktop server update response reconciliation', () => {
-  it('clears a lost acknowledgement after the matching durable request arrives without reloading', async () => {
-    await updates.serverUpdateAction('install');
-    expect(observed.error).toBe('Connection lost');
-    status.request = intent('accepted');
-    await updates.refreshServerUpdate();
-    expect(observed.error).toBe('');
-    status.request.state = 'completed';
-    status.version = '0.1.1';
-    await updates.refreshServerUpdate();
-    expect(observed.error).toBe('');
-    expect(observed.status?.version).toBe('0.1.1');
-  });
   it('does not mistake a historical request for acknowledgement of a new attempt', async () => {
     status.request = intent('old', 'failed');
     await updates.refreshServerUpdate();

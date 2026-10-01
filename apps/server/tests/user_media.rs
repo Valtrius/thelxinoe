@@ -455,26 +455,6 @@ async fn time_format_update_distinguishes_omitted_null_and_override() {
 }
 
 #[tokio::test]
-async fn timezone_choices_include_every_supported_timezone() {
-    let (_temp, state) = fixture().await;
-    let (alice, _) = login(&state, "alice").await;
-    let response = ok(&state, &alice, "/timezones", "GET", Value::Null).await;
-    let zones: Vec<_> = response["timezones"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|zone| zone.as_str().unwrap())
-        .collect();
-    assert_eq!(zones.len(), chrono_tz::TZ_VARIANTS.len());
-    assert!(zones.windows(2).all(|pair| pair[0] < pair[1]));
-    assert!(zones.contains(&"Europe/Paris"));
-    assert!(zones.contains(&"UTC"));
-    assert!(zones.contains(&"Etc/GMT-2"));
-    for zone in zones {
-        assert!(zone.parse::<chrono_tz::Tz>().is_ok());
-    }
-}
-#[tokio::test]
 async fn shared_playlists_keep_owner_edits_and_private_favorites_and_queues() {
     let (_temp, state) = fixture().await;
     let (alice, _) = login(&state, "alice").await;

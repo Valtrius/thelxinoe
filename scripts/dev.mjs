@@ -53,4 +53,4 @@ process.once('SIGINT', () => stop(130));
 process.once('SIGTERM', () => stop(143));
 
 start('server', 'cargo', ['run', '--locked', '-p', 'thelxinoe-server']);
-start('web', isWindows ? 'npm.cmd' : 'npm', ['run', 'dev:web']);
+start('web', isWindows ? 'pnpm.cmd' : 'pnpm', ['run', 'dev:web']);

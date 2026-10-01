@@ -57,8 +57,8 @@ function run(command, args, options = {}) {
   }
 }
 
-function npm(...args) {
-  run(isWindows ? 'npm.cmd' : 'npm', args);
+function pnpm(...args) {
+  run(isWindows ? 'pnpm.cmd' : 'pnpm', args);
 }
 
 function node(script, ...args) {
@@ -71,7 +71,12 @@ function docker(...args) {
 
 function ensurePlaywright() {
   if (!process.env.CI && !playwrightReady) {
-    run(isWindows ? 'npx.cmd' : 'npx', ['playwright', 'install', 'chromium']);
+    run(isWindows ? 'pnpm.cmd' : 'pnpm', [
+      'exec',
+      'playwright',
+      'install',
+      'chromium',
+    ]);
     playwrightReady = true;
   }
 }
@@ -80,17 +85,33 @@ function server() {
   if (isWindows) {
     docker('build', '-f', 'scripts/Dockerfile.verify', '.');
   } else {
-    npm('run', 'check:rust');
-    npm('run', 'test:rust');
+    run('cargo', ['fmt', '--all', '--check']);
+    run('cargo', [
+      'clippy',
+      '--locked',
+      '--workspace',
+      '--exclude',
+      'thelxinoe-desktop',
+      '--all-targets',
+      '--',
+      '-D',
+      'warnings',
+    ]);
+    run('cargo', [
+      'test',
+      '--locked',
+      '--workspace',
+      '--exclude',
+      'thelxinoe-desktop',
+    ]);
   }
-  if (!isWindows) npm('run', 'test:python');
+  if (!isWindows) node('scripts/python-tests.mjs');
 }
 
 function web() {
   ensurePlaywright();
-  npm('run', 'validate:web');
-  npm('run', 'test:ui:layout');
-  npm('run', 'test:ui:player');
+  pnpm('run', 'validate:web');
+  pnpm('exec', 'playwright', 'test', '--config', 'playwright.ui.config.ts');
 }
 
 async function containers() {
@@ -105,7 +126,7 @@ async function containers() {
     images: Object.values(images),
     closed: false,
   });
-  npm('run', 'build:containers');
+  pnpm('run', 'build:containers');
   const identity = {};
   for (const [component, reference] of Object.entries(images)) {
     const result = spawnSync(
@@ -122,7 +143,7 @@ async function containers() {
       Object.values(identity).map(({ reference, id }) => [reference, id]),
     ),
   });
-  npm('run', 'test:service-access', '--', '--built');
+  pnpm('run', 'test:service-access', '--built');
   node('scripts/test-service-connections.mjs');
   node('scripts/test-recyclarr.mjs');
   node('scripts/fixtures.mjs');
@@ -137,7 +158,7 @@ async function containers() {
   try {
     docker(...catalog.args, 'up', '-d', '--wait');
     populateMedia(catalog.args);
-    run(isWindows ? 'npm.cmd' : 'npm', ['run', 'test:e2e'], {
+    run(isWindows ? 'pnpm.cmd' : 'pnpm', ['run', 'test:e2e'], {
       env: {
         ...process.env,
         THELXINOE_PROXY_TEST: '1',
@@ -207,16 +228,25 @@ function desktop() {
     '-File',
     'scripts/test-online-storage.ps1',
   ]);
-  npm('run', 'build:desktop');
+  pnpm('run', 'build:desktop');
   run('cargo', [
     'clippy',
-    '--workspace',
+    '--locked',
+    '-p',
+    'thelxinoe-desktop',
     '--all-targets',
     '--',
     '-D',
     'warnings',
   ]);
   run('cargo', ['test', '--locked', '-p', 'thelxinoe-desktop']);
+  run('cargo', [
+    'test',
+    '--locked',
+    '-p',
+    'thelxinoe-server',
+    'windows_environment_isolated_and_tree_killed',
+  ]);
 }
 
 const requested = process.argv.slice(2);

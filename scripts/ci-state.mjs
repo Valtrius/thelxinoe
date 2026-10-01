@@ -79,16 +79,20 @@ export function originIdentity(repository) {
 }
 
 export const originLabel = (origin) => origin?.branch ?? 'Detached HEAD';
-function address(origin) {
-  const name = `thelxinoe-ci-${origin.key}`;
+function address(origin, id) {
+  const key = createHash('sha256')
+    .update(origin.key + id)
+    .digest('hex')
+    .slice(0, 32);
+  const name = `thelxinoe-ci-${key}`;
   return process.platform === 'win32'
     ? `\\\\.\\pipe\\${name}`
     : join(tmpdir(), `${name}.sock`);
 }
 
-export function requestRun(origin, action = 'status') {
+export function requestRun(origin, id, action = 'status') {
   return new Promise((resolve, reject) => {
-    const socket = createConnection(address(origin));
+    const socket = createConnection(address(origin, id));
     let contents = '';
     socket.setTimeout(5000, () =>
       socket.destroy(Error('CI coordinator did not respond')),
@@ -111,8 +115,9 @@ export function requestRun(origin, action = 'status') {
 }
 
 export async function acquireRun(origin, context, stop) {
-  const metadata = join(origin.worktree, '.local/ci/active.json');
-  mkdirSync(join(origin.worktree, '.local/ci'), { recursive: true });
+  const { id, directory } = context;
+  const metadata = join(directory, 'active.json');
+  mkdirSync(directory, { recursive: true });
   const server = createServer((socket) => {
     socket.setTimeout(5000, () => socket.destroy());
     socket.once('data', (bytes) => {
@@ -130,7 +135,7 @@ export async function acquireRun(origin, context, stop) {
   const listen = () =>
     new Promise((resolve, reject) => {
       server.once('error', reject);
-      server.listen(address(origin), () => {
+      server.listen(address(origin, id), () => {
         server.removeListener('error', reject);
         resolve();
       });
@@ -141,21 +146,21 @@ export async function acquireRun(origin, context, stop) {
     if (error.code !== 'EADDRINUSE') throw error;
     let active;
     try {
-      active = await requestRun(origin);
+      active = await requestRun(origin, id);
     } catch (probe) {
       if (process.platform === 'win32' || probe.code !== 'ECONNREFUSED')
         throw error;
       const old = existsSync(metadata) && jsonRead(metadata);
       if (!old || alive(old.pid)) throw error;
       // Serialize stale Unix socket recovery; never unlink a live owner's socket.
-      const recovery = address(origin) + '.recovery';
+      const recovery = address(origin, id) + '.recovery';
       mkdirSync(recovery);
       try {
         try {
-          active = await requestRun(origin);
+          active = await requestRun(origin, id);
         } catch (retry) {
           if (retry.code !== 'ECONNREFUSED') throw retry;
-          unlinkSync(address(origin));
+          unlinkSync(address(origin, id));
           await listen();
         }
       } finally {
@@ -164,7 +169,7 @@ export async function acquireRun(origin, context, stop) {
     }
     if (active)
       throw Error(
-        `Another local CI run owns this worktree. Report: ${join(active.directory, 'index.html')}`,
+        `This CI run is already active. Report: ${join(active.directory, 'index.html')}`,
         { cause: error },
       );
   }
@@ -175,7 +180,7 @@ export async function acquireRun(origin, context, stop) {
         const result = join(previous.directory, 'result.json');
         if (!existsSync(result) || !jsonRead(result).finished)
           throw Error(
-            `An interrupted run still owns this worktree. Recover it first: node scripts/ci-local.mjs --recover "${previous.directory}"`,
+            `This CI run needs recovery. Recover it first: node scripts/ci-local.mjs --recover "${previous.directory}"`,
           );
       }
     }

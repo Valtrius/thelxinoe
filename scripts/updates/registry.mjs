@@ -1,11 +1,12 @@
 import { createServer, request } from 'node:http';
 import { createHash, randomBytes } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
+import { dirname, join } from 'node:path';
 import { once } from 'node:events';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 
-function registryProxy(lab, slow) {
+function registryProxy(lab, slow, held = () => false) {
   return createServer((incoming, outgoing) => {
     const upstream = request(
       {
@@ -26,12 +27,22 @@ function registryProxy(lab, slow) {
           response.pipe(outgoing);
           return;
         }
+        // Docker may buffer small downloads before publishing its first byte
+        // count. Keep half of the 8 MiB unique layer available before holding it.
+        let transferred = 0;
         try {
           for await (const chunk of response) {
             for (let offset = 0; offset < chunk.length; offset += 64 * 1024) {
               if (outgoing.destroyed) return;
               if (!outgoing.write(chunk.subarray(offset, offset + 64 * 1024)))
                 await once(outgoing, 'drain');
+              transferred += Math.min(64 * 1024, chunk.length - offset);
+              while (
+                transferred >= 4 * 1024 * 1024 &&
+                held() &&
+                !outgoing.destroyed
+              )
+                await delay(100);
               await delay(100);
             }
           }
@@ -60,6 +71,7 @@ if (process.argv[2] === 'serve')
     () =>
       JSON.parse(readFileSync(process.argv[4], 'utf8')).mode ===
       'slow-download',
+    () => existsSync(join(dirname(process.argv[4]), 'hold')),
   );
 
 const digest = (bytes) =>
@@ -73,7 +85,10 @@ export async function downloadFixture(lab, reference) {
   const origin = `http://127.0.0.1:${lab.registryPort}`;
   const base = `${origin}/v2/${repository}`;
   const checked = async (url, options) => {
-    const response = await fetch(url, options);
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(60000),
+      ...options,
+    });
     if (!response.ok)
       throw Error(
         `Lab registry HTTP ${response.status}: ${new URL(url).pathname}`,

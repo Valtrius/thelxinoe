@@ -32,14 +32,6 @@ for (const file of [
     else throw new Error(`${file}: expected shared product version ${version}`);
   }
 }
-const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
-const lockVersions = [lock, lock.packages[''], lock.packages.frontend];
-if (lockVersions.some((entry) => entry.version !== version)) {
-  if (!process.argv.includes('--write'))
-    throw new Error('package-lock.json: version is out of sync');
-  for (const entry of lockVersions) entry.version = version;
-  writeFileSync('package-lock.json', JSON.stringify(lock, null, 2) + '\n');
-}
 const rustLock = readFileSync('Cargo.lock', 'utf8');
 const nextLock = rustLock.replace(
   /(name = "thelxinoe-[^"]+"\r?\nversion = ")[^"]+/g,

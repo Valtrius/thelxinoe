@@ -4,39 +4,36 @@
   "version": "0.1.0",
   "license": "MIT",
   "type": "module",
-  "workspaces": [
-    "frontend"
-  ],
   "scripts": {
     "dev": "node scripts/dev.mjs",
-    "dev:web": "npm run dev --workspace frontend --",
+    "dev:web": "pnpm --dir frontend run dev",
     "dev:desktop": "node scripts/desktop.mjs --dev",
     "dev:fresh": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev-fresh.ps1",
     "dev:online": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev-online.ps1",
-    "build:web": "npm run version:check && npm run build --workspace frontend",
+    "build:web": "pnpm run version:check && pnpm --dir frontend run build",
     "build:desktop": "node scripts/desktop.mjs",
     "build:containers": "docker compose build",
-    "check": "npm run format:check && npm run lint && npm run check:web && npm run check:rust",
-    "check:web": "npm run check --workspace frontend",
-    "check:rust": "cargo fmt --all --check && cargo clippy --locked --all-targets -- -D warnings",
-    "test": "npm run test:web && npm run test:rust && npm run test:python",
-    "test:web": "npm run test --workspace frontend",
-    "test:rust": "cargo test --locked",
+    "check": "pnpm run format:check && pnpm run lint && pnpm run check:web && pnpm run check:rust",
+    "check:web": "pnpm --dir frontend run check",
+    "check:rust": "cargo fmt --all --check && cargo clippy --locked --workspace --exclude thelxinoe-desktop --all-targets -- -D warnings",
+    "test": "pnpm run test:web && pnpm run test:rust && pnpm run test:python",
+    "test:web": "pnpm --dir frontend run test",
+    "test:rust": "cargo test --locked --workspace --exclude thelxinoe-desktop",
     "test:python": "node scripts/python-tests.mjs",
     "test:e2e": "playwright test",
     "test:service-access": "node --import ./scripts/service-access-errors.mjs scripts/test-service-access.mjs",
     "test:recyclarr": "node scripts/test-recyclarr.mjs",
-    "test:ui:player": "playwright test --config playwright.player.config.ts",
-    "test:ui:layout": "playwright test --config playwright.layout.config.ts",
+    "test:ui:player": "pnpm run build:web && playwright test --config playwright.ui.config.ts --project player",
+    "test:ui:layout": "pnpm run build:web && playwright test --config playwright.ui.config.ts --project layout",
     "test:updates": "node scripts/updates/test.mjs",
     "lint": "eslint frontend scripts tests --max-warnings=0",
-    "format": "prettier --write frontend scripts tests package.json .github README.md docs",
-    "format:check": "prettier --check frontend scripts tests package.json .github README.md docs",
+    "format": "prettier --write frontend scripts tests package.json .github README.md docs pnpm-workspace.yaml playwright*.config.ts",
+    "format:check": "prettier --check frontend scripts tests package.json .github README.md docs pnpm-workspace.yaml playwright*.config.ts",
     "version:sync": "node scripts/version.mjs --write",
     "version:check": "node scripts/version.mjs",
     "updates:lab": "node scripts/updates/lab.mjs",
-    "validate": "npm run check && npm test && npm run build:web",
-    "validate:web": "npm run format:check && npm run lint && npm run check:web && npm run test:web && npm run build:web",
+    "validate": "pnpm run check && pnpm test && pnpm run build:web",
+    "validate:web": "pnpm run format:check && pnpm run lint && pnpm run check:web && pnpm run test:web && pnpm run build:web",
     "ci": "node scripts/ci.mjs",
     "ci:local": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/ci-local.ps1 -Background",
     "ci:status": "node scripts/ci-status.mjs",
@@ -47,7 +44,8 @@
     "ci:desktop": "node scripts/ci.mjs desktop",
     "ci:updates": "node scripts/ci.mjs updates",
     "ci:updates:server": "node scripts/ci.mjs updates-server",
-    "ci:updates:desktop": "node scripts/ci.mjs updates-desktop"
+    "ci:updates:desktop": "node scripts/ci.mjs updates-desktop",
+    "test:ui": "pnpm run build:web && playwright test --config playwright.ui.config.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -58,6 +56,13 @@
     "globals": "^17.8.0",
     "prettier": "^3.9.6",
     "prettier-plugin-svelte": "^4.1.1",
-    "typescript-eslint": "^8.65.0"
+    "typescript-eslint": "^8.65.0",
+    "@tailwindcss/node": "^4.3.3",
+    "tailwindcss": "^4.3.3",
+    "playwright": "^1.58.2"
+  },
+  "packageManager": "pnpm@10.33.2",
+  "engines": {
+    "node": ">=24"
   }
 }
