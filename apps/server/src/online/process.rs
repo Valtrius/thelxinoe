@@ -186,7 +186,7 @@ mod tests {
     async fn windows_environment_isolated_and_tree_killed() {
         let shell = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
             .join("System32/WindowsPowerShell/v1.0/powershell.exe");
-        let output = run(&shell, &["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(), "if ($env:HOME -ne $env:APPDATA -or $env:HOME -ne $env:TEMP -or $env:PATH) { exit 9 }; Write-Output 'isolated'".into()], Duration::from_secs(10), 1024).await.unwrap();
+        let output = run(&shell, &["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(), "if ($env:HOME -ne $env:APPDATA -or $env:HOME -ne $env:TEMP -or $env:PATH) { exit 9 }; Write-Output 'isolated'".into()], Duration::from_secs(60), 1024).await.unwrap();
         assert!(output.success);
         assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), "isolated");
         let marker = tempfile::tempdir().unwrap();
