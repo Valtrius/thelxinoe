@@ -16,7 +16,7 @@ import { pathToFileURL } from 'node:url';
 import { archiveWorkspace } from './ci-workspaces.mjs';
 import { stopProcess } from './ci-processes.mjs';
 import { requestedPhases, ciPhases } from './ci-phases.mjs';
-import { reporter } from './ci-report.mjs';
+import { reporter, reportSummary } from './ci-report.mjs';
 import {
   acquireRun,
   alive,
@@ -355,9 +355,7 @@ async function lane(item, source) {
     await view
       .style(workspace)
       .catch((error) => console.error(`Report styling: ${error.message}`));
-    if (
-      ['web', 'containers', 'updates-server', 'updates-desktop'].includes(phase)
-    ) {
+    if (['web', 'updates-desktop'].includes(phase)) {
       browsers ??= command(
         process.execPath,
         [
@@ -373,6 +371,8 @@ async function lane(item, source) {
     item.tests_started = new Date().toISOString();
     const laneEnvironment = {
       ...environment,
+      THELXINOE_CI_SOURCE_SHA256: source.sha256,
+      THELXINOE_CI_RESOURCE_DIRECTORY: join(report.resources, phase),
       CARGO_TARGET_DIR: join(workspace, 'target'),
       CARGO_BUILD_JOBS: environment.CARGO_BUILD_JOBS ?? '2',
     };
@@ -451,43 +451,58 @@ try {
   report.passed = false;
 } finally {
   clearInterval(refresh);
-  if (stopping || report.error) {
-    stopping = true;
-    report.cleanup_errors = terminateChildren(report);
-    // Failed process ownership checks must not prevent other cleanup or hang the report.
-    const deadline = Date.now() + 30000;
-    while (children.size && Date.now() < deadline)
-      await new Promise((done) => setTimeout(done, 50));
-    if (children.size)
-      report.cleanup_errors.push('Child processes did not exit');
-    report.cleanup_errors.push(
-      ...cleanupResources(report.resources, id, {
+  try {
+    if (stopping || report.error) {
+      stopping = true;
+      report.cleanup_errors = terminateChildren(report);
+      // Failed process ownership checks must not prevent other cleanup or hang the report.
+      const deadline = Date.now() + 30000;
+      while (children.size && Date.now() < deadline)
+        await new Promise((done) => setTimeout(done, 50));
+      if (children.size)
+        report.cleanup_errors.push('Child processes did not exit');
+      report.cleanup_errors.push(
+        ...cleanupResources(report.resources, id, {
+          removeImages: true,
+        }),
+      );
+      failPending(report, report.error);
+    } else {
+      report.cleanup_errors = cleanupResources(report.resources, id, {
         removeImages: true,
-      }),
-    );
-    failPending(report, report.error);
-  } else {
-    report.cleanup_errors = cleanupResources(report.resources, id, {
-      removeImages: true,
-    });
-    if (report.cleanup_errors.length) report.passed = false;
-  }
-  if (!report.cleanup_errors.length) {
-    for (const item of report.lanes) {
-      try {
-        archiveWorkspace(report, item);
-      } catch (error) {
-        report.cleanup_errors.push(`${item.phase}: ${error.message}`);
-      }
+      });
+      if (report.cleanup_errors.length) report.passed = false;
     }
-    if (!report.cleanup_errors.length)
-      report.cleaned = new Date().toISOString();
+    if (!report.cleanup_errors.length) {
+      for (const item of report.lanes) {
+        try {
+          archiveWorkspace(report, item);
+        } catch (error) {
+          report.cleanup_errors.push(`${item.phase}: ${error.message}`);
+        }
+      }
+      if (!report.cleanup_errors.length)
+        report.cleaned = new Date().toISOString();
+    }
+    if (report.cleanup_errors.length) report.passed = false;
+    report.finished = new Date().toISOString();
+    view.save();
+    console.log(reportSummary(report));
+    console.log(`Summary: ${join(directory, 'index.html')}`);
+    process.exitCode = report.passed ? 0 : 1;
+  } catch (error) {
+    report.passed = false;
+    report.finished = new Date().toISOString();
+    report.infrastructure_error = error.message;
+    report.error ??= `CI finalization failed: ${error.message}`;
+    process.exitCode = 1;
+    console.error('CI finalization failed:', error.message);
+    try {
+      view.save();
+    } catch (persistence) {
+      console.error('Could not persist CI result:', persistence.message);
+    }
+  } finally {
+    if (release) await release();
   }
-  if (report.cleanup_errors.length) report.passed = false;
-  report.finished = new Date().toISOString();
-  view.save();
-  if (release) await release();
-  console.log(readFileSync(join(directory, 'summary.txt'), 'utf8'));
-  console.log(`Summary: ${join(directory, 'index.html')}`);
-  process.exitCode = report.passed ? 0 : 1;
 }

@@ -28,20 +28,7 @@ export function run(command, args, options = {}) {
 }
 export const docker = (...args) =>
   run('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-export async function pullFixtureImage(image) {
-  for (let attempt = 1; attempt <= 4; attempt++) {
-    try {
-      run('docker', ['pull', image], { timeout: 120000 });
-      return;
-    } catch (error) {
-      if (attempt === 4) throw error;
-      console.warn(
-        `Retrying fixture image ${image} after pull ${attempt} failed`,
-      );
-      await delay(1000 * 3 ** (attempt - 1));
-    }
-  }
-}
+export { pullFixtureImage } from '../ci-images.mjs';
 export const save = (path, value) =>
   writeFileSync(path, JSON.stringify(value, null, 2) + '\n');
 export function certificate(lab) {
@@ -146,7 +133,7 @@ export function source(lab, version) {
     .split(/\r?\n/);
   for (const file of new Set(files)) {
     if (
-      !/^(apps\/|crates\/|frontend\/|scripts\/|releases\/|Cargo\.|Dockerfile$|compose\.|package|pnpm-|\.dockerignore$)/.test(
+      !/^(apps\/|crates\/|frontend\/|scripts\/|releases\/|Cargo\.|rust-toolchain\.toml$|Dockerfile$|compose\.|package|pnpm-|\.dockerignore$)/.test(
         file,
       ) ||
       !existsSync(join(repository, file))

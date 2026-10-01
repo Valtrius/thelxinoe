@@ -1,5 +1,7 @@
 import { resourceScope } from '../ci-resources.mjs';
-import { chromium, expect } from '@playwright/test';
+import { expect } from '@playwright/test';
+import { requestBudget } from '../ci-readiness.mjs';
+import { launchBrowser } from '../ci-browser.mjs';
 import { mkdirSync, writeFileSync, readFileSync, copyFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -57,7 +59,7 @@ try {
     report.installed = desktopInstallation(lab);
     expect(report.installed).toEqual({ registered: true, executable: true });
   }
-  browser = await chromium.launch();
+  browser = await launchBrowser();
   context = await browser.newContext({
     viewport: { width: 1440, height: 1000 },
   });
@@ -68,7 +70,7 @@ try {
       method,
       data,
       headers: { 'X-Thelxinoe-Client': '1' },
-      timeout: 10000,
+      timeout: requestBudget(path),
     });
   const api = async (...args) => {
     const response = await request(...args);

@@ -9,6 +9,13 @@ import {
   freePort,
   resourceScope,
 } from './ci-resources.mjs';
+import { fixtureImage } from './ci-images.mjs';
+import {
+  budgets,
+  requestBudget,
+  waitForState,
+  waitForProvision,
+} from './ci-readiness.mjs';
 import { launchBrowser } from './ci-browser.mjs';
 export { freePort } from './ci-resources.mjs';
 
@@ -19,21 +26,18 @@ export const docker = (...args) =>
   }).trim();
 
 export async function waitForProxy(client, base) {
-  await expect
-    .poll(
-      async () => {
-        try {
-          const response = await client.get(`${base}/api/v1/health`, {
-            timeout: 5000,
-          });
-          return response.ok() && (await response.json()).status === 'ok';
-        } catch {
-          return false;
-        }
-      },
-      { timeout: 30000, intervals: [500, 1000] },
-    )
-    .toBe(true);
+  await waitForState(
+    'Authenticated proxy startup',
+    async (timeout) => {
+      const response = await client.get(`${base}/api/v1/health`, { timeout });
+      return {
+        http_status: response.status(),
+        status: (await response.json()).status,
+      };
+    },
+    (value) => value.http_status === 200 && value.status === 'ok',
+    { timeout: budgets.startup },
+  );
 }
 
 export async function fixture({ scheme = 'https' } = {}) {
@@ -63,12 +67,20 @@ export async function fixture({ scheme = 'https' } = {}) {
   let browser, context;
   const services = {};
   const attachedContainers = [];
+  const secrets = new Set(['test-only long passphrase']);
   let closed = false;
   let deployment;
-  async function api(path, method = 'GET', data, client = context.request) {
+  async function api(
+    path,
+    method = 'GET',
+    data,
+    client = context.request,
+    timeout = requestBudget(path),
+  ) {
     const response = await client.fetch(`${base}/api/v1${path}`, {
       method,
       data,
+      timeout,
       headers: { 'X-Thelxinoe-Client': '1' },
     });
     if (!response.ok()) {
@@ -79,7 +91,8 @@ export async function fixture({ scheme = 'https' } = {}) {
     }
     return response.json();
   }
-  const stack = () => api('/admin/stack');
+  const stack = (timeout) =>
+    api('/admin/stack', 'GET', undefined, context.request, timeout);
   async function install(kind) {
     const host_port = await freePort();
     const created = await api('/admin/stack/install', 'POST', {
@@ -88,20 +101,16 @@ export async function fixture({ scheme = 'https' } = {}) {
     });
     let latest;
     try {
-      await expect
-        .poll(
-          async () => {
-            latest = await stack();
-            const provision = latest.provisions.find(
-              (p) => p.id === created.id,
-            );
-            if (provision?.state === 'blocked')
-              throw Error(`${kind}: ${provision.error}`);
-            return provision?.state;
+      latest = (
+        await waitForProvision(
+          async (timeout) => {
+            latest = await stack(timeout);
+            return latest;
           },
-          { timeout: 300000, intervals: [2000] },
+          created.id,
+          kind,
         )
-        .toBe('complete');
+      ).stack;
     } catch (error) {
       const containers = [];
       for (const item of latest?.items ?? []) {
@@ -159,7 +168,7 @@ export async function fixture({ scheme = 'https' } = {}) {
         nzbget: 'nzbget.conf',
         seerr: 'settings.json',
       }[kind] ?? 'config.xml';
-    return compose(
+    const raw = compose(
       'exec',
       '-T',
       '-u',
@@ -168,6 +177,16 @@ export async function fixture({ scheme = 'https' } = {}) {
       'cat',
       `/var/lib/thelxinoe/deployment/services/${services[kind].id}/appdata/${filename}`,
     );
+    for (const pattern of [
+      /<ApiKey>(.*?)<\/ApiKey>/,
+      /^\s+apikey:\s*['"]?([a-zA-Z0-9]+)/m,
+      /^ControlPassword=(.*)$/m,
+      /"apiKey"\s*:\s*"([^"]+)"/,
+    ]) {
+      const secret = raw.match(pattern)?.[1]?.trim();
+      if (secret) secrets.add(secret);
+    }
+    return raw;
   }
   async function upstream(kind, path, method = 'GET', data) {
     const raw = config(kind);
@@ -220,6 +239,23 @@ export async function fixture({ scheme = 'https' } = {}) {
   }
   async function close() {
     if (closed) return;
+    if (infrastructure) {
+      try {
+        for (const kind of Object.keys(services)) {
+          try {
+            config(kind);
+          } catch {
+            /* The failed service may already be unavailable. */
+          }
+        }
+        let logs = compose('logs', '--no-color', 'server', 'controller');
+        for (const secret of secrets)
+          logs = logs.replaceAll(secret, '[redacted]');
+        writeFileSync(`${root}/services.log`, logs);
+      } catch (error) {
+        console.error('Could not capture fixture diagnostics:', error.message);
+      }
+    }
     try {
       await browser?.close();
     } finally {
@@ -241,6 +277,7 @@ export async function fixture({ scheme = 'https' } = {}) {
     }[kind];
     const port = await freePort();
     const key = randomBytes(16).toString('hex');
+    secrets.add(key);
     mkdirSync(directory, { recursive: true });
     if (kind === 'bazarr') {
       mkdirSync(`${directory}/config`, { recursive: true });
@@ -314,23 +351,18 @@ export async function fixture({ scheme = 'https' } = {}) {
       return text ? JSON.parse(text) : null;
     };
     async function register() {
-      await expect
-        .poll(
-          async () => {
-            try {
-              if (kind === 'nzbget')
-                return (await direct('version')) ? kind : '';
-              const status = await direct('system/status');
-              return kind === 'bazarr' && status.data.bazarr_version
-                ? kind
-                : status.appName.toLowerCase();
-            } catch {
-              return '';
-            }
-          },
-          { timeout: 180000, intervals: [1000] },
-        )
-        .toBe(kind);
+      await waitForState(
+        `Attached ${kind} startup`,
+        async () => {
+          if (kind === 'nzbget') return (await direct('version')) ? kind : '';
+          const status = await direct('system/status');
+          return kind === 'bazarr' && status.data.bazarr_version
+            ? kind
+            : status.appName.toLowerCase();
+        },
+        (value) => value === kind,
+        { timeout: budgets.startup },
+      );
       const support = ['prowlarr', 'bazarr', 'nzbget'].includes(kind);
       return api(support ? '/admin/support' : '/admin/managers', 'POST', {
         name: `Attached ${kind}`,
@@ -415,7 +447,7 @@ export async function fixture({ scheme = 'https' } = {}) {
       `${mediaSource()}:/media`,
       '-v',
       `${resolve('tests/service-access-peer.mjs')}:/peer.mjs:ro`,
-      'node:24-bookworm-slim',
+      fixtureImage('node:24-bookworm-slim'),
       'node',
       '/peer.mjs',
     );

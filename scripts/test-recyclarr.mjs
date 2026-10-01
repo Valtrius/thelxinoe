@@ -5,6 +5,11 @@ import { resolve } from 'node:path';
 import { composeFixture, fixtureId, freePort } from './ci-resources.mjs';
 import { randomUUID } from 'node:crypto';
 import { waitForProxy } from './service-access-fixture.mjs';
+import {
+  requestBudget,
+  waitForProvision,
+  waitForJob,
+} from './ci-readiness.mjs';
 import { launchBrowser } from './ci-browser.mjs';
 
 const project = fixtureId('recyclarr');
@@ -72,12 +77,15 @@ function record(message) {
 }
 saveEvidence();
 let deployment;
-async function request(path, method = 'GET', data) {
+async function request(
+  path,
+  method = 'GET',
+  data,
+  timeout = requestBudget(path),
+) {
   // Restore verifies a full archive, and both adoption endpoints copy appdata
   // before responding (even when rejecting a stale or unsupported review).
-  const copiesState =
-    path.startsWith('/admin/recyclarr/adopt') ||
-    /^\/admin\/backups\/[^/]+\/restore$/.test(path);
+  const copiesState = requestBudget(path) > requestBudget('/setup');
   const started = Date.now();
   let status = null;
   try {
@@ -85,7 +93,7 @@ async function request(path, method = 'GET', data) {
       method,
       data,
       headers: { 'X-Thelxinoe-Client': '1' },
-      timeout: copiesState ? 300000 : 30000,
+      timeout,
     });
     status = response.status();
     return response;
@@ -101,8 +109,8 @@ async function request(path, method = 'GET', data) {
     }
   }
 }
-async function api(path, method = 'GET', data) {
-  const response = await request(path, method, data);
+async function api(path, method = 'GET', data, timeout) {
+  const response = await request(path, method, data, timeout);
   const value = await response
     .json()
     .catch(() => ({ error: { message: 'unavailable' } }));
@@ -117,17 +125,13 @@ async function install(kind) {
     host_port,
   });
   let observed;
-  await expect
-    .poll(
-      async () => {
-        observed = await api('/admin/stack');
-        const item = observed.provisions.find((p) => p.id === created.id);
-        if (item?.state === 'blocked') throw Error(`${kind}: ${item.error}`);
-        return item?.state;
-      },
-      { timeout: 300000, intervals: [1500] },
+  observed = (
+    await waitForProvision(
+      (timeout) => api('/admin/stack', 'GET', undefined, timeout),
+      created.id,
+      kind,
     )
-    .toBe('complete');
+  ).stack;
   services[kind] = {
     ...observed.items.find((p) => p.id === created.id),
     ...observed.provisions.find((p) => p.id === created.id),
@@ -209,43 +213,33 @@ async function defaultTarget(kind) {
   );
 }
 async function waitRun(id, stage = 'complete') {
-  let last;
-  await expect
-    .poll(
-      async () => {
-        last = (await settings()).runs.find((r) => r.id === id);
-        if (['blocked', 'partial'].includes(last?.state))
-          throw Error(
-            `Run ${last.state}: ${last.error}\n${JSON.stringify(last.evidence)}`,
-          );
-        return last?.state;
-      },
-      { timeout: 300000, intervals: [1500] },
-    )
-    .toBe(stage);
-  return last;
+  return waitForJob(
+    async (timeout) =>
+      (await api('/admin/recyclarr', 'GET', undefined, timeout)).runs.find(
+        (r) => r.id === id,
+      ),
+    stage,
+    `Recyclarr run ${id}`,
+  );
 }
 async function waitUpdate(id, stage) {
-  await expect
-    .poll(
-      async () => {
-        const item = (await api('/admin/service-updates')).items.find(
-          (u) => u.id === id,
-        );
-        if (
-          [
-            'blocked',
-            'runtime-failure',
-            'recovery-required',
-            'rolled-back',
-          ].includes(item?.state)
-        )
-          throw Error(`${item.state}: ${item.error}`);
-        return item?.state;
-      },
-      { timeout: 360000, intervals: [1500] },
-    )
-    .toBe(stage);
+  return waitForJob(
+    async (timeout) =>
+      (
+        await api('/admin/service-updates', 'GET', undefined, timeout)
+      ).items.find((u) => u.id === id),
+    stage,
+    `Service update ${id}`,
+    {
+      timeout: 360000,
+      failures: [
+        'blocked',
+        'runtime-failure',
+        'recovery-required',
+        'rolled-back',
+      ],
+    },
+  );
 }
 scenario: try {
   browser = await launchBrowser();
@@ -1446,20 +1440,13 @@ scenario: try {
     container_id: external,
     released_compose: true,
   });
-  let adoptedStack;
-  await expect
-    .poll(
-      async () => {
-        adoptedStack = await api('/admin/stack');
-        const provision = adoptedStack.provisions.find(
-          (p) => p.id === adopted.id,
-        );
-        if (provision?.state === 'blocked') throw Error(provision.error);
-        return provision?.state;
-      },
-      { timeout: 180000 },
+  const adoptedStack = (
+    await waitForProvision(
+      (timeout) => api('/admin/stack', 'GET', undefined, timeout),
+      adopted.id,
+      'Recyclarr adoption',
     )
-    .toBe('complete');
+  ).stack;
   services.recyclarr = {
     ...adoptedStack.items.find((p) => p.id === adopted.id),
     ...adoptedStack.provisions.find((p) => p.id === adopted.id),
@@ -1494,6 +1481,7 @@ scenario: try {
   evidence.error = String(error);
   throw error;
 } finally {
+  evidence.product_passed = evidence.passed;
   evidence.cleanup_errors = [];
   saveEvidence();
   async function cleanup(name, action) {

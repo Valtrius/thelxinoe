@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { installUiFixture } from './helpers/ui-fixture';
+import { waitForViewportFit } from '../scripts/ci-readiness.mjs';
 
 async function selectRadarr(page: Page) {
   await page
@@ -997,13 +998,7 @@ test('NZBGet URL has compact login and password copy buttons', async ({
     ),
   ).toBe(false);
   await page.setViewportSize({ width: 320, height: 850 });
-  await expect
-    .poll(() =>
-      page.evaluate(
-        () => document.documentElement.scrollWidth <= window.innerWidth,
-      ),
-    )
-    .toBe(true);
+  await waitForViewportFit(page);
   const urlBox = await url.boundingBox();
   const loginBox = await copyLogin.boundingBox();
   const passwordBox = await copyPassword.boundingBox();

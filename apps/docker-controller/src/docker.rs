@@ -29,6 +29,19 @@ pub(crate) async fn ensure_pinned_image(image: &str) -> Result<Value> {
 }
 pub(crate) async fn pull_image(
     image: &str,
+    progress: impl FnMut(&Value) -> Result<()>,
+) -> Result<()> {
+    let started = std::time::Instant::now();
+    let result = pull_image_stream(image, progress).await;
+    eprintln!(
+        "Docker image pull: image={image} elapsed_ms={} outcome={}",
+        started.elapsed().as_millis(),
+        if result.is_ok() { "complete" } else { "failed" }
+    );
+    result
+}
+async fn pull_image_stream(
+    image: &str,
     mut progress: impl FnMut(&Value) -> Result<()>,
 ) -> Result<()> {
     if !crate::lease::active() {
@@ -49,38 +62,98 @@ pub(crate) async fn pull_image(
         .query(&[("fromImage", image)])
         .send()
         .await
-        .map_err(|_| unavailable())?;
+        .map_err(|error| {
+            pull_failure(
+                image,
+                "connect",
+                if error.is_timeout() {
+                    "Image download timed out"
+                } else {
+                    "Image download transport failed"
+                },
+            )
+        })?;
     if !response.status().is_success() {
-        return Err(unavailable());
+        let status = response.status();
+        eprintln!("Docker image pull: image={image} http_status={status}");
+        let body = response.json::<Value>().await.unwrap_or_default();
+        let category = match status {
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
+                "Image registry authorization failed"
+            }
+            StatusCode::NOT_FOUND => "Image registry manifest not found",
+            StatusCode::TOO_MANY_REQUESTS => "Image registry rate limit exceeded",
+            _ => pull_category(body["message"].as_str().unwrap_or_default()),
+        };
+        return Err(pull_failure(image, "response", category));
     }
     let mut pending = Vec::new();
     loop {
         let chunk = tokio::time::timeout(std::time::Duration::from_secs(120), response.chunk())
             .await
-            .map_err(|_| unavailable())?
-            .map_err(|_| unavailable())?;
+            .map_err(|_| pull_failure(image, "stream", "Image download stalled"))?
+            .map_err(|_| pull_failure(image, "stream", "Image download transport failed"))?;
         let Some(chunk) = chunk else { break };
         for byte in chunk {
             if byte == b'\n' {
-                pull_event(&pending, &mut progress)?;
+                pull_event(&pending, image, &mut progress)?;
                 pending.clear();
             } else {
                 if pending.len() >= 64 * 1024 {
-                    return Err(unavailable());
+                    return Err(pull_failure(
+                        image,
+                        "stream",
+                        "Image download event exceeds size limit",
+                    ));
                 }
                 pending.push(byte);
             }
         }
     }
-    pull_event(&pending, &mut progress)
+    pull_event(&pending, image, &mut progress)
 }
-fn pull_event(bytes: &[u8], progress: &mut impl FnMut(&Value) -> Result<()>) -> Result<()> {
+fn pull_failure(image: &str, stage: &str, reason: &'static str) -> (StatusCode, &'static str) {
+    eprintln!("Docker image pull: image={image} stage={stage} category={reason}");
+    (StatusCode::SERVICE_UNAVAILABLE, reason)
+}
+fn pull_category(message: &str) -> &'static str {
+    let message = message.to_ascii_lowercase();
+    if ["unauthorized", "denied", "authentication", "forbidden"]
+        .iter()
+        .any(|value| message.contains(value))
+    {
+        "Image registry authorization failed"
+    } else if message.contains("manifest unknown") || message.contains("not found") {
+        "Image registry manifest not found"
+    } else if message.contains("429")
+        || message.contains("toomanyrequests")
+        || message.contains("rate limit")
+    {
+        "Image registry rate limit exceeded"
+    } else if message.contains("no space") {
+        "Docker image storage is full"
+    } else if message.contains("timeout") || message.contains("timed out") {
+        "Image download timed out"
+    } else {
+        "Image download failed"
+    }
+}
+fn pull_event(
+    bytes: &[u8],
+    image: &str,
+    progress: &mut impl FnMut(&Value) -> Result<()>,
+) -> Result<()> {
     if bytes.iter().all(u8::is_ascii_whitespace) {
         return Ok(());
     }
-    let value: Value = serde_json::from_slice(bytes).map_err(|_| unavailable())?;
+    let value: Value = serde_json::from_slice(bytes)
+        .map_err(|_| pull_failure(image, "parse", "Invalid image download response"))?;
     if value.get("error").is_some() || value.get("errorDetail").is_some() {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, "Image download failed"));
+        let message = value["errorDetail"]["message"]
+            .as_str()
+            .or(value["error"].as_str())
+            .unwrap_or_default();
+        return Err(pull_failure(image, "stream", pull_category(message)));
     }
     progress(&value)
 }
@@ -135,18 +208,6 @@ pub(crate) async fn request(
             } else {
                 Ok(value)
             }
-        })
-        .or_else(|_| {
-            // Image pull returns newline-delimited progress objects. Never return registry bodies.
-            for line in bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
-                let entry: Value = serde_json::from_slice(line)?;
-                if entry.get("error").is_some() {
-                    return Err(<serde_json::Error as serde::de::Error>::custom(
-                        "Image pull failed",
-                    ));
-                }
-            }
-            Ok(json!({"complete":true}))
         })
         .map_err(|_| unavailable())
 }

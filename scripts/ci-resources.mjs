@@ -5,6 +5,7 @@ import { createSocket } from 'node:dgram';
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { resolve, join, sep, basename } from 'node:path';
 import { jsonRead, jsonWrite } from './ci-state.mjs';
+import { fixtureImage, imageManifest } from './ci-images.mjs';
 
 const docker = (...args) =>
   execFileSync('docker', args, {
@@ -208,8 +209,15 @@ export function composeFixture({ project, file, root, env = process.env }) {
           service.environment.THELXINOE_TRUSTED_PROXIES = subnet;
       }
     }
-    for (const service of Object.values(config.services))
+    for (const [name, service] of Object.entries(config.services)) {
+      service.image = fixtureImage(service.image);
       service.labels = { ...service.labels, 'io.thelxinoe.ci-run': owner };
+      if (name === 'controller')
+        service.environment = {
+          ...service.environment,
+          THELXINOE_CURATED_IMAGES: JSON.stringify(imageManifest.services),
+        };
+    }
     for (const volume of Object.values(config.volumes ?? {}))
       volume.labels = { ...volume.labels, 'io.thelxinoe.ci-run': owner };
     jsonWrite(path, config);
@@ -399,15 +407,20 @@ export function cleanupResources(
   const errors = [];
   if (!directory || !existsSync(directory)) return errors;
   const records = [];
-  for (const file of readdirSync(directory).filter((name) =>
-    name.endsWith('.json'),
-  )) {
-    try {
-      records.push({ file, record: jsonRead(join(directory, file)) });
-    } catch (error) {
-      errors.push(`${file}: ${error.message}`);
+  function collect(root) {
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      const file = join(root, entry.name);
+      if (entry.isDirectory()) collect(file);
+      else if (entry.isFile() && entry.name.endsWith('.json')) {
+        try {
+          records.push({ file, record: jsonRead(file) });
+        } catch (error) {
+          errors.push(`${file}: ${error.message}`);
+        }
+      }
     }
   }
+  collect(directory);
   // Image records must outlive every container that uses them.
   records.sort((a, b) => Number(!!a.record.images) - Number(!!b.record.images));
   for (const { file, record } of records) {
@@ -420,8 +433,7 @@ export function cleanupResources(
       continue;
     const failures = cleanupRecord(record);
     errors.push(...failures.map((error) => `${file}: ${error.message}`));
-    if (!failures.length)
-      jsonWrite(join(directory, file), { ...record, closed: true });
+    if (!failures.length) jsonWrite(file, { ...record, closed: true });
   }
   return errors;
 }

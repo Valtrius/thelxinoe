@@ -1,4 +1,5 @@
 import { defineConfig } from '@playwright/test';
+import { browserConnection } from './scripts/ci-browser.mjs';
 import { freePort } from './scripts/ci-resources.mjs';
 const port = (process.env.THELXINOE_UI_PORT ??= String(await freePort()));
 const playerPort = (process.env.THELXINOE_PLAYER_PORT ??= String(
@@ -37,6 +38,7 @@ export default defineConfig({
   workers: 1,
   use: {
     trace: 'on',
+    connectOptions: browserConnection(),
     baseURL: `http://127.0.0.1:${port}`,
     headless: true,
     viewport: { width: 1440, height: 1000 },

@@ -1,5 +1,6 @@
-import { request, chromium } from '@playwright/test';
+import { request } from '@playwright/test';
 import { writeFileSync } from 'node:fs';
+import { launchBrowser } from './ci-browser.mjs';
 import assert from 'node:assert/strict';
 const origin = process.env.THELXINOE_PLAYBACK_URL ?? 'https://localhost:20443';
 const api = await request.newContext({
@@ -97,10 +98,7 @@ try {
     await subtitle.text(),
     /WEBVTT[\s\S]*Thelxinoe subtitle fixture/,
   );
-  browser = await chromium.launch({
-    headless: true,
-    args: ['--autoplay-policy=no-user-gesture-required'],
-  });
+  browser = await launchBrowser();
   const context = await browser.newContext({
     ignoreHTTPSErrors: true,
     storageState: await api.storageState(),

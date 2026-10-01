@@ -1,3 +1,5 @@
+import { waitForState, budgets } from '../ci-readiness.mjs';
+import { fixtureImage, stageBuildImages } from '../ci-images.mjs';
 import { stopProcess } from '../ci-processes.mjs';
 import {
   resourceRecord,
@@ -21,7 +23,6 @@ import { resolve, join, dirname, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import { request as https } from 'node:https';
-import { setTimeout as delay } from 'node:timers/promises';
 import { downloadFixture } from './registry.mjs';
 import {
   run,
@@ -37,20 +38,11 @@ import {
 } from './build.mjs';
 
 export { freePort } from '../ci-resources.mjs';
-export async function until(fn, timeout = 90000) {
-  const deadline = Date.now() + timeout;
-  let last;
-  while (Date.now() < deadline) {
-    try {
-      const value = await fn();
-      if (value) return value;
-    } catch (error) {
-      if (error.fatal) throw error;
-      last = error;
-    }
-    await delay(500);
-  }
-  throw last ?? Error('Update lab timed out');
+export function until(fn, timeout = budgets.restart) {
+  return waitForState('Update lab readiness', fn, (value) => !!value, {
+    timeout,
+    interval: 500,
+  });
 }
 export function publisher(lab, path = '/status', body) {
   return new Promise((done, reject) => {
@@ -283,7 +275,8 @@ export async function createLab({
   try {
     keys(lab);
     if (server) {
-      await pullFixtureImage('registry:2');
+      await stageBuildImages();
+      await pullFixtureImage(fixtureImage('registry:2'));
       await pullFixtureImage('node:24-bookworm-slim');
       mkdirSync(join(root, 'registry-control'), { recursive: true });
       save(join(root, 'registry-control/mode.json'), { mode: 'base' });
@@ -308,7 +301,7 @@ export async function createLab({
         `app.thelxinoe.update-lab=${id}`,
         '--network',
         `${id}-registry`,
-        'registry:2',
+        fixtureImage('registry:2'),
       );
       docker(
         'run',
@@ -328,7 +321,7 @@ export async function createLab({
         `${join(repository, 'scripts/updates/registry.mjs')}:/registry.mjs:ro`,
         '-v',
         `${join(root, 'registry-control')}:/control:ro`,
-        'node:24-bookworm-slim',
+        fixtureImage('node:24-bookworm-slim'),
         'node',
         '/registry.mjs',
         'serve',

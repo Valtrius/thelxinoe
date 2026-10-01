@@ -29,6 +29,17 @@ pub async fn metadata(template: Template, image: &str) -> ServiceRelease {
         build_version: None,
         release_notes_url: None,
     };
+    if crate::templates::pinned_image(template)
+        .ok()
+        .flatten()
+        .as_deref()
+        == Some(image)
+    {
+        if let Ok(raw) = crate::docker::engine(&format!("/images/{image}/json")).await {
+            return from_labels(template.kind, image, &raw["Config"]["Labels"]);
+        }
+        return release;
+    }
     // Metadata availability must never prevent discovery of an image update.
     if let Ok(client) = http_client() {
         let lookup = async {
