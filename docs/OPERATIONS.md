@@ -104,7 +104,7 @@ curl --unix-socket /run/thelxinoe/controller.sock \
 
 Recreate from the generated deployment directory using both `compose.yaml` and `compose.override.yaml`; the override pins accepted images. Preserve recovery images until restoration is verified. [Recovery implementation](../apps/docker-controller/src/product.rs).
 
-The fresh [schema](../crates/database/schema.sql) rejects earlier development databases and backups. Prefer `npm run dev:fresh`. To discard an old development database, stop its server, remove only its `thelxinoe.sqlite3`, `thelxinoe.sqlite3-wal` and `thelxinoe.sqlite3-shm`, then restart and complete setup. This loses accounts, connections, catalog state and preferences; media is separate.
+The fresh [schema](../crates/database/schema.sql) rejects earlier development databases and backups. Prefer `pnpm run dev:fresh`. To discard an old development database, stop its server, remove only its `thelxinoe.sqlite3`, `thelxinoe.sqlite3-wal` and `thelxinoe.sqlite3-shm`, then restart and complete setup. This loses accounts, connections, catalog state and preferences; media is separate.
 
 ## Publishing
 

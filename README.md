@@ -4,26 +4,26 @@ Self-hosted movies, shows, music, YouTube, Twitch and Kick. Rust server, Svelte 
 
 ## Run
 
-Development requires Rust 1.96+, Node 24+, FFmpeg/FFprobe 7.1+ and Docker with Linux containers.
+Development requires Rust 1.96+, Node 24+ and pnpm 10.33.2, FFmpeg/FFprobe 7.1+ and Docker with Linux containers.
 
 ```sh
-npm ci
-npm run dev
+pnpm install --frozen-lockfile
+pnpm run dev
 ```
 
-Open http://127.0.0.1:5173 and create the first administrator (password: 12+ characters). The server runs on port 8484; development state stays in `.local`. Ctrl+C stops both processes.
+Open http://127.0.0.1:5173 and create the first administrator. The server runs on port 8484; development state stays in `.local`. Ctrl+C stops both processes.
 
 | Command                        | Purpose                                                                                                                      |
 | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `npm run dev:web`              | Frontend only                                                                                                                |
-| `npm run dev:desktop`          | Windows app; requires a running server                                                                                       |
-| `npm run dev:fresh`            | Windows: new empty profile at http://127.0.0.1:18486; previous runs remain in `.local/dev-runs`                              |
-| `npm run dev:online`           | Windows: reuse existing `.local/online/server` database and key at https://localhost:22443; containers keep running          |
+| `pnpm run dev:web`             | Frontend only                                                                                                                |
+| `pnpm run dev:desktop`         | Windows app; requires a running server                                                                                       |
+| `pnpm run dev:fresh`           | Windows: new empty profile at http://127.0.0.1:18486; previous runs remain in `.local/dev-runs`                              |
+| `pnpm run dev:online`          | Windows: reuse existing `.local/online/server` database and key at https://localhost:22443; containers keep running          |
 | `docker compose up --build -d` | Deploy using [Compose](compose.yaml) and [.env.example](.env.example); read [storage and recovery](docs/OPERATIONS.md) first |
-| `npm run validate`             | Formatting, lint, Rust/web checks, unit tests and web build                                                                  |
-| `npm run ci`                   | Parallel local [CI phases](scripts/ci.mjs), including Docker fixtures and Windows desktop checks                             |
-| `npm run ci:local`             | Windows CI with a completion notification, live summary and lane logs under `.local/ci`                                      |
-| `npm run ci:status`            | Latest local CI lane results and report paths                                                                                |
+| `pnpm run validate`            | Formatting, lint, Rust/web checks, product tests and web build                                                               |
+| `pnpm run ci`                  | Parallel local [CI phases](scripts/ci.mjs), including Docker fixtures and Windows desktop checks                             |
+| `pnpm run ci:local`            | Windows CI with a completion notification, live summary and lane logs under `.local/ci`                                      |
+| `pnpm run ci:status`           | Latest local CI lane results and report paths                                                                                |
 
 New `dev:online` profiles use separate controller storage, even when a data folder is reused after a reset. Keep `server/controller-storage-id` with the saved database and key so later launches reconnect to the same controller state.
 

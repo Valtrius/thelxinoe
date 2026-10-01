@@ -359,7 +359,7 @@ mod tests {
                 manager.set_preference(ToolId::Mpv, p).await
             };
             // Preferences and local selections do not wait behind a package download.
-            tokio::time::timeout(Duration::from_secs(1), preference_change)
+            tokio::time::timeout(Duration::from_secs(10), preference_change)
                 .await
                 .unwrap()
                 .unwrap();

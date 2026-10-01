@@ -28,16 +28,16 @@ See [server policy](../apps/server/src/product.rs),
 ## Manual local lab
 
 Install the normal build prerequisites, Docker with Linux containers, Node 24,
-Rust, and OpenSSL (Git for Windows supplies it). Run `npm ci` first. Windows builds
+Rust, and OpenSSL (Git for Windows supplies it). Run `pnpm install --frozen-lockfile` first. Windows builds
 also need the Tauri prerequisites and WebView2. The first run builds two complete
 versions and can take several minutes.
 
 ```sh
-npm run updates:lab -- start
+pnpm run updates:lab start
 # Docker/web only (also works on Linux):
-npm run updates:lab -- start --server-only
+pnpm run updates:lab start --server-only
 # Windows installer only, with a local native API server and no Docker:
-npm run updates:lab -- start --desktop-only
+pnpm run updates:lab start --desktop-only
 ```
 
 The command prints the publisher URL, server URL and `lab.json` path. The Windows
@@ -52,7 +52,7 @@ Production sources, trust keys and product version are not changed by the lab.
 2. Open the printed HTTPS publisher URL. Accept the browser's warning for this
    disposable local certificate; the lab apps trust its generated CA explicitly.
    Select **candidate** and apply. Alternatively:
-   `npm run updates:lab -- candidate "<lab.json>"`.
+   `pnpm run updates:lab candidate "<lab.json>"`.
 3. In either web or desktop, open Settings → Server. The quiet icon beside
    **Product version** checks for a release; once available it becomes an animated
    arrow. The notification's **View server version** action opens this screen.
@@ -69,13 +69,13 @@ Production sources, trust keys and product version are not changed by the lab.
    Review playback gating with actual playback in the lab if relevant to UI work.
 
 To review server recovery, run
-`npm run updates:lab -- fail-validation "<lab.json>"` before clicking the update icon.
+`pnpm run updates:lab fail-validation "<lab.json>"` before clicking the update icon.
 The candidate deliberately fails validation and the controller restores the
-snapshot. Run `npm run updates:lab -- clear-failure "<lab.json>"` before retrying.
+snapshot. Run `pnpm run updates:lab clear-failure "<lab.json>"` before retrying.
 
 ```sh
-npm run updates:lab -- reset "<lab.json>"
-npm run updates:lab -- stop "<lab.json>"
+pnpm run updates:lab reset "<lab.json>"
+pnpm run updates:lab stop "<lab.json>"
 ```
 
 Reset recreates the Docker baseline and reinstalls the base desktop. Complete
@@ -89,25 +89,25 @@ accepts loopback requests only. No private signing key is mounted in containers.
 ## Automated qualification
 
 ```sh
-npm run test:updates                 # Windows: Docker + native desktop
-npm run test:updates -- --server-only # Linux or Windows
-npm run test:updates -- --desktop-only
+pnpm run test:updates                 # Windows: Docker + native desktop
+pnpm run test:updates --server-only # Linux or Windows
+pnpm run test:updates --desktop-only
 ```
 
 Each run saves `test-results/updates/<timestamp>/result.json`, screenshots,
 Playwright traces and operation/process logs. Open a trace with
-`npx playwright show-trace <trace.zip>`. `--keep` retains the lab for inspection;
+`pnpm exec playwright show-trace <trace.zip>`. `--keep` retains the lab for inspection;
 `--lab "<lab.json>"` uses an existing lab after a reset. Generated credentials are
 test-only. Failure points are injected solely into disposable candidate sources.
 No production migrations or test switches are added.
 
 The regular CI includes separate Linux server and Windows desktop lanes. Local
-`npm run ci` runs both qualification lanes separately on Windows, using the same
+`pnpm run ci` runs both qualification lanes separately on Windows, using the same
 entry points as GitHub: `ci:updates:server` and `ci:updates:desktop`.
 The full local run starts independent CI lanes concurrently in separate worktrees,
-with clean dependencies and separate builds. `npm run ci:local` retains the live
+with clean dependencies and separate builds. `pnpm run ci:local` retains the live
 summary and lane logs under `.local/ci` and displays an identified completion
-notification; `npm run ci:status` prints progress. The Linux lane uses an unused
+notification; `pnpm run ci:status` prints progress. The Linux lane uses an unused
 desktop placeholder; the Windows lane tests real signed installer bytes.
 
 ## Release setup and operation
@@ -139,7 +139,7 @@ Authenticode/SmartScreen signing; no Authenticode certificate is configured here
 [Tauri signing reference](https://v2.tauri.app/plugin/updater/#signing-updates).
 
 1. Change `[workspace.package].version` in `Cargo.toml`, run
-   `npm run version:sync`, review the change and complete local CI. Before the first
+   `pnpm run version:sync`, review the change and complete local CI. Before the first
    official release, source and target DB schemas remain equal; no migration is
    created by this workflow.
 2. Push the corresponding `X.Y.Z` tag when authorized. **Assemble release draft**

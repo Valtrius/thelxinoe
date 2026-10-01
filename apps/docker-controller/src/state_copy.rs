@@ -268,7 +268,8 @@ mod tests {
     use super::*;
     #[test]
     fn rejects_links_and_preserves_regular_content() {
-        let root = std::env::temp_dir().join(thelxinoe_core::id());
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_path_buf();
         fs::create_dir_all(root.join("source")).unwrap();
         fs::write(root.join("source/db"), "consistent state").unwrap();
         validate(&root.join("source"), &mut (0, 0)).unwrap();
@@ -276,11 +277,11 @@ mod tests {
         assert_eq!(fs::read(root.join("copy/db")).unwrap(), b"consistent state");
         std::os::unix::fs::symlink("/etc", root.join("source/escape")).unwrap();
         assert!(validate(&root.join("source"), &mut (0, 0)).is_err());
-        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn snapshots_logger_links_without_following_other_links() {
-        let root = std::env::temp_dir().join(thelxinoe_core::id());
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_path_buf();
         let source = root.join("source");
         fs::create_dir_all(&source).unwrap();
         fs::write(source.join("dated.log"), "log content").unwrap();
@@ -301,6 +302,5 @@ mod tests {
             assert!(validate(&source, &mut (0, 0)).is_err(), "accepted {target}");
             fs::remove_file(source.join("invalid")).unwrap();
         }
-        fs::remove_dir_all(root).unwrap();
     }
 }

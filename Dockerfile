@@ -1,15 +1,15 @@
 # syntax=docker/dockerfile:1
 FROM node:24-bookworm-slim AS web
 WORKDIR /src
-COPY package.json package-lock.json ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY frontend/package.json frontend/package.json
-RUN npm ci
+RUN corepack enable && pnpm install --frozen-lockfile
 COPY frontend frontend
 COPY scripts/version.mjs scripts/version.mjs
 COPY Cargo.toml Cargo.toml
 COPY compose.yaml compose.test.yaml compose.release.yaml Cargo.lock Dockerfile ./
 COPY apps/desktop/tauri.conf.json apps/desktop/tauri.conf.json
-RUN npm run build:web
+RUN pnpm run build:web
 
 FROM rust:1.98-bookworm AS rust
 WORKDIR /src

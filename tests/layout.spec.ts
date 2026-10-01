@@ -997,11 +997,13 @@ test('NZBGet URL has compact login and password copy buttons', async ({
     ),
   ).toBe(false);
   await page.setViewportSize({ width: 320, height: 850 });
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= window.innerWidth,
-    ),
-  ).toBe(true);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    )
+    .toBe(true);
   const urlBox = await url.boundingBox();
   const loginBox = await copyLogin.boundingBox();
   const passwordBox = await copyPassword.boundingBox();
@@ -1483,6 +1485,14 @@ test('skipping stays responsive during saves, animates, and reverts a failed lat
   await expect(auto).toBeEnabled();
   const selection = intro.locator('[data-choice-selection]');
   // Freeze the animation at an intermediate frame to verify actual movement.
+  await page.evaluate(() => {
+    const animate = Element.prototype.animate;
+    Element.prototype.animate = function (keyframes, options) {
+      const animation = animate.call(this, keyframes, options);
+      if (this.hasAttribute('data-choice-selection')) animation.pause();
+      return animation;
+    };
+  });
   await intro.evaluate((element) => {
     const button = element.querySelector<HTMLButtonElement>(
       'button[aria-label="Auto"]',

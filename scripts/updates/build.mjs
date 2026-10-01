@@ -146,7 +146,7 @@ export function source(lab, version) {
     .split(/\r?\n/);
   for (const file of new Set(files)) {
     if (
-      !/^(apps\/|crates\/|frontend\/|scripts\/|releases\/|Cargo\.|Dockerfile$|compose\.|package|\.dockerignore$)/.test(
+      !/^(apps\/|crates\/|frontend\/|scripts\/|releases\/|Cargo\.|Dockerfile$|compose\.|package|pnpm-|\.dockerignore$)/.test(
         file,
       ) ||
       !existsSync(join(repository, file))
@@ -196,14 +196,30 @@ export function source(lab, version) {
     let name = format!("thelxinoe-product-`,
     ),
   );
+  const fault = (file, needle, replacement) => {
+    const path = join(directory, file);
+    const code = readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
+    if (code.split(needle).length !== 2)
+      throw Error(`Missing update qualification boundary: ${file}`);
+    writeFileSync(path, code.replace(needle, replacement));
+  };
+  fault(
+    'apps/server/src/product.rs',
+    '        tokio::time::sleep(std::time::Duration::from_secs(5)).await;',
+    `        let ticks = state.config.state.join("lab-product-ticks");
+        let count = std::fs::read_to_string(&ticks).ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+        let _ = std::fs::write(ticks, (count + 1).to_string());
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;`,
+  );
   if (lab.desktop) {
-    const fault = (file, needle, replacement) => {
-      const path = join(directory, file);
-      const code = readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
-      if (code.split(needle).length !== 2)
-        throw Error(`Missing update qualification boundary: ${file}`);
-      writeFileSync(path, code.replace(needle, replacement));
-    };
+    fault(
+      'apps/desktop/src/updates.rs',
+      '            tokio::time::sleep(std::time::Duration::from_secs(60)).await;',
+      `            let ticks = std::path::Path::new(${JSON.stringify(join(lab.root, 'desktop-scheduler-ticks'))});
+            let count = std::fs::read_to_string(ticks).ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+            let _ = std::fs::write(ticks, (count + 1).to_string());
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;`,
+    );
     const held = (name, failure) => `
         let hold = std::path::Path::new(${JSON.stringify(join(lab.root, `hold-${name}`))});
         if hold.exists() {
@@ -249,7 +265,9 @@ export function source(lab, version) {
         `
     if std::env::var_os("THELXINOE_LAB_LIVE_VALIDATION").is_some() && state.config.state.join("hold-live-validation").exists() {
         std::fs::write(state.config.state.join("held-validation-entered"), b"held")?;
-        tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+        while state.config.state.join("hold-live-validation").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
     }
     if std::env::var_os("THELXINOE_LAB_LIVE_VALIDATION").is_some() && state.config.state.join("fail-live-validation").exists() {
         std::fs::write(state.config.state.join("failed-validation-mutated"), b"candidate wrote state")?;
@@ -288,7 +306,7 @@ export function containerBuild(lab, version, directory) {
 export async function nativeBuild(lab, version, directory) {
   // Cargo releases its lock before NSIS packaging reads the binary and writes
   // its shared staging files. Hold an OS-owned lock through artifact copying.
-  const pipe = `\\\\.\\pipe\\thelxinoe-update-build-${createHash('sha256').update(repository.toLowerCase()).digest('hex').slice(0, 16)}`;
+  const pipe = `\\\\.\\pipe\\thelxinoe-update-build-${createHash('sha256').update(updateTarget.toLowerCase()).digest('hex').slice(0, 16)}`;
   let lock;
   let waiting = false;
   while (!lock) {

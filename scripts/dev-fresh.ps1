@@ -9,7 +9,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$npmCommand = (Get-Command npm.cmd -ErrorAction Stop).Source
+$pnpmCommand = (Get-Command pnpm.cmd -ErrorAction Stop).Source
 $cargoCommand = (Get-Command cargo.exe -ErrorAction Stop).Source
 $webRoot = Join-Path $repoRoot 'frontend/dist'
 
@@ -62,7 +62,7 @@ try {
     }
 
     if (-not $SkipBuild) {
-        & $npmCommand run build:web
+        & $pnpmCommand run build:web
         if ($LASTEXITCODE -ne 0) {
             throw "Frontend build failed (exit $LASTEXITCODE)."
         }

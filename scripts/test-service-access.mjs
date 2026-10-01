@@ -25,7 +25,7 @@ const result = {
   revision: execFileSync('git', ['rev-parse', 'HEAD'], {
     encoding: 'utf8',
   }).trim(),
-  command: `npm run test:service-access${process.argv.includes('--desktop') ? ' -- --desktop' : ''}`,
+  command: `pnpm run test:service-access${process.argv.includes('--desktop') ? ' --desktop' : ''}`,
   scenarios: [],
   browser_network: process.env.THELXINOE_CI_BROWSER_WS_ENDPOINT
     ? 'isolated Docker bridge'
@@ -803,16 +803,5 @@ try {
   result.passed = true;
 } finally {
   writeFileSync(`${output}/result.json`, JSON.stringify(result, null, 2));
-  if (!result.passed && process.env.THELXINOE_KEEP_FAILED_FIXTURE === '1') {
-    writeFileSync(
-      `${output}/fixture.json`,
-      JSON.stringify({
-        project: f.project,
-        root: f.root,
-        base: f.base,
-        services: f.services,
-      }),
-    );
-    await f.browser.close();
-  } else await f.close();
+  await f.close();
 }

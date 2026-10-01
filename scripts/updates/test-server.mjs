@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test';
 import { join } from 'node:path';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { docker, save, envelope } from './build.mjs';
 import { until, refreshDownloads } from './lab.mjs';
 
@@ -313,6 +313,7 @@ export async function serverScenarios({
       await refreshDownloads(lab);
       envelope(lab, lab.next, lab.images[lab.next]);
       save(join(lab.root, 'lab.json'), lab);
+      writeFileSync(join(lab.root, 'registry-control/hold'), 'hold');
       await mode('slow-download');
       await api('/admin/product-update/check', 'POST');
       for (const part of ['server', 'controller']) {
@@ -397,7 +398,9 @@ export async function serverScenarios({
       });
       expect(duplicate.id).toBe(update.id);
       // More than one coordinator tick must pass with no controller operation.
-      const untilTime = Date.now() + 11000;
+      const ticks = () =>
+        Number(marker('lab-product-ticks', 'print(p.read_text())'));
+      const before = ticks();
       await until(async () => {
         if (
           (await state()).controller.items.some((item) => item.id === update.id)
@@ -405,7 +408,7 @@ export async function serverScenarios({
           throw Object.assign(Error('Update started during playback'), {
             fatal: true,
           });
-        return Date.now() >= untilTime;
+        return ticks() >= before + 2;
       });
       await page
         .getByRole('navigation', { name: 'Settings navigation' })
@@ -462,6 +465,23 @@ export async function serverScenarios({
       expect(
         (await request('/catalog/roots/missing/scan', 'POST', {})).status(),
       ).toBe(503);
+      // Keep the real maintenance fence active while a fresh page boots.
+      // A transient 503 must not strand an authenticated user at sign-in.
+      expect((await request('/setup')).status()).toBe(503);
+      const maintenanceBoot = page.waitForResponse(
+        (response) =>
+          response.url().endsWith('/api/v1/setup') && response.status() === 503,
+      );
+      await page.reload();
+      await maintenanceBoot;
+      await expect(page.getByText('Connecting to your library…')).toBeVisible();
+      await expect(
+        page.getByRole('button', { name: 'Sign in', exact: true }),
+      ).toHaveCount(0);
+      await page.screenshot({
+        path: join(output, 'server-maintenance-reload.png'),
+      });
+      rmSync(join(lab.root, 'registry-control/hold'), { force: true });
       const recovered = await stage(update.id, 'recovered');
       expect(recovered.download.component).toBe('controller');
       expect(recovered.download.received).toBeGreaterThan(0);
@@ -501,6 +521,8 @@ export async function serverScenarios({
             docker(
               'run',
               '--rm',
+              '--label',
+              `app.thelxinoe.update-lab=${lab.id}`,
               '--network',
               'none',
               '--read-only',

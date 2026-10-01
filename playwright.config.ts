@@ -1,6 +1,9 @@
 import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: 'tests',
+  workers: 1,
+  timeout: 60000,
+  expect: { timeout: 15000 },
   use: {
     trace: 'on',
     baseURL: process.env.THELXINOE_TEST_URL ?? 'http://127.0.0.1:8484',

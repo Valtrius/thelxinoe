@@ -212,7 +212,8 @@ mod tests {
     }
     #[test]
     fn deletion_rejects_parent_paths_and_symlinks() {
-        let root = std::env::temp_dir().join(thelxinoe_core::id());
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_path_buf();
         std::fs::create_dir_all(root.join("services")).unwrap();
         std::os::unix::fs::symlink(std::env::temp_dir(), root.join("services/linked")).unwrap();
         assert!(checked_directory(&root, &root).is_err());
@@ -220,6 +221,5 @@ mod tests {
         assert!(checked_directory(&root, &root.join("services/linked/appdata")).is_err());
         assert!(checked_directory(&root, &root.join("services/missing/appdata")).is_ok());
         std::fs::remove_file(root.join("services/linked")).unwrap();
-        std::fs::remove_dir_all(root).unwrap();
     }
 }

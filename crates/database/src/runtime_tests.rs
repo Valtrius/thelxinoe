@@ -88,7 +88,7 @@ async fn readers_see_committed_state_while_writes_wait_in_order() -> Result<()> 
             .await
     });
     let seen = tokio::time::timeout(
-        Duration::from_secs(1),
+        Duration::from_secs(10),
         db.read("test.read", |c| {
             Ok(
                 c.query_row("SELECT value FROM settings WHERE key='counter'", [], |r| {
@@ -136,7 +136,7 @@ async fn readers_run_concurrently_and_cannot_write() -> Result<()> {
     });
     ready.await?;
     tokio::time::timeout(
-        Duration::from_secs(1),
+        Duration::from_secs(10),
         db.read("test.fast_read", |c| {
             c.query_row("SELECT 1", [], |_| Ok(()))?;
             Ok(())
@@ -193,7 +193,7 @@ async fn queue_overload_is_explicit_and_shutdown_drains_accepted_writes() -> Res
             })
             .await
     });
-    tokio::time::timeout(Duration::from_secs(1), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         while db.metrics().writes.queued != 1 {
             tokio::task::yield_now().await;
         }

@@ -3,12 +3,13 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 import { createSocket } from 'node:dgram';
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { resolve, join, sep, basename } from 'node:path';
 import { jsonRead, jsonWrite } from './ci-state.mjs';
 
 const docker = (...args) =>
   execFileSync('docker', args, {
     encoding: 'utf8',
+    stdio: 'pipe',
     windowsHide: true,
     timeout: 120000,
   }).trim();
@@ -17,10 +18,56 @@ function inspect(kind, name) {
     return JSON.parse(docker(kind, 'inspect', name))[0];
   } catch (error) {
     if (
-      /No such (?:object|container|network|image)/i.test(String(error.stderr))
+      /No such (?:object|container|network|image|volume)/i.test(
+        String(error.stderr),
+      )
     )
       return null;
     throw error;
+  }
+}
+export function removeFixtureImages(references) {
+  const images = new Set();
+  const remove = (reference) => {
+    try {
+      docker('image', 'rm', reference);
+    } catch (error) {
+      // Another completed run can remove a shared worker alias concurrently.
+      if (inspect('image', reference)) throw error;
+    }
+  };
+  for (const reference of references) {
+    const current = inspect('image', reference);
+    if (!current) continue;
+    images.add(current.Id);
+    remove(reference);
+  }
+  for (const id of images) {
+    const current = inspect('image', id);
+    if (!current) continue;
+    const repositories = new Set([
+      'thelxinoe-controller-worker',
+      'thelxinoe-recovery-controller',
+      'thelxinoe-recovery-server',
+    ]);
+    const aliases = new Set(
+      [...repositories].map((repo) => `${repo}:${id.slice(7)}`),
+    );
+    // A concurrent run can share a cached build. Its image references or
+    // containers must survive until that run performs its own cleanup.
+    if (
+      current.RepoTags?.some((tag) => !aliases.has(tag)) ||
+      current.RepoDigests?.some(
+        (digest) => !repositories.has(digest.split('@')[0]),
+      ) ||
+      docker('ps', '-aq', '--filter', `ancestor=${id}`)
+    )
+      continue;
+    for (const reference of [
+      ...(current.RepoTags ?? []),
+      ...(current.RepoDigests ?? []),
+    ])
+      remove(reference);
   }
 }
 // Leave room for service suffixes within Docker DNS's 63-byte label limit.
@@ -61,11 +108,31 @@ export async function freePort({ udp = false } = {}) {
   throw Error('Could not allocate a free fixture port');
 }
 
-export function resourceRecord(
-  value,
-  directory = process.env.THELXINOE_CI_RESOURCE_DIRECTORY,
-) {
-  if (!directory) return () => {};
+let standalone;
+export function resourceScope({ cleanupOnExit = true } = {}) {
+  if (process.env.THELXINOE_CI_RESOURCE_DIRECTORY) return;
+  const owner = randomUUID();
+  const directory = resolve('.local/test-runs', owner);
+  process.env.THELXINOE_CI_RUN_ID = owner;
+  process.env.THELXINOE_CI_RESOURCE_DIRECTORY = directory;
+  standalone = { owner, directory };
+  if (!cleanupOnExit) return;
+  process.once('exit', () => {
+    const errors = cleanupResources(standalone.directory, standalone.owner, {
+      removeImages: true,
+    });
+    if (errors.length) {
+      console.error('Fixture cleanup failed:', errors.join('\n'));
+      process.exitCode = 1;
+    }
+  });
+}
+
+export function resourceRecord(value, directory) {
+  if (!directory) {
+    resourceScope();
+    directory = process.env.THELXINOE_CI_RESOURCE_DIRECTORY;
+  }
   mkdirSync(directory, { recursive: true });
   const path = join(directory, randomUUID() + '.json');
   const record = { owner: process.env.THELXINOE_CI_RUN_ID, ...value };
@@ -74,23 +141,47 @@ export function resourceRecord(
     jsonWrite(path, record);
   };
   update({});
+  update.close = () => {
+    const errors = cleanupRecord(record);
+    if (errors.length)
+      throw new AggregateError(
+        errors,
+        errors.map((error) => error.message).join('; '),
+      );
+    update({ closed: true });
+  };
   return update;
 }
 
 export function composeFixture({ project, file, root, env = process.env }) {
+  resourceScope();
+  env = {
+    ...env,
+    THELXINOE_CI_RUN_ID: process.env.THELXINOE_CI_RUN_ID,
+    THELXINOE_CI_RESOURCE_DIRECTORY:
+      process.env.THELXINOE_CI_RESOURCE_DIRECTORY,
+  };
   mkdirSync(root, { recursive: true });
-  const path = join(root, 'compose.json');
-  const owner = env.THELXINOE_CI_RUN_ID ?? project;
+  const path = resolve(root, 'compose.json');
+  const bindRoot = resolve(root);
+  if (
+    !bindRoot.startsWith(resolve('.local') + sep) ||
+    basename(bindRoot) !== project
+  )
+    throw Error('Fixture data must have its own directory under .local');
+  const owner = env.THELXINOE_CI_RUN_ID;
   const config = JSON.parse(
     execFileSync(
       'docker',
       ['compose', '-p', project, '-f', file, 'config', '--format', 'json'],
-      { env, encoding: 'utf8', windowsHide: true },
+      { env, encoding: 'utf8', windowsHide: true, timeout: 30000 },
     ),
   );
-  const networks = [];
+  const networks = Object.keys(config.networks ?? {}).map(
+    (key) => `${project}_${key}`,
+  );
   const update = resourceRecord(
-    { owner, project, compose: path, networks, closed: false },
+    { owner, project, networks, closed: false },
     env.THELXINOE_CI_RESOURCE_DIRECTORY,
   );
   try {
@@ -103,8 +194,6 @@ export function composeFixture({ project, file, root, env = process.env }) {
         `io.thelxinoe.ci-run=${owner}`,
         name,
       );
-      networks.push(name);
-      update({ networks });
       const [network] = JSON.parse(docker('network', 'inspect', name));
       const subnet = network.IPAM.Config.find(
         (entry) => entry.Subnet && !entry.Subnet.includes(':'),
@@ -119,16 +208,27 @@ export function composeFixture({ project, file, root, env = process.env }) {
           service.environment.THELXINOE_TRUSTED_PROXIES = subnet;
       }
     }
-    for (const service of Object.values(config.services)) {
+    for (const service of Object.values(config.services))
       service.labels = { ...service.labels, 'io.thelxinoe.ci-run': owner };
-    }
-    for (const volume of Object.values(config.volumes ?? {})) {
+    for (const volume of Object.values(config.volumes ?? {}))
       volume.labels = { ...volume.labels, 'io.thelxinoe.ci-run': owner };
-    }
     jsonWrite(path, config);
+    update({
+      compose: path,
+      bindRoot,
+      cleanupImage:
+        config.services.controller?.image ?? config.services.server?.image,
+    });
   } catch (error) {
-    for (const name of networks) docker('network', 'rm', name);
-    update({ closed: true });
+    try {
+      update.close();
+    } catch (cleanup) {
+      throw new AggregateError(
+        [error, cleanup],
+        'Fixture setup and cleanup failed',
+        { cause: cleanup },
+      );
+    }
     throw error;
   }
   const args = ['compose', '-p', project, '-f', path];
@@ -141,17 +241,154 @@ export function composeFixture({ project, file, root, env = process.env }) {
         env,
         encoding: 'utf8',
         windowsHide: true,
+        timeout: 360000,
       }).trim(),
-    close() {
-      execFileSync(
-        'docker',
-        [...args, 'down', '--volumes', '--remove-orphans'],
-        { env, stdio: 'pipe', windowsHide: true, timeout: 120000 },
-      );
-      for (const name of networks) docker('network', 'rm', name);
-      update({ closed: true });
-    },
+    close: () => update.close(),
   };
+}
+
+function cleanupRecord(record) {
+  const errors = [];
+  const attempt = (action) => {
+    try {
+      return action();
+    } catch (error) {
+      errors.push(error);
+    }
+  };
+  const owner = record.owner;
+  const deployments = new Set(record.deployment ? [record.deployment] : []);
+  if (record.lab)
+    attempt(() =>
+      execFileSync(
+        process.execPath,
+        ['scripts/updates/lab.mjs', 'stop', record.lab],
+        {
+          cwd: record.workspace,
+          windowsHide: true,
+          timeout: 300000,
+          stdio: 'pipe',
+        },
+      ),
+    );
+  // Stop producers first, including a controller whose setup failed before its
+  // deployment ID could be recorded. Then remove its managed service children.
+  if (record.project) {
+    const ids =
+      attempt(() =>
+        docker(
+          'ps',
+          '-aq',
+          '--filter',
+          `label=com.docker.compose.project=${record.project}`,
+        ),
+      ) ?? '';
+    for (const id of ids.split(/\s+/).filter(Boolean))
+      attempt(() => {
+        const container = inspect('container', id);
+        if (!container) return;
+        if (container.Config.Labels?.['io.thelxinoe.ci-run'] !== owner)
+          throw Error('Container ownership changed');
+        const deployment =
+          container.Config.Labels?.['app.thelxinoe.deployment'];
+        if (deployment) deployments.add(deployment);
+        docker('rm', '-f', '-v', id);
+      });
+  }
+  for (const id of [
+    ...(record.containers ?? []),
+    ...(record.project ? [`${record.project}-cleanup`] : []),
+  ])
+    attempt(() => {
+      const container = inspect('container', id);
+      if (!container) return;
+      if (container.Config.Labels?.['io.thelxinoe.ci-run'] !== owner)
+        throw Error('Container ownership changed');
+      docker('rm', '-f', '-v', id);
+    });
+  for (const deployment of deployments) {
+    const ids =
+      attempt(() =>
+        docker(
+          'ps',
+          '-aq',
+          '--filter',
+          `label=app.thelxinoe.deployment=${deployment}`,
+        ),
+      ) ?? '';
+    for (const id of ids.split(/\s+/).filter(Boolean))
+      attempt(() => docker('rm', '-f', '-v', id));
+  }
+  if (record.compose)
+    attempt(() => {
+      const config = jsonRead(record.compose);
+      if (
+        Object.values(config.services).some(
+          (service) => service.labels?.['io.thelxinoe.ci-run'] !== owner,
+        )
+      )
+        throw Error('Fixture ownership changed');
+      docker(
+        'compose',
+        '-p',
+        record.project,
+        '-f',
+        record.compose,
+        'down',
+        '--volumes',
+        '--remove-orphans',
+      );
+    });
+  for (const name of record.networks ?? [])
+    attempt(() => {
+      const network = inspect('network', name);
+      if (!network) return;
+      if (network.Labels?.['io.thelxinoe.ci-run'] !== owner)
+        throw Error('Network ownership changed');
+      docker('network', 'rm', name);
+    });
+  if (record.bindRoot && record.cleanupImage && !errors.length)
+    attempt(() => {
+      const root = resolve(record.bindRoot);
+      if (
+        basename(root) !== record.project ||
+        !root.startsWith(resolve('.local') + sep)
+      )
+        throw Error('Fixture data escaped its workspace');
+      // Linux fixtures write as UID 10001. Delete only directories under this
+      // fixture's validated root; root-level reports, traces and logs survive.
+      docker(
+        'run',
+        '--rm',
+        '--name',
+        `${record.project}-cleanup`,
+        '--label',
+        `io.thelxinoe.ci-run=${owner}`,
+        '--network',
+        'none',
+        '--read-only',
+        '--user',
+        '0:0',
+        '--volume',
+        `${root}:/fixture`,
+        '--entrypoint',
+        'sh',
+        record.cleanupImage,
+        '-c',
+        'find /fixture -mindepth 1 -maxdepth 1 -type d -exec rm -rf -- {} +',
+      );
+    });
+  for (const image of record.images ?? [])
+    attempt(() => {
+      if (!image.endsWith(`:${owner}`))
+        throw Error('Image reference does not belong to this run');
+      const current = inspect('image', image);
+      if (!current) return;
+      if (record.imageIds?.[image] && record.imageIds[image] !== current.Id)
+        throw Error('Image identity changed');
+      removeFixtureImages([image]);
+    });
+  return errors;
 }
 
 export function cleanupResources(
@@ -161,88 +398,37 @@ export function cleanupResources(
 ) {
   const errors = [];
   if (!directory || !existsSync(directory)) return errors;
-  for (const file of readdirSync(directory)) {
-    if (!file.endsWith('.json')) continue;
-    const path = join(directory, file);
-    const record = jsonRead(path);
-    if (record.owner !== owner || record.closed) continue;
-    if (record.images && !removeImages) continue;
+  const records = [];
+  for (const file of readdirSync(directory).filter((name) =>
+    name.endsWith('.json'),
+  )) {
     try {
-      for (const id of record.containers ?? []) {
-        const container = inspect('container', id);
-        if (!container) continue;
-        if (container.Config.Labels?.['io.thelxinoe.ci-run'] !== owner)
-          throw Error('Container ownership changed');
-        docker('rm', '-f', id);
-      }
-      if (record.deployment) {
-        const ids = docker(
-          'ps',
-          '-aq',
-          '--filter',
-          `label=app.thelxinoe.deployment=${record.deployment}`,
-        )
-          .split(/\s+/)
-          .filter(Boolean);
-        if (ids.length) docker('rm', '-f', ...ids);
-      }
-      if (record.lab)
-        execFileSync(
-          process.execPath,
-          ['scripts/updates/lab.mjs', 'stop', record.lab],
-          {
-            cwd: record.workspace,
-            windowsHide: true,
-            timeout: 180000,
-            stdio: 'pipe',
-          },
-        );
-      if (record.compose) {
-        const config = jsonRead(record.compose);
-        if (
-          Object.values(config.services).some(
-            (service) => service.labels?.['io.thelxinoe.ci-run'] !== owner,
-          )
-        )
-          throw Error('Fixture ownership changed');
-        docker(
-          'compose',
-          '-p',
-          record.project,
-          '-f',
-          record.compose,
-          'down',
-          '--volumes',
-          '--remove-orphans',
-        );
-      }
-      for (const name of record.networks ?? []) {
-        const network = inspect('network', name);
-        if (!network) continue;
-        if (network.Labels?.['io.thelxinoe.ci-run'] !== owner)
-          throw Error('Network ownership changed');
-        docker('network', 'rm', name);
-      }
-      if (record.images)
-        for (const image of record.images) {
-          if (!image.endsWith(`:${owner}`))
-            throw Error('Image reference does not belong to this run');
-          const current = inspect('image', image);
-          if (!current) continue;
-          if (record.imageIds?.[image] && record.imageIds[image] !== current.Id)
-            throw Error('Image identity changed');
-          docker('image', 'rm', image);
-        }
-      jsonWrite(path, { ...record, closed: true });
+      records.push({ file, record: jsonRead(join(directory, file)) });
     } catch (error) {
       errors.push(`${file}: ${error.message}`);
     }
+  }
+  // Image records must outlive every container that uses them.
+  records.sort((a, b) => Number(!!a.record.images) - Number(!!b.record.images));
+  for (const { file, record } of records) {
+    if (
+      record.owner !== owner ||
+      record.closed ||
+      record.process ||
+      (record.images && (!removeImages || errors.length))
+    )
+      continue;
+    const failures = cleanupRecord(record);
+    errors.push(...failures.map((error) => `${file}: ${error.message}`));
+    if (!failures.length)
+      jsonWrite(join(directory, file), { ...record, closed: true });
   }
   return errors;
 }
 
 export function fixtureImages() {
-  const namespace = process.env.THELXINOE_CI_RUN_ID ?? randomUUID();
+  resourceScope();
+  const namespace = process.env.THELXINOE_CI_RUN_ID;
   return Object.fromEntries(
     ['server', 'controller'].map((component) => [
       component,

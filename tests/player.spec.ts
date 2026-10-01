@@ -427,7 +427,10 @@ test('web playback records active time but excludes paused time and seeking', as
   await expect.poll(() => state.progress.at(-1)?.state).toBe('paused');
   const seconds = state.progress.at(-1)!.active_seconds;
   expect(seconds).toBeGreaterThan(0);
-  expect(seconds).toBeLessThan(10);
+  const position = await page
+    .locator('video')
+    .evaluate((video: HTMLVideoElement) => video.currentTime);
+  expect(seconds).toBeLessThanOrEqual(position + 1);
   await page.locator('video').evaluate(async (video: HTMLVideoElement) => {
     await new Promise<void>((resolve) => {
       video.addEventListener('seeked', () => resolve(), { once: true });

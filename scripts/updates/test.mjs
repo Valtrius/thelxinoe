@@ -1,3 +1,4 @@
+import { resourceScope } from '../ci-resources.mjs';
 import { chromium, expect } from '@playwright/test';
 import { mkdirSync, writeFileSync, readFileSync, copyFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
@@ -15,6 +16,7 @@ import { serverScenarios } from './test-server.mjs';
 import { desktopScenarios, connectDesktop } from './test-desktop.mjs';
 
 const arguments_ = process.argv.slice(2);
+if (arguments_.includes('--keep')) resourceScope({ cleanupOnExit: false });
 const reuse = arguments_.indexOf('--lab');
 const output = resolve('test-results/updates', String(Date.now()));
 mkdirSync(output, { recursive: true });

@@ -124,6 +124,7 @@
   } from '@lucide/svelte';
   import {
     api,
+    ApiError,
     Events,
     type User,
     desktop,
@@ -282,43 +283,59 @@
     return true;
   }
   async function boot() {
-    try {
-      await initializeTransport();
-      serverAddress = serverUrl();
-      if (!(await checkServer())) return;
-      if (!setup) {
-        try {
-          user = (await api<{ user: User }>('/auth/me')).user;
-        } catch {
-          user = null;
+    loading = true;
+    let reconnecting = false;
+    for (;;) {
+      try {
+        await initializeTransport();
+        serverAddress = serverUrl();
+        if (!(await checkServer())) break;
+        if (!setup) {
+          try {
+            user = (await api<{ user: User }>('/auth/me')).user;
+          } catch (e) {
+            if (!(e instanceof ApiError) || e.status !== 401) throw e;
+            user = null;
+          }
         }
-      }
-      if (user) {
-        if (returnToService()) return;
-        await Promise.all([loadAppearance(user.id), loadDisplayPreferences()]);
-        restoreNavigation();
-        startEvents();
-        if (desktop) {
-          const state = await invoke<{
-            media_id: string;
-            title: string;
-            music: boolean;
-            status: string;
-          }>('mpv_state');
-          if (state.media_id && !['stopped', 'failed'].includes(state.status))
-            playing = {
-              id: state.media_id,
-              title: state.title,
-              kind: state.music ? 'track' : 'movie',
-              restore: true,
-            };
+        if (user) {
+          if (returnToService()) return;
+          await Promise.all([
+            loadAppearance(user.id),
+            loadDisplayPreferences(),
+          ]);
+          restoreNavigation();
+          startEvents();
+          if (desktop) {
+            const state = await invoke<{
+              media_id: string;
+              title: string;
+              music: boolean;
+              status: string;
+            }>('mpv_state');
+            if (state.media_id && !['stopped', 'failed'].includes(state.status))
+              playing = {
+                id: state.media_id,
+                title: state.title,
+                kind: state.music ? 'track' : 'movie',
+                restore: true,
+              };
+          }
         }
+      } catch (e) {
+        if (
+          (e instanceof ApiError && e.code === 'maintenance') ||
+          (reconnecting && (!(e instanceof ApiError) || e.status >= 500))
+        ) {
+          reconnecting = true;
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          continue;
+        }
+        error = String(e);
       }
-    } catch (e) {
-      error = String(e);
-    } finally {
-      loading = false;
+      break;
     }
+    loading = false;
   }
   async function loadDisplayPreferences() {
     const value = await api<{

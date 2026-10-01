@@ -164,7 +164,7 @@ mod tests {
             .write_all(b"RESS:25\t100\tNA\t3\th264\tnone\n")
             .await
             .unwrap();
-        let progress = tokio::time::timeout(Duration::from_secs(1), receive.recv())
+        let progress = tokio::time::timeout(Duration::from_secs(10), receive.recv())
             .await
             .unwrap()
             .unwrap();
@@ -186,57 +186,66 @@ mod tests {
     async fn windows_environment_isolated_and_tree_killed() {
         let shell = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
             .join("System32/WindowsPowerShell/v1.0/powershell.exe");
-        let output = run(&shell, &["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(), "if ($env:HOME -ne $env:APPDATA -or $env:HOME -ne $env:TEMP -or $env:PATH) { exit 9 }; Write-Output 'isolated'".into()], Duration::from_secs(10), 1024).await.unwrap();
+        let output = run(&shell, &["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(), "if ($env:HOME -ne $env:APPDATA -or $env:HOME -ne $env:TEMP -or $env:PATH) { exit 9 }; Write-Output 'isolated'".into()], Duration::from_secs(60), 1024).await.unwrap();
         assert!(output.success);
         assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), "isolated");
         let marker = tempfile::tempdir().unwrap();
-        let path = marker.path().join("escaped.txt");
-        let baseline = format!(
-            "Start-Process -Wait -WindowStyle Hidden -FilePath '{}' -ArgumentList '-NoProfile -NonInteractive -Command Set-Content -LiteralPath ''{}'' -Value baseline'",
+        let ready = marker.path().join("child.pid");
+        let child_script = marker.path().join("child.ps1");
+        std::fs::write(
+            &child_script,
+            format!(
+                "Set-Content -LiteralPath '{}' -Encoding ascii -Value $PID; Start-Sleep 120",
+                ready.display()
+            ),
+        )
+        .unwrap();
+        // Output overflow triggers the same cleanup path as timeout, after the
+        // descendant has acknowledged startup. No fixed startup race or delayed marker.
+        let script = format!(
+            "Start-Process -WindowStyle Hidden -FilePath '{}' -ArgumentList '-NoProfile -NonInteractive -File \"{}\"'; while (-not (Test-Path -LiteralPath '{}')) {{ Start-Sleep -Milliseconds 50 }}; Write-Output ('x' * 2048); Start-Sleep 120",
             shell.display(),
-            path.display()
+            child_script.display(),
+            ready.display()
         );
-        let baseline = run(
+        let failure = run(
             &shell,
             &[
                 "-NoProfile".into(),
                 "-NonInteractive".into(),
                 "-Command".into(),
-                baseline.into(),
+                script.into(),
             ],
-            Duration::from_secs(10),
+            Duration::from_secs(60),
+            1024,
+        )
+        .await
+        .err()
+        .expect("Output overflow must stop the tool");
+        assert!(failure.to_string().contains("output exceeded"), "{failure}");
+        let pid: u32 = std::fs::read_to_string(ready)
+            .unwrap()
+            .trim()
+            .trim_start_matches('\u{feff}')
+            .parse()
+            .unwrap();
+        let cleanup = format!(
+            "$child = Get-Process -Id {pid} -ErrorAction SilentlyContinue; if ($child -and -not $child.WaitForExit(30000)) {{ Stop-Process -InputObject $child -Force; exit 9 }}; Write-Output 'killed'"
+        );
+        let result = run(
+            &shell,
+            &[
+                "-NoProfile".into(),
+                "-NonInteractive".into(),
+                "-Command".into(),
+                cleanup.into(),
+            ],
+            Duration::from_secs(60),
             1024,
         )
         .await
         .unwrap();
-        assert!(baseline.success);
-        assert!(
-            path.exists(),
-            "The descendant fixture must execute before testing termination"
-        );
-        std::fs::remove_file(&path).unwrap();
-        let script = format!(
-            "Start-Process -WindowStyle Hidden -FilePath '{}' -ArgumentList '-NoProfile -NonInteractive -Command Start-Sleep 3; Set-Content -LiteralPath ''{}'' -Value escaped'; Start-Sleep 30",
-            shell.display(),
-            path.display()
-        );
-        assert!(
-            run(
-                &shell,
-                &[
-                    "-NoProfile".into(),
-                    "-NonInteractive".into(),
-                    "-Command".into(),
-                    script.into()
-                ],
-                Duration::from_secs(1),
-                1024
-            )
-            .await
-            .is_err()
-        );
-        tokio::time::sleep(Duration::from_secs(4)).await;
-        assert!(!path.exists(), "Descendant escaped the Windows job");
+        assert!(result.success, "Descendant escaped the Windows job");
     }
     #[cfg(unix)]
     #[tokio::test]

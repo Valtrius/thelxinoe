@@ -29,14 +29,12 @@ for (const dir of [
   mkdirSync(`${root}/${dir}`, { recursive: true });
 let infrastructure;
 const compose = (...args) => infrastructure.compose(...args);
-const browser = await launchBrowser();
-const context = await browser.newContext({ ignoreHTTPSErrors: true });
+let browser, context;
 const base = `https://localhost:${process.env.THELXINOE_CONNECTIONS_PORT}`;
 const services = {};
 const retirementReconnects = [];
 const bootstrapProfiles = {};
-let deployment,
-  passed = false;
+let deployment;
 async function api(path, method = 'GET', data, timeout = 30000) {
   const response = await context.request.fetch(`${base}/api/v1${path}`, {
     method,
@@ -292,6 +290,8 @@ async function waitUpdate(updateId, stage) {
 }
 
 try {
+  browser = await launchBrowser();
+  context = await browser.newContext({ ignoreHTTPSErrors: true });
   infrastructure = composeFixture({
     project,
     file: 'compose.connections.test.yaml',
@@ -867,7 +867,6 @@ try {
       2,
     ),
   );
-  passed = true;
 } catch (error) {
   try {
     writeFileSync(
@@ -897,25 +896,9 @@ try {
   );
   throw error;
 } finally {
-  await browser.close().catch(() => {});
-  if (passed || process.env.THELXINOE_KEEP_FAILED_FIXTURE !== '1') {
-    if (deployment) {
-      const owned = docker(
-        'ps',
-        '-aq',
-        '--filter',
-        `label=app.thelxinoe.deployment=${deployment}`,
-      )
-        .split(/\s+/)
-        .filter(Boolean);
-      if (owned.length) docker('rm', '-f', ...owned);
-    }
+  try {
+    await browser?.close();
+  } finally {
     infrastructure?.close();
-  } else {
-    writeFileSync(
-      `${root}/fixture.json`,
-      JSON.stringify({ project, root, deployment, base, services }, null, 2),
-    );
-    console.log(`Failed fixture retained: ${root}`);
   }
 }
