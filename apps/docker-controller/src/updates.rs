@@ -365,13 +365,7 @@ async fn snapshot(d: &Deployment, u: &Update, leaf: &str) -> Result<()> {
     worker(d, u, source, &host_path(d, u, leaf), false, leaf).await
 }
 async fn check(d: &Deployment, u: &mut Update) -> Result<()> {
-    request(
-        Method::POST,
-        &format!("/images/create?fromImage={}", u.candidate),
-        None,
-    )
-    .await?;
-    let image = engine(&format!("/images/{}/json", u.candidate)).await?;
+    let image = crate::docker::ensure_pinned_image(&u.candidate).await?;
     if image["Architecture"] != "amd64" || image["Os"] != "linux" {
         return Err(conflict("Candidate platform is unsupported"));
     }
