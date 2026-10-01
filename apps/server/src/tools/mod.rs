@@ -43,6 +43,23 @@ impl std::fmt::Display for PackageFailure {
 }
 impl std::error::Error for PackageFailure {}
 
+fn retry_at(error: &anyhow::Error) -> Option<i64> {
+    error
+        .downcast_ref::<PackageFailure>()
+        .and_then(|failure| failure.retry_at)
+        .or_else(|| {
+            error
+                .downcast_ref::<std::io::Error>()
+                .filter(|error| {
+                    matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::OutOfMemory
+                    )
+                })
+                .map(|_| now() + 30)
+        })
+}
+
 pub struct Manager {
     pub runtime: thelxinoe_tools::Runtime,
     root: PathBuf,
@@ -496,6 +513,13 @@ async fn validate_current(state: &AppState, job: &Job, t: &Tool) -> anyhow::Resu
         verify_package(state, &generation).await
     }
     .await;
+    if result
+        .as_ref()
+        .err()
+        .is_some_and(|error| retry_at(error).is_some())
+    {
+        return result;
+    }
     storage::integrity(
         &state.db,
         t.id.clone(),
@@ -988,6 +1012,9 @@ async fn activate(state: &AppState, job: &Job, t: &Tool) -> anyhow::Result<()> {
         .await?;
     }
     if let Err(error) = protocol(state, &proposed).await {
+        if retry_at(&error).is_some() {
+            return Err(error);
+        }
         storage::validation(
             &state.db,
             job.id.clone(),
@@ -1014,6 +1041,10 @@ async fn activate(state: &AppState, job: &Job, t: &Tool) -> anyhow::Result<()> {
         // Remote-provider failures never enter this rollback path.
         for generation in &proposed {
             if let Err(error) = verify_package(state, generation).await {
+                if retry_at(&error).is_some() {
+                    tracing::warn!(%error, "Activated tool validation temporarily unavailable");
+                    continue;
+                }
                 storage::integrity(
                     &state.db,
                     generation.candidate.tool.clone(),
@@ -1273,14 +1304,8 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
                     continue;
                 }
                 if let Err(error) = operation(&state, &job).await {
-                    if job.startup() {
-                        storage::integrity(&state.db, job.tool.clone(), Some(error.to_string()))
-                            .await?;
-                    }
                     if job.action != "check"
-                        && let Some(retry_at) = error
-                            .downcast_ref::<PackageFailure>()
-                            .and_then(|e| e.retry_at)
+                        && let Some(retry_at) = retry_at(&error)
                     {
                         storage::validation(
                             &state.db,
@@ -1289,9 +1314,18 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
                             retry_at,
                         )
                         .await?;
-                        wait(&state,&job,"Release service unavailable; the frozen candidate will retry automatically".into()).await?;
+                        wait(
+                            &state,
+                            &job,
+                            "Tool operation temporarily unavailable; retrying automatically".into(),
+                        )
+                        .await?;
                         changed(&state).await?;
                         continue;
+                    }
+                    if job.startup() {
+                        storage::integrity(&state.db, job.tool.clone(), Some(error.to_string()))
+                            .await?;
                     }
                     storage::progress(
                         &state.db,

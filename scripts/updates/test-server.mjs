@@ -107,7 +107,8 @@ export async function serverScenarios({
           'recovered',
           'restored',
           'superseded',
-        ].includes(operation?.stage)
+        ].includes(operation?.stage) &&
+        !(wanted === 'restored' && operation?.stage === 'committed')
       )
         throw Object.assign(Error(JSON.stringify(operation)), { fatal: true });
       return false;

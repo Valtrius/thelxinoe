@@ -1,5 +1,6 @@
 """Bounded package acquisition/validation. Selection and policy belong to Rust storage."""
 import hashlib
+import errno
 from concurrent.futures import ThreadPoolExecutor
 import http.client
 import base64
@@ -547,7 +548,9 @@ if __name__ == "__main__":
         main()
     except Exception as error:
         retry_at = None
-        if isinstance(error, urllib.error.HTTPError) and error.code in (403, 429, 503):
+        if isinstance(error, MemoryError) or isinstance(error, OSError) and error.errno in (errno.EAGAIN, errno.ENOMEM) or str(error) == "can't start new thread":
+            retry_at = int(time.time()) + 30
+        elif isinstance(error, urllib.error.HTTPError) and error.code in (403, 429, 503):
             try:
                 retry_at = max(int(time.time()) + 60, min(int(time.time()) + 86400,
                                int(error.headers.get("X-RateLimit-Reset", int(time.time()) + int(error.headers.get("Retry-After", 3600))))))

@@ -19,7 +19,7 @@ function inspect(kind, name) {
     return JSON.parse(docker(kind, 'inspect', name))[0];
   } catch (error) {
     if (
-      /No such (?:object|container|network|image|volume)/i.test(
+      /No such (?:object|container|network|image|volume)|(?:network|volume) .+ not found/i.test(
         String(error.stderr),
       )
     )

@@ -74,7 +74,9 @@ export function serverToolsReady({ supported, items }) {
 }
 
 export function waitForServerTools(read) {
-  return waitForState('Server tools ready', read, serverToolsReady);
+  return waitForState('Server tools ready', read, serverToolsReady, {
+    timeout: budgets.provision,
+  });
 }
 
 export function waitForRestart(read, before, urlBase) {

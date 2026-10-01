@@ -9,7 +9,7 @@ test('movie, multi-episode and tagged music scan into browsable libraries with s
     'Requires generated media and isolated Compose fixture',
   );
   const watchTimeout = 15_000;
-  test.setTimeout(budgets.startup + 60_000);
+  test.setTimeout(budgets.provision + 60_000);
   await page.goto('/');
   await page.getByLabel('Username', { exact: true }).fill('admin');
   await page

@@ -70,8 +70,12 @@ async function docker(...args) {
     );
   });
 }
-function eventually(callback, timeout = budgets.provision) {
-  return waitForState('Server tool state', callback, (value) => !!value, {
+function eventually(
+  callback,
+  timeout = budgets.provision,
+  accept = (value) => !!value,
+) {
+  return waitForState('Server tool state', callback, accept, {
     timeout,
   });
 }
@@ -209,6 +213,12 @@ async function coldStart() {
       container,
       '--health-interval',
       '1s',
+      '--cpus',
+      '2',
+      '--memory',
+      '1g',
+      '--pids-limit',
+      '64',
       '--network',
       'none',
       '--read-only',
@@ -309,14 +319,11 @@ async function coldStart() {
       queued.job.id,
       'Restart must resume the durable installation job',
     );
-    const items = await eventually(async () => {
-      const items = await observe();
-      return (
-        items.every(
-          (item) => item.installed && !item.integrity_error && !pending(item),
-        ) && items
-      );
-    });
+    const items = await eventually(observe, budgets.provision, (items) =>
+      items.every(
+        (item) => item.installed && !item.integrity_error && !pending(item),
+      ),
+    );
     const toolsReadyMs = Date.now() - started;
     for (const item of items) {
       assert.ok(item.installed, item.id);
@@ -529,6 +536,48 @@ http.server.ThreadingHTTPServer(('0.0.0.0',8080),Proxy).serve_forever()`;
         await api(path, method, body, 403, member);
       }
     });
+    await scenario(
+      'temporary process pressure preserves the installed tool and retries its repair',
+      async () => {
+        const before = (await inventory()).find((item) => item.id === 'deno');
+        const originalLimit = JSON.parse(await docker('inspect', name))[0]
+          .HostConfig.PidsLimit;
+        let waiting;
+        try {
+          await docker('update', '--pids-limit', '1', name);
+          await api('/admin/tools/deno/repair', 'POST', {
+            candidate_id: before.installed.candidate_id,
+          });
+          waiting = await eventually(
+            async () => (await inventory()).find((item) => item.id === 'deno'),
+            budgets.restart,
+            (item) => {
+              if (item.job.stage === 'failed')
+                throw Object.assign(Error(item.job.error), { fatal: true });
+              return item.job.retry_at > Date.now() / 1000;
+            },
+          );
+          assert.deepEqual(waiting.installed, before.installed);
+          assert.equal(waiting.integrity_error, null);
+        } finally {
+          await docker(
+            'update',
+            '--pids-limit',
+            String(originalLimit ?? -1),
+            name,
+          );
+        }
+        const repaired = (await idle()).find((item) => item.id === 'deno');
+        assert.equal(repaired.job.stage, 'complete', repaired.job.error);
+        assert.equal(
+          repaired.installed.candidate_id,
+          before.installed.candidate_id,
+        );
+        assert.notEqual(repaired.installed.id, before.installed.id);
+        assert.equal(repaired.integrity_error, null);
+        return { waiting, repaired };
+      },
+    );
     let original, updated;
     await scenario(
       'Notify discovers a new build without installing; manual install deduplicates',
@@ -1098,11 +1147,14 @@ http.server.ThreadingHTTPServer(('0.0.0.0',8080),Proxy).serve_forever()`;
           channel: 'stable',
           pinned: false,
         });
-        await eventually(
-          async () =>
-            (await inventory()).find((item) => item.id === 'yt-dlp').job
-              .stage === 'canceled',
+        const changed = await eventually(
+          async () => (await inventory()).find((item) => item.id === 'yt-dlp'),
+          budgets.restart,
+          (item) =>
+            item.channel === 'stable' &&
+            (item.job.id !== waiting.job.id || item.job.stage === 'canceled'),
         );
+        assert.equal(changed.installed.id, before.id);
         catalog[index] = previous;
         await saveCatalog();
         await api('/admin/tools/yt-dlp/settings', 'POST', {
@@ -1111,7 +1163,14 @@ http.server.ThreadingHTTPServer(('0.0.0.0',8080),Proxy).serve_forever()`;
           pinned: false,
         });
         await check();
-        return waiting.job;
+        const next = await api('/admin/tools/yt-dlp/install', 'POST', {
+          candidate_id: catalog[index].id,
+        });
+        assert.notEqual(next.job_id, waiting.job.id);
+        const installed = (await idle()).find((item) => item.id === 'yt-dlp');
+        assert.equal(installed.job.stage, 'complete', installed.job.error);
+        assert.equal(installed.installed.candidate_id, catalog[index].id);
+        return { interrupted: waiting.job, changed, installed };
       },
     );
     evidence.product_passed = true;
