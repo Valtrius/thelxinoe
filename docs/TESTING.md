@@ -14,28 +14,25 @@ npm run test:ui:player
 npm run test:service-access
 ```
 
-[Scripts](../package.json) and [CI runner](../scripts/ci.mjs) define the checks. On Windows, `ci:server` runs Linux checks via [Dockerfile.verify](../scripts/Dockerfile.verify); `ci:desktop` runs native checks. `ci:containers` deletes its disposable `thelxinoe-test` and `thelxinoe-playback` containers/volumes before and after running. UI suites intercept API requests and use no server account; player tests need FFmpeg.
+[Scripts](../package.json) and [CI runner](../scripts/ci.mjs) define the checks.
+On Windows, Linux checks require Docker Desktop running Linux containers.
+Use `npm run ci:status` to locate the latest report, then run these commands
+from the originating worktree when needed:
 
-The full local `npm run ci` runs independent lanes concurrently. Each lane gets
-an isolated worktree containing the current files, a clean dependency installation,
-and separate build outputs and evidence. Local runs use unique browser ports and
-Compose project names; one coordinator at a time owns shared Docker fixtures.
-Single-phase commands remain the same commands GitHub runs.
-
-The live summary requests background opening in the default browser at launch
-and updates every five seconds. Browser launch errors are saved in
-`browser-open.log`. Use `npm run ci:status` to reopen its path. Expand a lane's commands to
-see which step is running and how long each completed step took.
-The run retains per-lane logs, `result.json`, source hashes, worktrees and test
-artifacts. Windows displays a completion window with the run ID and lane results.
+```sh
+node scripts/ci-local.mjs --stop <run-directory>
+node scripts/ci-local.mjs --recover <run-directory> # After a coordinator crash
+npm run ci:clean -- <finished-run-directory>
+```
 
 ## Test artifacts
 
 Native Radarr/Sonarr/Lidarr/Prowlarr/Bazarr/NZBGet checks use fresh Docker storage and save safe results and
 screenshots in `test-results/service-access`. The [runner](../scripts/test-service-access.mjs)
-builds its images; pass `-- --built` only after building the current server and
-controller as `thelxinoe-service-{server,controller}:local`. See the
-[failure contract](../tests/service-access.md). Native browser traces are omitted
+builds uniquely tagged images; pass `-- --built` only after setting
+`THELXINOE_SERVER_IMAGE` and `THELXINOE_CONTROLLER_IMAGE` to the current built
+references (the legacy `thelxinoe-service-{server,controller}:local` defaults
+remain available for manual fixtures). Native browser traces are omitted
 because service responses contain API keys.
 
 On Windows with Linux Docker available, `npm run test:service-access -- --desktop`

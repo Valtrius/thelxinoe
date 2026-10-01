@@ -1,16 +1,14 @@
-import { chromium, expect } from '@playwright/test';
+import { expect } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { createServer } from 'node:net';
+import { composeFixture, fixtureId, freePort } from './ci-resources.mjs';
 import { randomUUID } from 'node:crypto';
 import { waitForProxy } from './service-access-fixture.mjs';
+import { launchBrowser } from './ci-browser.mjs';
 
-const project = `thelxinoe-recyclarr-${Date.now()}`;
+const project = fixtureId('recyclarr');
 const adoptionOnly = process.argv.includes('--adoption-only');
-const interruptAfterInstall = process.argv.includes(
-  '--interrupt-after-install',
-);
 const root = resolve(`.local/${project}`);
 const docker = (...args) => {
   try {
@@ -29,15 +27,8 @@ const docker = (...args) => {
     throw Error(message);
   }
 };
-async function port() {
-  const server = createServer();
-  await new Promise((done) => server.listen(0, '127.0.0.1', done));
-  const value = server.address().port;
-  await new Promise((done) => server.close(done));
-  return value;
-}
 process.env.THELXINOE_CONNECTIONS_ROOT = root;
-process.env.THELXINOE_CONNECTIONS_PORT = String(await port());
+process.env.THELXINOE_CONNECTIONS_PORT = String(await freePort());
 for (const folder of [
   'server',
   'cache',
@@ -47,22 +38,9 @@ for (const folder of [
   'media/downloads',
 ])
   mkdirSync(`${root}/${folder}`, { recursive: true });
-const compose = (...args) =>
-  docker(
-    'compose',
-    '-p',
-    project,
-    '-f',
-    'compose.connections.test.yaml',
-    ...args,
-  );
-const browserEndpoint = process.env.THELXINOE_RECYCLARR_BROWSER_WS_ENDPOINT;
-const browser = browserEndpoint
-  ? await chromium.connect(browserEndpoint, {
-      exposeNetwork: '<loopback>',
-      timeout: 30000,
-    })
-  : await chromium.launch();
+let infrastructure;
+const compose = (...args) => infrastructure.compose(...args);
+const browser = await launchBrowser();
 const context = await browser.newContext({ ignoreHTTPSErrors: true });
 await context.tracing.start({ screenshots: true, snapshots: true });
 const base = `https://localhost:${process.env.THELXINOE_CONNECTIONS_PORT}`;
@@ -72,12 +50,10 @@ const externalContainers = [];
 const evidence = {
   project,
   root,
-  browser_network: browserEndpoint ? 'isolated Docker bridge' : 'host',
-  scope: interruptAfterInstall
-    ? 'cleanup'
-    : adoptionOnly
-      ? 'adoption'
-      : 'complete',
+  browser_network: process.env.THELXINOE_CI_BROWSER_WS_ENDPOINT
+    ? 'isolated Docker bridge'
+    : 'host',
+  scope: adoptionOnly ? 'adoption' : 'complete',
   started: new Date().toISOString(),
   finished: null,
   passed: null,
@@ -112,7 +88,7 @@ async function api(path, method = 'GET', data) {
   return value;
 }
 async function install(kind) {
-  const host_port = kind === 'recyclarr' ? null : await port();
+  const host_port = kind === 'recyclarr' ? null : await freePort();
   const created = await api('/admin/stack/install', 'POST', {
     kind,
     host_port,
@@ -235,6 +211,11 @@ async function waitUpdate(id, stage) {
     .toBe(stage);
 }
 try {
+  infrastructure = composeFixture({
+    project,
+    file: 'compose.connections.test.yaml',
+    root,
+  });
   compose(
     'run',
     '--rm',
@@ -258,16 +239,13 @@ try {
   });
   deployment = (await api('/admin/stack')).deployment_id;
   evidence.deployment = deployment;
+  infrastructure.update({ deployment });
   saveEvidence();
   await install('recyclarr');
   expect(
     JSON.parse(docker('inspect', services.recyclarr.container_id))[0].State
       .Status,
   ).toBe('created');
-  if (interruptAfterInstall) {
-    await browser.close();
-    throw Error('Intentional fixture interruption after installation');
-  }
   if (!adoptionOnly) {
     await expect
       .poll(
@@ -423,7 +401,7 @@ try {
         `${compose('ps', '-q', 'server')}:ro`,
         '-v',
         `${nativeMount}:/target:ro`,
-        'thelxinoe-service-server:local',
+        process.env.THELXINOE_SERVER_IMAGE ?? 'thelxinoe-service-server:local',
         '-c',
         "import json,sys,socket,http.client,xml.etree.ElementTree as E; p=json.loads(sys.argv[2]); p['targets'][0]['secret']=E.parse('/target/config.xml').getroot().findtext('ApiKey'); c=http.client.HTTPConnection('localhost',timeout=300); c.sock=socket.socket(socket.AF_UNIX); c.sock.connect('/run/thelxinoe/controller.sock'); c.request('POST','/stack/'+sys.argv[1]+'/recyclarr/run',json.dumps(p),{'Content-Type':'application/json'}); r=c.getresponse(); assert r.status==200,r.status; print(r.read().decode())",
         services.recyclarr.id,
@@ -1170,7 +1148,8 @@ try {
     `${ownedRaw.Mounts.find((m) => m.Destination === '/config').Source}:/source:ro`,
     '-v',
     `${volume}:/destination`,
-    'thelxinoe-service-controller:local',
+    process.env.THELXINOE_CONTROLLER_IMAGE ??
+      'thelxinoe-service-controller:local',
     'snapshot-copy',
   );
   const privateYaml = compose(
@@ -1209,7 +1188,7 @@ try {
       'python3',
       '-v',
       `${volume}:/config`,
-      'thelxinoe-service-server:local',
+      process.env.THELXINOE_SERVER_IMAGE ?? 'thelxinoe-service-server:local',
       '-c',
       "import sys,os; open('/config/recyclarr.yml','w').write(sys.argv[1]); open('/config/settings.yml','w').write(sys.argv[2]); os.chown('/config/recyclarr.yml',10001,10001); os.chown('/config/settings.yml',10001,10001)",
       yaml,
@@ -1220,6 +1199,8 @@ try {
   const external = docker(
     'run',
     '-d',
+    '--label',
+    `io.thelxinoe.ci-run=${process.env.THELXINOE_CI_RUN_ID ?? project}`,
     '--name',
     `${project}-external`,
     '--network',
@@ -1233,6 +1214,7 @@ try {
     evidence.image,
   );
   externalContainers.push(external);
+  infrastructure.update({ containers: externalContainers });
   await api(`/admin/stack/${services.recyclarr.id}/action`, 'POST', {
     action: 'remove',
   });
@@ -1386,9 +1368,7 @@ try {
     await cleanup(`external fixture ${container}`, () =>
       docker('rm', '-f', container),
     );
-  await cleanup('compose deployment', () =>
-    compose('down', '--volumes', '--remove-orphans'),
-  );
+  await cleanup('compose deployment', () => infrastructure?.close());
   evidence.finished = new Date().toISOString();
   if (evidence.cleanup_errors.length) {
     evidence.passed = false;

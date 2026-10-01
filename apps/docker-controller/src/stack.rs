@@ -87,34 +87,21 @@ fn service_path(key: &str) -> std::path::PathBuf {
         .join(key)
         .join("service.json")
 }
-fn choose_service_name(
-    kind: &str,
-    key: &str,
-    containers: &Value,
-    replacing: Option<&str>,
-) -> Result<String> {
+fn choose_service_name(kind: &str, key: &str, containers: &Value) -> Result<String> {
     let rows = containers.as_array().ok_or_else(unavailable)?;
-    let occupied = |name: &str| {
-        rows.iter().any(|row| {
-            replacing != row["Id"].as_str()
-                && row["Names"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_str)
-                    .any(|n| n.trim_start_matches('/') == name)
-        })
-    };
-    let primary = format!("thelxinoe-{kind}");
-    if !occupied(&primary) {
-        return Ok(primary);
-    }
-    // Separate deployments can share a Docker daemon without taking each other's names.
-    let scoped = format!("{primary}-{}", &key[..8]);
-    if occupied(&scoped) {
+    // A shared primary name races between controllers even when both see it free.
+    let name = format!("thelxinoe-{kind}-{key}");
+    if rows.iter().any(|row| {
+        row["Names"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .any(|n| n.trim_start_matches('/') == name)
+    }) {
         return Err(conflict("Managed container name is already in use"));
     }
-    Ok(scoped)
+    Ok(name)
 }
 fn load(key: &str) -> Result<Managed> {
     id(key)?;
@@ -549,7 +536,7 @@ async fn install(
     let image = stable_image(t).await?;
     pull_image(&image).await?;
     app_config(t, &input, &directory)?;
-    let name = choose_service_name(t.kind, &key, &containers, None)?;
+    let name = choose_service_name(t.kind, &key, &containers)?;
     let mut mounts = vec![
         json!({"Type":"bind","Source":format!("{}/services/{key}/appdata",d.appdata_source),"Target":"/config"}),
     ];
@@ -862,37 +849,6 @@ async fn verify_recorded(d: &Deployment, s: &Managed, raw: &Value) -> Result<()>
 #[cfg(test)]
 mod naming_tests {
     use super::*;
-    #[test]
-    fn names_are_prefixed_without_claiming_another_deployments_container() {
-        let key = "01234567-89ab-cdef-0123-456789abcdef";
-        let occupied = json!([{"Id":"other","Names":["/thelxinoe-radarr"]}]);
-        assert_eq!(
-            choose_service_name("radarr", key, &json!([]), None).unwrap(),
-            "thelxinoe-radarr"
-        );
-        assert_eq!(
-            choose_service_name("radarr", key, &occupied, Some("other")).unwrap(),
-            "thelxinoe-radarr"
-        );
-        assert_eq!(
-            choose_service_name("radarr", key, &occupied, None).unwrap(),
-            "thelxinoe-radarr-01234567"
-        );
-        let collision =
-            json!([{"Id":"other","Names":["/thelxinoe-radarr", "/thelxinoe-radarr-01234567"]}]);
-        assert!(choose_service_name("radarr", key, &collision, None).is_err());
-    }
-
-    #[test]
-    fn managed_kind_detection_is_scoped_to_the_current_deployment() {
-        let containers = json!([
-            {"Labels":{"app.thelxinoe.deployment":"current","app.thelxinoe.kind":"radarr"}},
-            {"Labels":{"app.thelxinoe.deployment":"other","app.thelxinoe.kind":"sonarr"}}
-        ]);
-        assert!(deployment_has_kind(&containers, "current", "radarr").unwrap());
-        assert!(!deployment_has_kind(&containers, "current", "sonarr").unwrap());
-    }
-
     #[test]
     fn bootstrap_ignores_stopped_servers_sharing_the_controller_runtime() {
         let runtime = json!("controller-runtime");

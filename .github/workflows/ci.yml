@@ -57,7 +57,7 @@ jobs:
       - run: npm ci
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: npx playwright install --with-deps chromium
-      - name: Start isolated Recyclarr browser
+      - name: Start isolated container-test browser
         timeout-minutes: 10
         run: |
           version=$(node -p 'require("@playwright/test/package.json").version')
@@ -80,8 +80,8 @@ jobs:
           exit 1
       - run: npm run ci:containers
         env:
-          THELXINOE_RECYCLARR_BROWSER_WS_ENDPOINT: ws://127.0.0.1:3000/
-      - name: Stop isolated Recyclarr browser
+          THELXINOE_CI_BROWSER_WS_ENDPOINT: ws://127.0.0.1:3000/
+      - name: Stop isolated container-test browser
         if: always()
         run: |
           mkdir -p .local

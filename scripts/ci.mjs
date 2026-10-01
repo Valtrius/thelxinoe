@@ -1,13 +1,21 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { requestedPhases } from './ci-phases.mjs';
+import { atomicWrite, jsonWrite } from './ci-state.mjs';
+import {
+  composeFixture,
+  fixtureId,
+  fixtureImages,
+  freePort,
+  resourceRecord,
+} from './ci-resources.mjs';
 
 const isWindows = process.platform === 'win32';
 let playwrightReady = false;
 const steps = [];
 function saveSteps() {
   mkdirSync('.local', { recursive: true });
-  writeFileSync('.local/ci-steps.json', JSON.stringify(steps, null, 2) + '\n');
+  atomicWrite('.local/ci-steps.json', JSON.stringify(steps, null, 2) + '\n');
 }
 
 function commandForSpawn(command, args) {
@@ -49,14 +57,6 @@ function run(command, args, options = {}) {
   }
 }
 
-function cleanup(command, args, options = {}) {
-  try {
-    run(command, args, options);
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : error);
-  }
-}
-
 function npm(...args) {
   run(isWindows ? 'npm.cmd' : 'npm', args);
 }
@@ -78,14 +78,7 @@ function ensurePlaywright() {
 
 function server() {
   if (isWindows) {
-    docker(
-      'build',
-      '-f',
-      'scripts/Dockerfile.verify',
-      '-t',
-      'thelxinoe-verified:local',
-      '.',
-    );
+    docker('build', '-f', 'scripts/Dockerfile.verify', '.');
   } else {
     npm('run', 'check:rust');
     npm('run', 'test:rust');
@@ -100,54 +93,50 @@ function web() {
   npm('run', 'test:ui:player');
 }
 
-function containers() {
-  const playbackProject = process.env.COMPOSE_PROJECT_NAME
-    ? `${process.env.COMPOSE_PROJECT_NAME}-playback`
-    : 'thelxinoe-playback';
+async function containers() {
+  const project = fixtureId('catalog');
+  const playbackProject = fixtureId('playback');
+  process.env.COMPOSE_PROJECT_NAME = project;
   ensurePlaywright();
-  const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
-  run(isWindows ? 'npm.cmd' : 'npm', ['run', 'build:containers'], {
-    env: {
-      ...process.env,
-      THELXINOE_SERVER_IMAGE: `thelxinoe-server:${version}`,
-      THELXINOE_CONTROLLER_IMAGE: `thelxinoe-controller:${version}`,
-    },
+  const images = fixtureImages();
+  process.env.THELXINOE_SERVER_IMAGE = images.server;
+  process.env.THELXINOE_CONTROLLER_IMAGE = images.controller;
+  const recordImages = resourceRecord({
+    images: Object.values(images),
+    closed: false,
   });
-  for (const component of ['server', 'controller'])
-    docker(
-      'tag',
-      `thelxinoe-${component}:${version}`,
-      `thelxinoe-service-${component}:local`,
+  npm('run', 'build:containers');
+  const identity = {};
+  for (const [component, reference] of Object.entries(images)) {
+    const result = spawnSync(
+      'docker',
+      ['image', 'inspect', '--format', '{{.Id}}', reference],
+      { encoding: 'utf8', windowsHide: true },
     );
+    if (result.status !== 0) throw Error(`Could not inspect ${reference}`);
+    identity[component] = { reference, id: result.stdout.trim() };
+  }
+  jsonWrite('.local/ci-images.json', identity);
+  recordImages({
+    imageIds: Object.fromEntries(
+      Object.values(identity).map(({ reference, id }) => [reference, id]),
+    ),
+  });
   npm('run', 'test:service-access', '--', '--built');
   node('scripts/test-service-connections.mjs');
-  node('scripts/qualify-recyclarr.mjs');
-  node('scripts/test-recyclarr-cleanup.mjs');
   node('scripts/test-recyclarr.mjs');
-  cleanup('docker', [
-    'compose',
-    '-f',
-    'compose.test.yaml',
-    'down',
-    '--volumes',
-    '--remove-orphans',
-  ]);
-  cleanup('docker', [
-    'compose',
-    '-p',
-    playbackProject,
-    '-f',
-    'compose.test.yaml',
-    'down',
-    '--volumes',
-    '--remove-orphans',
-  ]);
   node('scripts/fixtures.mjs');
   docker('compose', 'config', '--quiet');
-
+  process.env.THELXINOE_TEST_HTTP_PORT = String(await freePort({ udp: true }));
+  process.env.THELXINOE_TEST_HTTPS_PORT = String(await freePort());
+  const catalog = composeFixture({
+    project,
+    file: 'compose.test.yaml',
+    root: `.local/${project}`,
+  });
   try {
-    docker('compose', '-f', 'compose.test.yaml', 'up', '-d', '--wait');
-    populateMedia(['compose', '-f', 'compose.test.yaml']);
+    docker(...catalog.args, 'up', '-d', '--wait');
+    populateMedia(catalog.args);
     run(isWindows ? 'npm.cmd' : 'npm', ['run', 'test:e2e'], {
       env: {
         ...process.env,
@@ -156,48 +145,28 @@ function containers() {
       },
     });
   } finally {
-    cleanup('docker', [
-      'compose',
-      '-f',
-      'compose.test.yaml',
-      'down',
-      '--volumes',
-      '--remove-orphans',
-    ]);
+    catalog.close();
   }
 
   node('scripts/playback-fixtures.mjs');
   const playbackEnvironment = {
     ...process.env,
-    THELXINOE_TEST_HTTP_PORT:
-      process.env.THELXINOE_PLAYBACK_HTTP_PORT ?? '18686',
-    THELXINOE_TEST_HTTPS_PORT:
-      process.env.THELXINOE_PLAYBACK_HTTPS_PORT ?? '20443',
-    THELXINOE_PLAYBACK_URL: `https://localhost:${process.env.THELXINOE_PLAYBACK_HTTPS_PORT ?? '20443'}`,
-    THELXINOE_TEST_SUBNET: '172.31.252.0/24',
+    THELXINOE_TEST_HTTP_PORT: String(await freePort({ udp: true })),
+    THELXINOE_TEST_HTTPS_PORT: String(await freePort()),
+    COMPOSE_PROJECT_NAME: playbackProject,
   };
+  playbackEnvironment.THELXINOE_PLAYBACK_URL = `https://localhost:${playbackEnvironment.THELXINOE_TEST_HTTPS_PORT}`;
+  const playback = composeFixture({
+    project: playbackProject,
+    file: 'compose.test.yaml',
+    root: `.local/${playbackProject}`,
+    env: playbackEnvironment,
+  });
   try {
-    run(
-      'docker',
-      [
-        'compose',
-        '-p',
-        playbackProject,
-        '-f',
-        'compose.test.yaml',
-        'up',
-        '-d',
-        '--wait',
-      ],
-      { env: playbackEnvironment },
-    );
-    populateMedia([
-      'compose',
-      '-p',
-      playbackProject,
-      '-f',
-      'compose.test.yaml',
-    ]);
+    run('docker', [...playback.args, 'up', '-d', '--wait'], {
+      env: playbackEnvironment,
+    });
+    populateMedia(playback.args);
     for (const script of [
       'test-playback.mjs',
       'test-playback-tracks.mjs',
@@ -207,16 +176,7 @@ function containers() {
         env: playbackEnvironment,
       });
   } finally {
-    cleanup('docker', [
-      'compose',
-      '-p',
-      playbackProject,
-      '-f',
-      'compose.test.yaml',
-      'down',
-      '--volumes',
-      '--remove-orphans',
-    ]);
+    playback.close();
   }
 }
 
@@ -300,7 +260,7 @@ for (const phase of phases) {
   }
   console.log(`\n=== ${phase} ===`);
   try {
-    execute();
+    await execute();
     results.push({ phase, passed: true });
   } catch (error) {
     console.error(error);

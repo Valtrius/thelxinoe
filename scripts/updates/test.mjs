@@ -108,7 +108,7 @@ try {
       await fn();
       item.passed = true;
     } catch (error) {
-      item.error = String(error);
+      item.error = error.stack ?? String(error);
       throw error;
     } finally {
       save(join(output, 'result.json'), report);

@@ -1,5 +1,6 @@
 // Hostile-response fixture for the gateway boundary, never a normal UI substitute.
 import { createServer } from 'node:http';
+const activity = { streams: 0, pending: 0 };
 createServer((request, response) => {
   const path = new URL(request.url, 'http://fixture').pathname;
   response.setHeader('Content-Type', 'application/json');
@@ -15,6 +16,8 @@ createServer((request, response) => {
     response.end('[]');
   } else if (path === '/services/radarr/headers') {
     response.end(JSON.stringify(request.headers));
+  } else if (path === '/services/radarr/activity') {
+    response.end(JSON.stringify(activity));
   } else if (path === '/services/radarr/cookies') {
     response.setHeader('Set-Cookie', [
       'native=fixture; Domain=example.invalid; Path=/; HttpOnly',
@@ -37,11 +40,19 @@ createServer((request, response) => {
     response.end('range');
   } else if (path === '/services/radarr/stream') {
     response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    activity.streams++;
     const timer = setInterval(() => response.write('data: fixture\n\n'), 100);
-    request.on('close', () => clearInterval(timer));
+    response.on('close', () => {
+      clearInterval(timer);
+      activity.streams--;
+    });
   } else if (path === '/services/radarr/pending') {
+    activity.pending++;
     const timer = setTimeout(() => response.end('{}'), 60000);
-    response.on('close', () => clearTimeout(timer));
+    response.on('close', () => {
+      clearTimeout(timer);
+      activity.pending--;
+    });
   } else {
     response.writeHead(404);
     response.end('{}');

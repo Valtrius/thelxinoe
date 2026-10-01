@@ -1,3 +1,5 @@
+import { resourceRecord } from '../ci-resources.mjs';
+const resourceOwners = new Map();
 import { spawn } from 'node:child_process';
 import {
   existsSync,
@@ -9,6 +11,7 @@ import {
 } from 'node:fs';
 import { resolve, join, dirname, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
 import { request as https } from 'node:https';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -142,7 +145,10 @@ export function readLab(file) {
   return lab;
 }
 function writeCompose(lab) {
-  lab.storage = join(lab.root, `storage-${Date.now()}`);
+  // Docker Desktop cannot open SQLite snapshots through deeply nested Windows binds.
+  const storageRoot =
+    process.platform === 'win32' ? join(tmpdir(), lab.id) : lab.root;
+  lab.storage = join(storageRoot, `storage-${Date.now()}`);
   for (const directory of ['server', 'cache', 'media', 'deployment'])
     mkdirSync(join(lab.storage, directory), { recursive: true });
   docker(
@@ -264,6 +270,14 @@ export async function createLab({
   lab.publisher = `https://localhost:${lab.publisherPort}`;
   lab.baseUrl = `http://127.0.0.1:${lab.serverPort}`;
   save(join(root, 'lab.json'), lab);
+  resourceOwners.set(
+    root,
+    resourceRecord({
+      lab: join(root, 'lab.json'),
+      workspace: repository,
+      closed: false,
+    }),
+  );
   keys(lab);
   try {
     if (server) {
@@ -404,7 +418,7 @@ export function stopDesktop(lab) {
     [
       '-NoProfile',
       '-Command',
-      `Get-Process | Where-Object { $_.Path -eq '${executable}' } | Stop-Process -Force`,
+      `$ErrorActionPreference = 'Stop'; Get-Process | Where-Object { $_.Path -eq '${executable}' } | ForEach-Object { Stop-Process -InputObject $_ -Force; if (-not $_.WaitForExit(30000)) { throw 'Update lab desktop did not exit' } }`,
     ],
     { stdio: 'ignore' },
   );
@@ -477,6 +491,7 @@ export async function stopLab(lab) {
     if (alive?.id === lab.id && alive.pid === lab.processes.publisher)
       process.kill(lab.processes.publisher);
   }
+  resourceOwners.get(lab.root)?.({ closed: true });
 }
 export function desktopInstallation(lab, inspect = true) {
   // Validate the descriptor before running the installer-owned removal flow.

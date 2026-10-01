@@ -1,23 +1,20 @@
-// Real service/browser E2E. See tests/service-access.md for the failure contract.
 import { expect } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { fixtureImages, resourceRecord } from './ci-resources.mjs';
 import { docker, fixture } from './service-access-fixture.mjs';
 import { additionalAccess } from './service-access-additional.mjs';
 import { nzbgetAccess } from './service-access-nzbget.mjs';
 
 if (!process.argv.includes('--built')) {
+  const images = fixtureImages();
+  process.env.THELXINOE_SERVER_IMAGE = images.server;
+  process.env.THELXINOE_CONTROLLER_IMAGE = images.controller;
+  resourceRecord({ images: Object.values(images), closed: false });
   for (const target of ['server', 'controller']) {
     execFileSync(
       'docker',
-      [
-        'build',
-        '--target',
-        target,
-        '-t',
-        `thelxinoe-service-${target}:local`,
-        '.',
-      ],
+      ['build', '--target', target, '-t', images[target], '.'],
       { stdio: 'inherit' },
     );
   }
@@ -30,6 +27,9 @@ const result = {
   }).trim(),
   command: `npm run test:service-access${process.argv.includes('--desktop') ? ' -- --desktop' : ''}`,
   scenarios: [],
+  browser_network: process.env.THELXINOE_CI_BROWSER_WS_ENDPOINT
+    ? 'isolated Docker bridge'
+    : 'host',
   images: {},
   passed: false,
 };
@@ -45,6 +45,40 @@ async function scenario(name, run) {
   console.log(`PASS ${name}`);
 }
 try {
+  await scenario(
+    'parallel deployments install and clean up the same service independently',
+    async () => {
+      const parallel = await fixture();
+      try {
+        const installations = await Promise.allSettled([
+          f.install('radarr'),
+          parallel.install('radarr'),
+        ]);
+        for (const installation of installations)
+          if (installation.status === 'rejected') throw installation.reason;
+        expect(f.services.radarr.container_id).not.toBe(
+          parallel.services.radarr.container_id,
+        );
+        for (const deployment of [f, parallel])
+          expect(
+            (await deployment.upstream('radarr', 'system/status')).appName,
+          ).toBe('Radarr');
+        result.parallel_deployments = {
+          projects: [f.project, parallel.project],
+          containers: [
+            f.services.radarr.container_id,
+            parallel.services.radarr.container_id,
+          ],
+        };
+      } finally {
+        await parallel.close();
+      }
+      expect((await f.upstream('radarr', 'system/status')).appName).toBe(
+        'Radarr',
+      );
+      result.parallel_deployments.remaining_service_healthy = true;
+    },
+  );
   for (const kind of [
     'radarr',
     'sonarr',
@@ -53,7 +87,7 @@ try {
     'bazarr',
     'nzbget',
   ]) {
-    await f.install(kind);
+    if (kind !== 'radarr') await f.install(kind);
     result.images[kind] = docker(
       'inspect',
       '--format',
@@ -329,6 +363,8 @@ try {
       );
       expect(range.status()).toBe(directRange.status());
       expect(await range.body()).toEqual(await directRange.body());
+      const before = await f.upstream('radarr', 'system/status');
+      expect(before.startTime).toBeTruthy();
       const restored = await f.context.request.post(
         `${f.base}/services/radarr/api/v3/system/backup/restore/upload`,
         {
@@ -345,18 +381,33 @@ try {
       expect(restored.status()).toBe(200);
       expect((await restored.json()).restartRequired).toBe(true);
       await native('command', 'POST', { name: 'Restart' });
+      let restarted;
       await expect
         .poll(
           async () => {
             try {
-              return (await f.upstream('radarr', 'system/status')).urlBase;
+              const response = await f.context.request.get(
+                `${f.base}/services/radarr/api/v3/system/status`,
+                { headers: { 'X-Api-Key': key }, timeout: 5000 },
+              );
+              restarted = response.ok() ? await response.json() : null;
+              return (
+                !!restarted?.startTime &&
+                restarted.startTime !== before.startTime &&
+                restarted.urlBase === '/services/radarr'
+              );
             } catch {
-              return '';
+              return false;
             }
           },
           { timeout: 90000, intervals: [2000] },
         )
-        .toBe('/services/radarr');
+        .toBe(true);
+      result.backup_restore = {
+        before_start: before.startTime,
+        after_start: restarted.startTime,
+        url_base: restarted.urlBase,
+      };
       await page.goto(`${f.base}/services/radarr/settings/ui`);
       await expect(
         page.getByRole('group', { name: 'Calendar', exact: true }),
@@ -597,41 +648,85 @@ try {
       client.request,
     );
     const tab = await client.newPage();
-    await tab.goto(f.base);
-    await tab.evaluate(() => {
-      window.streamChunks = 0;
-      window.streamClosed = false;
-      window.pendingClosed = false;
-      void fetch('/services/radarr/pending', {
-        method: 'POST',
-        body: 'fixture',
-      })
-        .finally(() => {
-          window.pendingClosed = true;
-        })
-        .catch(() => {});
-      void (async () => {
-        try {
-          const reader = (
-            await fetch('/services/radarr/stream')
-          ).body.getReader();
-          while (!(await reader.read()).done) window.streamChunks++;
-        } finally {
-          window.streamClosed = true;
-        }
-      })().catch(() => {});
+    const activity = async () =>
+      (
+        await f.context.request.get(`${f.base}/services/radarr/activity`)
+      ).json();
+    result.logout_stream = { logout_requested: false, request_failures: [] };
+    tab.on('requestfailed', (request) => {
+      const path = new URL(request.url()).pathname;
+      if (
+        path === '/services/radarr/stream' ||
+        path === '/services/radarr/pending'
+      )
+        result.logout_stream.request_failures.push({
+          path,
+          error: request.failure()?.errorText,
+          logout_requested: result.logout_stream.logout_requested,
+        });
     });
-    await expect
-      .poll(() => tab.evaluate(() => window.streamChunks))
-      .toBeGreaterThan(2);
-    await f.api('/auth/logout', 'POST', undefined, client.request);
-    await expect
-      .poll(() => tab.evaluate(() => window.streamClosed), { timeout: 15000 })
-      .toBe(true);
-    await expect
-      .poll(() => tab.evaluate(() => window.pendingClosed), { timeout: 15000 })
-      .toBe(true);
-    await client.close();
+    try {
+      await tab.goto(f.base);
+      await tab.evaluate(() => {
+        window.streamMessages = 0;
+        window.streamClosed = false;
+        window.pendingClosed = false;
+        void fetch('/services/radarr/pending', {
+          method: 'POST',
+          body: 'fixture',
+        })
+          .finally(() => {
+            window.pendingClosed = true;
+          })
+          .catch(() => {});
+        const stream = new EventSource('/services/radarr/stream');
+        stream.onmessage = ({ data }) => {
+          if (data === 'fixture') window.streamMessages++;
+        };
+        stream.onerror = () => {
+          window.streamClosed = true;
+          stream.close();
+        };
+      });
+      await expect
+        .poll(() => tab.evaluate(() => window.streamMessages), {
+          timeout: 30000,
+        })
+        .toBeGreaterThan(2);
+      expect(await tab.evaluate(() => window.streamClosed)).toBe(false);
+      expect(await tab.evaluate(() => window.pendingClosed)).toBe(false);
+      await expect.poll(activity, { timeout: 30000 }).toEqual({
+        streams: 1,
+        pending: 1,
+      });
+      result.logout_stream.before_logout = await activity();
+      result.logout_stream.logout_requested = true;
+      await f.api('/auth/logout', 'POST', undefined, client.request);
+      await expect
+        .poll(() => tab.evaluate(() => window.streamClosed), {
+          timeout: 15000,
+        })
+        .toBe(true);
+      await expect
+        .poll(() => tab.evaluate(() => window.pendingClosed), {
+          timeout: 15000,
+        })
+        .toBe(true);
+      await expect.poll(activity, { timeout: 15000 }).toEqual({
+        streams: 0,
+        pending: 0,
+      });
+      result.logout_stream.after_logout = await activity();
+    } finally {
+      result.logout_stream.browser = await tab
+        .evaluate(() => ({
+          messages: window.streamMessages,
+          stream_closed: window.streamClosed,
+          pending_closed: window.pendingClosed,
+        }))
+        .catch(() => null);
+      await client.close();
+    }
   });
   await scenario(
     'current administrator role is checked again on each native request',

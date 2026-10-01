@@ -1,32 +1,23 @@
 // Isolated real Docker/API/browser checks. Build Dockerfile's server/controller
 // targets as thelxinoe-service-{server,controller}:local before running.
-import { chromium, expect } from '@playwright/test';
+import { expect } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { createServer } from 'node:net';
+import { composeFixture, fixtureId, freePort } from './ci-resources.mjs';
 import { randomUUID } from 'node:crypto';
 import { waitForProxy } from './service-access-fixture.mjs';
+import { launchBrowser } from './ci-browser.mjs';
 
 const docker = (...args) =>
   execFileSync('docker', args, {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   }).trim();
-async function port() {
-  const server = createServer();
-  await new Promise((done, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', done);
-  });
-  const result = server.address().port;
-  await new Promise((done) => server.close(done));
-  return result;
-}
-const project = `thelxinoe-connections-${Date.now()}`;
+const project = fixtureId('connections');
 const root = resolve(`.local/${project}`);
 process.env.THELXINOE_CONNECTIONS_ROOT = root;
-process.env.THELXINOE_CONNECTIONS_PORT = String(await port());
+process.env.THELXINOE_CONNECTIONS_PORT = String(await freePort());
 for (const dir of [
   'server',
   'cache',
@@ -36,16 +27,9 @@ for (const dir of [
   'media/downloads',
 ])
   mkdirSync(`${root}/${dir}`, { recursive: true });
-const compose = (...args) =>
-  docker(
-    'compose',
-    '-p',
-    project,
-    '-f',
-    'compose.connections.test.yaml',
-    ...args,
-  );
-const browser = await chromium.launch();
+let infrastructure;
+const compose = (...args) => infrastructure.compose(...args);
+const browser = await launchBrowser();
 const context = await browser.newContext({ ignoreHTTPSErrors: true });
 const base = `https://localhost:${process.env.THELXINOE_CONNECTIONS_PORT}`;
 const services = {};
@@ -98,7 +82,7 @@ async function waitLink(source, target, expected) {
 const action = (kind, name) =>
   api(`/admin/stack/${services[kind].id}/action`, 'POST', { action: name });
 async function install(kind) {
-  const host_port = await port();
+  const host_port = await freePort();
   const created = await api('/admin/stack/install', 'POST', {
     kind,
     host_port,
@@ -302,6 +286,11 @@ async function waitUpdate(updateId, stage) {
 }
 
 try {
+  infrastructure = composeFixture({
+    project,
+    file: 'compose.connections.test.yaml',
+    root,
+  });
   compose(
     'run',
     '--rm',
@@ -324,6 +313,7 @@ try {
     password: 'test-only long passphrase',
   });
   deployment = (await stack()).deployment_id;
+  infrastructure.update({ deployment });
   await install('prowlarr');
   await idle('prowlarr');
   await action('prowlarr', 'stop');
@@ -893,7 +883,7 @@ try {
   );
   throw error;
 } finally {
-  await browser.close();
+  await browser.close().catch(() => {});
   if (passed || process.env.THELXINOE_KEEP_FAILED_FIXTURE !== '1') {
     if (deployment) {
       const owned = docker(
@@ -906,7 +896,7 @@ try {
         .filter(Boolean);
       if (owned.length) docker('rm', '-f', ...owned);
     }
-    compose('down', '-v');
+    infrastructure?.close();
   } else {
     writeFileSync(
       `${root}/fixture.json`,

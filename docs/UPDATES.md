@@ -94,13 +94,6 @@ npm run test:updates -- --server-only # Linux or Windows
 npm run test:updates -- --desktop-only
 ```
 
-These use actual containers, browsers, signed NSIS installers and a local HTTPS
-publisher. The Docker suite exercises failed validation, interrupted activation
-with the registry offline, successful installation, Compose recreation and full
-state restore. The Windows suite exercises independent discovery, trust failures,
-compatibility rejection, installation and retained credentials. UI actions cover
-the successful flows; assertions check functional results, not layout or timing.
-
 Each run saves `test-results/updates/<timestamp>/result.json`, screenshots,
 Playwright traces and operation/process logs. Open a trace with
 `npx playwright show-trace <trace.zip>`. `--keep` retains the lab for inspection;

@@ -1,6 +1,5 @@
 import { spawn, execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { createServer } from 'node:net';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -10,28 +9,75 @@ import {
   openSync,
   closeSync,
   unlinkSync,
+  readdirSync,
 } from 'node:fs';
 import { dirname, join, resolve, relative, isAbsolute, sep } from 'node:path';
-import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { requestedPhases, ciPhases } from './ci-phases.mjs';
 import { reporter } from './ci-report.mjs';
+import {
+  acquireRun,
+  alive,
+  atomicWrite,
+  jsonRead,
+  jsonWrite,
+  originIdentity,
+  requestRun,
+} from './ci-state.mjs';
+import { cleanupResources, freePort, resourceRecord } from './ci-resources.mjs';
 
 const repository = resolve(import.meta.dirname, '..');
 const args = process.argv.slice(2);
+if (['--stop', '--recover'].includes(args[0])) {
+  const recoveryDirectory = resolve(args[1]);
+  const previous = jsonRead(join(recoveryDirectory, 'result.json'));
+  if (args[0] === '--stop') {
+    const active = await requestRun(previous.origin);
+    if (active.id !== previous.id)
+      throw Error('This run no longer owns its worktree');
+    await requestRun(previous.origin, 'stop');
+  } else if (!previous.finished) {
+    if (alive(previous.pid)) throw Error('The coordinator is still alive');
+    const release = await acquireRun(previous.origin, {
+      id: previous.id,
+      directory: recoveryDirectory,
+      pid: process.pid,
+    });
+    try {
+      terminateChildren(previous);
+      const errors = cleanupResources(previous.resources, previous.id);
+      failPending(
+        previous,
+        'The local CI coordinator exited without finishing this run.',
+      );
+      previous.cleanup_errors = errors;
+      const view = reporter(recoveryDirectory, previous);
+      view.save();
+    } finally {
+      await release();
+    }
+  }
+  process.exit(0);
+}
+const noOpen = args.includes('--no-open');
+if (noOpen) args.splice(args.indexOf('--no-open'), 1);
+const origin = originIdentity(repository);
+const id = new Date().toISOString().replace(/[:.]/g, '-') + '-' + randomUUID();
 const output = args.indexOf('--output');
 const directory =
   output < 0
-    ? join(
-        repository,
-        '.local/ci',
-        new Date().toISOString().replace(/[:.]/g, '-'),
-      )
+    ? join(repository, '.local/ci', id)
     : resolve(args.splice(output, 2)[1]);
 const phases = requestedPhases(args);
 mkdirSync(directory, { recursive: true });
+closeSync(openSync(join(directory, 'run.lock'), 'wx'));
 const report = {
-  id: directory.split(/[\\/]/).at(-1),
+  id,
+  pid: process.pid,
+  directory,
+  origin,
+  resources: join(directory, 'resources'),
+  ready: false,
   started: new Date().toISOString(),
   finished: null,
   passed: null,
@@ -47,8 +93,86 @@ const report = {
 };
 const view = reporter(directory, report);
 view.save();
-const lock = createServer((socket) => socket.end());
-let refresh, browsers;
+mkdirSync(report.resources, { recursive: true });
+const environment = {
+  ...process.env,
+  CI: 'true',
+  THELXINOE_CI_RUN_ID: id,
+  THELXINOE_CI_RESOURCE_DIRECTORY: report.resources,
+  PLAYWRIGHT_BROWSERS_PATH: join(repository, '.local/ci-browsers'),
+};
+const children = new Set();
+let refresh, browsers, release, stopping;
+
+function terminateChildren(run) {
+  if (!existsSync(run.resources)) return;
+  for (const file of readdirSync(run.resources)) {
+    if (!file.endsWith('.json')) continue;
+    const record = jsonRead(join(run.resources, file));
+    if (
+      !record.process ||
+      record.closed ||
+      record.owner !== run.id ||
+      !alive(record.process)
+    )
+      continue;
+    const commandLine =
+      process.platform === 'win32'
+        ? execFileSync(
+            'powershell.exe',
+            [
+              '-NoProfile',
+              '-Command',
+              `(Get-CimInstance Win32_Process -Filter "ProcessId = ${Number(record.process)}").CommandLine`,
+            ],
+            { encoding: 'utf8', windowsHide: true },
+          )
+        : execFileSync('ps', ['-p', String(record.process), '-o', 'args='], {
+            encoding: 'utf8',
+          });
+    if (!commandLine.includes(run.id) || !commandLine.includes('ci-child.mjs'))
+      throw Error('Refusing to terminate a process whose ownership changed');
+    if (process.platform === 'win32')
+      execFileSync(
+        'taskkill.exe',
+        ['/PID', String(record.process), '/T', '/F'],
+        { windowsHide: true, stdio: 'pipe' },
+      );
+    else process.kill(-record.process, 'SIGKILL');
+  }
+}
+function failPending(run, error) {
+  run.finished = new Date().toISOString();
+  run.passed = false;
+  run.error = error;
+  for (const lane of run.lanes) {
+    if (lane.finished) continue;
+    lane.state = lane.started ? 'failed' : 'cancelled';
+    lane.finished = run.finished;
+    lane.exit_code = 1;
+    lane.error = error;
+    const path = lane.workspace && join(lane.workspace, '.local/ci-steps.json');
+    if (path && existsSync(path)) {
+      const steps = jsonRead(path);
+      for (const step of steps)
+        if (!step.finished)
+          Object.assign(step, { finished: run.finished, passed: false, error });
+      jsonWrite(path, steps);
+    }
+  }
+}
+function stop() {
+  if (stopping) return;
+  stopping = true;
+  report.error = 'Local CI was stopped.';
+  try {
+    terminateChildren(report);
+  } catch (error) {
+    report.error += ` ${error.message}`;
+  }
+}
+process.on('SIGINT', stop);
+process.on('SIGTERM', stop);
 
 function openReport() {
   const path = join(directory, 'index.html');
@@ -96,17 +220,32 @@ function openReport() {
   child.unref();
 }
 
-function command(command, argv, cwd, log, env = process.env) {
+function command(command, argv, cwd, log, env = environment) {
+  if (stopping) throw Error('Local CI was stopped.');
   return new Promise((done, reject) => {
     const descriptor = openSync(log, 'a');
     writeFileSync(descriptor, `\n> ${[command, ...argv].join(' ')}\n`);
-    const child = spawn(command, argv, {
-      cwd,
-      env,
-      windowsHide: true,
-      stdio: ['ignore', descriptor, descriptor],
-    });
+    const child = spawn(
+      process.execPath,
+      [join(repository, 'scripts/ci-child.mjs'), id, cwd, command, ...argv],
+      {
+        cwd,
+        env,
+        windowsHide: true,
+        detached: process.platform !== 'win32',
+        stdio: ['ignore', descriptor, descriptor],
+      },
+    );
     closeSync(descriptor);
+    children.add(child);
+    const record = resourceRecord(
+      { owner: id, process: child.pid, closed: false },
+      report.resources,
+    );
+    child.once('close', () => {
+      children.delete(child);
+      record({ closed: true });
+    });
     child.once('error', reject);
     child.once('exit', (code, signal) =>
       code === 0
@@ -131,16 +270,6 @@ function inside(root, file) {
     throw Error('Source path escaped its workspace');
   return path;
 }
-async function port() {
-  const listener = createServer();
-  await new Promise((done, reject) => {
-    listener.once('error', reject);
-    listener.listen(0, '127.0.0.1', done);
-  });
-  const value = listener.address().port;
-  await new Promise((done) => listener.close(done));
-  return String(value);
-}
 function snapshot() {
   const files = [
     ...new Set(
@@ -150,7 +279,10 @@ function snapshot() {
         { cwd: repository, encoding: 'utf8' },
       )
         .split('\0')
-        .filter(Boolean),
+        .filter(
+          (file) =>
+            file && !resolve(repository, file).startsWith(directory + sep),
+        ),
     ),
   ].sort();
   const root = join(directory, 'source');
@@ -173,15 +305,15 @@ function snapshot() {
     writeFileSync(destination, bytes);
   }
   const source = {
-    revision: execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: repository,
-      encoding: 'utf8',
-    }).trim(),
+    origin,
+    revision: origin.revision,
     sha256: hash.digest('hex'),
     files: files.filter((file) => !missing.includes(file)),
     deleted: missing,
   };
-  writeFileSync(
+  if (originIdentity(repository).revision !== origin.revision)
+    throw Error('HEAD changed during source capture. Launch CI again.');
+  atomicWrite(
     join(directory, 'source.json'),
     JSON.stringify(source, null, 2) + '\n',
   );
@@ -243,27 +375,16 @@ async function lane(item, source) {
       await browsers;
     }
     item.tests_started = new Date().toISOString();
-    const environment = {
-      ...process.env,
-      CI: 'true',
+    const laneEnvironment = {
+      ...environment,
       CARGO_TARGET_DIR: join(repository, '.local/ci-targets', phase),
     };
     if (phase === 'web') {
-      environment.THELXINOE_LAYOUT_PORT = await port();
-      environment.THELXINOE_PLAYER_PORT = await port();
-    }
-    if (phase === 'containers') {
-      environment.COMPOSE_PROJECT_NAME = `thelxinoe-ci-${report.id.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
-      for (const name of [
-        'THELXINOE_TEST_HTTP_PORT',
-        'THELXINOE_TEST_HTTPS_PORT',
-        'THELXINOE_PLAYBACK_HTTP_PORT',
-        'THELXINOE_PLAYBACK_HTTPS_PORT',
-      ])
-        environment[name] = await port();
+      laneEnvironment.THELXINOE_LAYOUT_PORT = String(await freePort());
+      laneEnvironment.THELXINOE_PLAYER_PORT = String(await freePort());
     }
     item.ports = Object.fromEntries(
-      Object.entries(environment).filter(
+      Object.entries(laneEnvironment).filter(
         ([key]) => key.endsWith('_PORT') && key.startsWith('THELXINOE_'),
       ),
     );
@@ -275,7 +396,7 @@ async function lane(item, source) {
       [join(workspace, 'scripts/ci.mjs'), phase],
       workspace,
       log,
-      environment,
+      laneEnvironment,
     );
     item.state = 'passed';
     item.exit_code = 0;
@@ -294,23 +415,9 @@ try {
   for (const phase of phases)
     if (!ciPhases().includes(phase))
       throw Error(`Unsupported local CI phase: ${phase}`);
-  await new Promise((done, reject) => {
-    lock.once('error', () =>
-      reject(
-        Error(
-          'Another local CI run owns the fixed browser and Docker fixtures. Wait for its completion window.',
-        ),
-      ),
-    );
-    lock.listen(
-      process.platform === 'win32'
-        ? '\\\\.\\pipe\\thelxinoe-local-ci'
-        : join(tmpdir(), 'thelxinoe-local-ci.sock'),
-      done,
-    );
-  });
+  release = await acquireRun(origin, { id, directory, pid: process.pid }, stop);
   mkdirSync(join(repository, '.local/ci'), { recursive: true });
-  writeFileSync(
+  atomicWrite(
     join(repository, '.local/ci/latest.json'),
     JSON.stringify(
       { id: report.id, directory, started: report.started },
@@ -319,19 +426,42 @@ try {
     ) + '\n',
   );
   const source = snapshot();
+  report.ready = true;
   view.save();
-  openReport();
-  refresh = setInterval(view.save, 5000);
+  await view.style(repository).catch(() => {});
+  jsonWrite(join(directory, 'ready.json'), {
+    id,
+    directory,
+    origin,
+    pid: process.pid,
+  });
+  if (!noOpen) openReport();
+  refresh = setInterval(() => {
+    try {
+      view.save();
+    } catch (error) {
+      console.error('Could not refresh the CI report:', error.message);
+    }
+  }, 5000);
   await Promise.all(report.lanes.map((item) => lane(item, source)));
-  report.passed = report.lanes.every((item) => item.state === 'passed');
+  report.passed =
+    !stopping && report.lanes.every((item) => item.state === 'passed');
 } catch (error) {
   report.error = String(error.message ?? error);
   report.passed = false;
 } finally {
   clearInterval(refresh);
-  if (lock.listening) await new Promise((done) => lock.close(done));
+  if (stopping || report.error) {
+    while (children.size) await new Promise((done) => setTimeout(done, 50));
+    report.cleanup_errors = cleanupResources(report.resources, id);
+    failPending(report, report.error);
+  } else {
+    report.cleanup_errors = cleanupResources(report.resources, id);
+    if (report.cleanup_errors.length) report.passed = false;
+  }
   report.finished = new Date().toISOString();
   view.save();
+  if (release) await release();
   console.log(readFileSync(join(directory, 'summary.txt'), 'utf8'));
   console.log(`Summary: ${join(directory, 'index.html')}`);
   process.exitCode = report.passed ? 0 : 1;
