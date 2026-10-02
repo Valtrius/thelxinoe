@@ -18,6 +18,8 @@ mod state_copy;
 mod store;
 #[cfg(unix)]
 mod templates;
+#[cfg(all(unix, test))]
+mod test_support;
 #[cfg(unix)]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

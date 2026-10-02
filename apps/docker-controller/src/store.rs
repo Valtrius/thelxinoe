@@ -7,6 +7,10 @@ use std::{
     path::{Path, PathBuf},
 };
 pub fn root() -> PathBuf {
+    #[cfg(test)]
+    if let Ok(root) = crate::test_support::DOCKER.try_with(|context| context.root.clone()) {
+        return root;
+    }
     PathBuf::from(
         std::env::var("THELXINOE_DEPLOYMENT").unwrap_or("/var/lib/thelxinoe/deployment".into()),
     )
@@ -16,6 +20,13 @@ pub fn write_json<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
     write(path, &bytes)
 }
 pub fn write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    #[cfg(test)]
+    if crate::test_support::DOCKER
+        .try_with(|context| context.fail_write(bytes))
+        .unwrap_or(false)
+    {
+        anyhow::bail!("Injected journal persistence failure");
+    }
     let parent = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Missing parent"))?;

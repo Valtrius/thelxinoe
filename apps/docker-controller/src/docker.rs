@@ -162,6 +162,12 @@ pub(crate) async fn request(
     path: &str,
     body: Option<Value>,
 ) -> Result<Value> {
+    #[cfg(test)]
+    if let Ok(result) = crate::test_support::DOCKER
+        .try_with(|transport| transport.request(&method, path, body.as_ref()))
+    {
+        return result;
+    }
     if method != reqwest::Method::GET && !crate::lease::active() {
         return Err((
             StatusCode::CONFLICT,

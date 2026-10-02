@@ -250,6 +250,7 @@ pub(super) async fn adopt(
         copied: false,
         complete: false,
     };
+    s.spec["Labels"][creation::ATTEMPT_LABEL] = json!(thelxinoe_core::id());
     persisted(
         std::fs::create_dir_all(service_path(key).with_file_name("appdata")).map_err(Into::into),
     )?;
@@ -269,13 +270,7 @@ pub(super) async fn adopt(
         transfer.copied = true;
         persisted(store::write_json(&transfer_path(key), &transfer))?;
         original_stopped(&transfer).await?;
-        let created = request(
-            Method::POST,
-            &format!("/containers/create?name={}", s.name),
-            Some(s.spec.clone()),
-        )
-        .await?;
-        s.container = created["Id"].as_str().ok_or_else(unavailable)?.into();
+        s.container = creation::Intent::recorded(&d, &s).create(&d).await?;
         save(&s)?;
         let raw = engine(&format!("/containers/{}/json", s.container)).await?;
         if raw["Image"] != transfer.review.original["Image"] {

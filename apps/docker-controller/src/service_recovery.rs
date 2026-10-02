@@ -132,7 +132,12 @@ pub(super) async fn resume_creation(d: &Deployment, s: &mut Managed) -> Result<J
     }
     validate_storage(d, s).await?;
     let existing = find_container(d, s).await?;
-    let container = if let Some(container) = existing {
+    let container = if s.spec["Labels"][creation::ATTEMPT_LABEL].is_string() {
+        if existing.is_none() {
+            crate::docker::ensure_pinned_image(&s.image).await?;
+        }
+        creation::Intent::recorded(d, s).create(d).await?
+    } else if let Some(container) = existing {
         container
     } else {
         // Creation intent and spec are already durable. Retry the exact image,
@@ -178,6 +183,7 @@ pub(super) async fn recreate(d: &Deployment, s: &mut Managed) -> Result<Json<Val
     }
     validate_storage(d, s).await?;
     s.phase = "recreating".into();
+    s.spec["Labels"][creation::ATTEMPT_LABEL] = json!(thelxinoe_core::id());
     s.expected = Value::Null;
     s.error = None;
     save(s)?;
