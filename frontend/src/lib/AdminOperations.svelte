@@ -85,7 +85,7 @@
   }
 </script>
 
-<Panel aria-label="Administration overview">
+<Panel class="col-span-full" aria-label="Administration overview">
   <SectionHeading>
     <h2>Administration overview</h2>
     <Button
@@ -96,80 +96,97 @@
     >
   </SectionHeading>
   {#if error}<p role="alert">{error}</p>{/if}
-  {#if data}
-    <div class={statsClass}>
-      {#each ['state', 'cache'] as key (key)}{@const usage =
-          data.storage[key as 'state' | 'cache']}
-        <div>
-          <strong>{size(usage.bytes)}{usage.partial ? ' +' : ''}</strong><small
-            >{key} used · {size(usage.free_bytes)} free</small
+  <div class="settings-grid mt-5">
+    {#if data}
+      <section>
+        <h3 class="text-base font-semibold">Storage</h3>
+        <div class={statsClass}>
+          {#each ['state', 'cache'] as key (key)}{@const usage =
+              data.storage[key as 'state' | 'cache']}
+            <div>
+              <strong>{size(usage.bytes)}{usage.partial ? ' +' : ''}</strong
+              ><small>{key} used · {size(usage.free_bytes)} free</small>
+            </div>{/each}
+        </div>
+      </section>
+      <section>
+        <h3 class="text-base font-semibold">Integrations</h3>
+        {#each data.services as service (service.kind)}<div class={rowClass}>
+            <strong>{service.kind}</strong><span
+              >{service.healthy ? 'Last check passed' : 'Needs attention'} · {new Date(
+                service.checked_at * 1000,
+              ).toLocaleString(undefined, {
+                timeZone: timezone,
+                hour12: timeFormat === '12h',
+              })}</span
+            >
+          </div>{:else}<p>No integrations configured.</p>{/each}
+      </section>
+      <section>
+        <h3 class="text-base font-semibold">Downloads and indexers</h3>
+        {#each data.support.items as service (service.id)}<div class={rowClass}>
+            <strong>{service.kind}</strong><span
+              >{service.unavailable
+                ? 'Unavailable'
+                : service.problem
+                  ? 'Needs attention'
+                  : service.kind === 'nzbget'
+                    ? `${service.queue_count ?? 0} queued · ${((service.rate ?? 0) / 1024 ** 2).toFixed(2)} MB/s${service.paused ? ' · Paused' : ''}`
+                    : 'Health check passed'}</span
+            >
+          </div>{:else}<p>No download or indexer services configured.</p>{/each}
+      </section>
+      <section>
+        <h3 class="text-base font-semibold">Active playback and transcodes</h3>
+        {#each data.playback as session (session.id)}<div class={rowClass}>
+            <strong>{session.title}</strong><span
+              >{session.user} · {session.mode} · {session.state}</span
+            >
+          </div>{:else}<p>No active playback.</p>{/each}
+      </section>
+      <section>
+        <h3 class="text-base font-semibold">Recent failures</h3>
+        {#each data.errors as item (item.id)}<div class={rowClass}>
+            <strong>{item.kind}</strong><span
+              >{new Date(item.at * 1000).toLocaleString(undefined, {
+                timeZone: timezone,
+                hour12: timeFormat === '12h',
+              })}</span
+            >
+          </div>{:else}<p>No failed jobs.</p>{/each}
+      </section>
+    {/if}
+    <section>
+      <h3 class="mb-3 text-base font-semibold">Diagnostics</h3>
+      <Button variant="secondary" size="form" onclick={() => void diagnostics()}
+        >Export redacted diagnostics</Button
+      >
+      <p class="text-muted">
+        Diagnostics include version, database checks and job counts.
+        Credentials, paths and viewing history are excluded.
+      </p>
+    </section>
+    <section class="settings-wide">
+      <h3 class="text-base font-semibold">All devices</h3>
+      {#each devices as device (device.id)}<div class={rowClass}>
+          <div>
+            <strong>{device.user} · {device.name}</strong><small
+              >{device.transport}</small
+            >
+          </div>
+          <Button
+            variant="secondary"
+            size="form"
+            onclick={async () => {
+              try {
+                await api(`/auth/sessions/${device.id}`, 'DELETE');
+                await load();
+              } catch (e) {
+                error = String(e);
+              }
+            }}>Revoke access</Button
           >
         </div>{/each}
-    </div>
-    <h3>Integrations</h3>
-    {#each data.services as service (service.kind)}<div class={rowClass}>
-        <strong>{service.kind}</strong><span
-          >{service.healthy ? 'Last check passed' : 'Needs attention'} · {new Date(
-            service.checked_at * 1000,
-          ).toLocaleString(undefined, {
-            timeZone: timezone,
-            hour12: timeFormat === '12h',
-          })}</span
-        >
-      </div>{:else}<p>No integrations configured.</p>{/each}
-    <h3>Downloads and indexers</h3>
-    {#each data.support.items as service (service.id)}<div class={rowClass}>
-        <strong>{service.kind}</strong><span
-          >{service.unavailable
-            ? 'Unavailable'
-            : service.problem
-              ? 'Needs attention'
-              : service.kind === 'nzbget'
-                ? `${service.queue_count ?? 0} queued · ${((service.rate ?? 0) / 1024 ** 2).toFixed(2)} MB/s${service.paused ? ' · Paused' : ''}`
-                : 'Health check passed'}</span
-        >
-      </div>{:else}<p>No download or indexer services configured.</p>{/each}
-    <h3>Active playback and transcodes</h3>
-    {#each data.playback as session (session.id)}<div class={rowClass}>
-        <strong>{session.title}</strong><span
-          >{session.user} · {session.mode} · {session.state}</span
-        >
-      </div>{:else}<p>No active playback.</p>{/each}
-    <h3>Recent failures</h3>
-    {#each data.errors as item (item.id)}<div class={rowClass}>
-        <strong>{item.kind}</strong><span
-          >{new Date(item.at * 1000).toLocaleString(undefined, {
-            timeZone: timezone,
-            hour12: timeFormat === '12h',
-          })}</span
-        >
-      </div>{:else}<p>No failed jobs.</p>{/each}
-  {/if}
-  <Button variant="secondary" size="form" onclick={() => void diagnostics()}
-    >Export redacted diagnostics</Button
-  >
-  <p class="text-muted">
-    Diagnostics include version, database checks and job counts. Credentials,
-    paths and viewing history are excluded.
-  </p>
-  <h3>All devices</h3>
-  {#each devices as device (device.id)}<div class={rowClass}>
-      <div>
-        <strong>{device.user} · {device.name}</strong><small
-          >{device.transport}</small
-        >
-      </div>
-      <Button
-        variant="secondary"
-        size="form"
-        onclick={async () => {
-          try {
-            await api(`/auth/sessions/${device.id}`, 'DELETE');
-            await load();
-          } catch (e) {
-            error = String(e);
-          }
-        }}>Revoke access</Button
-      >
-    </div>{/each}
+    </section>
+  </div>
 </Panel>

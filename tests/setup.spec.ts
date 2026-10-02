@@ -74,3 +74,52 @@ test('matching passwords create the administrator and empty provider pages load'
   }
   expect(errors).toEqual([]);
 });
+
+test('administrators filter the persisted audit trail by actor and action', async ({
+  page,
+}, testInfo) => {
+  await page.goto('/');
+  await page.getByLabel('Username', { exact: true }).fill('admin');
+  await page
+    .getByLabel('Password', { exact: true })
+    .fill('test-only long passphrase');
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await page
+    .getByRole('navigation', { name: 'Main navigation' })
+    .getByRole('button', { name: 'Settings', exact: true })
+    .click();
+  const nav = page.getByRole('navigation', { name: 'Settings navigation' });
+  await nav.getByRole('button', { name: 'People', exact: true }).click();
+  const form = page.getByRole('form', { name: 'Create user' });
+  await form
+    .getByLabel('Username', { exact: true })
+    .fill('audit-filter-member');
+  await form
+    .getByLabel('Password', { exact: true })
+    .fill('audit-only-passphrase');
+  await form.getByRole('button', { name: 'Add user', exact: true }).click();
+  await expect(
+    page.getByRole('heading', { name: 'User access' }),
+  ).toBeVisible();
+  await expect(
+    page.getByText('audit-filter-member', { exact: true }).first(),
+  ).toBeVisible();
+  await nav.getByRole('button', { name: 'Audit', exact: true }).click();
+  await page
+    .getByLabel('Audit user', { exact: true })
+    .selectOption({ label: 'admin' });
+  await page
+    .getByLabel('Audit action', { exact: true })
+    .selectOption('user.create');
+  await expect(page.locator('.settings-content .row')).toHaveCount(1);
+  await expect(page.locator('.settings-content .row')).toContainText(
+    'user.create',
+  );
+  await page.getByLabel('Audit action', { exact: true }).selectOption('setup');
+  await expect(page.locator('.settings-content .row')).toHaveCount(1);
+  await expect(page.locator('.settings-content .row')).toContainText('setup');
+  await page.screenshot({
+    path: testInfo.outputPath('persisted-audit-filter.png'),
+    fullPage: true,
+  });
+});

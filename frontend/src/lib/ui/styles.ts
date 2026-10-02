@@ -1,6 +1,6 @@
 // Repeated layouts shared by library, account and administration views.
 export const panelClass =
-  'panel mb-5 min-w-0 rounded-none border border-line bg-surface p-6 shadow-none compact:p-4 settings-panel:mb-6 settings-panel:border-0 settings-panel:border-b settings-panel:border-line settings-panel:bg-transparent settings-panel:p-0 settings-panel:pb-6 settings-panel:compact:p-4';
+  'panel mb-5 min-w-0 rounded-none border border-line bg-surface p-6 shadow-none compact:p-4 settings-panel:mb-0 settings-panel:border-0 settings-panel:border-t settings-panel:border-line settings-panel:bg-transparent settings-panel:p-0 settings-panel:pt-5 settings-panel:compact:p-0 settings-panel:compact:pt-5';
 
 export const inlineFormClass =
   'my-4.5 flex flex-wrap items-end gap-3 [&_label]:m-0 [&_label]:min-w-[min(150px,100%)] [&_label]:flex-1 compact:flex-col compact:items-stretch compact:[&_label]:w-full';

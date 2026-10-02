@@ -101,6 +101,9 @@
     onclick={() => void load()}>Refresh backups</Button
   >
   {#if message}<p role="status">{message}</p>{/if}
+</Panel>
+<Panel class="settings-wide" aria-label="Backup archives">
+  <h2>Backup archives</h2>
   {#each items as item (item.id)}<div class={rowClass}>
       <div>
         <strong
@@ -120,7 +123,7 @@
             restoreConfirmation = '';
           }}>Restore this backup</Button
         >{/if}
-    </div>{/each}
+    </div>{:else}<p class="text-muted">No backups yet.</p>{/each}
   {#if restoreId}<div class="border border-line p-4">
       <p>
         Restoring replaces server and managed-service state with the selected

@@ -70,7 +70,7 @@
 </script>
 
 <section
-  class="grid gap-4 border-b border-line py-4"
+  class="settings-section grid gap-4"
   aria-label="Recyclarr guide configuration"
 >
   <div class="flex flex-wrap items-center justify-between gap-3">

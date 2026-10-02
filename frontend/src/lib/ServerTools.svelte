@@ -44,12 +44,9 @@
   });
 </script>
 
-<section
-  aria-label="Server tools"
-  class="mt-5 min-w-0 border-t border-line pt-4"
->
+<section aria-label="Server tools" class="min-w-0">
   <div class="flex items-center justify-between gap-3">
-    <h3 class="font-semibold">Tools</h3>
+    <h2>Tools</h2>
     <button
       class="border border-line px-3 py-1.5 text-xs disabled:opacity-40"
       disabled={checking || status?.supported === false}

@@ -19,8 +19,44 @@ pub(super) async fn history(
     }).await
 }
 
-pub(super) async fn audit(db: &Database, filter: AuditFilter) -> anyhow::Result<Vec<Value>> {
-    db.read("history.audit", move|db|Ok(db.prepare("SELECT a.id,a.action,a.target,a.created_at,u.username FROM audit a LEFT JOIN users u ON u.id=a.actor_id WHERE (?1 IS NULL OR a.id<?1) ORDER BY a.id DESC LIMIT 100")?.query_map([filter.before],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"action":r.get::<_,String>(1)?,"target":r.get::<_,String>(2)?,"created_at":r.get::<_,i64>(3)?,"actor":r.get::<_,Option<String>>(4)?})))?.collect::<std::result::Result<Vec<_>,_>>()?)).await
+pub(super) async fn audit(db: &Database, filter: AuditFilter) -> anyhow::Result<Value> {
+    db.read("history.audit", move |db| {
+        let items = db
+            .prepare(
+                "SELECT a.id,a.action,a.target,a.created_at,u.username FROM audit a
+             LEFT JOIN users u ON u.id=a.actor_id
+             WHERE (?1 IS NULL OR a.id<?1)
+               AND (?2 IS NULL OR a.actor_id=?2 OR (?2='deleted' AND a.actor_id IS NULL))
+               AND (?3 IS NULL OR a.action=?3)
+             ORDER BY a.id DESC LIMIT 100",
+            )?
+            .query_map(params![filter.before, filter.user, filter.action], |r| {
+                Ok(json!({
+                    "id":r.get::<_,i64>(0)?, "action":r.get::<_,String>(1)?,
+                    "target":r.get::<_,String>(2)?, "created_at":r.get::<_,i64>(3)?,
+                    "actor":r.get::<_,Option<String>>(4)?
+                }))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let actors = db
+            .prepare(
+                "SELECT DISTINCT COALESCE(a.actor_id,'deleted'),COALESCE(u.username,'Deleted user')
+             FROM audit a LEFT JOIN users u ON u.id=a.actor_id ORDER BY 2,1",
+            )?
+            .query_map([], |r| {
+                Ok(json!({"id":r.get::<_,String>(0)?,"username":r.get::<_,String>(1)?}))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let actions = db
+            .prepare("SELECT DISTINCT action FROM audit ORDER BY action")?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(json!({
+            "next_before": items.last().map(|i|i["id"].clone()).filter(|_|items.len()==100),
+            "items": items, "actors": actors, "actions": actions
+        }))
+    })
+    .await
 }
 
 pub(crate) fn record(

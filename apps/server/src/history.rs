@@ -28,6 +28,8 @@ pub struct Filter {
 #[derive(Deserialize, Default)]
 pub struct AuditFilter {
     before: Option<i64>,
+    user: Option<String>,
+    action: Option<String>,
 }
 pub async fn mine(
     State(state): State<AppState>,
@@ -78,10 +80,7 @@ pub async fn audit(
     Query(filter): Query<AuditFilter>,
 ) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
-    let items = storage::audit(&state.db, filter).await?;
-    Ok(Json(
-        json!({"next_before":items.last().map(|i|i["id"].clone()).filter(|_|items.len()==100),"items":items}),
-    ))
+    Ok(Json(storage::audit(&state.db, filter).await?))
 }
 
 #[cfg(test)]

@@ -81,7 +81,7 @@
 </script>
 
 {#if titles[kind]}
-  <section aria-label={titles[kind]} class="border-t border-line py-3">
+  <section aria-label={titles[kind]} class="settings-section">
     <h3 class="mb-3 text-xs font-semibold">{titles[kind]}</h3>
     {#if items.length === 0}
       <p class="text-[11px] leading-[1.6] text-muted my-2">

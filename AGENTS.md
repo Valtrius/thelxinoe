@@ -12,4 +12,5 @@
 ## Workflow
 
 - Always design CI tests to run on GitHub Actions and account for the runner's platform, permissions, resource limits, networking, Docker behavior, and empty caches.
-- Before pushing changes, always run the format `pnpm run format` and local CI `pnpm run ci:local` to make sure CI will pass. Once launched, end your turn as the `pnpm run ci:local` has a end notification built-in. User will tell you when noification appears so you can check the results.
+- Before pushing changes, always run the format `pnpm run format`.
+- Local CI `pnpm run ci:local` is recommended to be launched when making a PR to make sure CI will run on local and GitHub. Once launched, end your turn as the `pnpm run ci:local` has a end notification built-in. User will tell you when notification appears so you can check the results.

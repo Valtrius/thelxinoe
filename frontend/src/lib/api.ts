@@ -15,6 +15,12 @@ export type User = {
   timezone: string;
   avatar?: string | null;
 };
+export type Job = {
+  id: string;
+  kind: string;
+  state: 'queued' | 'running' | 'complete' | 'failed';
+  error: string | null;
+};
 export class ApiError extends Error {
   constructor(
     public status: number,
