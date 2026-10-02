@@ -223,7 +223,27 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
             return Ok(false);
         }
     }
-    let result = run_locked(state, key, action).await;
+    let result = async {
+        let _radarr = if kind == "recyclarr" {
+            Some(state.managers.guard.service("radarr").await)
+        } else {
+            None
+        };
+        let _sonarr = if kind == "recyclarr" {
+            Some(state.managers.guard.service("sonarr").await)
+        } else {
+            None
+        };
+        if kind == "recyclarr" && matches!(action, "preflight" | "activate") {
+            recyclarr::capture_update(state, &automatic.1).await?;
+        }
+        run_locked(state, key, action).await?;
+        if kind == "recyclarr" {
+            recyclarr::current_configuration(state, &automatic.1).await?;
+        }
+        Ok::<(), ApiError>(())
+    }
+    .await;
     if let Err(error) = result {
         progress(state, key, "blocked", None, Some(error.2.clone()))
             .await

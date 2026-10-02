@@ -579,6 +579,11 @@ CREATE TABLE stack_provisions (
 
 CREATE TABLE recyclarr_settings (
     timezone TEXT NOT NULL,
+    configuration_mode TEXT NOT NULL DEFAULT 'defaults' CHECK(configuration_mode IN ('defaults','customized')),
+    configuration_revision TEXT,
+    applied_configuration_revision TEXT,
+    configuration_error TEXT,
+    configured_profiles TEXT NOT NULL DEFAULT '[]',
     provision_id TEXT PRIMARY KEY REFERENCES stack_provisions(id) ON DELETE CASCADE,
     paused INTEGER NOT NULL DEFAULT 0 CHECK(paused IN (0,1)),
     hour INTEGER NOT NULL DEFAULT 4 CHECK(hour BETWEEN 0 AND 23),

@@ -30,6 +30,12 @@ pub fn adopt(kind: &str, name: &str) -> anyhow::Result<()> {
     }
     run(false)?;
     if kind == "recyclarr" {
+        // Ownership metadata belongs to this deployment, never to an imported
+        // scheduler. Rebuild it from the explicitly reviewed import selections.
+        let metadata = Path::new("/destination/.thelxinoe");
+        if metadata.exists() {
+            fs::remove_dir_all(metadata)?;
+        }
         // Accepted imports retain state while plaintext API keys from the old
         // scheduler are removed from the managed copy before it can run.
         let path = Path::new("/destination/recyclarr.yml");

@@ -1,6 +1,8 @@
 //! Bounded CLI operations. A stopped definition container pins the installed image;
 //! each operation has its own recoverable runtime identity and private key mount.
 use super::*;
+#[path = "recyclarr_configuration.rs"]
+pub(super) mod configuration;
 use reqwest::Method;
 use sha2::{Digest, Sha256};
 use std::{
@@ -10,14 +12,6 @@ use std::{
 
 fn appdata(key: &str) -> PathBuf {
     service_path(key).with_file_name("appdata")
-}
-fn write_config(s: &Managed, file: &str, bytes: &[u8]) -> Result<()> {
-    let path = appdata(&s.id).join(file);
-    persisted(store::write(&path, bytes))?;
-    let identity = Identity::service("recyclarr", &s.spec)?;
-    persisted(
-        std::os::unix::fs::chown(path, Some(identity.uid), Some(identity.gid)).map_err(Into::into),
-    )
 }
 fn journal(key: &str, run: &str) -> PathBuf {
     service_path(key)
@@ -42,9 +36,12 @@ fn state_directory(url: &str) -> String {
         .collect()
 }
 fn resource_revision(key: &str) -> Result<String> {
+    resource_revision_at(&appdata(key))
+}
+fn resource_revision_at(root: &FsPath) -> Result<String> {
     let mut hash = Sha256::new();
     for repo in ["trash-guides", "config-templates"] {
-        let git = appdata(key).join(format!("resources/{repo}/git/official/.git"));
+        let git = root.join(format!("resources/{repo}/git/official/.git"));
         let head = std::fs::read_to_string(git.join("HEAD"))
             .map_err(|_| conflict("Guide resources are unavailable"))?;
         let revision = if let Some(reference) = head.trim().strip_prefix("ref: ") {
@@ -80,7 +77,10 @@ fn resource_revision(key: &str) -> Result<String> {
     Ok(format!("{:x}", hash.finalize()))
 }
 fn resources(key: &str, kind: &str, folder: &str) -> Result<Vec<Value>> {
-    let path = appdata(key).join(format!(
+    resources_at(&appdata(key), kind, folder)
+}
+fn resources_at(root: &FsPath, kind: &str, folder: &str) -> Result<Vec<Value>> {
+    let path = root.join(format!(
         "resources/trash-guides/git/official/docs/json/{kind}/{folder}"
     ));
     let mut rows = Vec::new();
@@ -164,19 +164,35 @@ pub(super) async fn cleanup(d: &Deployment, key: &str) -> Result<()> {
     }
     Ok(())
 }
-pub(super) async fn command(
+async fn command_in(
     d: &Deployment,
     s: &Managed,
     operation: &str,
     args: &[String],
     runtime: Option<&str>,
+    workspace: Option<&str>,
 ) -> Result<(bool, String)> {
     let identity = Identity::service("recyclarr", &s.spec)?;
     let mut mounts = vec![
-        json!({"Type":"bind","Source":format!("{}/services/{}/appdata",d.appdata_source,s.id),"Target":"/config"}),
+        json!({"Type":"bind","Source":workspace.map(str::to_owned).unwrap_or_else(||format!("{}/services/{}/appdata",d.appdata_source,s.id)),"Target":"/config"}),
     ];
+    if workspace.is_some() {
+        for directory in ["resources", "state"] {
+            let path = appdata(&s.id).join(directory);
+            persisted(std::fs::create_dir_all(&path).map_err(Into::into))?;
+            persisted(
+                std::os::unix::fs::chown(&path, Some(identity.uid), Some(identity.gid))
+                    .map_err(Into::into),
+            )?;
+            mounts.push(json!({"Type":"bind","Source":format!("{}/services/{}/appdata/{directory}",d.appdata_source,s.id),"Target":format!("/config/{directory}"),"ReadOnly":directory=="resources" && runtime.is_some()}));
+        }
+    }
     if let Some(runtime) = runtime {
         mounts.push(json!({"Type":"bind","Source":runtime,"Target":"/runtime","ReadOnly":true}));
+        mounts.push(json!({"Type":"bind","Source":format!("{runtime}/secrets.yml"),"Target":"/config/secrets.yml","ReadOnly":true}));
+        mounts.push(
+            json!({"Type":"bind","Source":format!("{runtime}/logs"),"Target":"/config/logs"}),
+        );
     }
     let spec = json!({"Image":s.image,"User":identity.user(),"Cmd":args,"Tty":true,"Env":["TZ=UTC","TERM=dumb"],"Healthcheck":{"Test":["NONE"]},"Labels":{"app.thelxinoe.deployment":d.id,"app.thelxinoe.recyclarr-service":s.id,"app.thelxinoe.recyclarr-run":operation},"HostConfig":{"NetworkMode":d.network,"RestartPolicy":{"Name":"no"},"Mounts":mounts,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],"Memory":1073741824u64,"PidsLimit":128}});
     let container = request(
@@ -221,8 +237,14 @@ pub(super) async fn catalog(
     }
     updates::verified(&s, &d).await?;
     cleanup(&d, &key).await?;
-    write_config(&s, "settings.yml", b"{}\n")?;
-    let (success, text) = command(
+    let catalog_dir = service_path(&key).with_file_name("runtime").join("catalog");
+    configuration::materialize(
+        &catalog_dir,
+        &configuration::Files::from([("settings.yml".into(), "{}\n".into())]),
+        &Identity::service("recyclarr", &s.spec)?,
+    )?;
+    let catalog_host = format!("{}/services/{key}/runtime/catalog", d.appdata_source);
+    let result = command_in(
         &d,
         &s,
         &thelxinoe_core::id(),
@@ -233,8 +255,11 @@ pub(super) async fn catalog(
             "--raw".into(),
         ],
         None,
+        Some(&catalog_host),
     )
-    .await?;
+    .await;
+    cleanup(&d, &key).await?;
+    let (success, text) = result?;
     if !success {
         return Err(conflict(
             "Guide catalog refresh failed; check registry and GitHub access",
@@ -293,6 +318,12 @@ pub(super) struct Run {
     targets: Vec<Target>,
     #[serde(default)]
     preview: bool,
+    #[serde(default)]
+    configuration_revision: Option<String>,
+    #[serde(default)]
+    files: Option<configuration::Files>,
+    #[serde(default)]
+    upstream: Value,
 }
 fn quote(value: &str) -> String {
     serde_json::to_string(value).unwrap()
@@ -326,7 +357,7 @@ async fn target_url(d: &Deployment, target: &Target) -> Result<String> {
         target.port, target.url_base
     ))
 }
-fn config(key: &str, targets: &[(Target, String)]) -> Result<String> {
+fn config_at(root: &FsPath, targets: &[(Target, String)]) -> Result<String> {
     let mut text = String::new();
     for kind in ["radarr", "sonarr"] {
         let rows = targets
@@ -342,10 +373,16 @@ fn config(key: &str, targets: &[(Target, String)]) -> Result<String> {
             managers.entry(&row.0.service_id).or_default().push(row);
         }
         for profiles in managers.values() {
-            let (manager, url) = profiles[0];
-            text.push_str(&format!("  managed_{}:\n    base_url: {}\n    api_key: !file /runtime/{}\n    delete_old_custom_formats: false\n    quality_profiles:\n",manager.service_id.replace('-', ""),quote(url),manager.service_id));
+            let (manager, _) = profiles[0];
+            let instance = configuration::instance(&manager.service_id);
+            text.push_str(&format!("  {instance}:\n    base_url: !secret {instance}_base_url\n    api_key: !secret {instance}_api_key\n    delete_old_custom_formats: false\n    quality_profiles:\n"));
             for (target, _) in profiles {
-                let guide = profile(key, kind, &target.trash_id)?;
+                let guide = resources_at(root, kind, "quality-profiles")?
+                    .into_iter()
+                    .find(|guide| guide["trash_id"] == target.trash_id)
+                    .ok_or_else(|| {
+                        conflict("Selected guide ID is no longer available; choose another guide")
+                    })?;
                 let name = guide["name"].as_str().ok_or_else(unavailable)?;
                 text.push_str(&format!("      - trash_id: {}\n        name: {}\n        reset_unmatched_scores:\n          enabled: {}\n",quote(&target.trash_id),quote(name),target.reset_scores));
                 if let Some(value) = target.overrides.get("min_format_score") {
@@ -393,7 +430,7 @@ fn config(key: &str, targets: &[(Target, String)]) -> Result<String> {
                 }
             }
             if !skip.is_empty() {
-                for group in resources(key, kind, "cf-groups")? {
+                for group in resources_at(root, kind, "cf-groups")? {
                     let trash = group["trash_id"].as_str().ok_or_else(unavailable)?;
                     if !skip.contains(trash)
                         || !(group["default"] == true || group["default"] == "true")
@@ -498,18 +535,20 @@ async fn upstream_hashes(
     targets: &[(Target, String)],
     runtime_host: &str,
     operation: &str,
+    check_profiles: bool,
 ) -> Result<Value> {
     let identity = Identity::service("recyclarr", &s.spec)?;
     let mut rows = std::collections::BTreeMap::<String, Value>::new();
     for (target, url) in targets {
-        let guide = profile(&s.id, &target.kind, &target.trash_id)?;
         let row = rows
             .entry(target.service_id.clone())
             .or_insert_with(|| json!({"service_id":target.service_id,"url":url,"profiles":[]}));
-        row["profiles"]
+        if check_profiles {
+            row["profiles"]
             .as_array_mut()
             .ok_or_else(unavailable)?
-            .push(json!({"name":guide["name"],"tracked_id":tracked_profile(&s.id,target,url)?}));
+            .push(json!({"name":profile(&s.id,&target.kind,&target.trash_id)?["name"],"tracked_id":tracked_profile(&s.id,target,url)?}));
+        }
     }
     let rows = rows.into_values().collect::<Vec<_>>();
     let spec = json!({"Image":updates::current_image().await?,"User":identity.user(),"Cmd":["recyclarr-check",serde_json::to_string(&rows).map_err(|_|unavailable())?],"Tty":true,"Healthcheck":{"Test":["NONE"]},"Labels":{"app.thelxinoe.deployment":d.id,"app.thelxinoe.recyclarr-service":s.id,"app.thelxinoe.recyclarr-run":operation},"HostConfig":{"NetworkMode":d.network,"ReadonlyRootfs":true,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],"Memory":268435456u64,"PidsLimit":32,"Mounts":[{"Type":"bind","Source":runtime_host,"Target":"/runtime","ReadOnly":true}]}});
@@ -538,6 +577,10 @@ pub(super) async fn run(
 ) -> Result<Json<Value>> {
     id(&input.operation_id)?;
     let _guard = runtime.0.service("recyclarr").await;
+    execute(key, input).await
+}
+async fn execute(key: String, input: Run) -> Result<Json<Value>> {
+    updates::reconcile_recyclarr(&key).await?;
     let path = journal(&key, &input.operation_id);
     if path.exists() {
         return Ok(Json(persisted(store::read(&path))?));
@@ -570,30 +613,46 @@ pub(super) async fn run(
     )?;
     let outcome = async {
         let mut targets = Vec::new();
+        let configuration=configuration::for_run(&key,input.configuration_revision.as_deref(),input.files.clone(),&input.targets)?;
+        if !input.preview && input.files.is_some() { return Err(bad("Save draft files before applying them")); }
+        let mut secrets=serde_json::Map::new();
+        let used=configuration::used_services(&configuration.active.files,&input.targets);
         for mut target in input.targets {
+            if !used.contains(&target.service_id) { continue; }
             if target.trash_id.len() != 32 || !target.trash_id.bytes().all(|b|b.is_ascii_hexdigit()) { return Err(bad("Invalid guide ID")); }
             let url = target_url(&d, &target).await?;
             let file = private.join(&target.service_id);
             persisted(store::write(&file,target.secret.as_bytes()))?;
             persisted(std::os::unix::fs::chown(&file,Some(identity.uid),Some(identity.gid)).map_err(Into::into))?;
+            let instance=configuration::instance(&target.service_id);
+            secrets.insert(format!("{instance}_base_url"),json!(url));
+            secrets.insert(format!("{instance}_api_key"),json!(target.secret));
             target.secret.clear();
             targets.push((target,url));
         }
-        let text = config(&key,&targets)?;
         bind_state(&key,&targets)?;
-        write_config(&s,"recyclarr.yml",text.as_bytes())?;
-        write_config(&s,"settings.yml",local_settings().as_bytes())?;
+        let sealed=journal(&key,&input.operation_id).with_file_name("config");
+        configuration::materialize(&sealed,&configuration.active.files,&identity)?;
+        let secret_file=private.join("secrets.yml");
+        persisted(store::write_json(&secret_file,&secrets))?;
+        persisted(std::os::unix::fs::chown(&secret_file,Some(identity.uid),Some(identity.gid)).map_err(Into::into))?;
+        persisted(std::fs::create_dir_all(private.join("logs")).map_err(Into::into))?;
+        persisted(std::os::unix::fs::chown(private.join("logs"),Some(identity.uid),Some(identity.gid)).map_err(Into::into))?;
+        let sealed_host=format!("{}/services/{key}/runs/{}/config",d.appdata_source,input.operation_id);
         let runtime_host = format!("{}/services/{key}/runtime/{}",d.appdata_source,input.operation_id);
-        let upstream=upstream_hashes(&d,&s,&targets,&runtime_host,&input.operation_id).await?;
-        let (valid, preview) = command(&d,&s,&input.operation_id,&["sync".into(),"--preview".into(),"--log".into(),"info".into()],Some(&runtime_host)).await?;
+        let check_profiles=configuration.mode=="defaults";
+        let configured_profiles=configuration::configured_profiles(&key,&configuration.active.files,&configuration.bindings)?;
+        let upstream=upstream_hashes(&d,&s,&targets,&runtime_host,&input.operation_id,check_profiles).await?;
+        let (valid, preview) = command_in(&d,&s,&input.operation_id,&["sync".into(),"--preview".into(),"--log".into(),"info".into()],Some(&runtime_host),Some(&sealed_host)).await?;
         let valid = valid && !preview.contains("[ERR]");
-        let mut evidence = json!({"id":input.operation_id,"image":s.image,"resources":input.resources,"config_hash":digest(text.as_bytes()),"upstream_hashes":upstream,"state":if valid {"previewed"} else {"blocked"},"preview":preview,"targets":[]});
-        let checked=upstream_hashes(&d,&s,&targets,&runtime_host,&input.operation_id).await?;
+        let mut evidence = json!({"id":input.operation_id,"image":s.image,"resources":input.resources,"configuration_revision":configuration.revision,"mode":configuration.mode,"config_hash":digest(&serde_json::to_vec(&configuration.active.files).map_err(|_|unavailable())?),"upstream_hashes":upstream,"state":if valid {"previewed"} else {"blocked"},"preview":preview,"targets":[]});
+        let checked=upstream_hashes(&d,&s,&targets,&runtime_host,&input.operation_id,check_profiles).await?;
+        evidence["configured_profiles"]=configured_profiles;
         let stable=checked==upstream;
         evidence["upstream_hashes_before_apply"]=checked;
         if !stable { evidence["state"]=json!("invalidated"); evidence["error"]=json!("Target settings changed after preview; review the changes before retrying"); }
         if valid && stable && !input.preview {
-            let (applied, log) = command(&d,&s,&input.operation_id,&["sync".into(),"--log".into(),"info".into()],Some(&runtime_host)).await?;
+            let (applied, log) = command_in(&d,&s,&input.operation_id,&["sync".into(),"--log".into(),"info".into()],Some(&runtime_host),Some(&sealed_host)).await?;
             evidence["state"] = json!(if applied && !log.contains("[ERR]") {"applied"} else {"partial"});
             evidence["apply"] = json!(log);
             let mut applied_targets=Vec::new();
@@ -603,10 +662,13 @@ pub(super) async fn run(
         // Never persist a key in evidence, including an upstream error response.
         let mut serialized = evidence.to_string();
         for entry in std::fs::read_dir(&private).map_err(|_| unavailable())? {
-            let secret = std::fs::read_to_string(entry.map_err(|_| unavailable())?.path()).map_err(|_| unavailable())?;
+            let entry=entry.map_err(|_|unavailable())?;
+            if !entry.path().is_file() { continue; }
+            let secret = std::fs::read_to_string(entry.path()).map_err(|_| unavailable())?;
             if !secret.is_empty() { serialized = serialized.replace(&secret,"[redacted]"); }
         }
         let evidence: Value = serde_json::from_str(&serialized).map_err(|_| unavailable())?;
+        if valid && !input.upstream.is_null() { persisted(store::write_json(&appdata(&key).join(".thelxinoe/target-snapshots.json"),&input.upstream))?; }
         persisted(store::write_json(&path,&evidence))?;
         Ok(Json(evidence))
     }.await;
@@ -645,7 +707,7 @@ pub(super) async fn qualify(
     )
     .await?;
     let config = root.join("config");
-    if !config.join("resources/trash-guides/git/official").is_dir() {
+    {
         // Download only public resources. No target credentials or Arr access
         // are available to this catalog command; apply uses the offline fixture.
         persisted(store::write(&config.join("settings.yml"), b"{}\n"))?;
@@ -666,12 +728,7 @@ pub(super) async fn qualify(
         updates::remove(&fetch).await?;
         result?;
     }
-    let settings = config.join("settings.yml");
-    persisted(store::write(&settings, local_settings().as_bytes()))?;
-    persisted(
-        std::os::unix::fs::chown(&settings, Some(identity.uid), Some(identity.gid))
-            .map_err(Into::into),
-    )?;
+    let prepared = configuration::prepare_upgrade(&config, old, image)?;
     let secret = thelxinoe_core::id().replace('-', "");
     let keyfile = root.join("key");
     persisted(store::write(&keyfile, secret.as_bytes()))?;
@@ -679,71 +736,94 @@ pub(super) async fn qualify(
         std::os::unix::fs::chown(&keyfile, Some(identity.uid), Some(identity.gid))
             .map_err(Into::into),
     )?;
-    let mut yaml = String::new();
-    let previous = std::fs::read_to_string(config.join("recyclarr.yml"))
-        .ok()
-        .and_then(|s| serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&s).ok());
-    for kind in ["radarr", "sonarr"] {
-        let t = templates::find(kind).ok_or_else(unavailable)?;
-        let directory = root.join(kind);
+    let mut fallback = String::new();
+    let mut secrets = serde_json::Map::new();
+    let mut fixtures = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    if let Some(prepared) = &prepared {
+        let used = configuration::used_services(&prepared.active.files, &prepared.bindings);
+        for binding in &prepared.bindings {
+            if !used.contains(&binding.service_id) {
+                continue;
+            }
+            if seen.insert(binding.service_id.clone()) {
+                fixtures.push(json!({"service_id":binding.service_id,"kind":binding.kind,"folder":binding.service_id,"fixture_port":10000 + fixtures.len()}));
+            }
+        }
+    }
+    let no_targets = fixtures.is_empty();
+    if no_targets {
+        for kind in ["radarr", "sonarr"] {
+            fixtures.push(json!({"kind":kind,"folder":kind,"fixture_port":10000 + fixtures.len()}));
+        }
+    }
+    for fixture in &fixtures {
+        let kind = fixture["kind"].as_str().ok_or_else(unavailable)?;
+        let folder = fixture["folder"].as_str().ok_or_else(unavailable)?;
+        let directory = root.join(folder);
         persisted(std::fs::create_dir_all(&directory).map_err(Into::into))?;
+        let port = fixture["fixture_port"].as_u64().ok_or_else(unavailable)?;
         let xml = format!(
-            "<Config><BindAddress>*</BindAddress><Port>{}</Port><ApiKey>{secret}</ApiKey><AuthenticationMethod>External</AuthenticationMethod><AuthenticationRequired>Enabled</AuthenticationRequired><UpdateAutomatically>False</UpdateAutomatically></Config>",
-            t.port.ok_or_else(unavailable)?
+            "<Config><BindAddress>*</BindAddress><Port>{port}</Port><ApiKey>{secret}</ApiKey><AuthenticationMethod>External</AuthenticationMethod><AuthenticationRequired>Enabled</AuthenticationRequired><UpdateAutomatically>False</UpdateAutomatically></Config>"
         );
         persisted(store::write(&directory.join("config.xml"), xml.as_bytes()))?;
         persisted(
             std::os::unix::fs::chown(directory.join("config.xml"), Some(1000), Some(1000))
                 .map_err(Into::into),
         )?;
-        let profiles = previous
-            .as_ref()
-            .and_then(|p| p.get(kind))
-            .and_then(|p| p.as_mapping());
-        yaml.push_str(&format!("{kind}:\n"));
-        let fallback = if kind == "radarr" {
-            "d1d67249d3890e49bc12e275d989a7e9"
+        if let Some(service) = fixture["service_id"].as_str() {
+            let instance = configuration::instance(service);
+            secrets.insert(
+                format!("{instance}_base_url"),
+                json!(format!("http://127.0.0.1:{port}")),
+            );
+            secrets.insert(format!("{instance}_api_key"), json!(secret));
         } else {
-            "72dae194fc92bf828f32cde7744e51a1"
-        };
-        let mut selections = profiles
-            .into_iter()
-            .flatten()
-            .filter_map(|(_, v)| {
-                Some((
-                    serde_yaml_ng::to_string(v.get("quality_profiles")?).ok()?,
-                    v.get("custom_format_groups")
-                        .and_then(|x| serde_yaml_ng::to_string(x).ok()),
-                    v.get("quality_definition")
-                        .and_then(|x| serde_yaml_ng::to_string(x).ok()),
-                ))
-            })
-            .collect::<Vec<_>>();
-        if selections.is_empty() {
-            selections.push((format!("- trash_id: {fallback}\n"), None, None));
-        }
-        for (i, (selected, groups, sizes)) in selections.iter().enumerate() {
-            yaml.push_str(&format!("  fixture_{kind}_{i}:\n    base_url: http://127.0.0.1:{}\n    api_key: !file /fixtures/key\n    delete_old_custom_formats: false\n    quality_profiles:\n",t.port.ok_or_else(unavailable)?));
-            for line in selected.lines() {
-                yaml.push_str(&format!("      {line}\n"));
-            }
-            for (field, configured) in [
-                ("custom_format_groups", groups),
-                ("quality_definition", sizes),
-            ] {
-                if let Some(configured) = configured {
-                    yaml.push_str(&format!("    {field}:\n"));
-                    for line in configured.lines() {
-                        yaml.push_str(&format!("      {line}\n"));
-                    }
-                }
-            }
+            let trash = if kind == "radarr" {
+                "d1d67249d3890e49bc12e275d989a7e9"
+            } else {
+                "72dae194fc92bf828f32cde7744e51a1"
+            };
+            fallback.push_str(&format!("{kind}:\n  fixture_{kind}:\n    base_url: http://127.0.0.1:{port}\n    api_key: !file /fixtures/key\n    quality_profiles:\n      - trash_id: {trash}\n"));
         }
     }
-    persisted(store::write(&config.join("recyclarr.yml"), yaml.as_bytes()))?;
+    let mut files = prepared
+        .as_ref()
+        .map(|configuration| configuration.active.files.clone())
+        .unwrap_or_else(|| {
+            configuration::Files::from([
+                ("recyclarr.yml".into(), "{}\n".into()),
+                ("settings.yml".into(), local_settings().into()),
+            ])
+        });
+    // Empty installations still qualify the candidate binary against Arr.
+    // This disposable probe never becomes the active or retained default file.
+    if no_targets {
+        files.insert(
+            format!("configs/qualification-{}.yml", thelxinoe_core::id()),
+            fallback,
+        );
+    }
+    // Only the chosen bundle may participate in Recyclarr's file discovery.
+    for path in [
+        config.join("configs"),
+        config.join("includes"),
+        config.join("state"),
+    ] {
+        if path.exists() {
+            persisted(std::fs::remove_dir_all(path).map_err(Into::into))?;
+        }
+    }
+    for name in ["recyclarr.yml", "settings.yml"] {
+        if config.join(name).exists() {
+            persisted(std::fs::remove_file(config.join(name)).map_err(Into::into))?;
+        }
+    }
+    configuration::materialize(&config, &files, &identity)?;
+    persisted(store::write_json(&config.join("secrets.yml"), &secrets))?;
     persisted(
         std::os::unix::fs::chown(
-            config.join("recyclarr.yml"),
+            config.join("secrets.yml"),
             Some(identity.uid),
             Some(identity.gid),
         )
@@ -753,13 +833,23 @@ pub(super) async fn qualify(
     let anchor=request(Method::POST,"/containers/create",Some(json!({"Image":updates::current_image().await?,"Cmd":["recyclarr-fixture"],"Labels":labels,"Healthcheck":{"Test":["NONE"]},"HostConfig":{"NetworkMode":"none","ReadonlyRootfs":true,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"]}}))).await?["Id"].as_str().ok_or_else(unavailable)?.to_owned();
     updates::start(&anchor).await?;
     let outcome=async {
-        for kind in ["radarr","sonarr"] {
+        if let Some(prepared)=&prepared {
+            let protected = config.join(".thelxinoe/required-profiles.json");
+            if protected.is_file() {
+                let required:Vec<Value> = persisted(store::read(&protected))?;
+                configuration::check_required(&configuration::configured_profiles_at(&config,&prepared.active.files,&prepared.bindings)?, &required)?;
+            }
+        }
+        for fixture_spec in &fixtures {
+            let kind=fixture_spec["kind"].as_str().ok_or_else(unavailable)?;
+            let folder=fixture_spec["folder"].as_str().ok_or_else(unavailable)?;
+            let fixture_port=fixture_spec["fixture_port"].as_u64().ok_or_else(unavailable)?;
             let t=templates::find(kind).ok_or_else(unavailable)?;
             let image=templates::pinned_image(t)?.unwrap_or_else(|| format!("{}@{}",t.repository,t.digest));
             pull_image(&image).await?;
-            let fixture=request(Method::POST,"/containers/create",Some(json!({"Image":image,"Labels":labels,"Env":["PUID=1000","PGID=1000"],"Healthcheck":{"Test":["NONE"]},"HostConfig":{"NetworkMode":format!("container:{anchor}"),"Mounts":[{"Type":"bind","Source":format!("{host}/{kind}"),"Target":"/config"}]}}))).await?["Id"].as_str().ok_or_else(unavailable)?.to_owned();
+            let fixture=request(Method::POST,"/containers/create",Some(json!({"Image":image,"Labels":labels,"Env":["PUID=1000","PGID=1000"],"Healthcheck":{"Test":["NONE"]},"HostConfig":{"NetworkMode":format!("container:{anchor}"),"Mounts":[{"Type":"bind","Source":format!("{host}/{folder}"),"Target":"/config"}]}}))).await?["Id"].as_str().ok_or_else(unavailable)?.to_owned();
             updates::start(&fixture).await?;
-            let checker=request(Method::POST,"/containers/create",Some(json!({"Image":updates::current_image().await?,"Cmd":["adapter-health",kind],"User":"1000:1000","Tty":true,"Labels":labels,"Healthcheck":{"Test":["NONE"]},"HostConfig":{"NetworkMode":format!("container:{anchor}"),"ReadonlyRootfs":true,"CapDrop":["ALL"],"Mounts":[{"Type":"bind","Source":format!("{host}/{kind}"),"Target":"/config","ReadOnly":true}]}}))).await?["Id"].as_str().ok_or_else(unavailable)?.to_owned();
+            let checker=request(Method::POST,"/containers/create",Some(json!({"Image":updates::current_image().await?,"Cmd":["adapter-health",kind],"Env":[format!("THELXINOE_FIXTURE_PORT={fixture_port}")],"User":"1000:1000","Tty":true,"Labels":labels,"Healthcheck":{"Test":["NONE"]},"HostConfig":{"NetworkMode":format!("container:{anchor}"),"ReadonlyRootfs":true,"CapDrop":["ALL"],"Mounts":[{"Type":"bind","Source":format!("{host}/{folder}"),"Target":"/config","ReadOnly":true}]}}))).await?["Id"].as_str().ok_or_else(unavailable)?.to_owned();
             updates::start(&checker).await?;
             if let Err(error)=updates::wait(&checker,200).await {
                 let logs=output(&checker).await.unwrap_or_default().replace(&secret,"[redacted]");
@@ -767,6 +857,19 @@ pub(super) async fn qualify(
                 return Err(error);
             }
             updates::remove(&checker).await?;
+        }
+        if prepared.is_some() && !no_targets {
+            let snapshots = config.join(".thelxinoe/target-snapshots.json");
+            if snapshots.is_file() {
+                persisted(std::os::unix::fs::chown(&snapshots, Some(identity.uid), Some(identity.gid)).map_err(Into::into))?;
+            }
+            let worker=request(Method::POST,"/containers/create",Some(json!({"Image":updates::current_image().await?,"User":identity.user(),"Cmd":["recyclarr-seed",serde_json::to_string(&fixtures).map_err(|_|unavailable())?],"Labels":labels,"Tty":true,"HostConfig":{"NetworkMode":format!("container:{anchor}"),"ReadonlyRootfs":true,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],"Mounts":[{"Type":"bind","Source":host,"Target":"/fixtures","ReadOnly":true}]}}))).await?["Id"].as_str().ok_or_else(unavailable)?.to_owned();
+            updates::start(&worker).await?;
+            let result=updates::wait(&worker,200).await;
+            let log=output(&worker).await.unwrap_or_default().replace(&secret,"[redacted]");
+            persisted(store::write(&root.join("seed.log"),log.as_bytes()))?;
+            result?;
+            updates::remove(&worker).await?;
         }
         for preview in [true,false] {
             let mut args=vec!["sync","--log","info"];
@@ -792,11 +895,78 @@ pub(super) async fn qualify(
     if keyfile.exists() {
         persisted(std::fs::remove_file(keyfile).map_err(Into::into))?;
     }
-    for kind in ["radarr", "sonarr"] {
-        let file = root.join(kind).join("config.xml");
+    for fixture in &fixtures {
+        let file = root
+            .join(fixture["folder"].as_str().ok_or_else(unavailable)?)
+            .join("config.xml");
         if file.exists() {
             persisted(std::fs::remove_file(file).map_err(Into::into))?;
         }
+    }
+    if let Some(prepared) = prepared {
+        let current = configuration::read(&old.id)?.ok_or_else(unavailable)?;
+        let diagnostics = if outcome.is_ok() {
+            json!([])
+        } else {
+            let log = [
+                "apply.log",
+                "preview.log",
+                "seed.log",
+                "sonarr-health.log",
+                "radarr-health.log",
+            ]
+            .into_iter()
+            .filter_map(|name| std::fs::read_to_string(root.join(name)).ok())
+            .find(|log| !log.trim().is_empty())
+            .unwrap_or_else(|| {
+                outcome
+                    .as_ref()
+                    .err()
+                    .map(|(_, message)| message.to_string())
+                    .unwrap_or_else(|| "Candidate configuration failed isolated validation".into())
+            });
+            json!([{"file":"recyclarr.yml","line":1,"column":1,"message":log}])
+        };
+        persisted(store::write_json(
+            &store::root()
+                .join("updates")
+                .join(operation)
+                .join("recyclarr-candidate-root.json"),
+            &leaf,
+        ))?;
+        configuration::write_candidate(
+            &appdata(&old.id),
+            &configuration::Candidate {
+                operation_id: operation.into(),
+                base_revision: current.revision,
+                image: image.into(),
+                files: prepared.active.files.clone(),
+                defaults: prepared.defaults.clone(),
+                valid: outcome.is_ok(),
+                edited: configuration::candidate_at(&appdata(&old.id))?
+                    .is_some_and(|candidate| candidate.edited && candidate.image == image),
+                diagnostics,
+            },
+        )?;
+        if outcome.is_ok() {
+            persisted(store::write_json(
+                &store::root()
+                    .join("updates")
+                    .join(operation)
+                    .join("recyclarr-configuration.json"),
+                &prepared,
+            ))?;
+            persisted(store::write_json(
+                &store::root()
+                    .join("updates")
+                    .join(operation)
+                    .join("recyclarr-resources-source.json"),
+                &format!("{host}/config/resources"),
+            ))?;
+        }
+    }
+    if config.join("secrets.yml").exists() {
+        persisted(std::fs::remove_file(config.join("secrets.yml")).map_err(Into::into))?;
     }
     outcome
 }
