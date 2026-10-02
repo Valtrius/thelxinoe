@@ -320,7 +320,7 @@ pub(crate) async fn maintain(state: &AppState, candidates: &[String], active: &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::online::oauth::tests::{call, fixture};
+    use crate::test_support::{call, fixture};
     use axum::http::StatusCode;
     fn metadata(live: bool) -> Value {
         json!({"is_live":live,"duration":100,"formats":[{"vcodec":"avc1.640028","acodec":"none","height":1080,"protocol":"https","ext":"mp4","url":"https://r1.googlevideo.com/video?signature=private"},{"vcodec":"none","acodec":"mp4a.40.2","abr":128,"protocol":"https","ext":"m4a","url":"https://r1.googlevideo.com/audio?signature=private"}]})

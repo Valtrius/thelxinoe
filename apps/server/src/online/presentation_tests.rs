@@ -1,4 +1,4 @@
-use super::oauth::tests::{call, fixture};
+use crate::test_support::{call, fixture};
 use axum::http::StatusCode;
 use rusqlite::params;
 use serde_json::{Value, json};

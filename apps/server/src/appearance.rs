@@ -134,7 +134,7 @@ pub async fn update(
 
 #[cfg(test)]
 mod tests {
-    use crate::online::oauth::tests::{call, fixture};
+    use crate::test_support::{call, fixture};
     use serde_json::{Value, json};
     #[tokio::test]
     async fn player_and_provider_changes_merge_and_emit_only_to_the_owner() {

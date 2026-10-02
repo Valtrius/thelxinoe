@@ -1,11 +1,9 @@
 use super::*;
 use crate::online::{
     Runtime,
-    oauth::{
-        Credential,
-        tests::{call, fixture},
-    },
+    oauth::{Credential, tests::fixture},
 };
+use crate::test_support::call;
 use axum::{
     extract::{Path, Query},
     http::{HeaderMap, StatusCode, header},

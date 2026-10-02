@@ -1,5 +1,5 @@
 use super::*;
-use crate::online::oauth::tests::{call, fixture};
+use crate::test_support::{call, fixture};
 use axum::http::StatusCode;
 #[test]
 fn external_timestamps_require_identity_and_explicit_bounded_fields() {

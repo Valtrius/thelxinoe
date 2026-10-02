@@ -96,7 +96,7 @@ pub(crate) async fn extract(state: &AppState, media: &str) -> Result<RemoteSourc
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::online::oauth::tests::{call, fixture};
+    use crate::test_support::{call, fixture};
     use axum::http::StatusCode;
     use serde_json::{Value, json};
     #[tokio::test]

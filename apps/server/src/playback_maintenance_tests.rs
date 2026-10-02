@@ -1,5 +1,5 @@
 use super::*;
-use crate::online::oauth::tests::{call, fixture};
+use crate::test_support::{call, fixture};
 
 #[tokio::test]
 async fn stale_cleanup_cannot_fail_a_new_generation_or_reopen_a_terminal_session() {

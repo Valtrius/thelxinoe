@@ -1,3 +1,5 @@
+#[path = "../../../tests/helpers/server-config.rs"]
+mod configuration;
 use axum::{
     body::Body,
     extract::ConnectInfo,
@@ -11,15 +13,8 @@ use tower::ServiceExt;
 async fn fixture() -> (tempfile::TempDir, AppState) {
     let temp = tempfile::tempdir().unwrap();
     let state = AppState::open(Config {
-        state: temp.path().join("state"),
-        cache: temp.path().join("cache"),
-        web: temp.path().join("web"),
-        media: temp.path().join("media"),
-        bind: "127.0.0.1:0".parse().unwrap(),
-        public_url: None,
         trusted_proxies: vec!["10.0.0.0/24".parse().unwrap()],
-        cors_origins: vec![],
-        controller_socket: temp.path().join("socket"),
+        ..configuration::config(temp.path())
     })
     .await
     .unwrap();

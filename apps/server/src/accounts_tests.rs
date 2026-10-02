@@ -1,4 +1,4 @@
-use crate::online::oauth::tests::{call, fixture};
+use crate::test_support::{call, fixture};
 use axum::http::StatusCode;
 use serde_json::json;
 

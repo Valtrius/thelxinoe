@@ -1,5 +1,5 @@
 use super::*;
-use crate::online::oauth::tests::{call, fixture};
+use crate::test_support::{call, fixture};
 use axum::{extract::Query, http::StatusCode};
 use std::{collections::BTreeMap, sync::Arc};
 #[test]

@@ -1,3 +1,5 @@
+#[path = "../../../tests/helpers/server-config.rs"]
+mod configuration;
 #[path = "../../../tests/helpers/tool-runtime.rs"]
 mod tool_runtime;
 use axum::{
@@ -66,17 +68,7 @@ async fn replacement_and_restart_keep_resume_but_invalidate_old_playback_generat
     std::fs::create_dir(&root).unwrap();
     let path = root.join("Resume (2020).mp4");
     media(&path, "440");
-    let config = Config {
-        state: temp.path().join("state"),
-        cache: temp.path().join("cache"),
-        web: temp.path().join("web"),
-        media: root.clone(),
-        bind: "127.0.0.1:0".parse().unwrap(),
-        public_url: None,
-        trusted_proxies: vec![],
-        cors_origins: vec![],
-        controller_socket: temp.path().join("socket"),
-    };
+    let config = configuration::config(temp.path());
     let state = AppState::open(config.clone()).await.unwrap();
     tool_runtime::install(&state.tools.runtime, &state.config.state.join("tools"));
     state.db.write("test.fixture", move|db|{

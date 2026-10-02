@@ -86,7 +86,7 @@ pub async fn audit(
 
 #[cfg(test)]
 mod tests {
-    use crate::online::oauth::tests::{call, fixture};
+    use crate::test_support::{call, fixture};
     use serde_json::Value;
     #[tokio::test]
     async fn history_uses_shared_platform_range_and_private_scope() {

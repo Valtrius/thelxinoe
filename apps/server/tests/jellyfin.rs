@@ -1,5 +1,7 @@
 #[path = "../../../tests/helpers/auth-session.rs"]
 mod auth_session;
+#[path = "../../../tests/helpers/server-config.rs"]
+mod configuration;
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -11,19 +13,9 @@ use tower::ServiceExt;
 
 async fn fixture() -> (tempfile::TempDir, AppState, String) {
     let temp = tempfile::tempdir().unwrap();
-    let state = AppState::open(Config {
-        state: temp.path().join("state"),
-        cache: temp.path().join("cache"),
-        web: temp.path().join("web"),
-        media: temp.path().join("media"),
-        bind: "127.0.0.1:0".parse().unwrap(),
-        public_url: None,
-        trusted_proxies: vec![],
-        cors_origins: vec![],
-        controller_socket: temp.path().join("socket"),
-    })
-    .await
-    .unwrap();
+    let state = AppState::open(configuration::config(temp.path()))
+        .await
+        .unwrap();
     let hash = thelxinoe_auth::password_hash("a long test-only password".into())
         .await
         .unwrap();

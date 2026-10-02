@@ -836,7 +836,7 @@ async fn sync(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::online::oauth::tests::{call as api, fixture};
+    use crate::test_support::{call as api, fixture};
     use std::{future::Future, sync::Arc, task::Poll, time::Duration};
 
     // Browser qualification cannot deterministically queue an exclusive operation

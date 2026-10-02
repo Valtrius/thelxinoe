@@ -1,85 +1,15 @@
 use super::*;
-use crate::{config::Config, online::Runtime};
-use axum::{
-    body::Body,
-    http::{Request, StatusCode},
-    routing::post,
-};
-use http_body_util::BodyExt;
+use crate::online::Runtime;
+use crate::test_support::call;
+use axum::{http::StatusCode, routing::post};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-use tower::ServiceExt;
-pub(crate) async fn call(
-    state: &AppState,
-    path: &str,
-    method: &str,
-    body: Value,
-    cookie: &str,
-) -> (StatusCode, HeaderMap, Value) {
-    let mut request = Request::builder()
-        .uri(path)
-        .method(method)
-        .header("host", "internal:8484")
-        .header("x-forwarded-proto", "https")
-        .header("x-forwarded-host", "media.test")
-        .header("x-thelxinoe-client", "1")
-        .header("cookie", cookie)
-        .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    request.extensions_mut().insert(axum::extract::ConnectInfo(
-        "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
-    ));
-    let response = crate::router(state.clone()).oneshot(request).await.unwrap();
-    let status = response.status();
-    let headers = response.headers().clone();
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    (
-        status,
-        headers,
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-    )
-}
 pub(crate) async fn fixture() -> (tempfile::TempDir, AppState, String) {
-    let temp = tempfile::tempdir().unwrap();
-    let state = AppState::open(Config {
-        state: temp.path().join("state"),
-        cache: temp.path().join("cache"),
-        web: temp.path().join("web"),
-        media: temp.path().join("media"),
-        bind: "127.0.0.1:0".parse().unwrap(),
-        public_url: Some("https://media.test".parse().unwrap()),
-        trusted_proxies: vec!["127.0.0.1/32".parse().unwrap()],
-        cors_origins: vec![],
-        controller_socket: temp.path().join("socket"),
-    })
-    .await
-    .unwrap();
-    state
-        .db
-        .write("test.fixture", |db| {
-            for name in ["alice", "bob"] {
-                db.execute(
-                    "INSERT INTO users(id,username,password_hash,role,created_at) VALUES (?1,?1,'unused','user',1)",
-                    [name],
-                )?;
-            }
-            Ok(())
-        })
-        .await
-        .unwrap();
+    let (temp, state, cookie) = crate::test_support::fixture().await;
     state.secrets.put(&state.db,"provider.google".into(),br#"{"client_id":"test.apps.googleusercontent.com","client_secret":"test-application-secret"}"#).await.unwrap();
-    let token = crate::test_support::issue_session(
-        &state.db,
-        "alice".into(),
-        "web".into(),
-        "test browser".into(),
-    )
-    .await
-    .unwrap();
-    (temp, state, format!("thelxinoe_session={token}"))
+    (temp, state, cookie)
 }
 fn attempt(response: (StatusCode, HeaderMap, Value)) -> (String, String, String) {
     assert_eq!(response.0, StatusCode::OK);

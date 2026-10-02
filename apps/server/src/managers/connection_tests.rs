@@ -1,5 +1,5 @@
 use super::*;
-use crate::online::oauth::tests::{call, fixture};
+use crate::test_support::{call, fixture};
 use axum::http::StatusCode;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -382,7 +382,17 @@ async fn prowlarr_advertises_the_peer_route_on_three_networks_with_url_bases() {
             .unwrap()
             .unwrap();
         assert_eq!(link.state, "connected", "{:?}", link.error);
-        let source_port: u16 = state.db.read("test.port", |db| Ok(db.query_row("SELECT port FROM support_services WHERE id='prowlarr'", [], |r| r.get(0))?)).await.unwrap();
+        let source_port: u16 = state
+            .db
+            .read("test.port", |db| {
+                Ok(db.query_row(
+                    "SELECT port FROM support_services WHERE id='prowlarr'",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .await
+            .unwrap();
         let target = service(&state, "radarr").await.unwrap();
         let rows = mock.rows.lock().await;
         let values = &rows[0]["fields"];

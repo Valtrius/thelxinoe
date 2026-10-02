@@ -183,7 +183,7 @@ pub async fn reconcile(state: AppState) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod presentation_tests {
-    use crate::online::oauth::tests::{call, fixture};
+    use crate::test_support::{call, fixture};
     use serde_json::Value;
     #[tokio::test]
     async fn home_inherits_show_artwork_without_exposing_other_users_shelves() {

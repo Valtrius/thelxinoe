@@ -1,5 +1,5 @@
 use super::*;
-use crate::online::oauth::tests::fixture;
+use crate::test_support::fixture;
 
 #[tokio::test]
 async fn validation_of_one_file_keeps_unrelated_playback_responsive_and_hashes_once() {
@@ -47,11 +47,11 @@ async fn validation_of_one_file_keeps_unrelated_playback_responsive_and_hashes_o
         )
     };
     ready.await.unwrap();
-    let playback=tokio::time::timeout(std::time::Duration::from_secs(2),crate::online::oauth::tests::call(&state,"/api/v1/playback","POST",json!({"media_id":"other","options":{"quality":"auto","capabilities":{"containers":["mp4"],"video":["h264"],"audio":[],"hls":false}}}),&cookie)).await.expect("unrelated playback must not wait for hashing");
+    let playback=tokio::time::timeout(std::time::Duration::from_secs(2),crate::test_support::call(&state,"/api/v1/playback","POST",json!({"media_id":"other","options":{"quality":"auto","capabilities":{"containers":["mp4"],"video":["h264"],"audio":[],"hls":false}}}),&cookie)).await.expect("unrelated playback must not wait for hashing");
     assert_eq!(playback.0, axum::http::StatusCode::OK, "{}", playback.2);
     let progress = tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        crate::online::oauth::tests::call(
+        crate::test_support::call(
             &state,
             &format!(
                 "/api/v1/playback/{}/progress",
@@ -98,7 +98,17 @@ async fn mutation_rechecks_protection_generation_and_open_file_identity_after_va
         ready.await.unwrap();
         match change {
             "keep" => {
-                state.db.write("test.keep",|db|{db.execute("INSERT INTO media_protection(media_id,keep) VALUES ('ret-movie',1)",[])?;Ok(())}).await.unwrap();
+                state
+                    .db
+                    .write("test.keep", |db| {
+                        db.execute(
+                            "INSERT INTO media_protection(media_id,keep) VALUES ('ret-movie',1)",
+                            [],
+                        )?;
+                        Ok(())
+                    })
+                    .await
+                    .unwrap();
             }
             "generation" => {
                 state
