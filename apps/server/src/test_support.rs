@@ -32,6 +32,7 @@ impl FaultControl {
     }
 }
 tokio::task_local! { pub(crate) static MEDIA_VALIDATION: std::sync::Arc<FaultControl>; }
+tokio::task_local! { pub(crate) static CONTROLLER_FAILURE: (&'static str, &'static str); }
 
 pub(crate) async fn call(
     state: &AppState,

@@ -26,6 +26,14 @@ pub(super) fn router() -> Router<AppState> {
 }
 pub(crate) async fn controller(state: &AppState, path: &str, body: Option<Value>) -> Result<Value> {
     #[cfg(test)]
+    if let Ok((code, message)) = crate::test_support::CONTROLLER_FAILURE.try_with(|v| *v) {
+        return Err(ApiError(
+            axum::http::StatusCode::CONFLICT,
+            code,
+            message.into(),
+        ));
+    }
+    #[cfg(test)]
     if let Some(value) = state
         .managers
         .docker
@@ -64,15 +72,24 @@ pub(crate) async fn controller(state: &AppState, path: &str, body: Option<Value>
                 "Docker controller request failed"
             );
             let message = response.text().await.unwrap_or_default();
-            return Err(ApiError::conflict(
-                if status == reqwest::StatusCode::CONFLICT
-                    || status == reqwest::StatusCode::BAD_REQUEST
-                {
-                    message.chars().take(300).collect::<String>()
-                } else {
-                    "Docker controller operation unavailable".into()
-                },
-            ));
+            let code = if status.is_server_error() {
+                "dependency_unavailable"
+            } else if matches!(
+                status,
+                reqwest::StatusCode::LOCKED | reqwest::StatusCode::TOO_MANY_REQUESTS
+            ) {
+                "operation_contended"
+            } else if status == reqwest::StatusCode::PRECONDITION_FAILED {
+                "revision_changed"
+            } else {
+                "conflict"
+            };
+            let message = if status.is_client_error() {
+                message.chars().take(300).collect()
+            } else {
+                "Docker controller operation unavailable".into()
+            };
+            return Err(ApiError(axum::http::StatusCode::CONFLICT, code, message));
         }
         read(response).await
     }

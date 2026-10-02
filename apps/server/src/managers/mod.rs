@@ -125,8 +125,10 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/api/v1/admin/managers/{id}/test", post(test))
 }
 fn unavailable() -> ApiError {
-    ApiError::conflict(
-        "Manager or its Docker evidence is unavailable; check the service and controller",
+    ApiError(
+        axum::http::StatusCode::CONFLICT,
+        "dependency_unavailable",
+        "Manager or its Docker evidence is unavailable; check the service and controller".into(),
     )
 }
 async fn docker(state: &AppState, path: &str) -> Result<Value> {

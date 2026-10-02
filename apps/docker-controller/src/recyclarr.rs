@@ -261,7 +261,8 @@ pub(super) async fn catalog(
     cleanup(&d, &key).await?;
     let (success, text) = result?;
     if !success {
-        return Err(conflict(
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
             "Guide catalog refresh failed; check registry and GitHub access",
         ));
     }
@@ -592,7 +593,8 @@ async fn execute(key: String, input: Run) -> Result<Json<Value>> {
         || s.image != input.image
         || resource_revision(&key)? != input.resources
     {
-        return Err(conflict(
+        return Err((
+            StatusCode::PRECONDITION_FAILED,
             "Image or guide revision changed; refresh before applying",
         ));
     }
