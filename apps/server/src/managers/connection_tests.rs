@@ -190,6 +190,12 @@ fn masked(rows: &[Value]) -> Value {
 }
 
 async fn connected_services() -> (tempfile::TempDir, AppState, String, Mock) {
+    connected_services_on(false, "").await
+}
+async fn connected_services_on(
+    split: bool,
+    url_base: &'static str,
+) -> (tempfile::TempDir, AppState, String, Mock) {
     let (temp, mut state, cookie) = fixture().await;
     Arc::get_mut(&mut state.config).unwrap().media = "/media".into();
     state
@@ -210,7 +216,19 @@ async fn connected_services() -> (tempfile::TempDir, AppState, String, Mock) {
     let creates = posts.clone();
     let lost = lose_response.clone();
     let source=Router::new()
-        .route("/api/v1/applications/test",post(||async{StatusCode::NO_CONTENT}))
+        .route("/api/v1/applications/test",post(move |Json(record):Json<Value>| async move {
+            let fields = record["fields"].as_array().unwrap();
+            let field = |name: &str| fields.iter().find(|f|f["name"]==name).unwrap()["value"].as_str().unwrap().to_owned();
+            let source = field("prowlarrUrl");
+            let target = field("baseUrl");
+            if split && (!source.starts_with("http://127.0.0.2:") || !target.starts_with("http://127.0.0.3:")) { return StatusCode::BAD_REQUEST; }
+            let client = reqwest::Client::builder().no_proxy().build().unwrap();
+            for (base, api, app) in [(source, "v1", "Prowlarr"), (target, "v3", record["implementation"].as_str().unwrap())] {
+                let response = client.get(format!("{base}/api/{api}/system/status")).send().await.unwrap();
+                if response.json::<Value>().await.unwrap()["appName"] != app { return StatusCode::BAD_REQUEST; }
+            }
+            StatusCode::NO_CONTENT
+        }))
         .route("/api/v1/system/status",get(||async{Json(json!({"appName":"Prowlarr","version":"1"}))}))
         .route("/api/v1/applications/schema",get(||async{Json(json!([
             {"implementation":"Radarr","fields":[{"name":"baseUrl","value":""},{"name":"prowlarrUrl","value":""},{"name":"apiKey","value":""}]},
@@ -236,11 +254,26 @@ async fn connected_services() -> (tempfile::TempDir, AppState, String, Mock) {
                 *row=value.clone();Json(value)
             }
         }).delete(move|Path(id):Path<i64>|{let rows=delete_rows.clone();async move{rows.lock().await.retain(|r|r["id"]!=id);StatusCode::NO_CONTENT}}));
+    let source = if url_base.is_empty() {
+        source
+    } else {
+        Router::new().nest(url_base, source)
+    };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let source_port = listener.local_addr().unwrap().port();
+    let peer_source = source.clone();
     let mut tasks = vec![tokio::spawn(async move {
         axum::serve(listener, source).await.unwrap()
     })];
+    if split {
+        let listener =
+            tokio::net::TcpListener::bind((std::net::Ipv4Addr::new(127, 0, 0, 2), source_port))
+                .await
+                .unwrap();
+        tasks.push(tokio::spawn(async move {
+            axum::serve(listener, peer_source).await.unwrap()
+        }));
+    }
     for (kind, character) in [("prowlarr", 'c'), ("radarr", 'a'), ("sonarr", 'b')] {
         let port = if kind == "prowlarr" {
             source_port
@@ -250,15 +283,35 @@ async fn connected_services() -> (tempfile::TempDir, AppState, String, Mock) {
                 "/api/v3/system/status",
                 get(move || async move { Json(json!({"appName":app,"version":"1"})) }),
             );
+            let router = if url_base.is_empty() {
+                router
+            } else {
+                Router::new().nest(url_base, router)
+            };
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let port = listener.local_addr().unwrap().port();
+            if split {
+                let peer = router.clone();
+                let listener =
+                    tokio::net::TcpListener::bind((std::net::Ipv4Addr::new(127, 0, 0, 3), port))
+                        .await
+                        .unwrap();
+                tasks.push(tokio::spawn(async move {
+                    axum::serve(listener, peer).await.unwrap()
+                }));
+            }
             tasks.push(tokio::spawn(async move {
                 axum::serve(listener, router).await.unwrap()
             }));
             port
         };
         let container = character.to_string().repeat(64);
-        let inspection = json!({"id":container,"name":if kind=="prowlarr" {"localhost"} else {kind},"running":true,"mounts":[{"kind":"bind","source":"/media","destination":"/media","writable":true}],"networks":[{"id":"shared","address":"127.0.0.1"}]});
+        let networks = if split {
+            json!([{"id":if kind=="prowlarr"{"server-source"}else{"server-target"},"address":"127.0.0.1"},{"id":"peers","address":if kind=="prowlarr"{"127.0.0.2"}else{"127.0.0.3"}}])
+        } else {
+            json!([{"id":"shared","address":"127.0.0.1"}])
+        };
+        let inspection = json!({"id":container,"name":if kind=="prowlarr" {"localhost"} else {kind},"running":true,"mounts":[{"kind":"bind","source":"/media","destination":"/media","writable":true}],"networks":networks});
         state
             .managers
             .docker
@@ -271,6 +324,15 @@ async fn connected_services() -> (tempfile::TempDir, AppState, String, Mock) {
             .lock()
             .unwrap()
             .insert("containers/self".into(), inspection);
+        if split {
+            state
+                .managers
+                .docker
+                .lock()
+                .unwrap()
+                .get_mut("containers/self")
+                .unwrap()["networks"] = json!([{"id":"server-source","address":"127.0.0.1"},{"id":"server-target","address":"127.0.0.1"}]);
+        }
         let credential = if kind == "prowlarr" {
             state
                 .secrets
@@ -288,6 +350,7 @@ async fn connected_services() -> (tempfile::TempDir, AppState, String, Mock) {
         state.db.write("test.endpoint",move|db| {
             let table=if kind=="prowlarr"{"support_services"}else{"manager_services"};
             db.execute(&format!("INSERT INTO {table}(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES (?1,?1,?1,?2,?3,'generation',?4,?5,'1',1)"),params![kind,container,port,credential,if kind=="prowlarr"{""}else{"/media"}])?;
+            db.execute(&format!("UPDATE {table} SET url_base=?1 WHERE id=?2"),params![url_base,kind])?;
             Ok(())
         }).await.unwrap();
     }
@@ -306,6 +369,40 @@ async fn connected_services() -> (tempfile::TempDir, AppState, String, Mock) {
             tasks,
         },
     )
+}
+
+#[tokio::test]
+async fn prowlarr_advertises_the_peer_route_on_three_networks_with_url_bases() {
+    for prefix in ["", "/custom"] {
+        let (_temp, state, cookie, mock) = connected_services_on(true, prefix).await;
+        action(&state, &cookie, "radarr", "connect").await;
+        tick(&state).await.unwrap();
+        let link = storage::load(&state.db, &link_id("prowlarr", "radarr"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(link.state, "connected", "{:?}", link.error);
+        let source_port: u16 = state.db.read("test.port", |db| Ok(db.query_row("SELECT port FROM support_services WHERE id='prowlarr'", [], |r| r.get(0))?)).await.unwrap();
+        let target = service(&state, "radarr").await.unwrap();
+        let rows = mock.rows.lock().await;
+        let values = &rows[0]["fields"];
+        assert!(
+            values
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f["name"] == "prowlarrUrl"
+                    && f["value"] == format!("http://127.0.0.2:{source_port}{prefix}"))
+        );
+        assert!(
+            values
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f["name"] == "baseUrl"
+                    && f["value"] == format!("http://127.0.0.3:{}{prefix}", target.port))
+        );
+    }
 }
 
 fn running(state: &AppState, character: char, value: bool) {

@@ -35,11 +35,13 @@ async fn open<'a>(state: &'a AppState, endpoint: &Endpoint) -> Attempt<Connectio
     }
 }
 
-async fn addresses(
-    state: &AppState,
-    source: &Endpoint,
-    target: &Endpoint,
-) -> Attempt<(String, String, Vec<String>)> {
+struct PeerRoute {
+    network: String,
+    source: String,
+    target: String,
+    target_names: Vec<String>,
+}
+async fn addresses(state: &AppState, source: &Endpoint, target: &Endpoint) -> Attempt<PeerRoute> {
     let a = docker(state, &format!("containers/{}", source.container)).await?;
     let b = docker(state, &format!("containers/{}", target.container)).await?;
     for network in a["networks"].as_array().into_iter().flatten() {
@@ -73,7 +75,12 @@ async fn addresses(
                         .filter_map(Value::as_str)
                         .map(str::to_owned),
                 );
-                return Ok((source, target, names));
+                return Ok(PeerRoute {
+                    network: network["id"].as_str().unwrap().to_owned(),
+                    source,
+                    target,
+                    target_names: names,
+                });
             }
         }
     }
@@ -98,7 +105,10 @@ pub(super) async fn apply(
     let target =
         target.ok_or_else(|| Failure::unavailable("Target service is no longer connected"))?;
     let target_connection = open(state, target).await?;
-    let (_, target_address, target_names) = addresses(state, source, target).await?;
+    let route = addresses(state, source, target).await?;
+    tracing::debug!(network = %route.network, source = %source.id, target = %target.id, "Selected service peer route");
+    let target_address = route.target;
+    let target_names = route.target_names;
     if link.kind == "subtitles" {
         return bazarr(
             state,
@@ -114,7 +124,7 @@ pub(super) async fn apply(
             "applications",
             target.kind.clone(),
             json!({
-            "prowlarrUrl":format!("{}{}",c.base,c.url_base),
+            "prowlarrUrl":format!("http://{}:{}{}",route.source,source.port,c.url_base),
             "baseUrl":format!("http://{target_address}:{}{}",target.port,target_connection.url_base),"apiKey":target_connection.key}),
         )
     } else {
