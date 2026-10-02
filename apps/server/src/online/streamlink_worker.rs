@@ -1,15 +1,16 @@
 //! Two isolated resident Streamlink workers, bounded by the shared extraction slots.
+use crate::AppState;
 use anyhow::{Context, Result, bail, ensure};
 use process_wrap::tokio::*;
 use serde_json::{Value, json};
-use std::{path::Path, process::Stdio, time::Duration};
+use std::{process::Stdio, time::Duration};
+use thelxinoe_tools::Package;
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{ChildStdin, ChildStdout},
     sync::Mutex,
 };
 
-const PYTHON: &str = "/opt/streamlink/bin/python";
 const SCRIPT: &str = include_str!("streamlink_worker.py");
 
 #[derive(Default)]
@@ -18,19 +19,28 @@ pub(super) struct Pool {
 }
 
 impl Pool {
-    pub async fn warm(&self) {
-        if !Path::new(PYTHON).is_file() {
+    pub async fn warm(&self, state: &AppState) {
+        let Ok(package) = state.tools.runtime.package("streamlink") else {
             return;
-        }
+        };
         for worker in &self.workers {
-            let mut worker = worker.lock().await;
-            if worker.is_none() {
-                *worker = Worker::start().await.ok();
+            let Ok(mut worker) = worker.try_lock() else {
+                continue;
+            };
+            if worker
+                .as_ref()
+                .is_none_or(|worker| worker.package.generation.id != package.generation.id)
+            {
+                if let Some(mut previous) = worker.take() {
+                    previous.stop().await;
+                }
+                *worker = Worker::start(package.clone()).await.ok();
             }
         }
     }
 
-    pub async fn resolve(&self, provider: &str, channel: &str) -> Result<String> {
+    pub async fn resolve(&self, state: &AppState, provider: &str, channel: &str) -> Result<String> {
+        let package = state.tools.runtime.package("streamlink")?;
         let mut slot = if let Some(slot) = self
             .workers
             .iter()
@@ -43,8 +53,13 @@ impl Pool {
         // Cancellation kills the owned worker; its pending response must never
         // be mistaken for the next caller's response.
         let mut worker = match slot.take() {
-            Some(worker) => worker,
-            None => Worker::start().await?,
+            Some(worker) if worker.package.generation.id == package.generation.id => worker,
+            old => {
+                if let Some(mut old) = old {
+                    old.stop().await;
+                }
+                Worker::start(package.clone()).await?
+            }
         };
         let result = tokio::time::timeout(Duration::from_secs(45), async {
             match worker.resolve(provider, channel).await {
@@ -53,7 +68,7 @@ impl Pool {
                     // A resident process may have exited between requests. Retry
                     // a broken transport once, within the same request deadline.
                     worker.stop().await;
-                    worker = Worker::start().await?;
+                    worker = Worker::start(package.clone()).await?;
                     worker.resolve(provider, channel).await
                 }
             }
@@ -76,6 +91,7 @@ impl Pool {
 }
 
 struct Worker {
+    package: Package,
     child: Box<dyn ChildWrapper>,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
@@ -83,10 +99,12 @@ struct Worker {
 }
 
 impl Worker {
-    async fn start() -> Result<Self> {
+    async fn start(package: Package) -> Result<Self> {
+        let python = package.executable("python")?;
+        python.verify().await?;
         let home = tempfile::tempdir()?;
-        let mut command = CommandWrap::with_new(PYTHON, |cmd| {
-            cmd.args(["-I", "-u", "-c", SCRIPT])
+        let mut command = CommandWrap::with_new(&python.path, |cmd| {
+            cmd.args(["-I", "-B", "-u", "-c", SCRIPT])
                 .env_clear()
                 .current_dir(home.path())
                 .stdin(Stdio::piped())
@@ -116,6 +134,7 @@ impl Worker {
         let input = child.stdin().take().context("Missing worker input")?;
         let output = BufReader::new(child.stdout().take().context("Missing worker output")?);
         let mut worker = Self {
+            package,
             child,
             input,
             output,

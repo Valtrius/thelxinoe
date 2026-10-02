@@ -1,3 +1,10 @@
+#[path = "../../../tests/helpers/tool-runtime.rs"]
+mod tool_runtime;
+fn runtime(root: &std::path::Path) -> thelxinoe_tools::Runtime {
+    let tools = thelxinoe_tools::Runtime::new(root.to_path_buf());
+    tool_runtime::install(&tools, root);
+    tools
+}
 use std::{
     path::Path,
     process::{Command, Output},
@@ -134,7 +141,9 @@ async fn check_timeline(root: &Path, media: &Path) {
     let expected = frames(media);
     assert_eq!(expected.len(), 180);
     let source = source(root, media);
-    let pipelines = Pipelines::open(&root.join("cache")).await.unwrap();
+    let pipelines = Pipelines::open(&root.join("cache"), runtime(&root.join("tools")))
+        .await
+        .unwrap();
     let options = Options {
         quality: "2mbps".into(),
         audio: None,
@@ -288,7 +297,12 @@ async fn audio_only_vod_remux_and_conversion_keep_the_requested_interval() {
         ],
     );
     let source = source(temp.path(), &media);
-    let pipelines = Pipelines::open(&temp.path().join("cache")).await.unwrap();
+    let pipelines = Pipelines::open(
+        &temp.path().join("cache"),
+        runtime(&temp.path().join("tools")),
+    )
+    .await
+    .unwrap();
     let options = Options {
         quality: "auto".into(),
         audio: None,

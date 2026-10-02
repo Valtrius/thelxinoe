@@ -961,11 +961,37 @@ scenario: try {
     const managerDefaults = (await api('/admin/managers')).items.find(
       (m) => m.id === hd.service_id,
     ).defaults;
-    await api(`/admin/managers/${hd.service_id}/defaults`, 'PUT', {
-      ...managerDefaults,
-      quality_profile: nativeCustom.id,
-    });
-    await waitRun((await api('/admin/recyclarr/sync', 'POST', {})).id);
+    let reconciliation;
+    docker('pause', services.seerr.container_id);
+    try {
+      const started = Date.now();
+      await api(
+        `/admin/managers/${hd.service_id}/defaults`,
+        'PUT',
+        {
+          ...managerDefaults,
+          quality_profile: nativeCustom.id,
+        },
+        5000,
+      );
+      evidence.defaults_while_seerr_unresponsive = {
+        elapsed_ms: Date.now() - started,
+        quality_profile: (await api('/admin/managers')).items.find(
+          (m) => m.id === hd.service_id,
+        ).defaults.quality_profile,
+      };
+      expect(evidence.defaults_while_seerr_unresponsive.quality_profile).toBe(
+        nativeCustom.id,
+      );
+      reconciliation = api('/admin/managers/reconcile', 'POST', {});
+    } finally {
+      docker('unpause', services.seerr.container_id);
+    }
+    record('Saving defaults remains responsive while Seerr is unresponsive');
+    await Promise.all([
+      reconciliation,
+      waitRun((await api('/admin/recyclarr/sync', 'POST', {})).id),
+    ]);
     expect(
       (await api('/admin/managers')).items.find((m) => m.id === hd.service_id)
         .defaults.quality_profile,

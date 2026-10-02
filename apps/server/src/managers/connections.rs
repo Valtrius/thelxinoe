@@ -361,7 +361,7 @@ pub(crate) async fn run(state: AppState) -> anyhow::Result<()> {
             seerr_sync = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
         }
         tokio::select! {
-            _=state.managers.connection_wake.notified()=>{},
+            _=state.managers.connection_wake.notified()=>{seerr_sync=tokio::time::Instant::now();},
             _=tokio::time::sleep(std::time::Duration::from_secs(5))=>{},
         }
     }

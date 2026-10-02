@@ -79,6 +79,7 @@
   import ProductVersion from './lib/ProductVersion.svelte';
   import { isServerUpdateInterruption } from './lib/server-updates';
   import ProductUpdatePreferences from './lib/ProductUpdatePreferences.svelte';
+  import ServerTools from './lib/ServerTools.svelte';
   import DesktopVersion from './lib/DesktopVersion.svelte';
   import DesktopUpdatePreferences from './lib/DesktopUpdatePreferences.svelte';
   import WebUpdateReload from './lib/WebUpdateReload.svelte';
@@ -367,6 +368,8 @@
           accountRevision++;
           if (section === 'Settings') void loadSettings();
         }
+        if (['tools.changed', 'server.reconnected'].includes(event.kind))
+          window.dispatchEvent(new Event('thelxinoe-tools'));
         if (['product.changed', 'server.reconnected'].includes(event.kind))
           window.dispatchEvent(new Event('thelxinoe-product-update'));
         if (event.kind === 'online.account.changed') accountRevision++;
@@ -996,7 +999,6 @@
                       ><small>Cache space available</small>
                     </div>
                   </div>
-                  <ProductUpdatePreferences />
                   <AutoSaveForm
                     label="Server display defaults"
                     class={inlineFormClass}
@@ -1025,6 +1027,8 @@
                       ></FormField
                     >
                   </AutoSaveForm>
+                  <ProductUpdatePreferences />
+                  <ServerTools />
                 </Panel>
                 <AdminOperations {timezone} {timeFormat} />
               {/if}

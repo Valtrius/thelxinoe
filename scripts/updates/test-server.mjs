@@ -1,8 +1,14 @@
 import { expect } from '@playwright/test';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { docker, save, envelope } from './build.mjs';
 import { until, refreshDownloads } from './lab.mjs';
+import {
+  budgets,
+  serverToolsReady,
+  waitForServerTools,
+  waitForState,
+} from '../ci-readiness.mjs';
 
 export async function serverScenarios({
   lab,
@@ -16,6 +22,23 @@ export async function serverScenarios({
   output,
 }) {
   const state = () => api('/admin/product-update');
+  const toolSelections = async () =>
+    (await api('/admin/tools')).items.map(
+      ({ id, installed, integrity_error }) => ({
+        id,
+        installed,
+        integrity_error,
+      }),
+    );
+  const startupTimeout = budgets.startup;
+  await waitForServerTools(() => api('/admin/tools'));
+  const originalTools = await toolSelections();
+  expect(originalTools).toHaveLength(4);
+  for (const tool of originalTools) {
+    expect(tool.installed).toBeTruthy();
+    expect(tool.integrity_error).toBeNull();
+  }
+  save(join(output, 'server-tools-before.json'), originalTools);
   const component = (name) => `${lab.id}-${name}`;
   const controller = (path) =>
     JSON.parse(
@@ -29,6 +52,20 @@ export async function serverScenarios({
         'http://localhost' + path,
       ),
     );
+  const transitionTimeout = budgets.provision;
+  const transitions = [];
+  const observed = new Map();
+  const operations = () => {
+    const value = controller('/stack/product');
+    for (const operation of value.items) {
+      if (observed.get(operation.id) === operation.stage) continue;
+      observed.set(operation.id, operation.stage);
+      transitions.push({ at: new Date().toISOString(), ...operation });
+      save(join(output, 'server-transitions.json'), transitions);
+      console.log(`Server update ${operation.id}: ${operation.stage}`);
+    }
+    return value;
+  };
   const marker = (file, action) =>
     docker(
       'exec',
@@ -38,22 +75,44 @@ export async function serverScenarios({
       `from pathlib import Path; p=Path('/var/lib/thelxinoe/${file}'); ${action}`,
     );
   const stage = async (id, wanted) =>
-    until(async () => {
-      const operation = (await state()).controller.items.find(
-        (item) => item.id === id,
-      );
-      if (operation?.stage === wanted) {
-        // The journal can settle before the restarted server reconciles its fence.
-        return (await request('/setup')).ok() && operation;
-      }
-      if (
-        ['blocked', 'recovery-required', 'runtime-failure'].includes(
-          operation?.stage,
-        )
+    (
+      await waitForState(
+        `Server update ${id} reaches ${wanted}`,
+        async () => {
+          // The server is deliberately stopped during snapshots and replacement.
+          const operation = operations().items.find((item) => item.id === id);
+          if (operation?.stage === wanted) {
+            // The journal can settle before the restarted server reconciles its fence.
+            return {
+              operation,
+              setup: (await request('/setup')).status(),
+              tools: await api('/admin/tools'),
+            };
+          }
+          if (
+            [
+              'blocked',
+              'recovery-required',
+              'runtime-failure',
+              'committed',
+              'recovered',
+              'restored',
+              'superseded',
+            ].includes(operation?.stage) &&
+            !(wanted === 'restored' && operation?.stage === 'committed')
+          )
+            throw Object.assign(Error(JSON.stringify(operation)), {
+              fatal: true,
+            });
+          return { operation };
+        },
+        ({ operation, setup, tools }) =>
+          operation?.stage === wanted &&
+          setup === 200 &&
+          serverToolsReady(tools),
+        { timeout: transitionTimeout, interval: 500 },
       )
-        throw Object.assign(Error(JSON.stringify(operation)), { fatal: true });
-      return false;
-    }, 300000);
+    ).operation;
   const idleWaits = [];
   const commandWhenIdle = (path, body) =>
     until(async () => {
@@ -63,8 +122,10 @@ export async function serverScenarios({
         if (response.ok()) return value;
         if (
           response.status() === 409 &&
-          value.error?.message ===
-            'Wait for playback, downloads and background work to finish'
+          [
+            'Wait for playback, downloads and background work to finish',
+            'Wait for current requests to finish and try again',
+          ].includes(value.error?.message)
         ) {
           const jobs = (await api('/admin/jobs')).items.map(
             ({ id, kind, state }) => ({ id, kind, state }),
@@ -80,7 +141,7 @@ export async function serverScenarios({
         // Response loss is ambiguous: never replay an accepted mutation.
         throw Object.assign(error, { fatal: true });
       }
-    }, 90000);
+    }, budgets.restart);
   const ready = async () => {
     const update = await commandWhenIdle('/admin/product-update/prepare');
     await stage(update.id, 'ready');
@@ -126,7 +187,10 @@ export async function serverScenarios({
       '--pull',
       'never',
     );
-    await until(async () => (await api('/health')).version === version);
+    await until(
+      async () => (await api('/health')).version === version,
+      startupTimeout,
+    );
     await until(() => controller('/health').version === version);
     const after = controller('/stack/product').generation;
     expect(after).toBeGreaterThan(before);
@@ -269,14 +333,14 @@ export async function serverScenarios({
         window_end: 0,
       });
       const replacement = await until(
-        async () =>
-          (await state()).controller.items.find(
+        () =>
+          operations().items.find(
             (item) =>
               item.id !== previous.id &&
               item.version === lab.next &&
               item.source_generation === generation,
           ),
-        300000,
+        startupTimeout,
       );
       await stage(replacement.id, 'committed');
       expect((await api('/health')).version).toBe(lab.next);
@@ -322,10 +386,20 @@ export async function serverScenarios({
         ).toThrow();
       }
       // Real direct-play session: the queue must wait without holding up playback.
+      const ffmpeg = (await toolSelections()).find(
+        (tool) => tool.id === 'ffmpeg',
+      );
+      const executable = docker(
+        'exec',
+        component('server'),
+        'python3',
+        '-c',
+        `import json; from pathlib import Path; root=Path('/var/lib/thelxinoe/tools/packages/${ffmpeg.installed.id}'); print(root / json.loads((root / 'manifest.json').read_text())['executables']['ffmpeg'])`,
+      );
       docker(
         'exec',
         component('server'),
-        'ffmpeg',
+        executable,
         '-v',
         'error',
         '-f',
@@ -420,13 +494,16 @@ export async function serverScenarios({
         state: 'stopped',
       });
       docker('restart', component('server'));
-      await until(async () => (await state()).request?.id === update.id);
+      await until(
+        async () => (await state()).request?.id === update.id,
+        startupTimeout,
+      );
       await page
         .getByRole('navigation', { name: 'Settings navigation' })
         .getByRole('button', { name: 'Server', exact: true })
         .click();
       const downloading = await until(async () => {
-        const operation = (await state()).controller.items.find(
+        const operation = operations().items.find(
           (item) => item.id === update.id,
         );
         return (
@@ -460,7 +537,7 @@ export async function serverScenarios({
       await page.screenshot({ path: join(output, 'server-downloading.png') });
       // Restart after controller acceptance, while slow image pulls are ongoing.
       docker('restart', component('server'));
-      await until(async () => (await request('/health')).ok());
+      await until(async () => (await request('/health')).ok(), startupTimeout);
       expect((await request('/playback', 'POST', {})).status()).toBe(503);
       expect(
         (await request('/catalog/roots/missing/scan', 'POST', {})).status(),
@@ -527,14 +604,14 @@ export async function serverScenarios({
               'none',
               '--read-only',
               '-v',
-              `${join(lab.storage, 'server')}:/state:ro`,
+              `${posix.join(lab.storage.replaceAll('\\', '/'), 'server')}:/state:ro`,
               '--entrypoint',
               'python3',
               lab.images[lab.base].server.reference,
               '-c',
               "from pathlib import Path; print(Path('/state/held-validation-entered').exists())",
             ) === 'True',
-          90000,
+          transitionTimeout,
         );
         docker('restart', '--time', '0', component('controller'));
         await stage(update.id, 'recovered');
@@ -582,6 +659,9 @@ export async function serverScenarios({
           ],
         ).toBe(lab.next);
       expect((await api('/admin/settings')).timezone).toBe('Europe/Paris');
+      const tools = await toolSelections();
+      expect(tools).toEqual(originalTools);
+      save(join(output, 'server-tools-after.json'), tools);
       if (native)
         expect(
           (
@@ -688,7 +768,10 @@ export async function serverScenarios({
         '--pull',
         'never',
       );
-      await until(async () => (await api('/health')).version === lab.next);
+      await until(
+        async () => (await api('/health')).version === lab.next,
+        startupTimeout,
+      );
       await until(() => controller('/health').version === lab.next);
       const after = JSON.parse(
         docker(
@@ -733,9 +816,31 @@ export async function serverScenarios({
       const restore = page.getByRole('dialog');
       await expect(restore).toContainText(`Rollback to ${lab.base}`);
       await restore.getByLabel('Type RESTORE to continue').fill('RESTORE');
-      await restore
-        .getByRole('button', { name: `Restore ${lab.base}`, exact: true })
-        .click();
+      marker('hold-release-request', "p.write_text('hold')");
+      const heldRequest = request('/admin/settings');
+      try {
+        await until(
+          () =>
+            marker('held-release-request-entered', 'print(p.exists())') ===
+            'True',
+        );
+        const rejected = page.waitForResponse(
+          (response) =>
+            response.url().endsWith(`/${lab.committed}/recover`) &&
+            response.status() === 409,
+        );
+        const button = restore.getByRole('button', {
+          name: `Restore ${lab.base}`,
+          exact: true,
+        });
+        await button.click();
+        expect((await rejected).status()).toBe(409);
+        await expect(button).toBeDisabled();
+        await page.screenshot({ path: join(output, 'restore-waiting.png') });
+      } finally {
+        marker('hold-release-request', 'p.unlink(missing_ok=True)');
+        await heldRequest;
+      }
       await stage(lab.committed, 'restored');
       expect((await api('/health')).version).toBe(lab.base);
       expect(controller('/health').version).toBe(lab.base);

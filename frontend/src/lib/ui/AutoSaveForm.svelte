@@ -29,7 +29,7 @@
   let active = true;
   onDestroy(() => (active = false));
 
-  async function submit() {
+  export async function submit() {
     if (disabled || !form.reportValidity()) return;
     pending = copy(value);
     if (busy) return;

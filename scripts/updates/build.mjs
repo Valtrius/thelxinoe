@@ -198,6 +198,18 @@ export function source(lab, version) {
         let _ = std::fs::write(ticks, (count + 1).to_string());
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;`,
   );
+  fault(
+    'apps/server/src/security.rs',
+    '    let api_request = request.uri().path().starts_with("/api/");',
+    `    if request.uri().path() == "/api/v1/admin/settings" && request.method() == Method::GET {
+        let hold = state.config.state.join("hold-release-request");
+        if hold.exists() {
+            let _ = std::fs::write(state.config.state.join("held-release-request-entered"), b"held");
+            while hold.exists() { tokio::time::sleep(std::time::Duration::from_millis(100)).await; }
+        }
+    }
+    let api_request = request.uri().path().starts_with("/api/");`,
+  );
   if (lab.desktop) {
     fault(
       'apps/desktop/src/updates.rs',

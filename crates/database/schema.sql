@@ -1006,3 +1006,51 @@ CREATE INDEX playback_auth_session ON playback_sessions(user_id,auth_session_id)
 -- Defaults required before any administrator saves settings.
 INSERT INTO settings(key,value) VALUES ('segments.config','{"local":true,"external":false}');
 INSERT INTO retention_policies(domain,updated_at) VALUES ('movies',0),('shows',0);
+
+CREATE TABLE server_tools (
+    id TEXT PRIMARY KEY,
+    policy TEXT NOT NULL DEFAULT 'inherit' CHECK(policy IN ('inherit','notify','automatic')),
+    channel TEXT NOT NULL,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    revision INTEGER NOT NULL DEFAULT 0,
+    installed TEXT,
+    previous TEXT,
+    held TEXT,
+    candidate TEXT,
+    checked_at INTEGER,
+    next_check_at INTEGER NOT NULL DEFAULT 0,
+    check_error TEXT,
+    integrity_error TEXT
+);
+INSERT INTO server_tools(id,channel) VALUES ('yt-dlp','nightly'),('deno','lts'),('streamlink','stable'),('ffmpeg','stable');
+CREATE TABLE tool_generations (
+    id TEXT PRIMARY KEY,
+    tool TEXT NOT NULL REFERENCES server_tools(id),
+    manifest TEXT NOT NULL
+);
+CREATE TABLE tool_jobs (
+    id TEXT PRIMARY KEY,
+    tool TEXT NOT NULL REFERENCES server_tools(id),
+    action TEXT NOT NULL,
+    candidate TEXT,
+    manual INTEGER NOT NULL,
+    revision INTEGER NOT NULL,
+    generation TEXT,
+    stage TEXT NOT NULL,
+    received INTEGER NOT NULL DEFAULT 0,
+    total INTEGER NOT NULL DEFAULT 0,
+    reason TEXT,
+    error TEXT,
+    validation TEXT,
+    retry_at INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX tool_job_pending ON tool_jobs(tool) WHERE action NOT IN ('check','bootstrap','validate') AND stage NOT IN ('complete','failed','canceled');
+CREATE UNIQUE INDEX tool_check_pending ON tool_jobs(tool) WHERE action='check' AND stage NOT IN ('complete','failed','canceled');
+CREATE UNIQUE INDEX tool_startup_pending ON tool_jobs(tool) WHERE action IN ('bootstrap','validate') AND stage NOT IN ('complete','failed','canceled');
+CREATE TABLE tool_activation_groups (
+    id TEXT PRIMARY KEY,
+    members TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);

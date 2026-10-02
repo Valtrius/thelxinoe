@@ -54,6 +54,7 @@
       <Button
         variant="danger"
         size="form"
+        loading={$serverUpdates.action === 'recover'}
         disabled={confirmation !== 'RESTORE' || Boolean($serverUpdates.action)}
         onclick={async () => {
           if (await serverUpdateAction('recover', recovery.id)) open = false;

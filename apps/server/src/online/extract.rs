@@ -76,6 +76,7 @@ pub(super) async fn metadata(state: &AppState, id: &str) -> Result<Value> {
     tools::verify(&bundle.deno).await?;
     let args = arguments(&bundle, id);
     let output = process::run(
+        state.tools.temporary()?,
         &bundle.yt_dlp.path,
         &args,
         Duration::from_secs(120),
@@ -110,7 +111,7 @@ fn extraction_error(code: &'static str) -> ApiError {
         .into(),
     )
 }
-pub(super) fn arguments(bundle: &tools::Bundle, id: &str) -> Vec<OsString> {
+pub(super) fn arguments(bundle: &tools::OnlineSnapshot, id: &str) -> Vec<OsString> {
     let mut args: Vec<OsString> = [
         "--ignore-config",
         "--no-plugin-dirs",

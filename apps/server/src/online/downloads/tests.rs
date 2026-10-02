@@ -256,7 +256,7 @@ async fn public_file_sharing_keeps_progress_private_and_retention_fenced() {
     assert_eq!(
         call(
             &state,
-            "/api/v1/admin/online/tools",
+            "/api/v1/admin/tools/check",
             "POST",
             json!({}),
             &alice

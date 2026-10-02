@@ -88,6 +88,7 @@ export async function installUiFixture(
     if (!['GET', 'HEAD'].includes(method) && path !== '/auth/event-ticket')
       writes.push({ path, method, body });
     const json = (value: unknown) => route.fulfill({ json: value });
+    if (path === '/admin/tools') return json({ items: [], supported: false });
     if (path === '/health') return json({ api_version: 1 });
     if (path === '/seerr/status') return json({ configured: false });
     if (path === '/setup') return json({ setup_required: false });

@@ -1,0 +1,12 @@
+[package]
+name = "thelxinoe-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde = { workspace = true, features = ["rc"] }
+serde_json.workspace = true
+sha2 = "0.11"
+tokio.workspace = true

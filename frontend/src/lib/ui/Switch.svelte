@@ -38,7 +38,7 @@
 >
   <span class={`relative shrink-0 ${trackClass}`}>
     <input
-      class="peer absolute size-px opacity-0"
+      class="peer absolute inset-0 z-1 m-0 size-full cursor-inherit opacity-0"
       type="checkbox"
       role="switch"
       {checked}
@@ -46,7 +46,7 @@
       onchange={handleChange}
     />
     <span
-      class="absolute inset-0 border border-line-strong bg-surface transition-colors duration-200 ease-out peer-checked:bg-accent-soft peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent motion-reduce:transition-none"
+      class="pointer-events-none absolute inset-0 border border-line-strong bg-surface transition-colors duration-200 ease-out peer-checked:bg-accent-soft peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent motion-reduce:transition-none"
       aria-hidden="true"
     ></span>
     <span

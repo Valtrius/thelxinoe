@@ -654,9 +654,7 @@ async fn defaults(
         prepare_library(&state, &s).await?;
     }
     storage::defaults(&state.db, id, input, p).await?;
-    // The saved defaults remain authoritative when Seerr is temporarily offline.
-    // Its connection worker retries, and requests synchronize before submission.
-    let _ = seerr::sync_managers(&state).await;
+    state.managers.connection_wake.notify_one();
     Ok(Json(json!({"saved":true})))
 }
 async fn test(
