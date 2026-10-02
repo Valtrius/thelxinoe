@@ -1,3 +1,4 @@
+import type { RequestAttention } from '../attention';
 export type MediaKind = 'movie' | 'tv';
 export type Media = {
   id: number;
@@ -42,6 +43,7 @@ export type Media = {
 };
 export type MediaRequest = {
   id: number;
+  attention?: RequestAttention | null;
   status: number;
   createdAt: string;
   type: MediaKind;

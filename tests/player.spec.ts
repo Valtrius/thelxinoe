@@ -142,7 +142,7 @@ async function fixture(
         return route.fulfill({ json: { api_version: 1 } });
       if (path === '/api/v1/setup')
         return route.fulfill({ json: { setup_required: false } });
-      if (path === '/api/v1/me/notifications')
+      if (path === '/api/v1/me/attention')
         return route.fulfill({ json: { items: [] } });
       if (path === '/api/v1/auth/me')
         return route.fulfill({

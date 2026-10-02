@@ -179,7 +179,10 @@ pub(crate) async fn request(
     if let Some(body) = body {
         request = request.json(&body);
     }
-    let mut response = request.send().await.map_err(|_| unavailable())?;
+    let mut response = request.send().await.map_err(|error| {
+        eprintln!("Docker request {path} failed: {error}");
+        unavailable()
+    })?;
     if response.status() == StatusCode::NOT_FOUND {
         return Err((StatusCode::NOT_FOUND, "Container no longer exists"));
     }
@@ -187,6 +190,7 @@ pub(crate) async fn request(
         return Ok(Value::Null);
     }
     if !response.status().is_success() {
+        eprintln!("Docker request {path} returned HTTP {}", response.status());
         return Err(unavailable());
     }
     let mut bytes = Vec::new();

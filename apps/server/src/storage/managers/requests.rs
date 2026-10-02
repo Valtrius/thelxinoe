@@ -18,8 +18,25 @@ pub(super) async fn list(
     db: &Database,
     p: thelxinoe_core::Principal,
     admin: bool,
-) -> anyhow::Result<Vec<Value>> {
-    db.read("managers.requests.list", move|db|Ok(db.prepare("SELECT r.id,r.title,r.state,r.created_at,r.updated_at,r.manager_id,r.error,u.username,s.name,s.kind,r.user_id FROM acquisition_requests r JOIN users u ON u.id=r.user_id JOIN manager_services s ON s.id=r.service_id WHERE ?1 OR r.user_id=?2 ORDER BY r.created_at DESC LIMIT 200")?.query_map(params![admin,p.user.id],|r|Ok(json!({"id":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"state":r.get::<_,String>(2)?,"created_at":r.get::<_,i64>(3)?,"updated_at":r.get::<_,i64>(4)?,"manager_id":r.get::<_,Option<i64>>(5)?,"error":r.get::<_,Option<String>>(6)?,"username":r.get::<_,String>(7)?,"service":r.get::<_,String>(8)?,"kind":r.get::<_,String>(9)?,"user_id":r.get::<_,String>(10)?})))?.collect::<rusqlite::Result<Vec<_>>>()?)).await
+    page: u32,
+) -> anyhow::Result<Value> {
+    db.read("managers.requests.list", move |db| {
+        let total: i64 = db.query_row("SELECT COUNT(*) FROM acquisition_requests WHERE ?1 OR user_id=?2", params![admin,p.user.id], |r| r.get(0))?;
+        let pages = ((total + 199) / 200).max(1);
+        let page = i64::from(page).clamp(1,pages);
+        let items = db.prepare("SELECT r.id,r.title,r.state,r.created_at,r.updated_at,r.manager_id,r.error,u.username,s.name,s.kind,r.user_id,r.generation FROM acquisition_requests r JOIN users u ON u.id=r.user_id JOIN manager_services s ON s.id=r.service_id WHERE ?1 OR r.user_id=?2 ORDER BY r.created_at DESC,r.id DESC LIMIT 200 OFFSET ?3")?.query_map(params![admin,p.user.id,(page-1)*200], |r| {
+            let id: String = r.get(0)?;
+            let state: String = r.get(2)?;
+            let updated: i64 = r.get(4)?;
+            let owner: String = r.get(10)?;
+            let attention = if owner == p.user.id { Some(crate::operations::RequestAttention {
+                id: format!("request:{id}"),
+                revision: crate::operations::native_request_revision(&r.get::<_,String>(11)?, &state, updated),
+            }) } else { None };
+            Ok(json!({"id":id,"title":r.get::<_,String>(1)?,"state":state,"created_at":r.get::<_,i64>(3)?,"updated_at":updated,"manager_id":r.get::<_,Option<i64>>(5)?,"error":r.get::<_,Option<String>>(6)?,"username":r.get::<_,String>(7)?,"service":r.get::<_,String>(8)?,"kind":r.get::<_,String>(9)?,"user_id":owner,"attention":attention}))
+        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(json!({"items":items,"page":page,"pages":pages}))
+    }).await
 }
 
 pub(super) async fn request(

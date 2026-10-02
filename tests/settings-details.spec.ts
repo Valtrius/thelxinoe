@@ -161,51 +161,6 @@ for (const admin of [false, true]) {
   });
 }
 
-test('notification counts sit on the bell in both sidebar sizes and clear when read', async ({
-  page,
-}) => {
-  const fixture = await installUiFixture(page);
-  let read = false;
-  await page.route('**/api/v1/me/notifications**', async (route) => {
-    if (route.request().method() === 'PUT') read = true;
-    await route.fulfill({
-      json: {
-        items: [1, 2, 3].map((id) => ({
-          id: String(id),
-          severity: 'info',
-          message: `Notice ${id}`,
-          created_at: 1700000000,
-          read_at: read ? 1700000100 : null,
-        })),
-      },
-    });
-  });
-  await page.goto('/');
-  const button = page.getByRole('button', {
-    name: 'Notifications',
-    exact: true,
-  });
-  const badge = button.locator('[data-notification-count]');
-  await expect(badge).toHaveText('3');
-  await expect(button).not.toContainText('(');
-  for (const toggle of ['Collapse sidebar', 'Expand sidebar']) {
-    await page.getByRole('button', { name: toggle }).click();
-    const icon = (await button.locator('svg').boundingBox())!;
-    const count = (await badge.boundingBox())!;
-    expect(
-      Math.abs(count.x + count.width / 2 - icon.x - icon.width),
-    ).toBeLessThan(10);
-    expect(Math.abs(count.y + count.height / 2 - icon.y)).toBeLessThan(10);
-  }
-  await button.click();
-  await page
-    .getByRole('button', { name: 'Mark all read', exact: true })
-    .click();
-  await expect(badge).toHaveCount(0);
-  expect(fixture.errors).toEqual([]);
-  expect(fixture.unexpected).toEqual([]);
-});
-
 test('administrator setup is centered and accepts an eight-character password', async ({
   page,
 }) => {

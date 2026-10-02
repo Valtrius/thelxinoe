@@ -38,6 +38,7 @@
       active?: boolean;
       collapsed?: boolean;
       resizeWithSidebar?: boolean;
+      description?: string;
       class?: string;
     };
 

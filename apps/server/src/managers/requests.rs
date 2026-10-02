@@ -105,11 +105,19 @@ async fn search(
     }).collect::<Vec<_>>();
     Ok(Json(json!({"service":s.name,"local":local,"items":rows})))
 }
-async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
+#[derive(Default, Deserialize)]
+struct HistoryPage {
+    #[serde(default)]
+    page: u32,
+}
+async fn list(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(input): Query<HistoryPage>,
+) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
     let admin = p.user.role == Role::Admin;
-    let rows = storage::list(&state.db, p, admin).await?;
-    Ok(Json(json!({"items":rows})))
+    Ok(Json(storage::list(&state.db, p, admin, input.page).await?))
 }
 #[derive(Deserialize)]
 struct Request {

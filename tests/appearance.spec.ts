@@ -306,7 +306,7 @@ test('YouTube keeps concurrent optimistic additions visible and saves named list
   await page.screenshot({ path: '.local/ui-validation/youtube-populated.png' });
 });
 
-test('notifications dismiss outside and Settings panels stay at the left', async ({
+test('Settings panels stay at the left without a notification center', async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1600, height: 1000 });
@@ -320,15 +320,9 @@ test('notifications dismiss outside and Settings panels stay at the left', async
   });
   expect(geometry.width).toBeLessThanOrEqual(880);
   expect(geometry.left).toBe(24);
-  const trigger = page.getByRole('button', { name: /^Notifications/ });
-  await trigger.click();
-  await expect(page.locator('.notices')).toBeVisible();
-  await page.getByRole('heading', { name: 'Settings', exact: true }).click();
-  await expect(page.locator('.notices')).toHaveCount(0);
-  await trigger.click();
-  await page.keyboard.press('Escape');
-  await expect(page.locator('.notices')).toHaveCount(0);
-  await expect(trigger).toBeFocused();
+  await expect(
+    page.getByRole('button', { name: 'Notifications', exact: true }),
+  ).toHaveCount(0);
 });
 
 test('provider Ctrl+wheel zoom has one owner and sidebar motion keeps cards visible', async ({

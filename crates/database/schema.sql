@@ -712,21 +712,28 @@ CREATE TABLE segment_analysis (
     PRIMARY KEY(media_id,file_id,generation)
 ) STRICT;
 
-CREATE TABLE notifications (
-    id TEXT NOT NULL PRIMARY KEY,
+CREATE TABLE attention_seen (
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     source TEXT NOT NULL,
-    severity TEXT NOT NULL,
-    message TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    read_at INTEGER,
-    UNIQUE(user_id,source)
+    revision TEXT NOT NULL,
+    seen_at INTEGER NOT NULL,
+    PRIMARY KEY(user_id,source)
 ) STRICT;
 
-CREATE TABLE notification_conditions (
-    source TEXT NOT NULL PRIMARY KEY,
-    occurrence INTEGER NOT NULL,
-    active INTEGER NOT NULL CHECK(active IN (0,1))
+CREATE TABLE attention_snapshots (
+    user_id TEXT NOT NULL PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    value TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE seerr_request_states (
+    service_id TEXT NOT NULL REFERENCES support_services(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    request_id INTEGER NOT NULL,
+    media_type TEXT NOT NULL CHECK(media_type IN ('movie','tv')),
+    external_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    revision TEXT NOT NULL,
+    PRIMARY KEY(service_id,request_id)
 ) STRICT;
 
 CREATE TABLE ui_preferences (
@@ -895,7 +902,7 @@ CREATE UNIQUE INDEX retention_pending_media ON retention_candidates(media_id) WH
 
 CREATE INDEX media_segments_source ON media_segments(media_id,file_id,generation,source);
 
-CREATE INDEX notification_user ON notifications(user_id,created_at DESC);
+CREATE INDEX seerr_request_user ON seerr_request_states(user_id);
 
 CREATE UNIQUE INDEX youtube_default_watchlist ON youtube_watchlists(user_id) WHERE is_default=1;
 

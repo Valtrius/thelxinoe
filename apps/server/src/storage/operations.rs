@@ -90,53 +90,6 @@ pub(super) async fn delete_user(
     }).await
 }
 
-pub(super) async fn notifications(
-    db: &Database,
-    p: thelxinoe_core::Principal,
-) -> anyhow::Result<Vec<Value>> {
-    db.read("operations.notifications", move|db| Ok(db.prepare("SELECT id,severity,message,created_at,read_at,source FROM notifications WHERE user_id=?1 ORDER BY created_at DESC,id LIMIT 200")?.query_map([p.user.id],|r|Ok(json!({"id":r.get::<_,String>(0)?,"severity":r.get::<_,String>(1)?,"message":r.get::<_,String>(2)?,"created_at":r.get::<_,i64>(3)?,"read_at":r.get::<_,Option<i64>>(4)?,"target":if r.get::<_,String>(5)?.starts_with("product-") {Some("server")} else if r.get::<_,String>(5)?.starts_with("tools-") {Some("tools")} else {None}})))?.collect::<rusqlite::Result<Vec<_>>>()?)).await
-}
-
-pub(super) async fn read(db: &Database, key: String, user: String) -> anyhow::Result<()> {
-    db.write("operations.read", move |db| {
-        db.execute(
-            "UPDATE notifications SET read_at=?1 WHERE user_id=?2 AND (id=?3 OR ?3='all')",
-            params![now(), user, key],
-        )?;
-        Ok(())
-    })
-    .await
-}
-
-pub(super) async fn observe(db: &Database) -> anyhow::Result<Vec<String>> {
-    db.write("operations.observe", |db|{
-        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        // Fixed messages prevent private media titles, URLs and provider errors entering shared notifications.
-        let observations=tx.prepare("SELECT 'job:'||id,'error','A background job failed. Open administration for details.' FROM jobs WHERE state='failed' AND completed_at>?1
-          UNION ALL SELECT 'service:'||id,'error','An integration is unavailable. Check service health.' FROM manager_services WHERE error IS NOT NULL
-          UNION ALL SELECT 'support:'||id,'error','A support service needs attention. Check download and indexer health.' FROM support_services WHERE error IS NOT NULL
-          UNION ALL SELECT 'update:'||id||':'||state,'warning','A service update needs attention. Open service updates.' FROM service_updates WHERE state IN ('blocked','failed','incompatible','unable-to-verify','runtime-failure')
-          UNION ALL SELECT 'health:'||json_extract(j.value,'$.id'),'warning','An indexer or download service needs attention. Open Support services.' FROM settings s,json_each(s.value,'$.items') j WHERE s.key='operations.support' AND json_extract(j.value,'$.problem')=1
-          UNION ALL SELECT 'product-release:'||json_extract(value,'$.version'),'info','Server '||json_extract(value,'$.version')||' is available.' FROM settings WHERE key='product.release' AND json_extract(value,'$.version') IS NOT NULL
-          UNION ALL SELECT 'tools-release:'||t.id||':'||json_extract(t.candidate,'$.id'),'info',t.id||' '||json_extract(t.candidate,'$.version')||' is available.' FROM server_tools t LEFT JOIN tool_generations g ON g.id=t.installed WHERE t.candidate IS NOT NULL AND t.check_error IS NULL AND (g.id IS NULL OR json_extract(t.candidate,'$.id')!=json_extract(g.manifest,'$.candidate.id')) AND CASE WHEN t.policy='inherit' THEN COALESCE((SELECT json_extract(value,'$.policy') FROM settings WHERE key='product.policy'),'notify') ELSE t.policy END='notify'
-          UNION ALL SELECT 'product-update:'||json_extract(j.value,'$.id')||':'||json_extract(j.value,'$.stage'),'warning','A server update needs attention.' FROM settings s,json_each(s.value,'$.items') j WHERE s.key='product.controller' AND json_extract(j.value,'$.stage') IN ('blocked','recovered','recovery-required','runtime-failure')")?.query_map([now()-7*86400],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let admins=tx.prepare("SELECT id FROM users WHERE role='admin'")?.query_map([],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut changed=vec![];
-        let previous=tx.prepare("SELECT source,occurrence,active FROM notification_conditions")?.query_map([],|r|Ok((r.get::<_,String>(0)?,(r.get::<_,i64>(1)?,r.get::<_,bool>(2)?))))?.collect::<rusqlite::Result<std::collections::HashMap<_,_>>>()?;
-        tx.execute("UPDATE notification_conditions SET active=0",[])?;
-        for (source,severity,message) in &observations {
-            let epoch=if source.starts_with("tools-"){1}else{previous.get(source).map_or(1,|(n,active)|if *active{*n}else{n+1})};
-            tx.execute("INSERT INTO notification_conditions VALUES (?1,?2,1) ON CONFLICT(source) DO UPDATE SET occurrence=excluded.occurrence,active=1",params![source,epoch])?;
-            let key=format!("{source}:{epoch}");
-            for user in &admins {if tx.execute("INSERT OR IGNORE INTO notifications VALUES (?1,?2,?3,?4,?5,?6,NULL)",params![id(),user,key,severity,message,now()])?>0 && !changed.contains(user){changed.push(user.clone());}}
-        }
-        let personal=tx.prepare("SELECT user_id,'request:'||id||':'||state||':'||updated_at,'Your media request has changed. Open Requests for details.' FROM acquisition_requests WHERE updated_at>?1 AND state IN ('available','denied','failed','requested') UNION ALL SELECT user_id,'account:'||provider||':'||generation,'A linked account needs you to sign in again.' FROM online_accounts WHERE status='reconnect_required'")?.query_map([now()-7*86400],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        for (user,source,message) in personal {if tx.execute("INSERT OR IGNORE INTO notifications VALUES (?1,?2,?3,'info',?4,?5,NULL)",params![id(),user,source,message,now()])?>0 && !changed.contains(&user){changed.push(user);}}
-        tx.execute("DELETE FROM notifications WHERE created_at<?1",[now()-90*86400])?;
-        tx.commit()?;Ok(changed)
-    }).await
-}
-
 pub(super) async fn dashboard(db: &Database) -> anyhow::Result<Value> {
     db.read("operations.dashboard", |db|{
         let playback=db.prepare("SELECT p.id,u.username,COALESCE(m.title,'Online playback'),p.mode,p.state,p.position,p.duration FROM playback_sessions p JOIN users u ON u.id=p.user_id LEFT JOIN media m ON m.id=p.media_id WHERE p.state IN ('ready','playing','paused') AND p.updated_at>?1 ORDER BY p.updated_at DESC LIMIT 100")?.query_map([now()-120],|r|Ok(json!({"id":r.get::<_,String>(0)?,"user":r.get::<_,String>(1)?,"title":r.get::<_,String>(2)?,"mode":r.get::<_,String>(3)?,"state":r.get::<_,String>(4)?,"position":r.get::<_,f64>(5)?,"duration":r.get::<_,f64>(6)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;

@@ -5,6 +5,11 @@
   import { formControlClass } from './ui/styles';
   import { Folder, RefreshCw, ArrowLeft } from '@lucide/svelte';
   import { api } from './api';
+  import {
+    attention,
+    attentionErrors,
+    acknowledgeAttention,
+  } from './attention';
   import MediaGrid from './ui/MediaGrid.svelte';
   import LibraryCard from './ui/LibraryCard.svelte';
   import MetadataEditor from './MetadataEditor.svelte';
@@ -302,6 +307,22 @@
   >
     {#each items as item (item.id)}<LibraryCard
         {item}
+        attention={$attention.filter((entry) =>
+          entry.media_ids.includes(item.id),
+        )}
+        attentionError={$attention
+          .filter((entry) => entry.media_ids.includes(item.id))
+          .map((entry) => $attentionErrors[entry.id])
+          .filter(Boolean)
+          .join('\n')}
+        onSeen={() => {
+          for (const entry of $attention.filter(
+            (entry) =>
+              entry.media_ids.includes(item.id) &&
+              (entry.target !== 'music' || item.kind === 'album'),
+          ))
+            void acknowledgeAttention(entry);
+        }}
         open={() => void open(item)}
         details={() => void select(item)}
         play={['movie', 'episode', 'track'].includes(item.kind) &&
