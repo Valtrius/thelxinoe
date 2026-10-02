@@ -147,11 +147,10 @@ async fn action(
     Path((key, action)): Path<(String, String)>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
-    let _lease = state.media_operations.write().await;
-    let _guard = state.managers.guard.lock().await;
     if action == "delete" {
         delete_locked(&state, &key, Some(p.user.id), false).await?;
     } else if ["cancel", "keep"].contains(&action.as_str()) {
+        let _lease = state.media_operations.write().await;
         let changed = storage::action(&state.db, key, action, p).await?;
         if !changed {
             return Err(ApiError::conflict(
@@ -186,14 +185,10 @@ async fn delete_locked(
 pub(crate) async fn run(state: AppState) -> anyhow::Result<()> {
     loop {
         let _ = evaluate_all(&state, None).await;
-        let _lease = state.media_operations.write().await;
-        let _guard = state.managers.guard.lock().await;
         let ready = storage::run(&state.db).await?;
         for key in ready {
             let _ = delete_locked(&state, &key, None, true).await;
         }
-        drop(_guard);
-        drop(_lease);
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
     }
 }

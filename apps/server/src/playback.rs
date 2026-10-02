@@ -139,7 +139,6 @@ pub(crate) async fn create_with_delivery(
     mut input: Create,
     vod: bool,
 ) -> Result<Value> {
-    let _lease = state.media_operations.read().await;
     if let Some(queue) = &input.queue {
         if !crate::user_media::valid_client(&queue.client_id) || queue.index >= 500 {
             return Err(ApiError::bad("Invalid queue context"));
@@ -155,6 +154,7 @@ pub(crate) async fn create_with_delivery(
         }
     }
     if crate::online::live::domain(&input.media_id) {
+        let _lease = state.media_operations.read().await;
         if input.queue.is_some() {
             return Err(ApiError::bad(
                 "Live channels are not part of the local library",
@@ -181,6 +181,7 @@ pub(crate) async fn create_with_delivery(
         match crate::online::downloads::source(state, video).await {
             Ok(value) => value,
             Err(error) if error.0 == axum::http::StatusCode::CONFLICT => {
+                let _lease = state.media_operations.read().await;
                 return crate::online::streams::create_with_delivery(
                     state,
                     p,
@@ -196,6 +197,9 @@ pub(crate) async fn create_with_delivery(
     } else {
         source(state, &input.media_id, input.file_id.as_deref()).await?
     };
+    let file_key = format!("file:{}", source.id);
+    let _file = state.media_resources.read(&[&file_key]).await;
+    let _lease = state.media_operations.read().await;
     source
         .validate()
         .await
@@ -503,6 +507,11 @@ pub async fn progress(
     report(&state, &p, &id, input).await.map(Json)
 }
 pub async fn report(state: &AppState, p: &Principal, id: &str, input: Progress) -> Result<Value> {
+    let keys = crate::media_resources::for_playback(&state.db, id, p).await?;
+    let _files = state
+        .media_resources
+        .read(&keys.iter().map(String::as_str).collect::<Vec<_>>())
+        .await;
     let _lease = state.media_operations.read().await;
     let _lifecycle = state.playback_lifecycle.write(&[id]).await;
     if input.sequence < 0
