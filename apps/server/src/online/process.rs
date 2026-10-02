@@ -185,70 +185,90 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn windows_environment_isolated_and_tree_killed() {
-        let shell = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
-            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
-        let output = run(tempfile::tempdir().unwrap(), &shell, &["-NoProfile".into(), "-NonInteractive".into(), "-Command".into(), "if ($env:HOME -ne $env:APPDATA -or $env:HOME -ne $env:TEMP -or $env:PATH) { exit 9 }; Write-Output 'isolated'".into()], Duration::from_secs(60), 1024).await.unwrap();
-        assert!(output.success);
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows::Win32::{
+            Foundation::{HANDLE, WAIT_OBJECT_0},
+            System::Threading::{
+                OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess,
+                WaitForSingleObject,
+            },
+        };
+
+        // A native fixture exercises the runner without PowerShell/.NET startup
+        // and module initialization inside the deliberately empty environment.
+        let fixture = tempfile::tempdir().unwrap();
+        let executable = fixture.path().join("online-process.exe");
+        let build =
+            std::process::Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+                .arg("--edition=2024")
+                .arg(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../tests/helpers/online-process.rs"
+                ))
+                .arg("-o")
+                .arg(&executable)
+                .output()
+                .unwrap();
+        assert!(
+            build.status.success(),
+            "{}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let output = run(
+            tempfile::tempdir().unwrap(),
+            &executable,
+            &[],
+            Duration::from_secs(60),
+            1024,
+        )
+        .await
+        .unwrap();
+        assert!(
+            output.success,
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), "isolated");
+
         let marker = tempfile::tempdir().unwrap();
         let ready = marker.path().join("child.pid");
-        let child_script = marker.path().join("child.ps1");
-        std::fs::write(
-            &child_script,
-            format!(
-                "Set-Content -LiteralPath '{}' -Encoding ascii -Value $PID; Start-Sleep 120",
-                ready.display()
-            ),
-        )
-        .unwrap();
-        // Output overflow triggers the same cleanup path as timeout, after the
-        // descendant has acknowledged startup. No fixed startup race or delayed marker.
-        let script = format!(
-            "Start-Process -WindowStyle Hidden -FilePath '{}' -ArgumentList '-NoProfile -NonInteractive -File \"{}\"'; while (-not (Test-Path -LiteralPath '{}')) {{ Start-Sleep -Milliseconds 50 }}; Write-Output ('x' * 2048); Start-Sleep 120",
-            shell.display(),
-            child_script.display(),
-            ready.display()
-        );
-        let failure = run(
-            tempfile::tempdir().unwrap(),
-            &shell,
-            &[
-                "-NoProfile".into(),
-                "-NonInteractive".into(),
-                "-Command".into(),
-                script.into(),
-            ],
-            Duration::from_secs(60),
-            1024,
-        )
+        let directory = marker.path().as_os_str().to_owned();
+        let task = tokio::spawn(async move {
+            run(
+                tempfile::tempdir().unwrap(),
+                &executable,
+                &["tree".into(), directory],
+                Duration::from_secs(60),
+                1024,
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(60), async {
+            while !ready.exists() {
+                assert!(
+                    !task.is_finished(),
+                    "Native fixture exited before its child was ready"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
         .await
-        .err()
-        .expect("Output overflow must stop the tool");
+        .expect("Native child did not start");
+        let pid = std::fs::read_to_string(ready).unwrap().parse().unwrap();
+        // Capture the live process handle before allowing the parent to overflow.
+        // Waiting on that handle proves this descendant exited, without PID reuse.
+        let handle =
+            unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, false, pid) }.unwrap();
+        let process = unsafe { OwnedHandle::from_raw_handle(handle.0) };
+        std::fs::write(marker.path().join("release"), b"").unwrap();
+        let result = task.await.unwrap();
+        let exited = unsafe { WaitForSingleObject(HANDLE(process.as_raw_handle()), 5000) };
+        if exited != WAIT_OBJECT_0 {
+            unsafe { TerminateProcess(HANDLE(process.as_raw_handle()), 1) }.unwrap();
+        }
+        assert_eq!(exited, WAIT_OBJECT_0, "Descendant escaped the Windows job");
+        let failure = result.err().expect("Output overflow must stop the tool");
         assert!(failure.to_string().contains("output exceeded"), "{failure}");
-        let pid: u32 = std::fs::read_to_string(ready)
-            .unwrap()
-            .trim()
-            .trim_start_matches('\u{feff}')
-            .parse()
-            .unwrap();
-        let cleanup = format!(
-            "$child = Get-Process -Id {pid} -ErrorAction SilentlyContinue; if ($child -and -not $child.WaitForExit(30000)) {{ Stop-Process -InputObject $child -Force; exit 9 }}; Write-Output 'killed'"
-        );
-        let result = run(
-            tempfile::tempdir().unwrap(),
-            &shell,
-            &[
-                "-NoProfile".into(),
-                "-NonInteractive".into(),
-                "-Command".into(),
-                cleanup.into(),
-            ],
-            Duration::from_secs(60),
-            1024,
-        )
-        .await
-        .unwrap();
-        assert!(result.success, "Descendant escaped the Windows job");
     }
     #[cfg(unix)]
     #[tokio::test]
