@@ -73,6 +73,15 @@ pub(crate) fn write_candidate(root: &FsPath, candidate: &Candidate) -> Result<()
     persisted(store::write_json(&candidate_path(root), candidate))
 }
 
+fn candidate_revision(candidate: &Candidate) -> String {
+    digest(
+        json!({"operation_id":candidate.operation_id,"base_revision":candidate.base_revision,
+        "image":candidate.image,"files":candidate.files,"defaults":candidate.defaults})
+        .to_string()
+        .as_bytes(),
+    )
+}
+
 fn default_bindings(root: &FsPath, bindings: &[Target]) -> Result<Vec<Target>> {
     let mut default_bindings = Vec::new();
     let mut managers = BTreeSet::new();
@@ -187,6 +196,12 @@ pub(crate) fn view(configuration: &Configuration, mut candidate: Option<Candidat
     {
         candidate.valid = false;
     }
+    let candidate = candidate.map(|candidate| {
+        let revision = candidate_revision(&candidate);
+        let mut value = json!(candidate);
+        value["revision"] = json!(revision);
+        value
+    });
     let bindings = configuration
         .bindings
         .iter()
@@ -918,6 +933,7 @@ fn candidate_root(candidate: &Candidate) -> Result<std::path::PathBuf> {
 pub(crate) struct Change {
     operation: String,
     revision: Option<String>,
+    candidate_revision: Option<String>,
     files: Option<Files>,
     #[serde(default)]
     targets: Vec<Target>,
@@ -953,6 +969,18 @@ pub(crate) async fn change(
             "Configuration revision changed; reload the latest files before saving",
         ));
     }
+    let candidate = if input.operation == "candidate" {
+        let candidate = candidate_at(&appdata(&key))?
+            .ok_or_else(|| conflict("Preflight a candidate image first"))?;
+        if input.candidate_revision.as_deref() != Some(candidate_revision(&candidate).as_str()) {
+            return Err(conflict(
+                "Candidate revision changed; reload the latest candidate before saving",
+            ));
+        }
+        Some(candidate)
+    } else {
+        None
+    };
     if input.operation == "capture" {
         let snapshots = input
             .snapshots
@@ -975,7 +1003,7 @@ pub(crate) async fn change(
     };
     let problems = diagnostics(&files, &input.targets);
     if !problems.is_empty() {
-        if input.operation == "validate" {
+        if matches!(input.operation.as_str(), "validate" | "inspect") {
             return Ok(Json(json!({"valid":false,"diagnostics":problems})));
         }
         return Err(bad(
@@ -984,20 +1012,16 @@ pub(crate) async fn change(
     }
     if input.operation == "inspect" {
         return Ok(Json(
-            json!({"used_services":used_services(&files,&input.targets)}),
+            json!({"valid":true,"used_services":used_services(&files,&input.targets)}),
         ));
     }
-    let profiles = if input.operation == "candidate" {
-        let candidate = candidate_at(&appdata(&key))?
-            .ok_or_else(|| conflict("Preflight a candidate image first"))?;
-        configured_profiles_at(&candidate_root(&candidate)?, &files, &input.targets)?
+    let profiles = if let Some(candidate) = &candidate {
+        configured_profiles_at(&candidate_root(candidate)?, &files, &input.targets)?
     } else {
         configured_profiles(&key, &files, &input.targets)?
     };
     check_required(&profiles, &input.required_profiles)?;
-    if input.operation == "candidate" {
-        let mut candidate = candidate_at(&appdata(&key))?
-            .ok_or_else(|| conflict("Preflight a candidate image first"))?;
+    if let Some(mut candidate) = candidate {
         candidate.files = files;
         candidate.base_revision = configuration.revision.clone();
         candidate.valid = false;

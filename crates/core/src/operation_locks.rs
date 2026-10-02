@@ -69,6 +69,44 @@ impl OperationLocks {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        future::{Future, poll_fn},
+        task::Poll,
+        time::Duration,
+    };
+
+    #[tokio::test]
+    async fn multiple_services_finish_with_a_queued_deployment_writer() {
+        let locks = OperationLocks::default();
+        let holder = locks.service("recyclarr").await;
+        let mut operation = Box::pin(locks.services(&["sonarr", "recyclarr", "radarr", "radarr"]));
+        assert!(
+            poll_fn(|cx| Poll::Ready(operation.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+        let mut deployment = Box::pin(locks.lock());
+        assert!(
+            poll_fn(|cx| Poll::Ready(deployment.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+        drop(holder);
+        let guard = tokio::time::timeout(Duration::from_secs(1), operation)
+            .await
+            .expect("A queued writer must not prevent the remaining service acquisitions");
+        assert!(
+            poll_fn(|cx| Poll::Ready(deployment.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+        assert!(locks.try_service("radarr").is_err());
+        assert!(locks.try_service("sonarr").is_err());
+        drop(guard);
+        tokio::time::timeout(Duration::from_secs(1), deployment)
+            .await
+            .expect("Deployment work must proceed after the service operation");
+    }
 
     #[tokio::test]
     async fn services_run_independently_and_deployment_work_stays_exclusive() {

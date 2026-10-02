@@ -161,22 +161,17 @@ async fn editor_assistance(
     Ok(Json(metadata))
 }
 
-async fn configuration_context(state: &AppState, key: &str, secrets: bool) -> Result<Value> {
+async fn configuration_context(state: &AppState, key: &str) -> Result<Value> {
     let targets = storage::targets(&state.db, key.into()).await?;
     let mut result = Vec::new();
     for target in targets {
         let service = service(state, &target.service_id).await?;
-        let secret = if secrets {
-            Connection::open(state, &service).await?.key
-        } else {
-            String::new()
-        };
         result.push(
             json!({"service_id":service.id,"kind":service.kind,"container_id":service.container,
             "port":service.port,"url_base":service.url_base,"generation":service.generation,
             "trash_id":target.trash_id,"revision":target.revision,"profile_id":target.profile_id,
             "quality_sizes":target.quality_sizes,"reset_scores":target.reset_scores,
-            "groups":target.groups,"overrides":target.overrides,"secret":secret}),
+            "groups":target.groups,"overrides":target.overrides,"secret":""}),
         );
     }
     Ok(json!(result))
@@ -213,7 +208,7 @@ pub(super) async fn current_configuration(state: &AppState, key: &str) -> Result
             state,
             &format!("/{key}/recyclarr/configuration"),
             Some(json!({
-                "operation":"initialize","targets":configuration_context(state,key,false).await?
+                "operation":"initialize","targets":configuration_context(state,key).await?
             })),
         )
         .await?;
@@ -247,16 +242,55 @@ async fn change_configuration(
 ) -> Result<Json<Value>> {
     let actor = security::require(&state, &headers, Capability::ManageServer).await?;
     let _maintenance = state.managers.maintenance(&state).await;
-    let _guard = state.managers.guard.service("recyclarr").await;
-    let _radarr = state.managers.guard.service("radarr").await;
-    let _sonarr = state.managers.guard.service("sonarr").await;
+    let _guard = state
+        .managers
+        .guard
+        .services(&["recyclarr", "radarr", "sonarr"])
+        .await;
     let key = provision(&state).await?;
-    current_configuration(&state, &key).await?;
+    let configuration = current_configuration(&state, &key).await?;
     if !input.is_object() {
         return Err(ApiError::bad("Supply a YAML file set"));
     }
     input["operation"] = json!(operation);
-    input["targets"] = configuration_context(&state, &key, true).await?;
+    input["targets"] = configuration_context(&state, &key).await?;
+    if operation != "candidate" {
+        let files = if operation == "defaults" {
+            &configuration["defaults"]["files"]
+        } else {
+            &input["files"]
+        };
+        let inspected = controller_request(&state, &format!("/{key}/recyclarr/configuration"),
+            Some(json!({"operation":"inspect","revision":input["revision"],"files":files,"targets":input["targets"]}))).await?;
+        if inspected["valid"] != true {
+            if operation == "validate" {
+                return Ok(Json(inspected));
+            }
+            return Err(ApiError::bad(
+                "Invalid YAML file set; validate the draft to see its problems",
+            ));
+        }
+        let mut secrets = std::collections::HashMap::new();
+        for target in input["targets"].as_array_mut().ok_or_else(unavailable)? {
+            let id = target["service_id"]
+                .as_str()
+                .ok_or_else(unavailable)?
+                .to_owned();
+            if !inspected["used_services"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|used| used == &id)
+            {
+                continue;
+            }
+            if !secrets.contains_key(&id) {
+                let service = service(&state, &id).await?;
+                secrets.insert(id.clone(), Connection::open(&state, &service).await?.key);
+            }
+            target["secret"] = json!(secrets[&id]);
+        }
+    }
     input["required_profiles"] = json!(storage::required_profiles(&state.db).await?);
     let result = controller_request(
         &state,
@@ -478,7 +512,12 @@ async fn queue(
                 "Supply the current configuration revision to preview a draft",
             ));
         }
-        let inspected=controller_request(&state,&format!("/{key}/recyclarr/configuration"),Some(json!({"operation":"inspect","revision":current["revision"],"files":input["files"],"targets":configuration_context(&state,&key,false).await?}))).await?;
+        let inspected=controller_request(&state,&format!("/{key}/recyclarr/configuration"),Some(json!({"operation":"inspect","revision":current["revision"],"files":input["files"],"targets":configuration_context(&state,&key).await?}))).await?;
+        if inspected["valid"] != true {
+            return Err(ApiError::bad(
+                "Invalid YAML file set; validate the draft to see its problems",
+            ));
+        }
         input["used_services"] = inspected["used_services"].clone();
     }
     if input["revision"]
@@ -680,7 +719,7 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
             if !customized && enrolled.insert(target.service_id.clone()) { storage::enroll(&state.db,key.clone(),target.service_id.clone(),catalogs[&target.kind].clone()).await?; }
         }
         targets=storage::targets(&state.db,key.clone()).await?;
-        let configuration=controller_request(state,&format!("/{key}/recyclarr/configuration"),Some(json!({"operation":"reconcile","targets":configuration_context(state,&key,false).await?}))).await?;
+        let configuration=controller_request(state,&format!("/{key}/recyclarr/configuration"),Some(json!({"operation":"reconcile","targets":configuration_context(state,&key).await?}))).await?;
         storage::configuration(&state.db,key.clone(),configuration.clone(),None).await?;
         if customized || !job.payload["files"].is_null() {
             let used=if job.payload["files"].is_null() { &configuration["used_services"] } else { &job.payload["used_services"] };

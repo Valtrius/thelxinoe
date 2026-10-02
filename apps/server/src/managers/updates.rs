@@ -174,7 +174,12 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
         .await?
         .ok_or_else(|| anyhow::anyhow!("Managed service no longer exists"))?;
     let _lease = state.managers.maintenance(state).await;
-    let _guard = state.managers.guard.service(&kind).await;
+    let kinds = if kind == "recyclarr" {
+        vec!["recyclarr", "radarr", "sonarr"]
+    } else {
+        vec![kind.as_str()]
+    };
+    let _guard = state.managers.guard.services(&kinds).await;
     let inherited = automatic
         .2
         .as_deref()
@@ -224,16 +229,6 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
         }
     }
     let result = async {
-        let _radarr = if kind == "recyclarr" {
-            Some(state.managers.guard.service("radarr").await)
-        } else {
-            None
-        };
-        let _sonarr = if kind == "recyclarr" {
-            Some(state.managers.guard.service("sonarr").await)
-        } else {
-            None
-        };
         if kind == "recyclarr" && matches!(action, "preflight" | "activate") {
             recyclarr::capture_update(state, &automatic.1).await?;
         }

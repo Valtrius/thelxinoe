@@ -185,7 +185,13 @@
       const result = await api<RecyclarrConfiguration>(
         `/admin/recyclarr/configuration${candidate ? '/candidate' : ''}`,
         candidate ? 'POST' : 'PUT',
-        { revision: snapshot.revision, files: submitted },
+        {
+          revision: snapshot.revision,
+          candidate_revision: candidate
+            ? snapshot.candidate?.revision
+            : undefined,
+          files: submitted,
+        },
       );
       onUpdate(result);
       if (alive) {
@@ -358,6 +364,12 @@
   }
   function reloadLatest() {
     if (!latest) return;
+    if (candidate && !latest.candidate) {
+      error =
+        'This candidate is no longer available. Close the editor and review the current update.';
+      reload = false;
+      return;
+    }
     snapshot = latest;
     savedFiles = candidate ? latest.candidate!.files : latest.files;
     replaceFiles({ ...savedFiles });
@@ -575,7 +587,9 @@
   >
     {#if compare && latest}<YamlDiff
         before={files[file] ?? ''}
-        after={latest.files[file] ?? ''}
+        after={(candidate
+          ? latest.candidate?.files[file]
+          : latest.files[file]) ?? ''}
         beforeLabel="Your draft"
         afterLabel="Latest saved file"
       />{:else}<YamlEditor

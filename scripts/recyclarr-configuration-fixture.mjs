@@ -10,6 +10,9 @@ export async function exerciseConfiguration({
   waitRun,
   record,
   evidence,
+  retryInterruptedRun,
+  readRunFiles,
+  withOffline,
 }) {
   const original = await api('/admin/recyclarr/configuration');
   expect(original.mode).toBe('defaults');
@@ -79,10 +82,66 @@ export async function exerciseConfiguration({
   record(
     'Saved YAML comments and local includes survive preview and sync; stale saves, malformed includes, and traversal are rejected',
   );
+  const split = parseDocument(files['recyclarr.yml'], {
+    customTags: [{ tag: '!secret', resolve: (value) => value }],
+  });
+  const secondary = parseDocument('');
+  secondary.set('sonarr', split.get('sonarr', true));
+  split.delete('sonarr');
+  const splitFiles = {
+    ...files,
+    'recyclarr.yml': split.toString(),
+    'configs/retired.yml': secondary.toString(),
+    'includes/obsolete.yml':
+      '# Removed after interruption\ndelete_old_custom_formats: false\n',
+  };
+  const splitSaved = await api('/admin/recyclarr/configuration', 'PUT', {
+    revision: saved.revision,
+    files: splitFiles,
+  });
+  const interrupted = await api('/admin/recyclarr/preview', 'POST', {});
+  await waitRun(interrupted.id, 'previewed');
+  const renamed = {
+    ...splitFiles,
+    'configs/current.yml': splitFiles['configs/retired.yml'],
+  };
+  delete renamed['configs/retired.yml'];
+  delete renamed['includes/obsolete.yml'];
+  const replacement = await api('/admin/recyclarr/configuration', 'PUT', {
+    revision: splitSaved.revision,
+    files: renamed,
+  });
+  await retryInterruptedRun(interrupted.id);
+  await waitRun(interrupted.id, 'previewed');
+  const retried = await api(`/admin/recyclarr/runs/${interrupted.id}`);
+  const actualFiles = readRunFiles(interrupted.id);
+  expect(actualFiles).toEqual(renamed);
+  expect(retried.evidence.configuration_revision).toBe(replacement.revision);
+  expect(retried.evidence.before).toEqual(retried.evidence.after);
+  const { createHash } = await import('node:crypto');
+  expect(retried.evidence.config_hash).toBe(
+    createHash('sha256')
+      .update(
+        JSON.stringify(
+          Object.fromEntries(
+            Object.entries(actualFiles).sort(([a], [b]) => a.localeCompare(b)),
+          ),
+        ),
+      )
+      .digest('hex'),
+  );
+  evidence.interrupted_configuration = {
+    run: interrupted.id,
+    revision: replacement.revision,
+    files: Object.keys(actualFiles),
+  };
+  record(
+    'An interrupted operation retried with the same ID removes deleted and renamed YAML, executes only its declared file set, and records the matching hash',
+  );
   const restored = await api(
     '/admin/recyclarr/configuration/defaults',
     'POST',
-    { revision: saved.revision },
+    { revision: replacement.revision },
   );
   expect(restored.mode).toBe('defaults');
   expect(restored.files).toEqual(restored.defaults.files);
@@ -141,9 +200,54 @@ export async function exerciseConfiguration({
   });
   expect(rejected.status()).toBe(409);
   expect((await api('/admin/recyclarr/configuration')).files).toEqual(subset);
-  await api('/admin/recyclarr/configuration/defaults', 'POST', {
-    revision: configured.revision,
+  const sonarr = managers.find((manager) => manager.kind === 'sonarr');
+  const options = await api(`/admin/managers/${sonarr.id}/options`);
+  const native = options.profiles.find(
+    (profile) => !profile.trash_id && profile.name !== 'Any',
+  );
+  expect(native).toBeTruthy();
+  await api(`/admin/managers/${sonarr.id}/defaults`, 'PUT', {
+    ...sonarr.defaults,
+    quality_profile: native.id,
   });
+  const radarrOnly = parseDocument(subset['recyclarr.yml'], {
+    customTags: [{ tag: '!secret', resolve: (value) => value }],
+  });
+  radarrOnly.delete('sonarr');
+  const offlineFiles = { ...subset, 'recyclarr.yml': radarrOnly.toString() };
+  let offlineSaved;
+  await withOffline(['sonarr'], async () => {
+    const validated = await api(
+      '/admin/recyclarr/configuration/validate',
+      'POST',
+      { revision: configured.revision, files: offlineFiles },
+    );
+    expect(validated.valid).toBe(true);
+    offlineSaved = await api('/admin/recyclarr/configuration', 'PUT', {
+      revision: configured.revision,
+      files: offlineFiles,
+    });
+    expect(offlineSaved.files).toEqual(offlineFiles);
+    const requiredOffline = await request(
+      '/admin/recyclarr/configuration/validate',
+      'POST',
+      { revision: offlineSaved.revision, files: subset },
+    );
+    expect(requiredOffline.ok()).toBe(false);
+    const defaultsOffline = await request(
+      '/admin/recyclarr/configuration/defaults',
+      'POST',
+      { revision: offlineSaved.revision },
+    );
+    expect(defaultsOffline.ok()).toBe(false);
+  });
+  await api('/admin/recyclarr/configuration/defaults', 'POST', {
+    revision: offlineSaved.revision,
+  });
+  await api(`/admin/managers/${sonarr.id}/defaults`, 'PUT', sonarr.defaults);
+  record(
+    'An offline unused Sonarr does not block Radarr-only validation or save; including Sonarr or restoring defaults still requires it',
+  );
   record(
     'Custom YAML tracks only configured guides and native profiles, does not re-enroll the catalog, and protects the selected acquisition profile',
   );
@@ -331,6 +435,8 @@ export async function exerciseConfigurationEditor({ page, api, root, record }) {
 
 export async function exerciseConfigurationUpgrades({
   api,
+  request,
+  withOffline,
   waitUpdate,
   services,
   snapshot,
@@ -338,7 +444,16 @@ export async function exerciseConfigurationUpgrades({
   evidence,
   page,
   root,
+  base,
 }) {
+  await page.goto(`${base}/?section=Settings`);
+  await page
+    .getByRole('button', { name: 'Media services', exact: true })
+    .click();
+  await page
+    .getByRole('navigation', { name: 'Select service' })
+    .getByRole('button', { name: 'Recyclarr', exact: true })
+    .click();
   const before = Object.fromEntries(
     await Promise.all(
       ['radarr', 'sonarr'].map(async (kind) => [kind, await snapshot(kind)]),
@@ -415,18 +530,104 @@ export async function exerciseConfigurationUpgrades({
     files: customFiles,
   });
   await preflight();
-  expect((await api('/admin/recyclarr/configuration')).candidate.files).toEqual(
-    customFiles,
-  );
-  await api('/admin/recyclarr/configuration/candidate', 'POST', {
-    revision: customized.revision,
-    files: { ...customFiles, 'settings.yml': 'resource_providers: invalid\n' },
+  const competing = await api('/admin/recyclarr/configuration');
+  expect(competing.candidate.files).toEqual(customFiles);
+  let candidateEditor;
+  if (page) {
+    await page
+      .getByRole('button', { name: 'Review update configuration', exact: true })
+      .click();
+    await page
+      .getByRole('dialog', {
+        name: 'Review candidate configuration',
+        exact: true,
+      })
+      .getByRole('button', { name: 'Edit candidate YAML', exact: true })
+      .click();
+    candidateEditor = page.getByRole('dialog', {
+      name: 'Recyclarr YAML',
+      exact: true,
+    });
+    await candidateEditor.locator('.cm-content').click();
+    await page.keyboard.press('Control+Home');
+    await page.keyboard.insertText('# Stale editor draft\n');
+  }
+  let edited;
+  await withOffline(['radarr', 'sonarr'], async () => {
+    edited = await api('/admin/recyclarr/configuration/candidate', 'POST', {
+      revision: customized.revision,
+      candidate_revision: competing.candidate.revision,
+      files: {
+        ...customFiles,
+        'recyclarr.yml': `# Accepted candidate edit\n${customFiles['recyclarr.yml']}`,
+        'settings.yml': 'resource_providers: invalid\n',
+      },
+    });
   });
+  const staleCandidate = await request(
+    '/admin/recyclarr/configuration/candidate',
+    'POST',
+    {
+      revision: customized.revision,
+      candidate_revision: competing.candidate.revision,
+      files: customFiles,
+    },
+  );
+  expect(staleCandidate.status()).toBe(409);
+  expect((await api('/admin/recyclarr/configuration')).candidate.files).toEqual(
+    edited.candidate.files,
+  );
+  expect(edited.revision).toBe(competing.revision);
+  expect(edited.candidate.revision).not.toBe(competing.candidate.revision);
+  if (candidateEditor) {
+    await candidateEditor
+      .getByRole('button', { name: 'Save candidate', exact: true })
+      .click();
+    await expect(candidateEditor.getByRole('alert')).toContainText(
+      'Candidate revision changed',
+    );
+    await candidateEditor
+      .getByRole('button', { name: 'Compare latest', exact: true })
+      .click();
+    await expect(
+      candidateEditor.locator('.cm-mergeViewEditor').last(),
+    ).toContainText('# Accepted candidate edit');
+    await page.screenshot({
+      path: `${root}/yaml-candidate-conflict.png`,
+      fullPage: true,
+    });
+    await candidateEditor
+      .getByRole('button', { name: 'Reload latest files', exact: true })
+      .click();
+    await page
+      .getByRole('dialog', { name: 'Reload latest files?', exact: true })
+      .getByRole('button', { name: 'Reload latest files', exact: true })
+      .click();
+    await candidateEditor
+      .getByRole('tab', { name: 'recyclarr.yml', exact: true })
+      .click();
+    await expect(candidateEditor.locator('.cm-content')).toContainText(
+      '# Accepted candidate edit',
+    );
+    await candidateEditor
+      .getByRole('button', { name: 'Close YAML editor', exact: true })
+      .click();
+  }
   await preflight('blocked');
   const blocked = await api('/admin/recyclarr/configuration');
   expect(blocked.candidate.valid).toBe(false);
   expect(blocked.files).toEqual(customFiles);
   expect(blocked.image).toBe(customized.image);
+  const replacedCandidate = await request(
+    '/admin/recyclarr/configuration/candidate',
+    'POST',
+    {
+      revision: customized.revision,
+      candidate_revision: edited.candidate.revision,
+      files: customFiles,
+    },
+  );
+  expect(replacedCandidate.status()).toBe(409);
   const corrected = {
     ...customFiles,
     'includes/retained.yml':
@@ -434,6 +635,7 @@ export async function exerciseConfigurationUpgrades({
   };
   await api('/admin/recyclarr/configuration/candidate', 'POST', {
     revision: customized.revision,
+    candidate_revision: blocked.candidate.revision,
     files: corrected,
   });
   const accepted = await preflight();
@@ -452,6 +654,9 @@ export async function exerciseConfigurationUpgrades({
   };
   record(
     'Candidate qualification checks settings.yml, blocks invalid candidates without changing active files or Arr, and activates only the reviewed custom file set',
+  );
+  record(
+    'Candidate saves need no live managers; competing edits and replaced candidate operations reject stale revisions without overwriting the accepted draft',
   );
   await api('/admin/recyclarr/configuration/defaults', 'POST', {
     revision: current.revision,

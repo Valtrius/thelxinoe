@@ -27,6 +27,7 @@ export type RecyclarrConfiguration = {
     api_key: string;
   }[];
   candidate: null | {
+    revision: string;
     operation_id: string;
     base_revision: string;
     image: string;

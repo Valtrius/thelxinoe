@@ -632,6 +632,9 @@ async fn execute(key: String, input: Run) -> Result<Json<Value>> {
         }
         bind_state(&key,&targets)?;
         let sealed=journal(&key,&input.operation_id).with_file_name("config");
+        // Interrupted operations may retry against a newer file set. Never let
+        // Recyclarr discover files left over from an earlier attempt.
+        if sealed.exists() { persisted(std::fs::remove_dir_all(&sealed).map_err(Into::into))?; }
         configuration::materialize(&sealed,&configuration.active.files,&identity)?;
         let secret_file=private.join("secrets.yml");
         persisted(store::write_json(&secret_file,&secrets))?;

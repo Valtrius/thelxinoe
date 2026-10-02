@@ -197,6 +197,98 @@ function fixtureSQL(sql, values = []) {
     ),
   );
 }
+async function withOffline(kinds, action) {
+  try {
+    for (const kind of kinds)
+      docker('stop', '-t', '1', services[kind].container_id);
+    return await action();
+  } finally {
+    for (const kind of kinds) docker('start', services[kind].container_id);
+    for (const kind of kinds)
+      await expect
+        .poll(
+          async () => {
+            try {
+              await arr(kind, 'system/status');
+              return true;
+            } catch {
+              return false;
+            }
+          },
+          { timeout: 90000 },
+        )
+        .toBe(true);
+  }
+}
+const runRoot = (run) =>
+  `/var/lib/thelxinoe/deployment/services/${services.recyclarr.id}/runs/${run}`;
+async function retryInterruptedRun(run) {
+  await expect
+    .poll(
+      () =>
+        fixtureSQL(
+          "SELECT state FROM jobs WHERE kind='recyclarr.sync' AND json_extract(payload,'$.id')=?",
+          [run],
+        )[0]?.[0],
+    )
+    .toBe('complete');
+  // Remove only the terminal journal to reproduce a lost write after sealing;
+  // retain the original config tree and retry the same durable operation.
+  compose(
+    'exec',
+    '-T',
+    'controller',
+    'rm',
+    '--',
+    `${runRoot(run)}/result.json`,
+  );
+  fixtureSQL(
+    "UPDATE recyclarr_runs SET state='retrying',evidence='{}',error=NULL WHERE id=?",
+    [run],
+  );
+  expect(
+    fixtureSQL(
+      "UPDATE jobs SET state='queued',attempts=0,started_at=NULL,completed_at=NULL,error=NULL,available_at=unixepoch() WHERE kind='recyclarr.sync' AND json_extract(payload,'$.id')=? RETURNING id",
+      [run],
+    ),
+  ).toHaveLength(1);
+}
+function readRunFiles(run) {
+  const root = `${runRoot(run)}/config/`;
+  const names = compose(
+    'exec',
+    '-T',
+    'controller',
+    'find',
+    root,
+    '-type',
+    'f',
+    '-print',
+  )
+    .trim()
+    .split('\n')
+    .filter((path) => {
+      const name = path.slice(root.length);
+      return (
+        name === 'recyclarr.yml' ||
+        name === 'settings.yml' ||
+        name.startsWith('configs/') ||
+        name.startsWith('includes/')
+      );
+    });
+  return Object.fromEntries(
+    names.map((path) => {
+      expect(path.startsWith(root)).toBe(true);
+      return [
+        path.slice(root.length),
+        Buffer.from(
+          compose('exec', '-T', 'controller', 'base64', '-w0', path),
+          'base64',
+        ).toString('utf8'),
+      ];
+    }),
+  );
+}
 async function snapshot(kind) {
   return {
     profiles: await arr(kind, 'qualityprofile'),
@@ -463,19 +555,22 @@ scenario: try {
     'The full official catalog and profile scores sync idempotently while preserving defaults; concurrent manual requests deduplicate; internal preview is read-only',
   );
   if (!adoptionOnly) {
-    await exerciseConfiguration({ api, request, waitRun, record, evidence });
+    await exerciseConfiguration({
+      api,
+      request,
+      waitRun,
+      record,
+      evidence,
+      retryInterruptedRun,
+      readRunFiles,
+      withOffline,
+    });
     if (configurationOnly) {
       const page = await context.newPage();
-      await page.goto(`${base}/?section=Settings`);
-      await page
-        .getByRole('button', { name: 'Media services', exact: true })
-        .click();
-      await page
-        .getByRole('navigation', { name: 'Select service' })
-        .getByRole('button', { name: 'Recyclarr', exact: true })
-        .click();
       await exerciseConfigurationUpgrades({
         api,
+        request,
+        withOffline,
         waitUpdate,
         services,
         snapshot,
@@ -483,6 +578,7 @@ scenario: try {
         evidence,
         page,
         root,
+        base,
       });
       await exerciseConfigurationEditor({ page, api, root, record });
       evidence.passed = true;
@@ -1159,11 +1255,16 @@ scenario: try {
     );
     await exerciseConfigurationUpgrades({
       api,
+      request,
+      withOffline,
       waitUpdate,
       services,
       snapshot,
       record,
       evidence,
+      page,
+      root,
+      base,
     });
     compose('restart', 'server', 'controller');
     await waitForProxy(context.request, base);
