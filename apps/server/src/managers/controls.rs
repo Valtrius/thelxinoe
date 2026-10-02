@@ -201,7 +201,7 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn sonarr_release_search_requires_an_existing_manager_season() {
-        let (_temp, state, _) = crate::online::oauth::tests::fixture().await;
+        let (_temp, state, _) = crate::test_support::fixture().await;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let task = tokio::spawn(async move {

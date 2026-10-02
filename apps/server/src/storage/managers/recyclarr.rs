@@ -249,24 +249,64 @@ pub(super) async fn configured(
         Ok(())
     }).await
 }
-pub(super) async fn progress(
+pub(super) async fn begin(db: &Database, run: String) -> anyhow::Result<()> {
+    transition(db, run, Transition::Begin).await
+}
+pub(super) async fn cancel(db: &Database, run: String, reason: String) -> anyhow::Result<()> {
+    transition(db, run, Transition::Cancel(reason)).await
+}
+pub(super) async fn record_outcome(
     db: &Database,
     run: String,
-    stage: String,
-    evidence: Value,
-    error: Option<String>,
+    outcome: ControllerOutcome,
 ) -> anyhow::Result<()> {
-    db.write("recyclarr.progress",move |c| {
+    transition(db, run, Transition::Controller(outcome)).await
+}
+pub(super) async fn previewed(db: &Database, run: String, evidence: Value) -> anyhow::Result<()> {
+    transition(db, run, Transition::Previewed(evidence)).await
+}
+pub(super) async fn complete(db: &Database, run: String, evidence: Value) -> anyhow::Result<()> {
+    transition(db, run, Transition::Complete(evidence)).await
+}
+pub(super) async fn block(db: &Database, run: String, error: String) -> anyhow::Result<()> {
+    transition(db, run, Transition::Block(error)).await
+}
+enum Transition {
+    Begin,
+    Cancel(String),
+    Controller(ControllerOutcome),
+    Previewed(Value),
+    Complete(Value),
+    Block(String),
+}
+async fn transition(db: &Database, run: String, change: Transition) -> anyhow::Result<()> {
+    db.write("recyclarr.transition",move |c| {
         let tx=c.transaction()?;
         let previous:String=tx.query_row("SELECT state FROM recyclarr_runs WHERE id=?1",[&run],|r|r.get(0))?;
-        let stage = if previous == "partial" && stage == "blocked" { previous.clone() } else { stage };
-        tx.execute("UPDATE recyclarr_runs SET state=?1,evidence=CASE WHEN ?2='{}' THEN evidence ELSE ?2 END,error=?3,updated_at=?4 WHERE id=?5",params![stage,evidence.to_string(),error,now(),run])?;
+        // Terminal controller evidence cannot be demoted by a later error or replay.
+        if matches!(previous.as_str(),"complete"|"previewed"|"partial"|"blocked"|"cancelled") { return Ok(()); }
+        let (stage,evidence,error) = match change {
+            Transition::Begin => ("running",None,None),
+            Transition::Cancel(reason) => ("cancelled",None,Some(reason)),
+            Transition::Controller(outcome) => {
+                let (stage,error) = match outcome.kind {
+                    OutcomeKind::Applied | OutcomeKind::Previewed => ("running",None),
+                    OutcomeKind::Partial => ("partial",Some("Sync did not finish; inspect the run output before retrying".into())),
+                    OutcomeKind::Blocked => ("blocked",Some("Sync was blocked; inspect the run output before retrying".into())),
+                };
+                (stage,Some(outcome.evidence),error)
+            },
+            Transition::Previewed(evidence) => ("previewed",Some(evidence),None),
+            Transition::Complete(evidence) => ("complete",Some(evidence),None),
+            Transition::Block(error) => ("blocked",None,Some(error)),
+        };
+        tx.execute("UPDATE recyclarr_runs SET state=?1,evidence=COALESCE(?2,evidence),error=?3,updated_at=?4 WHERE id=?5",params![stage,evidence.as_ref().map(Value::to_string),error,now(),run])?;
         if stage=="complete" {
-            tx.execute("UPDATE recyclarr_settings SET applied_configuration_revision=?1,configuration_error=NULL WHERE provision_id=(SELECT provision_id FROM recyclarr_runs WHERE id=?2)",params![evidence["configuration_revision"].as_str(),run])?;
-        } else if matches!(stage.as_str(),"blocked"|"partial") {
+            tx.execute("UPDATE recyclarr_settings SET applied_configuration_revision=?1,configuration_error=NULL WHERE provision_id=(SELECT provision_id FROM recyclarr_runs WHERE id=?2)",params![evidence.as_ref().and_then(|v|v["configuration_revision"].as_str()),run])?;
+        } else if matches!(stage,"blocked"|"partial") {
             tx.execute("UPDATE recyclarr_settings SET configuration_error=?1 WHERE provision_id=(SELECT provision_id FROM recyclarr_runs WHERE id=?2)",params![error,run])?;
         }
-        if previous!=stage && matches!(stage.as_str(),"complete"|"blocked"|"partial"|"cancelled") {
+        if previous!=stage && matches!(stage,"complete"|"previewed"|"blocked"|"partial"|"cancelled") {
             tx.execute("INSERT INTO audit(actor_id,action,target,created_at) SELECT actor_id,?1,id,?2 FROM recyclarr_runs WHERE id=?3",params![format!("recyclarr.{stage}"),now(),run])?;
         }
         tx.commit()?; Ok(())
@@ -329,15 +369,21 @@ pub(super) async fn failure(
     })
     .await
 }
-pub(super) async fn retry(db: &Database, job: String, seconds: i64) -> anyhow::Result<()> {
+pub(super) async fn retry(
+    db: &Database,
+    run: String,
+    job: String,
+    seconds: i64,
+    error: String,
+) -> anyhow::Result<bool> {
     db.write("recyclarr.retry", move |c| {
-        c.execute(
-            "UPDATE jobs SET state='queued',available_at=?1,started_at=NULL WHERE id=?2",
-            params![now() + seconds, job],
-        )?;
-        Ok(())
-    })
-    .await
+        let tx = c.transaction()?;
+        let changed = tx.execute("UPDATE recyclarr_runs SET state='retrying',error=?1,updated_at=?2 WHERE id=?3 AND state IN ('queued','running','retrying')",params![error,now(),run])?;
+        if changed == 0 { return Ok(false); }
+        anyhow::ensure!(tx.execute("UPDATE jobs SET state='queued',available_at=?1,started_at=NULL WHERE id=?2 AND kind='recyclarr.sync' AND json_extract(payload,'$.id')=?3", params![now()+seconds,job,run])? == 1, "Recyclarr retry lost its job");
+        tx.commit()?;
+        Ok(true)
+    }).await
 }
 
 pub(super) async fn review(db: &Database, review: String, value: Value) -> anyhow::Result<()> {

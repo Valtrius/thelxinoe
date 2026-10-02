@@ -817,7 +817,8 @@ pub(crate) fn for_run(
     let mut configuration =
         read(key)?.ok_or_else(|| conflict("Initialize Recyclarr configuration before syncing"))?;
     if revision.is_some_and(|revision| revision != configuration.revision) {
-        return Err(conflict(
+        return Err((
+            StatusCode::PRECONDITION_FAILED,
             "Configuration revision changed; reload or preview the current files",
         ));
     }
@@ -965,7 +966,8 @@ pub(crate) async fn change(
     let mut configuration =
         read(&key)?.ok_or_else(|| conflict("Initialize configuration first"))?;
     if input.revision.as_deref() != Some(&configuration.revision) {
-        return Err(conflict(
+        return Err((
+            StatusCode::PRECONDITION_FAILED,
             "Configuration revision changed; reload the latest files before saving",
         ));
     }
@@ -973,7 +975,8 @@ pub(crate) async fn change(
         let candidate = candidate_at(&appdata(&key))?
             .ok_or_else(|| conflict("Preflight a candidate image first"))?;
         if input.candidate_revision.as_deref() != Some(candidate_revision(&candidate).as_str()) {
-            return Err(conflict(
+            return Err((
+                StatusCode::PRECONDITION_FAILED,
                 "Candidate revision changed; reload the latest candidate before saving",
             ));
         }

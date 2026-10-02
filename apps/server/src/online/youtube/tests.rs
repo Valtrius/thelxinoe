@@ -1,8 +1,9 @@
 use super::*;
 use crate::online::{
-    oauth::tests::{call, fixture},
+    oauth::tests::fixture,
     sync::tests::{connect, stub},
 };
+use crate::test_support::call;
 use axum::{Json, http::StatusCode, routing::post};
 use serde_json::json;
 use std::sync::{

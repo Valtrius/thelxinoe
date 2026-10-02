@@ -1,5 +1,5 @@
 use super::*;
-use crate::online::oauth::tests::{call, fixture};
+use crate::test_support::{call, fixture};
 use axum::{extract::Query, http::StatusCode};
 use std::{collections::BTreeMap, sync::Arc};
 #[test]
@@ -55,9 +55,10 @@ async fn tracking_and_metadata_are_private_and_removed_generation_stays_removed(
     assert_eq!(feed.2["items"][0]["viewers"], 123);
     assert!(!feed.2.to_string().contains("secret"));
     assert!(!feed.2.to_string().contains("stream-key"));
-    let bob = thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())
-        .await
-        .unwrap();
+    let bob =
+        crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())
+            .await
+            .unwrap();
     let bob = format!("thelxinoe_session={bob}");
     assert_eq!(
         call(&state, "/api/v1/online/kick", "GET", Value::Null, &bob)

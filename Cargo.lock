@@ -6181,6 +6181,7 @@ dependencies = [
  "tempfile",
  "thelxinoe-tools",
  "tokio",
+ "tracing",
  "url",
  "uuid",
 ]
@@ -6220,6 +6221,7 @@ dependencies = [
  "process-wrap",
  "reqwest",
  "rusqlite",
+ "same-file",
  "serde",
  "serde_json",
  "sha2 0.11.0",

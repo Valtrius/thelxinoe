@@ -19,6 +19,8 @@ struct Update {
     candidate_container: Option<String>,
     replacement: Option<String>,
     #[serde(default)]
+    replacement_intent: Option<creation::Intent>,
+    #[serde(default)]
     configuration_revision: Option<String>,
     #[serde(default)]
     configuration_candidate_revision: Option<String>,
@@ -199,6 +201,7 @@ pub(super) async fn preflight(
         activation_crossed: false,
         candidate_container: None,
         replacement: None,
+        replacement_intent: None,
         configuration_revision: None,
         configuration_candidate_revision: None,
     };
@@ -579,31 +582,14 @@ async fn replace(d: &Deployment, u: &mut Update) -> Result<()> {
         .to_owned();
     candidate(d, u, &source).await?;
     cleanup_candidate(u).await?;
-    // Stopped original remains available until the accepted replacement is recorded.
-    request(
-        Method::POST,
-        &format!(
-            "/containers/{}/rename?name={}-prior-{}",
-            u.old.container,
-            u.old.name,
-            &u.id[..8]
-        ),
-        None,
-    )
-    .await?;
-    let mut spec = u.old.spec.clone();
-    spec["Image"] = json!(u.candidate);
-    let replacement = request(
-        Method::POST,
-        &format!("/containers/create?name={}", u.old.name),
-        Some(spec.clone()),
-    )
-    .await?;
-    let container = replacement["Id"]
-        .as_str()
+    let container = prepare_replacement(d, u).await?;
+    let spec = u
+        .replacement_intent
+        .as_ref()
         .ok_or_else(unavailable)?
-        .to_owned();
-    u.replacement = Some(container.clone());
+        .service
+        .spec
+        .clone();
     u.stage = "activating".into();
     // Commit the boundary before any request that permits production side effects.
     u.activation_crossed = true;
@@ -643,6 +629,33 @@ async fn replace(d: &Deployment, u: &mut Update) -> Result<()> {
     // Keep the stopped original and recovery snapshot for explicit recovery, never automatic post-activation rollback.
     Ok(())
 }
+
+async fn prepare_replacement(d: &Deployment, u: &mut Update) -> Result<String> {
+    let mut service = u.old.clone();
+    service.image = u.candidate.clone();
+    service.spec["Image"] = json!(u.candidate);
+    let intent = creation::Intent::new(d, service, &u.id);
+    u.replacement_intent = Some(intent.clone());
+    u.stage = "creating-replacement".into();
+    write(u)?;
+    // Stopped original remains available until the accepted replacement is recorded.
+    request(
+        Method::POST,
+        &format!(
+            "/containers/{}/rename?name={}-prior-{}",
+            u.old.container,
+            u.old.name,
+            &u.id[..8]
+        ),
+        None,
+    )
+    .await?;
+    let container = intent.create(d).await?;
+    u.replacement = Some(container.clone());
+    u.stage = "replacement-created".into();
+    write(u)?;
+    Ok(container)
+}
 pub(super) async fn reconcile_recyclarr(key: &str) -> Result<()> {
     let mut service = load(key)?;
     if service.kind != "recyclarr" || service.phase != "updating" {
@@ -676,8 +689,30 @@ async fn rollback(d: &Deployment, u: &mut Update) -> Result<()> {
         ));
     }
     cleanup_candidate(u).await?;
-    if let Some(c) = &u.replacement {
-        remove(c).await?;
+    if let Some(intent) = &u.replacement_intent {
+        if let Some(container) = intent.find(d).await? {
+            if u.replacement
+                .as_ref()
+                .is_some_and(|saved| saved != &container)
+            {
+                return Err(conflict("Replacement differs from its recorded identity"));
+            }
+            let raw = engine(&format!("/containers/{container}/json")).await?;
+            if raw["State"]["Running"] != false
+                || raw["State"]["StartedAt"]
+                    .as_str()
+                    .is_none_or(|time| !time.starts_with("0001-01-01"))
+            {
+                return Err(conflict("Replacement may have performed production work"));
+            }
+            u.replacement = Some(container.clone());
+            write(u)?;
+            remove(&container).await?;
+        }
+    } else if u.replacement.is_some() {
+        return Err(conflict(
+            "Replacement intent is missing; explicit recovery is required",
+        ));
     }
     let raw = verified(&u.old, d).await?;
     stop(&u.old.container).await?;
@@ -740,3 +775,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "update_recovery_tests.rs"]
+mod recovery_tests;

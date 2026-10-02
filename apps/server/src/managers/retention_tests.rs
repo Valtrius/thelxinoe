@@ -1,5 +1,145 @@
 use super::*;
-use crate::online::oauth::tests::fixture;
+use crate::test_support::fixture;
+
+#[tokio::test]
+async fn validation_of_one_file_keeps_unrelated_playback_responsive_and_hashes_once() {
+    let (_temp, state, path) = movie().await;
+    let other = path.with_file_name("other.mp4");
+    std::fs::copy(&path, &other).unwrap();
+    let modified = std::fs::metadata(&other)
+        .unwrap()
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        .to_string();
+    state.db.write("test.other_media", move |db| {
+        db.execute("UPDATE users SET role='admin' WHERE id='alice'", [])?;
+        db.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES ('other','ret-root','movie','other','Other',1)", [])?;
+        db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,ownership,scanned_at) SELECT 'other','ret-root',?1,'other',size,?2,fingerprint,?3,'unmanaged',1 FROM media_files WHERE id='ret-file'",params![other.to_string_lossy(), modified,json!({"format":{"duration":"120"},"streams":[{"index":0,"codec_type":"video","codec_name":"h264"}]}).to_string()])?;
+        db.execute("INSERT INTO media_sources VALUES ('other','other')", [])?;
+        Ok(())
+    }).await.unwrap();
+    let token =
+        crate::test_support::issue_session(&state.db, "alice".into(), "web".into(), "test".into())
+            .await
+            .unwrap();
+    let cookie = format!("thelxinoe_session={token}");
+    let operation = operations::prepare_locked(&state, None, "ret-movie".into(), "delete".into())
+        .await
+        .unwrap()
+        .0["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let control = Arc::new(crate::test_support::FaultControl::default());
+    let (entered, ready) = tokio::sync::oneshot::channel();
+    let (release, resume) = tokio::sync::oneshot::channel();
+    *control.pause.lock().await = Some((entered, resume));
+    let work = {
+        let state = state.clone();
+        let control = control.clone();
+        tokio::spawn(
+            crate::test_support::MEDIA_VALIDATION.scope(control, async move {
+                operations::execute_locked(&state, operation, None, false).await
+            }),
+        )
+    };
+    ready.await.unwrap();
+    let playback=tokio::time::timeout(std::time::Duration::from_secs(2),crate::test_support::call(&state,"/api/v1/playback","POST",json!({"media_id":"other","options":{"quality":"auto","capabilities":{"containers":["mp4"],"video":["h264"],"audio":[],"hls":false}}}),&cookie)).await.expect("unrelated playback must not wait for hashing");
+    assert_eq!(playback.0, axum::http::StatusCode::OK, "{}", playback.2);
+    let progress = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        crate::test_support::call(
+            &state,
+            &format!(
+                "/api/v1/playback/{}/progress",
+                playback.2["id"].as_str().unwrap()
+            ),
+            "POST",
+            json!({"sequence":1,"position":1,"state":"playing"}),
+            &cookie,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(progress.0, axum::http::StatusCode::OK);
+    release.send(()).unwrap();
+    let _ = work.await.unwrap().unwrap();
+    assert!(!path.exists());
+    assert_eq!(control.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn mutation_rechecks_protection_generation_and_open_file_identity_after_validation() {
+    for change in ["keep", "generation", "replacement", "content"] {
+        let (_temp, state, path) = movie().await;
+        let operation =
+            operations::prepare_locked(&state, None, "ret-movie".into(), "delete".into())
+                .await
+                .unwrap()
+                .0["id"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+        let control = Arc::new(crate::test_support::FaultControl::default());
+        let (entered, ready) = tokio::sync::oneshot::channel();
+        let (release, resume) = tokio::sync::oneshot::channel();
+        *control.pause.lock().await = Some((entered, resume));
+        let work = {
+            let state = state.clone();
+            tokio::spawn(
+                crate::test_support::MEDIA_VALIDATION.scope(control, async move {
+                    operations::execute_locked(&state, operation, None, false).await
+                }),
+            )
+        };
+        ready.await.unwrap();
+        match change {
+            "keep" => {
+                state
+                    .db
+                    .write("test.keep", |db| {
+                        db.execute(
+                            "INSERT INTO media_protection(media_id,keep) VALUES ('ret-movie',1)",
+                            [],
+                        )?;
+                        Ok(())
+                    })
+                    .await
+                    .unwrap();
+            }
+            "generation" => {
+                state
+                    .db
+                    .write("test.generation", |db| {
+                        db.execute("UPDATE media_files SET generation='new'", [])?;
+                        Ok(())
+                    })
+                    .await
+                    .unwrap();
+            }
+            _ => {
+                let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+                let content = std::fs::read(&path).unwrap();
+                if change == "replacement" {
+                    std::fs::rename(&path, path.with_extension("old")).unwrap();
+                }
+                std::fs::write(&path, vec![b'x'; content.len()]).unwrap();
+                std::fs::File::options()
+                    .write(true)
+                    .open(&path)
+                    .unwrap()
+                    .set_times(std::fs::FileTimes::new().set_modified(modified))
+                    .unwrap();
+            }
+        }
+        release.send(()).unwrap();
+        assert!(work.await.unwrap().is_err(), "{change}");
+        assert!(path.exists(), "{change}");
+    }
+}
 
 #[tokio::test]
 async fn reacquisition_restores_exact_episode_ids_and_preserves_foreign_exclusions() {
@@ -195,8 +335,6 @@ async fn automatic_deletion_requires_grace_and_root_optin_and_cannot_replay() {
         .await
         .unwrap();
     assert!(revalidate_operation(&state, &operation, true).await.is_ok());
-    let _lease = state.media_operations.write().await;
-    let _guard = state.managers.guard.lock().await;
     delete_locked(&state, &candidate, None, true).await.unwrap();
     assert!(!path.exists());
     assert!(delete_locked(&state, &candidate, None, true).await.is_err());

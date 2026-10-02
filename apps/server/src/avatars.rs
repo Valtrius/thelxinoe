@@ -95,7 +95,7 @@ pub async fn save(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::online::oauth::tests::{call, fixture};
+    use crate::test_support::{call, fixture};
     use axum::http::StatusCode;
 
     fn picture(width: u32, height: u32) -> String {
@@ -144,7 +144,7 @@ mod tests {
             saved["avatar"]
         );
         let bob =
-            thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())
+            crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())
                 .await
                 .unwrap();
         assert!(

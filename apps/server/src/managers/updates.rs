@@ -498,7 +498,7 @@ pub(crate) async fn run(state: AppState) -> anyhow::Result<()> {
 #[cfg(test)]
 mod offline_tests {
     use super::*;
-    use crate::online::oauth::tests::fixture;
+    use crate::test_support::fixture;
 
     #[tokio::test]
     async fn stopped_update_requires_positive_docker_evidence_and_keeps_idle_guards() {

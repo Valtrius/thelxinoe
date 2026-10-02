@@ -1,11 +1,9 @@
 use super::*;
 use crate::online::{
     Runtime,
-    oauth::{
-        Credential,
-        tests::{call, fixture},
-    },
+    oauth::{Credential, tests::fixture},
 };
+use crate::test_support::call;
 use axum::{
     extract::{Path, Query},
     http::{HeaderMap, StatusCode, header},
@@ -256,10 +254,14 @@ async fn fair_sync_resumes_pages_and_preserves_private_state() {
         .0,
         StatusCode::OK
     );
-    let bob =
-        thelxinoe_auth::issue_session(&restarted.db, "bob".into(), "web".into(), "test".into())
-            .await
-            .unwrap();
+    let bob = crate::test_support::issue_session(
+        &restarted.db,
+        "bob".into(),
+        "web".into(),
+        "test".into(),
+    )
+    .await
+    .unwrap();
     let bob = format!("thelxinoe_session={bob}");
     let other = call(
         &restarted,

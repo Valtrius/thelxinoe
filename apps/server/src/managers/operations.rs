@@ -4,7 +4,9 @@
 mod storage;
 
 use super::*;
-use std::path::PathBuf;
+#[path = "validated_file.rs"]
+mod validated_file;
+use validated_file::ValidatedFile;
 pub(super) fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/admin/media/operations", get(list).post(prepare))
@@ -118,71 +120,28 @@ async fn complete_manager_scope(state: &AppState, files: &[Target]) -> Result<()
     }
     Ok(())
 }
-async fn physical(file: &Target) -> Result<()> {
-    let path = PathBuf::from(&file.path);
-    let root = tokio::fs::canonicalize(&file.root)
+async fn physical(file: &Target) -> Result<Arc<ValidatedFile>> {
+    let file = file.clone();
+    let proof = tokio::task::spawn_blocking(move || ValidatedFile::capture(file))
         .await
-        .map_err(|_| unavailable())?;
-    let actual = tokio::fs::canonicalize(&path)
+        .map_err(|_| unavailable())?
+        .map_err(|_| {
+            ApiError::conflict("File generation changed; rescan and prepare a new operation")
+        })?;
+    #[cfg(test)]
+    if let Ok(control) = crate::test_support::MEDIA_VALIDATION.try_with(Clone::clone) {
+        control.reached().await;
+    }
+    Ok(Arc::new(proof))
+}
+async fn recheck(proof: &Arc<ValidatedFile>) -> Result<()> {
+    let proof = proof.clone();
+    tokio::task::spawn_blocking(move || proof.recheck())
         .await
-        .map_err(|_| ApiError::conflict("Target file moved or disappeared"))?;
-    if !actual.starts_with(&root)
-        || actual != path
-        || tokio::fs::symlink_metadata(&path)
-            .await
-            .map_err(|_| unavailable())?
-            .file_type()
-            .is_symlink()
-    {
-        return Err(ApiError::conflict(
-            "Target path is no longer an ordinary file inside its library",
-        ));
-    }
-    let expected = file.clone();
-    let valid = tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
-        use sha2::{Digest, Sha256};
-        use std::io::Read;
-        let mut file = std::fs::File::open(&path)?;
-        let before = file.metadata()?;
-        if !before.is_file()
-            || before.len() != expected.size
-            || before
-                .modified()?
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_nanos()
-                .to_string()
-                != expected.modified
-        {
-            return Ok(false);
-        }
-        let mut hash = Sha256::new();
-        let mut buffer = [0u8; 128 * 1024];
-        loop {
-            let n = file.read(&mut buffer)?;
-            if n == 0 {
-                break;
-            }
-            hash.update(&buffer[..n]);
-        }
-        let after = std::fs::metadata(path)?;
-        Ok(hash
-            .finalize()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
-            == expected.fingerprint
-            && before.len() == after.len()
-            && before.modified()? == after.modified()?)
-    })
-    .await
-    .map_err(|_| unavailable())?
-    .map_err(|_| unavailable())?;
-    if !valid {
-        return Err(ApiError::conflict(
-            "File generation changed; rescan and prepare a new operation",
-        ));
-    }
-    Ok(())
+        .map_err(|_| unavailable())?
+        .map_err(|_| {
+            ApiError::conflict("File identity or content changed; prepare a new operation")
+        })
 }
 async fn protected_or_active(state: &AppState, media: &str, files: &[Target]) -> Result<()> {
     let media = media.to_owned();
@@ -227,13 +186,11 @@ async fn mutate(
     files: &[Target],
     operation: &str,
     automatic: bool,
+    proofs: &[Arc<ValidatedFile>],
 ) -> Result<()> {
     validate_ownership(files, action)?;
     complete_manager_scope(state, files).await?;
     protected_or_active(state, media, files).await?;
-    for file in files {
-        physical(file).await?;
-    }
     // Recheck every manager before the first mutation, then each immediately before its call.
     for file in files {
         for claim in &file.claims {
@@ -242,10 +199,10 @@ async fn mutate(
             manager_idle(&c).await?;
         }
     }
-    for file in files {
+    for (file, proof) in files.iter().zip(proofs) {
         super::retention::revalidate_operation(state, operation, automatic).await?;
         protected_or_active(state, media, files).await?;
-        physical(file).await?;
+        recheck(proof).await?;
         if let Some(claim) = file.claims.first() {
             let s = service(state, &claim.service_id).await?;
             if s.generation != claim.service_generation {
@@ -292,6 +249,7 @@ async fn mutate(
                         "Manager episode ownership changed before deletion",
                     ));
                 }
+                recheck(proof).await?;
                 c.call(
                     reqwest::Method::PUT,
                     "episode/monitor",
@@ -306,6 +264,7 @@ async fn mutate(
                     return Err(ApiError::conflict("Manager entity identity changed"));
                 }
                 item["monitored"] = json!(monitored);
+                recheck(proof).await?;
                 c.call(
                     reqwest::Method::PUT,
                     &format!("{entity}/{}", claim.entity_id),
@@ -315,6 +274,7 @@ async fn mutate(
                 .await?;
             }
             if action == "delete" {
+                recheck(proof).await?;
                 c.call(
                     reqwest::Method::DELETE,
                     &format!("{endpoint}/{}", claim.manager_file_id),
@@ -344,7 +304,6 @@ async fn mutate(
         let ids = json!(files.iter().map(|f| &f.id).collect::<Vec<_>>()).to_string();
         storage::mutate(ids, &state.db).await?;
     }
-    bindings::reconcile(state).await?;
     Ok(())
 }
 async fn execute(
@@ -353,8 +312,6 @@ async fn execute(
     Path(key): Path<String>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
-    let _lease = state.media_operations.write().await;
-    let _manager = state.managers.guard.lock().await;
     execute_locked(&state, key, Some(p.user.id), false).await
 }
 pub(super) async fn execute_locked(
@@ -363,6 +320,8 @@ pub(super) async fn execute_locked(
     actor: Option<String>,
     automatic: bool,
 ) -> Result<Json<Value>> {
+    let operation_key = format!("operation:{key}");
+    let _operation = state.media_resources.write(&[&operation_key]).await;
     let k = key.clone();
     let (media, action, status, saved) =
         storage::execute_locked_read_media_operations(k, &state.db)
@@ -374,7 +333,18 @@ pub(super) async fn execute_locked(
         ));
     }
     let captured: Vec<Target> = serde_json::from_str(&saved).map_err(|_| unavailable())?;
-    bindings::reconcile(state).await?;
+    {
+        let _manager = state.managers.guard.lock().await;
+        bindings::reconcile(state).await?;
+    }
+    let keys = captured
+        .iter()
+        .map(|file| format!("file:{}", file.id))
+        .collect::<Vec<_>>();
+    let _files = state
+        .media_resources
+        .write(&keys.iter().map(String::as_str).collect::<Vec<_>>())
+        .await;
     let current = targets(state, &media).await?;
     if current != captured {
         return Err(ApiError::conflict(
@@ -383,15 +353,36 @@ pub(super) async fn execute_locked(
     }
     protected_or_active(state, &media, &current).await?;
     super::retention::revalidate_operation(state, &key, automatic).await?;
+    let mut proofs = Vec::new();
     for file in &current {
-        physical(file).await?;
+        proofs.push(physical(file).await?);
+    }
+    let _lease = state.media_operations.read().await;
+    let mut services = Vec::new();
+    for claim in current.iter().flat_map(|file| &file.claims) {
+        services.push(service(state, &claim.service_id).await?.kind);
+    }
+    let _managers = state
+        .managers
+        .guard
+        .services(&services.iter().map(String::as_str).collect::<Vec<_>>())
+        .await;
+    if targets(state, &media).await? != current {
+        return Err(ApiError::conflict(
+            "File set, generation or ownership changed; prepare a new operation",
+        ));
+    }
+    protected_or_active(state, &media, &current).await?;
+    super::retention::revalidate_operation(state, &key, automatic).await?;
+    for proof in &proofs {
+        recheck(proof).await?;
     }
     let k = key.clone();
     storage::execute_locked_write_media_operations(k, &state.db).await?;
     // Once executing is durable, interruption never automatically repeats a destructive call.
     let result = async {
         super::retention::exclude(state, &key, &current).await?;
-        mutate(state, &media, &action, &current, &key, automatic).await
+        mutate(state, &media, &action, &current, &key, automatic, &proofs).await
     }
     .await;
     let error = result.as_ref().err().map(|e| e.2.clone());

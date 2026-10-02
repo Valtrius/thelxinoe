@@ -96,14 +96,14 @@ pub(crate) async fn extract(state: &AppState, media: &str) -> Result<RemoteSourc
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::online::oauth::tests::{call, fixture};
+    use crate::test_support::{call, fixture};
     use axum::http::StatusCode;
     use serde_json::{Value, json};
     #[tokio::test]
     async fn live_progress_is_private_and_data_deletion_stops_only_own_sessions() {
         let (_temp, state, alice) = fixture().await;
         let bob =
-            thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())
+            crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())
                 .await
                 .unwrap();
         let bob = format!("thelxinoe_session={bob}");

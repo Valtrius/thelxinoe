@@ -1,3 +1,7 @@
+#[path = "../../../tests/helpers/auth-session.rs"]
+mod auth_session;
+#[path = "../../../tests/helpers/server-config.rs"]
+mod configuration;
 use axum::{
     body::Body,
     extract::ConnectInfo,
@@ -17,19 +21,9 @@ use tower::ServiceExt;
 
 async fn fixture() -> (tempfile::TempDir, AppState) {
     let temp = tempfile::tempdir().unwrap();
-    let state = AppState::open(Config {
-        state: temp.path().join("state"),
-        cache: temp.path().join("cache"),
-        web: temp.path().join("web"),
-        media: temp.path().join("media"),
-        bind: "127.0.0.1:0".parse().unwrap(),
-        public_url: None,
-        trusted_proxies: vec![],
-        cors_origins: vec![],
-        controller_socket: temp.path().join("socket"),
-    })
-    .await
-    .unwrap();
+    let state = AppState::open(configuration::config(temp.path()))
+        .await
+        .unwrap();
     state.db.write("test.fixture", |db|{
         for user in ["alice","bob","admin"]{db.execute("INSERT INTO users(id,username,password_hash,role,created_at) VALUES (?1,?1,'unused',?2,?3)",params![user,if user=="admin"{"admin"}else{"user"},now()])?;}
         db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Test','movies','/media/test')",[])?;
@@ -45,7 +39,7 @@ async fn fixture() -> (tempfile::TempDir, AppState) {
     (temp, state)
 }
 async fn login(state: &AppState, user: &str) -> (String, Principal) {
-    let token = thelxinoe_auth::issue_session(
+    let token = auth_session::issue_session(
         &state.db,
         user.into(),
         "device".into(),

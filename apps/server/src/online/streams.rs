@@ -141,6 +141,7 @@ pub(crate) async fn create_with_delivery(
         prepared.remux = !vod && !format.source.live;
     }
     let sid = thelxinoe_core::id();
+    let _lifecycle = state.playback_lifecycle.write(&[&sid]).await;
     let native = prepared.native && options.capabilities.native_remote && !vod;
     let mode = if native {
         "direct"
@@ -288,14 +289,25 @@ pub(crate) async fn seek(
             ApiError::conflict("Could not seek the public stream; reopen it to refresh its address")
         })
 }
-pub(crate) async fn maintain(state: &AppState, active: &[String]) {
+pub(crate) async fn sessions(state: &AppState) -> Vec<String> {
     state
         .online
         .streams
         .sessions
         .lock()
         .await
-        .retain(|id, _| active.contains(id));
+        .keys()
+        .cloned()
+        .collect()
+}
+pub(crate) async fn maintain(state: &AppState, candidates: &[String], active: &[String]) {
+    state
+        .online
+        .streams
+        .sessions
+        .lock()
+        .await
+        .retain(|id, _| !candidates.contains(id) || active.contains(id));
     state
         .online
         .streams
@@ -308,7 +320,7 @@ pub(crate) async fn maintain(state: &AppState, active: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::online::oauth::tests::{call, fixture};
+    use crate::test_support::{call, fixture};
     use axum::http::StatusCode;
     fn metadata(live: bool) -> Value {
         json!({"is_live":live,"duration":100,"formats":[{"vcodec":"avc1.640028","acodec":"none","height":1080,"protocol":"https","ext":"mp4","url":"https://r1.googlevideo.com/video?signature=private"},{"vcodec":"none","acodec":"mp4a.40.2","abr":128,"protocol":"https","ext":"m4a","url":"https://r1.googlevideo.com/audio?signature=private"}]})
@@ -562,7 +574,7 @@ mod tests {
             .0,
             StatusCode::FORBIDDEN
         );
-        let token = thelxinoe_auth::issue_session(
+        let token = crate::test_support::issue_session(
             &state.db,
             "bob".into(),
             "web".into(),

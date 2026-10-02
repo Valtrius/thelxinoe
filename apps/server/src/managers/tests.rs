@@ -1,5 +1,5 @@
 use super::*;
-use crate::online::oauth::tests::{call, fixture};
+use crate::test_support::{call, fixture};
 use axum::http::StatusCode;
 use std::sync::{
     Arc,
@@ -69,9 +69,10 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
         })
         .await
         .unwrap();
-    let bob = thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
-        .await
-        .unwrap();
+    let bob =
+        crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
+            .await
+            .unwrap();
     let bob = format!("thelxinoe_session={bob}");
     let movies = Arc::new(tokio::sync::Mutex::new(Vec::<Value>::new()));
     let post_movies = movies.clone();
@@ -423,7 +424,7 @@ async fn deletion_rechecks_keep_and_file_replacement_and_never_retries_completed
         .await
         .unwrap();
     let token =
-        thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
+        crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
             .await
             .unwrap();
     let admin = format!("thelxinoe_session={token}");
@@ -542,7 +543,7 @@ async fn support_services_are_admin_only_redacted_and_expose_only_allowed_comman
         .await
         .unwrap();
     let token =
-        thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
+        crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
             .await
             .unwrap();
     let admin = format!("thelxinoe_session={token}");
@@ -733,7 +734,7 @@ async fn nzbget_login_is_available_to_admins_while_provisioning() {
         .await
         .unwrap();
     let token =
-        thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
+        crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
             .await
             .unwrap();
     let admin = format!("thelxinoe_session={token}");
@@ -830,7 +831,7 @@ async fn provisioning_is_admin_only_durable_and_never_puts_credentials_in_jobs()
         .await
         .unwrap();
     let token =
-        thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
+        crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
             .await
             .unwrap();
     let admin = format!("thelxinoe_session={token}");

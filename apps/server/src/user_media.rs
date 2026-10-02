@@ -52,6 +52,11 @@ pub(crate) async fn set_for(
     media: &str,
     input: Change,
 ) -> Result<Value> {
+    let keys = crate::media_resources::for_media(&state.db, media).await?;
+    let _files = state
+        .media_resources
+        .read(&keys.iter().map(String::as_str).collect::<Vec<_>>())
+        .await;
     let _lease = state.media_operations.read().await;
     let user = p.user.id.clone();
     let mid = media.to_owned();

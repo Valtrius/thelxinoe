@@ -17,7 +17,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use thelxinoe_auth::{
-    issue_session, password_hash, user_row, validate_credentials, verify_password,
+    SessionAuthorization, issue_session, password_hash, user_row, validate_credentials,
+    verify_password,
 };
 use thelxinoe_core::{Capability, Role, id, now};
 
@@ -39,7 +40,7 @@ pub async fn setup_status(State(state): State<AppState>) -> Result<Json<Value>> 
 }
 async fn respond_session(
     state: &AppState,
-    user_id: String,
+    authorization: SessionAuthorization,
     c: &Credentials,
     secure: bool,
 ) -> Result<Response> {
@@ -47,9 +48,10 @@ async fn respond_session(
     if !matches!(transport, "web" | "device") {
         return Err(ApiError::bad("Unsupported credential transport"));
     }
+    let user_id = authorization.user_id().to_owned();
     let raw = issue_session(
         &state.db,
-        user_id.clone(),
+        authorization,
         transport.into(),
         c.device_name
             .as_deref()
@@ -62,7 +64,8 @@ async fn respond_session(
             .take(100)
             .collect(),
     )
-    .await?;
+    .await?
+    .ok_or_else(ApiError::unauthorized)?;
     let user = storage::respond_session(&state.db, user_id).await?;
     let user = crate::avatars::profile(state, user).await?;
     let mut response =
@@ -85,25 +88,40 @@ pub async fn setup(
     headers: HeaderMap,
     Json(c): Json<Credentials>,
 ) -> Result<Response> {
-    let _slot = state
-        .password_slots
-        .acquire()
-        .await
-        .map_err(anyhow::Error::from)?;
     let context = security::request_context(&state.config, &headers, peer)?;
+    if storage::setup_status(&state.db).await? != 0 {
+        return Err(ApiError::conflict("Setup is already complete"));
+    }
     if !matches!(c.transport.as_deref().unwrap_or("web"), "web" | "device") {
         return Err(ApiError::bad("Unsupported transport"));
     }
     validate_credentials(&c.username, &c.password).map_err(|e| ApiError::bad(e.to_string()))?;
+    allow_password_attempt(&state, format!("setup:{}", context.address)).await?;
+    let _slot = state.password_slots.try_acquire().map_err(|_| {
+        ApiError(
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "Authentication is busy. Try again shortly.".into(),
+        )
+    })?;
     let hash = password_hash(c.password.clone()).await?;
     let user_id = id();
     let uid = user_id.clone();
     let username = c.username.clone();
-    let created = storage::setup(&state.db, hash, uid, username).await?;
+    let created = storage::setup(&state.db, hash.clone(), uid, username).await?;
     if !created {
         return Err(ApiError::conflict("Setup is already complete"));
     }
-    respond_session(&state, user_id, &c, context.secure).await
+    respond_session(
+        &state,
+        SessionAuthorization::Password {
+            user_id,
+            expected_hash: hash,
+        },
+        &c,
+        context.secure,
+    )
+    .await
 }
 pub async fn login(
     State(state): State<AppState>,
@@ -120,7 +138,7 @@ pub(crate) async fn check_credentials(
     address: std::net::IpAddr,
     username: &str,
     password: &str,
-) -> Result<String> {
+) -> Result<SessionAuthorization> {
     allow_password_attempt(state, address.to_string()).await?;
     if password.len() > 256 || username.len() > 64 {
         return Err(ApiError::unauthorized());
@@ -140,7 +158,11 @@ pub(crate) async fn check_credentials(
     if !valid || record.is_none() {
         return Err(ApiError::unauthorized());
     }
-    Ok(record.unwrap().0)
+    let (user_id, expected_hash) = record.unwrap();
+    Ok(SessionAuthorization::Password {
+        user_id,
+        expected_hash,
+    })
 }
 async fn allow_password_attempt(state: &AppState, address: String) -> Result<()> {
     let allowed = storage::allow_password_attempt(&state.db, address).await?;

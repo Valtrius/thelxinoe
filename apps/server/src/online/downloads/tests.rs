@@ -1,5 +1,5 @@
 use super::*;
-use crate::online::oauth::tests::{call, fixture};
+use crate::test_support::{call, fixture};
 use axum::http::StatusCode;
 const VIDEO: &str = "abcdefghijk";
 
@@ -241,10 +241,14 @@ async fn public_file_sharing_keeps_progress_private_and_retention_fenced() {
         db.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,path,size,modified,probe,requested_at,updated_at,unprotected_at) VALUES (?1,?2,'ready','{}',?3,?4,?5,?6,1,1,1)",params![VIDEO,generation_copy,path.to_string_lossy(),metadata.len() as i64,metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos().to_string(),json!({"format":{"duration":"100"},"streams":[{"index":0,"codec_type":"video","codec_name":"h264"}]}).to_string()])?;
         Ok(())
     }).await.unwrap();
-    let bob_token =
-        thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Bob browser".into())
-            .await
-            .unwrap();
+    let bob_token = crate::test_support::issue_session(
+        &state.db,
+        "bob".into(),
+        "web".into(),
+        "Bob browser".into(),
+    )
+    .await
+    .unwrap();
     let bob = format!("thelxinoe_session={bob_token}");
     let body = json!({"media_id":format!("youtube:{VIDEO}"),"options":{"quality":"auto","capabilities":{"containers":["mp4"],"video":["h264"],"audio":[],"hls":false}}});
     assert_eq!(

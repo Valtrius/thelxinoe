@@ -40,10 +40,10 @@ pub(super) async fn status(
 pub(super) async fn exchange(
     hash: String,
     db: &Database,
-) -> anyhow::Result<Option<(String, Device)>> {
+) -> anyhow::Result<Option<(thelxinoe_auth::SessionAuthorization, Device)>> {
     db.write("jellyfin.quick_connect.exchange", move|db|{
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let row=tx.query_row("SELECT q.user_id,q.device_id,q.device_name,q.client,q.version FROM quick_connect q JOIN sessions s ON s.id=q.authorizer_session_id AND s.user_id=q.user_id WHERE q.secret_hash=?1 AND q.expires_at>?2 AND s.expires_at>?2",params![hash,now()],|r|Ok((r.get::<_,String>(0)?,Device{id:r.get(1)?,name:r.get(2)?,client:r.get(3)?,version:r.get(4)?}))).optional()?;
+        let row=tx.query_row("SELECT q.user_id,q.device_id,q.device_name,q.client,q.version,s.id FROM quick_connect q JOIN sessions s ON s.id=q.authorizer_session_id AND s.user_id=q.user_id WHERE q.secret_hash=?1 AND q.expires_at>?2 AND s.expires_at>?2",params![hash,now()],|r|Ok((thelxinoe_auth::SessionAuthorization::ApprovedSession { user_id:r.get(0)?, session_id:r.get(5)? },Device{id:r.get(1)?,name:r.get(2)?,client:r.get(3)?,version:r.get(4)?}))).optional()?;
         if row.is_some(){tx.execute("DELETE FROM quick_connect WHERE secret_hash=?1",[hash])?;}
         tx.commit()?;Ok(row)
     }).await

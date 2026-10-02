@@ -1,5 +1,7 @@
 #[path = "storage/server.rs"]
 mod storage;
+#[cfg(test)]
+mod test_support;
 
 mod accounts;
 #[cfg(test)]
@@ -13,6 +15,8 @@ mod history;
 mod jellyfin;
 pub mod library;
 mod managers;
+#[path = "storage/media_resources.rs"]
+mod media_resources;
 mod online;
 pub mod operations;
 #[cfg(test)]
@@ -72,6 +76,8 @@ pub struct AppState {
     pub online: Arc<online::Runtime>,
     pub(crate) managers: Arc<managers::Runtime>,
     pub(crate) media_operations: Arc<tokio::sync::RwLock<()>>,
+    pub(crate) playback_lifecycle: Arc<thelxinoe_core::resource_locks::ResourceLocks>,
+    pub(crate) media_resources: Arc<thelxinoe_core::resource_locks::ResourceLocks>,
     pub(crate) release_gate: Arc<tokio::sync::RwLock<()>>,
     pub(crate) release_quiescing: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) release_check: Arc<tokio::sync::Mutex<()>>,
@@ -111,6 +117,8 @@ impl AppState {
             online: Arc::new(online::Runtime::new()?),
             managers: Arc::new(managers::Runtime::new()?),
             media_operations: Arc::new(tokio::sync::RwLock::new(())),
+            playback_lifecycle: Arc::new(Default::default()),
+            media_resources: Arc::new(Default::default()),
             release_gate: Arc::new(tokio::sync::RwLock::new(())),
             release_quiescing: Arc::new(std::sync::atomic::AtomicBool::new(release_pending)),
             release_check: Arc::new(tokio::sync::Mutex::new(())),
@@ -381,12 +389,17 @@ async fn run_general_jobs(state: AppState) -> anyhow::Result<()> {
                         .await?;
                 }
                 "library.scan" => {
-                    let _lease = state.media_operations.read().await;
                     let roots = thelxinoe_catalog::roots(&state.db).await?;
                     if let Some(root) = roots
                         .into_iter()
                         .find(|r| Some(r.id.as_str()) == job.payload["root_id"].as_str())
                     {
+                        let keys = media_resources::for_root(&state.db, &root.id).await?;
+                        let _files = state
+                            .media_resources
+                            .read(&keys.iter().map(String::as_str).collect::<Vec<_>>())
+                            .await;
+                        let _lease = state.media_operations.read().await;
                         state
                             .emit(None, "catalog.scan.started", json!({"root_id":root.id}))
                             .await?;

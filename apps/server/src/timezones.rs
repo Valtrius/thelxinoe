@@ -88,7 +88,7 @@ mod tests {
 
     #[tokio::test]
     async fn server_maintenance_policies_expose_the_current_zone() {
-        use crate::online::oauth::tests::{call, fixture};
+        use crate::test_support::{call, fixture};
         let (_temp, state, cookie) = fixture().await;
         state
             .db

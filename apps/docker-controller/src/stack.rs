@@ -16,6 +16,8 @@ use serde_json::{Value, json};
 mod adoption;
 #[path = "backups.rs"]
 mod backups;
+#[path = "creation.rs"]
+mod creation;
 #[path = "product.rs"]
 pub(crate) mod product;
 #[path = "service_recovery.rs"]
@@ -587,6 +589,7 @@ async fn install(
         expected: Value::Null,
         error: None,
     };
+    s.spec["Labels"][creation::ATTEMPT_LABEL] = json!(thelxinoe_core::id());
     save(&s)?;
     let _ = recovery::resume_creation(&d, &mut s).await?;
     Ok(Json(

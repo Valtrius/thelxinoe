@@ -183,7 +183,7 @@ pub async fn reconcile(state: AppState) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod presentation_tests {
-    use crate::online::oauth::tests::{call, fixture};
+    use crate::test_support::{call, fixture};
     use serde_json::Value;
     #[tokio::test]
     async fn home_inherits_show_artwork_without_exposing_other_users_shelves() {
@@ -201,7 +201,7 @@ mod presentation_tests {
         let url = response.2["favorites"][0]["artwork_url"].as_str().unwrap();
         assert!(url.starts_with("/api/v1/catalog/show/artwork?grant="));
         let bob =
-            thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())
+            crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())
                 .await
                 .unwrap();
         assert_eq!(

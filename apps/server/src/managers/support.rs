@@ -133,20 +133,24 @@ pub(super) async fn api_evidence(
         // Prowlarr filters Host against its saved allowlist. Docker names stay
         // stable when a stopped container receives a different private IP.
         let observed = docker(state, &format!("containers/{container}")).await?;
-        let name = observed["name"]
-            .as_str()
-            .ok_or_else(unavailable)?
-            .trim_start_matches('/');
-        if name.is_empty()
-            || !name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
-        {
-            return Err(unavailable());
-        }
+        let name = docker_host(&observed)?;
         base = format!("http://{name}:{port}");
     }
     Ok((base, media))
+}
+pub(super) fn docker_host(observed: &Value) -> Result<&str> {
+    let name = observed["name"]
+        .as_str()
+        .ok_or_else(unavailable)?
+        .trim_start_matches('/');
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    {
+        return Err(unavailable());
+    }
+    Ok(name)
 }
 pub(super) async fn rpc(
     c: &Connection<'_>,
