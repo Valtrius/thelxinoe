@@ -221,8 +221,10 @@ async fn connected_services_on(
             let field = |name: &str| fields.iter().find(|f|f["name"]==name).unwrap()["value"].as_str().unwrap().to_owned();
             let source = field("prowlarrUrl");
             let target = field("baseUrl");
-            if split && (!source.starts_with("http://127.0.0.2:") || !target.starts_with("http://127.0.0.3:")) { return StatusCode::BAD_REQUEST; }
-            let client = reqwest::Client::builder().no_proxy().build().unwrap();
+            if split && (!source.starts_with("http://prowlarr.fixture:") || !target.starts_with("http://127.0.0.3:")) { return StatusCode::BAD_REQUEST; }
+            let client = reqwest::Client::builder().no_proxy()
+                .resolve("prowlarr.fixture", std::net::SocketAddr::from(([127,0,0,if split {2} else {1}],0)))
+                .build().unwrap();
             for (base, api, app) in [(source, "v1", "Prowlarr"), (target, "v3", record["implementation"].as_str().unwrap())] {
                 let response = client.get(format!("{base}/api/{api}/system/status")).send().await.unwrap();
                 if response.json::<Value>().await.unwrap()["appName"] != app { return StatusCode::BAD_REQUEST; }
@@ -254,6 +256,21 @@ async fn connected_services_on(
                 *row=value.clone();Json(value)
             }
         }).delete(move|Path(id):Path<i64>|{let rows=delete_rows.clone();async move{rows.lock().await.retain(|r|r["id"]!=id);StatusCode::NO_CONTENT}}));
+    let source = source.layer(axum::middleware::from_fn(
+        |request: axum::extract::Request, next: axum::middleware::Next| async move {
+            use axum::response::IntoResponse;
+            if request
+                .headers()
+                .get("host")
+                .and_then(|host| host.to_str().ok())
+                .and_then(|host| host.split(':').next())
+                != Some("prowlarr.fixture")
+            {
+                return StatusCode::BAD_REQUEST.into_response();
+            }
+            next.run(request).await
+        },
+    ));
     let source = if url_base.is_empty() {
         source
     } else {
@@ -261,6 +278,14 @@ async fn connected_services_on(
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let source_port = listener.local_addr().unwrap().port();
+    Arc::get_mut(&mut state.managers).unwrap().http = reqwest::Client::builder()
+        .no_proxy()
+        .resolve(
+            "prowlarr.fixture",
+            std::net::SocketAddr::from(([127, 0, 0, 1], source_port)),
+        )
+        .build()
+        .unwrap();
     let peer_source = source.clone();
     let mut tasks = vec![tokio::spawn(async move {
         axum::serve(listener, source).await.unwrap()
@@ -311,7 +336,7 @@ async fn connected_services_on(
         } else {
             json!([{"id":"shared","address":"127.0.0.1"}])
         };
-        let inspection = json!({"id":container,"name":if kind=="prowlarr" {"localhost"} else {kind},"running":true,"mounts":[{"kind":"bind","source":"/media","destination":"/media","writable":true}],"networks":networks});
+        let inspection = json!({"id":container,"name":if kind=="prowlarr" {"prowlarr.fixture"} else {kind},"running":true,"mounts":[{"kind":"bind","source":"/media","destination":"/media","writable":true}],"networks":networks});
         state
             .managers
             .docker
@@ -377,6 +402,8 @@ async fn prowlarr_advertises_the_peer_route_on_three_networks_with_url_bases() {
         let (_temp, state, cookie, mock) = connected_services_on(true, prefix).await;
         action(&state, &cookie, "radarr", "connect").await;
         tick(&state).await.unwrap();
+        action(&state, &cookie, "radarr", "retry").await;
+        tick(&state).await.unwrap();
         let link = storage::load(&state.db, &link_id("prowlarr", "radarr"))
             .await
             .unwrap()
@@ -402,7 +429,7 @@ async fn prowlarr_advertises_the_peer_route_on_three_networks_with_url_bases() {
                 .unwrap()
                 .iter()
                 .any(|f| f["name"] == "prowlarrUrl"
-                    && f["value"] == format!("http://127.0.0.2:{source_port}{prefix}"))
+                    && f["value"] == format!("http://prowlarr.fixture:{source_port}{prefix}"))
         );
         assert!(
             values
@@ -494,7 +521,11 @@ async fn unavailable_target_does_not_block_another_link_and_retries_survive_runt
     // The worker has no authoritative in-memory queue: rebuild its runtime and
     // recover the pending intent from the database alone.
     let docker = state.managers.docker.lock().unwrap().clone();
-    state.managers = Arc::new(Runtime::new().unwrap());
+    let http = state.managers.http.clone();
+    state.managers = Arc::new(Runtime {
+        http,
+        ..Runtime::new().unwrap()
+    });
     *state.managers.docker.lock().unwrap() = docker;
     running(&state, 'a', true);
     due(&state, "radarr").await;

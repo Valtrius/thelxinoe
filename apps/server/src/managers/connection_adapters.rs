@@ -37,7 +37,7 @@ async fn open<'a>(state: &'a AppState, endpoint: &Endpoint) -> Attempt<Connectio
 
 struct PeerRoute {
     network: String,
-    source: String,
+    source_host: String,
     target: String,
     target_names: Vec<String>,
 }
@@ -58,7 +58,7 @@ async fn addresses(state: &AppState, source: &Endpoint, target: &Endpoint) -> At
                     .filter(|ip| ip.is_private() || ip.is_loopback())
                     .map(|ip| ip.to_string())
             };
-            if let (Some(source), Some(target)) =
+            if let (Some(_), Some(target)) =
                 (private(&network["address"]), private(&peer["address"]))
             {
                 let mut names = vec![target.clone()];
@@ -77,7 +77,9 @@ async fn addresses(state: &AppState, source: &Endpoint, target: &Endpoint) -> At
                 );
                 return Ok(PeerRoute {
                     network: network["id"].as_str().unwrap().to_owned(),
-                    source,
+                    // Docker DNS resolves this name on a network shared by the
+                    // caller. Prowlarr's Host allowlist also survives IP changes.
+                    source_host: support::docker_host(&a)?.to_owned(),
                     target,
                     target_names: names,
                 });
@@ -124,7 +126,7 @@ pub(super) async fn apply(
             "applications",
             target.kind.clone(),
             json!({
-            "prowlarrUrl":format!("http://{}:{}{}",route.source,source.port,c.url_base),
+            "prowlarrUrl":format!("http://{}:{}{}",route.source_host,source.port,c.url_base),
             "baseUrl":format!("http://{target_address}:{}{}",target.port,target_connection.url_base),"apiKey":target_connection.key}),
         )
     } else {
