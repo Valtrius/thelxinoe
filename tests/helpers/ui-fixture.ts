@@ -157,7 +157,7 @@ export async function installUiFixture(
         items: Array.from({ length: 40 }, (_, index) => ({
           id: `job-${index}`,
           kind: `Fixture job ${index}`,
-          state: 'completed',
+          state: 'complete',
           error: null,
         })),
       });

@@ -115,6 +115,7 @@
     ApiError,
     Events,
     type User,
+    type Job,
     desktop,
     initializeTransport,
     changeServer,
@@ -126,7 +127,6 @@
     transport: string;
     last_seen: number;
   };
-  type Job = { id: string; kind: string; state: string; error: string | null };
   let loading = $state(true),
     setup = $state(false),
     user = $state<User | null>(null),

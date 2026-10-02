@@ -1045,22 +1045,22 @@
     }}
   />
   <nav
-    class="service-strip mb-7 grid grid-cols-4 gap-1.5 @min-[1100px]/settings:grid-cols-8"
+    class="service-strip mb-7 grid grid-cols-2 gap-1.5 @min-[270px]/settings:grid-cols-4 @min-[1100px]/settings:grid-cols-8"
     aria-label="Select service"
   >
     {#each definitions as service (service.kind)}
       {@const state = status(service.kind)}
       <button
-        class="service-tab flex min-w-0 cursor-pointer items-center gap-2 border border-line bg-transparent px-2.5 py-3 text-left text-foreground hover:bg-surface-soft aria-[current=true]:border-accent aria-[current=true]:bg-accent-soft compact:flex-col compact:items-center compact:gap-1.5 compact:px-1 compact:text-center [&>img]:size-6.75 [&>img]:object-contain tight:[&>img]:size-5.75 [&_strong]:text-[11px] [&_strong]:font-[650]"
+        class="service-tab flex min-w-0 cursor-pointer flex-col items-center gap-1.5 border border-line bg-transparent px-1 py-3 text-center text-foreground hover:bg-surface-soft aria-[current=true]:border-accent aria-[current=true]:bg-accent-soft @min-[600px]/settings:flex-row @min-[600px]/settings:gap-2 @min-[600px]/settings:px-2.5 @min-[600px]/settings:text-left [&>img]:size-6.75 [&>img]:shrink-0 [&>img]:object-contain @max-[400px]/settings:[&>img]:size-5.75 [&_strong]:text-[11px] [&_strong]:font-[650]"
         aria-current={selectedKind === service.kind ? 'true' : undefined}
         aria-label={service.label}
         aria-describedby={`service-attention-${service.kind}`}
         onclick={() => selectService(service.kind)}
       >
         <img src={icons[service.kind]} alt="" />
-        <span
+        <span class="min-w-0"
           ><strong>{service.label}</strong><StatusIndicator
-            class="service-status mt-1.5"
+            class="service-status mt-1.5 justify-center @min-[600px]/settings:justify-start"
             tone={state.tone}>{state.label}</StatusIndicator
           ></span
         >
