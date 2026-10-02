@@ -1,13 +1,34 @@
 # Reuses the online development profile and its saved provider connections.
 [CmdletBinding()]
 param(
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [string]$LanAddress = $env:THELXINOE_ONLINE_LAN_IP
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $dockerCommand = (Get-Command docker.exe -ErrorAction Stop).Source
+if ([string]::IsNullOrWhiteSpace($LanAddress)) {
+    $lanInterface = Get-NetIPConfiguration | Where-Object {
+        $_.IPv4DefaultGateway -and $_.NetAdapter.Status -eq 'Up'
+    } | Sort-Object @{ Expression = { if ($_.NetAdapter.HardwareInterface) { 0 } else { 1 } } },
+        @{ Expression = { $_.NetIPv4Interface.InterfaceMetric } } | Select-Object -First 1
+    if (-not $lanInterface) {
+        throw 'No active LAN interface with an IPv4 gateway was found. Specify -LanAddress or THELXINOE_ONLINE_LAN_IP.'
+    }
+    $LanAddress = $lanInterface.IPv4Address | Select-Object -ExpandProperty IPAddress -First 1
+}
+$lanIp = $null
+if (-not [Net.IPAddress]::TryParse($LanAddress, [ref]$lanIp) -or
+    $lanIp.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork -or
+    [Net.IPAddress]::IsLoopback($lanIp) -or $LanAddress -eq '0.0.0.0') {
+    throw 'The online LAN address must be a non-loopback IPv4 address assigned to this PC.'
+}
+$localAddresses = Get-NetIPAddress -AddressFamily IPv4 | Select-Object -ExpandProperty IPAddress
+if ($LanAddress -notin $localAddresses) {
+    throw "The online LAN address $LanAddress is not assigned to this PC."
+}
 $onlineRootValue = [Environment]::GetEnvironmentVariable('THELXINOE_ONLINE_ROOT', 'Process')
 if ([string]::IsNullOrWhiteSpace($onlineRootValue)) {
     $onlineRootValue = './.local/online'
@@ -63,6 +84,8 @@ $runEnvironment = @{
     THELXINOE_TEST_SUBNET = '172.31.254.0/24'
     THELXINOE_ONLINE_ROOT = $onlineRootValue
     THELXINOE_ONLINE_VOLUME_PREFIX = $volumePrefix
+    THELXINOE_ONLINE_LAN_IP = $LanAddress
+    THELXINOE_ONLINE_DISCOVERY_PORT = '7359'
 }
 $previousEnvironment = @{}
 foreach ($name in $runEnvironment.Keys) {
@@ -92,6 +115,10 @@ try {
     }
 
     Write-Host 'Online development instance: https://localhost:22443'
+    Write-Host "LAN instance: http://${LanAddress}:18888 (HTTPS: https://${LanAddress}:22443)"
+    Write-Host "LAN discovery: UDP 7359 advertises http://${LanAddress}:18888"
+    Write-Host 'Provider account linking uses https://localhost:22443 on this PC.'
+    Write-Host 'Allow inbound TCP 18888/22443 and UDP 7359 from the local subnet through Windows Firewall.'
     Write-Host "Saved profile data: $stateRoot"
     if ($firstLaunch) {
         foreach ($path in @($databasePath, $masterKeyPath)) {
