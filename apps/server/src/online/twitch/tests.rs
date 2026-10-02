@@ -168,10 +168,14 @@ async fn device_connection_is_encrypted_session_bound_and_rate_limited() {
     )
     .await;
     assert_eq!(second.0, StatusCode::CONFLICT);
-    let another =
-        thelxinoe_auth::issue_session(&state.db, "alice".into(), "web".into(), "second".into())
-            .await
-            .unwrap();
+    let another = crate::test_support::issue_session(
+        &state.db,
+        "alice".into(),
+        "web".into(),
+        "second".into(),
+    )
+    .await
+    .unwrap();
     let status = call(
         &state,
         "/api/v1/online/twitch",
@@ -302,9 +306,10 @@ async fn followed_snapshot_is_private_paginated_and_refreshes_once() {
     )
     .await;
     assert_eq!(complete.2["items"].as_array().unwrap().len(), 2);
-    let bob = thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "bob".into())
-        .await
-        .unwrap();
+    let bob =
+        crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "bob".into())
+            .await
+            .unwrap();
     let bob = format!("thelxinoe_session={bob}");
     let other = call(
         &state,

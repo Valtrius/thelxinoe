@@ -562,7 +562,7 @@ mod tests {
             .0,
             StatusCode::FORBIDDEN
         );
-        let token = thelxinoe_auth::issue_session(
+        let token = crate::test_support::issue_session(
             &state.db,
             "bob".into(),
             "web".into(),

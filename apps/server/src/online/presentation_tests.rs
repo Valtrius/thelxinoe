@@ -60,9 +60,10 @@ async fn live_cards_precede_pagination_and_unknown_shorts_never_flash_in_filtere
 #[tokio::test]
 async fn named_watchlists_keep_private_memberships_and_retention_consistent() {
     let (_temp, state, alice) = fixture().await;
-    let bob = thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())
-        .await
-        .unwrap();
+    let bob =
+        crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())
+            .await
+            .unwrap();
     let bob = format!("thelxinoe_session={bob}");
     let default = call(
         &state,

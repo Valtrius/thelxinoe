@@ -67,9 +67,10 @@ async fn playback_changes_roll_back_when_their_event_cannot_be_saved() {
 
 async fn live_fixture() -> (tempfile::TempDir, AppState, String, String) {
     let (temp, state, alice) = fixture().await;
-    let token = thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())
-        .await
-        .unwrap();
+    let token =
+        crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())
+            .await
+            .unwrap();
     state.db.write("test.fixture", |db|{
         db.execute("INSERT INTO live_media VALUES ('twitch:42','Live fixture')",[])?;
         for user in ["alice","bob"] {

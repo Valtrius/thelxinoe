@@ -1,3 +1,5 @@
+#[path = "../../../tests/helpers/auth-session.rs"]
+mod auth_session;
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -38,7 +40,7 @@ async fn fixture() -> (tempfile::TempDir, AppState, String) {
         })
         .await
         .unwrap();
-    let token = thelxinoe_auth::issue_session(
+    let token = auth_session::issue_session(
         &state.db,
         "alice".into(),
         "device".into(),

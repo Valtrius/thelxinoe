@@ -1,5 +1,8 @@
 #[path = "storage/server.rs"]
 mod storage;
+#[cfg(test)]
+#[path = "../../../tests/helpers/auth-session.rs"]
+mod test_support;
 
 mod accounts;
 #[cfg(test)]

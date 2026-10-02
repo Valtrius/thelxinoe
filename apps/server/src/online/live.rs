@@ -103,7 +103,7 @@ mod tests {
     async fn live_progress_is_private_and_data_deletion_stops_only_own_sessions() {
         let (_temp, state, alice) = fixture().await;
         let bob =
-            thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())
+            crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())
                 .await
                 .unwrap();
         let bob = format!("thelxinoe_session={bob}");

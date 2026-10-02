@@ -18,7 +18,7 @@ pub(crate) async fn call(
     body: Value,
     cookie: &str,
 ) -> (StatusCode, HeaderMap, Value) {
-    let request = Request::builder()
+    let mut request = Request::builder()
         .uri(path)
         .method(method)
         .header("host", "internal:8484")
@@ -29,6 +29,9 @@ pub(crate) async fn call(
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
         .unwrap();
+    request.extensions_mut().insert(axum::extract::ConnectInfo(
+        "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+    ));
     let response = crate::router(state.clone()).oneshot(request).await.unwrap();
     let status = response.status();
     let headers = response.headers().clone();
@@ -68,7 +71,7 @@ pub(crate) async fn fixture() -> (tempfile::TempDir, AppState, String) {
         .await
         .unwrap();
     state.secrets.put(&state.db,"provider.google".into(),br#"{"client_id":"test.apps.googleusercontent.com","client_secret":"test-application-secret"}"#).await.unwrap();
-    let token = thelxinoe_auth::issue_session(
+    let token = crate::test_support::issue_session(
         &state.db,
         "alice".into(),
         "web".into(),

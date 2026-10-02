@@ -152,16 +152,37 @@ pub struct Session {
     pub last_seen: i64,
 }
 
+pub enum SessionAuthorization {
+    Password {
+        user_id: String,
+        expected_hash: String,
+    },
+    ApprovedSession {
+        user_id: String,
+        session_id: String,
+    },
+}
+impl SessionAuthorization {
+    pub fn user_id(&self) -> &str {
+        match self {
+            Self::Password { user_id, .. } | Self::ApprovedSession { user_id, .. } => user_id,
+        }
+    }
+}
+
 pub async fn issue_session(
     db: &Database,
-    user_id: String,
+    authorization: SessionAuthorization,
     transport: String,
     name: String,
-) -> Result<String> {
+) -> Result<Option<String>> {
     let raw = token();
     let hashed = digest(&raw);
-    storage::issue_session(hashed, db, user_id, transport, name).await?;
-    Ok(raw)
+    Ok(
+        storage::issue_session(hashed, db, authorization, transport, name)
+            .await?
+            .then_some(raw),
+    )
 }
 pub async fn resolve(db: &Database, raw: &str, transport: &str) -> Result<Option<Principal>> {
     if raw.len() != 64 {
@@ -180,7 +201,17 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let db = Database::open(temp.path().join("auth.db"))?;
         db.write("test.fixture", |db|{db.execute("INSERT INTO users(id,username,password_hash,role,created_at) VALUES ('user','reader','unused','user',?1)",[now()])?;Ok(())}).await?;
-        let token = issue_session(&db, "user".into(), "device".into(), "test".into()).await?;
+        let token = issue_session(
+            &db,
+            SessionAuthorization::Password {
+                user_id: "user".into(),
+                expected_hash: "unused".into(),
+            },
+            "device".into(),
+            "test".into(),
+        )
+        .await?
+        .unwrap();
         let (entered, ready) = tokio::sync::oneshot::channel();
         let (release, blocked) = std::sync::mpsc::channel();
         let writer = db.clone();

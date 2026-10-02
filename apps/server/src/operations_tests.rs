@@ -110,7 +110,7 @@ async fn attention_is_private_live_and_diagnostics_exclude_secret_material() {
     let (_temp, state, alice) = fixture().await;
     state.db.write("test.fixture", |db|{db.execute("UPDATE users SET role='admin' WHERE id='bob'",[])?;db.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,completed_at,error,created_at) VALUES ('failed','metadata.match','{\"secret\":\"PRIVATE-TOKEN\"}','test','failed',1,?1,'https://private/?ApiKey=PRIVATE-TOKEN',1)",[thelxinoe_core::now()])?;Ok(())}).await.unwrap();
     let token =
-        thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
+        crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
             .await
             .unwrap();
     let admin = format!("thelxinoe_session={token}");
@@ -201,7 +201,7 @@ async fn user_deletion_revokes_personal_state_and_preserves_shared_data() {
     let (_temp, state, alice) = fixture().await;
     state.db.write("test.fixture", |db|{db.execute("UPDATE users SET role='admin' WHERE id='bob'",[])?;db.execute("INSERT INTO online_accounts(user_id,provider,generation,updated_at) VALUES ('alice','youtube','g',1)",[])?;db.execute("INSERT INTO events(user_id,kind,payload,created_at) VALUES ('alice','private','{}',1)",[])?;db.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,created_at,updated_at) VALUES ('service','radarr','alice',7878,X'00','active',1,1)",[])?;Ok(())}).await.unwrap();
     let token =
-        thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
+        crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
             .await
             .unwrap();
     let admin = format!("thelxinoe_session={token}");
@@ -250,9 +250,10 @@ async fn request_attention_maps_album_ancestors_and_rejects_foreign_or_stale_ack
         db.execute("INSERT INTO acquisition_requests(id,user_id,service_id,generation,external_id,title,state,created_at,updated_at) VALUES ('request','alice','lidarr','g','album-id','Album','available',1,1)", [])?;
         Ok(())
     }).await.unwrap();
-    let token = thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())
-        .await
-        .unwrap();
+    let token =
+        crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())
+            .await
+            .unwrap();
     let bob = format!("thelxinoe_session={token}");
     let list = call(&state, "/api/v1/me/attention", "GET", json!({}), &alice)
         .await

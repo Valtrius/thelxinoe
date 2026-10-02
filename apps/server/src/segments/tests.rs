@@ -61,7 +61,7 @@ async fn manual_overrides_are_authorized_bounded_and_specific_to_file_generation
         Ok(())
     }).await.unwrap();
     let token =
-        thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
+        crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
             .await
             .unwrap();
     let admin = format!("thelxinoe_session={token}");
@@ -144,9 +144,10 @@ async fn manual_overrides_are_authorized_bounded_and_specific_to_file_generation
 #[tokio::test]
 async fn skip_preferences_are_private_and_default_to_ask() {
     let (_temp, state, alice) = fixture().await;
-    let token = thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())
-        .await
-        .unwrap();
+    let token =
+        crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())
+            .await
+            .unwrap();
     let bob = format!("thelxinoe_session={token}");
     let changed = json!({"Intro":"Auto","Recap":"Ignore","Credits":"Ask","Preview":"Ignore"});
     assert_eq!(

@@ -165,17 +165,23 @@ pub async fn login(
     .await?;
     issue(state, user, device).await
 }
-pub async fn issue(state: &AppState, user: String, device: Device) -> Result<Value> {
+pub async fn issue(
+    state: &AppState,
+    authorization: thelxinoe_auth::SessionAuthorization,
+    device: Device,
+) -> Result<Value> {
+    let user = authorization.user_id().to_owned();
     let raw = thelxinoe_auth::issue_session(
         &state.db,
-        user.clone(),
+        authorization,
         "jellyfin".into(),
         format!("{} · {}", device.client, device.name)
             .chars()
             .take(100)
             .collect(),
     )
-    .await?;
+    .await?
+    .ok_or_else(ApiError::unauthorized)?;
     let hash = thelxinoe_auth::digest(&raw);
     let (id, date) = storage::issue(hash, &state.db, user, device).await?;
     let p = thelxinoe_auth::resolve(&state.db, &raw, "jellyfin")

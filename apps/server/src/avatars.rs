@@ -144,7 +144,7 @@ mod tests {
             saved["avatar"]
         );
         let bob =
-            thelxinoe_auth::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())
+            crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())
                 .await
                 .unwrap();
         assert!(

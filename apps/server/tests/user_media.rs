@@ -1,3 +1,5 @@
+#[path = "../../../tests/helpers/auth-session.rs"]
+mod auth_session;
 use axum::{
     body::Body,
     extract::ConnectInfo,
@@ -45,7 +47,7 @@ async fn fixture() -> (tempfile::TempDir, AppState) {
     (temp, state)
 }
 async fn login(state: &AppState, user: &str) -> (String, Principal) {
-    let token = thelxinoe_auth::issue_session(
+    let token = auth_session::issue_session(
         &state.db,
         user.into(),
         "device".into(),

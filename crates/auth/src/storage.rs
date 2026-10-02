@@ -20,13 +20,19 @@ pub(super) async fn get(key: String, db: &Database) -> anyhow::Result<Option<Vec
 pub(super) async fn issue_session(
     hashed: String,
     db: &Database,
-    user_id: String,
+    authorization: SessionAuthorization,
     transport: String,
     name: String,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     db.write("auth.issue_session", move |c| {
-        c.execute(
-            "INSERT INTO sessions VALUES (?1,?2,?3,?4,?5,?6,?7,?6)",
+        let (user_id, expected_hash, authorizer) = match authorization {
+            SessionAuthorization::Password { user_id, expected_hash } => (user_id, Some(expected_hash), None),
+            SessionAuthorization::ApprovedSession { user_id, session_id } => (user_id, None, Some(session_id)),
+        };
+        let inserted = c.execute(
+            "INSERT INTO sessions SELECT ?1,id,?3,?4,?5,?6,?7,?6 FROM users
+             WHERE id=?2 AND ((?8 IS NOT NULL AND password_hash=?8) OR
+             (?9 IS NOT NULL AND EXISTS(SELECT 1 FROM sessions WHERE id=?9 AND user_id=?2 AND expires_at>?6)))",
             params![
                 id(),
                 user_id,
@@ -34,10 +40,12 @@ pub(super) async fn issue_session(
                 transport,
                 name,
                 now(),
-                now() + 30 * 86400
+                now() + 30 * 86400,
+                expected_hash,
+                authorizer,
             ],
         )?;
-        Ok(())
+        Ok(inserted == 1)
     })
     .await
 }
