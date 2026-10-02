@@ -1,3 +1,6 @@
+mod cache;
+#[cfg(test)]
+mod maintenance_tests;
 mod pipeline;
 mod remote;
 pub use remote::RemoteSource;

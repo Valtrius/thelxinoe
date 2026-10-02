@@ -6181,6 +6181,7 @@ dependencies = [
  "tempfile",
  "thelxinoe-tools",
  "tokio",
+ "tracing",
  "url",
  "uuid",
 ]

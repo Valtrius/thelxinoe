@@ -28,6 +28,7 @@ enum Input<'a> {
     },
 }
 pub struct Pipelines {
+    pub(crate) scanner: Arc<crate::cache::Scanner>,
     tools: Runtime,
     root: PathBuf,
     running: Mutex<HashMap<String, Running>>,
@@ -43,8 +44,11 @@ impl Pipelines {
         }
         tokio::fs::create_dir_all(&root).await?;
         let slots = Arc::new(Semaphore::new(4));
-        let vod = crate::vod::VodCache::open(&root, slots.clone(), tools.clone()).await?;
+        let scanner = Arc::new(crate::cache::Scanner::default());
+        let vod = crate::vod::VodCache::open(&root, slots.clone(), tools.clone(), scanner.clone())
+            .await?;
         Ok(Self {
+            scanner,
             tools,
             root,
             running: Mutex::new(HashMap::new()),
@@ -352,11 +356,14 @@ impl Pipelines {
         let mut total = 0u64;
         let low = fs2::available_space(&self.root)? < 512 * 1024 * 1024;
         for (id, run) in runs.iter_mut() {
-            let mut size = 0;
-            let mut entries = tokio::fs::read_dir(&run.directory).await?;
-            while let Some(entry) = entries.next_entry().await? {
-                size += entry.metadata().await?.len();
-            }
+            let size = match self.scanner.usage(&run.directory).await {
+                Ok(size) => size,
+                Err(error) => {
+                    tracing::warn!(session = %id, revision = %run.revision, %error, "Stopping playback with unreadable disposable cache");
+                    stop.push(id.clone());
+                    continue;
+                }
+            };
             total += size;
             let failed = run
                 .child

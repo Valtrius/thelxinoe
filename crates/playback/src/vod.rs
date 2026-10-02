@@ -40,16 +40,23 @@ impl Drop for RemoteWork {
     }
 }
 pub struct VodCache {
+    scanner: Arc<crate::cache::Scanner>,
     tools: Runtime,
     root: PathBuf,
     runs: Mutex<HashMap<String, Arc<Run>>>,
     slots: Arc<Semaphore>,
 }
 impl VodCache {
-    pub async fn open(root: &Path, slots: Arc<Semaphore>, tools: Runtime) -> Result<Self> {
+    pub async fn open(
+        root: &Path,
+        slots: Arc<Semaphore>,
+        tools: Runtime,
+        scanner: Arc<crate::cache::Scanner>,
+    ) -> Result<Self> {
         let root = root.join("vod");
         tokio::fs::create_dir_all(&root).await?;
         Ok(Self {
+            scanner,
             tools,
             root,
             runs: Mutex::new(HashMap::new()),
@@ -530,19 +537,14 @@ impl VodCache {
         let mut total = 0;
         let low = fs2::available_space(&self.root)? < 512 * 1024 * 1024;
         for (id, run) in runs {
-            let mut entries = match tokio::fs::read_dir(&run.directory).await {
-                Ok(entries) => entries,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(e.into()),
-            };
-            let mut size = 0;
-            while let Some(entry) = entries.next_entry().await? {
-                match entry.metadata().await {
-                    Ok(meta) => size += meta.len(),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(e.into()),
+            let size = match self.scanner.usage(&run.directory).await {
+                Ok(size) => size,
+                Err(error) => {
+                    tracing::warn!(session = %id, revision = %run.revision, %error, "Stopping VOD with unreadable disposable cache");
+                    stopped.push(id);
+                    continue;
                 }
-            }
+            };
             total += size;
             if !active.contains(&id) || low || total > budget || size > 288 * 1024 * 1024 {
                 stopped.push(id);
