@@ -20,6 +20,23 @@ struct Running {
     directory: PathBuf,
     revision: String,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunHandle {
+    pub session: String,
+    pub revision: String,
+}
+#[derive(Clone, Copy, Debug)]
+pub enum CleanupReason {
+    Inactive,
+    ProcessFailed,
+    CacheUnreadable,
+    CacheLimit,
+}
+pub struct StoppedRun {
+    pub handle: RunHandle,
+    pub reason: CleanupReason,
+}
 enum Input<'a> {
     Local(&'a Source),
     Remote {
@@ -298,7 +315,11 @@ impl Pipelines {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        self.stop(id).await;
+        self.stop_revision(&RunHandle {
+            session: id.to_owned(),
+            revision,
+        })
+        .await;
         bail!("FFmpeg could not prepare playback within 20 seconds")
     }
     pub async fn start_vod(
@@ -350,17 +371,72 @@ impl Pipelines {
             let _ = tokio::fs::remove_dir_all(run.directory).await;
         }
     }
-    pub async fn maintain(&self, active: &[String]) -> Result<Vec<String>> {
+    pub async fn runs(&self) -> Vec<RunHandle> {
+        let mut runs = self
+            .running
+            .lock()
+            .await
+            .iter()
+            .map(|(id, run)| RunHandle {
+                session: id.clone(),
+                revision: run.revision.clone(),
+            })
+            .collect::<Vec<_>>();
+        runs.extend(self.vod.runs().await);
+        runs
+    }
+    pub async fn has_newer_run(&self, handle: &RunHandle) -> bool {
+        self.runs()
+            .await
+            .iter()
+            .any(|run| run.session == handle.session && run.revision != handle.revision)
+    }
+    pub async fn stop_revision(&self, handle: &RunHandle) -> bool {
+        let vod = self.vod.stop_revision(handle).await;
+        let run = {
+            let mut runs = self.running.lock().await;
+            if runs
+                .get(&handle.session)
+                .is_some_and(|run| run.revision == handle.revision)
+            {
+                runs.remove(&handle.session)
+            } else {
+                None
+            }
+        };
+        if let Some(mut run) = run {
+            let _ = run.child.kill().await;
+            let _ = tokio::fs::remove_dir_all(run.directory).await;
+            true
+        } else {
+            vod
+        }
+    }
+    pub async fn maintain(
+        &self,
+        candidates: &[RunHandle],
+        active: &[String],
+    ) -> Result<Vec<StoppedRun>> {
         let mut runs = self.running.lock().await;
         let mut stop = Vec::new();
         let mut total = 0u64;
         let low = fs2::available_space(&self.root)? < 512 * 1024 * 1024;
         for (id, run) in runs.iter_mut() {
+            let handle = RunHandle {
+                session: id.clone(),
+                revision: run.revision.clone(),
+            };
+            if !candidates.contains(&handle) {
+                continue;
+            }
             let size = match self.scanner.usage(&run.directory).await {
                 Ok(size) => size,
                 Err(error) => {
                     tracing::warn!(session = %id, revision = %run.revision, %error, "Stopping playback with unreadable disposable cache");
-                    stop.push(id.clone());
+                    stop.push(StoppedRun {
+                        handle,
+                        reason: CleanupReason::CacheUnreadable,
+                    });
                     continue;
                 }
             };
@@ -375,11 +451,18 @@ impl Pipelines {
                 || size > 768 * 1024 * 1024
                 || total > 2 * 1024 * 1024 * 1024
             {
-                stop.push(id.clone());
+                let reason = if !active.contains(id) {
+                    CleanupReason::Inactive
+                } else if failed {
+                    CleanupReason::ProcessFailed
+                } else {
+                    CleanupReason::CacheLimit
+                };
+                stop.push(StoppedRun { handle, reason });
             }
         }
-        for id in &stop {
-            if let Some(mut run) = runs.remove(id) {
+        for stopped in &stop {
+            if let Some(mut run) = runs.remove(&stopped.handle.session) {
                 let _ = run.child.kill().await;
                 let _ = tokio::fs::remove_dir_all(run.directory).await;
             }
@@ -387,7 +470,11 @@ impl Pipelines {
         drop(runs);
         stop.extend(
             self.vod
-                .maintain(active, (2u64 * 1024 * 1024 * 1024).saturating_sub(total))
+                .maintain(
+                    candidates,
+                    active,
+                    (2u64 * 1024 * 1024 * 1024).saturating_sub(total),
+                )
                 .await?,
         );
         Ok(stop)

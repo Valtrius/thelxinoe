@@ -96,7 +96,7 @@ async fn cache_turnover_during_streaming_and_vod_sweeps_is_benign() {
                 let pipelines = pipelines.clone();
                 tokio::spawn(async move {
                     pipelines
-                        .maintain(&["session".into(), "other".into()])
+                        .maintain(&pipelines.runs().await, &["session".into(), "other".into()])
                         .await
                 })
             };
@@ -111,7 +111,7 @@ async fn cache_turnover_during_streaming_and_vod_sweeps_is_benign() {
             release.send(()).unwrap();
             task.await.unwrap().unwrap();
             pipelines
-                .maintain(&["session".into(), "other".into()])
+                .maintain(&pipelines.runs().await, &["session".into(), "other".into()])
                 .await
                 .unwrap();
             assert!(
@@ -126,4 +126,64 @@ async fn cache_turnover_during_streaming_and_vod_sweeps_is_benign() {
             pipelines.stop("other").await;
         }
     }
+}
+
+#[tokio::test]
+async fn cleanup_cannot_remove_a_run_published_after_its_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    let (pipelines, source, options) = fixture(temp.path()).await;
+    let candidates = pipelines.runs().await;
+    let revision = pipelines
+        .start_vod("new", &source, &options, "transcode")
+        .await
+        .unwrap()
+        .0;
+    assert!(
+        pipelines
+            .maintain(&candidates, &[])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        pipelines
+            .file("new", &revision, "index.m3u8")
+            .await
+            .unwrap()
+            .unwrap()
+            .is_file()
+    );
+    let candidates = pipelines.runs().await;
+    let directory = pipelines
+        .file("new", &revision, "index.m3u8")
+        .await
+        .unwrap()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_owned();
+    let (entered, observed) = oneshot::channel();
+    let (release, resume) = oneshot::channel();
+    *pipelines.scanner.before_stat.lock().await = Some((directory, entered, resume));
+    let sweeping = {
+        let pipelines = pipelines.clone();
+        tokio::spawn(async move { pipelines.maintain(&candidates, &[]).await })
+    };
+    observed.await.unwrap();
+    let replacement = pipelines
+        .start_vod("new", &source, &options, "transcode")
+        .await
+        .unwrap()
+        .0;
+    release.send(()).unwrap();
+    assert!(sweeping.await.unwrap().unwrap().is_empty());
+    assert!(
+        pipelines
+            .file("new", &replacement, "index.m3u8")
+            .await
+            .unwrap()
+            .unwrap()
+            .is_file()
+    );
+    pipelines.stop("new").await;
 }

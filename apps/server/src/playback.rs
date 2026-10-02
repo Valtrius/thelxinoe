@@ -235,6 +235,7 @@ pub(crate) async fn create_with_delivery(
         ));
     }
     let sid = id();
+    let _lifecycle = state.playback_lifecycle.write(&[&sid]).await;
     let key = sid.clone();
     let user = p.user.id.clone();
     let auth = p.session_id.clone();
@@ -437,6 +438,7 @@ pub async fn cancel(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<Value>> {
+    let _lifecycle = state.playback_lifecycle.write(&[&id]).await;
     let p = security::principal(&state, &headers).await?;
     session(&state, &p, &id).await?;
     let key = id.clone();
@@ -450,6 +452,7 @@ pub async fn seek(
     Path(id): Path<String>,
     Json(input): Json<Position>,
 ) -> Result<Json<Value>> {
+    let _lifecycle = state.playback_lifecycle.write(&[&id]).await;
     let p = security::principal(&state, &headers).await?;
     let session = session(&state, &p, &id).await?;
     if !input.position.is_finite() || input.position < 0.0 || input.position >= session.duration {
@@ -501,6 +504,7 @@ pub async fn progress(
 }
 pub async fn report(state: &AppState, p: &Principal, id: &str, input: Progress) -> Result<Value> {
     let _lease = state.media_operations.read().await;
+    let _lifecycle = state.playback_lifecycle.write(&[id]).await;
     if input.sequence < 0
         || input
             .active_seconds
@@ -604,10 +608,30 @@ pub async fn maintain(state: AppState) -> anyhow::Result<()> {
     storage::maintain_write_playback_sessions(&state.db).await?;
     loop {
         tokio::time::sleep(Duration::from_secs(10)).await;
-        let active = storage::expire_sessions(&state.db).await?;
-        for id in state.playback.maintain(&active).await? {
-            fail(&state, &id).await?;
-        }
-        crate::online::streams::maintain(&state, &active).await;
+        maintain_once(&state).await?;
     }
 }
+
+async fn maintain_once(state: &AppState) -> anyhow::Result<()> {
+    // Only runtimes already published before the database observation are eligible.
+    let candidates = state.playback.runs().await;
+    let streams = crate::online::streams::sessions(state).await;
+    let active = storage::expire_sessions(&state.db).await?;
+    let ids = active.keys().cloned().collect::<Vec<_>>();
+    for stopped in state.playback.maintain(&candidates, &ids).await? {
+        let handle = &stopped.handle;
+        let _lifecycle = state.playback_lifecycle.write(&[&handle.session]).await;
+        if !state.playback.has_newer_run(handle).await
+            && let Some(generation) = active.get(&handle.session)
+        {
+            tracing::debug!(session = %handle.session, revision = %handle.revision, reason = ?stopped.reason, "Playback run cleaned up");
+            storage::fail_generation(handle.session.clone(), generation.clone(), &state.db).await?;
+        }
+    }
+    crate::online::streams::maintain(state, &streams, &ids).await;
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "playback_maintenance_tests.rs"]
+mod maintenance_tests;

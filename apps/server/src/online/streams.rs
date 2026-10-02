@@ -141,6 +141,7 @@ pub(crate) async fn create_with_delivery(
         prepared.remux = !vod && !format.source.live;
     }
     let sid = thelxinoe_core::id();
+    let _lifecycle = state.playback_lifecycle.write(&[&sid]).await;
     let native = prepared.native && options.capabilities.native_remote && !vod;
     let mode = if native {
         "direct"
@@ -288,14 +289,25 @@ pub(crate) async fn seek(
             ApiError::conflict("Could not seek the public stream; reopen it to refresh its address")
         })
 }
-pub(crate) async fn maintain(state: &AppState, active: &[String]) {
+pub(crate) async fn sessions(state: &AppState) -> Vec<String> {
     state
         .online
         .streams
         .sessions
         .lock()
         .await
-        .retain(|id, _| active.contains(id));
+        .keys()
+        .cloned()
+        .collect()
+}
+pub(crate) async fn maintain(state: &AppState, candidates: &[String], active: &[String]) {
+    state
+        .online
+        .streams
+        .sessions
+        .lock()
+        .await
+        .retain(|id, _| !candidates.contains(id) || active.contains(id));
     state
         .online
         .streams

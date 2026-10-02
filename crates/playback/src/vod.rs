@@ -1,6 +1,6 @@
 //! A complete VOD timeline for clients that seek by requesting HLS segments.
 //! Segments are generated on demand and may be evicted and regenerated.
-use crate::{Options, RemoteSource, Source, conversion_args};
+use crate::{CleanupReason, Options, RemoteSource, RunHandle, Source, StoppedRun, conversion_args};
 use anyhow::{Context, Result, bail};
 use std::{
     collections::HashMap,
@@ -376,13 +376,46 @@ impl VodCache {
     pub async fn stop(&self, id: &str) {
         let run = self.runs.lock().await.remove(id);
         if let Some(run) = run {
-            run.canceled.send_replace(true);
-            let mut gate = run.gate.lock().await;
-            if let Some(mut work) = gate.take() {
-                work.task.abort();
-                let _ = (&mut work.task).await;
+            Self::dispose(run).await;
+        }
+    }
+    async fn dispose(run: Arc<Run>) {
+        run.canceled.send_replace(true);
+        let mut gate = run.gate.lock().await;
+        if let Some(mut work) = gate.take() {
+            work.task.abort();
+            let _ = (&mut work.task).await;
+        }
+        let _ = tokio::fs::remove_dir_all(&run.directory).await;
+    }
+    pub async fn runs(&self) -> Vec<RunHandle> {
+        self.runs
+            .lock()
+            .await
+            .iter()
+            .map(|(id, run)| RunHandle {
+                session: id.clone(),
+                revision: run.revision.clone(),
+            })
+            .collect()
+    }
+    pub async fn stop_revision(&self, handle: &RunHandle) -> bool {
+        let run = {
+            let mut runs = self.runs.lock().await;
+            if runs
+                .get(&handle.session)
+                .is_some_and(|run| run.revision == handle.revision)
+            {
+                runs.remove(&handle.session)
+            } else {
+                None
             }
-            let _ = tokio::fs::remove_dir_all(&run.directory).await;
+        };
+        if let Some(run) = run {
+            Self::dispose(run).await;
+            true
+        } else {
+            false
         }
     }
     async fn remote_file(
@@ -525,7 +558,12 @@ impl VodCache {
         .await
         .context("Public video segment timed out")?
     }
-    pub async fn maintain(&self, active: &[String], budget: u64) -> Result<Vec<String>> {
+    pub async fn maintain(
+        &self,
+        candidates: &[RunHandle],
+        active: &[String],
+        budget: u64,
+    ) -> Result<Vec<StoppedRun>> {
         let runs = self
             .runs
             .lock()
@@ -537,23 +575,41 @@ impl VodCache {
         let mut total = 0;
         let low = fs2::available_space(&self.root)? < 512 * 1024 * 1024;
         for (id, run) in runs {
+            let handle = RunHandle {
+                session: id.clone(),
+                revision: run.revision.clone(),
+            };
+            if !candidates.contains(&handle) {
+                continue;
+            }
             let size = match self.scanner.usage(&run.directory).await {
                 Ok(size) => size,
                 Err(error) => {
                     tracing::warn!(session = %id, revision = %run.revision, %error, "Stopping VOD with unreadable disposable cache");
-                    stopped.push(id);
+                    stopped.push(StoppedRun {
+                        handle,
+                        reason: CleanupReason::CacheUnreadable,
+                    });
                     continue;
                 }
             };
             total += size;
             if !active.contains(&id) || low || total > budget || size > 288 * 1024 * 1024 {
-                stopped.push(id);
+                let reason = if !active.contains(&id) {
+                    CleanupReason::Inactive
+                } else {
+                    CleanupReason::CacheLimit
+                };
+                stopped.push(StoppedRun { handle, reason });
             }
         }
-        for id in &stopped {
-            self.stop(id).await;
+        let mut removed = Vec::new();
+        for stopped in stopped {
+            if self.stop_revision(&stopped.handle).await {
+                removed.push(stopped);
+            }
         }
-        Ok(stopped)
+        Ok(removed)
     }
 }
 async fn trim(directory: &Path, current: &Path) -> Result<()> {

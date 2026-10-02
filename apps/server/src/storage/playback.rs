@@ -199,10 +199,27 @@ pub(super) async fn maintain_write_playback_sessions(db: &Database) -> anyhow::R
     db.write("playback.maintain_write_playback_sessions", |db|{db.execute("UPDATE playback_sessions SET state='stopped' WHERE state IN ('ready','playing','paused')",[])?;crate::history::finish_stale(db)?;Ok(())}).await
 }
 
-pub(super) async fn expire_sessions(db: &Database) -> anyhow::Result<Vec<String>> {
+pub(super) async fn fail_generation(
+    id: String,
+    generation: String,
+    db: &Database,
+) -> anyhow::Result<()> {
+    db.write("playback.fail_generation", move |db| {
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if tx.execute("UPDATE playback_sessions SET state='failed',updated_at=?1 WHERE id=?2 AND generation=?3 AND state IN ('ready','playing','paused')", params![now(), id, generation])? == 1 {
+            tx.execute("DELETE FROM playback_grants WHERE resource=?1", [format!("playback:{id}")])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }).await
+}
+
+pub(super) async fn expire_sessions(
+    db: &Database,
+) -> anyhow::Result<std::collections::HashMap<String, String>> {
     db.write("playback.expire_sessions", |db| {
         db.execute("UPDATE playback_sessions SET state='stopped' WHERE state IN ('ready','playing','paused') AND updated_at<=?1",[now()-120])?;
         crate::history::finish_stale(db)?;
-        Ok(db.prepare("SELECT p.id FROM playback_sessions p JOIN sessions s ON s.id=p.auth_session_id WHERE p.state IN ('ready','playing','paused') AND s.expires_at>?1")?.query_map([now()],|r|r.get::<_,String>(0))?.collect::<std::result::Result<Vec<_>,_>>()?)
+        Ok(db.prepare("SELECT p.id,p.generation FROM playback_sessions p JOIN sessions s ON s.id=p.auth_session_id WHERE p.state IN ('ready','playing','paused') AND s.expires_at>?1")?.query_map([now()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<std::result::Result<std::collections::HashMap<_,_>,_>>()?)
     }).await
 }

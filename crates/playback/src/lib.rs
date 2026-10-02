@@ -5,7 +5,7 @@ mod pipeline;
 mod remote;
 pub use remote::RemoteSource;
 mod vod;
-pub use pipeline::Pipelines;
+pub use pipeline::{CleanupReason, Pipelines, RunHandle, StoppedRun};
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
