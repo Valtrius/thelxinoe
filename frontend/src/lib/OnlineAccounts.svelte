@@ -65,8 +65,7 @@
   onDestroy(() => request++);
 </script>
 
-<Panel>
-  <h2>Your online accounts</h2>
+<div class="col-span-full">
   {#if Object.values(accounts).some((account) => !account.configured)}
     <Notice>
       {#if configureProviders}<a
@@ -83,11 +82,11 @@
     </Notice>
   {/if}
   {#if error}<Notice variant="error" role="alert">{error}</Notice>{/if}
-  {#each [['youtube', 'YouTube'], ['twitch', 'Twitch']] as [provider, label] (provider)}
-    {@const account = accounts[provider as 'youtube' | 'twitch']}
-    <div
-      class="mb-4.5 flex flex-col items-start gap-4 border-b border-line py-4"
-    >
+</div>
+{#each [['youtube', 'YouTube'], ['twitch', 'Twitch']] as [provider, label] (provider)}
+  {@const account = accounts[provider as 'youtube' | 'twitch']}
+  <Panel
+    ><div class="flex flex-col items-start gap-4">
       <div class="flex items-center gap-3">
         {#if account?.account.status === 'connected' && account.account.avatar_url}
           <img
@@ -172,8 +171,10 @@
           >Cancel</Button
         >
       </Notice>{/if}
-  {/each}
-  <div class="mb-4.5 flex flex-col items-start gap-4 py-4">
+  </Panel>
+{/each}
+<Panel
+  ><div class="flex flex-col items-start gap-4">
     <div>
       <strong>Kick</strong>
       <p class="mt-1.5 mb-0 text-muted">

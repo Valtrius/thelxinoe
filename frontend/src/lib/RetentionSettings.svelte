@@ -63,7 +63,7 @@
   });
 </script>
 
-<Panel class="grid gap-4">
+<div class="col-span-full">
   <h2>Watched media retention</h2>
   <p>
     Choose whose watched status can start a grace period. A TV season requires
@@ -71,9 +71,13 @@
     mappings and complete aired metadata. Keep and active playback prevent
     deletion.
   </p>
-  {#each policies as policy (policy.domain)}
-    <fieldset class="grid gap-[0.7rem] border border-line p-4" disabled={busy}>
-      <legend>{policy.domain === 'movies' ? 'Movies' : 'TV seasons'}</legend>
+</div>
+{#each policies as policy (policy.domain)}
+  <Panel
+    ><fieldset class="grid gap-3" disabled={busy}>
+      <legend class="mb-4 text-base font-semibold"
+        >{policy.domain === 'movies' ? 'Movies' : 'TV seasons'}</legend
+      >
       <Switch bind:checked={policy.enabled}>Enable retention</Switch>
       <FormField class="m-0 flex-row items-center gap-2"
         >Grace period (hours)<input
@@ -110,9 +114,11 @@
             api(`/admin/retention/policy/${policy.domain}`, 'POST', policy),
           )}>Save {policy.domain === 'movies' ? 'movie' : 'TV'} policy</Button
       >
-    </fieldset>
-  {/each}
-  <h3>Files without a manager</h3>
+    </fieldset></Panel
+  >
+{/each}
+<Panel class="grid gap-3"
+  ><h2>Files without a manager</h2>
   <p>
     Automatic direct deletion requires an explicit opt-in for each library root.
     Otherwise eligible files wait here for an administrator to delete them.
@@ -146,7 +152,8 @@
     >
   </div>
   {#if message}<p role="alert">{message}</p>{/if}
-  <h3>Retention queue</h3>
+</Panel><Panel class="settings-wide"
+  ><h2>Retention queue</h2>
   {#each items as item (item.id)}
     <article class="border-t border-line pt-4">
       <strong>{item.title}</strong>

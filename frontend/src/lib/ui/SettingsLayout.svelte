@@ -1,82 +1,233 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import {
+    Activity,
+    AppWindow,
+    AudioLines,
+    ArchiveRestore,
+    Boxes,
+    Clapperboard,
+    Hourglass,
+    Laptop,
+    Link,
+    MonitorSmartphone,
+    Play,
+    ScrollText,
+    Search,
+    Server,
+    UserRound,
+    UsersRound,
+  } from '@lucide/svelte';
   import NavigationItem from './NavigationItem.svelte';
   import { desktop, type User } from '../api';
   import AttentionDot from './AttentionDot.svelte';
   import { attention, attentionDescription } from '../attention';
+  import { formControlClass } from './styles';
   let {
     user,
     active = $bindable('account'),
     children,
   } = $props<{ user: User; active?: string; children: Snippet }>();
+  let query = $state('');
   const personal = [
-    ['account', 'Account'],
-    ['playback', 'Playback'],
-    ['online', 'Online accounts'],
-    ['devices', 'Devices'],
+    {
+      id: 'account',
+      label: 'Account',
+      icon: UserRound,
+      keywords:
+        'profile picture avatar password display timezone time format workspace density watched',
+    },
+    {
+      id: 'playback',
+      label: 'Playback',
+      icon: Play,
+      keywords:
+        'video quality audio language subtitles replaygain intro recap credits preview skipping',
+    },
+    {
+      id: 'online',
+      label: 'Online accounts',
+      icon: Link,
+      keywords: 'youtube twitch kick connect synchronization',
+    },
+    {
+      id: 'devices',
+      label: 'Devices',
+      icon: MonitorSmartphone,
+      keywords: 'quick connect sessions revoke access',
+    },
   ];
   const native = [
-    ['mpv', 'MPV'],
-    ['connection', 'Desktop'],
+    {
+      id: 'mpv',
+      label: 'MPV',
+      icon: Clapperboard,
+      keywords: 'player configuration shortcuts',
+    },
+    {
+      id: 'connection',
+      label: 'Desktop',
+      icon: Laptop,
+      keywords: 'server address desktop updates version',
+    },
   ];
   const admin = [
-    ['server', 'Server'],
-    ['analysis', 'Episode analysis'],
-    ['providers', 'Provider applications'],
-    ['services', 'Media services'],
-    ['retention', 'Retention'],
-    ['backups', 'Backups'],
-    ['people', 'People'],
-    ['jobs', 'Activity'],
-    ['audit', 'Audit'],
+    {
+      id: 'server',
+      label: 'Server',
+      icon: Server,
+      keywords:
+        'health storage cache docker tools updates timezone time format diagnostics',
+    },
+    {
+      id: 'analysis',
+      label: 'Episode analysis',
+      icon: AudioLines,
+      keywords: 'intro credits timestamps theintrodb detection',
+    },
+    {
+      id: 'providers',
+      label: 'Provider applications',
+      icon: AppWindow,
+      keywords: 'youtube twitch kick client secret oauth api quota downloads',
+    },
+    {
+      id: 'services',
+      label: 'Media services',
+      icon: Boxes,
+      keywords:
+        'seerr recyclarr radarr sonarr lidarr bazarr prowlarr nzbget downloads requests profiles trash guides indexers updates ownership',
+    },
+    {
+      id: 'retention',
+      label: 'Retention',
+      icon: Hourglass,
+      keywords: 'watched deletion grace period movies tv seasons library roots',
+    },
+    {
+      id: 'backups',
+      label: 'Backups',
+      icon: ArchiveRestore,
+      keywords: 'restore encryption archives passphrase',
+    },
+    {
+      id: 'people',
+      label: 'People',
+      icon: UsersRound,
+      keywords: 'users permissions roles password',
+    },
+    {
+      id: 'jobs',
+      label: 'Activity',
+      icon: Activity,
+      keywords: 'jobs background checkpoint failed running queued completed',
+    },
+    {
+      id: 'audit',
+      label: 'Audit',
+      icon: ScrollText,
+      keywords: 'administrative history actions users',
+    },
   ];
   const groups = $derived([
-    {
-      id: 'user',
-      items: [...personal, ...(desktop ? native : [])],
-    },
-    ...(user.role === 'admin' ? [{ id: 'administration', items: admin }] : []),
+    { label: 'Personal', items: [...personal, ...(desktop ? native : [])] },
+    ...(user.role === 'admin'
+      ? [{ label: 'Administration', items: admin }]
+      : []),
   ]);
+  const title = $derived(
+    groups.flatMap((group) => group.items).find((item) => item.id === active)
+      ?.label ?? 'Settings',
+  );
+  const filtered = $derived(
+    groups.map((group) => ({
+      ...group,
+      items: group.items.filter((item) =>
+        (item.label + ' ' + item.keywords)
+          .toLowerCase()
+          .includes(query.trim().toLowerCase()),
+      ),
+    })),
+  );
 </script>
 
-<div class="settings-layout flex min-h-full items-start compact:flex-col">
+<div
+  class="settings-layout mx-auto flex min-h-full w-full max-w-520 items-start gap-8 px-8 py-7 narrow:gap-5 narrow:px-5 compact:flex-col compact:gap-6 compact:px-4 compact:py-4"
+>
   <nav
     aria-label="Settings navigation"
-    class="settings-navigation sticky top-0 z-1 flex h-(--workspace-height) max-h-(--workspace-height) w-47.5 shrink-0 flex-col overflow-y-auto border-r border-line bg-surface narrow:w-38.75 compact:h-auto compact:max-h-none compact:w-full compact:flex-row compact:overflow-x-auto compact:border-r-0 compact:border-b compact:p-0"
+    class="settings-navigation @container/settings-nav sticky top-0 z-1 max-h-[calc(var(--workspace-height)-2rem)] w-49 overflow-y-auto shrink-0 space-y-6 py-1 compact:static compact:max-h-none compact:w-full compact:overflow-visible compact:space-y-4"
   >
-    {#each groups as group, index (group.id)}
-      {#if index > 0}
-        <hr
-          class="my-0 h-px shrink-0 border-0 bg-line compact:mx-0 compact:h-auto compact:w-px compact:self-stretch"
-        />
+    <label class="relative block">
+      <span class="sr-only">Find a setting</span>
+      <Search
+        size={14}
+        class="pointer-events-none absolute top-3 left-2.5 text-muted"
+        aria-hidden="true"
+      />
+      <input
+        type="search"
+        class={[formControlClass, 'pl-8 text-xs']}
+        placeholder="Find a setting"
+        bind:value={query}
+      />
+    </label>
+    {#each filtered as group (group.label)}
+      {#if group.items.length}
+        <div>
+          <p
+            class="mb-2 px-2 text-[10px] font-semibold tracking-widest text-muted uppercase"
+          >
+            {group.label}
+          </p>
+          <div
+            class="grid gap-1 compact:grid-cols-3 compact:gap-1.5 compact:@max-[270px]/settings-nav:grid-cols-2"
+          >
+            {#each group.items as item (item.id)}
+              <NavigationItem
+                aria-label={item.label}
+                description={attentionDescription(
+                  $attention.filter((entry) => entry.target === item.id),
+                )}
+                active={active === item.id}
+                onclick={() => {
+                  active = item.id;
+                  query = '';
+                }}
+                class="settings-nav-item flex min-h-10 items-center gap-2.5 border border-transparent px-2.5 py-2 text-xs aria-[current=page]:border-line-strong compact:min-h-11 compact:gap-1 compact:px-1 compact:text-[11px] [&_[data-nav-accent]]:hidden"
+              >
+                <item.icon
+                  size={16}
+                  strokeWidth={1.6}
+                  class="shrink-0 compact:size-3.5"
+                  aria-hidden="true"
+                />
+                <span class="min-w-0 leading-snug wrap-anywhere"
+                  >{item.label}</span
+                >
+                <AttentionDot
+                  items={$attention.filter((entry) => entry.target === item.id)}
+                />
+              </NavigationItem>
+            {/each}
+          </div>
+        </div>
       {/if}
-      {#each group.items as [id, label] (id)}
-        <NavigationItem
-          aria-label={label}
-          description={attentionDescription(
-            $attention.filter((item) => item.target === id),
-          )}
-          active={active === id}
-          onclick={() => (active = id)}
-          class="settings-nav-item flex shrink-0 items-center gap-3 px-4.5 py-3.75 narrow:p-3.25 compact:p-3.5 compact:whitespace-nowrap"
-          ><span class="text-[11px] font-semibold tracking-[0.08em] uppercase"
-            >{label}</span
-          ><AttentionDot
-            items={$attention.filter((item) => item.target === id)}
-          /></NavigationItem
-        >
-      {/each}
     {/each}
+    {#if !filtered.some((group) => group.items.length)}<p
+        role="status"
+        class="text-xs text-muted"
+      >
+        No matching settings.
+      </p>{/if}
   </nav>
   <div
-    class={[
-      'settings-content min-w-0 flex-1 compact:min-h-0 compact:w-full',
-      active === 'services'
-        ? 'pr-6 pb-6 narrow:pr-4 narrow:pb-4 compact:pr-3 compact:pb-3'
-        : 'p-6 narrow:p-4 compact:p-3',
-    ]}
+    class="settings-content @container/settings min-w-0 flex-1 compact:w-full"
     data-sidebar-resize-origin
   >
-    <div class="settings-panels w-full max-w-320">{@render children()}</div>
+    <h1 class="mb-7 text-[25px] font-semibold tracking-tight compact:mb-5">
+      {title}
+    </h1>
+    <div class="settings-panels settings-grid">{@render children()}</div>
   </div>
 </div>

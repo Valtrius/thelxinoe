@@ -550,7 +550,7 @@ test('profile pictures are cropped, resized, saved and removable', async ({
   expect(fixture.unexpected).toEqual([]);
 });
 
-async function expectFullHeightNavigation(page: Page) {
+async function expectContainedNavigation(page: Page) {
   await expect
     .poll(() =>
       page.locator('.settings-navigation').evaluate((nav) => {
@@ -559,15 +559,15 @@ async function expectFullHeightNavigation(page: Page) {
           .getBoundingClientRect();
         const bounds = nav.getBoundingClientRect();
         return Math.max(
-          Math.abs(bounds.top - workspace.top),
-          Math.abs(bounds.bottom - workspace.bottom),
+          workspace.top - bounds.top,
+          bounds.bottom - workspace.bottom,
         );
       }),
     )
     .toBeLessThanOrEqual(1);
 }
 
-test('short settings navigation fills the workspace and follows resizing', async ({
+test('adaptive account panels remain bounded while navigation follows resizing', async ({
   page,
 }) => {
   const fixture = await installUiFixture(page);
@@ -575,7 +575,7 @@ test('short settings navigation fills the workspace and follows resizing', async
   await expect(
     page.getByRole('region', { name: 'Appearance preferences', exact: true }),
   ).toBeVisible();
-  await expectFullHeightNavigation(page);
+  await expectContainedNavigation(page);
   const panels = await page.locator('.settings-panels').evaluate((element) => ({
     width: element.getBoundingClientRect().width,
     inset:
@@ -584,7 +584,7 @@ test('short settings navigation fills the workspace and follows resizing', async
   }));
   expect(panels.width).toBeGreaterThan(880);
   expect(panels.width).toBeLessThanOrEqual(1280);
-  expect(panels.inset).toBe(24);
+  expect(panels.inset).toBe(0);
   await expect(
     page.getByText('Use the server default or choose your own timezone', {
       exact: false,
@@ -592,27 +592,27 @@ test('short settings navigation fills the workspace and follows resizing', async
   ).toHaveCount(0);
   await expect(page.locator('.settings-panels > .panel').first()).toHaveCSS(
     'padding',
-    '0px 0px 24px',
+    '20px 0px 0px',
   );
   for (const viewport of [
     { width: 960, height: 800 },
     { width: 1440, height: 1200 },
   ]) {
     await page.setViewportSize(viewport);
-    await expectFullHeightNavigation(page);
+    await expectContainedNavigation(page);
     await expect(page.locator('.settings-navigation')).toHaveCSS(
       'width',
-      viewport.width <= 1000 ? '155px' : '190px',
+      '196px',
     );
   }
   await page.getByRole('button', { name: 'Dark theme', exact: true }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await expectFullHeightNavigation(page);
+  await expectContainedNavigation(page);
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });
 
-test('long settings content scrolls while the menu stays full height', async ({
+test('long settings content scrolls while navigation stays reachable', async ({
   page,
 }) => {
   const fixture = await installUiFixture(page, { settingsSection: 'devices' });
@@ -630,7 +630,7 @@ test('long settings content scrolls while the menu stays full height', async ({
         .evaluate((element) => element.scrollTop),
     )
     .toBe(450);
-  await expectFullHeightNavigation(page);
+  await expectContainedNavigation(page);
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });
@@ -651,7 +651,7 @@ test('long admin navigation scrolls independently and keeps its last item reacha
       .locator('.workspace-scroll')
       .evaluate((element) => element.scrollTop),
   ).toBe(0);
-  await expectFullHeightNavigation(page);
+  await expectContainedNavigation(page);
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });
@@ -686,7 +686,7 @@ test('server settings contain display defaults and the version update icon', asy
   ).toHaveValue('24h');
   await expect(
     page.getByRole('heading', { name: 'Server updates', exact: true }),
-  ).toHaveCount(0);
+  ).toBeVisible();
   await expect(
     page.getByRole('button', { name: 'Check for server updates', exact: true }),
   ).toBeVisible();
@@ -717,7 +717,7 @@ test('server settings contain display defaults and the version update icon', asy
   expect(fixture.unexpected).toEqual([]);
 });
 
-test('all eight media service tabs stay on one row at desktop and mobile widths', async ({
+test('all eight media services stay accessible without horizontal scrolling', async ({
   page,
 }) => {
   const fixture = await installUiFixture(page, {
@@ -736,11 +736,11 @@ test('all eight media service tabs stay on one row at desktop and mobile widths'
         return { top: rect.top, width: rect.width, content: node.scrollWidth };
       }),
     );
-    expect(geometry.every((tab) => tab.top === geometry[0].top)).toBe(true);
+    expect(new Set(geometry.map((tab) => tab.top)).size).toBeLessThanOrEqual(2);
     expect(geometry.every((tab) => tab.content <= tab.width + 1)).toBe(true);
     if (width === 390) {
       expect(
-        await nav.evaluate((node) => node.scrollWidth > node.clientWidth),
+        await nav.evaluate((node) => node.scrollWidth <= node.clientWidth),
       ).toBe(true);
       await tabs.last().click();
       await expect(
@@ -752,7 +752,7 @@ test('all eight media service tabs stay on one row at desktop and mobile widths'
   expect(fixture.unexpected).toEqual([]);
 });
 
-test('media services select one workspace and keep desktop rail sections aligned', async ({
+test('media services preserve real controls across adaptive layouts', async ({
   page,
 }) => {
   const fixture = await installUiFixture(page, {
@@ -792,14 +792,6 @@ test('media services select one workspace and keep desktop rail sections aligned
       ),
     )
     .toBe(true);
-  const railGeometry = () =>
-    page.locator('.service-rail > :not(.inactive)').evaluateAll((nodes) =>
-      nodes.map((node) => {
-        const r = node.getBoundingClientRect();
-        return { top: r.top, height: r.height };
-      }),
-    );
-  const original = await railGeometry();
   for (const name of [
     'Seerr',
     'Sonarr',
@@ -813,7 +805,9 @@ test('media services select one workspace and keep desktop rail sections aligned
       page.getByRole('article', { name: `${name} service` }),
     ).toBeVisible();
     await expect(page.getByRole('article')).toHaveCount(1);
-    expect(await railGeometry()).toEqual(original);
+    await expect(
+      page.getByRole('complementary', { name: 'Service controls' }),
+    ).toBeVisible();
   }
   await nav.getByRole('button', { name: 'Sonarr', exact: true }).click();
   await expect(
@@ -859,8 +853,10 @@ test('media services select one workspace and keep desktop rail sections aligned
     });
     await nav.getByRole('button', { name: 'Sonarr', exact: true }).click();
     const rail = await page.locator('.service-rail').boundingBox();
-    const workspace = await page.locator('.service-workspace').boundingBox();
-    expect(workspace!.x).toBeCloseTo(rail!.x, 0);
+    const workspace = await page
+      .getByRole('form', { name: 'Connect existing Sonarr' })
+      .boundingBox();
+    expect(workspace!.x).toBeGreaterThanOrEqual(rail!.x);
     expect(workspace!.y).toBeGreaterThanOrEqual(rail!.y + rail!.height);
     expect(
       await page.evaluate(
@@ -1245,7 +1241,7 @@ test('media services show request approval only for regular users', async ({
   expect(fixture.unexpected).toEqual([]);
 });
 
-test('mobile settings use a horizontal menu at the existing breakpoint', async ({
+test('mobile settings show every category in a wrapping grid', async ({
   page,
 }) => {
   const fixture = await installUiFixture(page, { role: 'admin' });
@@ -1253,14 +1249,16 @@ test('mobile settings use a horizontal menu at the existing breakpoint', async (
     await page.setViewportSize({ width, height: 850 });
     await page.goto('/');
     const nav = page.getByRole('navigation', { name: 'Settings navigation' });
-    await expect(nav).toHaveCSS('flex-direction', 'row');
+    expect(
+      await nav.evaluate((node) => node.scrollWidth <= node.clientWidth),
+    ).toBe(true);
     const bounds = await nav.boundingBox();
     const workspace = await page.locator('.workspace-scroll').boundingBox();
-    expect(bounds!.width).toBeCloseTo(workspace!.width, 0);
-    expect(bounds!.height).toBeLessThan(100);
+    expect(bounds!.width).toBeLessThanOrEqual(workspace!.width);
+    expect(bounds!.height).toBeLessThan(520);
     await expect(page.locator('.settings-panels > .panel').first()).toHaveCSS(
       'padding',
-      '16px',
+      '20px 0px 0px',
     );
     await nav
       .getByRole('button', { name: 'Audit', exact: true })
@@ -1598,7 +1596,7 @@ test('update choices save eagerly, roll back failures, and respect reduced motio
   ).toHaveCount(0);
   const nav = page.getByRole('navigation', { name: 'Settings navigation' });
   await expect(nav.getByRole('heading')).toHaveCount(0);
-  await expect(nav.getByRole('separator')).toHaveCount(1);
+  await expect(nav.getByText('Administration', { exact: true })).toBeVisible();
   await page.screenshot({
     path: 'test-results/settings-update-policy.png',
     fullPage: true,

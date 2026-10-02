@@ -306,7 +306,7 @@ test('YouTube keeps concurrent optimistic additions visible and saves named list
   await page.screenshot({ path: '.local/ui-validation/youtube-populated.png' });
 });
 
-test('Settings panels stay at the left without a notification center', async ({
+test('Settings use available width while keeping form controls bounded', async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1600, height: 1000 });
@@ -318,11 +318,22 @@ test('Settings panels stay at the left without a notification center', async ({
       parent = element.parentElement!.getBoundingClientRect();
     return { width: rect.width, left: rect.left - parent.left };
   });
-  expect(geometry.width).toBeLessThanOrEqual(880);
-  expect(geometry.left).toBe(24);
+  expect(geometry.width).toBeGreaterThan(880);
+  expect(geometry.width).toBeLessThanOrEqual(1788);
+  expect(geometry.left).toBe(0);
+  expect(
+    await panels
+      .locator('select')
+      .evaluateAll((nodes) =>
+        nodes.every((node) => node.getBoundingClientRect().width <= 289),
+      ),
+  ).toBe(true);
   await expect(
     page.getByRole('button', { name: 'Notifications', exact: true }),
   ).toHaveCount(0);
+  await page.screenshot({
+    path: '.local/ui-validation/settings-adaptive-1600.png',
+  });
 });
 
 test('provider Ctrl+wheel zoom has one owner and sidebar motion keeps cards visible', async ({

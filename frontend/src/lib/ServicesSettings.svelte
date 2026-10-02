@@ -201,20 +201,20 @@
 
   const definitions: Definition[] = [
     {
-      kind: 'recyclarr',
-      label: 'Recyclarr',
-      role: 'job',
-      internalPort: null,
-      hostPort: null,
-      description: 'TRaSH Guides sync',
-    },
-    {
       kind: 'seerr',
       label: 'Seerr',
       role: 'support',
       internalPort: 5055,
       hostPort: 15055,
       description: 'Discovery and requests',
+    },
+    {
+      kind: 'recyclarr',
+      label: 'Recyclarr',
+      role: 'job',
+      internalPort: null,
+      hostPort: null,
+      description: 'TRaSH Guides sync',
     },
     {
       kind: 'radarr',
@@ -1026,7 +1026,7 @@
 
 <Panel
   aria-label="Media services"
-  class="services-panel settings-panel:compact:p-0"
+  class="services-panel col-span-full settings-panel:border-0 settings-panel:pt-0 settings-panel:compact:p-0"
 >
   <ConfirmDialog
     open={removalKind !== null}
@@ -1045,13 +1045,13 @@
     }}
   />
   <nav
-    class="service-strip mb-5.5 grid grid-flow-col auto-cols-[minmax(8.5rem,1fr)] overflow-x-auto border-b border-line"
+    class="service-strip mb-7 grid grid-cols-4 gap-1.5 @min-[1100px]/settings:grid-cols-8"
     aria-label="Select service"
   >
     {#each definitions as service (service.kind)}
       {@const state = status(service.kind)}
       <button
-        class="service-tab flex min-w-0 cursor-pointer items-center gap-2 border-0 border-r border-b-3 border-r-line border-b-transparent bg-transparent px-2 py-3 text-left text-foreground last:border-r-0 hover:bg-surface-soft aria-[current=true]:border-b-accent aria-[current=true]:bg-accent-soft tight:gap-1.25 tight:px-1.25 tight:py-2.5 [&>img]:size-6.75 [&>img]:object-contain tight:[&>img]:size-5.75 [&_strong]:text-[11px] [&_strong]:font-[650]"
+        class="service-tab flex min-w-0 cursor-pointer items-center gap-2 border border-line bg-transparent px-2.5 py-3 text-left text-foreground hover:bg-surface-soft aria-[current=true]:border-accent aria-[current=true]:bg-accent-soft compact:flex-col compact:items-center compact:gap-1.5 compact:px-1 compact:text-center [&>img]:size-6.75 [&>img]:object-contain tight:[&>img]:size-5.75 [&_strong]:text-[11px] [&_strong]:font-[650]"
         aria-current={selectedKind === service.kind ? 'true' : undefined}
         aria-label={service.label}
         aria-describedby={`service-attention-${service.kind}`}
@@ -1100,14 +1100,14 @@
     {/if}
   {/each}
   <article
-    class="service-detail grid grid-cols-[minmax(175px,25%)_minmax(0,1fr)] service-narrow:grid-cols-[minmax(160px,27%)_minmax(0,1fr)] compact:grid-cols-1"
+    class="service-detail settings-grid"
     aria-label={`${definition.label} service`}
   >
     <aside
-      class="service-rail grid grid-cols-1 grid-rows-[minmax(180px,max-content)_minmax(145px,max-content)_minmax(215px,max-content)] content-start border-r border-line pr-5 pl-4 compact:block compact:border-0 compact:px-3"
+      class="service-rail settings-section grid grid-cols-1 content-start"
       aria-label="Service controls"
     >
-      {#each definitions as service (service.kind)}
+      {#each [definition] as service (service.kind)}
         {@const active = service.kind === selectedKind}
         {@const attached = integration(service)}
         {@const provisioned = provision(service.kind)}
@@ -1122,18 +1122,18 @@
         {@const operating = serviceOperationActive(service.kind)}
         <div
           class={[
-            'rail-identity col-start-1 min-w-0 border-b border-line py-3.5 row-start-1 flex flex-col pt-0 compact:min-h-42.5',
+            'rail-identity min-w-0 flex flex-col',
             !active && 'inactive invisible pointer-events-none compact:hidden',
           ]}
           inert={!active}
         >
           <div
-            class="rail-heading flex items-center gap-2.5 [&_img]:size-10.5 [&_img]:object-contain [&_span]:text-[9px] [&_span]:tracking-[0.07em] [&_span]:text-muted [&_span]:uppercase [&_h2]:mt-0.5 [&_h2]:mb-0 [&_h2]:text-[20px]"
+            class="rail-heading flex items-center gap-3 [&_img]:size-10.5 [&_img]:object-contain [&_span]:text-xs [&_span]:text-muted [&_h2]:mb-1 [&_h2]:text-xl"
           >
             <img src={icons[service.kind]} alt="" />
             <div>
-              <span>{service.description}</span>
               <h2>{service.label}</h2>
+              <span>{service.description}</span>
             </div>
           </div>
           <StatusIndicator
@@ -1195,9 +1195,7 @@
                 </div>
               {/if}
             </div>{/if}
-          <div
-            class="rail-progress mt-auto min-h-9 pt-3 text-[10px] text-muted"
-          >
+          <div class="rail-progress empty:hidden pt-3 text-xs text-muted">
             {#if progress}<span>{progress}</span>
               <ProgressBar
                 class="activity-bar mt-1.75 h-0.75"
@@ -1212,7 +1210,7 @@
         </div>
         <div
           class={[
-            'rail-actions col-start-1 min-w-0 border-b border-line py-3.5 row-start-2 flex flex-col justify-start gap-1.75 [&_button]:w-full [&_button]:whitespace-normal compact:flex-row compact:flex-wrap compact:[&_button]:w-auto',
+            'rail-actions min-w-0 flex flex-wrap items-start gap-2 py-4 [&_button]:whitespace-normal',
             !active && 'inactive invisible pointer-events-none compact:hidden',
           ]}
           inert={!active}
@@ -1313,7 +1311,7 @@
         </div>
         <dl
           class={[
-            'rail-meta col-start-1 min-w-0 border-b border-line py-3.5 row-start-3 m-0 flex flex-col gap-3 border-b-0 compact:grid compact:grid-cols-2 compact:border-b tight:grid-cols-1',
+            'rail-meta m-0 grid min-w-0 grid-cols-2 gap-x-4 gap-y-3 border-t border-line pt-4',
             !active && 'inactive invisible pointer-events-none compact:hidden',
           ]}
           inert={!active}
@@ -1328,6 +1326,14 @@
                 : attached
                   ? 'External'
                   : 'Not configured'}
+            </dd>
+          </div>
+          <div>
+            <dt class="text-[9px] tracking-[0.07em] text-muted uppercase">
+              Application version
+            </dt>
+            <dd class="mt-0.75 wrap-anywhere text-[11px]">
+              {attached?.version || '—'}
             </dd>
           </div>
           <div>
@@ -1348,23 +1354,13 @@
               {runtimeService?.image || container?.image || '—'}
             </dd>
           </div>
-          <div>
-            <dt class="text-[9px] tracking-[0.07em] text-muted uppercase">
-              Version
-            </dt>
-            <dd class="mt-0.75 wrap-anywhere text-[11px]">
-              {attached?.version || '—'}
-            </dd>
-          </div>
         </dl>
       {/each}
     </aside>
-    <div
-      class="service-workspace relative min-w-0 pl-5.5 compact:px-3 compact:pt-5.5 [&_form>button]:w-fit"
-    >
+    <div class="service-workspace contents [&_form>button]:w-fit">
       {#if live?.registered === false}
         <div
-          class="mb-3 border-l-2 border-warning bg-surface px-3 py-2 text-xs leading-5"
+          class="col-span-full mb-3 border-l-2 border-warning bg-surface px-3 py-2 text-xs leading-5"
           role="status"
           aria-label="Service setup mismatch"
         >
@@ -1374,7 +1370,7 @@
         </div>
       {/if}
       {#if item?.error || live?.inspection_error || live?.error || live?.drift}
-        <Notice tone="warning" role="status">
+        <Notice class="col-span-full" tone="warning" role="status">
           {#each [...new Set([item?.error, live?.inspection_error, live?.error].filter(Boolean))] as error (error)}<p
               class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
             >
@@ -1391,7 +1387,7 @@
       {#if transferReviews[selectedKind]}
         {@const review = transferReviews[selectedKind]!}
         <section
-          class="work-section border-b border-line py-4 first-of-type:pt-0 last:border-b-0"
+          class="work-section settings-section"
           aria-label="Ownership review"
         >
           <h3 class="mb-3.25 text-[12px] font-[650]">Ownership review</h3>
@@ -1449,7 +1445,7 @@
       {/if}
       {#if !connected && !item && !live}
         <section
-          class="work-section border-b border-line py-4 first-of-type:pt-0 last:border-b-0"
+          class="work-section settings-section"
           aria-label="Service setup"
         >
           <div class="setup-forms grid gap-5.5">
@@ -1582,211 +1578,226 @@
         </section>
       {/if}
       {#if connected && !setupActive(selectedKind)}
-        {#if definition.role === 'manager' || definition.kind === 'prowlarr' || definition.kind === 'nzbget'}
-          <section
-            class="work-section border-b border-line py-4 first-of-type:pt-0 last:border-b-0"
-            aria-label={definition.role === 'manager'
-              ? 'Acquisition defaults'
-              : definition.kind === 'prowlarr'
-                ? 'Indexers'
-                : 'Downloads'}
+        {#if definition.role === 'manager' || ['prowlarr', 'nzbget', 'bazarr'].includes(definition.kind)}
+          <div
+            class={[
+              'grid min-w-0 gap-7',
+              definition.kind === 'nzbget' &&
+                '@min-[1320px]/settings:col-span-2',
+            ]}
           >
-            <div
-              class="work-head mt-0 mr-7 mb-3 ml-0 flex items-center justify-between gap-3 compact:flex-wrap [&_h3]:m-0"
-            >
-              <h3 class="mb-3.25 text-[12px] font-[650]">
-                {definition.role === 'manager'
+            {#if definition.role === 'manager' || definition.kind === 'prowlarr' || definition.kind === 'nzbget'}
+              <section
+                class="work-section settings-section"
+                aria-label={definition.role === 'manager'
                   ? 'Acquisition defaults'
                   : definition.kind === 'prowlarr'
                     ? 'Indexers'
                     : 'Downloads'}
-              </h3>
-              {#if definition.kind === 'nzbget' && supportData}<Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={busy}
-                  onclick={() =>
-                    void work(() =>
-                      supportCommand(
-                        'nzbget',
-                        supportData.paused ? 'resume_all' : 'pause_all',
-                      ),
-                    )}>{supportData.paused ? 'Resume all' : 'Pause all'}</Button
-                >{/if}
-            </div>
-            {#if detailErrors[selectedKind]}<Notice tone="danger" role="alert">
-                {detailErrors[selectedKind]}
-              </Notice>{/if}
-            {#if detailLoading[selectedKind] && !supportData && !defaults[selectedKind]?.loaded}<p
-                class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
-                role="status"
               >
-                Loading service settings…
-              </p>{/if}
-            {#if definition.role === 'manager'}
-              {#if defaults[definition.kind]?.loaded}
-                {@const options = managerOptions[definition.kind]}
-                {@const draft = defaults[definition.kind]!}
-                {#if options}
-                  {#key connected.id}<AutoSaveForm
-                      class="mt-3 grid gap-3 [&_label]:m-0"
-                      label={`${definition.label} acquisition defaults`}
-                      value={{
-                        root_folder: draft.root_folder,
-                        quality_profile: draft.quality_profile,
-                        metadata_profile: draft.metadata_profile,
-                        monitored: draft.monitored,
-                      }}
-                      onsave={(value) =>
-                        saveManagerDefaults(definition.kind, value)}
-                      onRevert={(value) => Object.assign(draft, value)}
-                      disabled={busy}
-                    >
-                      <FormField
-                        >{definition.kind === 'lidarr'
-                          ? 'Quality profile'
-                          : 'Default request profile'}<select
-                          class={formControlClass}
-                          bind:value={draft.quality_profile}
-                          required
-                          >{#each options.profiles as option (option.id)}<option
-                              value={option.id}>{option.name}</option
-                            >{/each}</select
-                        ></FormField
-                      >
-                      {#if definition.kind === 'lidarr'}<FormField
-                          >Metadata profile<select
-                            class={formControlClass}
-                            bind:value={draft.metadata_profile}
-                            required
-                            >{#each options.metadata_profiles as option (option.id)}<option
-                                value={option.id}>{option.name}</option
-                              >{/each}</select
-                          ></FormField
-                        >{/if}
-                      <Switch bind:checked={draft.monitored} size="sm"
-                        >Monitor and search requests</Switch
-                      >
-                    </AutoSaveForm>{/key}
-                  {#if definition.kind === 'radarr' || definition.kind === 'sonarr'}
-                    {@const selectedProfile = options.profiles.find(
-                      (profile) => profile.id === draft.quality_profile,
-                    )}
-                    <div
-                      class="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-[11px]"
-                    >
-                      {#if connected.access_url && !desktop}<a
-                          class="text-foreground underline decoration-accent underline-offset-4"
-                          href={`${connected.access_url.replace(/\/$/, '')}/settings/profiles`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          >Manage profiles in {definition.label}</a
-                        >{/if}
-                      {#if selectedProfile?.url?.startsWith('https://')}<a
-                          class="text-foreground underline decoration-accent underline-offset-4"
-                          href={selectedProfile.url}
-                          target="_blank"
-                          rel="noopener noreferrer">View TRaSH profile</a
-                        >{/if}
-                    </div>
-                  {/if}
-                  {#if definition.kind === 'lidarr'}<div class="mt-4">
-                      {#key connected.id}<QualityProfileEditor
-                          serviceId={connected.id}
-                          created={async () => {
-                            draft.loaded = false;
-                            await loadManagerOptions(definition.kind);
-                          }}
-                        />{/key}
-                    </div>{/if}
-                {/if}
-              {/if}
-            {:else if supportData}
-              {#each supportData.health ?? [] as issue, index (index)}<Notice
-                  tone="warning"
+                <div
+                  class="work-head mt-0 mb-4 flex items-center justify-between gap-3 compact:flex-wrap [&_h3]:m-0"
                 >
-                  {typeof issue === 'string' ? issue : issue.message}
-                </Notice>{/each}
-              {#if selectedKind === 'prowlarr'}
-                {#if !supportData.indexers?.length}<p
+                  <h3 class="mb-3.25 text-[12px] font-[650]">
+                    {definition.role === 'manager'
+                      ? 'Acquisition defaults'
+                      : definition.kind === 'prowlarr'
+                        ? 'Indexers'
+                        : 'Downloads'}
+                  </h3>
+                  {#if definition.kind === 'nzbget' && supportData}<Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={busy}
+                      onclick={() =>
+                        void work(() =>
+                          supportCommand(
+                            'nzbget',
+                            supportData.paused ? 'resume_all' : 'pause_all',
+                          ),
+                        )}
+                      >{supportData.paused ? 'Resume all' : 'Pause all'}</Button
+                    >{/if}
+                </div>
+                {#if detailErrors[selectedKind]}<Notice
+                    tone="danger"
+                    role="alert"
+                  >
+                    {detailErrors[selectedKind]}
+                  </Notice>{/if}
+                {#if detailLoading[selectedKind] && !supportData && !defaults[selectedKind]?.loaded}<p
                     class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
+                    role="status"
                   >
-                    No indexers configured.
+                    Loading service settings…
                   </p>{/if}
-                {#each supportData.indexers ?? [] as indexer (indexer.id)}
-                  <div
-                    class="service-row flex items-center justify-between gap-3 border-b border-line py-3 text-[11px] [&>div]:min-w-0"
-                  >
-                    <div>
-                      <strong>{indexer.name}</strong><span
-                        class="row-status mt-1 block text-[10px] text-muted"
-                        >{indexer.disabled_until
-                          ? `Unavailable until ${indexer.disabled_until}`
-                          : indexer.enabled
-                            ? 'Enabled'
-                            : 'Disabled'}</span
+                {#if definition.role === 'manager'}
+                  {#if defaults[definition.kind]?.loaded}
+                    {@const options = managerOptions[definition.kind]}
+                    {@const draft = defaults[definition.kind]!}
+                    {#if options}
+                      {#key connected.id}<AutoSaveForm
+                          class="mt-3 grid gap-3 [&_label]:m-0"
+                          label={`${definition.label} acquisition defaults`}
+                          value={{
+                            root_folder: draft.root_folder,
+                            quality_profile: draft.quality_profile,
+                            metadata_profile: draft.metadata_profile,
+                            monitored: draft.monitored,
+                          }}
+                          onsave={(value) =>
+                            saveManagerDefaults(definition.kind, value)}
+                          onRevert={(value) => Object.assign(draft, value)}
+                          disabled={busy}
+                        >
+                          <FormField
+                            >{definition.kind === 'lidarr'
+                              ? 'Quality profile'
+                              : 'Default request profile'}<select
+                              class={formControlClass}
+                              bind:value={draft.quality_profile}
+                              required
+                              >{#each options.profiles as option (option.id)}<option
+                                  value={option.id}>{option.name}</option
+                                >{/each}</select
+                            ></FormField
+                          >
+                          {#if definition.kind === 'lidarr'}<FormField
+                              >Metadata profile<select
+                                class={formControlClass}
+                                bind:value={draft.metadata_profile}
+                                required
+                                >{#each options.metadata_profiles as option (option.id)}<option
+                                    value={option.id}>{option.name}</option
+                                  >{/each}</select
+                              ></FormField
+                            >{/if}
+                          <Switch bind:checked={draft.monitored} size="sm"
+                            >Monitor and search requests</Switch
+                          >
+                        </AutoSaveForm>{/key}
+                      {#if definition.kind === 'radarr' || definition.kind === 'sonarr'}
+                        {@const selectedProfile = options.profiles.find(
+                          (profile) => profile.id === draft.quality_profile,
+                        )}
+                        <div
+                          class="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-[11px]"
+                        >
+                          {#if connected.access_url && !desktop}<a
+                              class="text-foreground underline decoration-accent underline-offset-4"
+                              href={`${connected.access_url.replace(/\/$/, '')}/settings/profiles`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              >Manage profiles in {definition.label}</a
+                            >{/if}
+                          {#if selectedProfile?.url?.startsWith('https://')}<a
+                              class="text-foreground underline decoration-accent underline-offset-4"
+                              href={selectedProfile.url}
+                              target="_blank"
+                              rel="noopener noreferrer">View TRaSH profile</a
+                            >{/if}
+                        </div>
+                      {/if}
+                      {#if definition.kind === 'lidarr'}<div class="mt-4">
+                          {#key connected.id}<QualityProfileEditor
+                              serviceId={connected.id}
+                              created={async () => {
+                                draft.loaded = false;
+                                await loadManagerOptions(definition.kind);
+                              }}
+                            />{/key}
+                        </div>{/if}
+                    {/if}
+                  {/if}
+                {:else if supportData}
+                  {#each supportData.health ?? [] as issue, index (index)}<Notice
+                      tone="warning"
+                    >
+                      {typeof issue === 'string' ? issue : issue.message}
+                    </Notice>{/each}
+                  {#if selectedKind === 'prowlarr'}
+                    {#if !supportData.indexers?.length}<p
+                        class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
                       >
-                    </div>
-                    <div class="row-actions flex flex-wrap items-center gap-2">
-                      <ConnectionTestButton
-                        size="sm"
-                        label="Test"
-                        disabled={busy}
-                        test={async () => {
-                          feedback.prowlarr = '';
-                          await supportCommand('prowlarr', 'test', {
-                            item_id: indexer.id,
-                          });
-                        }}
-                        onError={(error) =>
-                          (feedback.prowlarr =
-                            error instanceof Error
-                              ? error.message
-                              : String(error))}
-                      />
-                      <Switch
-                        size="sm"
-                        checked={indexer.enabled}
-                        disabled={busy}
-                        onCheckedChange={(enabled) =>
-                          void work(() =>
-                            supportCommand(
-                              'prowlarr',
-                              enabled ? 'enable' : 'disable',
-                              { item_id: indexer.id },
-                            ),
-                          )}
-                        ><span class="sr-only">Enable {indexer.name}</span
-                        ></Switch
+                        No indexers configured.
+                      </p>{/if}
+                    {#each supportData.indexers ?? [] as indexer (indexer.id)}
+                      <div
+                        class="service-row flex items-center justify-between gap-3 border-b border-line py-3 text-[11px] [&>div]:min-w-0"
                       >
-                    </div>
-                  </div>
-                {/each}
-                {#key connected.id}<IndexerOnboarding
-                    serviceId={connected.id}
-                    added={() => refreshSupport('prowlarr')}
-                  />{/key}
-              {:else if selectedKind === 'nzbget'}
-                <DownloadsTable
-                  queue={supportData.queue ?? []}
-                  history={supportData.history ?? []}
-                  paused={supportData.paused}
-                  {busy}
-                  onaction={(action, id) =>
-                    void work(() =>
-                      supportCommand('nzbget', action, { item_id: id }),
-                    )}
-                />
-              {/if}
+                        <div>
+                          <strong>{indexer.name}</strong><span
+                            class="row-status mt-1 block text-[10px] text-muted"
+                            >{indexer.disabled_until
+                              ? `Unavailable until ${indexer.disabled_until}`
+                              : indexer.enabled
+                                ? 'Enabled'
+                                : 'Disabled'}</span
+                          >
+                        </div>
+                        <div
+                          class="row-actions flex flex-wrap items-center gap-2"
+                        >
+                          <ConnectionTestButton
+                            size="sm"
+                            label="Test"
+                            disabled={busy}
+                            test={async () => {
+                              feedback.prowlarr = '';
+                              await supportCommand('prowlarr', 'test', {
+                                item_id: indexer.id,
+                              });
+                            }}
+                            onError={(error) =>
+                              (feedback.prowlarr =
+                                error instanceof Error
+                                  ? error.message
+                                  : String(error))}
+                          />
+                          <Switch
+                            size="sm"
+                            checked={indexer.enabled}
+                            disabled={busy}
+                            onCheckedChange={(enabled) =>
+                              void work(() =>
+                                supportCommand(
+                                  'prowlarr',
+                                  enabled ? 'enable' : 'disable',
+                                  { item_id: indexer.id },
+                                ),
+                              )}
+                            ><span class="sr-only">Enable {indexer.name}</span
+                            ></Switch
+                          >
+                        </div>
+                      </div>
+                    {/each}
+                    {#key connected.id}<IndexerOnboarding
+                        serviceId={connected.id}
+                        added={() => refreshSupport('prowlarr')}
+                      />{/key}
+                  {:else if selectedKind === 'nzbget'}
+                    <DownloadsTable
+                      queue={supportData.queue ?? []}
+                      history={supportData.history ?? []}
+                      paused={supportData.paused}
+                      {busy}
+                      onaction={(action, id) =>
+                        void work(() =>
+                          supportCommand('nzbget', action, { item_id: id }),
+                        )}
+                    />
+                  {/if}
+                {/if}
+              </section>
             {/if}
-          </section>
-        {/if}
-        {#if !loadErrors.connections}<ServiceConnections
-            kind={selectedKind}
-            {connections}
-            {busy}
-            onaction={connectionAction}
-          />{/if}
+            {#if !loadErrors.connections}<ServiceConnections
+                kind={selectedKind}
+                {connections}
+                {busy}
+                onaction={connectionAction}
+              />{/if}
+          </div>{/if}
       {/if}
       {#if canRetire(selectedKind)}<Notice>
           Retiring removes the installation and its API connection. Appdata,
@@ -1795,10 +1806,7 @@
       {#if selectedKind === 'recyclarr' && item?.state === 'complete'}<RecyclarrSettings
         />{/if}
       {#if (connected || (definition.role === 'job' && live)) && !setupActive(selectedKind)}
-        <section
-          class="work-section border-b border-line py-4 first-of-type:pt-0 last:border-b-0"
-          aria-label="Updates"
-        >
+        <section class="work-section settings-section" aria-label="Updates">
           <h3 class="mb-3.25 text-[12px] font-[650]">Updates</h3>
           {#if target}
             {#key target.id}<AutoSaveForm
@@ -1852,7 +1860,11 @@
                   { timeZone: timezone, hour12: timeFormat === '12h' },
                 )}
               </p>{/if}
-            {#if policy?.error}<Notice tone="warning" role="status">
+            {#if policy?.error}<Notice
+                class="col-span-full"
+                tone="warning"
+                role="status"
+              >
                 {policy.error}
               </Notice>{/if}
             {#if policy?.candidate && policy.candidate !== live?.image && !policy.error}
@@ -1927,7 +1939,7 @@
     </div>
   </article>
   {#if feedback.general || approvalUsers.length}<footer
-      class="services-footer mt-6 grid gap-5 border-t border-line pt-4.5 pl-4 compact:pl-3"
+      class="services-footer mt-7 grid gap-5 border-t border-line pt-5"
     >
       {#if feedback.general}<p
           class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"

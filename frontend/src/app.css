@@ -52,7 +52,20 @@
 @custom-variant tight (@media (max-width: 440px));
 @custom-variant player-small (@container player (max-width: 380px));
 @custom-variant desktop-shell (&:where(.desktop-app *));
-@custom-variant settings-panel (&:where(.settings-panels > *));
+@custom-variant settings-panel (&:where(.settings-grid > .panel));
+@custom-variant settings-control (&:where(.settings-content *));
+
+@utility settings-grid {
+  @apply grid min-w-0 grid-cols-1 items-start gap-x-8 gap-y-7 @min-[700px]/settings:grid-cols-2 @min-[1320px]/settings:grid-cols-3;
+}
+
+@utility settings-wide {
+  @apply col-span-full @min-[1320px]/settings:col-span-2;
+}
+
+@utility settings-section {
+  @apply min-w-0 border-t border-line pt-5 [&_h3]:text-base [&_h3]:font-semibold;
+}
 
 @property --feed-label-scale-x {
   syntax: '<number>';

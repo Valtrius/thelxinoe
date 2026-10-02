@@ -52,8 +52,8 @@
   });
 </script>
 
-<Panel class="grid gap-4">
-  {#if !admin}
+{#if !admin}
+  <Panel class="grid gap-4">
     <h2>Intro and credit skipping</h2>
     <p>
       Ask shows a skip button. Auto seeks past the segment while playing. Ignore
@@ -85,7 +85,10 @@
           {/each}
         {/snippet}
       </AutoSaveForm>{/if}
-  {:else}<h2>Episode analysis</h2>
+    {#if message}<p role="alert">{message}</p>{/if}
+  </Panel>
+{:else}<Panel class="grid gap-4"
+    ><h2>Episode analysis</h2>
     <Switch bind:checked={config.local} disabled={busy}
       >Detect recurring intro and credit audio locally</Switch
     >
@@ -111,10 +114,13 @@
         onclick={() => work(refresh)}>Refresh analysis</Button
       >
     </div>
+    {#if message}<p role="alert">{message}</p>{/if}
+  </Panel><Panel class="settings-wide"
+    ><h2>Analysis queue</h2>
     {#each items as item, i (`${item.media_id}-${i}`)}<p>
         {item.title} · {item.state}{#if item.error}
           · {item.error}{/if}
+      </p>{:else}<p class="text-muted">
+        No episodes queued for analysis.
       </p>{/each}
-  {/if}
-  {#if message}<p role="alert">{message}</p>{/if}
-</Panel>
+  </Panel>{/if}

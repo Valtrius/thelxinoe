@@ -9,7 +9,8 @@
   import type { StatisticsPlatform, StatisticsRange } from './statistics/types';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
-  import { rowClass } from './ui/styles';
+  import FormField from './ui/FormField.svelte';
+  import { rowClass, formControlClass } from './ui/styles';
   let {
     user,
     audit = false,
@@ -43,7 +44,13 @@
   type Result = {
     items: Row[];
     next_before: number | string | null;
+    actors?: { id: string; username: string }[];
+    actions?: string[];
   };
+  let auditUser = $state('');
+  let auditAction = $state('');
+  let actors = $state<NonNullable<Result['actors']>>([]);
+  let actions = $state<string[]>([]);
   let result = $state<Result | null>(null),
     error = $state(''),
     busy = $state(false);
@@ -54,8 +61,18 @@
     const selectedScope = scope;
     const selectedRange = range;
     const selectedPlatform = platform;
+    const selectedUser = auditUser;
+    const selectedAction = auditAction;
     untrack(() => {
-      void load(mode, false, selectedScope, selectedRange, selectedPlatform);
+      void load(
+        mode,
+        false,
+        selectedScope,
+        selectedRange,
+        selectedPlatform,
+        selectedUser,
+        selectedAction,
+      );
     });
   });
   async function load(
@@ -64,6 +81,8 @@
     selectedScope = scope,
     selectedRange = range,
     selectedPlatform = platform,
+    selectedUser = auditUser,
+    selectedAction = auditAction,
   ) {
     const current = requests.begin();
     busy = true;
@@ -75,6 +94,10 @@
         query.set('range', selectedRange);
         query.set('platform', selectedPlatform);
       }
+      if (mode) {
+        if (selectedUser) query.set('user', selectedUser);
+        if (selectedAction) query.set('action', selectedAction);
+      }
       if (more && result?.next_before)
         query.set('before', String(result.next_before));
       const administrative =
@@ -84,13 +107,16 @@
       const response = await api<Result>(
         `${mode ? '/admin/audit' : administrative ? '/admin/history' : '/me/history'}?${query}`,
       );
-      if (current())
+      if (current()) {
+        actors = response.actors ?? actors;
+        actions = response.actions ?? actions;
         result = more
           ? {
               ...response,
               items: [...(result?.items ?? []), ...response.items],
             }
           : response;
+      }
     } catch (e) {
       if (current()) error = String(e);
     } finally {
@@ -127,7 +153,7 @@
 </script>
 
 {#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
-<Panel>
+<Panel class={audit ? 'settings-wide' : undefined}>
   <SectionHeading>
     <h2>
       {audit ? 'Administrative activity' : 'Playback history'}
@@ -140,6 +166,34 @@
     >
   </SectionHeading>
   {#if audit}<p class="text-muted">Times shown in {user.timezone}.</p>{/if}
+  {#if audit}
+    <div class="my-5 flex flex-wrap items-end gap-4">
+      <FormField class="mb-0"
+        >User<select
+          aria-label="Audit user"
+          class={formControlClass}
+          bind:value={auditUser}
+        >
+          <option value="">All users</option>
+          {#each actors as actor (actor.id)}<option value={actor.id}
+              >{actor.username}</option
+            >{/each}
+        </select></FormField
+      >
+      <FormField class="mb-0"
+        >Action<select
+          aria-label="Audit action"
+          class={formControlClass}
+          bind:value={auditAction}
+        >
+          <option value="">All actions</option>
+          {#each actions as action (action)}<option value={action}
+              >{action}</option
+            >{/each}
+        </select></FormField
+      >
+    </div>
+  {/if}
   {#if (result?.items.length ?? 0) > 0}
     {#if audit}
       {#each result?.items ?? [] as row (`audit:${row.id}`)}<div
@@ -207,7 +261,13 @@
       </div>
     {/if}
   {:else}
-    <p class="text-muted">No activity in this view yet.</p>
+    <p class="text-muted" role="status">
+      {busy
+        ? 'Loading activity…'
+        : audit && (auditUser || auditAction)
+          ? 'No activity matches these filters.'
+          : 'No activity in this view yet.'}
+    </p>
   {/if}
   {#if result?.next_before}<Button
       variant="secondary"

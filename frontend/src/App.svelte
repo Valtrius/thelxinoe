@@ -1,29 +1,18 @@
 <script lang="ts">
   import { hasNativeAccess } from './lib/services/presentation';
   import Notice from './lib/ui/Notice.svelte';
-  import SectionHeading from './lib/ui/SectionHeading.svelte';
+  import ActivitySettings from './lib/ActivitySettings.svelte';
   import FormField from './lib/ui/FormField.svelte';
   import { formControlClass } from './lib/ui/styles';
   import AuthLayout from './lib/ui/AuthLayout.svelte';
   import Button from './lib/ui/Button.svelte';
   import Panel from './lib/ui/Panel.svelte';
-  import {
-    inlineFormClass,
-    rowClass,
-    badgeClass,
-    statsClass,
-  } from './lib/ui/styles';
+  import { inlineFormClass, rowClass, statsClass } from './lib/ui/styles';
   import { onMount, tick } from 'svelte';
   import { Accordion } from 'bits-ui';
   import Sidebar from './lib/ui/Sidebar.svelte';
   import SettingsLayout from './lib/ui/SettingsLayout.svelte';
-  import {
-    attention,
-    acknowledgeAttention,
-    connectAttention,
-    refreshAttention,
-  } from './lib/attention';
-  import AttentionDot from './lib/ui/AttentionDot.svelte';
+  import { connectAttention, refreshAttention } from './lib/attention';
   import WindowTitlebar from './lib/ui/WindowTitlebar.svelte';
   import AppearanceSettings from './lib/AppearanceSettings.svelte';
   import {
@@ -120,16 +109,7 @@
   let playbackRequest = 0;
   let mediaRevision = $state(0),
     focusId = $state<string | undefined>(undefined);
-  import {
-    House,
-    Film,
-    Tv,
-    Music,
-    Play,
-    Radio,
-    ShieldCheck,
-    RefreshCw,
-  } from '@lucide/svelte';
+  import { House, Film, Tv, Music, Play, Radio } from '@lucide/svelte';
   import {
     api,
     ApiError,
@@ -998,13 +978,10 @@
                 />{/if}
               {#if settingsSection === 'server'}<Panel>
                   <div class="flex items-center justify-between gap-3">
-                    <h2><ShieldCheck size={20} /> Server</h2>
+                    <h2>Server status</h2>
                   </div>
                   <div
-                    class={[
-                      statsClass,
-                      'grid-cols-[repeat(auto-fit,minmax(min(100%,250px),1fr))]!',
-                    ]}
+                    class="grid divide-y divide-line [&>div]:py-3 [&_strong]:text-base [&_strong]:font-medium [&_small]:mt-1 [&_small]:block [&_small]:text-xs [&_small]:text-muted"
                   >
                     <ProductVersion installed={health?.version ?? '—'} />
                     <div>
@@ -1022,6 +999,9 @@
                       ><small>Cache space available</small>
                     </div>
                   </div>
+                </Panel>
+                <Panel
+                  ><h2>Display defaults</h2>
                   <AutoSaveForm
                     label="Server display defaults"
                     class={inlineFormClass}
@@ -1050,13 +1030,16 @@
                       ></FormField
                     >
                   </AutoSaveForm>
-                  <ProductUpdatePreferences />
-                  <ServerTools />
                 </Panel>
+                <Panel
+                  ><h2>Server updates</h2>
+                  <ProductUpdatePreferences /></Panel
+                >
+                <Panel class="settings-wide"><ServerTools /></Panel>
                 <AdminOperations {timezone} {timeFormat} />
               {/if}
               {#if settingsSection === 'people'}<Panel>
-                  <h2>People</h2>
+                  <h2>Add user</h2>
                   <form
                     class={inlineFormClass}
                     aria-label="Create user"
@@ -1091,6 +1074,9 @@
                       >Add user</Button
                     >
                   </form>
+                </Panel>
+                <Panel class="settings-wide"
+                  ><h2>User access</h2>
                   <Accordion.Root type="single" bind:value={expandedUser}>
                     {#each users as person (person.id)}<UserAdministration
                         {person}
@@ -1102,43 +1088,16 @@
                 </Panel>
               {/if}
               {#if settingsSection === 'audit'}<History {user} audit />{/if}
-              {#if settingsSection === 'jobs'}<Panel>
-                  <SectionHeading>
-                    <h2>Background jobs</h2>
-                    <Button
-                      size="form"
-                      variant="secondary"
-                      type="submit"
-                      onclick={() =>
-                        act(async () => {
-                          await api('/admin/jobs', 'POST', {
-                            key: crypto.randomUUID(),
-                          });
-                          await loadSettings();
-                        })}><RefreshCw size={15} /> Run checkpoint</Button
-                    >
-                  </SectionHeading>
-                  {#each jobs as job (job.id)}
-                    {@const entries = $attention.filter(
-                      (item) =>
-                        item.target === 'jobs' && item.resource === job.id,
-                    )}
-                    <div class={rowClass}>
-                      <span>{job.kind}</span><span class={badgeClass}
-                        >{job.state}</span
-                      >
-                      <AttentionDot items={entries} />
-                      {#each entries as entry (entry.id)}<Button
-                          variant="secondary"
-                          size="sm"
-                          onclick={() => void acknowledgeAttention(entry)}
-                          >Dismiss failure</Button
-                        >{/each}
-                    </div>{:else}<p class="text-muted">
-                      No background jobs yet.
-                    </p>{/each}
-                </Panel>
-              {/if}
+              {#if settingsSection === 'jobs'}<ActivitySettings
+                  {jobs}
+                  checkpoint={() =>
+                    act(async () => {
+                      await api('/admin/jobs', 'POST', {
+                        key: crypto.randomUUID(),
+                      });
+                      await loadSettings();
+                    })}
+                />{/if}
             {/if}
           </SettingsLayout>
         {:else if section === 'Home'}
