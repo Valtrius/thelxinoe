@@ -13,25 +13,15 @@
   } from '@lucide/svelte';
   import SidebarButton from './SidebarButton.svelte';
   import PlatformIcon from './PlatformIcon.svelte';
-  import NotificationCenter from '../NotificationCenter.svelte';
+  import AttentionDot from './AttentionDot.svelte';
+  import { attention, attentionDescription } from '../attention';
   import ThemeControls from './ThemeControls.svelte';
   import Button from './Button.svelte';
   import { desktop, type User } from '../api';
-  let {
-    section,
-    collapsed,
-    user,
-    timeFormat,
-    navigate,
-    toggle,
-    logout,
-    notificationRevision,
-  } = $props<{
-    notificationRevision: number;
+  let { section, collapsed, user, navigate, toggle, logout } = $props<{
     section: string;
     collapsed: boolean;
     user: User;
-    timeFormat: '12h' | '24h';
     navigate: (name: string) => void;
     toggle: () => void;
     logout: () => void;
@@ -48,6 +38,18 @@
     { name: 'Twitch', platform: 'twitch' },
     { name: 'Kick', platform: 'kick' },
   ] as const;
+  const settingsAttention = $derived(
+    $attention.filter((item) =>
+      ['services', 'server', 'jobs', 'online'].includes(item.target),
+    ),
+  );
+  function menuAttention(name: string) {
+    return $attention.filter(
+      (item) =>
+        item.target === name.toLowerCase() ||
+        (name === 'Home' && item.target === 'requests'),
+    );
+  }
 </script>
 
 <aside
@@ -96,9 +98,15 @@
           {collapsed}
           title={collapsed ? item.name : undefined}
           aria-label={item.name}
+          description={attentionDescription(menuAttention(item.name))}
           active={section === item.name}
           onclick={() => navigate(item.name)}
-          ><item.icon class="size-5 shrink-0" /></SidebarButton
+          ><span class="relative size-5 shrink-0"
+            ><item.icon class="size-5" /><AttentionDot
+              items={menuAttention(item.name)}
+              class="absolute -top-1 -right-1.5"
+            /></span
+          ></SidebarButton
         >{/each}
       <div class="h-px bg-line"></div>
       {#each providers as item (item.name)}<SidebarButton
@@ -107,12 +115,26 @@
           {collapsed}
           title={collapsed ? item.name : undefined}
           aria-label={item.name}
+          description={attentionDescription(
+            $attention.filter(
+              (entry) =>
+                entry.target === 'online' && entry.resource === item.platform,
+            ),
+          )}
           active={section === item.name}
           onclick={() => navigate(item.name)}
-          ><PlatformIcon
-            platform={item.platform}
-            class="size-5 shrink-0"
-          /></SidebarButton
+          ><span class="relative size-5 shrink-0"
+            ><PlatformIcon
+              platform={item.platform}
+              class="size-5 shrink-0"
+            /><AttentionDot
+              items={$attention.filter(
+                (entry) =>
+                  entry.target === 'online' && entry.resource === item.platform,
+              )}
+              class="absolute -top-1 -right-1.5"
+            /></span
+          ></SidebarButton
         >{/each}
     </nav>
     <div class="sidebar-bottom mt-auto shrink-0 pb-2">
@@ -129,17 +151,17 @@
         label="Settings"
         {collapsed}
         aria-label="Settings"
+        description={attentionDescription(settingsAttention)}
         title={collapsed ? 'Settings' : undefined}
         active={section === 'Settings'}
         onclick={() => navigate('Settings')}
-        ><Settings class="size-5 shrink-0" /></SidebarButton
+        ><span class="relative size-5 shrink-0"
+          ><Settings class="size-5" /><AttentionDot
+            items={settingsAttention}
+            class="absolute -top-1 -right-1.5"
+          /></span
+        ></SidebarButton
       >
-      <NotificationCenter
-        revision={notificationRevision}
-        {collapsed}
-        timezone={user.timezone}
-        {timeFormat}
-      />
       {#if !desktop}<div
           class="web-theme-controls relative flex justify-center group-[.collapsed]/sidebar:[--compact-choice-width:24px]"
         >

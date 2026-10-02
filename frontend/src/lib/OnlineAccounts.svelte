@@ -9,6 +9,8 @@
   } from './providers/api';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
+  import AttentionDot from './ui/AttentionDot.svelte';
+  import { attention } from './attention';
 
   let {
     navigate,
@@ -101,7 +103,14 @@
           >
         {/if}
         <div>
-          <strong>{label}</strong>
+          <strong class="inline-flex items-center gap-2"
+            >{label}<AttentionDot
+              items={$attention.filter(
+                (item) =>
+                  item.target === 'online' && item.resource === provider,
+              )}
+            /></strong
+          >
           <p class="mt-1.5 mb-0 text-muted">
             {account?.account.status === 'connected'
               ? account.account.display_name

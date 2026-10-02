@@ -8,6 +8,9 @@
     RefreshCw,
   } from '@lucide/svelte';
   import { api, type User } from '../api';
+  import { attention, acknowledgeAttention } from '../attention';
+  import AttentionDot from '../ui/AttentionDot.svelte';
+  import AcquisitionHistory from './AcquisitionHistory.svelte';
   import Button from '../ui/Button.svelte';
   import Notice from '../ui/Notice.svelte';
   import { formControlClass } from '../ui/styles';
@@ -24,7 +27,11 @@
     type Results,
     type MediaRequest,
   } from './types';
-  let { user, settings } = $props<{ user: User; settings: () => void }>();
+  let { user, settings, navigate } = $props<{
+    user: User;
+    settings: () => void;
+    navigate: (section: string) => void;
+  }>();
   type Feed = { id: string; label: string; items: Media[]; error: string };
   let feeds = $state<Feed[]>([
     { id: 'trending', label: 'Trending', items: [], error: '' },
@@ -219,6 +226,16 @@
       }));
       requestPages = result.pageInfo.pages;
       requestPage = nextPage;
+      for (const entry of $attention.filter(
+        (item) => item.target === 'requests',
+      )) {
+        if (
+          result.results.some(
+            (request) => String(request.id) === entry.resource,
+          )
+        )
+          void acknowledgeAttention(entry);
+      }
     } catch (caught) {
       if (version === requestGeneration) error = String(caught);
     } finally {
@@ -313,7 +330,11 @@
               : 'border-transparent text-muted',
           ]}
           aria-current={tab === item.id ? 'page' : undefined}
-          onclick={() => changeTab(item.id)}>{item.label}</button
+          onclick={() => changeTab(item.id)}
+          >{item.label}{#if item.id === 'requests'}<AttentionDot
+              items={$attention.filter((entry) => entry.target === 'requests')}
+              class="ml-2"
+            />{/if}</button
         >{/each}
     </nav>
     {#if error}<Notice variant="error" role="alert"
@@ -344,6 +365,7 @@
             >Open Media services <ArrowRight size={15} /></Button
           >{/if}
       </section>
+      {#if tab === 'requests'}<AcquisitionHistory {navigate} />{/if}
     {:else if tab === 'requests'}
       <div class="mb-4 flex items-center justify-between">
         <h2 class="text-base font-semibold">
@@ -370,11 +392,16 @@
               <button
                 class="flex min-w-0 flex-1 items-center gap-4 text-left"
                 onclick={() =>
-                  open(
-                    request.detail
-                      ? { ...request.detail, mediaType: request.type }
-                      : { id: request.media.tmdbId, mediaType: request.type },
-                  )}
+                  request.media.status === 5 || request.status === 5
+                    ? navigate(request.type === 'movie' ? 'Movies' : 'Shows')
+                    : open(
+                        request.detail
+                          ? { ...request.detail, mediaType: request.type }
+                          : {
+                              id: request.media.tmdbId,
+                              mediaType: request.type,
+                            },
+                      )}
               >
                 {#if artwork(request.detail?.posterPath)}<img
                     class="aspect-2/3 w-13 shrink-0 object-cover"
@@ -386,7 +413,7 @@
                       ? title(request.detail)
                       : `${request.type === 'movie' ? 'Movie' : 'Series'} #${request.media.tmdbId}`}</strong
                   ><span class="mt-1 block text-xs text-muted"
-                    >{request.media.status === 5
+                    >{request.media.status === 5 || request.status === 5
                       ? 'Available'
                       : (
                           {
@@ -433,6 +460,7 @@
               </div>
             </article>{/each}
         </div>{/if}
+      <AcquisitionHistory {navigate} />
       {#if requestPages > 1}<div class="mt-5 flex justify-center gap-4">
           <Button
             variant="secondary"

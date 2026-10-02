@@ -850,6 +850,27 @@ try {
     })),
   });
 } catch (error) {
+  let controllerUpdates = null;
+  try {
+    controllerUpdates = JSON.parse(
+      compose(
+        'exec',
+        '-T',
+        'controller',
+        'curl',
+        '--fail',
+        '--silent',
+        '--show-error',
+        '--max-time',
+        '10',
+        '--unix-socket',
+        '/run/thelxinoe/controller.sock',
+        'http://localhost/stack/updates',
+      ),
+    ).items;
+  } catch (captureError) {
+    console.error('Unable to capture controller updates:', captureError);
+  }
   try {
     writeFileSync(
       `${root}/services.log`,
@@ -862,6 +883,9 @@ try {
     project,
     passed: false,
     error: String(error),
+    controller_updates: controllerUpdates,
+    updates:
+      (await api('/admin/service-updates').catch(() => null))?.items ?? null,
     connections: (await links().catch(() => [])).map((l) => ({
       source: l.source_kind,
       target: l.target_kind,

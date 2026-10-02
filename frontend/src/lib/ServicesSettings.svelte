@@ -7,6 +7,8 @@
   import Notice from './ui/Notice.svelte';
   import ProgressBar from './ui/ProgressBar.svelte';
   import { onMount } from 'svelte';
+  import AttentionDot from './ui/AttentionDot.svelte';
+  import { attention, attentionDescription } from './attention';
   import { api, desktop } from './api';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
@@ -1052,6 +1054,7 @@
         class="service-tab flex min-w-0 cursor-pointer items-center gap-2 border-0 border-r border-b-3 border-r-line border-b-transparent bg-transparent px-2 py-3 text-left text-foreground last:border-r-0 hover:bg-surface-soft aria-[current=true]:border-b-accent aria-[current=true]:bg-accent-soft tight:gap-1.25 tight:px-1.25 tight:py-2.5 [&>img]:size-6.75 [&>img]:object-contain tight:[&>img]:size-5.75 [&_strong]:text-[11px] [&_strong]:font-[650]"
         aria-current={selectedKind === service.kind ? 'true' : undefined}
         aria-label={service.label}
+        aria-describedby={`service-attention-${service.kind}`}
         onclick={() => selectService(service.kind)}
       >
         <img src={icons[service.kind]} alt="" />
@@ -1060,6 +1063,20 @@
             class="service-status mt-1.5"
             tone={state.tone}>{state.label}</StatusIndicator
           ></span
+        >
+        <AttentionDot
+          items={$attention.filter(
+            (item) =>
+              item.target === 'services' && item.resource === service.kind,
+          )}
+        />
+        <span id={`service-attention-${service.kind}`} class="sr-only"
+          >{attentionDescription(
+            $attention.filter(
+              (item) =>
+                item.target === 'services' && item.resource === service.kind,
+            ),
+          )}</span
         >
       </button>
     {/each}

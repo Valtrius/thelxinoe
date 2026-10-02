@@ -1,7 +1,40 @@
 //! Administrative observations never include credentials or arbitrary upstream payloads.
 
+#[path = "storage/attention.rs"]
+mod attention_storage;
 #[path = "storage/operations.rs"]
 mod storage;
+
+#[derive(Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Severity {
+    Info,
+    Warning,
+    Error,
+}
+#[derive(Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum AttentionTarget {
+    Services,
+    Server,
+    Jobs,
+    Online,
+    Requests,
+    Movies,
+    Shows,
+    Music,
+}
+#[derive(Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct AttentionItem {
+    id: String,
+    severity: Severity,
+    message: String,
+    target: AttentionTarget,
+    resource: Option<String>,
+    revision: String,
+    dismissible: bool,
+    media_ids: Vec<String>,
+}
 
 use crate::{
     AppState,
@@ -16,11 +49,11 @@ use axum::{
 };
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
-use thelxinoe_core::{Capability, id, now};
+use thelxinoe_core::{Capability, now};
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
-        .route("/api/v1/me/notifications", get(notifications))
-        .route("/api/v1/me/notifications/{id}", put(read))
+        .route("/api/v1/me/attention", get(attention))
+        .route("/api/v1/me/attention/{id}", put(acknowledge))
         .route("/api/v1/admin/operations", get(dashboard))
         .route("/api/v1/admin/diagnostics", get(diagnostics))
         .route("/api/v1/admin/devices", get(devices))
@@ -142,21 +175,29 @@ async fn delete_user(
     state.emit(None, "users.changed", json!({})).await?;
     Ok(Json(json!({"deleted":true})))
 }
-async fn notifications(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
+async fn attention(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
-    let items = storage::notifications(&state.db, p).await?;
+    let items = attention_storage::summary(&state.db, p).await?;
     Ok(Json(json!({"items":items})))
 }
-async fn read(
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Acknowledgment {
+    revision: String,
+}
+async fn acknowledge(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(key): Path<String>,
+    Json(input): Json<Acknowledgment>,
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
     let user = p.user.id.clone();
-    storage::read(&state.db, key, user).await?;
+    if !attention_storage::acknowledge(&state.db, p, key, input.revision).await? {
+        return Err(ApiError::not_found());
+    }
     state
-        .emit(Some(p.user.id), "notifications.changed", json!({}))
+        .emit(Some(user), "attention.changed", json!({}))
         .await?;
     Ok(Json(json!({"saved":true})))
 }
@@ -164,18 +205,25 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
     loop {
         let _ = crate::product::observe(&state).await;
         crate::managers::operational_health(&state).await?;
+        let _ = crate::managers::observe_requests(&state).await;
         observe(&state).await?;
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
     }
 }
 pub(crate) async fn observe(state: &AppState) -> anyhow::Result<()> {
-    let changed = storage::observe(&state.db).await?;
-    for user in changed {
+    for user in attention_storage::observe(&state.db).await? {
         state
-            .emit(Some(user), "notifications.changed", json!({}))
+            .emit(Some(user), "attention.changed", json!({}))
             .await?;
     }
     Ok(())
+}
+pub(crate) async fn cache_seerr_requests(
+    state: &AppState,
+    service: String,
+    rows: Vec<Value>,
+) -> anyhow::Result<()> {
+    attention_storage::cache_seerr(&state.db, service, rows).await
 }
 fn usage(path: &std::path::Path) -> anyhow::Result<Value> {
     let mut pending = vec![path.to_path_buf()];

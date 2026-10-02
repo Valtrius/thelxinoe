@@ -2,12 +2,17 @@
   import ProgressBar from './ProgressBar.svelte';
   import { Film, Music, Tv, Play, MoreHorizontal } from '@lucide/svelte';
   import { serverUrl } from '../api';
+  import AttentionDot from './AttentionDot.svelte';
+  import { attentionDescription, type AttentionItem } from '../attention';
   let {
     item,
     open,
     play,
     details,
     keyPrefix = 'library',
+    attention = [],
+    onSeen,
+    attentionError = '',
   } = $props<{
     item: {
       id: string;
@@ -24,9 +29,16 @@
     open: () => void;
     play?: () => void;
     details?: () => void;
+    attention?: AttentionItem[];
+    onSeen?: () => void;
+    attentionError?: string;
   }>();
   const music = $derived(['artist', 'album', 'track'].includes(item.kind));
   const landscape = $derived(item.kind === 'episode');
+  const cardId = $props.id();
+  const description = $derived(
+    attentionError || attentionDescription(attention),
+  );
   let imageFailed = $state(false);
   const actionClass =
     'grid size-7.5 min-h-0 place-items-center gap-2 border border-[#ffffff30] bg-[#080b10c9] p-0 text-[0.68rem] font-semibold tracking-[0.08em] text-white uppercase';
@@ -55,13 +67,20 @@
     </div>{/if}
   <button
     class="card-primary block w-full bg-transparent p-0 text-left text-inherit"
+    aria-labelledby={`${cardId}-label`}
+    aria-describedby={description ? `${cardId}-description` : undefined}
     onclick={open}
+    onfocus={onSeen}
   >
     <div
       class={[
         'tile-art relative grid w-full place-items-center overflow-hidden bg-[linear-gradient(130deg,#121923,#080b10_60%)] text-accent',
         music ? 'aspect-square' : landscape ? 'aspect-video' : 'aspect-2/3',
       ]}
+      onpointerenter={onSeen}
+      role="presentation"
+      title={attentionError ||
+        (attention.length ? 'Your requested media is available' : undefined)}
     >
       {#if item.artwork_url && !imageFailed}<img
           class="absolute size-full object-cover"
@@ -77,8 +96,12 @@
           value={(item.position / item.duration) * 100}
           barClass="shadow-accent-glow"
         />{/if}
+      <AttentionDot
+        items={attention}
+        class="absolute top-2 left-2 z-3 size-2.5 border-2 border-surface-strong box-content"
+      />
     </div>
-    <div class="tile-body min-w-0 p-4">
+    <div id={`${cardId}-label`} class="tile-body min-w-0 p-4">
       {#if item.show_title}<div
           class="mb-2 flex justify-between gap-2.5 text-[10px] tracking-[0.08em] text-muted uppercase"
         >
@@ -93,4 +116,7 @@
       </p>
     </div>
   </button>
+  {#if description}<span id={`${cardId}-description`} class="sr-only"
+      >{description}</span
+    >{/if}
 </article>

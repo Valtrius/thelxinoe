@@ -23,6 +23,7 @@ export default defineConfig({
         'server-tools.spec.ts',
         'authentication.spec.ts',
         'desktop-startup.spec.ts',
+        'attention.spec.ts',
       ],
     },
     {

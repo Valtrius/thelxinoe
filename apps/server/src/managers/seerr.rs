@@ -295,6 +295,39 @@ async fn requests(
         .await?,
     )))
 }
+
+pub(crate) async fn observe_requests(state: &AppState) -> Result<()> {
+    if storage::service(&state.db).await?.is_none() {
+        return Ok(());
+    }
+    let (service, c) = connection(state).await?;
+    let _guard = state.managers.guard.service("seerr-attention").await;
+    let mut rows = Vec::new();
+    for page in 0..100 {
+        let result = call(
+            &c,
+            reqwest::Method::GET,
+            "request",
+            &[("take", "100".into()), ("skip", (page * 100).to_string())],
+            None,
+            None,
+        )
+        .await?;
+        let batch = result["results"].as_array().ok_or_else(unavailable)?;
+        let done = batch.len() < 100
+            || result["pageInfo"]["results"]
+                .as_u64()
+                .is_some_and(|total| rows.len() as u64 + batch.len() as u64 >= total);
+        rows.extend(batch.iter().cloned());
+        if done {
+            crate::operations::cache_seerr_requests(state, service, rows).await?;
+            return Ok(());
+        }
+    }
+    Err(ApiError::conflict(
+        "The request list is too large to observe safely",
+    ))
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RequestMedia {
@@ -510,7 +543,7 @@ async fn request(
         body["seasons"] = json!(input.seasons);
     }
     let user = user(&c, &service, &principal).await?;
-    Ok(Json(public(
+    let result = public(
         call(
             &c,
             reqwest::Method::POST,
@@ -520,7 +553,10 @@ async fn request(
             Some(user),
         )
         .await?,
-    )))
+    );
+    let _ = observe_requests(&state).await;
+    crate::operations::observe(&state).await?;
+    Ok(Json(result))
 }
 async fn decide(
     State(state): State<AppState>,
@@ -541,9 +577,10 @@ async fn decide(
     } else {
         (reqwest::Method::POST, format!("request/{id}/{action}"))
     };
-    Ok(Json(public(
-        call(&c, method, &path, &[], None, Some(user)).await?,
-    )))
+    let result = public(call(&c, method, &path, &[], None, Some(user)).await?);
+    let _ = observe_requests(&state).await;
+    crate::operations::observe(&state).await?;
+    Ok(Json(result))
 }
 
 /// Seerr requires a first owner before its API can create local users. Perform

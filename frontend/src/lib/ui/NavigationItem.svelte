@@ -15,6 +15,7 @@
   let {
     active = false,
     resizeWithSidebar = false,
+    description = '',
     children,
     class: className,
     type = 'button',
@@ -22,9 +23,11 @@
   }: Omit<HTMLButtonAttributes, 'children' | 'class'> & {
     active?: boolean;
     resizeWithSidebar?: boolean;
+    description?: string;
     children: Snippet;
     class?: string;
   } = $props();
+  const descriptionId = $props.id();
 </script>
 
 <button
@@ -32,6 +35,7 @@
   aria-current={active ? 'page' : undefined}
   class={styles({ active, class: className })}
   {...rest}
+  aria-describedby={description ? descriptionId : rest['aria-describedby']}
 >
   {#if !active}
     <span
@@ -54,4 +58,6 @@
     ></span>
   {/if}
   {@render children()}
+  {#if description}<span id={descriptionId} class="sr-only">{description}</span
+    >{/if}
 </button>

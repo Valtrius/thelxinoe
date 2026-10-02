@@ -2,6 +2,8 @@
   import type { Snippet } from 'svelte';
   import NavigationItem from './NavigationItem.svelte';
   import { desktop, type User } from '../api';
+  import AttentionDot from './AttentionDot.svelte';
+  import { attention, attentionDescription } from '../attention';
   let {
     user,
     active = $bindable('account'),
@@ -51,12 +53,17 @@
       {#each group.items as [id, label] (id)}
         <NavigationItem
           aria-label={label}
+          description={attentionDescription(
+            $attention.filter((item) => item.target === id),
+          )}
           active={active === id}
           onclick={() => (active = id)}
-          class="settings-nav-item shrink-0 px-4.5 py-3.75 narrow:p-3.25 compact:p-3.5 compact:whitespace-nowrap"
+          class="settings-nav-item flex shrink-0 items-center gap-3 px-4.5 py-3.75 narrow:p-3.25 compact:p-3.5 compact:whitespace-nowrap"
           ><span class="text-[11px] font-semibold tracking-[0.08em] uppercase"
             >{label}</span
-          ></NavigationItem
+          ><AttentionDot
+            items={$attention.filter((item) => item.target === id)}
+          /></NavigationItem
         >
       {/each}
     {/each}

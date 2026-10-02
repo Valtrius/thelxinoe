@@ -58,6 +58,11 @@ pub(crate) async fn controller(state: &AppState, path: &str, body: Option<Value>
         let response = request.send().await.map_err(|_| unavailable())?;
         if !response.status().is_success() {
             let status = response.status();
+            tracing::warn!(
+                path,
+                status = status.as_u16(),
+                "Docker controller request failed"
+            );
             let message = response.text().await.unwrap_or_default();
             return Err(ApiError::conflict(
                 if status == reqwest::StatusCode::CONFLICT

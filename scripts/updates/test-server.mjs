@@ -234,20 +234,23 @@ export async function serverScenarios({
     },
   );
   await scenario(
-    'Administrators receive actionable notices in open clients',
+    'Administrators receive update dots in open clients',
     async () => {
       await mode('candidate');
       await api('/admin/product-update/check', 'POST');
       expect(
-        (await api('/me/notifications')).items.some(
+        (await api('/me/attention')).items.some(
           (item) => item.target === 'server',
         ),
       ).toBe(true);
+      await expect(
+        page
+          .getByRole('button', { name: 'Settings', exact: true })
+          .locator('[data-attention-severity]'),
+      ).toBeVisible();
+      await page.getByRole('button', { name: 'Settings', exact: true }).click();
       await page
-        .getByRole('button', { name: 'Notifications', exact: true })
-        .click();
-      await page
-        .getByRole('button', { name: 'View server version', exact: true })
+        .getByRole('button', { name: 'Server', exact: true })
         .first()
         .click();
       await expect(
@@ -258,10 +261,10 @@ export async function serverScenarios({
       ).toBeVisible();
       if (native) {
         await native.page
-          .getByRole('button', { name: 'Notifications', exact: true })
+          .getByRole('button', { name: 'Settings', exact: true })
           .click();
         await native.page
-          .getByRole('button', { name: 'View server version', exact: true })
+          .getByRole('button', { name: 'Server', exact: true })
           .first()
           .click();
         await expect(
@@ -302,7 +305,7 @@ export async function serverScenarios({
         ).toBe(403);
         expect(
           (
-            await api('/me/notifications', 'GET', undefined, ordinary.request)
+            await api('/me/attention', 'GET', undefined, ordinary.request)
           ).items.some((n) => n.target === 'server'),
         ).toBe(false);
       } finally {

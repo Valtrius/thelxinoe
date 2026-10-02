@@ -580,7 +580,7 @@ http.server.ThreadingHTTPServer(('0.0.0.0',8080),Proxy).serve_forever()`;
     );
     let original, updated;
     await scenario(
-      'Notify discovers a new build without installing; manual install deduplicates',
+      'Notify marks a new build for administrators until manual installation completes',
       async () => {
         original = (await inventory()).find(
           (item) => item.id === 'yt-dlp',
@@ -591,6 +591,25 @@ http.server.ThreadingHTTPServer(('0.0.0.0',8080),Proxy).serve_forever()`;
         const found = (await check()).find((item) => item.id === 'yt-dlp');
         assert.equal(found.installed.id, original.id);
         assert.equal(found.candidate.id, catalog[0].id);
+        const notice = (await api('/me/attention')).items.find(
+          (item) => item.id === 'tools-release:yt-dlp',
+        );
+        assert.ok(notice, 'A discovered tool update must mark Server settings');
+        assert.equal(notice.target, 'server');
+        assert.equal(notice.severity, 'info');
+        const member = (
+          await api('/auth/login', 'POST', {
+            username: 'member',
+            password: 'qualification member password',
+            transport: 'device',
+          })
+        ).token;
+        assert.equal(
+          (
+            await api('/me/attention', 'GET', undefined, 200, member)
+          ).items.some((item) => item.id === notice.id),
+          false,
+        );
         const body = { candidate_id: found.candidate.id };
         const [first, second] = await Promise.all([
           api('/admin/tools/yt-dlp/install', 'POST', body),
@@ -601,7 +620,14 @@ http.server.ThreadingHTTPServer(('0.0.0.0',8080),Proxy).serve_forever()`;
         assert.equal(updated.job.stage, 'complete', updated.job.error);
         assert.notEqual(updated.installed.id, original.id);
         assert.equal(updated.previous.id, original.id);
-        return updated;
+        assert.equal(
+          (await api('/me/attention')).items.some(
+            (item) => item.id === notice.id,
+          ),
+          false,
+          'Installing the candidate must clear its update marker',
+        );
+        return { notice, updated };
       },
     );
     await scenario(
@@ -780,6 +806,13 @@ http.server.ThreadingHTTPServer(('0.0.0.0',8080),Proxy).serve_forever()`;
             item.job.reason?.includes('maintenance')
           );
         });
+        assert.equal(
+          (await api('/me/attention')).items.some(
+            (item) => item.id === 'tools-release:deno',
+          ),
+          false,
+          'Automatic updates must not produce Notify markers',
+        );
         await api('/admin/tools/deno/settings', 'POST', {
           policy: 'notify',
           channel: 'lts',
@@ -789,6 +822,12 @@ http.server.ThreadingHTTPServer(('0.0.0.0',8080),Proxy).serve_forever()`;
           (await inventory())
             .find((item) => item.id === 'deno')
             .job.reason?.includes('policy'),
+        );
+        assert.ok(
+          (await api('/me/attention')).items.some(
+            (item) => item.id === 'tools-release:deno',
+          ),
+          'Switching back to Notify must mark the pending candidate',
         );
         const checked = (await inventory()).find(
           (item) => item.id === 'deno',

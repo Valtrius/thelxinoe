@@ -15,6 +15,7 @@ pub(crate) mod recyclarr;
 mod requests;
 mod retention;
 mod seerr;
+pub(crate) use seerr::observe_requests;
 mod stack;
 mod support;
 pub(crate) use connections::run as run_connections;

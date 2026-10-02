@@ -57,36 +57,34 @@ try {
       path: '/media/broken',
     }));
   await api(`/catalog/roots/${root.id}/scan`, 'POST');
-  const button = page.getByRole('button', {
-    name: 'Notifications',
-    exact: true,
-  });
-  await expect(button.locator('[data-notification-count]')).toBeVisible({
+  const button = page.getByRole('button', { name: 'Settings', exact: true });
+  await expect(button.locator('[data-attention-severity]')).toBeVisible({
     timeout: 90000,
   });
-  await button.click();
-  const notices = page.getByRole('region', {
-    name: 'Notifications',
+  expect(
+    (await (await guest.request.get(origin + '/api/v1/me/attention')).json())
+      .items,
+  ).toHaveLength(0);
+  const nav = page.getByRole('navigation', { name: 'Settings navigation' });
+  await nav.getByRole('button', { name: 'Activity', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'Dismiss failure', exact: true }).first(),
+  ).toBeVisible();
+  const failures = page.getByRole('button', {
+    name: 'Dismiss failure',
     exact: true,
   });
-  await expect(notices).toContainText('A background job failed');
-  expect(
-    (
-      await (
-        await guest.request.get(origin + '/api/v1/me/notifications')
-      ).json()
-    ).items,
-  ).toHaveLength(0);
-  await notices
-    .getByRole('button', { name: 'Mark all read', exact: true })
-    .click();
+  while (await failures.count()) {
+    const count = await failures.count();
+    await failures.first().click();
+    await expect(failures).toHaveCount(count - 1);
+  }
   await expect(
-    page.getByRole('button', { name: 'Notifications', exact: true }),
-  ).toBeVisible();
-  await expect(button.locator('[data-notification-count]')).toHaveCount(0);
-  await page
-    .getByRole('button', { name: 'Notifications', exact: true })
-    .click();
+    nav
+      .getByRole('button', { name: 'Activity', exact: true })
+      .locator('[data-attention-severity]'),
+  ).toHaveCount(0);
+  await nav.getByRole('button', { name: 'People', exact: true }).click();
   await person
     .getByRole('button', { name: 'Manage user', exact: true })
     .click();
@@ -115,7 +113,7 @@ try {
     JSON.stringify(
       {
         passed: true,
-        realtimeNotification: true,
+        realtimeAttention: true,
         privateNotices: true,
         createdAndDeletedUser: true,
         revokedDeletedSession: true,
@@ -125,7 +123,7 @@ try {
     ),
   );
   console.log(
-    'Browser notifications, private state and user administration passed',
+    'Browser attention dots, private state and user administration passed',
   );
 } finally {
   if (fixture) unlinkSync(fixture);

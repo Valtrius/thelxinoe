@@ -17,6 +17,13 @@
   import { Accordion } from 'bits-ui';
   import Sidebar from './lib/ui/Sidebar.svelte';
   import SettingsLayout from './lib/ui/SettingsLayout.svelte';
+  import {
+    attention,
+    acknowledgeAttention,
+    connectAttention,
+    refreshAttention,
+  } from './lib/attention';
+  import AttentionDot from './lib/ui/AttentionDot.svelte';
   import WindowTitlebar from './lib/ui/WindowTitlebar.svelte';
   import AppearanceSettings from './lib/AppearanceSettings.svelte';
   import {
@@ -248,7 +255,11 @@
   let settingsTimer: ReturnType<typeof setTimeout> | undefined,
     settingsLoading = false;
   let catalogRevision = $state(0);
-  let notificationRevision = $state(0);
+  const attentionUserId = $derived(user?.id);
+  $effect(() => {
+    const id = attentionUserId;
+    if (id) return connectAttention(id);
+  });
   let accountRevision = $state(0);
   let scans = $state<Record<string, { completed: number; total: number }>>({});
   let serverAddress = $state('');
@@ -360,9 +371,23 @@
           acceptAppearance(
             (event.payload as { appearance: Appearance }).appearance,
           );
-        if (event.kind === 'notifications.changed') notificationRevision++;
+        if (
+          [
+            'attention.changed',
+            'product.changed',
+            'catalog.changed',
+            'online.account.changed',
+            'acquisition.changed',
+            'jobs.changed',
+            'managers.changed',
+            'support.changed',
+            'service-updates.changed',
+            'tools.changed',
+          ].includes(event.kind)
+        )
+          void refreshAttention();
         if (event.kind === 'server.reconnected') {
-          notificationRevision++;
+          void refreshAttention();
           mediaRevision++;
           catalogRevision++;
           accountRevision++;
@@ -771,8 +796,6 @@
       {section}
       {collapsed}
       {user}
-      {timeFormat}
-      {notificationRevision}
       navigate={(name) => void navigate(name)}
       toggle={() => void toggleSidebar()}
       logout={() => void logout()}
@@ -1095,10 +1118,22 @@
                         })}><RefreshCw size={15} /> Run checkpoint</Button
                     >
                   </SectionHeading>
-                  {#each jobs as job (job.id)}<div class={rowClass}>
+                  {#each jobs as job (job.id)}
+                    {@const entries = $attention.filter(
+                      (item) =>
+                        item.target === 'jobs' && item.resource === job.id,
+                    )}
+                    <div class={rowClass}>
                       <span>{job.kind}</span><span class={badgeClass}
                         >{job.state}</span
                       >
+                      <AttentionDot items={entries} />
+                      {#each entries as entry (entry.id)}<Button
+                          variant="secondary"
+                          size="sm"
+                          onclick={() => void acknowledgeAttention(entry)}
+                          >Dismiss failure</Button
+                        >{/each}
                     </div>{:else}<p class="text-muted">
                       No background jobs yet.
                     </p>{/each}
@@ -1109,6 +1144,7 @@
         {:else if section === 'Home'}
           <Discover
             {user}
+            navigate={(name) => void navigate(name)}
             settings={() => {
               settingsSection = 'services';
               void navigate('Settings');
