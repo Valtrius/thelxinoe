@@ -1,9 +1,9 @@
 import { resourceScope } from '../ci-resources.mjs';
 import { expect } from '@playwright/test';
-import { requestBudget } from '../ci-readiness.mjs';
+import { budgets, requestBudget } from '../ci-readiness.mjs';
 import { launchBrowser } from '../ci-browser.mjs';
 import { mkdirSync, writeFileSync, readFileSync, copyFileSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { join, resolve } from 'node:path';
 import {
@@ -154,9 +154,16 @@ try {
   if (lab?.server) {
     for (const component of ['server', 'controller']) {
       try {
+        const logs = spawnSync('docker', ['logs', `${lab.id}-${component}`], {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: true,
+          timeout: budgets.request,
+          maxBuffer: 8 * 1024 * 1024,
+        });
         writeFileSync(
           join(output, `${component}.log`),
-          docker('logs', `${lab.id}-${component}`),
+          `${logs.stdout ?? ''}${logs.stderr ?? ''}`,
         );
       } catch {
         /* Container may have been replaced. */

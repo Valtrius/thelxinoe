@@ -217,7 +217,7 @@ pub(super) async fn preflight(
     .ok_or_else(unavailable)?
     .to_string_lossy()
     .into_owned();
-    if !policy::appdata_isolated(&source, &d.media_source) {
+    if !server_state_isolated(&source, &d.media_source).await? {
         return Err(conflict(
             "Server state must be isolated from media and system files",
         ));
@@ -346,6 +346,31 @@ async fn pull(u: &mut Update, component: &str, image: &thelxinoe_releases::Image
         ));
     }
     Ok(())
+}
+async fn server_state_isolated(source: &str, media: &str) -> Result<bool> {
+    if policy::appdata_isolated(source, media) {
+        return Ok(true);
+    }
+    if !policy::media_disjoint(source, media) {
+        return Ok(false);
+    }
+    // Saved Compose turns first-party volumes into binds to the same host
+    // directory. Accept only default local-volume data, never Docker's other
+    // state or a volume driver that redirects the mount to host system files.
+    let volumes = engine("/volumes").await?;
+    Ok(volumes["Volumes"].as_array().is_some_and(|volumes| {
+        volumes.iter().any(|volume| {
+            volume["Driver"] == "local"
+                && (volume["Options"].is_null()
+                    || volume["Options"]
+                        .as_object()
+                        .is_some_and(|options| options.is_empty()))
+                && volume["Mountpoint"].as_str().is_some_and(|root| {
+                    !root.is_empty()
+                        && std::path::Path::new(source).starts_with(std::path::Path::new(root))
+                })
+        })
+    }))
 }
 async fn worker(u: &Update, label: &str, spec: Value) -> Result<()> {
     let name = format!("thelxinoe-product-{}-{label}", &u.id[..8]);

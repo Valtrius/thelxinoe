@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { docker, save, envelope } from './build.mjs';
 import { until, refreshDownloads } from './lab.mjs';
@@ -7,6 +7,7 @@ import {
   budgets,
   serverToolsReady,
   waitForServerTools,
+  waitForState,
 } from '../ci-readiness.mjs';
 
 export async function serverScenarios({
@@ -30,21 +31,6 @@ export async function serverScenarios({
       }),
     );
   const startupTimeout = budgets.startup;
-  const readyTools = async () => {
-    const status = await api('/admin/tools');
-    if (!serverToolsReady(status)) return false;
-    const { items } = status;
-    const tools = items.map(({ id, installed, integrity_error }) => ({
-      id,
-      installed,
-      integrity_error,
-    }));
-    return (
-      tools.length === 4 &&
-      tools.every((tool) => tool.installed && !tool.integrity_error) &&
-      tools
-    );
-  };
   await waitForServerTools(() => api('/admin/tools'));
   const originalTools = await toolSelections();
   expect(originalTools).toHaveLength(4);
@@ -89,30 +75,44 @@ export async function serverScenarios({
       `from pathlib import Path; p=Path('/var/lib/thelxinoe/${file}'); ${action}`,
     );
   const stage = async (id, wanted) =>
-    until(async () => {
-      // The server is deliberately stopped during snapshots and replacement.
-      const operation = operations().items.find((item) => item.id === id);
-      if (operation?.stage === wanted) {
-        // The journal can settle before the restarted server reconciles its fence.
-        return (
-          (await request('/setup')).ok() && (await readyTools()) && operation
-        );
-      }
-      if (
-        [
-          'blocked',
-          'recovery-required',
-          'runtime-failure',
-          'committed',
-          'recovered',
-          'restored',
-          'superseded',
-        ].includes(operation?.stage) &&
-        !(wanted === 'restored' && operation?.stage === 'committed')
+    (
+      await waitForState(
+        `Server update ${id} reaches ${wanted}`,
+        async () => {
+          // The server is deliberately stopped during snapshots and replacement.
+          const operation = operations().items.find((item) => item.id === id);
+          if (operation?.stage === wanted) {
+            // The journal can settle before the restarted server reconciles its fence.
+            return {
+              operation,
+              setup: (await request('/setup')).status(),
+              tools: await api('/admin/tools'),
+            };
+          }
+          if (
+            [
+              'blocked',
+              'recovery-required',
+              'runtime-failure',
+              'committed',
+              'recovered',
+              'restored',
+              'superseded',
+            ].includes(operation?.stage) &&
+            !(wanted === 'restored' && operation?.stage === 'committed')
+          )
+            throw Object.assign(Error(JSON.stringify(operation)), {
+              fatal: true,
+            });
+          return { operation };
+        },
+        ({ operation, setup, tools }) =>
+          operation?.stage === wanted &&
+          setup === 200 &&
+          serverToolsReady(tools),
+        { timeout: transitionTimeout, interval: 500 },
       )
-        throw Object.assign(Error(JSON.stringify(operation)), { fatal: true });
-      return false;
-    }, transitionTimeout);
+    ).operation;
   const idleWaits = [];
   const commandWhenIdle = (path, body) =>
     until(async () => {
@@ -604,7 +604,7 @@ export async function serverScenarios({
               'none',
               '--read-only',
               '-v',
-              `${join(lab.storage, 'server')}:/state:ro`,
+              `${posix.join(lab.storage.replaceAll('\\', '/'), 'server')}:/state:ro`,
               '--entrypoint',
               'python3',
               lab.images[lab.base].server.reference,

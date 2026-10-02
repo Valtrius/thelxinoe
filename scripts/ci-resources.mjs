@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 import { createSocket } from 'node:dgram';
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
@@ -76,25 +76,34 @@ export const fixtureId = (purpose) =>
   `thelxinoe-${purpose}-${randomBytes(12).toString('hex')}`;
 const allocated = new Set();
 export async function freePort({ udp = false } = {}) {
+  let lastError;
   for (let attempt = 0; attempt < 20; attempt++) {
     const tcp = createServer();
     const datagram = udp ? createSocket('udp4') : null;
     try {
-      await new Promise((done, reject) => {
-        tcp.once('error', reject);
-        tcp.listen(0, '127.0.0.1', done);
-      });
-      const port = tcp.address().port;
-      if (allocated.has(port)) continue;
+      // Windows TCP and UDP exclusions differ. Randomize dual-protocol probes
+      // so consecutive ephemeral ports cannot exhaust retries in one range.
       if (datagram)
         await new Promise((done, reject) => {
           datagram.once('error', reject);
-          datagram.bind(port, '127.0.0.1', done);
+          datagram.bind(randomInt(1024, 65536), '127.0.0.1', done);
         });
+      await new Promise((done, reject) => {
+        tcp.once('error', reject);
+        tcp.listen(datagram?.address().port ?? 0, '127.0.0.1', done);
+      });
+      const port = tcp.address().port;
+      if (allocated.has(port)) continue;
       allocated.add(port);
       return port;
     } catch (error) {
-      if (error.code !== 'EADDRINUSE') throw error;
+      // A port usable by one protocol may be reserved for the other on Windows.
+      if (
+        error.code !== 'EADDRINUSE' &&
+        !(process.platform === 'win32' && error.code === 'EACCES')
+      )
+        throw error;
+      lastError = error;
     } finally {
       if (tcp.listening) await new Promise((done) => tcp.close(done));
       if (datagram) {
@@ -106,7 +115,7 @@ export async function freePort({ udp = false } = {}) {
       }
     }
   }
-  throw Error('Could not allocate a free fixture port');
+  throw Error('Could not allocate a free fixture port', { cause: lastError });
 }
 
 let standalone;
