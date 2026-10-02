@@ -356,9 +356,14 @@ export async function fixture({ scheme = 'https' } = {}) {
         async () => {
           if (kind === 'nzbget') return (await direct('version')) ? kind : '';
           const status = await direct('system/status');
-          return kind === 'bazarr' && status.data.bazarr_version
-            ? kind
-            : status.appName.toLowerCase();
+          const ready =
+            kind === 'bazarr' && status.data.bazarr_version
+              ? kind
+              : status.appName.toLowerCase();
+          // Arr persists missing defaults when its host settings are first read.
+          if (ready === kind && !['bazarr', 'nzbget'].includes(kind))
+            await direct('config/host');
+          return ready;
         },
         (value) => value === kind,
         { timeout: budgets.startup },

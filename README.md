@@ -13,19 +13,21 @@ pnpm run dev
 
 Open http://127.0.0.1:5173 and create the first administrator. The server runs on port 8484; development state stays in `.local`. Ctrl+C stops both processes.
 
-| Command                        | Purpose                                                                                                                      |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `pnpm run dev:web`             | Frontend only                                                                                                                |
-| `pnpm run dev:desktop`         | Windows app; requires a running server                                                                                       |
-| `pnpm run dev:fresh`           | Windows: new empty profile at http://127.0.0.1:18486; previous runs remain in `.local/dev-runs`                              |
-| `pnpm run dev:online`          | Windows: reuse existing `.local/online/server` database and key at https://localhost:22443; containers keep running          |
-| `docker compose up --build -d` | Deploy using [Compose](compose.yaml) and [.env.example](.env.example); read [storage and recovery](docs/OPERATIONS.md) first |
-| `pnpm run validate`            | Formatting, lint, Rust/web checks, product tests and web build                                                               |
-| `pnpm run ci`                  | Parallel local [CI phases](scripts/ci.mjs), including Docker fixtures and Windows desktop checks                             |
-| `pnpm run ci:local`            | Windows CI with a completion notification, live summary and lane logs under `.local/ci`                                      |
-| `pnpm run ci:status`           | Latest local CI lane results and report paths                                                                                |
+| Command                        | Purpose                                                                                                                        |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| `pnpm run dev:web`             | Frontend only                                                                                                                  |
+| `pnpm run dev:desktop`         | Windows app; requires a running server                                                                                         |
+| `pnpm run dev:fresh`           | Windows: new empty profile at http://127.0.0.1:18486; previous runs remain in `.local/dev-runs`                                |
+| `pnpm run dev:online`          | Windows: reuse the saved online profile at https://localhost:22443, with LAN access and UDP discovery; containers keep running |
+| `docker compose up --build -d` | Deploy using [Compose](compose.yaml) and [.env.example](.env.example); read [storage and recovery](docs/OPERATIONS.md) first   |
+| `pnpm run validate`            | Formatting, lint, Rust/web checks, product tests and web build                                                                 |
+| `pnpm run ci`                  | Parallel local [CI phases](scripts/ci.mjs), including Docker fixtures and Windows desktop checks                               |
+| `pnpm run ci:local`            | Windows CI with a completion notification, live summary and lane logs under `.local/ci`                                        |
+| `pnpm run ci:status`           | Latest local CI lane results and report paths                                                                                  |
 
 New `dev:online` profiles use separate controller storage, even when a data folder is reused after a reset. Keep `server/controller-storage-id` with the saved database and key so later launches reconnect to the same controller state.
+
+`dev:online` also listens at `http://<LAN-IP>:18888` and `https://<LAN-IP>:22443`. It selects an active LAN interface; set `THELXINOE_ONLINE_LAN_IP` or run `pnpm run dev:online -LanAddress 192.168.1.10` to choose another address assigned to this PC. Other PCs and compatible clients can discover the server on UDP 7359. Allow TCP 18888/22443 and UDP 7359 from the local subnet through Windows Firewall. Link provider accounts from https://localhost:22443 on the server PC.
 
 Open each provider page for connection instructions and application setup. Administrators configure credentials once; each user connects YouTube/Twitch or tracks Kick channels. Local metadata comes from connected Radarr/Sonarr/Lidarr services; files remain usable without them.
 

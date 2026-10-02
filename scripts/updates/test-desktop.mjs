@@ -11,9 +11,19 @@ export async function connectDesktop(lab, version) {
       { timeout: 5000 },
     );
     const context = browser.contexts()[0];
-    const page = context
-      ?.pages()
-      .find((page) => page.url().startsWith('http://tauri.localhost'));
+    let page;
+    for (const candidate of context?.pages() ?? []) {
+      if (!candidate.url().startsWith('http://tauri.localhost')) continue;
+      const label = await candidate
+        .evaluate(
+          () => window.__TAURI_INTERNALS__?.metadata.currentWindow.label,
+        )
+        .catch(() => null);
+      if (label === 'main') {
+        page = candidate;
+        break;
+      }
+    }
     if (!page) {
       await browser.close();
       return false;
@@ -25,7 +35,10 @@ export async function connectDesktop(lab, version) {
       );
     try {
       const status = await invoke('desktop_update_status');
-      if (version && status.installed !== version) {
+      if (
+        (version && status.installed !== version) ||
+        !(await invoke('plugin:window|is_visible', { label: 'main' }))
+      ) {
         await browser.close();
         return false;
       }

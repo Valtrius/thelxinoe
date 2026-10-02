@@ -435,8 +435,20 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
   let key=key.clone();storage::provision_write_stack_provisions(registered, key, &state.db).await?;
   if row.7=="installed" && matches!(row.0.as_str(),"radarr"|"sonarr"|"lidarr") {
     let _guard=state.managers.guard.service(&row.0).await;
-    super::prepare_library(state,&super::service(state,&integration).await?).await?;
-    super::quality::ensure_defaults(state,&super::service(state,&integration).await?).await?;
+    let deadline=tokio::time::Instant::now()+std::time::Duration::from_secs(90);
+    loop {
+        let setup=async {
+            super::prepare_library(state,&super::service(state,&integration).await?).await?;
+            super::quality::ensure_defaults(state,&super::service(state,&integration).await?).await
+        }.await;
+        match setup {
+            Ok(())=>break,
+            Err(error) if error.2==unavailable().2 && tokio::time::Instant::now()<deadline=> {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+            Err(error)=>return Err(error),
+        }
+    }
   }
   if row.0=="seerr" && row.7=="installed" {super::seerr::initialize(state).await?;}
   else if row.0=="prowlarr" {super::indexers::ensure_hosts(state,&integration).await?;}
