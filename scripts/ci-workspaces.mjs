@@ -67,7 +67,7 @@ export function archiveWorkspace(report, lane) {
   } catch (error) {
     if (
       process.platform !== 'win32' ||
-      !/Filename too long|Function not implemented|not a working tree/.test(
+      !/Filename too long|Result too large|Function not implemented|not a working tree/.test(
         String(error.stderr),
       )
     )
