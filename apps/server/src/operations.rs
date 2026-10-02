@@ -36,6 +36,42 @@ pub(crate) struct AttentionItem {
     media_ids: Vec<String>,
 }
 
+#[derive(serde::Serialize)]
+pub(crate) struct RequestAttention {
+    pub(crate) id: String,
+    pub(crate) revision: String,
+}
+pub(crate) fn native_request_revision(generation: &str, state: &str, updated: i64) -> String {
+    format!("{generation}:{state}:{updated}")
+}
+pub(crate) fn seerr_request_state(row: &Value) -> &'static str {
+    if row["media"]["status"] == 5 || row["media"]["status4k"] == 5 || row["status"] == 5 {
+        "available"
+    } else {
+        match row["status"].as_i64() {
+            Some(2) => "requested",
+            Some(3) => "denied",
+            Some(4) => "failed",
+            _ => "pending",
+        }
+    }
+}
+pub(crate) fn seerr_request_attention(service: &str, row: &Value) -> Option<RequestAttention> {
+    let id = row["id"].as_i64().filter(|id| *id > 0)?;
+    Some(RequestAttention {
+        id: format!("seerr:{service}:{id}"),
+        revision: format!(
+            "{}:{}:{}",
+            seerr_request_state(row),
+            row["updatedAt"]
+                .as_str()
+                .or_else(|| row["createdAt"].as_str())
+                .unwrap_or(""),
+            row["seasons"]
+        ),
+    })
+}
+
 use crate::{
     AppState,
     error::{ApiError, Result},

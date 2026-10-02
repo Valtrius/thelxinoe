@@ -498,13 +498,9 @@ export async function installUiFixture(
           metadata: {},
         })),
       });
-    if (
-      [
-        '/catalog/collections',
-        '/me/attention',
-        '/acquisition/requests',
-      ].includes(path)
-    )
+    if (path === '/acquisition/requests')
+      return json({ items: [], page: 1, pages: 1 });
+    if (['/catalog/collections', '/me/attention'].includes(path))
       return json({ items: [] });
     if (path === '/requests/capabilities')
       return json({ movies: false, tv: false, music: false });

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy, tick } from 'svelte';
+  import { onMount, onDestroy, tick, untrack } from 'svelte';
   import {
     Search,
     X,
@@ -59,8 +59,21 @@
   let searchTimer: ReturnType<typeof setTimeout>,
     searchGeneration = 0,
     requestGeneration = 0,
+    requestedPage = 1,
     active = true;
   let browseScroll = 0;
+  const requestAttention = $derived(
+    $attention
+      .filter((item) => item.id.startsWith('seerr:'))
+      .map((item) => `${item.id}:${item.revision}`)
+      .join('\n'),
+  );
+  $effect(() => {
+    if (tab !== 'requests' || selected || !configured) return;
+    // Track source revisions without restarting loads for unrelated menu changes.
+    void requestAttention;
+    untrack(() => void loadRequests(requestedPage));
+  });
   const filtered = $derived(
     results.filter(
       (item) =>
@@ -205,6 +218,7 @@
     searchTimer = setTimeout(() => void search(), 300);
   }
   async function loadRequests(nextPage = 1) {
+    requestedPage = nextPage;
     const version = ++requestGeneration;
     requestLoading = true;
     error = '';
@@ -226,12 +240,24 @@
       }));
       requestPages = result.pageInfo.pages;
       requestPage = nextPage;
+      requestLoading = false;
+      await tick();
+      if (
+        !active ||
+        version !== requestGeneration ||
+        tab !== 'requests' ||
+        !configured ||
+        selected
+      )
+        return;
       for (const entry of $attention.filter(
         (item) => item.target === 'requests',
       )) {
         if (
           result.results.some(
-            (request) => String(request.id) === entry.resource,
+            (request) =>
+              request.attention?.id === entry.id &&
+              request.attention.revision === entry.revision,
           )
         )
           void acknowledgeAttention(entry);
@@ -255,12 +281,14 @@
     }
   }
   function changeTab(value: string) {
+    if (value === 'requests' && tab === value) void loadRequests();
     tab = value;
     if (value === 'requests') {
       query = '';
       clearTimeout(searchTimer);
       searchGeneration++;
-      void loadRequests();
+      requestPage = 1;
+      requestedPage = 1;
     }
   }
   onMount(() => {

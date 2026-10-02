@@ -20,6 +20,7 @@ export type AttentionItem = {
   dismissible: boolean;
   media_ids: string[];
 };
+export type RequestAttention = Pick<AttentionItem, 'id' | 'revision'>;
 export const attention = writable<AttentionItem[]>([]);
 export const attentionErrors = writable<Record<string, string>>({});
 const pending = new Map<string, Promise<boolean>>();

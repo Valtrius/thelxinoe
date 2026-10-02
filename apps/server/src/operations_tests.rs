@@ -1,6 +1,110 @@
 use crate::online::oauth::tests::{call, fixture};
 use axum::http::StatusCode;
 use serde_json::json;
+
+// UI fixtures cannot catch the storage limit or administrator visibility scope.
+// Follow the public history/acknowledgment routes against the real database.
+#[tokio::test]
+async fn older_request_updates_remain_reachable_for_members_and_administrators() {
+    let (_temp, state, alice) = fixture().await;
+    state.db.write("test.history", |db| {
+        db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('lidarr','Lidarr','lidarr','container',8686,'g',X'00','/music','1',1)",[])?;
+        for index in 0..201 {
+            db.execute("INSERT INTO acquisition_requests(id,user_id,service_id,generation,external_id,title,state,created_at,updated_at) VALUES (?1,'alice','lidarr','g',?1,?1,'denied',?2,1)",rusqlite::params![format!("album-{index:03}"),index])?;
+        }
+        Ok(())
+    }).await.unwrap();
+    for page in 1..=2 {
+        let result = call(
+            &state,
+            &format!("/api/v1/acquisition/requests?page={page}"),
+            "GET",
+            json!({}),
+            &alice,
+        )
+        .await
+        .2;
+        assert_eq!(result["pages"], 2);
+        assert_eq!(result["page"], page);
+        let rows = result["items"].as_array().unwrap();
+        assert_eq!(rows.len(), if page == 1 { 200 } else { 1 });
+        for row in rows {
+            let reference = &row["attention"];
+            assert_eq!(
+                call(
+                    &state,
+                    &format!("/api/v1/me/attention/{}", reference["id"].as_str().unwrap()),
+                    "PUT",
+                    json!({"revision":reference["revision"]}),
+                    &alice
+                )
+                .await
+                .0,
+                StatusCode::OK
+            );
+        }
+    }
+    assert_eq!(
+        call(&state, "/api/v1/me/attention", "GET", json!({}), &alice)
+            .await
+            .2["items"],
+        json!([])
+    );
+    state.db.write("test.admin_history", |db| {
+        db.execute("UPDATE users SET role='admin' WHERE id='alice'",[])?;
+        db.execute("DELETE FROM acquisition_requests WHERE id<>'album-000'",[])?;
+        db.execute("UPDATE acquisition_requests SET state='failed',updated_at=2 WHERE id='album-000'",[])?;
+        for index in 1..=200 {
+            db.execute("INSERT INTO acquisition_requests(id,user_id,service_id,generation,external_id,title,state,created_at,updated_at) VALUES (?1,'bob','lidarr','g',?1,?1,'denied',?2,1)",rusqlite::params![format!("bob-{index:03}"),index])?;
+        }
+        Ok(())
+    }).await.unwrap();
+    let first = call(
+        &state,
+        "/api/v1/acquisition/requests?page=1",
+        "GET",
+        json!({}),
+        &alice,
+    )
+    .await
+    .2;
+    assert!(
+        first["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["user_id"] == "bob" && r["attention"].is_null())
+    );
+    let older = call(
+        &state,
+        "/api/v1/acquisition/requests?page=2",
+        "GET",
+        json!({}),
+        &alice,
+    )
+    .await
+    .2;
+    let own = &older["items"][0];
+    assert_eq!(own["id"], "album-000");
+    assert_eq!(
+        call(
+            &state,
+            "/api/v1/me/attention/request:album-000",
+            "PUT",
+            json!({"revision":own["attention"]["revision"]}),
+            &alice
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&state, "/api/v1/me/attention", "GET", json!({}), &alice)
+            .await
+            .2["items"],
+        json!([])
+    );
+}
 #[tokio::test]
 async fn attention_is_private_live_and_diagnostics_exclude_secret_material() {
     let (_temp, state, alice) = fixture().await;

@@ -1,56 +1,100 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import { api } from '../api';
-  import { attention, acknowledgeAttention } from '../attention';
+  import {
+    attention,
+    acknowledgeAttention,
+    type RequestAttention,
+  } from '../attention';
   import AttentionDot from '../ui/AttentionDot.svelte';
   import Button from '../ui/Button.svelte';
   let { navigate } = $props<{ navigate: (section: string) => void }>();
-  let items = $state<
-    { id: string; title: string; kind: string; state: string }[]
-  >([]);
+  type RequestRow = {
+    id: string;
+    title: string;
+    kind: string;
+    state: string;
+    attention?: RequestAttention | null;
+  };
+  let items = $state<RequestRow[]>([]);
   let error = $state('');
-  onMount(() => {
-    let active = true;
-    void api<{ items: typeof items }>('/acquisition/requests')
-      .then((result) => {
-        if (active) items = result.items;
-      })
-      .catch(() => {
-        if (active) error = 'Could not load request history.';
-      });
-    return () => {
-      active = false;
-    };
+  let page = $state(1),
+    pages = $state(1),
+    loading = $state(false);
+  let active = true,
+    generation = 0,
+    requestedPage = 1;
+  const requestAttention = $derived(
+    $attention
+      .filter((item) => item.id.startsWith('request:'))
+      .map((item) => `${item.id}:${item.revision}`)
+      .join('\n'),
+  );
+  $effect(() => {
+    void requestAttention;
+    untrack(() => void load(requestedPage));
   });
-  function seen(id: string) {
-    for (const item of $attention.filter(
-      (item) => item.id === 'request:' + id && item.target === 'requests',
-    ))
-      void acknowledgeAttention(item);
+  onDestroy(() => {
+    active = false;
+    generation++;
+  });
+  async function load(nextPage: number) {
+    requestedPage = nextPage;
+    const version = ++generation;
+    loading = true;
+    error = '';
+    try {
+      const result = await api<{
+        items: RequestRow[];
+        page: number;
+        pages: number;
+      }>(`/acquisition/requests?page=${nextPage}`);
+      if (!active || version !== generation) return;
+      items = result.items;
+      page = result.page;
+      requestedPage = result.page;
+      pages = result.pages;
+    } catch {
+      if (active && version === generation)
+        error = 'Could not load request history.';
+    } finally {
+      if (active && version === generation) loading = false;
+    }
+  }
+  function markers(row: RequestRow) {
+    return $attention.filter(
+      (entry) =>
+        entry.target === 'requests' &&
+        entry.id === row.attention?.id &&
+        entry.revision === row.attention.revision,
+    );
+  }
+  function seen(row: RequestRow) {
+    for (const item of markers(row)) void acknowledgeAttention(item);
   }
 </script>
 
-{#if error}<p role="alert" class="mt-4 text-sm text-danger">{error}</p>{/if}
+{#if error}<div class="mt-4 flex items-center gap-3">
+    <p role="alert" class="text-sm text-danger">{error}</p>
+    <Button variant="ghost" size="sm" onclick={() => void load(page)}
+      >Try again</Button
+    >
+  </div>{/if}
 {#each items as item (item.id)}
   <article
     class="mt-3 flex items-center gap-4 border border-line bg-surface p-4"
   >
     <button
       class="flex min-w-0 flex-1 items-center gap-3 text-left"
-      onpointerenter={() => seen(item.id)}
-      onfocus={() => seen(item.id)}
+      onpointerenter={() => seen(item)}
+      onfocus={() => seen(item)}
     >
       <span
         ><strong class="block text-sm">{item.title}</strong><span
           class="mt-1 block text-xs text-muted">{item.state}</span
         ></span
       >
-      <AttentionDot
-        items={$attention.filter(
-          (entry) =>
-            entry.id === 'request:' + item.id && entry.target === 'requests',
-        )}
-      />
+      <AttentionDot items={markers(item)} />
     </button>
     {#if item.state === 'available'}
       {@const section =
@@ -65,3 +109,23 @@
     {/if}
   </article>
 {/each}
+{#if pages > 1}
+  <nav
+    aria-label="Acquisition request pages"
+    class="mt-5 flex items-center justify-center gap-4"
+  >
+    <Button
+      variant="secondary"
+      size="sm"
+      disabled={page <= 1 || loading}
+      onclick={() => void load(page - 1)}>Newer requests</Button
+    >
+    <span class="text-xs text-muted">{page} / {pages}</span>
+    <Button
+      variant="secondary"
+      size="sm"
+      disabled={page >= pages || loading}
+      onclick={() => void load(page + 1)}>Older requests</Button
+    >
+  </nav>
+{/if}

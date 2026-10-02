@@ -126,6 +126,10 @@ async fn user(c: &Connection<'_>, service: &str, principal: &Principal) -> Resul
         .guard
         .service(&format!("seerr-user:{}", principal.user.id))
         .await;
+    user_locked(c, service, principal).await
+}
+
+async fn user_locked(c: &Connection<'_>, service: &str, principal: &Principal) -> Result<i64> {
     let stored =
         storage::mapped_user(&c.state.db, service.into(), principal.user.id.clone()).await?;
     let remote = if let Some(id) = stored {
@@ -280,28 +284,36 @@ async fn requests(
     let principal = security::principal(&state, &headers).await?;
     let (service, c) = connection(&state).await?;
     let user = user(&c, &service, &principal).await?;
-    Ok(Json(public(
-        call(
-            &c,
-            reqwest::Method::GET,
-            "request",
-            &[
-                ("take", "20".into()),
-                ("skip", ((input.page.max(1) - 1).min(499) * 20).to_string()),
-            ],
-            None,
-            Some(user),
-        )
-        .await?,
-    )))
+    let mut result = call(
+        &c,
+        reqwest::Method::GET,
+        "request",
+        &[
+            ("take", "20".into()),
+            ("skip", ((input.page.max(1) - 1).min(499) * 20).to_string()),
+        ],
+        None,
+        Some(user),
+    )
+    .await?;
+    if let Some(rows) = result["results"].as_array_mut() {
+        for row in rows {
+            row["attention"] = if row["requestedBy"]["id"] == user {
+                json!(crate::operations::seerr_request_attention(&service, row))
+            } else {
+                Value::Null
+            };
+        }
+    }
+    Ok(Json(public(result)))
 }
 
 pub(crate) async fn observe_requests(state: &AppState) -> Result<()> {
+    let _guard = state.managers.guard.service("seerr-attention").await;
     if storage::service(&state.db).await?.is_none() {
         return Ok(());
     }
     let (service, c) = connection(state).await?;
-    let _guard = state.managers.guard.service("seerr-attention").await;
     let mut rows = Vec::new();
     for page in 0..100 {
         let result = call(
@@ -467,13 +479,18 @@ async fn request(
     {
         return Err(ApiError::bad("Select the seasons to request"));
     }
-    let (service, c) = connection(&state).await?;
     let kind = if input.media_type == "movie" {
         "radarr"
     } else {
         "sonarr"
     };
-    let _guard = state.managers.guard.services(&[kind, "seerr"]).await;
+    let user_lock = format!("seerr-user:{}", principal.user.id);
+    let guard = state
+        .managers
+        .guard
+        .services(&[kind, "seerr", &user_lock])
+        .await;
+    let (service, c) = connection(&state).await?;
     let manager = request_manager(&state, kind).await?;
     let native = Connection::open(&state, &manager).await?;
     let profiles = native.get("qualityprofile").await?;
@@ -542,7 +559,7 @@ async fn request(
     if input.media_type == "tv" {
         body["seasons"] = json!(input.seasons);
     }
-    let user = user(&c, &service, &principal).await?;
+    let user = user_locked(&c, &service, &principal).await?;
     let result = public(
         call(
             &c,
@@ -554,6 +571,9 @@ async fn request(
         )
         .await?,
     );
+    // Observation acquires its own shared deployment gate. Release mutation
+    // locks first so an exclusive operation queued during the POST can finish.
+    drop(guard);
     let _ = observe_requests(&state).await;
     crate::operations::observe(&state).await?;
     Ok(Json(result))
@@ -816,6 +836,138 @@ async fn sync(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::online::oauth::tests::{call as api, fixture};
+    use std::{future::Future, sync::Arc, task::Poll, time::Duration};
+
+    // Browser qualification cannot deterministically queue an exclusive operation
+    // between two awaits inside the request handler. Exercise the actual HTTP route.
+    #[tokio::test]
+    async fn requesting_media_finishes_with_a_queued_exclusive_operation() {
+        for pause_at in ["request", "profiles"] {
+            let (_temp, mut state, alice) = fixture().await;
+            Arc::get_mut(&mut state.config).unwrap().media = "/media".into();
+            let reached = Arc::new(tokio::sync::Notify::new());
+            let release = Arc::new(tokio::sync::Notify::new());
+            let reached_upstream = reached.clone();
+            let release_upstream = release.clone();
+            let remote = json!({"id":7,"type":"movie","status":2,"updatedAt":"2026-10-02T10:00:00Z","requestedBy":{"id":2},"media":{"tmdbId":603,"status":3},"seasons":[]});
+            let remote_upstream = remote.clone();
+            let stub = Router::new().fallback(move |request: Request| {
+                let reached = reached_upstream.clone();
+                let release = release_upstream.clone();
+                let remote = remote_upstream.clone();
+                async move {
+                    let path = request.uri().path();
+                    if (pause_at == "request"
+                        && path == "/api/v1/request"
+                        && request.method() == "POST")
+                        || (pause_at == "profiles" && path == "/api/v3/qualityprofile")
+                    {
+                        reached.notify_one();
+                        release.notified().await;
+                    }
+                    Json(match path {
+                        "/api/v3/qualityprofile" => json!([{"id":1,"name":"HD","items":[]}]),
+                        "/api/v1/settings/public" => json!({"initialized":false}),
+                        "/api/v1/settings/radarr" => json!([{"id":1,"name":"Thelxinoe radarr"}]),
+                        "/api/v1/user/2/settings/permissions" => json!({}),
+                        "/api/v1/request" if request.method() == "POST" => remote,
+                        "/api/v1/request" => {
+                            json!({"results":[remote],"pageInfo":{"pages":1,"results":1}})
+                        }
+                        _ => panic!("Unexpected upstream request: {path}"),
+                    })
+                }
+            });
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let upstream = tokio::spawn(async move { axum::serve(listener, stub).await.unwrap() });
+            let container = "a".repeat(64);
+            let inspection = json!({"id":container,"running":true,"mounts":[{"kind":"bind","source":"/media","destination":"/media","writable":true}],"networks":[{"id":"shared","address":"127.0.0.1"}]});
+            state
+                .managers
+                .docker
+                .lock()
+                .unwrap()
+                .insert(format!("containers/{container}"), inspection.clone());
+            state
+                .managers
+                .docker
+                .lock()
+                .unwrap()
+                .insert("containers/self".into(), inspection);
+            let manager_key = state
+                .secrets
+                .encrypt("manager:radarr", b"fixture-key")
+                .unwrap();
+            let seerr_key = state
+                .secrets
+                .encrypt("support:seerr", br#"{"secret":"fixture-key"}"#)
+                .unwrap();
+            state.db.write("test.seerr", move |db| {
+                db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at,defaults) VALUES ('radarr','Radarr','radarr',?1,?2,'g',?3,'/media','1',1,'{\"quality_profile\":1}')",params![container,port,manager_key])?;
+                db.execute("INSERT INTO support_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('seerr','Seerr','seerr',?1,?2,'g',?3,'','1',1)",params![container,port,seerr_key])?;
+                db.execute("INSERT INTO seerr_users VALUES ('seerr','alice',2)",[])?;
+                Ok(())
+            }).await.unwrap();
+            let request_state = state.clone();
+            let cookie = alice.clone();
+            let mut request = tokio::spawn(async move {
+                api(
+                    &request_state,
+                    "/api/v1/seerr/requests",
+                    "POST",
+                    json!({"media_type":"movie","media_id":603}),
+                    &cookie,
+                )
+                .await
+            });
+            tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::select! {
+                    _ = reached.notified() => (),
+                    response = &mut request => panic!("Request ended before reaching {pause_at}: {response:?}"),
+                }
+            }).await.expect("Upstream request did not reach the controlled pause");
+            let mut exclusive = Box::pin(state.managers.guard.lock());
+            std::future::poll_fn(|cx| {
+                assert!(exclusive.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            release.notify_one();
+            let (response, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::join!(request, async {
+                    drop(exclusive.await);
+                })
+            })
+            .await
+            .expect("The request and exclusive operation deadlocked");
+            assert_eq!(response.unwrap().0, StatusCode::OK);
+            let snapshot = api(&state, "/api/v1/seerr/requests", "GET", json!({}), &alice)
+                .await
+                .2;
+            let reference = &snapshot["results"][0]["attention"];
+            assert_eq!(
+                api(
+                    &state,
+                    &format!("/api/v1/me/attention/{}", reference["id"].as_str().unwrap()),
+                    "PUT",
+                    json!({"revision":reference["revision"]}),
+                    &alice
+                )
+                .await
+                .0,
+                StatusCode::OK
+            );
+            assert_eq!(
+                api(&state, "/api/v1/me/attention", "GET", json!({}), &alice)
+                    .await
+                    .2["items"],
+                json!([])
+            );
+            upstream.abort();
+        }
+    }
     #[test]
     fn media_routes_and_request_identity_are_closed() {
         assert!(media_path("settings", 1).is_err());

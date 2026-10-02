@@ -1,6 +1,248 @@
 import { expect, test } from '@playwright/test';
 import { installUiFixture } from './helpers/ui-fixture';
 
+test('delayed request details cannot acknowledge a newer unseen decision', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, { section: 'Home' });
+  const entry = {
+    id: 'seerr:service:7',
+    revision: 'denied:2:[]',
+    target: 'requests',
+    resource: '7',
+    severity: 'warning',
+    message: 'Request declined',
+    dismissible: true,
+    media_ids: [],
+  };
+  let denied = false;
+  let fresh = false;
+  let seen = false;
+  const releases: (() => void)[] = [];
+  const acknowledged: unknown[] = [];
+  await page.route('**/api/v1/me/attention**', async (route) => {
+    if (route.request().method() === 'PUT') {
+      acknowledged.push(route.request().postDataJSON());
+      seen = true;
+      return route.fulfill({ json: { saved: true } });
+    }
+    return route.fulfill({ json: { items: denied && !seen ? [entry] : [] } });
+  });
+  await page.route('**/api/v1/seerr/**', async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith('/status'))
+      return route.fulfill({ json: { configured: true, ready: true } });
+    if (path.endsWith('/requests'))
+      return route.fulfill({
+        json: {
+          pageInfo: { pages: 1 },
+          results: [
+            {
+              id: 7,
+              type: 'movie',
+              status: fresh ? 3 : 1,
+              media: { tmdbId: 11, mediaType: 'movie', status: 2 },
+              attention: {
+                id: entry.id,
+                revision: fresh ? entry.revision : 'pending:1:[]',
+              },
+            },
+          ],
+        },
+      });
+    if (path.endsWith('/movie/11')) {
+      if (!seen) await new Promise<void>((resolve) => releases.push(resolve));
+      return route.fulfill({
+        json: { id: 11, title: 'Delayed request', mediaType: 'movie' },
+      });
+    }
+    return route.fulfill({ json: { results: [], page: 1, totalPages: 1 } });
+  });
+  await page.goto('/');
+  const requests = page
+    .getByRole('navigation', { name: 'Discover navigation' })
+    .getByRole('button', { name: /^My requests/ });
+  await requests.click();
+  await expect.poll(() => releases.length).toBe(1);
+  denied = true;
+  await page.evaluate(() =>
+    window.dispatchEvent(new Event('thelxinoe-attention-refresh')),
+  );
+  await expect(requests.locator('[data-attention-severity]')).toBeVisible();
+  const response = page.waitForResponse('**/api/v1/seerr/movie/11');
+  releases[0]();
+  await (await response).finished();
+  // The replacement snapshot's details are still withheld. Its decision cannot
+  // have been displayed, even if the older detail request has just completed.
+  await expect.poll(() => releases.length).toBe(2);
+  expect(acknowledged).toEqual([]);
+  await expect(requests.locator('[data-attention-severity]')).toBeVisible();
+  releases[1]();
+  await expect(
+    page.getByRole('button', {
+      name: 'Delayed request Pending approval',
+      exact: true,
+    }),
+  ).toBeVisible();
+  expect(acknowledged).toEqual([]);
+  await expect(requests.locator('[data-attention-severity]')).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath('stale-seerr-snapshot-stays-unread.png'),
+  });
+  fresh = true;
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect.poll(() => releases.length).toBe(3);
+  releases[2]();
+  await expect(
+    page.getByRole('button', { name: 'Delayed request Declined', exact: true }),
+  ).toBeVisible();
+  await expect(requests.locator('[data-attention-severity]')).toHaveCount(0);
+  expect(acknowledged).toEqual([{ revision: entry.revision }]);
+  await page.screenshot({
+    path: testInfo.outputPath('displayed-request-decision.png'),
+  });
+  // Subsequent refreshes caused by the successful acknowledgment may load again.
+  releases.slice(3).forEach((release) => release());
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('native request history keeps newer decisions unread until refreshed and reaches older pages', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, { section: 'Home' });
+  let newer = false;
+  let release: (() => void) | undefined;
+  const seen = new Set<string>();
+  const acknowledged: unknown[] = [];
+  const entries = [
+    {
+      id: 'request:recent',
+      revision: 'g:denied:2',
+      target: 'requests',
+      resource: 'recent',
+      severity: 'warning',
+      message: 'Request declined',
+      dismissible: true,
+      media_ids: [],
+    },
+    {
+      id: 'request:older',
+      revision: 'g:failed:1',
+      target: 'requests',
+      resource: 'older',
+      severity: 'error',
+      message: 'Request failed',
+      dismissible: true,
+      media_ids: [],
+    },
+  ];
+  await page.route('**/api/v1/seerr/**', (route) =>
+    route.fulfill({
+      json: new URL(route.request().url()).pathname.endsWith('/status')
+        ? { configured: false, ready: false }
+        : { results: [], pageInfo: { pages: 1 } },
+    }),
+  );
+  await page.route('**/api/v1/me/attention**', (route) => {
+    if (route.request().method() === 'PUT') {
+      const body = route.request().postDataJSON();
+      acknowledged.push(body);
+      seen.add(body.revision);
+      return route.fulfill({ json: { saved: true } });
+    }
+    return route.fulfill({
+      json: {
+        items: entries.filter(
+          (entry) =>
+            (entry.resource === 'older' || newer) && !seen.has(entry.revision),
+        ),
+      },
+    });
+  });
+  await page.route('**/api/v1/acquisition/requests**', async (route) => {
+    const currentPage = Number(
+      new URL(route.request().url()).searchParams.get('page') || 1,
+    );
+    if (newer && !release)
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    const entry = entries[currentPage === 1 ? 0 : 1];
+    return route.fulfill({
+      json: {
+        page: currentPage,
+        pages: 2,
+        items: [
+          {
+            id: entry.resource,
+            title: currentPage === 1 ? 'Recent album' : 'Older album',
+            kind: 'lidarr',
+            state:
+              currentPage === 1 ? (newer ? 'denied' : 'pending') : 'failed',
+            attention: {
+              id: entry.id,
+              revision:
+                currentPage === 1 && !newer ? 'g:pending:1' : entry.revision,
+            },
+          },
+        ],
+      },
+    });
+  });
+  await page.goto('/');
+  const requests = page
+    .getByRole('navigation', { name: 'Discover navigation' })
+    .getByRole('button', { name: /^My requests/ });
+  await requests.click();
+  const pending = page.getByRole('button', {
+    name: 'Recent album pending',
+    exact: true,
+  });
+  await expect(pending).toBeVisible();
+  newer = true;
+  await page.evaluate(() =>
+    window.dispatchEvent(new Event('thelxinoe-attention-refresh')),
+  );
+  await expect.poll(() => Boolean(release)).toBe(true);
+  await pending.hover();
+  expect(acknowledged).toEqual([]);
+  await page.screenshot({
+    path: testInfo.outputPath('stale-history-stays-unread.png'),
+  });
+  release!();
+  await page.mouse.move(0, 0);
+  await page.getByRole('button', { name: /^Recent album denied/ }).hover();
+  await expect.poll(() => acknowledged.length).toBe(1);
+  await expect(requests.locator('[data-attention-severity]')).toBeVisible();
+  await page
+    .getByRole('button', { name: 'Older requests', exact: true })
+    .click();
+  await page.getByRole('button', { name: /^Older album failed/ }).focus();
+  await expect(requests.locator('[data-attention-severity]')).toHaveCount(0);
+  expect(acknowledged).toEqual(
+    entries.map((entry) => ({ revision: entry.revision })),
+  );
+  await page
+    .getByRole('button', { name: 'Newer requests', exact: true })
+    .click();
+  await expect(
+    page.getByRole('button', { name: 'Recent album denied', exact: true }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath('older-request-acknowledged.png'),
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page
+    .getByRole('button', { name: 'Older requests', exact: true })
+    .scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: testInfo.outputPath('request-pages-mobile.png'),
+  });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 test('menu dots track live severity while pages are closed and survive sidebar collapse', async ({
   page,
 }, testInfo) => {

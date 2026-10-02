@@ -56,11 +56,15 @@ fn collect(
         let (provider, revision) = provider?;
         items.push(AttentionItem { id:format!("account:{provider}"), severity:Severity::Warning,message:"A linked account needs you to sign in again.".into(),target:AttentionTarget::Online,resource:Some(provider),revision,dismissible:false,media_ids:vec![] });
     }
-    let requests = db.prepare("SELECT 'request:'||r.id,s.kind,r.external_id,r.state,r.generation||':'||r.state||':'||r.updated_at,r.id FROM acquisition_requests r JOIN manager_services s ON s.id=r.service_id WHERE r.user_id=?1 AND r.state IN ('available','denied','failed','requested')
-        UNION ALL SELECT 'seerr:'||r.service_id||':'||r.request_id,CASE WHEN r.media_type='movie' THEN 'radarr' ELSE 'seerr-tv' END,r.external_id,r.state,r.revision,CAST(r.request_id AS TEXT) FROM seerr_request_states r WHERE r.user_id=?1 AND r.state IN ('available','denied','failed','requested')")?
-        .query_map([user], |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?)))?
+    let requests = db.prepare("SELECT 'request:'||r.id,s.kind,r.external_id,r.state,r.generation,r.id,r.updated_at FROM acquisition_requests r JOIN manager_services s ON s.id=r.service_id WHERE r.user_id=?1 AND r.state IN ('available','denied','failed','requested')
+        UNION ALL SELECT 'seerr:'||r.service_id||':'||r.request_id,CASE WHEN r.media_type='movie' THEN 'radarr' ELSE 'seerr-tv' END,r.external_id,r.state,r.revision,CAST(r.request_id AS TEXT),NULL FROM seerr_request_states r WHERE r.user_id=?1 AND r.state IN ('available','denied','failed','requested')")?
+        .query_map([user], |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,Option<i64>>(6)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (id, kind, external, state, revision, resource) in requests {
+    for (id, kind, external, state, revision, resource, updated) in requests {
+        let revision = updated.map_or_else(
+            || revision.clone(),
+            |updated| super::native_request_revision(&revision, &state, updated),
+        );
         let available = state == "available";
         let (target, media_kind, metadata) = match kind.as_str() {
             "radarr" => (AttentionTarget::Movies, "movie", "$.tmdb_id"),
@@ -175,8 +179,9 @@ pub(super) async fn cache_seerr(
             let Some(external) = row["media"]["tmdbId"].as_i64().filter(|id|*id>0) else {continue};
             let media_type = row["type"].as_str().or_else(||row["media"]["mediaType"].as_str()).unwrap_or("");
             if !matches!(media_type,"movie"|"tv") {continue}
-            let state = if row["media"]["status"]==5 || row["status"]==5 {"available"} else {match row["status"].as_i64() {Some(2)=>"requested",Some(3)=>"denied",Some(4)=>"failed",_=>"pending"}};
-            let revision = format!("{}:{}:{}",state,row["updatedAt"].as_str().or_else(||row["createdAt"].as_str()).unwrap_or(""),serde_json::to_string(&row["seasons"])?);
+            let state = super::seerr_request_state(&row);
+            let Some(reference) = super::seerr_request_attention(&service, &row) else {continue};
+            let revision = reference.revision;
             tx.execute("INSERT INTO seerr_request_states(service_id,user_id,request_id,media_type,external_id,state,revision) VALUES (?1,?2,?3,?4,?5,?6,?7)",params![service,user,id,media_type,external.to_string(),state,revision])?;
         }
         tx.commit()?;
