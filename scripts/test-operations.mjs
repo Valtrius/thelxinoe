@@ -104,6 +104,17 @@ try {
     )
     .toBe(0);
   const before = await api('/admin/settings');
+  const toolSelections = async () =>
+    (await api('/admin/tools')).items.map(
+      ({ id, installed, previous, integrity_error }) => ({
+        id,
+        installed,
+        previous,
+        integrity_error,
+      }),
+    );
+  const toolsBefore = await toolSelections();
+  expect(toolsBefore).toHaveLength(4);
   await api('/admin/settings', 'PUT', { timezone: 'Europe/Paris' });
   const secret = randomBytes(24).toString('hex');
   mkdirSync('.local/operations', { recursive: true });
@@ -131,6 +142,7 @@ try {
     confirm: true,
   });
   await waitBackup(created.id, 'restored');
+  expect(await toolSelections()).toEqual(toolsBefore);
   expect((await api('/admin/settings')).timezone).toBe('Europe/Paris');
   expect(
     execFileSync('docker', ['exec', controller, 'cat', sentinel], {
@@ -184,6 +196,7 @@ try {
         wrongPassphraseRejected: true,
         settingsRestored: true,
         managedAppdataRestored: true,
+        toolPackagesRestored: toolsBefore,
         diagnosticsRedacted: true,
       },
       null,

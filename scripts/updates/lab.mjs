@@ -19,7 +19,7 @@ import {
   appendFileSync,
   rmSync,
 } from 'node:fs';
-import { resolve, join, dirname, sep } from 'node:path';
+import { resolve, join, dirname, sep, posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import { request as https } from 'node:https';
@@ -135,12 +135,22 @@ export function readLab(file) {
   return lab;
 }
 function writeCompose(lab) {
-  // Docker Desktop cannot open SQLite snapshots through deeply nested Windows binds.
-  const storageRoot =
-    process.platform === 'win32' ? join(tmpdir(), lab.id) : lab.root;
-  lab.storage = join(storageRoot, `storage-${Date.now()}`);
-  for (const directory of ['server', 'cache', 'media', 'deployment'])
-    mkdirSync(join(lab.storage, directory), { recursive: true });
+  const storageDirectory = `storage-${Date.now()}`;
+  // Use the same disk-backed Linux storage on every runner. Docker Desktop's
+  // Windows bridge is slow for tool snapshots and its /tmp is memory-backed.
+  lab.storageVolume = `${lab.id}-storage`;
+  save(join(lab.root, 'lab.json'), lab);
+  docker(
+    'volume',
+    'create',
+    '--label',
+    `app.thelxinoe.update-lab=${lab.id}`,
+    lab.storageVolume,
+  );
+  const volume = storageVolume(lab);
+  if (!volume) throw Error('Update lab storage volume is missing');
+  lab.storage = posix.join(volume.Mountpoint, storageDirectory);
+  save(join(lab.root, 'lab.json'), lab);
   docker(
     'run',
     '--rm',
@@ -154,15 +164,20 @@ function writeCompose(lab) {
     '-u',
     '0:0',
     '-v',
-    `${lab.storage}:/lab`,
+    `${lab.storageVolume}:/lab`,
     '--entrypoint',
     'sh',
     lab.images[lab.base].controller.reference,
     '-c',
-    'chown 10001:10001 /lab/server /lab/cache /lab/media && chmod 750 /lab/server /lab/cache /lab/media',
+    'root="/lab/$1"; mkdir -p "$root/server" "$root/cache" "$root/media" "$root/deployment" && chown 10001:10001 "$root/server" "$root/cache" "$root/media" && chmod 750 "$root/server" "$root/cache" "$root/media"',
+    '--',
+    storageDirectory,
   );
-  const mount = (directory, target) =>
-    `${join(lab.storage, directory).replaceAll('\\', '/')}:${target}`;
+  const mount = (directory, target) => ({
+    type: 'bind',
+    source: posix.join(lab.storage.replaceAll('\\', '/'), directory),
+    target,
+  });
   const hardening = {
     read_only: true,
     security_opt: ['no-new-privileges:true'],
@@ -199,6 +214,7 @@ function writeCompose(lab) {
         restart: 'unless-stopped',
         ports: [`127.0.0.1:${lab.serverPort}:8484`],
         environment: {
+          THELXINOE_TOOLS_CATALOG: '/opt/thelxinoe/tools/catalog.json',
           THELXINOE_RELEASE_URL: `https://host.docker.internal:${lab.publisherPort}/latest.json`,
           THELXINOE_RELEASE_KEY_FILE: '/publisher/release.pub',
           THELXINOE_RELEASE_CA_FILE: '/publisher/tls.pem',
@@ -227,6 +243,20 @@ function writeCompose(lab) {
       ['runtime'].map((v) => [`${lab.id}-${v}`, { name: `${lab.id}-${v}` }]),
     ),
   });
+}
+function storageVolume(lab) {
+  if (lab.storageVolume !== `${lab.id}-storage`)
+    throw Error('Update lab storage volume escaped its owner');
+  let volume;
+  try {
+    [volume] = JSON.parse(docker('volume', 'inspect', lab.storageVolume));
+  } catch (error) {
+    if (/No such volume/i.test(String(error.stderr))) return null;
+    throw error;
+  }
+  if (volume.Labels?.['app.thelxinoe.update-lab'] !== lab.id)
+    throw Error('Update lab storage volume ownership changed');
+  return volume;
 }
 export async function createLab({
   server = true,
@@ -351,7 +381,15 @@ export async function createLab({
       save(join(root, 'lab.json'), lab);
     }
     if (server) writeCompose(lab);
-    if (server) compose(lab, 'up', '-d', '--wait');
+    if (server)
+      compose(
+        lab,
+        'up',
+        '-d',
+        '--wait',
+        '--wait-timeout',
+        String(budgets.startup / 1000),
+      );
     else {
       for (const dir of ['state', 'cache', 'media'])
         mkdirSync(join(root, dir), { recursive: true });
@@ -387,6 +425,26 @@ export async function createLab({
     return lab;
   } catch (error) {
     save(join(root, 'lab.json'), lab);
+    if (server) {
+      try {
+        save(join(root, 'startup-state.json'), {
+          server: JSON.parse(
+            docker('inspect', '--format', '{{json .State}}', `${id}-server`),
+          ),
+          controller: JSON.parse(
+            docker(
+              'inspect',
+              '--format',
+              '{{json .State}}',
+              `${id}-controller`,
+            ),
+          ),
+          logs: compose(lab, 'logs', '--no-color'),
+        });
+      } catch {
+        /* A build failure may occur before the containers exist. */
+      }
+    }
     await stopLab(lab).catch(() => {});
     throw error;
   }
@@ -429,6 +487,23 @@ export function stopDesktop(lab) {
     { stdio: 'ignore' },
   );
 }
+function inspectContainer(id) {
+  try {
+    return JSON.parse(docker('inspect', id))[0];
+  } catch (error) {
+    if (/No such (?:object|container)/i.test(String(error.stderr))) return null;
+    throw error;
+  }
+}
+function removeContainerIds(ids) {
+  if (!ids.length) return;
+  try {
+    docker('rm', '-f', '-v', ...ids);
+  } catch (error) {
+    // A running controller can finish and remove a worker after inventory.
+    if (ids.some((id) => inspectContainer(id))) throw error;
+  }
+}
 function removeContainers(lab, keepRegistry = false) {
   const owned = docker(
     'ps',
@@ -440,8 +515,22 @@ function removeContainers(lab, keepRegistry = false) {
     .filter(Boolean);
   const containers = new Set();
   const deployments = new Set();
+  const storageRoots = new Set();
+  if (lab.storageVolume) {
+    const volume = storageVolume(lab);
+    if (volume) {
+      const prefix = volume.Mountpoint + '/';
+      if (
+        !lab.storage?.startsWith(prefix) ||
+        !/^storage-\d+$/.test(lab.storage.slice(prefix.length))
+      )
+        throw Error('Update lab storage escaped its volume');
+      storageRoots.add(volume.Mountpoint);
+    }
+  }
   for (const id of owned) {
-    const [container] = JSON.parse(docker('inspect', id));
+    const container = inspectContainer(id);
+    if (!container) continue;
     if (
       keepRegistry &&
       [`/${lab.id}-registry`, `/${lab.id}-registry-proxy`].includes(
@@ -450,11 +539,38 @@ function removeContainers(lab, keepRegistry = false) {
     )
       continue;
     containers.add(id);
+    for (const mount of container.Mounts ?? [])
+      if (
+        ['/var/lib/thelxinoe', '/var/lib/thelxinoe/deployment'].includes(
+          mount.Destination,
+        )
+      )
+        storageRoots.add(posix.dirname(mount.Source));
     const deployment = container.Config.Labels['app.thelxinoe.deployment'];
     if (deployment) deployments.add(deployment);
   }
   // Stop controllers before inventorying children, so they cannot create more.
-  if (containers.size) docker('rm', '-f', '-v', ...containers);
+  removeContainerIds([...containers]);
+  // Bootstrap containers do not carry the deployment label. Workers do, and
+  // their mounts prove that they belong to this lab's private storage root.
+  const workers = docker(
+    'ps',
+    '-aq',
+    '--filter',
+    'label=app.thelxinoe.deployment',
+  )
+    .split(/\s+/)
+    .filter(Boolean);
+  for (const id of workers) {
+    const container = inspectContainer(id);
+    if (!container) continue;
+    if (
+      container.Mounts?.some((mount) =>
+        [...storageRoots].some((root) => mount.Source.startsWith(root + '/')),
+      )
+    )
+      deployments.add(container.Config.Labels['app.thelxinoe.deployment']);
+  }
   for (const deployment of deployments) {
     const children = docker(
       'ps',
@@ -464,7 +580,7 @@ function removeContainers(lab, keepRegistry = false) {
     )
       .split(/\s+/)
       .filter(Boolean);
-    if (children.length) docker('rm', '-f', '-v', ...children);
+    removeContainerIds(children);
   }
 }
 export async function stopLab(lab) {
@@ -510,7 +626,11 @@ export async function stopLab(lab) {
         awaitSync(() => docker('network', 'rm', network));
     });
     // Clear every reset's UID-owned bind data before dropping its cleanup image.
-    if (!errors.length && lab.storage) {
+    if (!errors.length && lab.storageVolume) {
+      await attempt(() => {
+        if (storageVolume(lab)) docker('volume', 'rm', lab.storageVolume);
+      });
+    } else if (!errors.length && lab.storage) {
       const storageRoot =
         process.platform === 'win32'
           ? resolve(tmpdir(), lab.id)
@@ -617,7 +737,14 @@ export async function resetLab(lab) {
     removeContainers(lab, true);
     compose(lab, 'down', '--volumes');
     writeCompose(lab);
-    compose(lab, 'up', '-d', '--wait');
+    compose(
+      lab,
+      'up',
+      '-d',
+      '--wait',
+      '--wait-timeout',
+      String(budgets.startup / 1000),
+    );
     if (lab.downloadSources) {
       await refreshDownloads(lab);
       envelope(lab, lab.next, lab.images[lab.next]);

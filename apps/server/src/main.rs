@@ -23,10 +23,12 @@ async fn main() -> Result<()> {
     }
     let bind = config.bind;
     let state = AppState::open(config).await?;
+    thelxinoe_server::tools::initialize(&state).await?;
     tracing::info!(version=thelxinoe_core::VERSION, %bind, "Starting Thelxinoe");
     let listener = tokio::net::TcpListener::bind(bind).await?;
     let mut workers = tokio::task::JoinSet::new();
     workers.spawn(run_jobs(state.clone()));
+    workers.spawn(thelxinoe_server::tools::run(state.clone()));
     workers.spawn(thelxinoe_server::library::reconcile(state.clone()));
     workers.spawn(thelxinoe_server::playback::maintain(state.clone()));
     workers.spawn(thelxinoe_server::run_discovery(state.clone()));

@@ -15,7 +15,7 @@ pub struct OperationLocks {
 }
 
 pub struct ServiceGuard {
-    _service: OwnedMutexGuard<()>,
+    _services: Vec<OwnedMutexGuard<()>>,
     _all: OwnedRwLockReadGuard<()>,
 }
 
@@ -38,10 +38,20 @@ impl OperationLocks {
     }
 
     pub async fn service(&self, kind: &str) -> ServiceGuard {
+        self.services(&[kind]).await
+    }
+
+    pub async fn services(&self, kinds: &[&str]) -> ServiceGuard {
         let all = self.all.clone().read_owned().await;
-        let service = self.mutex(kind).lock_owned().await;
+        let mut kinds = kinds.to_vec();
+        kinds.sort_unstable();
+        kinds.dedup();
+        let mut services = Vec::with_capacity(kinds.len());
+        for kind in kinds {
+            services.push(self.mutex(kind).lock_owned().await);
+        }
         ServiceGuard {
-            _service: service,
+            _services: services,
             _all: all,
         }
     }
@@ -50,7 +60,7 @@ impl OperationLocks {
         let all = self.all.clone().try_read_owned()?;
         let service = self.mutex(kind).try_lock_owned()?;
         Ok(ServiceGuard {
-            _service: service,
+            _services: vec![service],
             _all: all,
         })
     }

@@ -7,12 +7,14 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use thelxinoe_tools::{MediaTools, Runtime};
 use tokio::{
     process::{Child, Command},
     sync::{Mutex, OwnedSemaphorePermit, Semaphore},
 };
 
 struct Running {
+    _tools: MediaTools,
     _slot: OwnedSemaphorePermit,
     child: Child,
     directory: PathBuf,
@@ -26,13 +28,14 @@ enum Input<'a> {
     },
 }
 pub struct Pipelines {
+    tools: Runtime,
     root: PathBuf,
     running: Mutex<HashMap<String, Running>>,
     slots: Arc<Semaphore>,
     vod: crate::vod::VodCache,
 }
 impl Pipelines {
-    pub async fn open(cache: &Path) -> Result<Self> {
+    pub async fn open(cache: &Path, tools: Runtime) -> Result<Self> {
         let root = cache.join("playback");
         // Only our dedicated cache subtree is disposable. No media/state paths enter it.
         if root.exists() {
@@ -40,8 +43,9 @@ impl Pipelines {
         }
         tokio::fs::create_dir_all(&root).await?;
         let slots = Arc::new(Semaphore::new(4));
-        let vod = crate::vod::VodCache::open(&root, slots.clone()).await?;
+        let vod = crate::vod::VodCache::open(&root, slots.clone(), tools.clone()).await?;
         Ok(Self {
+            tools,
             root,
             running: Mutex::new(HashMap::new()),
             slots,
@@ -57,13 +61,21 @@ impl Pipelines {
         start: f64,
     ) -> Result<(String, f64)> {
         source.validate().await?;
+        let tools = self.tools.media()?;
         let timeline_start = if mode == "remux" && start > 0.0 && source.video_codec().is_some() {
-            keyframe_start(source, start).await?
+            keyframe_start(source, start, &tools).await?
         } else {
             start
         };
-        self.start_input(id, Input::Local(source), options, mode, timeline_start)
-            .await
+        self.start_input(
+            id,
+            Input::Local(source),
+            options,
+            mode,
+            timeline_start,
+            tools,
+        )
+        .await
     }
     pub async fn start_remote(
         &self,
@@ -74,11 +86,12 @@ impl Pipelines {
         start: f64,
     ) -> Result<(String, f64)> {
         source.validate()?;
+        let tools = self.tools.media()?;
         if !start.is_finite() || start < 0.0 {
             bail!("Invalid stream position");
         }
         let timeline_start = if mode == "remux" && start > 0.0 {
-            remote_keyframe_start(source, start).await?
+            remote_keyframe_start(source, start, &tools).await?
         } else {
             start
         };
@@ -91,6 +104,7 @@ impl Pipelines {
             options,
             mode,
             if source.live { 0.0 } else { timeline_start },
+            tools,
         )
         .await
     }
@@ -101,6 +115,7 @@ impl Pipelines {
         options: &Options,
         mode: &str,
         timeline_start: f64,
+        tools: MediaTools,
     ) -> Result<(String, f64)> {
         let mut running = self.running.lock().await;
         if let Some(mut old) = running.remove(id) {
@@ -126,7 +141,8 @@ impl Pipelines {
         // Publish online streams sooner, retaining the two-minute live window.
         let online = matches!(input, Input::Remote { .. });
         let segment_seconds = if online { "2" } else { "6" };
-        let mut command = Command::new("ffmpeg");
+        tools.ffmpeg.verify().await?;
+        let mut command = Command::new(&tools.ffmpeg.path);
         if let Input::Remote { source, position } = &input {
             // FFREPORT may otherwise write signed upstream addresses to disk.
             command.env_remove("FFREPORT");
@@ -252,6 +268,7 @@ impl Pipelines {
         running.insert(
             id.to_owned(),
             Running {
+                _tools: tools,
                 _slot: slot,
                 child,
                 directory: directory.clone(),
@@ -370,15 +387,25 @@ impl Pipelines {
     }
 }
 
-async fn keyframe_start(source: &Source, position: f64) -> Result<f64> {
-    probe_keyframe(&source.path.to_string_lossy(), position, false).await
+async fn keyframe_start(source: &Source, position: f64, tools: &MediaTools) -> Result<f64> {
+    probe_keyframe(&source.path.to_string_lossy(), position, false, tools).await
 }
-async fn remote_keyframe_start(source: &RemoteSource, position: f64) -> Result<f64> {
+async fn remote_keyframe_start(
+    source: &RemoteSource,
+    position: f64,
+    tools: &MediaTools,
+) -> Result<f64> {
     source.validate()?;
-    probe_keyframe(&source.video, position, true).await
+    probe_keyframe(&source.video, position, true, tools).await
 }
-async fn probe_keyframe(input: &str, position: f64, remote: bool) -> Result<f64> {
-    let mut command = Command::new("ffprobe");
+async fn probe_keyframe(
+    input: &str,
+    position: f64,
+    remote: bool,
+    tools: &MediaTools,
+) -> Result<f64> {
+    tools.ffprobe.verify().await?;
+    let mut command = Command::new(&tools.ffprobe.path);
     if remote {
         command.env_remove("FFREPORT").args([
             "-protocol_whitelist",

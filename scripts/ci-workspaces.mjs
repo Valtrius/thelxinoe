@@ -7,7 +7,7 @@ import {
   realpathSync,
   rmSync,
 } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { join, resolve, sep, toNamespacedPath } from 'node:path';
 
 export function archiveWorkspace(report, lane) {
   if (!lane.workspace) return;
@@ -74,7 +74,7 @@ export function archiveWorkspace(report, lane) {
       throw error;
     // Git for Windows may unregister a worktree while failing to remove long
     // paths or Docker-created links. The exact run-owned path was checked above.
-    rmSync(workspace, {
+    rmSync(toNamespacedPath(workspace), {
       recursive: true,
       force: true,
       maxRetries: 5,

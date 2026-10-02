@@ -13,6 +13,7 @@ services:
   server:
     image: ${THELXINOE_SERVER_IMAGE:-thelxinoe-service-server:local}
     environment:
+      THELXINOE_TOOLS_CATALOG: /opt/thelxinoe/tools/catalog.json
       THELXINOE_PUBLIC_URL: ${THELXINOE_CONNECTIONS_URL:-https://localhost:${THELXINOE_CONNECTIONS_PORT}}
       THELXINOE_TRUSTED_PROXIES: 172.31.244.0/24
     volumes:

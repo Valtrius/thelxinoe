@@ -2,6 +2,7 @@ import { request } from '@playwright/test';
 import { writeFileSync } from 'node:fs';
 import { launchBrowser } from './ci-browser.mjs';
 import assert from 'node:assert/strict';
+import { waitForServerTools } from './ci-readiness.mjs';
 const origin = process.env.THELXINOE_PLAYBACK_URL ?? 'https://localhost:20443';
 const api = await request.newContext({
   baseURL: origin,
@@ -38,6 +39,7 @@ try {
   if ((await call('/setup')).setup_required) {
     await call('/setup', 'POST', credentials);
   } else await call('/auth/login', 'POST', credentials);
+  await waitForServerTools(() => call('/admin/tools'));
   const roots = (await call('/catalog/roots')).items;
   for (const kind of ['movies', 'music']) {
     const root =

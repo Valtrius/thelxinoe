@@ -1,11 +1,11 @@
 """Compare isolated yt-dlp CLI and resident API extraction in the server image.
 
-Usage: /opt/streamlink/bin/python benchmark-youtube-startup.py inputs.json
-Input: {"youtube": [{"id": "public-video-id"}, ...]}. Output contains timings only.
+Usage: python3 benchmark-youtube-startup.py inputs.json
+Input: {"youtube": [{"id": "public-video-id"}, ...], "tools": <GET admin/tools>}.
 Run after the server prepares its matching resident yt-dlp module. This leaves
 installed server tools intact and requires no additional Python installation.
 """
-import hashlib
+from benchmark_tools import installed_tools
 import json
 import logging
 import os
@@ -26,19 +26,10 @@ class QuietLogger:
 
 def main():
     inputs = json.loads(Path(sys.argv[1]).read_text())
-    root = Path("/var/lib/thelxinoe/tools")
-    # Select the single installed test bundle; refuse an ambiguous installation.
-    tools = {}
-    for name in ["yt-dlp", "deno"]:
-        paths = list((root / name).glob(f"*/*/{name}"))
-        if len(paths) != 1:
-            raise RuntimeError("Expected one installed development tool bundle")
-        tools[name] = paths[0]
+    tools = installed_tools(inputs)
+    tools["yt-dlp"] = tools["yt_dlp"]
     installed = subprocess.check_output([str(tools["yt-dlp"]), "--version"], text=True).strip()
-    module = json.loads((root / "yt-dlp-module" / (installed + ".json")).read_text())
-    with Path(module["path"]).open("rb") as source:
-        if module["version"] != installed or hashlib.file_digest(source, "sha256").hexdigest() != module["digest"]:
-            raise RuntimeError("Resident module snapshot failed verification")
+    module = {"path": str(tools["module"])}
     with tempfile.TemporaryDirectory(prefix="thelxinoe-youtube-benchmark-") as home:
         os.environ.clear()
         os.environ.update({key: home for key in ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "TMPDIR"]})

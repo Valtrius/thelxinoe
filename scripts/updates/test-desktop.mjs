@@ -458,7 +458,7 @@ export async function desktopScenarios({
           native.page
             .getByLabel('Desktop version', { exact: true })
             .getByRole('tooltip'),
-        ).toHaveCSS('opacity', '0');
+        ).toBeHidden();
         await native.page.screenshot({
           path: join(output, 'desktop-downloading.png'),
         });

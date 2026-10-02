@@ -20,6 +20,7 @@ export default defineConfig({
         'service-onboarding.spec.ts',
         'service-updates.spec.ts',
         'server-updates.spec.ts',
+        'server-tools.spec.ts',
         'authentication.spec.ts',
         'desktop-startup.spec.ts',
       ],

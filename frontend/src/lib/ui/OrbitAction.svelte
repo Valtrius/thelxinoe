@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Snippet } from 'svelte';
+  import { onMount, type Snippet } from 'svelte';
   type Props = {
     label: string;
     title: string;
@@ -10,6 +10,7 @@
     busy?: boolean;
     onclick: () => void;
     children: Snippet;
+    details?: Snippet;
   };
   let {
     label,
@@ -21,10 +22,59 @@
     busy = false,
     onclick,
     children,
+    details,
   }: Props = $props();
   const id = $props.id();
   let dismissed = $state(false);
   let keyboardFocus = $state(false);
+  let hovered = $state(false);
+  let button = $state<HTMLButtonElement>();
+  let tooltip = $state<HTMLSpanElement>();
+  let position = $state({ left: 0, top: 0, above: false });
+
+  function placeTooltip() {
+    if (!button || !tooltip) return;
+    const anchor = button.getBoundingClientRect();
+    const bounds = tooltip.getBoundingClientRect();
+    const above = anchor.bottom + bounds.height > innerHeight - 8;
+    position = {
+      left: Math.max(
+        8,
+        Math.min(
+          anchor.left + anchor.width / 2 - bounds.width / 2,
+          innerWidth - bounds.width - 8,
+        ),
+      ),
+      top: Math.max(8, above ? anchor.top - bounds.height : anchor.bottom),
+      above,
+    };
+  }
+  $effect(() => {
+    void title;
+    void description;
+    if (!tooltip) return;
+    if ((hovered || keyboardFocus) && !dismissed) {
+      if (!tooltip.matches(':popover-open')) tooltip.showPopover();
+      placeTooltip();
+    } else if (tooltip.matches(':popover-open')) tooltip.hidePopover();
+  });
+  onMount(() => {
+    const reposition = () => {
+      if (tooltip?.matches(':popover-open')) placeTooltip();
+    };
+    const dismiss = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && tooltip?.matches(':popover-open'))
+        dismissed = true;
+    };
+    window.addEventListener('resize', reposition);
+    window.addEventListener('scroll', reposition, true);
+    window.addEventListener('keydown', dismiss);
+    return () => {
+      window.removeEventListener('resize', reposition);
+      window.removeEventListener('scroll', reposition, true);
+      window.removeEventListener('keydown', dismiss);
+    };
+  });
   const percent = $derived(
     progress === null ? null : Math.max(0, Math.min(100, progress)),
   );
@@ -37,8 +87,24 @@
   };
 </script>
 
-<span class="group/orbit relative inline-flex shrink-0">
+<span
+  role="group"
+  class="relative inline-flex shrink-0"
+  onpointerenter={() => {
+    hovered = true;
+    dismissed = false;
+  }}
+  onpointerleave={() => (hovered = false)}
+  onfocusout={(event) => {
+    if (
+      !(event.relatedTarget instanceof Node) ||
+      !event.currentTarget.contains(event.relatedTarget)
+    )
+      keyboardFocus = false;
+  }}
+>
   <button
+    bind:this={button}
     type="button"
     aria-label={label}
     aria-describedby={id}
@@ -51,7 +117,6 @@
       dismissed = false;
       keyboardFocus = event.currentTarget.matches(':focus-visible');
     }}
-    onblur={() => (keyboardFocus = false)}
     onkeydown={(event) => {
       if (event.key === 'Escape') {
         dismissed = true;
@@ -105,21 +170,26 @@
       aria-valuenow={Math.floor(percent)}
     ></span>{/if}
   <span
+    bind:this={tooltip}
     {id}
     role="tooltip"
-    class={`pointer-events-none absolute top-full left-1/2 z-50 w-max max-w-[min(17rem,calc(100vw-3rem))] -translate-x-1/2 pt-8 opacity-0 transition-opacity group-hover/orbit:pointer-events-auto group-hover/orbit:opacity-100 motion-reduce:transition-none ${keyboardFocus ? 'pointer-events-auto opacity-100' : ''} ${dismissed ? 'hidden' : ''}`}
+    popover="manual"
+    class={`fixed inset-auto m-0 w-max max-w-[min(17rem,calc(100vw-3rem))] overflow-visible border-0 bg-transparent p-0 ${position.above ? 'pb-8' : 'pt-8'}`}
+    style:left={`${position.left}px`}
+    style:top={`${position.top}px`}
   >
     <span
       class="block border border-line-strong bg-surface-strong p-3 text-left shadow-lg"
     >
       <span
-        class="block text-xs leading-5 font-medium tracking-normal text-foreground normal-case"
+        class="block text-xs leading-5 wrap-anywhere font-medium tracking-normal text-foreground normal-case"
         >{title}</span
       >
       {#if description}<span
-          class="mt-1 block text-[11px] leading-relaxed font-normal tracking-normal whitespace-pre-line text-muted normal-case"
+          class="mt-1 block text-[11px] leading-relaxed wrap-anywhere font-normal tracking-normal whitespace-pre-line text-muted normal-case"
           >{description}</span
         >{/if}
+      {#if details}{@render details()}{/if}
     </span>
   </span>
   <span class="sr-only" role="status" aria-live="polite">{title}</span>

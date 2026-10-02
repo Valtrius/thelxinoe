@@ -170,7 +170,7 @@ async fn create(
         serde_json::from_value(service.defaults.clone()).map_err(|_| unavailable())?;
     defaults.quality_profile = result["id"].as_i64().ok_or_else(unavailable)?;
     storage::defaults(&state.db, id, defaults, actor).await?;
-    let _ = seerr::sync_managers(&state).await;
+    state.managers.connection_wake.notify_one();
     Ok(Json(json!({"id":result["id"],"name":result["name"]})))
 }
 

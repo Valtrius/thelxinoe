@@ -349,18 +349,7 @@ try {
     fullPage: true,
   });
   compose('restart', 'server');
-  await expect
-    .poll(
-      async () => {
-        try {
-          return (await api('/health')).status;
-        } catch {
-          return '';
-        }
-      },
-      { timeout: 60000 },
-    )
-    .toBe('ok');
+  await waitForProxy(context.request, base);
   expect((await link('prowlarr', 'radarr')).enabled).toBe(true);
   await action('prowlarr', 'start');
   await waitLink('prowlarr', 'radarr', 'connected');
@@ -421,6 +410,7 @@ try {
     await action(kind, 'start');
   await install('bazarr');
   compose('restart', 'server');
+  await waitForProxy(context.request, base);
   await expect
     .poll(
       async () => {
