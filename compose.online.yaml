@@ -5,12 +5,26 @@ services:
     labels:
       app.thelxinoe.component: controller
   server:
+    ports: !override
+      - "0.0.0.0:${THELXINOE_TEST_HTTP_PORT:-18888}:8484"
+      - "0.0.0.0:${THELXINOE_ONLINE_DISCOVERY_PORT:-7359}:7359/udp"
+    environment:
+      THELXINOE_DISCOVERY: "true"
+      THELXINOE_DISCOVERY_URL: "http://${THELXINOE_ONLINE_LAN_IP:?Set the PC's LAN IPv4 address}:${THELXINOE_TEST_HTTP_PORT:-18888}"
+      THELXINOE_CORS_ORIGINS: "http://localhost:${THELXINOE_TEST_HTTP_PORT:-18888},http://127.0.0.1:${THELXINOE_TEST_HTTP_PORT:-18888},https://127.0.0.1:${THELXINOE_TEST_HTTPS_PORT:-22443},http://${THELXINOE_ONLINE_LAN_IP}:${THELXINOE_TEST_HTTP_PORT:-18888},https://${THELXINOE_ONLINE_LAN_IP}:${THELXINOE_TEST_HTTPS_PORT:-22443}"
     labels:
       app.thelxinoe.component: server
     volumes:
       - "${THELXINOE_ONLINE_ROOT:-./.local/online}/server:/var/lib/thelxinoe"
       - "${THELXINOE_ONLINE_ROOT:-./.local/online}/cache:/var/cache/thelxinoe"
       - "${THELXINOE_ONLINE_ROOT:-./.local/online}/media:/media"
+  proxy:
+    ports: !override
+      - "0.0.0.0:${THELXINOE_TEST_HTTPS_PORT:-22443}:9443"
+    environment:
+      THELXINOE_ONLINE_LAN_IP: "${THELXINOE_ONLINE_LAN_IP}"
+    volumes:
+      - ./scripts/Caddyfile.online:/etc/caddy/Caddyfile:ro
 volumes:
   controller-state:
     name: "${THELXINOE_ONLINE_VOLUME_PREFIX:-thelxinoe-online}_controller-state"
