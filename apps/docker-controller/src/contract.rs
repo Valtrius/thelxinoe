@@ -30,7 +30,13 @@ pub async fn recyclarr() -> anyhow::Result<()> {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing target URL"))?;
         let mut state = json!({});
-        for endpoint in ["qualityprofile", "customformat", "qualitydefinition"] {
+        for endpoint in [
+            "qualityprofile",
+            "customformat",
+            "qualitydefinition",
+            "config/naming",
+            "config/mediamanagement",
+        ] {
             let mut response = client
                 .get(format!("{url}/api/v3/{endpoint}"))
                 .header("X-Api-Key", &secret)
@@ -87,6 +93,126 @@ pub async fn recyclarr() -> anyhow::Result<()> {
     Ok(())
 }
 
+pub async fn recyclarr_seed() -> anyhow::Result<()> {
+    let snapshots = Path::new("/fixtures/config/.thelxinoe/target-snapshots.json");
+    if !snapshots.is_file() {
+        return Ok(());
+    }
+    let snapshots: Value = serde_json::from_slice(&std::fs::read(snapshots)?)?;
+    let bindings: Vec<Value> = serde_json::from_str(&std::env::args().nth(2).unwrap_or_default())?;
+    let secret = std::fs::read_to_string("/fixtures/key")?;
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(15))
+        .build()?;
+    let mut seen = std::collections::BTreeSet::new();
+    for binding in bindings {
+        let kind = binding["kind"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing fixture kind"))?;
+        let service = binding["service_id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing fixture identity"))?;
+        if !seen.insert(service.to_owned()) {
+            continue;
+        }
+        let Some(snapshot) = snapshots.get(service) else {
+            continue;
+        };
+        anyhow::ensure!(
+            matches!(kind, "radarr" | "sonarr"),
+            "Unsupported fixture kind"
+        );
+        let port = binding["fixture_port"]
+            .as_u64()
+            .filter(|port| *port >= 10000 && *port < 65536)
+            .ok_or_else(|| anyhow::anyhow!("Invalid fixture port"))?;
+        let base = format!("http://127.0.0.1:{port}/api/v3");
+        for (field, endpoint) in [
+            ("sizes", "qualitydefinition/update"),
+            ("naming", "config/naming"),
+            ("management", "config/mediamanagement"),
+        ] {
+            if snapshot[field].is_null() {
+                continue;
+            }
+            let response = client
+                .put(format!("{base}/{endpoint}"))
+                .header("X-Api-Key", &secret)
+                .json(&snapshot[field])
+                .send()
+                .await?;
+            anyhow::ensure!(
+                response.status().is_success(),
+                "Unable to seed {field} fixture"
+            );
+        }
+        let mut ids = std::collections::BTreeMap::new();
+        for format in snapshot["formats"].as_array().into_iter().flatten() {
+            let mut value = format.clone();
+            value
+                .as_object_mut()
+                .ok_or_else(|| anyhow::anyhow!("Invalid format snapshot"))?
+                .remove("id");
+            let response = client
+                .post(format!("{base}/customformat"))
+                .header("X-Api-Key", &secret)
+                .json(&value)
+                .send()
+                .await?;
+            anyhow::ensure!(
+                response.status().is_success(),
+                "Unable to seed custom-format fixture"
+            );
+            let created: Value = response.json().await?;
+            ids.insert(
+                format["id"].as_i64().unwrap_or_default(),
+                created["id"].clone(),
+            );
+        }
+        let existing: Vec<Value> = client
+            .get(format!("{base}/qualityprofile"))
+            .header("X-Api-Key", &secret)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        for profile in snapshot["profiles"].as_array().into_iter().flatten() {
+            let mut value = profile.clone();
+            value
+                .as_object_mut()
+                .ok_or_else(|| anyhow::anyhow!("Invalid profile snapshot"))?
+                .remove("id");
+            if let Some(formats) = value["formatItems"].as_array_mut() {
+                for format in formats {
+                    if let Some(mapped) = format["format"].as_i64().and_then(|id| ids.get(&id)) {
+                        format["format"] = mapped.clone();
+                    }
+                }
+            }
+            let request =
+                if let Some(previous) = existing.iter().find(|p| p["name"] == profile["name"]) {
+                    value["id"] = previous["id"].clone();
+                    client.put(format!("{base}/qualityprofile/{}", previous["id"]))
+                } else {
+                    client.post(format!("{base}/qualityprofile"))
+                };
+            let response = request
+                .header("X-Api-Key", &secret)
+                .json(&value)
+                .send()
+                .await?;
+            anyhow::ensure!(
+                response.status().is_success(),
+                "Unable to seed quality-profile fixture"
+            );
+        }
+    }
+    Ok(())
+}
+
 pub async fn run(kind: &str, isolated: bool) -> anyhow::Result<()> {
     let template =
         crate::templates::find(kind).ok_or_else(|| anyhow::anyhow!("Unsupported adapter"))?;
@@ -137,8 +263,10 @@ pub async fn run(kind: &str, isolated: bool) -> anyhow::Result<()> {
     );
     let base = format!(
         "http://127.0.0.1:{}{}",
-        template
-            .port
+        std::env::var("THELXINOE_FIXTURE_PORT")
+            .ok()
+            .and_then(|port| port.parse::<u16>().ok())
+            .or(template.port)
             .ok_or_else(|| anyhow::anyhow!("Job workloads have no HTTP endpoint"))?,
         url_base.trim_end_matches('/')
     );

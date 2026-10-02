@@ -18,6 +18,10 @@ struct Update {
     activation_crossed: bool,
     candidate_container: Option<String>,
     replacement: Option<String>,
+    #[serde(default)]
+    configuration_revision: Option<String>,
+    #[serde(default)]
+    configuration_candidate_revision: Option<String>,
 }
 fn path(key: &str) -> PathBuf {
     store::root().join("updates").join(key)
@@ -43,6 +47,28 @@ fn write(u: &Update) -> Result<()> {
 }
 fn public(u: &Update) -> Value {
     json!({"id":u.id,"service_id":u.service,"candidate":u.candidate,"stage":u.stage,"classification":u.classification,"error":u.error,"activation_crossed":u.activation_crossed,"container_id":u.replacement})
+}
+pub(super) fn invalidate_recyclarr(service: &str) -> Result<()> {
+    let root = store::root().join("updates");
+    if !root.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(root).map_err(|_| unavailable())? {
+        let entry = entry.map_err(|_| unavailable())?;
+        if !entry.path().join("update.json").is_file() {
+            continue;
+        }
+        if let Some(mut update) = read_listed(&entry.file_name().to_string_lossy())?
+            && update.service == service
+            && update.stage == "ready"
+        {
+            update.stage = "blocked".into();
+            update.classification = "stale-configuration".into();
+            update.error = Some("Recyclarr configuration changed; run preflight again".into());
+            write(&update)?;
+        }
+    }
+    Ok(())
 }
 pub(super) async fn list() -> Result<Json<Value>> {
     let root = store::root().join("updates");
@@ -173,6 +199,8 @@ pub(super) async fn preflight(
         activation_crossed: false,
         candidate_container: None,
         replacement: None,
+        configuration_revision: None,
+        configuration_candidate_revision: None,
     };
     write(&u)?;
     s.phase = "updating".into();
@@ -395,7 +423,27 @@ async fn check(d: &Deployment, u: &mut Update) -> Result<()> {
 }
 async fn candidate(d: &Deployment, u: &mut Update, config: &str) -> Result<()> {
     if u.old.kind == "recyclarr" {
-        return recyclarr::qualify(d, &u.id, &u.old, &u.candidate, config).await;
+        let revision =
+            recyclarr::configuration::read(&u.service)?.map(|configuration| configuration.revision);
+        if u.stage == "preflight" {
+            u.configuration_revision = revision;
+            write(u)?;
+        } else if revision != u.configuration_revision {
+            return Err(conflict(
+                "Recyclarr configuration changed; run preflight again",
+            ));
+        }
+        recyclarr::qualify(d, &u.id, &u.old, &u.candidate, config).await?;
+        let candidate_revision = recyclarr::configuration::prepared_revision(&u.id)?;
+        if u.stage == "preflight" {
+            u.configuration_candidate_revision = candidate_revision;
+            write(u)?;
+        } else if candidate_revision != u.configuration_candidate_revision {
+            return Err(conflict(
+                "Candidate defaults or resources changed; review a fresh preflight",
+            ));
+        }
+        return Ok(());
     }
     let identity = Identity::service(&u.old.kind, &u.old.spec)?;
     let data = path(&u.id).join("scratch-data");
@@ -484,6 +532,14 @@ pub(super) async fn activate(
         return Err(conflict("A current compatible preflight is required"));
     }
     let observed = verified(&s, &d).await?;
+    if s.kind == "recyclarr"
+        && recyclarr::configuration::read(&s.id)?.map(|configuration| configuration.revision)
+            != u.configuration_revision
+    {
+        return Err(conflict(
+            "Recyclarr configuration changed; run preflight again",
+        ));
+    }
     // Preflight may have happened hours ago. Preserve the running state at
     // activation, including a deliberate stop since the earlier snapshot.
     u.was_running = observed["State"]["Running"]
@@ -563,7 +619,16 @@ async fn replace(d: &Deployment, u: &mut Update) -> Result<()> {
     accepted.image = u.candidate.clone();
     accepted.spec = spec;
     accepted.expected = policy::fingerprint(&raw);
-    accepted.phase = "active".into();
+    accepted.phase = if u.old.kind == "recyclarr" {
+        "updating"
+    } else {
+        "active"
+    }
+    .into();
+    if u.old.kind == "recyclarr" {
+        accepted.active_update = Some(u.id.clone());
+        recyclarr::configuration::activate_upgrade(d, &accepted, &u.id).await?;
+    }
     save(&accepted)?;
     started?;
     if u.was_running && u.old.kind != "recyclarr" {
@@ -571,7 +636,37 @@ async fn replace(d: &Deployment, u: &mut Update) -> Result<()> {
     }
     u.stage = "committed".into();
     write(u)?;
+    if u.old.kind == "recyclarr" {
+        accepted.phase = "active".into();
+        save(&accepted)?;
+    }
     // Keep the stopped original and recovery snapshot for explicit recovery, never automatic post-activation rollback.
+    Ok(())
+}
+pub(super) async fn reconcile_recyclarr(key: &str) -> Result<()> {
+    let mut service = load(key)?;
+    if service.kind != "recyclarr" || service.phase != "updating" {
+        return Ok(());
+    }
+    let Some(operation) = &service.active_update else {
+        return Err(conflict("Recyclarr update journal is missing"));
+    };
+    let mut update = read(operation)?;
+    if update.stage == "committed" {
+        recyclarr::configuration::activate_upgrade(&bootstrap().await?, &service, &update.id)
+            .await?;
+        service.phase = "active".into();
+        return save(&service);
+    }
+    // The service lease proves no CLI job could run while phase=updating. The
+    // definition stays stopped, so its image/configuration boundary is recoverable.
+    if update.old.kind == "recyclarr" && !update.was_running {
+        update.activation_crossed = false;
+        write(&update)?;
+        rollback(&bootstrap().await?, &mut update).await?;
+        update.stage = "rolled-back".into();
+        write(&update)?;
+    }
     Ok(())
 }
 async fn rollback(d: &Deployment, u: &mut Update) -> Result<()> {

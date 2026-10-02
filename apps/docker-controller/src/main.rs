@@ -24,6 +24,7 @@ async fn main() -> anyhow::Result<()> {
     if let Some(command) = std::env::args().nth(1) {
         return match command.as_str() {
             "recyclarr-check" => contract::recyclarr().await,
+            "recyclarr-seed" => contract::recyclarr_seed().await,
             "recyclarr-fixture" => {
                 std::future::pending::<()>().await;
                 Ok(())

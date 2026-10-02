@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test';
+import type { RecyclarrConfiguration } from '../../frontend/src/lib/services/recyclarr-configuration';
 
 // All requests stay in the browser. This fixture never uses a server account.
 export async function installUiFixture(
@@ -433,6 +434,26 @@ export async function installUiFixture(
             : []),
         ],
       });
+    if (path === '/admin/recyclarr/configuration') {
+      const defaults = {
+        image: 'recyclarr/recyclarr:fixture',
+        resources: 'fixture-resources',
+        files: {
+          'recyclarr.yml': '# No connected instances.\n',
+          'settings.yml': '{}\n',
+        },
+      };
+      return json({
+        revision: 'fixture-configuration',
+        mode: 'defaults',
+        image: defaults.image,
+        files: defaults.files,
+        defaults,
+        base_defaults: defaults,
+        bindings: [],
+        candidate: null,
+      } satisfies RecyclarrConfiguration);
+    }
     if (path === '/admin/service-updates')
       return json({
         policies: [

@@ -46,7 +46,11 @@ test('Recyclarr installs with one click and no dialog', async ({
   );
   await page.route('**/api/v1/admin/recyclarr', (route) =>
     route.fulfill({
-      json: { settings: { paused: false, hour: 4 }, runs: [], timezone: 'UTC' },
+      json: {
+        settings: { provision_id: 'managed-recyclarr', paused: false, hour: 4 },
+        runs: [],
+        timezone: 'UTC',
+      },
     }),
   );
   await page.route('**/api/v1/admin/stack/install', async (route) => {
@@ -164,8 +168,10 @@ test('Recyclarr installs with one click and no dialog', async ({
   await expect(
     page.getByRole('region', { name: 'Recyclarr guide configuration' }),
   ).toBeVisible();
+  await expect(page.getByText('Defaults', { exact: true })).toBeVisible();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
 });
 
 test('Recyclarr sync uses only button progress and retains failures', async ({
@@ -211,7 +217,7 @@ test('Recyclarr sync uses only button progress and retains failures', async ({
   await page.route('**/api/v1/admin/recyclarr', (route) =>
     route.fulfill({
       json: {
-        settings: { paused: false, hour: 4 },
+        settings: { provision_id: 'managed-recyclarr', paused: false, hour: 4 },
         runs: run
           ? [
               {
@@ -238,6 +244,7 @@ test('Recyclarr sync uses only button progress and retains failures', async ({
     name: 'Recyclarr guide configuration',
   });
   const sync = region.getByRole('button', { name: 'Sync now', exact: true });
+  await expect(region.getByText('Defaults', { exact: true })).toBeVisible();
   await sync.click();
   for (const progress of ['queued', 'running', 'retrying']) {
     state = progress;
@@ -273,6 +280,7 @@ test('Recyclarr sync uses only button progress and retains failures', async ({
   );
   await expect(sync).toBeEnabled();
   expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
 });
 
 const movie = {

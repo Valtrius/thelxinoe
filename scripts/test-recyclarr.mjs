@@ -11,10 +11,17 @@ import {
   waitForJob,
 } from './ci-readiness.mjs';
 import { launchBrowser } from './ci-browser.mjs';
+import {
+  exerciseConfiguration,
+  exerciseConfigurationEditor,
+  exerciseConfigurationUpgrades,
+} from './recyclarr-configuration-fixture.mjs';
 
 const project = fixtureId('recyclarr');
 const adoptionOnly = process.argv.includes('--adoption-only');
 const profilesOnly = process.argv.includes('--profiles-only');
+const configurationOnly = process.argv.includes('--configuration-only');
+const editorOnly = process.argv.includes('--editor-only');
 const root = resolve(`.local/${project}`);
 const docker = (...args) => {
   try {
@@ -57,7 +64,15 @@ const evidence = {
   browser_network: process.env.THELXINOE_CI_BROWSER_WS_ENDPOINT
     ? 'isolated Docker bridge'
     : 'host',
-  scope: profilesOnly ? 'profiles' : adoptionOnly ? 'adoption' : 'complete',
+  scope: editorOnly
+    ? 'editor'
+    : configurationOnly
+      ? 'configuration'
+      : profilesOnly
+        ? 'profiles'
+        : adoptionOnly
+          ? 'adoption'
+          : 'complete',
   started: new Date().toISOString(),
   finished: null,
   passed: null,
@@ -182,6 +197,98 @@ function fixtureSQL(sql, values = []) {
     ),
   );
 }
+async function withOffline(kinds, action) {
+  try {
+    for (const kind of kinds)
+      docker('stop', '-t', '1', services[kind].container_id);
+    return await action();
+  } finally {
+    for (const kind of kinds) docker('start', services[kind].container_id);
+    for (const kind of kinds)
+      await expect
+        .poll(
+          async () => {
+            try {
+              await arr(kind, 'system/status');
+              return true;
+            } catch {
+              return false;
+            }
+          },
+          { timeout: 90000 },
+        )
+        .toBe(true);
+  }
+}
+const runRoot = (run) =>
+  `/var/lib/thelxinoe/deployment/services/${services.recyclarr.id}/runs/${run}`;
+async function retryInterruptedRun(run) {
+  await expect
+    .poll(
+      () =>
+        fixtureSQL(
+          "SELECT state FROM jobs WHERE kind='recyclarr.sync' AND json_extract(payload,'$.id')=?",
+          [run],
+        )[0]?.[0],
+    )
+    .toBe('complete');
+  // Remove only the terminal journal to reproduce a lost write after sealing;
+  // retain the original config tree and retry the same durable operation.
+  compose(
+    'exec',
+    '-T',
+    'controller',
+    'rm',
+    '--',
+    `${runRoot(run)}/result.json`,
+  );
+  fixtureSQL(
+    "UPDATE recyclarr_runs SET state='retrying',evidence='{}',error=NULL WHERE id=?",
+    [run],
+  );
+  expect(
+    fixtureSQL(
+      "UPDATE jobs SET state='queued',attempts=0,started_at=NULL,completed_at=NULL,error=NULL,available_at=unixepoch() WHERE kind='recyclarr.sync' AND json_extract(payload,'$.id')=? RETURNING id",
+      [run],
+    ),
+  ).toHaveLength(1);
+}
+function readRunFiles(run) {
+  const root = `${runRoot(run)}/config/`;
+  const names = compose(
+    'exec',
+    '-T',
+    'controller',
+    'find',
+    root,
+    '-type',
+    'f',
+    '-print',
+  )
+    .trim()
+    .split('\n')
+    .filter((path) => {
+      const name = path.slice(root.length);
+      return (
+        name === 'recyclarr.yml' ||
+        name === 'settings.yml' ||
+        name.startsWith('configs/') ||
+        name.startsWith('includes/')
+      );
+    });
+  return Object.fromEntries(
+    names.map((path) => {
+      expect(path.startsWith(root)).toBe(true);
+      return [
+        path.slice(root.length),
+        Buffer.from(
+          compose('exec', '-T', 'controller', 'base64', '-w0', path),
+          'base64',
+        ).toString('utf8'),
+      ];
+    }),
+  );
+}
 async function snapshot(kind) {
   return {
     profiles: await arr(kind, 'qualityprofile'),
@@ -287,7 +394,7 @@ scenario: try {
     JSON.parse(docker('inspect', services.recyclarr.container_id))[0].State
       .Status,
   ).toBe('created');
-  if (!adoptionOnly && !profilesOnly) {
+  if (!adoptionOnly && !profilesOnly && !editorOnly) {
     await expect
       .poll(
         async () => {
@@ -361,6 +468,21 @@ scenario: try {
   await expect
     .poll(async () => (await settings()).targets.length, { timeout: 45000 })
     .toBe(2);
+  if (editorOnly) {
+    const page = await context.newPage();
+    await page.goto(`${base}/?section=Settings`);
+    await page
+      .getByRole('button', { name: 'Media services', exact: true })
+      .click();
+    await page
+      .getByRole('navigation', { name: 'Select service' })
+      .getByRole('button', { name: 'Recyclarr', exact: true })
+      .click();
+    await exerciseConfigurationEditor({ page, api, root, record });
+    evidence.passed = true;
+    console.log(`Recyclarr editor E2E passed: ${root}`);
+    break scenario;
+  }
   const initialManagers = (await api('/admin/managers')).items;
   for (const kind of ['radarr', 'sonarr']) {
     evidence.snapshots[`${kind}-before`] = await snapshot(kind);
@@ -433,60 +555,55 @@ scenario: try {
     'The full official catalog and profile scores sync idempotently while preserving defaults; concurrent manual requests deduplicate; internal preview is read-only',
   );
   if (!adoptionOnly) {
+    await exerciseConfiguration({
+      api,
+      request,
+      waitRun,
+      record,
+      evidence,
+      retryInterruptedRun,
+      readRunFiles,
+      withOffline,
+    });
+    if (configurationOnly) {
+      const page = await context.newPage();
+      await exerciseConfigurationUpgrades({
+        api,
+        request,
+        withOffline,
+        waitUpdate,
+        services,
+        snapshot,
+        record,
+        evidence,
+        page,
+        root,
+        base,
+      });
+      await exerciseConfigurationEditor({ page, api, root, record });
+      evidence.passed = true;
+      console.log(`Recyclarr configuration E2E passed: ${root}`);
+      break scenario;
+    }
     // A real CLI parsing error may exit zero; it must still block before apply.
-    const invalidTarget = await defaultTarget('radarr');
-    const invalidManager = (await api('/admin/managers')).items.find(
-      (manager) => manager.id === invalidTarget.service_id,
-    );
-    const nativeMount = JSON.parse(
-      docker('inspect', services.radarr.container_id),
-    )[0].Mounts.find((mount) => mount.Destination === '/config').Source;
-    const invalidCatalog = await api('/admin/recyclarr/catalog/radarr');
     const beforeInvalid = await snapshot('radarr');
-    const invalidResult = JSON.parse(
-      docker(
-        'run',
-        '--label',
-        `com.docker.compose.project=${project}`,
-        '--label',
-        `io.thelxinoe.ci-run=${process.env.THELXINOE_CI_RUN_ID}`,
-        '--rm',
-        '--network',
-        'none',
-        '--user',
-        '0:0',
-        '--entrypoint',
-        'python3',
-        '--volumes-from',
-        `${compose('ps', '-q', 'server')}:ro`,
-        '-v',
-        `${nativeMount}:/target:ro`,
-        process.env.THELXINOE_SERVER_IMAGE ?? 'thelxinoe-service-server:local',
-        '-c',
-        "import json,sys,socket,http.client,xml.etree.ElementTree as E; p=json.loads(sys.argv[2]); p['targets'][0]['secret']=E.parse('/target/config.xml').getroot().findtext('ApiKey'); c=http.client.HTTPConnection('localhost',timeout=300); c.sock=socket.socket(socket.AF_UNIX); c.sock.connect('/run/thelxinoe/controller.sock'); c.request('POST','/stack/'+sys.argv[1]+'/recyclarr/run',json.dumps(p),{'Content-Type':'application/json'}); r=c.getresponse(); assert r.status==200,r.status; print(r.read().decode())",
-        services.recyclarr.id,
-        JSON.stringify({
-          operation_id: randomUUID(),
-          image: invalidCatalog.image,
-          resources: invalidCatalog.resources,
-          preview: false,
-          targets: [
-            {
-              ...invalidTarget,
-              container_id: services.radarr.container_id,
-              port: invalidManager.port,
-              url_base: invalidManager.url_base,
-              generation: fixtureSQL(
-                'SELECT generation FROM manager_services WHERE id=?',
-                [invalidTarget.service_id],
-              )[0][0],
-              overrides: { min_format_score: 'fixture-invalid' },
-              secret: '',
-            },
-          ],
-        }),
-      ),
+    const active = await api('/admin/recyclarr/configuration');
+    const invalid = await api(
+      '/admin/recyclarr/configuration/validate',
+      'POST',
+      {
+        revision: active.revision,
+        files: {
+          ...active.files,
+          'recyclarr.yml': active.files['recyclarr.yml'].replace(
+            '    quality_profiles:',
+            '    quality_profiles:\n      - name: Invalid fixture profile\n        min_format_score: fixture-invalid',
+          ),
+        },
+      },
     );
+    expect(invalid.valid).toBe(false);
+    const invalidResult = invalid.preview;
     expect(invalidResult.state).toBe('blocked');
     expect(invalidResult.preview).toContain('[ERR]');
     expect(invalidResult.apply).toBeUndefined();
@@ -687,6 +804,7 @@ scenario: try {
     });
     await page.setViewportSize({ width: 1440, height: 1000 });
     const runCount = (await settings()).runs.length;
+    await exerciseConfigurationEditor({ page, api, root, record });
     await guideRegion
       .getByRole('button', { name: 'Sync now', exact: true })
       .click();
@@ -1135,28 +1253,19 @@ scenario: try {
     record(
       'A missing job definition recreates without starting; preserved appdata retains guide mappings and numeric defaults',
     );
-    // A real image preflight uses disposable Arr in a loopback-only namespace.
-    console.log('Starting Recyclarr image preflight with populated targets');
-    const update = await api(
-      `/admin/service-updates/preflight/${services.recyclarr.id}`,
-      'POST',
-      {},
-    );
-    await waitUpdate(update.id, 'ready');
-    console.log('Recyclarr image preflight ready; activating replacement');
-    for (const kind of ['radarr', 'sonarr'])
-      expect(await snapshot(kind)).toEqual(
-        evidence.snapshots[`${kind}-applied`],
-      );
-    await api(`/admin/service-updates/${update.id}/activate`, 'POST', {});
-    await waitUpdate(update.id, 'committed');
-    for (const kind of ['radarr', 'sonarr'])
-      expect(await snapshot(kind)).toEqual(
-        evidence.snapshots[`${kind}-applied`],
-      );
-    record(
-      'Preflight and activation exercise real isolated Arr fixtures without changing production targets',
-    );
+    await exerciseConfigurationUpgrades({
+      api,
+      request,
+      withOffline,
+      waitUpdate,
+      services,
+      snapshot,
+      record,
+      evidence,
+      page,
+      root,
+      base,
+    });
     compose('restart', 'server', 'controller');
     await waitForProxy(context.request, base);
     await waitRun((await api('/admin/recyclarr/sync', 'POST', {})).id);
@@ -1380,8 +1489,19 @@ scenario: try {
       `/var/lib/thelxinoe/deployment/services/${services[kind].id}/appdata/config.xml`,
     );
     originalYaml = originalYaml.replace(
-      `!file /runtime/${manager.id}`,
+      `!secret managed_${manager.id.replaceAll('-', '')}_api_key`,
       JSON.stringify(xml.match(/<ApiKey>(.*?)<\/ApiKey>/)[1]),
+    );
+    const targetRaw = JSON.parse(
+      docker('inspect', services[kind].container_id),
+    )[0];
+    const address = Object.values(targetRaw.NetworkSettings.Networks)[0]
+      .IPAddress;
+    originalYaml = originalYaml.replace(
+      `!secret managed_${manager.id.replaceAll('-', '')}_base_url`,
+      JSON.stringify(
+        `http://${address}:${kind === 'radarr' ? 7878 : 8989}${xml.match(/<UrlBase>(.*?)<\/UrlBase>/)?.[1] ?? ''}`,
+      ),
     );
   }
   function externalConfig(yaml, settingsText = '{}') {

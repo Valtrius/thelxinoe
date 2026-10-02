@@ -397,7 +397,20 @@ pub fn router() -> Router {
         .route("/stack/adopt", post(adoption::adopt))
         .route("/stack/{id}/action", post(action))
         .route("/stack/{id}/recyclarr/catalog", post(recyclarr::catalog))
-        .route("/stack/{id}/recyclarr/run", post(recyclarr::run))
+        .route(
+            "/stack/{id}/recyclarr/run",
+            post(recyclarr::run).layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
+        .route(
+            "/stack/{id}/recyclarr/configuration",
+            get(recyclarr::configuration::get)
+                .post(recyclarr::configuration::change)
+                .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
+        .route(
+            "/stack/{id}/recyclarr/editor",
+            get(recyclarr::configuration::editor),
+        )
         .route(
             "/stack/{id}/recyclarr/results/{run}",
             get(recyclarr::result),

@@ -9,6 +9,7 @@ export const budgets = {
 };
 export const requestBudget = (path) =>
   path.startsWith('/admin/recyclarr/adopt') ||
+  path.startsWith('/admin/recyclarr/configuration') ||
   /^\/admin\/backups\/[^/]+\/restore$/.test(path)
     ? budgets.stateCopy
     : budgets.request;

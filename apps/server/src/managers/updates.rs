@@ -174,7 +174,12 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
         .await?
         .ok_or_else(|| anyhow::anyhow!("Managed service no longer exists"))?;
     let _lease = state.managers.maintenance(state).await;
-    let _guard = state.managers.guard.service(&kind).await;
+    let kinds = if kind == "recyclarr" {
+        vec!["recyclarr", "radarr", "sonarr"]
+    } else {
+        vec![kind.as_str()]
+    };
+    let _guard = state.managers.guard.services(&kinds).await;
     let inherited = automatic
         .2
         .as_deref()
@@ -223,7 +228,17 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
             return Ok(false);
         }
     }
-    let result = run_locked(state, key, action).await;
+    let result = async {
+        if kind == "recyclarr" && matches!(action, "preflight" | "activate") {
+            recyclarr::capture_update(state, &automatic.1).await?;
+        }
+        run_locked(state, key, action).await?;
+        if kind == "recyclarr" {
+            recyclarr::current_configuration(state, &automatic.1).await?;
+        }
+        Ok::<(), ApiError>(())
+    }
+    .await;
     if let Err(error) = result {
         progress(state, key, "blocked", None, Some(error.2.clone()))
             .await

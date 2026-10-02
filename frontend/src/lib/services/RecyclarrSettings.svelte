@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '../api';
+  import RecyclarrConfiguration from './RecyclarrConfiguration.svelte';
   import AutoSaveForm from '../ui/AutoSaveForm.svelte';
   import FormField from '../ui/FormField.svelte';
   import Switch from '../ui/Switch.svelte';
@@ -9,7 +10,7 @@
   import { formControlClass } from '../ui/styles';
 
   type Snapshot = {
-    settings: { paused: boolean; hour: number } | null;
+    settings: { provision_id: string; paused: boolean; hour: number } | null;
     runs: { id: string; state: string; error: string | null }[];
     timezone: string;
   };
@@ -82,6 +83,7 @@
       >{error || loadError}</Notice
     >{/if}
   {#if loaded && snapshot?.settings}
+    <RecyclarrConfiguration provisionId={snapshot.settings.provision_id} />
     <AutoSaveForm
       value={schedule}
       label="Daily guide sync"
