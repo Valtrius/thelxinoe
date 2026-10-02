@@ -816,9 +816,31 @@ export async function serverScenarios({
       const restore = page.getByRole('dialog');
       await expect(restore).toContainText(`Rollback to ${lab.base}`);
       await restore.getByLabel('Type RESTORE to continue').fill('RESTORE');
-      await restore
-        .getByRole('button', { name: `Restore ${lab.base}`, exact: true })
-        .click();
+      marker('hold-release-request', "p.write_text('hold')");
+      const heldRequest = request('/admin/settings');
+      try {
+        await until(
+          () =>
+            marker('held-release-request-entered', 'print(p.exists())') ===
+            'True',
+        );
+        const rejected = page.waitForResponse(
+          (response) =>
+            response.url().endsWith(`/${lab.committed}/recover`) &&
+            response.status() === 409,
+        );
+        const button = restore.getByRole('button', {
+          name: `Restore ${lab.base}`,
+          exact: true,
+        });
+        await button.click();
+        expect((await rejected).status()).toBe(409);
+        await expect(button).toBeDisabled();
+        await page.screenshot({ path: join(output, 'restore-waiting.png') });
+      } finally {
+        marker('hold-release-request', 'p.unlink(missing_ok=True)');
+        await heldRequest;
+      }
       await stage(lab.committed, 'restored');
       expect((await api('/health')).version).toBe(lab.base);
       expect(controller('/health').version).toBe(lab.base);

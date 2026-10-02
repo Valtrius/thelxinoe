@@ -320,11 +320,11 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
         return Ok(true);
     }
     let _maintenance = state.managers.maintenance(state).await;
-    // Lock order: deployment/media lease, Recyclarr, Radarr, Sonarr. Controller
-    // uses the same Recyclarr service lease for jobs, updates, and backup gates.
-    let _runner = state.managers.guard.service("recyclarr").await;
-    let _radarr = state.managers.guard.service("radarr").await;
-    let _sonarr = state.managers.guard.service("sonarr").await;
+    let _services = state
+        .managers
+        .guard
+        .services(&["recyclarr", "radarr", "sonarr"])
+        .await;
     let (_, _, authorized) = storage::run(&state.db, run.into()).await?;
     if job.payload["automatic"] == true && storage::paused(&state.db, key.clone()).await? {
         storage::progress(
@@ -389,7 +389,7 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
             if !storage::applied(&state.db,target.clone(),generation.into(),profile,selected["name"].as_str().ok_or_else(unavailable)?.into()).await? { return Err(ApiError::conflict("Target or selection changed during sync; retry the current selection")); }
         }
         storage::progress(&state.db,run.into(),"complete".into(),evidence,None).await?;
-        let _=seerr::sync_managers(state).await;
+        state.managers.connection_wake.notify_one();
         state.emit(None,"recyclarr.changed",json!({"id":run})).await?;
         Ok::<(),ApiError>(())
     }.await;

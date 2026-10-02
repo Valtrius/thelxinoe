@@ -467,10 +467,38 @@ test('download tracks bytes without pinning its tooltip, and controller reconnec
     body: await page.screenshot(),
     contentType: 'image/png',
   });
-  await modal
-    .getByRole('button', { name: 'Restore 0.1.0', exact: true })
-    .click();
+  let recoveryRequests = 0;
+  await page.route(
+    '**/api/v1/admin/product-update/*/recover',
+    async (route) => {
+      if (++recoveryRequests === 1)
+        await route.fulfill({
+          status: 409,
+          json: {
+            error: {
+              code: 'conflict',
+              message: 'Wait for current requests to finish and try again',
+            },
+          },
+        });
+      else await route.fallback();
+    },
+  );
+  const restoreButton = modal.getByRole('button', {
+    name: 'Restore 0.1.0',
+    exact: true,
+  });
+  await restoreButton.click();
+  await expect.poll(() => recoveryRequests).toBe(1);
+  await expect(restoreButton).toBeDisabled();
+  await expect(restoreButton).toHaveAttribute('aria-busy', 'true');
+  await testInfo.attach('rollback-waiting-for-idle', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+  await page.clock.runFor(1500);
   await expect(modal).toHaveCount(0);
+  expect(recoveryRequests).toBe(2);
   expect(flow.commands.at(-1)).toEqual({
     action: 'recover',
     body: { confirm: true },

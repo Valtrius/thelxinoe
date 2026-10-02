@@ -179,18 +179,38 @@ export async function serverUpdateAction(
   // Record before sending: losing the response during restart still reconnects.
   if (action === 'install' && !desktop)
     sessionStorage.setItem(reloadKey, version!);
+  const deadline = Date.now() + 120000;
   try {
-    await api(
-      '/admin/product-update/' +
-        (action === 'recover' ? `${operation}/recover` : action),
-      'POST',
-      action === 'install'
-        ? { version }
-        : action === 'recover'
-          ? { confirm: true }
-          : {},
-    );
-    return true;
+    for (;;) {
+      if (source !== serverUrl()) return false;
+      try {
+        await api(
+          '/admin/product-update/' +
+            (action === 'recover' ? `${operation}/recover` : action),
+          'POST',
+          action === 'install'
+            ? { version }
+            : action === 'recover'
+              ? { confirm: true }
+              : {},
+        );
+        return true;
+      } catch (error) {
+        // Only retry an explicit idle rejection: a lost response may follow acceptance.
+        if (
+          action !== 'recover' ||
+          !(error instanceof ApiError) ||
+          error.status !== 409 ||
+          ![
+            'Wait for current requests to finish and try again',
+            'Wait for playback, downloads and background work to finish',
+          ].includes(error.message) ||
+          Date.now() >= deadline
+        )
+          throw error;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
   } catch (e) {
     if (source === serverUrl()) {
       // Rejections are authoritative; transport/server failures may follow acceptance.

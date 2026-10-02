@@ -440,7 +440,7 @@ async fn request(
     } else {
         "sonarr"
     };
-    let _guard = state.managers.guard.service(kind).await;
+    let _guard = state.managers.guard.services(&[kind, "seerr"]).await;
     let manager = request_manager(&state, kind).await?;
     let native = Connection::open(&state, &manager).await?;
     let profiles = native.get("qualityprofile").await?;
@@ -496,7 +496,7 @@ async fn request(
             ApiError::conflict("The request profile was removed; select an existing profile")
         })?;
     let mut body = json!({"mediaType":input.media_type,"mediaId":input.media_id,"is4k":is_uhd(&profile["items"]),"profileId":selected});
-    sync_connections(&state, Some(kind), false).await?;
+    sync_connections_locked(&state, Some(kind), false).await?;
     let configured = c.get(&format!("settings/{kind}")).await?;
     body["serverId"] = configured
         .as_array()
@@ -648,11 +648,19 @@ pub(super) async fn sync_managers(state: &AppState) -> Result<()> {
 }
 
 async fn sync_connections(state: &AppState, only: Option<&str>, refresh: bool) -> Result<()> {
+    let _guard = state.managers.guard.service("seerr").await;
+    sync_connections_locked(state, only, refresh).await
+}
+
+async fn sync_connections_locked(
+    state: &AppState,
+    only: Option<&str>,
+    refresh: bool,
+) -> Result<()> {
     if storage::service(&state.db).await?.is_none() {
         return Ok(());
     }
     let (_, c) = connection(state).await?;
-    let _guard = state.managers.guard.service("seerr").await;
     if c.get("settings/public").await?["initialized"] != true {
         return Ok(());
     }
