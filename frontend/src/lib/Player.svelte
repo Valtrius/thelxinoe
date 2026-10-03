@@ -667,6 +667,10 @@
     data-sidebar-resize="video"
     bind:this={player}
     playsinline
+    onclick={() => {
+      void toggle();
+      revealControls();
+    }}
     ontimeupdate={update}
     onloadstart={waiting}
     onwaiting={waiting}
