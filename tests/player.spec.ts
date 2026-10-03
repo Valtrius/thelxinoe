@@ -828,7 +828,7 @@ test('controls hide, recover with keyboard, retain volume, seek, and stay inside
   expect(state.errors).toEqual([]);
 });
 
-test('web player supports YouTube playback shortcuts and right-click pause', async ({
+test('web player supports YouTube playback shortcuts and left/right-click pause', async ({
   page,
 }) => {
   const state = await fixture(page, { subtitles: true });
@@ -838,12 +838,27 @@ test('web player supports YouTube playback shortcuts and right-click pause', asy
 
   await video.click({ position: { x: 100, y: 100 } });
   await expect(player).toBeFocused();
+  await expect
+    .poll(() => video.evaluate((element) => element.paused))
+    .toBe(true);
+  await video.click({ position: { x: 100, y: 100 } });
+  await expect
+    .poll(() => video.evaluate((element) => element.paused))
+    .toBe(false);
 
   await page.keyboard.press('k');
   await expect
     .poll(() => video.evaluate((element) => element.paused))
     .toBe(true);
   await page.keyboard.press('Space');
+  await expect
+    .poll(() => video.evaluate((element) => element.paused))
+    .toBe(false);
+  await video.click({ button: 'right', position: { x: 100, y: 100 } });
+  await expect
+    .poll(() => video.evaluate((element) => element.paused))
+    .toBe(true);
+  await video.click({ button: 'right', position: { x: 100, y: 100 } });
   await expect
     .poll(() => video.evaluate((element) => element.paused))
     .toBe(false);
@@ -920,6 +935,42 @@ test('web player supports YouTube playback shortcuts and right-click pause', asy
   await page.keyboard.press('Shift+Comma');
   expect(await video.evaluate((element) => element.playbackRate)).toBe(1);
   expect(state.errors).toEqual([]);
+});
+
+test.describe('touch video playback', () => {
+  test.use({ hasTouch: true, viewport: { width: 390, height: 844 } });
+
+  test('tapping the video toggles playback independently of its controls', async ({
+    page,
+  }, testInfo) => {
+    const state = await fixture(page);
+    await decoded(page);
+    const video = page.locator('video');
+
+    await video.tap({ position: { x: 100, y: 100 } });
+    await expect(video).toHaveJSProperty('paused', true);
+    await expect(
+      page.getByRole('button', { name: 'Play', exact: true }),
+    ).toBeVisible();
+    await expect(page.locator('.player-controls')).toHaveCSS('opacity', '1');
+    await testInfo.attach('Paused touch video', {
+      body: await page.screenshot({
+        path: testInfo.outputPath('tap-paused.png'),
+      }),
+      contentType: 'image/png',
+    });
+    await video.tap({ position: { x: 100, y: 100 } });
+    await expect(video).toHaveJSProperty('paused', false);
+
+    await page.getByRole('button', { name: 'Pause', exact: true }).tap();
+    await expect(video).toHaveJSProperty('paused', true);
+    await page.getByRole('button', { name: 'Play', exact: true }).tap();
+    await expect(video).toHaveJSProperty('paused', false);
+    await page.getByRole('button', { name: 'Mute', exact: true }).tap();
+    await expect(video).toHaveJSProperty('muted', true);
+    await expect(video).toHaveJSProperty('paused', false);
+    expect(state.errors).toEqual([]);
+  });
 });
 
 test('transcoded seeking uses the server timeline and live playback omits seeking', async ({
