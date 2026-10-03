@@ -10,6 +10,7 @@
     PanelLeftOpen,
     Settings,
     LogOut,
+    X,
   } from '@lucide/svelte';
   import SidebarButton from './SidebarButton.svelte';
   import PlatformIcon from './PlatformIcon.svelte';
@@ -17,13 +18,14 @@
   import { attention, attentionDescription } from '../attention';
   import Button from './Button.svelte';
   import type { User } from '../api';
-  let { section, collapsed, user, navigate, toggle, logout } = $props<{
+  let { section, collapsed, user, navigate, toggle, logout, onClose } = $props<{
     section: string;
     collapsed: boolean;
     user: User;
     navigate: (name: string) => void;
     toggle: () => void;
     logout: () => void;
+    onClose?: () => void;
   }>();
   const library = [
     { name: 'Home', icon: House },
@@ -54,9 +56,7 @@
 <aside
   class={[
     'primary-sidebar group/sidebar relative z-30 min-h-0 min-w-0 grow-0 shrink-0',
-    collapsed
-      ? 'w-18 basis-18'
-      : 'w-45 basis-45 compact:absolute compact:z-70 compact:h-full compact:bg-background',
+    onClose ? 'h-full w-full' : collapsed ? 'w-18 basis-18' : 'w-45 basis-45',
   ]}
   class:collapsed
   aria-label="Application sidebar"
@@ -67,25 +67,36 @@
     class="sidebar-surface pointer-events-none absolute inset-0 z-0 origin-left border-r border-line bg-surface"
   ></div>
   <div class="relative flex h-full min-h-0 flex-col overflow-visible">
-    <a
-      href="#home"
-      class="flex h-16 shrink-0 items-center overflow-hidden whitespace-nowrap"
-      onclick={(e) => {
-        e.preventDefault();
-        navigate('Home');
-      }}
-      aria-label="Thelxinoe home"
-      ><img
-        class="mx-5.25 block size-7.5 shrink-0 object-contain"
-        src="/icon.svg"
-        alt=""
-        width="30"
-        height="30"
-      /><span
-        class="brand-label text-[11px] font-semibold tracking-[0.12em] uppercase transition-opacity duration-150 group-[.collapsed]/sidebar:w-0 group-[.collapsed]/sidebar:basis-0 group-[.collapsed]/sidebar:opacity-0"
-        >Thelxinoe</span
-      ></a
-    >
+    <div class="flex h-16 shrink-0 items-center">
+      <a
+        href="#home"
+        class="flex h-16 min-w-0 flex-1 items-center overflow-hidden whitespace-nowrap"
+        onclick={(e) => {
+          e.preventDefault();
+          navigate('Home');
+        }}
+        aria-label="Thelxinoe home"
+        ><img
+          class="mx-5.25 block size-7.5 shrink-0 object-contain"
+          src="/icon.svg"
+          alt=""
+          width="30"
+          height="30"
+        /><span
+          class="brand-label text-[11px] font-semibold tracking-[0.12em] uppercase transition-opacity duration-150 group-[.collapsed]/sidebar:w-0 group-[.collapsed]/sidebar:basis-0 group-[.collapsed]/sidebar:opacity-0"
+          >Thelxinoe</span
+        ></a
+      >
+      {#if onClose}
+        <Button
+          variant="ghost"
+          size="icon"
+          class="mr-2 size-11 shrink-0"
+          aria-label="Close navigation"
+          onclick={onClose}><X class="size-5" /></Button
+        >
+      {/if}
+    </div>
     <nav
       class="primary-navigation grid min-h-0 shrink overflow-y-auto scrollbar-none"
       aria-label="Main navigation"
@@ -196,19 +207,19 @@
           onclick={logout}><LogOut size={15} /></Button
         >
       </div>
-      <SidebarButton
-        label="Collapse"
-        {collapsed}
-        size="sm"
-        title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        onclick={toggle}
-        >{#if collapsed}<PanelLeftOpen
-            class="size-4 shrink-0"
-          />{:else}<PanelLeftClose
-            class="size-4 shrink-0"
-          />{/if}</SidebarButton
-      >
+      {#if !onClose}<SidebarButton
+          label="Collapse"
+          {collapsed}
+          size="sm"
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          onclick={toggle}
+          >{#if collapsed}<PanelLeftOpen
+              class="size-4 shrink-0"
+            />{:else}<PanelLeftClose
+              class="size-4 shrink-0"
+            />{/if}</SidebarButton
+        >{/if}
     </div>
   </div>
 </aside>

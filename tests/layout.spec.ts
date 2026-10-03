@@ -1247,6 +1247,104 @@ test('media services show request approval only for regular users', async ({
   expect(fixture.unexpected).toEqual([]);
 });
 
+test('mobile navigation opens over full-width content and restores the desktop sidebar', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page);
+  await page.goto('/');
+  const sidebar = page.getByRole('complementary', {
+    name: 'Application sidebar',
+  });
+  const menu = page.getByRole('button', { name: 'Open navigation' });
+  const drawer = page.getByRole('dialog', { name: 'Navigation menu' });
+  await expect(sidebar).toBeVisible();
+  await expect(menu).toBeHidden();
+  await page.getByRole('button', { name: 'Collapse sidebar' }).click();
+
+  for (const width of [320, 390, 720]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect(sidebar).toBeHidden();
+    await expect(menu).toBeVisible();
+    await expect(menu).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.locator('main')).toHaveCSS('width', `${width}px`);
+    const contentBounds = await page.locator('main').boundingBox();
+    await page.screenshot({ path: testInfo.outputPath(`mobile-${width}.png`) });
+
+    await menu.click();
+    await expect(drawer).toBeVisible();
+    await expect(sidebar).toBeVisible();
+    await expect(drawer.getByText('Thelxinoe', { exact: true })).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: 'Expand sidebar' }),
+    ).toBeHidden();
+    expect(await page.locator('main').boundingBox()).toEqual(contentBounds);
+    expect(await drawer.evaluate((node) => node.matches(':modal'))).toBe(true);
+    await expect(
+      drawer.getByRole('link', { name: 'Thelxinoe home' }),
+    ).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(
+      drawer.getByRole('button', { name: 'Close navigation' }),
+    ).toBeFocused();
+    await page.screenshot({
+      path: testInfo.outputPath(`mobile-menu-${width}.png`),
+    });
+
+    await page.keyboard.press('Escape');
+    await expect(drawer).toBeHidden();
+    await expect(menu).toBeFocused();
+    await menu.click();
+    await drawer.getByRole('button', { name: 'Close navigation' }).click();
+    await expect(drawer).toBeHidden();
+    await expect(menu).toBeFocused();
+    await menu.click();
+    await page.mouse.click(width - 8, 100);
+    await expect(drawer).toBeHidden();
+    await menu.click();
+    await drawer.getByRole('button', { name: 'Home', exact: true }).click();
+    await expect(drawer).toBeHidden();
+    await expect(
+      page.getByRole('heading', { name: 'Discover', exact: true }),
+    ).toBeVisible();
+    await menu.click();
+    await drawer.getByRole('button', { name: 'Settings', exact: true }).click();
+    await expect(drawer).toBeHidden();
+    await expect(menu).toBeFocused();
+    await expect(
+      page.getByRole('heading', { name: 'Settings', exact: true }),
+    ).toBeVisible();
+  }
+
+  await menu.click();
+  await page.setViewportSize({ width: 721, height: 844 });
+  await expect(drawer).toBeHidden();
+  await expect(menu).toBeHidden();
+  await expect(sidebar).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Expand sidebar' }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'Expand sidebar' }).click();
+  await expect(
+    page.getByRole('button', { name: 'Collapse sidebar' }),
+  ).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(drawer).toBeHidden();
+  await expect(sidebar).toBeHidden();
+  await page.reload();
+  await expect(sidebar).toBeHidden();
+  await expect(menu).toBeVisible();
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await expect(sidebar).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Collapse sidebar' }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath('desktop-navigation.png'),
+  });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 test('mobile settings show every category in a wrapping grid', async ({
   page,
 }) => {
