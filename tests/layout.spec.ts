@@ -573,7 +573,7 @@ test('adaptive account panels remain bounded while navigation follows resizing',
   const fixture = await installUiFixture(page);
   await page.goto('/');
   await expect(
-    page.getByRole('region', { name: 'Appearance preferences', exact: true }),
+    page.getByRole('region', { name: 'Your display preferences', exact: true }),
   ).toBeVisible();
   await expectContainedNavigation(page);
   const panels = await page.locator('.settings-panels').evaluate((element) => ({
@@ -606,7 +606,7 @@ test('adaptive account panels remain bounded while navigation follows resizing',
     );
   }
   const theme = page
-    .getByRole('region', { name: 'Appearance preferences', exact: true })
+    .getByRole('region', { name: 'Your display preferences', exact: true })
     .getByRole('group', { name: 'Theme', exact: true });
   await expect(
     page.getByRole('group', { name: 'Theme', exact: true }),

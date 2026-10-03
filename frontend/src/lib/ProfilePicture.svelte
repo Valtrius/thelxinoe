@@ -6,7 +6,6 @@
   import { onDestroy } from 'svelte';
   import { api, type User } from './api';
   import { cropRectangle } from './avatar-crop';
-  import Panel from './ui/Panel.svelte';
   import Button from './ui/Button.svelte';
 
   import { Pencil } from '@lucide/svelte';
@@ -131,8 +130,7 @@
   onDestroy(clear);
 </script>
 
-<Panel>
-  <h2>Profile picture</h2>
+<div class="min-w-0">
   <div class="flex flex-wrap items-center gap-4">
     <FormField
       class="group/avatar relative mb-0 grid size-16 shrink-0 cursor-pointer place-items-center overflow-hidden rounded-full border border-line bg-surface-soft text-2xl text-accent"
@@ -292,4 +290,4 @@
   {/if}
   {#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
   {#if saved}<p role="status">Profile picture saved.</p>{/if}
-</Panel>
+</div>

@@ -132,7 +132,7 @@ test('desktop restores the signed-in appearance and navigation before revealing 
   await expect.poll(() => reveals(page)).toHaveLength(1);
   const [reveal] = await reveals(page);
   expect(reveal.theme).toBe('dark');
-  expect(reveal.text).toContain('Profile picture');
+  expect(reveal.text).toContain('Your display preferences');
   await expect(
     page.getByRole('button', { name: 'Sign out', exact: true }),
   ).toBeVisible();

@@ -2,23 +2,18 @@
   import Switch from './ui/Switch.svelte';
   import { appearance, appearanceError, updateAppearance } from './appearance';
   import Button from './ui/Button.svelte';
-  import Panel from './ui/Panel.svelte';
   import ThemeControls from './ui/ThemeControls.svelte';
-  import { eyebrowClass } from './ui/styles';
 </script>
 
-<Panel aria-label="Appearance preferences">
-  <p class={eyebrowClass}>YOUR WORKSPACE</p>
-  <div class="flex flex-wrap items-center justify-between gap-4 py-4">
+<div class="grid gap-5">
+  <div class="flex flex-wrap items-center justify-between gap-4">
     <strong>Theme</strong>
     <ThemeControls />
   </div>
-  <div
-    class="mb-4.5 flex items-center justify-between gap-4 py-4 [&_p]:mt-1.25 [&_p]:mb-0 compact:flex-wrap compact:items-start"
-  >
-    <div>
+  <div class="flex flex-wrap items-center justify-between gap-4">
+    <div class="min-w-0 flex-1 basis-48">
       <strong>Media density</strong>
-      <p class="text-muted">
+      <p class="mt-1.25 mb-0 text-muted">
         Hold Ctrl and scroll over a collection to change its card size.
       </p>
     </div>
@@ -50,4 +45,4 @@
     >Fade watched videos</Switch
   >
   {#if $appearanceError}<p role="status">{$appearanceError}</p>{/if}
-</Panel>
+</div>

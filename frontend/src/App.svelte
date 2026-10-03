@@ -14,7 +14,6 @@
   import SettingsLayout from './lib/ui/SettingsLayout.svelte';
   import { connectAttention, refreshAttention } from './lib/attention';
   import WindowTitlebar from './lib/ui/WindowTitlebar.svelte';
-  import AppearanceSettings from './lib/AppearanceSettings.svelte';
   import {
     appearance,
     appearanceError,
@@ -93,7 +92,6 @@
   import UserPreferences from './lib/UserPreferences.svelte';
   import AutoSaveForm from './lib/ui/AutoSaveForm.svelte';
   import PasswordSettings from './lib/PasswordSettings.svelte';
-  import ProfilePicture from './lib/ProfilePicture.svelte';
   import QuickConnect from './lib/QuickConnect.svelte';
   import OnlineAccounts from './lib/OnlineAccounts.svelte';
   import OnlineSettings from './lib/OnlineSettings.svelte';
@@ -865,21 +863,17 @@
         {#if section === 'Settings'}
           <SettingsLayout {user} bind:active={settingsSection}>
             {#if settingsSection === 'account'}
-              <ProfilePicture
-                {user}
-                changed={(id, avatar) => {
-                  if (user?.id === id) user = { ...user, avatar };
-                }}
-              />
               <UserPreferences
                 {user}
                 revision={preferencesRevision}
+                avatarChanged={(id, avatar) => {
+                  if (user?.id === id) user = { ...user, avatar };
+                }}
                 changed={(zone, format) => {
                   timeFormat = format;
                   if (user) user = { ...user, timezone: zone };
                 }}
               />
-              <AppearanceSettings />
               <PasswordSettings changed={() => void loadSettings()} />{/if}
             {#if settingsSection === 'online'}<OnlineAccounts
                 revision={accountRevision}
