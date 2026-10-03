@@ -52,7 +52,7 @@ try {
     })
     .click();
   await expect(
-    page.getByRole('heading', { name: 'Discover', exact: true }),
+    page.getByRole('heading', { name: 'Home', exact: true }),
   ).toBeVisible();
   expect(
     (await context.cookies()).find((c) => c.name === 'thelxinoe_session'),
@@ -74,6 +74,7 @@ try {
   expect(install.installabilityErrors).toEqual([]);
   for (const section of [
     'Home',
+    'Discover',
     'Movies',
     'Shows',
     'Music',
@@ -115,7 +116,7 @@ try {
   await context.setOffline(false);
   await page.getByRole('link', { name: 'Reconnect' }).click();
   await expect(
-    page.getByRole('heading', { name: 'Discover', exact: true }),
+    page.getByRole('heading', { name: 'Settings', exact: true }),
   ).toBeVisible();
   expect(
     (

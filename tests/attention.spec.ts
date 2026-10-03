@@ -4,7 +4,7 @@ import { installUiFixture } from './helpers/ui-fixture';
 test('delayed request details cannot acknowledge a newer unseen decision', async ({
   page,
 }, testInfo) => {
-  const fixture = await installUiFixture(page, { section: 'Home' });
+  const fixture = await installUiFixture(page, { section: 'Discover' });
   const entry = {
     id: 'seerr:service:7',
     revision: 'denied:2:[]',
@@ -110,7 +110,7 @@ test('delayed request details cannot acknowledge a newer unseen decision', async
 test('native request history keeps newer decisions unread until refreshed and reaches older pages', async ({
   page,
 }, testInfo) => {
-  const fixture = await installUiFixture(page, { section: 'Home' });
+  const fixture = await installUiFixture(page, { section: 'Discover' });
   let newer = false;
   let release: (() => void) | undefined;
   const seen = new Set<string>();
@@ -384,7 +384,7 @@ for (const [section, kind] of [
   test(`available ${section} requests mark their posters and acknowledge only on hover`, async ({
     page,
   }, testInfo) => {
-    const fixture = await installUiFixture(page, { section: 'Home' });
+    const fixture = await installUiFixture(page, { section: 'Discover' });
     await page.route('**/api/v1/seerr/status', (route) =>
       route.fulfill({ json: { configured: false, ready: false } }),
     );
@@ -585,7 +585,7 @@ for (const [type, section] of [
   test(`available ${type} requests open ${section} from the request list`, async ({
     page,
   }, testInfo) => {
-    const fixture = await installUiFixture(page, { section: 'Home' });
+    const fixture = await installUiFixture(page, { section: 'Discover' });
     await page.route('**/api/v1/seerr/**', (route) => {
       const path = new URL(route.request().url()).pathname;
       if (path.endsWith('/status'))

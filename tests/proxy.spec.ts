@@ -29,7 +29,7 @@ test('HTTPS setup, secure login, event replay, CSRF rejection and device revocat
     })
     .click();
   await expect(
-    page.getByRole('heading', { name: 'Discover', exact: true }),
+    page.getByRole('heading', { name: 'Home', exact: true }),
   ).toBeVisible();
   await expect(page.getByText('Connected', { exact: true })).toBeVisible();
   const cookies = await context.cookies();

@@ -3,6 +3,7 @@
   import { Film, Music, Tv, Play, MoreHorizontal } from '@lucide/svelte';
   import { serverUrl } from '../api';
   import AttentionDot from './AttentionDot.svelte';
+  import PlatformIcon from './PlatformIcon.svelte';
   import { attentionDescription, type AttentionItem } from '../attention';
   let {
     item,
@@ -13,6 +14,7 @@
     attention = [],
     onSeen,
     attentionError = '',
+    landscape = false,
   } = $props<{
     item: {
       id: string;
@@ -32,9 +34,10 @@
     attention?: AttentionItem[];
     onSeen?: () => void;
     attentionError?: string;
+    landscape?: boolean;
   }>();
   const music = $derived(['artist', 'album', 'track'].includes(item.kind));
-  const landscape = $derived(item.kind === 'episode');
+  const wide = $derived(landscape || item.kind === 'episode');
   const cardId = $props.id();
   const description = $derived(
     attentionError || attentionDescription(attention),
@@ -75,7 +78,7 @@
     <div
       class={[
         'tile-art relative grid w-full place-items-center overflow-hidden bg-[linear-gradient(130deg,#121923,#080b10_60%)] text-accent',
-        music ? 'aspect-square' : landscape ? 'aspect-video' : 'aspect-2/3',
+        music ? 'aspect-square' : wide ? 'aspect-video' : 'aspect-2/3',
       ]}
       onpointerenter={onSeen}
       role="presentation"
@@ -88,6 +91,9 @@
           alt=""
           loading="lazy"
           onerror={() => (imageFailed = true)}
+        />{:else if item.kind === 'youtube'}<PlatformIcon
+          platform="youtube"
+          class="size-12"
         />{:else if music}<Music size={48} />{:else if item.kind === 'show'}<Tv
           size={48}
         />{:else}<Film size={48} />{/if}

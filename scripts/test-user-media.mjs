@@ -28,7 +28,7 @@ async function login(page, username) {
   await expect(page.getByText('Connected', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Home', exact: true }).click();
   await expect(
-    page.getByRole('heading', { name: 'Discover', exact: true }),
+    page.getByRole('heading', { name: 'Home', exact: true }),
   ).toBeVisible();
 }
 try {

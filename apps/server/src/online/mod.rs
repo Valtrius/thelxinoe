@@ -190,6 +190,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/api/v1/online/youtube/sync", post(sync::request))
         .route("/api/v1/online/youtube/feed", get(feed::list))
         .route("/api/v1/online/youtube/browse", post(browse::list))
+        .route("/api/v1/online/youtube/home", get(browse::home))
         .route(
             "/api/v1/online/{provider}/authorization",
             axum::routing::delete(presentation::cancel),
@@ -411,5 +412,7 @@ async fn bounded_response(
     Ok((status, headers, bytes))
 }
 
+#[cfg(test)]
+mod home_tests;
 #[cfg(test)]
 mod presentation_tests;
