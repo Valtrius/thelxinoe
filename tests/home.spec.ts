@@ -171,6 +171,23 @@ test('Home combines progress, subscription uploads and live channels on desktop 
         () => document.documentElement.scrollWidth <= innerWidth,
       ),
     ).toBe(true);
+    if (width > 390)
+      await expect(
+        resume.getByRole('button', { name: 'Next Continue watching' }),
+      ).toHaveCount(0);
+    else {
+      await expect(
+        resume.getByRole('button', { name: 'Previous Continue watching' }),
+      ).toBeDisabled();
+      await expect(
+        resume.getByRole('button', { name: 'Next Continue watching' }),
+      ).toBeEnabled();
+      await expect(
+        page
+          .getByRole('region', { name: 'Next up', exact: true })
+          .getByRole('button', { name: 'Next Next up' }),
+      ).toHaveCount(0);
+    }
     const path = testInfo.outputPath(`home-${width}.png`);
     await page.screenshot({ path, fullPage: true, animations: 'disabled' });
     await testInfo.attach(`home-${width}`, { path, contentType: 'image/png' });
@@ -192,6 +209,21 @@ test('Home combines progress, subscription uploads and live channels on desktop 
       });
     }
   }
+  const next = resume.getByRole('button', { name: 'Next Continue watching' });
+  const previous = resume.getByRole('button', {
+    name: 'Previous Continue watching',
+  });
+  await next.click();
+  await expect(next).toBeDisabled();
+  await expect(previous).toBeEnabled();
+  await expect
+    .poll(() =>
+      resume.locator('.grid-flow-col').evaluate((node) => node.scrollLeft),
+    )
+    .toBeGreaterThan(0);
+  await previous.click();
+  await expect(previous).toBeDisabled();
+  await expect(next).toBeEnabled();
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });
@@ -209,13 +241,25 @@ test('Home hides empty sections and disconnected caches while source failures re
     page.getByRole('region', { name: 'Live now', exact: true }),
   ).toContainText('Kick channel');
   await expect(page.getByText(/Twitch is unavailable/)).toBeVisible();
-  data.connected = false;
   data.library = {
     continue_watching: [],
     next_up: [],
     watch_later: [],
     favorites: [],
   };
+  await page.getByRole('button', { name: 'Refresh Home', exact: true }).click();
+  await expect(
+    page.getByRole('region', { name: 'YouTube subscriptions', exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('heading', { name: 'Next up', exact: true }),
+  ).toHaveCount(0);
+  await page.screenshot({
+    path: testInfo.outputPath('home-youtube-only.png'),
+    fullPage: true,
+    animations: 'disabled',
+  });
+  data.connected = false;
   await page.getByRole('button', { name: 'Refresh Home', exact: true }).click();
   for (const title of [
     'Continue watching',

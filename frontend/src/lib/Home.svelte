@@ -448,9 +448,7 @@
             />
           {/each}
         </MediaRow>
-      {:else}<h2 class="m-0 text-base font-semibold tracking-tight">
-          Next up
-        </h2>{/if}
+      {/if}
       {#if youtube.next_up.length}
         <MediaRow label="YouTube subscriptions">
           {#each youtube.next_up.map(youtubeItem) as item (item.id)}
