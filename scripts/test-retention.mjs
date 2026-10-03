@@ -123,17 +123,17 @@ try {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page
     .getByRole('navigation', { name: 'Settings navigation' })
-    .getByRole('button', { name: 'Retention', exact: true })
+    .getByRole('button', { name: 'Auto-delete', exact: true })
     .click();
   await expect(
-    page.getByRole('heading', { name: 'Watched media retention', exact: true }),
+    page.getByRole('heading', { name: 'Auto-delete', exact: true }),
   ).toBeVisible();
   await page
-    .getByRole('heading', { name: 'Watched media retention', exact: true })
+    .getByRole('heading', { name: 'Auto-delete', exact: true })
     .scrollIntoViewIfNeeded();
   await expect(
-    page.getByRole('button', { name: 'Save movie policy' }),
-  ).toBeEnabled();
+    page.getByRole('group', { name: 'Movies', exact: true }),
+  ).toBeVisible();
   await page.waitForLoadState('networkidle');
   await page
     .locator('section.retention')

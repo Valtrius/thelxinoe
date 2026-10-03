@@ -24,9 +24,12 @@ export function youtubeVideoPresentation(
   } = context;
   const activeDownload = downloadEvent?.download ?? video.download;
   const downloadReady = activeDownload?.status === 'ready';
-  const downloadPending = ['queued', 'downloading', 'processing'].includes(
-    activeDownload?.status ?? '',
-  );
+  const downloadPending = [
+    'queued',
+    'waiting_for_space',
+    'downloading',
+    'processing',
+  ].includes(activeDownload?.status ?? '');
   const isBusy = isPlaying || isLaunching;
   const canPlay =
     mpvReady &&
@@ -76,6 +79,9 @@ export function youtubeVideoPresentation(
   if (downloadBusy && !activeDownload) downloadLabel = 'Starting download';
   else
     switch (activeDownload?.status) {
+      case 'waiting_for_space':
+        downloadLabel = 'Waiting for space';
+        break;
       case 'queued':
         downloadLabel = 'Download queued';
         break;

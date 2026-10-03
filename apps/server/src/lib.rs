@@ -7,6 +7,7 @@ mod accounts;
 #[cfg(test)]
 mod accounts_tests;
 mod appearance;
+mod auto_delete;
 mod avatars;
 pub mod config;
 pub mod error;

@@ -143,12 +143,7 @@ pub(crate) async fn request_for(
     }
     let bundle = tools::ready(state).await?;
     let p = p.clone();
-    let result = storage::request_for(bundle, p, &state.db, video).await?;
-    if !result {
-        return Err(ApiError::conflict(
-            "Add this video to your watchlist or pin it before downloading",
-        ));
-    }
+    storage::request_for(bundle, p, &state.db, video).await?;
     Ok(Json(json!({"queued":true})))
 }
 
@@ -167,15 +162,9 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
     storage::recover_downloads(&state.db).await?;
     state.tools.wait_ready().await;
     loop {
-        if cleanup(&state).await.is_err() {
-            tracing::warn!("Online download cleanup could not complete; it will retry");
-        }
         if enabled(&state).await? {
             let job = storage::claim_download(&state.db).await?;
             if let Some((video, generation, bundle)) = job {
-                state
-                    .emit(None, "online.download.changed", json!({}))
-                    .await?;
                 let outcome = download(&state, &video, &generation, &bundle).await;
                 let status = outcome.unwrap_or("failed");
                 if status != "ready" {
@@ -203,15 +192,6 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
-}
-
-async fn cleanup(state: &AppState) -> anyhow::Result<()> {
-    let root = state.config.cache.join("youtube");
-    if !root.exists() {
-        return Ok(());
-    }
-    let root = root.canonicalize()?;
-    storage::cleanup(root, &state.db).await
 }
 
 fn parse_progress(line: &str) -> Option<(i64, Option<i64>, Option<i64>, &'static str)> {
@@ -259,17 +239,19 @@ async fn download(
     generation: &str,
     bundle: &str,
 ) -> anyhow::Result<&'static str> {
+    if !crate::auto_delete::admit(state, video, generation).await? {
+        return Ok("waiting_for_space");
+    }
+    state
+        .emit(None, "online.download.changed", json!({}))
+        .await?;
+    let budget = crate::auto_delete::budget(&state.db, video.to_owned()).await?;
     let mut bundle: tools::OnlineSnapshot = serde_json::from_str(bundle)?;
     state.tools.runtime.restore_online(&mut bundle)?;
     tools::verify(&bundle.ffmpeg).await?;
     tools::verify(&bundle.ffprobe).await?;
     tools::verify(&bundle.yt_dlp).await?;
     tools::verify(&bundle.deno).await?;
-    let retained = storage::cache_size(&state.db).await?;
-    ensure!(
-        retained < 48 * 1024 * 1024 * 1024,
-        "Public download cache reached its 50 GiB limit"
-    );
     let directory = state
         .config
         .cache
@@ -278,10 +260,9 @@ async fn download(
         .join(generation);
     tokio::fs::create_dir_all(&directory).await?;
     let directory = directory.canonicalize()?;
-    ensure!(
-        fs2::available_space(&directory)? > 3 * 1024 * 1024 * 1024,
-        "Insufficient download space"
-    );
+    if fs2::available_space(&directory)? <= 3 * 1024 * 1024 * 1024 {
+        return Ok("waiting_for_space");
+    }
     let target = directory.join("media.mp4");
     let mut args = extract::arguments(&bundle, video);
     args.truncate(args.len() - 4); // replace metadata output flags and canonical URL
@@ -295,8 +276,6 @@ async fn download(
             "download:THELXINOE_PROGRESS:%(progress.downloaded_bytes)s\t%(progress.total_bytes)s\t%(progress.total_bytes_estimate)s\t%(progress.eta)s\t%(info.vcodec)s\t%(info.acodec)s",
             "--no-warnings",
             "--no-simulate",
-            "--max-filesize",
-            "2G",
             "--match-filter",
             "!is_live & duration <= 21600",
             "-f",
@@ -308,6 +287,7 @@ async fn download(
         .map(Into::into),
     );
     args.push(bundle.ffmpeg.path.clone().into_os_string());
+    args.extend(["--max-filesize".into(), budget.to_string().into()]);
     args.push("-o".into());
     args.push(target.clone().into_os_string());
     args.extend([
@@ -340,7 +320,7 @@ async fn download(
                 let generation=generation.to_owned();
                 let interested=storage::has_interest(&state.db, video, generation).await?;
                 ensure!(interested&&enabled(state).await?,"Download cancelled after its interest or permission changed");
-                ensure!(fs2::available_space(&directory)?>1024*1024*1024,"Download stopped to preserve free space");
+                if fs2::available_space(&directory)?<=1024*1024*1024 {return Ok("waiting_for_space");}
                 let mut entries=tokio::fs::read_dir(&directory).await?;let mut bytes=0u64;
                 while let Some(entry)=entries.next_entry().await? {let meta=entry.metadata().await?;ensure!(meta.is_file(),"Unexpected download output");bytes=bytes.saturating_add(meta.len());}
                 ensure!(bytes<=6*1024*1024*1024,"Download temporary files exceed limit");
@@ -386,6 +366,11 @@ async fn download(
     );
     let video = video.to_owned();
     let generation = generation.to_owned();
-    storage::publish_download(target, metadata, value, video, generation, &state.db).await?;
-    Ok("ready")
+    Ok(
+        if storage::publish_download(target, metadata, value, video, generation, &state.db).await? {
+            "ready"
+        } else {
+            "waiting_for_space"
+        },
+    )
 }

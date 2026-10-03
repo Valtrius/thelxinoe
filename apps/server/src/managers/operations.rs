@@ -284,7 +284,7 @@ async fn mutate(
                 .await?;
             }
         } else if action == "delete" {
-            // Retention additionally requires the root's automatic-deletion opt-in.
+            // Automatic deletion separately requires confirmed manager tracking.
             tokio::fs::remove_file(&file.path)
                 .await
                 .map_err(|_| ApiError::conflict("Could not remove the confirmed-unmanaged file"))?;

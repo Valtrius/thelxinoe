@@ -35,19 +35,13 @@ pub(super) async fn remove(
 ) -> anyhow::Result<bool> {
     db.write("online.downloads.remove", move|db|{
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let protected=tx.query_row("SELECT EXISTS(SELECT 1 FROM youtube_video_state WHERE video_id=?1 AND user_id<>?2 AND (watchlist=1 OR pinned=1)) OR EXISTS(SELECT 1 FROM playback_sessions WHERE youtube_video_id=?1 AND state IN ('ready','playing','paused') AND updated_at>?3)",params![video,user,now()-120],|r|r.get::<_,bool>(0))?;
+        let protected=tx.query_row("SELECT EXISTS(SELECT 1 FROM youtube_video_state WHERE video_id=?1 AND user_id<>?2 AND (watchlist=1 OR pinned=1)) OR EXISTS(SELECT 1 FROM youtube_download_requests WHERE video_id=?1 AND user_id<>?2) OR EXISTS(SELECT 1 FROM playback_sessions WHERE youtube_video_id=?1 AND state IN ('ready','playing','paused') AND updated_at>?3)",params![video,user,now()-120],|r|r.get::<_,bool>(0))?;
         if protected {return Ok(false);}
-        let row=tx.query_row("SELECT generation,state FROM youtube_downloads WHERE video_id=?1",[&video],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?;
-        if let Some((generation,status))=row {
-            ensure!(uuid::Uuid::parse_str(&generation).is_ok(),"Invalid download generation");
-            // The worker owns a running process and removes its cancelled generation.
-            if status!="downloading" && root.exists() {
-                let root=root.canonicalize()?;
-                let path=root.join(&video).join(&generation);
-                if path.exists(){ensure!(path.canonicalize()?==path,"Download path changed");std::fs::remove_dir_all(path)?;}
-            }
-            tx.execute("DELETE FROM youtube_downloads WHERE video_id=?1",[&video])?;
-        }
+        crate::auto_delete::remove_ready(&tx,&root,&video)?;
+        // A running worker observes cancellation and removes its own partial output.
+        tx.execute("DELETE FROM youtube_downloads WHERE video_id=?1",[&video])?;
+        tx.execute("DELETE FROM youtube_download_requests WHERE video_id=?1",[&video])?;
+        tx.execute("UPDATE video_retention_candidates SET state='cancelled',error='Download removed manually' WHERE video_id=?1 AND state='pending'",[&video])?;
         tx.execute("INSERT INTO youtube_download_suppressed VALUES(?1) ON CONFLICT DO NOTHING",[video])?;
         tx.commit()?;Ok(true)
     }).await
@@ -98,12 +92,10 @@ pub(super) async fn request_for(
 ) -> anyhow::Result<bool> {
     db.write("online.downloads.request_for", move |db| {
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let interest=tx.query_row("SELECT EXISTS(SELECT 1 FROM youtube_video_state WHERE user_id=?1 AND video_id=?2 AND (watchlist=1 OR pinned=1))",params![p.user.id,video],|r|r.get::<_,bool>(0))?;
-        if !interest { return Ok(false); }
+        tx.execute("INSERT INTO youtube_download_requests(user_id,video_id,requested_at) VALUES (?1,?2,?3) ON CONFLICT(user_id,video_id) DO UPDATE SET requested_at=excluded.requested_at",params![p.user.id,video,now()])?;
         tx.execute("INSERT INTO youtube_media(video_id) VALUES (?1) ON CONFLICT DO NOTHING",[&video])?;
         tx.execute("DELETE FROM youtube_download_suppressed WHERE video_id=?1",[&video])?;
-        // A retained interest is required before acquiring shared physical media.
-        tx.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) VALUES (?1,?2,'queued',?3,?4,?4) ON CONFLICT(video_id) DO UPDATE SET generation=excluded.generation,state='queued',tools=excluded.tools,error=NULL,downloaded_bytes=0,total_bytes=NULL,eta_seconds=NULL,media_kind=NULL,updated_at=excluded.updated_at WHERE youtube_downloads.state IN ('failed','unavailable','extractor_authentication_required')",params![video,thelxinoe_core::id(),serde_json::to_string(&bundle)?,now()])?;
+        tx.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) VALUES (?1,?2,'queued',?3,?4,?4) ON CONFLICT(video_id) DO UPDATE SET generation=excluded.generation,state='queued',tools=excluded.tools,error=NULL,path=NULL,size=NULL,modified=NULL,probe=NULL,completed_at=NULL,downloaded_bytes=0,total_bytes=NULL,eta_seconds=NULL,media_kind=NULL,updated_at=excluded.updated_at WHERE youtube_downloads.state IN ('failed','unavailable','extractor_authentication_required')",params![video,thelxinoe_core::id(),serde_json::to_string(&bundle)?,now()])?;
         tx.commit()?;Ok(true)
     }).await
 }
@@ -132,7 +124,7 @@ pub(super) async fn claim_download(
 ) -> anyhow::Result<Option<(String, String, String)>> {
     db.write("online.downloads.claim_download", |db| {
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let row=tx.query_row("SELECT video_id,generation,tools FROM youtube_downloads d WHERE state='queued' AND EXISTS(SELECT 1 FROM youtube_video_state s WHERE s.video_id=d.video_id AND (s.watchlist=1 OR s.pinned=1)) ORDER BY updated_at LIMIT 1",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional()?;
+        let row=tx.query_row("SELECT video_id,generation,tools FROM youtube_downloads d WHERE state IN ('queued','waiting_for_space') AND (EXISTS(SELECT 1 FROM youtube_video_state s WHERE s.video_id=d.video_id AND (s.watchlist=1 OR s.pinned=1)) OR EXISTS(SELECT 1 FROM youtube_download_requests r WHERE r.video_id=d.video_id)) ORDER BY updated_at LIMIT 1",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional()?;
         if let Some((video,_,_))=&row {tx.execute("UPDATE youtube_downloads SET state='downloading',updated_at=?2 WHERE video_id=?1",params![video,now()])?;}
         tx.commit()?;Ok(row)
     }).await
@@ -144,37 +136,7 @@ pub(super) async fn finish_download(
     generation: String,
     db: &Database,
 ) -> anyhow::Result<()> {
-    db.write("online.downloads.finish_download", move |db| {db.execute("UPDATE youtube_downloads SET state=?3,error=CASE WHEN ?3='ready' THEN NULL ELSE ?3 END,updated_at=?4 WHERE video_id=?1 AND generation=?2",params![video,generation,status,now()])?;Ok(())}).await
-}
-
-pub(super) async fn cleanup(root: PathBuf, db: &Database) -> anyhow::Result<()> {
-    db.write("online.downloads.cleanup", move |db| {
-        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let protection="EXISTS(SELECT 1 FROM youtube_video_state s WHERE s.video_id=youtube_downloads.video_id AND (s.watchlist=1 OR s.pinned=1)) OR EXISTS(SELECT 1 FROM playback_sessions p WHERE p.youtube_video_id=youtube_downloads.video_id AND p.state IN ('ready','playing','paused') AND p.updated_at>".to_owned()+&(now()-120).to_string()+")";
-        tx.execute(&format!("UPDATE youtube_downloads SET unprotected_at=NULL WHERE {protection}"),[])?;
-        tx.execute(&format!("UPDATE youtube_downloads SET unprotected_at=?1 WHERE unprotected_at IS NULL AND NOT ({protection}) AND state!='downloading'"),[now()])?;
-        let candidate=tx.query_row(&format!("SELECT video_id,generation,path,size,modified FROM youtube_downloads WHERE unprotected_at<?1 AND state!='downloading' AND NOT ({protection}) ORDER BY unprotected_at LIMIT 1"),[now()-86400],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,Option<i64>>(3)?,r.get::<_,Option<String>>(4)?))).optional()?;
-        if let Some((video,generation,file,size,modified))=candidate {
-            ensure!(sync::identifier(&video,11)&&uuid::Uuid::parse_str(&generation).is_ok(),"Invalid download identity");
-            let path=root.join(&video).join(&generation);
-            if path.exists() {
-                ensure!(path.canonicalize()?==path,"Download cleanup path changed");
-                if let Some(file)=file {
-                    let file=PathBuf::from(file);
-                    let expected=path.join("media.mp4");
-                    ensure!(file.canonicalize()?==expected,"Downloaded file path changed before cleanup");
-                    let metadata=std::fs::metadata(&expected)?;
-                    ensure!(size==Some(metadata.len() as i64)&&modified==Some(metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos().to_string()),"Downloaded file generation changed before cleanup");
-                }
-                // The write transaction fences new interests/playback until the
-                // captured generation is removed. Only owned cache files enter here.
-                std::fs::remove_dir_all(path)?;
-            }
-            tx.execute("DELETE FROM playback_sessions WHERE youtube_video_id=?1",[&video])?;
-            tx.execute("DELETE FROM youtube_downloads WHERE video_id=?1 AND generation=?2",params![video,generation])?;
-        }
-        tx.commit()?;Ok(())
-    }).await
+    db.write("online.downloads.finish_download", move |db| {db.execute("UPDATE youtube_downloads SET state=?3,error=CASE WHEN ?3 IN ('ready','waiting_for_space') THEN NULL ELSE ?3 END,updated_at=?4 WHERE video_id=?1 AND generation=?2 AND state='downloading'",params![video,generation,status,now()])?;Ok(())}).await
 }
 
 pub(super) async fn publish_progress(
@@ -188,17 +150,6 @@ pub(super) async fn publish_progress(
     }).await
 }
 
-pub(super) async fn cache_size(db: &Database) -> anyhow::Result<i64> {
-    db.read("online.downloads.cache_size", |db| {
-        Ok(db.query_row(
-            "SELECT COALESCE(SUM(size),0) FROM youtube_downloads WHERE state='ready'",
-            [],
-            |r| r.get::<_, i64>(0),
-        )?)
-    })
-    .await
-}
-
 pub(super) async fn publish_download(
     target: PathBuf,
     metadata: std::fs::Metadata,
@@ -206,8 +157,14 @@ pub(super) async fn publish_download(
     video: String,
     generation: String,
     db: &Database,
-) -> anyhow::Result<()> {
-    db.write("online.downloads.publish_download", move |db| {let changed=db.execute("UPDATE youtube_downloads SET path=?3,size=?4,modified=?5,probe=?6 WHERE video_id=?1 AND generation=?2 AND state='downloading'",params![video,generation,target.to_string_lossy(),metadata.len() as i64,metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos().to_string(),serde_json::to_string(&value)?])?;ensure!(changed==1,"Download was cancelled");Ok(())}).await
+) -> anyhow::Result<bool> {
+    db.write("online.downloads.publish_download", move |db| {
+        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        ensure!(metadata.len() as i64<=crate::auto_delete::download_limit(&tx,&video)?,"Downloaded file exceeds the storage limit");
+        if metadata.len() as i64>crate::auto_delete::available_budget(&tx,&video)? {return Ok(false);}
+        let changed=tx.execute("UPDATE youtube_downloads SET path=?3,size=?4,modified=?5,probe=?6,state='ready',error=NULL,completed_at=?7,updated_at=?7 WHERE video_id=?1 AND generation=?2 AND state='downloading'",params![video,generation,target.to_string_lossy(),metadata.len() as i64,metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos().to_string(),serde_json::to_string(&value)?,now()])?;
+        ensure!(changed==1,"Download was cancelled");tx.commit()?;Ok(true)
+    }).await
 }
 
 pub(crate) fn record_state(
@@ -235,5 +192,5 @@ pub(super) async fn has_interest(
     video: String,
     generation: String,
 ) -> anyhow::Result<bool> {
-    db.read("online.downloads.has_interest", move |db| Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM youtube_video_state WHERE video_id=?1 AND (watchlist=1 OR pinned=1)) AND EXISTS(SELECT 1 FROM youtube_downloads WHERE video_id=?1 AND generation=?2 AND state='downloading')",params![video,generation],|r|r.get::<_,bool>(0))?)).await
+    db.read("online.downloads.has_interest", move |db| Ok(db.query_row("SELECT (EXISTS(SELECT 1 FROM youtube_video_state WHERE video_id=?1 AND (watchlist=1 OR pinned=1)) OR EXISTS(SELECT 1 FROM youtube_download_requests WHERE video_id=?1)) AND EXISTS(SELECT 1 FROM youtube_downloads WHERE video_id=?1 AND generation=?2 AND state='downloading')",params![video,generation],|r|r.get::<_,bool>(0))?)).await
 }

@@ -67,7 +67,7 @@ pub(in super::super) fn video(row: &rusqlite::Row<'_>, grant: &str) -> rusqlite:
     let broadcast: String = row.get(6)?;
     let status: Option<String> = row.get(17)?;
     let download = status.map(|status| -> rusqlite::Result<Value> { Ok(json!({
-        "videoId":id,"status":match status.as_str(){"ready"=>"ready","queued"=>"queued","downloading"=>"downloading","processing"=>"processing",_=>"failed"},
+        "videoId":id,"status":match status.as_str(){"ready"=>"ready","queued"=>"queued","waiting_for_space"=>"waiting_for_space","downloading"=>"downloading","processing"=>"processing",_=>"failed"},
         "fileSizeBytes":row.get::<_,Option<i64>>(18)?.unwrap_or(0),"pinned":row.get::<_,bool>(12)?,"quality":"1080p",
         "downloadedBytes":row.get::<_,Option<i64>>(21)?.unwrap_or(0),"totalBytes":row.get::<_,Option<i64>>(22)?,"etaSeconds":row.get::<_,Option<i64>>(23)?,"mediaKind":row.get::<_,Option<String>>(24)?,"requestedAt":date(row.get::<_,Option<i64>>(19)?.unwrap_or(0)),"errorMessage":row.get::<_,Option<String>>(20)?
     })) }).transpose()?;

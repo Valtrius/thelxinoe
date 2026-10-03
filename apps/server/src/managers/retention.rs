@@ -21,7 +21,6 @@ pub(super) fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/admin/retention", get(list))
         .route("/api/v1/admin/retention/policy/{domain}", post(policy))
-        .route("/api/v1/admin/retention/root/{id}", post(root_policy))
         .route("/api/v1/admin/retention/evaluate", post(evaluate))
         .route("/api/v1/admin/retention/{id}/{action}", post(action))
 }
@@ -31,13 +30,18 @@ struct Policy {
     grace_seconds: i64,
     exclude_specials: bool,
     trigger_users: Vec<String>,
+    #[serde(default = "default_video_limit")]
+    storage_limit_bytes: i64,
+}
+fn default_video_limit() -> i64 {
+    100_000_000_000
 }
 #[derive(Clone)]
 struct Eligible {
     stamp: String,
     user: String,
+    users: Vec<String>,
     grace: i64,
-    automatic: bool,
 }
 
 #[cfg(test)]
@@ -60,7 +64,17 @@ pub(super) async fn revalidate_operation(
 
 async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
-    let value = storage::list(&state.db).await?;
+    let mut value = storage::list(&state.db).await?;
+    let (videos, usage) = crate::auto_delete::list(&state.db).await?;
+    let items = value["items"].as_array_mut().expect("retention items");
+    items.extend(videos);
+    items.sort_by_key(|item| {
+        (
+            item["state"] != "pending",
+            item["due_at"].as_i64().unwrap_or(0),
+        )
+    });
+    value["video_usage"] = json!(usage);
     Ok(Json(value))
 }
 async fn policy(
@@ -70,45 +84,35 @@ async fn policy(
     Json(mut input): Json<Policy>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
-    if !["movies", "shows"].contains(&domain.as_str())
+    if !["movies", "shows", "videos"].contains(&domain.as_str())
         || !(0..=31536000).contains(&input.grace_seconds)
         || input.trigger_users.len() > 100
+        || !(1..=9_000_000_000_000_000).contains(&input.storage_limit_bytes)
     {
-        return Err(ApiError::bad("Invalid retention policy"));
+        return Err(ApiError::bad("Invalid auto-delete policy"));
     }
     input.trigger_users.sort();
     input.trigger_users.dedup();
-    if input.enabled && input.trigger_users.is_empty() {
-        return Err(ApiError::bad("Choose at least one retention-trigger user"));
+    if domain == "videos" {
+        input.trigger_users.clear();
+    }
+    if domain != "videos" && input.enabled && input.trigger_users.is_empty() {
+        return Err(ApiError::bad(
+            "Choose at least one person whose watched status is required",
+        ));
     }
     let _lease = state.media_operations.write().await;
     let valid = storage::policy(&state.db, domain, input, p).await?;
     if !valid {
-        return Err(ApiError::bad("Unknown retention-trigger user"));
+        return Err(ApiError::bad("Unknown selected user"));
     }
-    Ok(Json(json!({"saved":true})))
-}
-#[derive(Deserialize)]
-struct RootPolicy {
-    automatic_unmanaged_deletion: bool,
-}
-async fn root_policy(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(key): Path<String>,
-    Json(input): Json<RootPolicy>,
-) -> Result<Json<Value>> {
-    let p = security::require(&state, &headers, Capability::ManageServer).await?;
-    let _lease = state.media_operations.write().await;
-    let changed = storage::root_policy(&state.db, key, input, p).await?;
-    if !changed {
-        return Err(ApiError::not_found());
-    }
+    state.emit(None, "retention.changed", json!({})).await?;
     Ok(Json(json!({"saved":true})))
 }
 async fn evaluate(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
     let count = evaluate_all(&state, Some(p.user.id)).await?;
+    crate::auto_delete::evaluate(&state).await?;
     Ok(Json(json!({"created":count})))
 }
 async fn evaluate_all(state: &AppState, actor: Option<String>) -> Result<usize> {
@@ -147,14 +151,18 @@ async fn action(
     Path((key, action)): Path<(String, String)>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
+    if crate::auto_delete::action(&state, &key, &action, &p.user.id).await? {
+        state.emit(None, "retention.changed", json!({})).await?;
+        return Ok(Json(json!({"saved":true})));
+    }
     if action == "delete" {
         delete_locked(&state, &key, Some(p.user.id), false).await?;
-    } else if ["cancel", "keep"].contains(&action.as_str()) {
+    } else if action == "keep" {
         let _lease = state.media_operations.write().await;
         let changed = storage::action(&state.db, key, action, p).await?;
         if !changed {
             return Err(ApiError::conflict(
-                "Only pending retention can be cancelled or kept here",
+                "Only scheduled deletions can be kept here",
             ));
         }
     } else {
@@ -184,7 +192,12 @@ async fn delete_locked(
 }
 pub(crate) async fn run(state: AppState) -> anyhow::Result<()> {
     loop {
-        let _ = evaluate_all(&state, None).await;
+        if let Err(error) = evaluate_all(&state, None).await {
+            tracing::warn!(?error, "Watched deletion evaluation will retry");
+        }
+        if let Err(error) = crate::auto_delete::evaluate(&state).await {
+            tracing::warn!(%error, "Video deletion evaluation will retry");
+        }
         let ready = storage::run(&state.db).await?;
         for key in ready {
             let _ = delete_locked(&state, &key, None, true).await;
