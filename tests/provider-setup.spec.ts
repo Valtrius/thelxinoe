@@ -105,6 +105,18 @@ test('YouTube setup saves on the page and becomes a connection action', async ({
   await expect(page.getByLabel('Authorized redirect URI')).toHaveValue(
     'https://media.test/api/v1/online/youtube/callback',
   );
+  await expect(page.getByLabel('Application home page')).toHaveValue(
+    'https://media.test/about/index.html',
+  );
+  await expect(page.getByLabel('Application privacy policy link')).toHaveValue(
+    'https://media.test/about/privacy.html',
+  );
+  await expect(
+    page.getByRole('link', { name: 'Open home page' }),
+  ).toHaveAttribute('href', 'https://media.test/about/index.html');
+  await expect(
+    page.getByRole('link', { name: 'Open privacy policy' }),
+  ).toHaveAttribute('href', 'https://media.test/about/privacy.html');
   await expect(page.getByLabel('Google client ID')).toHaveCSS(
     'border-top-width',
     '1px',
@@ -197,6 +209,10 @@ test('missing public URL keeps YouTube setup actionable at mobile width', async 
   await expect(
     page.getByRole('status').filter({ hasText: 'THELXINOE_PUBLIC_URL' }),
   ).toBeVisible();
+  await expect(page.getByLabel('Application home page')).toHaveCount(0);
+  await expect(
+    page.getByRole('link', { name: 'Open privacy policy' }),
+  ).toHaveCount(0);
   await expect(
     page.getByRole('button', { name: 'Connect YouTube', exact: true }),
   ).toHaveCount(0);
@@ -215,6 +231,65 @@ test('missing public URL keeps YouTube setup actionable at mobile width', async 
   });
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
+});
+
+test('Google branding pages are public and readable without JavaScript', async ({
+  browser,
+}, testInfo) => {
+  const context = await browser.newContext({
+    baseURL: testInfo.project.use.baseURL,
+    javaScriptEnabled: false,
+    viewport: { width: 390, height: 844 },
+  });
+  try {
+    const page = await context.newPage();
+    const apiRequests: string[] = [];
+    page.on('request', (request) => {
+      if (new URL(request.url()).pathname.startsWith('/api/'))
+        apiRequests.push(request.url());
+    });
+    const response = await page.goto('/about/index.html');
+    expect(response?.status()).toBe(200);
+    await expect(
+      page.getByRole('heading', { name: 'Thelxinoe', exact: true }),
+    ).toBeVisible();
+    await expect(page.locator('body')).toHaveCSS('overflow-y', 'auto');
+    await page
+      .getByRole('link', { name: 'Privacy Policy', exact: true })
+      .first()
+      .click();
+    await expect(page).toHaveURL(/\/about\/privacy\.html$/);
+    await expect(
+      page.getByRole('heading', { name: 'Privacy Policy', exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText('https://www.googleapis.com/auth/youtube.readonly', {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole('link', { name: 'Google Account connections' }),
+    ).toHaveAttribute('href', 'https://myaccount.google.com/connections');
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    await testInfo.attach('public-privacy-mobile', {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: 'image/png',
+    });
+    await page.getByRole('link', { name: 'Thelxinoe home page' }).click();
+    await expect(page).toHaveURL(/\/about\/index\.html$/);
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await testInfo.attach('public-home-desktop', {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: 'image/png',
+    });
+    expect(apiRequests).toEqual([]);
+  } finally {
+    await context.close();
+  }
 });
 
 test('Kick tracking works without credentials and optional metadata saves inline', async ({

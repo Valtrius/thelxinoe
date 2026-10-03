@@ -69,7 +69,10 @@
     their own YouTube account. Replacing the application credentials requires
     everyone to reconnect.
   </p>
-  <ProviderSetupInstructions platform="youtube" />
+  <ProviderSetupInstructions
+    platform="youtube"
+    redirectUri={config?.redirect_uri}
+  />
   {#if config?.redirect_uri}
     <FormField
       >Authorized redirect URI<input
