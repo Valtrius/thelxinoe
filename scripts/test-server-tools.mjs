@@ -487,13 +487,17 @@ http.server.ThreadingHTTPServer(('0.0.0.0',8080),Proxy).serve_forever()`;
     await scenario(
       'offline first boot imports four verified seeds',
       async () => {
+        const policy = (await api('/admin/product-update')).policy;
+        assert.equal(policy.policy, 'automatic');
         const items = await check();
         assert.equal(items.length, 4);
         for (const item of items) {
           assert.ok(item.installed, item.id);
           assert.equal(item.integrity_error, null, item.id);
+          assert.equal(item.policy, 'inherit', item.id);
+          assert.equal(item.effective_policy, policy.policy, item.id);
         }
-        return items;
+        return { policy, items };
       },
     );
     await scenario('all tool routes require authentication', async () => {
@@ -582,6 +586,11 @@ http.server.ThreadingHTTPServer(('0.0.0.0',8080),Proxy).serve_forever()`;
     await scenario(
       'Notify marks a new build for administrators until manual installation completes',
       async () => {
+        await api('/admin/product-update/policy', 'POST', {
+          policy: 'notify',
+          window_start: 3,
+          window_end: 5,
+        });
         original = (await inventory()).find(
           (item) => item.id === 'yt-dlp',
         ).installed;
@@ -589,6 +598,8 @@ http.server.ThreadingHTTPServer(('0.0.0.0',8080),Proxy).serve_forever()`;
         catalog[0].id = identify(catalog[0]);
         await saveCatalog();
         const found = (await check()).find((item) => item.id === 'yt-dlp');
+        assert.equal(found.policy, 'inherit');
+        assert.equal(found.effective_policy, 'notify');
         assert.equal(found.installed.id, original.id);
         assert.equal(found.candidate.id, catalog[0].id);
         const notice = (await api('/me/attention')).items.find(
