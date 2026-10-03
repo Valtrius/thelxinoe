@@ -1311,8 +1311,12 @@ test('mobile navigation opens over full-width content and restores the desktop s
     await drawer.getByRole('button', { name: 'Home', exact: true }).click();
     await expect(drawer).toBeHidden();
     await expect(
-      page.getByRole('heading', { name: 'Discover', exact: true }),
+      page.getByRole('heading', { name: 'Home', exact: true }),
     ).toBeVisible();
+    await menu.click();
+    await drawer.getByRole('button', { name: 'Discover', exact: true }).click();
+    await expect(drawer).toBeHidden();
+    await expect(page.locator('.page-header h1')).toHaveText('Discover');
     await menu.click();
     await drawer.getByRole('button', { name: 'Settings', exact: true }).click();
     await expect(drawer).toBeHidden();

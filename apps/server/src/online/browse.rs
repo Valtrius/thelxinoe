@@ -10,7 +10,7 @@ use crate::{
 };
 use axum::{Json, extract::State, http::HeaderMap};
 use rusqlite::{Connection, params, params_from_iter, types::Value as SqlValue};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thelxinoe_core::now;
 
@@ -21,6 +21,20 @@ pub(super) fn date(timestamp: i64) -> String {
 }
 
 pub(super) use storage::one;
+
+#[derive(Serialize)]
+pub struct HomeFeed {
+    continue_watching: Vec<Value>,
+    next_up: Vec<Value>,
+}
+
+pub async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<HomeFeed>> {
+    let principal = security::principal(&state, &headers).await?;
+    let grant = grants::issue(&state, &principal, "youtube-artwork", 300).await?;
+    Ok(Json(
+        storage::home_feed(&state.db, principal.user.id, grant).await?,
+    ))
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

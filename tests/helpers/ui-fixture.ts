@@ -7,6 +7,7 @@ export async function installUiFixture(
   options: {
     role?: 'admin' | 'user';
     section?: string;
+    preserveNavigation?: boolean;
     settingsSection?: string;
     signedIn?: boolean;
     approvalUsers?: { id: string; username: string; enabled: boolean }[];
@@ -68,15 +69,15 @@ export async function installUiFixture(
   const unexpected: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.addInitScript(
-    ({ userId, section, settingsSection }) => {
-      localStorage.setItem(
-        `thelxinoe::${userId}:navigation`,
-        JSON.stringify({ section, settingsSection }),
-      );
+    ({ userId, section, settingsSection, preserveNavigation }) => {
+      const key = `thelxinoe::${userId}:navigation`;
+      if (preserveNavigation && localStorage.getItem(key)) return;
+      localStorage.setItem(key, JSON.stringify({ section, settingsSection }));
     },
     {
       userId: user.id,
       section: options.section ?? 'Settings',
+      preserveNavigation: options.preserveNavigation ?? false,
       settingsSection: options.settingsSection ?? 'account',
     },
   );
@@ -121,6 +122,17 @@ export async function installUiFixture(
           },
         },
       });
+    if (path === '/me/home')
+      return json({
+        continue_watching: [],
+        next_up: [],
+        watch_later: [],
+        favorites: [],
+      });
+    if (['/online/youtube', '/online/twitch'].includes(path))
+      return json({ configured: false, account: { status: 'disconnected' } });
+    if (path === '/online/kick')
+      return json({ connected: false, configured: false, items: [] });
     if (path === '/me/appearance') {
       if (method === 'PATCH') appearance = { ...appearance, ...body };
       return json(appearance);

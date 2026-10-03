@@ -194,7 +194,7 @@ for (const platform of ['YouTube', 'Twitch', 'Kick']) {
         page.getByRole('button', { name: 'Manage channels', exact: true }),
       ).toHaveCount(0);
     await page.goto(`/?section=${platform}`);
-    await expect(page.locator('.page-header h1')).toHaveText('Discover');
+    await expect(page.locator('.page-header h1')).toHaveText('Home');
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     await page
       .getByRole('button', { name: 'Provider applications', exact: true })

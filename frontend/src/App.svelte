@@ -83,6 +83,7 @@
   import { connectTools } from './lib/providers/tools-events';
   import NativePlayer from './lib/NativePlayer.svelte';
   import Discover from './lib/seerr/Discover.svelte';
+  import Home from './lib/Home.svelte';
   import Playlists from './lib/Playlists.svelte';
   import History from './lib/History.svelte';
   import StatisticsView from './lib/statistics/StatisticsView.svelte';
@@ -109,7 +110,16 @@
   let playbackRequest = 0;
   let mediaRevision = $state(0),
     focusId = $state<string | undefined>(undefined);
-  import { House, Film, Tv, Music, Play, Radio, Menu } from '@lucide/svelte';
+  import {
+    House,
+    Compass,
+    Film,
+    Tv,
+    Music,
+    Play,
+    Radio,
+    Menu,
+  } from '@lucide/svelte';
   import {
     api,
     ApiError,
@@ -166,6 +176,7 @@
     } | null>(null);
   const sections = [
     { name: 'Home', icon: House },
+    { name: 'Discover', icon: Compass },
     { name: 'Movies', icon: Film },
     { name: 'Shows', icon: Tv },
     { name: 'Music', icon: Music },
@@ -183,7 +194,7 @@
       const saved = JSON.parse(localStorage.getItem(key) ?? 'null');
       const query = new URLSearchParams(location.search);
       const requested = /^#discover\/(movie|tv)\/\d+$/.test(location.hash)
-        ? 'Home'
+        ? 'Discover'
         : query.has('youtube_link')
           ? 'YouTube'
           : query.get('section');
@@ -858,7 +869,7 @@
             class="m-0 text-[18px] leading-6 compact:text-[17px]"
             data-sidebar-resize="x-pos"
           >
-            {section === 'Home' ? 'Discover' : section}
+            {section}
           </h1>
         </div>
         <span
@@ -1155,6 +1166,24 @@
             {/if}
           </SettingsLayout>
         {:else if section === 'Home'}
+          <Home
+            {user}
+            revision={mediaRevision}
+            {accountRevision}
+            {playing}
+            play={playMedia}
+            navigate={(name) => void navigate(name)}
+            details={(id, kind) => {
+              void navigate(
+                ['artist', 'album', 'track'].includes(kind)
+                  ? 'Music'
+                  : ['show', 'season', 'episode'].includes(kind)
+                    ? 'Shows'
+                    : 'Movies',
+              ).then(() => (focusId = id));
+            }}
+          />
+        {:else if section === 'Discover'}
           <Discover
             {user}
             navigate={(name) => void navigate(name)}

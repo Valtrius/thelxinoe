@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     House,
+    Compass,
     Film,
     Tv,
     Music,
@@ -30,6 +31,7 @@
   }>();
   const library = [
     { name: 'Home', icon: House },
+    { name: 'Discover', icon: Compass },
     { name: 'Movies', icon: Film },
     { name: 'Shows', icon: Tv },
     { name: 'Music', icon: Music },
@@ -49,7 +51,7 @@
     return $attention.filter(
       (item) =>
         item.target === name.toLowerCase() ||
-        (name === 'Home' && item.target === 'requests'),
+        (name === 'Discover' && item.target === 'requests'),
     );
   }
 </script>

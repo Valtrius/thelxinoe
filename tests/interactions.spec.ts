@@ -106,7 +106,7 @@ test('provider switches persist, block disabled APIs and update another session'
         ).status(),
       ).toBe(404);
     }
-    await expect(peer.locator('.page-header h1')).toHaveText('Discover');
+    await expect(peer.locator('.page-header h1')).toHaveText('Home');
     await page.reload();
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     await page

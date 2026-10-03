@@ -319,7 +319,7 @@ const results = (items: unknown[]) => ({
 });
 
 async function discoverFixture(page: Page, role: 'admin' | 'user' = 'user') {
-  const fixture = await installUiFixture(page, { section: 'Home', role });
+  const fixture = await installUiFixture(page, { section: 'Discover', role });
   const requests: unknown[] = [];
   let requested = false;
   await page.route('**/api/v1/seerr/**', async (route) => {

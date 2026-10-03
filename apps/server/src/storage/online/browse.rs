@@ -2,6 +2,27 @@
 use super::*;
 use thelxinoe_database::Database;
 
+pub(super) async fn home_feed(
+    db: &Database,
+    user: String,
+    grant: String,
+) -> anyhow::Result<HomeFeed> {
+    db.read("online.browse.home_feed", move |db| {
+        let recorded = "v.user_id=?1 AND v.available=1 AND v.broadcast IN ('none','replay') AND COALESCE(s.watched,0)=0";
+        let played = "COALESCE((SELECT MAX(h.updated_at) FROM playback_history h WHERE h.user_id=v.user_id AND h.platform='youtube' AND h.media_id='youtube:'||v.video_id),s.updated_at,0)";
+        let (select, from) = VIDEO_SELECT.split_once(" FROM ").expect("video query has a FROM clause");
+        let sql = format!("{select}, {played} AS last_played FROM {from} WHERE {recorded} AND (COALESCE(v.is_short,0)=0 OR v.broadcast='replay') AND s.position>1 ORDER BY last_played DESC,v.video_id LIMIT 50");
+        let continue_watching = db.prepare(&sql)?.query_map([&user], |row| {
+            let mut item = video(row, &grant)?;
+            item["last_played"] = json!(row.get::<_,i64>(25)?);
+            Ok(item)
+        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let sql = format!("{VIDEO_SELECT} WHERE {recorded} AND (v.is_short=0 OR v.broadcast='replay') AND COALESCE(s.position,0)<=1 AND EXISTS(SELECT 1 FROM youtube_subscriptions sub WHERE sub.user_id=v.user_id AND sub.channel_id=v.channel_id AND sub.active=1) ORDER BY v.published_at DESC,v.video_id LIMIT 50");
+        let next_up = db.prepare(&sql)?.query_map([&user], |row| video(row,&grant))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(HomeFeed { continue_watching, next_up })
+    }).await
+}
+
 pub(super) async fn list(
     db: &Database,
     input: Request,
