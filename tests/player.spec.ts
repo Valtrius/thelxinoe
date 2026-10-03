@@ -805,6 +805,8 @@ test('controls hide, recover with keyboard, retain volume, seek, and stay inside
   await expect(
     page.getByRole('group', { name: 'Playback settings' }),
   ).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator('.primary-sidebar')).toBeHidden();
   const playerWidth = (await page.locator('.player').boundingBox())!.width;
   const outsidePlayer = page.viewportSize()!.width - playerWidth;
   await page.setViewportSize({ width: outsidePlayer + 380, height: 844 });

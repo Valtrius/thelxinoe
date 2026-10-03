@@ -11,6 +11,7 @@
   import { onMount, tick } from 'svelte';
   import { Accordion } from 'bits-ui';
   import Sidebar from './lib/ui/Sidebar.svelte';
+  import NavigationDrawer from './lib/ui/NavigationDrawer.svelte';
   import SettingsLayout from './lib/ui/SettingsLayout.svelte';
   import { connectAttention, refreshAttention } from './lib/attention';
   import WindowTitlebar from './lib/ui/WindowTitlebar.svelte';
@@ -52,15 +53,11 @@
     mobileNavOpen = $state(false);
   let settingsSection = $state('account');
   const sidebarMotion = createSidebarMotion();
-  const collapsed = $derived(
-    compact ? !mobileNavOpen : $appearance.sidebar_collapsed,
-  );
+  const collapsed = $derived(compact ? false : $appearance.sidebar_collapsed);
   async function toggleSidebar() {
     const animate = sidebarMotion.capture(shell, main);
     settleLayoutMotions();
-    if (compact) mobileNavOpen = !mobileNavOpen;
-    else
-      updateAppearance({ sidebar_collapsed: !$appearance.sidebar_collapsed });
+    updateAppearance({ sidebar_collapsed: !$appearance.sidebar_collapsed });
     await tick();
     syncMediaLayouts();
     animate();
@@ -107,7 +104,7 @@
   let playbackRequest = 0;
   let mediaRevision = $state(0),
     focusId = $state<string | undefined>(undefined);
-  import { House, Film, Tv, Music, Play, Radio } from '@lucide/svelte';
+  import { House, Film, Tv, Music, Play, Radio, Menu } from '@lucide/svelte';
   import {
     api,
     ApiError,
@@ -606,6 +603,7 @@
     const media = window.matchMedia('(max-width: 720px)');
     const resize = () => {
       compact = media.matches;
+      mobileNavOpen = false;
     };
     resize();
     media.addEventListener('change', resize);
@@ -770,29 +768,46 @@
     class="app-shell flex h-dvh overflow-hidden desktop-shell:mt-8 desktop-shell:h-[calc(100dvh-32px)]"
     bind:this={shell}
   >
-    <Sidebar
-      {section}
-      {collapsed}
-      {user}
-      navigate={(name) => void navigate(name)}
-      toggle={() => void toggleSidebar()}
-      logout={() => void logout()}
-    />
-    {#if compact && mobileNavOpen}<button
-        class="sidebar-scrim fixed inset-0 z-60 bg-black/53"
-        aria-label="Close navigation"
-        onclick={() => (mobileNavOpen = false)}
-      ></button>{/if}
+    {#snippet navigation(currentUser: User)}
+      <Sidebar
+        {section}
+        {collapsed}
+        user={currentUser}
+        navigate={(name) => void navigate(name)}
+        toggle={() => void toggleSidebar()}
+        logout={() => void logout()}
+        onClose={compact ? () => (mobileNavOpen = false) : undefined}
+      />
+    {/snippet}
+    {#if compact}
+      {#if mobileNavOpen}
+        <NavigationDrawer onClose={() => (mobileNavOpen = false)}>
+          {@render navigation(user)}
+        </NavigationDrawer>
+      {/if}
+    {:else}
+      {@render navigation(user)}
+    {/if}
     <main
-      class={[
-        'content flex min-w-0 flex-1 flex-col overflow-hidden',
-        compact && mobileNavOpen && 'ml-18',
-      ]}
+      class="content flex min-w-0 flex-1 flex-col overflow-hidden"
       bind:this={main}
     >
       <header
-        class="page-header flex shrink-0 items-center gap-5 border-b border-line bg-background/88 px-6 py-2 narrow:px-4 compact:gap-2.5 compact:px-3 compact:py-4"
+        class="page-header flex shrink-0 items-center gap-5 border-b border-line bg-background/88 px-6 py-2 narrow:px-4 compact:gap-2.5 compact:px-3 compact:py-1.5"
       >
+        {#if compact}
+          <Button
+            variant="ghost"
+            size="icon"
+            class="size-11 shrink-0"
+            aria-label="Open navigation"
+            aria-haspopup="dialog"
+            aria-controls="mobile-navigation"
+            aria-expanded={mobileNavOpen}
+            onclick={() => (mobileNavOpen = true)}
+            ><Menu class="size-5" /></Button
+          >
+        {/if}
         <div class="mr-auto min-w-0">
           <h1
             class="m-0 text-[18px] leading-6 compact:text-[17px]"
