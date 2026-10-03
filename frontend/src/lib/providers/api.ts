@@ -108,7 +108,9 @@ export function downloadEvent(payload: {
     download: {
       ...previous,
       videoId: payload.video_id,
-      status: (['queued', 'downloading', 'ready'].includes(payload.state)
+      status: (['queued', 'waiting_for_space', 'downloading', 'ready'].includes(
+        payload.state,
+      )
         ? payload.state
         : 'failed') as YoutubeDownload['status'],
       fileSizeBytes: payload.size ?? 0,
@@ -198,7 +200,13 @@ async function getDownload(videoId: string): Promise<YoutubeDownload> {
   if (!d) throw new Error('This download is no longer available.');
   return {
     videoId,
-    status: (['queued', 'downloading', 'processing', 'ready'].includes(d.state)
+    status: ([
+      'queued',
+      'waiting_for_space',
+      'downloading',
+      'processing',
+      'ready',
+    ].includes(d.state)
       ? d.state
       : 'failed') as YoutubeDownload['status'],
     fileSizeBytes: d.size ?? 0,
@@ -413,11 +421,8 @@ export const api = {
       throw new Error(
         'Signed-in browser cookies are not supported by this server.',
       );
-    // A user's retained interest protects the server's shared downloaded file.
-    await request(`/online/youtube/videos/${videoId}`, 'PUT', { pinned: true });
     await request(`/online/youtube/videos/${videoId}/download`, 'POST');
     const download = await getDownload(videoId);
-    download.pinned = true;
     return download;
   },
   cancelYoutubeDownload: async (id: string) => {

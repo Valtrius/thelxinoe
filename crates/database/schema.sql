@@ -91,7 +91,6 @@ CREATE TABLE library_roots (
     name TEXT NOT NULL,
     kind TEXT NOT NULL CHECK(kind IN ('movies','shows','music')),
     path TEXT NOT NULL UNIQUE,
-    automatic_unmanaged_deletion INTEGER NOT NULL DEFAULT 0 CHECK(automatic_unmanaged_deletion IN (0,1)),
     last_scan INTEGER,
     scan_error TEXT
 ) STRICT;
@@ -317,6 +316,7 @@ CREATE TABLE youtube_state (
     watched INTEGER NOT NULL DEFAULT 0 CHECK(watched IN (0,1)),
     position REAL NOT NULL DEFAULT 0 CHECK(position>=0),
     updated_at INTEGER NOT NULL,
+    watched_revision INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(user_id,video_id),
     FOREIGN KEY(user_id,video_id) REFERENCES youtube_videos(user_id,video_id) ON DELETE CASCADE
 ) STRICT;
@@ -324,7 +324,7 @@ CREATE TABLE youtube_state (
 CREATE TABLE youtube_downloads (
     video_id TEXT NOT NULL PRIMARY KEY,
     generation TEXT NOT NULL,
-    state TEXT NOT NULL CHECK(state IN ('queued','downloading','ready','extractor_authentication_required','unavailable','failed','deleting')),
+    state TEXT NOT NULL CHECK(state IN ('queued','waiting_for_space','downloading','ready','extractor_authentication_required','unavailable','failed','deleting')),
     tools TEXT NOT NULL,
     path TEXT,
     size INTEGER,
@@ -333,7 +333,7 @@ CREATE TABLE youtube_downloads (
     error TEXT,
     requested_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    unprotected_at INTEGER,
+    completed_at INTEGER,
     downloaded_bytes INTEGER NOT NULL DEFAULT 0,
     total_bytes INTEGER,
     eta_seconds INTEGER,
@@ -342,6 +342,14 @@ CREATE TABLE youtube_downloads (
 
 CREATE TABLE youtube_media (
     video_id TEXT NOT NULL PRIMARY KEY
+) STRICT;
+
+CREATE TABLE youtube_download_requests (
+    user_id TEXT NOT NULL,
+    video_id TEXT NOT NULL,
+    requested_at INTEGER NOT NULL,
+    PRIMARY KEY(user_id,video_id),
+    FOREIGN KEY(user_id,video_id) REFERENCES youtube_videos(user_id,video_id) ON DELETE CASCADE
 ) STRICT;
 
 CREATE TABLE twitch_attempts (
@@ -643,11 +651,12 @@ CREATE TABLE service_updates (
 ) STRICT;
 
 CREATE TABLE retention_policies (
-    domain TEXT NOT NULL PRIMARY KEY CHECK(domain IN ('movies','shows')),
+    domain TEXT NOT NULL PRIMARY KEY CHECK(domain IN ('movies','shows','videos')),
     enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
     grace_seconds INTEGER NOT NULL DEFAULT 604800 CHECK(grace_seconds BETWEEN 0 AND 31536000),
     exclude_specials INTEGER NOT NULL DEFAULT 1 CHECK(exclude_specials IN (0,1)),
     trigger_users TEXT NOT NULL DEFAULT '[]',
+    storage_limit_bytes INTEGER NOT NULL DEFAULT 100000000000 CHECK(storage_limit_bytes>0),
     updated_at INTEGER NOT NULL
 ) STRICT;
 
@@ -657,12 +666,29 @@ CREATE TABLE retention_candidates (
     operation_id TEXT REFERENCES media_operations(id),
     stamp TEXT NOT NULL,
     trigger_user TEXT REFERENCES users(id) ON DELETE SET NULL,
-    state TEXT NOT NULL CHECK(state IN ('pending','executing','complete','cancelled','blocked')),
+    state TEXT NOT NULL CHECK(state IN ('pending','executing','complete','cancelled','kept','blocked')),
     eligible_at INTEGER NOT NULL,
     due_at INTEGER NOT NULL,
     error TEXT,
-    UNIQUE(media_id,stamp)
+    watched_users TEXT NOT NULL DEFAULT '[]'
 ) STRICT;
+
+CREATE INDEX retention_candidates_media ON retention_candidates(media_id,stamp,state);
+
+CREATE TABLE video_retention_candidates (
+    id TEXT NOT NULL PRIMARY KEY,
+    video_id TEXT NOT NULL,
+    generation TEXT NOT NULL,
+    stamp TEXT NOT NULL,
+    title TEXT NOT NULL,
+    reason TEXT NOT NULL CHECK(reason IN ('watched','storage_limit')),
+    state TEXT NOT NULL CHECK(state IN ('pending','executing','complete','cancelled','kept','blocked')),
+    eligible_at INTEGER NOT NULL,
+    due_at INTEGER NOT NULL,
+    watched_users TEXT NOT NULL DEFAULT '[]',
+    error TEXT
+) STRICT;
+CREATE INDEX video_retention_video ON video_retention_candidates(video_id,generation,state);
 
 CREATE TABLE retention_exclusions (
     service_id TEXT NOT NULL REFERENCES manager_services(id),
@@ -966,6 +992,11 @@ SELECT u.id,u.username,u.role,
     u.time_format_override,d.server_time_format
 FROM users u CROSS JOIN defaults d;
 
+CREATE TRIGGER youtube_watched_revision AFTER UPDATE OF watched ON youtube_state
+WHEN OLD.watched != NEW.watched BEGIN
+ UPDATE youtube_state SET watched_revision=OLD.watched_revision+1 WHERE user_id=NEW.user_id AND video_id=NEW.video_id;
+END;
+
 CREATE TRIGGER retention_watched_revision AFTER UPDATE OF watched ON media_state
 WHEN OLD.watched != NEW.watched BEGIN
  UPDATE media_state SET watched_revision=OLD.watched_revision+1 WHERE user_id=NEW.user_id AND media_id=NEW.media_id;
@@ -1018,6 +1049,7 @@ CREATE INDEX playback_auth_session ON playback_sessions(user_id,auth_session_id)
 -- Defaults required before any administrator saves settings.
 INSERT INTO settings(key,value) VALUES ('segments.config','{"local":true,"external":false}');
 INSERT INTO retention_policies(domain,updated_at) VALUES ('movies',0),('shows',0);
+INSERT INTO retention_policies(domain,grace_seconds,updated_at) VALUES ('videos',86400,0);
 
 CREATE TABLE server_tools (
     id TEXT PRIMARY KEY,

@@ -85,7 +85,7 @@
   import Discover from './lib/seerr/Discover.svelte';
   import Home from './lib/Home.svelte';
   import Playlists from './lib/Playlists.svelte';
-  import History from './lib/History.svelte';
+  import AuditSettings from './lib/AuditSettings.svelte';
   import StatisticsView from './lib/statistics/StatisticsView.svelte';
   import UserPreferences from './lib/UserPreferences.svelte';
   import AutoSaveForm from './lib/ui/AutoSaveForm.svelte';
@@ -1037,10 +1037,7 @@
                   {timeFormat}
                 />{/if}
               {#if settingsSection === 'services'}<ManagerOwnership />{/if}
-              {#if settingsSection === 'retention'}<RetentionSettings
-                  {timezone}
-                  {timeFormat}
-                />{/if}
+              {#if settingsSection === 'retention'}<RetentionSettings />{/if}
               {#if settingsSection === 'server'}<Panel>
                   <div class="flex items-center justify-between gap-3">
                     <h2>Server status</h2>
@@ -1152,7 +1149,10 @@
                   </Accordion.Root>
                 </Panel>
               {/if}
-              {#if settingsSection === 'audit'}<History {user} audit />{/if}
+              {#if settingsSection === 'audit'}<AuditSettings
+                  {user}
+                  {timeFormat}
+                />{/if}
               {#if settingsSection === 'jobs'}<ActivitySettings
                   {jobs}
                   checkpoint={() =>

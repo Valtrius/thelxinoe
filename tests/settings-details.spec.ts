@@ -1,6 +1,240 @@
 import { expect, test } from '@playwright/test';
 import { installUiFixture } from './helpers/ui-fixture';
 
+test('auto-delete policies save on change and Audit owns scheduled deletions and outcomes', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, { role: 'admin' });
+  const policies = ['movies', 'shows', 'videos'].map((domain) => ({
+    domain,
+    enabled: false,
+    grace_seconds: domain === 'videos' ? 86400 : 604800,
+    exclude_specials: true,
+    trigger_users: [],
+    storage_limit_bytes: 100_000_000_000,
+  }));
+  const writes: { domain: string; value: (typeof policies)[number] }[] = [];
+  let rejectNextVideoSave = false;
+  const items = [
+    {
+      id: 'video-pending',
+      domain: 'videos',
+      video_id: 'abcdefghijk',
+      title: 'Shared video',
+      state: 'pending',
+      reason: 'watched',
+      due_at: 1791648000,
+      error: null,
+      watched_users: ['Alice', 'Bob'],
+    },
+    {
+      id: 'movie-pending',
+      domain: 'movies',
+      media_id: 'movie',
+      title: 'Arrival',
+      state: 'pending',
+      reason: 'watched',
+      due_at: 1791648000,
+      error: null,
+      watched_users: ['Alice', 'Bob'],
+    },
+  ];
+  await page.route('**/api/v1/admin/retention**', async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith('/retention'))
+      return route.fulfill({
+        json: {
+          policies,
+          items,
+          users: [
+            { id: 'alice', username: 'Alice' },
+            { id: 'bob', username: 'Bob' },
+          ],
+          video_usage: {
+            unpinned_bytes: 28_000_000_000,
+            pinned_bytes: 180_000_000_000,
+            waiting: 1,
+          },
+        },
+      });
+    if (path.includes('/policy/')) {
+      if (path.endsWith('/videos') && rejectNextVideoSave) {
+        rejectNextVideoSave = false;
+        return route.fulfill({
+          status: 503,
+          json: { message: 'Temporary failure' },
+        });
+      }
+      writes.push({
+        domain: path.split('/').at(-1)!,
+        value: route.request().postDataJSON(),
+      });
+      Object.assign(
+        policies.find((p) => path.endsWith('/' + p.domain))!,
+        route.request().postDataJSON(),
+      );
+      return route.fulfill({ json: { saved: true } });
+    }
+    const item = items.find((i) => path.includes('/' + i.id + '/'));
+    if (item) {
+      item.state = path.endsWith('/keep') ? 'kept' : 'complete';
+      return route.fulfill({ json: { saved: true } });
+    }
+    return route.fulfill({ status: 404, json: {} });
+  });
+  await page.goto('/');
+  await page
+    .getByRole('navigation', { name: 'Settings navigation' })
+    .getByRole('button', { name: 'Auto-delete', exact: true })
+    .click();
+  const movies = page.getByRole('group', { name: 'Movies', exact: true });
+  const videos = page.getByRole('group', {
+    name: 'Video downloads',
+    exact: true,
+  });
+  await expect(
+    movies.getByRole('switch', { name: 'Auto-delete watched movies' }),
+  ).toBeDisabled();
+  await movies.getByRole('checkbox', { name: 'Alice', exact: true }).check();
+  await movies.getByRole('checkbox', { name: 'Bob', exact: true }).check();
+  await movies
+    .getByRole('switch', { name: 'Auto-delete watched movies' })
+    .check();
+  await expect
+    .poll(() => policies[0].enabled && policies[0].trigger_users.length === 2)
+    .toBe(true);
+  await expect(
+    page
+      .locator('.settings-content')
+      .getByRole('button', { name: /save|refresh/i }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('region', { name: 'Scheduled deletions' }),
+  ).toHaveCount(0);
+  await expect(page.getByText('Deletion history', { exact: true })).toHaveCount(
+    0,
+  );
+  await expect(
+    movies.getByRole('checkbox', { name: 'Bob', exact: true }),
+  ).toBeChecked();
+  await expect(
+    videos.getByLabel('Unpinned storage limit (GB)', { exact: true }),
+  ).toHaveValue('100');
+  await expect(videos.getByText(/180.*GB/)).toBeVisible();
+  await expect(
+    videos.getByLabel('Delete after (days)', { exact: true }),
+  ).toHaveCount(0);
+  await videos
+    .getByLabel('Delete downloads', { exact: true })
+    .selectOption('after-watching');
+  await expect(
+    videos.getByLabel('Unpinned storage limit (GB)', { exact: true }),
+  ).toBeVisible();
+  await expect(
+    videos.getByLabel('Delete after (days)', { exact: true }),
+  ).toHaveValue('1');
+  await videos
+    .getByLabel('Unpinned storage limit (GB)', { exact: true })
+    .fill('125');
+  expect(policies[2].storage_limit_bytes).toBe(100_000_000_000);
+  await videos
+    .getByLabel('Unpinned storage limit (GB)', { exact: true })
+    .blur();
+  await expect
+    .poll(() => policies[2].storage_limit_bytes)
+    .toBe(125_000_000_000);
+  await expect(
+    videos.getByLabel('Unpinned storage limit (GB)', { exact: true }),
+  ).toHaveValue('125');
+  await videos.scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: testInfo.outputPath('auto-delete-after-watching.png'),
+    fullPage: true,
+  });
+  await videos
+    .getByLabel('Delete downloads', { exact: true })
+    .selectOption('storage-limit');
+  await expect.poll(() => policies[2].enabled).toBe(false);
+  rejectNextVideoSave = true;
+  await videos
+    .getByLabel('Unpinned storage limit (GB)', { exact: true })
+    .fill('200');
+  await videos
+    .getByLabel('Unpinned storage limit (GB)', { exact: true })
+    .blur();
+  await expect(
+    videos.getByLabel('Unpinned storage limit (GB)', { exact: true }),
+  ).toHaveValue('125');
+  await expect(page.getByRole('alert')).toContainText('could not be saved');
+  await expect(
+    videos.getByLabel('Unpinned storage limit (GB)', { exact: true }),
+  ).toBeVisible();
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await videos.scrollIntoViewIfNeeded();
+    await expect(
+      videos.getByLabel('Unpinned storage limit (GB)', { exact: true }),
+    ).toBeVisible();
+    expect(
+      await page
+        .locator('.workspace-scroll')
+        .evaluate((e) => e.scrollWidth <= e.clientWidth),
+    ).toBe(true);
+    await page.screenshot({
+      path: testInfo.outputPath(`auto-delete-${width}.png`),
+      fullPage: true,
+    });
+  }
+  await page
+    .getByRole('navigation', { name: 'Settings navigation' })
+    .getByRole('button', { name: 'Audit', exact: true })
+    .click();
+  await page
+    .getByLabel('Audit view', { exact: true })
+    .selectOption('scheduled');
+  const queue = page.getByRole('region', { name: 'Scheduled deletions' });
+  await expect(
+    queue.getByRole('button', { name: 'Cancel', exact: true }),
+  ).toHaveCount(0);
+  await queue
+    .locator('article')
+    .filter({ hasText: 'Shared video' })
+    .getByRole('button', { name: 'Keep', exact: true })
+    .click();
+  await expect(queue.getByText('Shared video', { exact: true })).toHaveCount(0);
+  page.once('dialog', (dialog) => dialog.dismiss());
+  await queue.getByRole('button', { name: 'Delete now' }).click();
+  await expect(queue.getByText('Arrival', { exact: true })).toBeVisible();
+  page.once('dialog', (dialog) => dialog.accept());
+  await queue.getByRole('button', { name: 'Delete now' }).click();
+  await expect(queue.getByText('No scheduled deletions.')).toBeVisible();
+  await page
+    .getByLabel('Audit view', { exact: true })
+    .selectOption('deletions');
+  const history = page.getByRole('region', { name: 'Deletion history' });
+  await expect(
+    history.locator('article').filter({ hasText: 'Shared video' }),
+  ).toContainText('Kept');
+  await expect(
+    history.locator('article').filter({ hasText: 'Arrival' }),
+  ).toContainText('Deleted');
+  await page.screenshot({
+    path: testInfo.outputPath('audit-deletions.png'),
+    fullPage: true,
+  });
+  await page
+    .getByRole('navigation', { name: 'Settings navigation' })
+    .getByRole('button', { name: 'Auto-delete', exact: true })
+    .click();
+  await expect(
+    videos.getByLabel('Unpinned storage limit (GB)', { exact: true }),
+  ).toHaveValue('125');
+  expect(
+    writes.filter((w) => w.domain === 'movies').at(-1)?.value.trigger_users,
+  ).toEqual(['alice', 'bob']);
+  expect(fixture.errors).toEqual([]);
+});
+
 test('display preferences group account controls and clear cancelled avatar edits', async ({
   page,
 }, testInfo) => {
@@ -360,7 +594,7 @@ test('settings sections adapt without hiding controls or stretching fields', asy
   await page
     .getByRole('searchbox', { name: 'Find a setting' })
     .fill('grace period');
-  await nav.getByRole('button', { name: 'Retention', exact: true }).click();
+  await nav.getByRole('button', { name: 'Auto-delete', exact: true }).click();
   await expect(
     page.getByRole('searchbox', { name: 'Find a setting' }),
   ).toHaveValue('');
@@ -382,7 +616,7 @@ test('settings sections adapt without hiding controls or stretching fields', asy
       'Playback',
       'Server',
       'Episode analysis',
-      'Retention',
+      'Auto-delete',
       'Backups',
       'People',
       'Activity',
@@ -397,9 +631,9 @@ test('settings sections adapt without hiding controls or stretching fields', asy
           )
           .first(),
       ).toBeVisible();
-      if (name === 'Retention')
+      if (name === 'Auto-delete')
         await expect(
-          page.getByRole('button', { name: 'Save movie policy' }),
+          page.getByRole('group', { name: 'Movies', exact: true }),
         ).toBeVisible();
       await page.locator('.workspace-scroll').evaluate((node) => {
         node.scrollTop = 0;

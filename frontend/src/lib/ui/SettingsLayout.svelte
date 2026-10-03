@@ -101,9 +101,10 @@
     },
     {
       id: 'retention',
-      label: 'Retention',
+      label: 'Auto-delete',
       icon: Hourglass,
-      keywords: 'watched deletion grace period movies tv seasons library roots',
+      keywords:
+        'auto-delete retention watched deletion grace period movies tv seasons videos storage limit pins',
     },
     {
       id: 'backups',

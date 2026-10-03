@@ -165,7 +165,7 @@ async fn reacquisition_restores_exact_episode_ids_and_preserves_foreign_exclusio
             db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,defaults,version,enabled,checked_at,error) VALUES ('sonarr','Fixture','sonarr','container',8989,'g',X'00','[]','{}','1',1,1,NULL)",[])?;
             let targets=json!([{"id":"ret-file","generation":"first","path":"fixture","root":"fixture","size":0,"modified":"1","fingerprint":"1","ownership":"managed","claims":[{"service_id":"sonarr","service_generation":"g","manager_file_id":17,"entity_id":9,"manager_path":"fixture","external_id":"42","members":[37],"server_path":"fixture"}]}]);
             db.execute("INSERT INTO media_operations VALUES ('operation',NULL,'ret-movie','delete','complete',?1,1,1,NULL)",[targets.to_string()])?;
-            db.execute("INSERT INTO retention_candidates VALUES ('candidate','ret-movie','operation','stamp','alice','complete',1,1,NULL)",[])?;
+            db.execute("INSERT INTO retention_candidates(id,media_id,operation_id,stamp,trigger_user,state,eligible_at,due_at,error) VALUES ('candidate','ret-movie','operation','stamp','alice','complete',1,1,NULL)",[])?;
             db.execute("INSERT INTO retention_exclusions VALUES ('sonarr','42',5,?1)",[owned])?;
             Ok(())
         }).await.unwrap();
@@ -239,8 +239,11 @@ async fn watched_revision_protection_and_generation_are_revalidated() {
     state
         .db
         .write("test.fixture", |db| {
+            assert!(eligibility(db, "ret-movie")?.is_none(), "Unmanaged files never qualify");
+            db.execute("UPDATE media_files SET ownership='managed'", [])?;
+            assert!(eligibility(db, "ret-movie")?.is_none(), "Bob has not watched");
+            db.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES ('bob','ret-movie',1,1)", [])?;
             let original = eligibility(db, "ret-movie")?.unwrap();
-            assert!(!original.automatic);
             db.execute(
                 "UPDATE media_state SET updated_at=999,favorite=1 WHERE media_id='ret-movie'",
                 [],
@@ -284,79 +287,22 @@ async fn watched_revision_protection_and_generation_are_revalidated() {
 }
 
 #[tokio::test]
-async fn automatic_deletion_requires_grace_and_root_optin_and_cannot_replay() {
+async fn unmanaged_media_is_excluded_from_the_auto_delete_queue() {
     let (_temp, state, path) = movie().await;
-    assert_eq!(evaluate_all(&state, None).await.unwrap(), 1);
+    state.db.write("test.watched", |db| {
+        db.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES ('bob','ret-movie',1,1)", [])?;
+        Ok(())
+    }).await.unwrap();
     assert_eq!(evaluate_all(&state, None).await.unwrap(), 0);
-    let (candidate, operation) = state
-        .db
-        .write("test.fixture", |db| {
-            Ok(db.query_row(
-                "SELECT id,operation_id FROM retention_candidates",
-                [],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-            )?)
-        })
-        .await
-        .unwrap();
-    assert!(
-        revalidate_operation(&state, &operation, true)
-            .await
-            .is_err()
-    );
-    assert!(
-        revalidate_operation(&state, &operation, false)
-            .await
-            .is_ok()
-    );
-    state
-        .db
-        .write("test.fixture", |db| {
-            db.execute(
-                "UPDATE library_roots SET automatic_unmanaged_deletion=1",
-                [],
-            )?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-    assert!(
-        revalidate_operation(&state, &operation, true)
-            .await
-            .is_err(),
-        "Grace has not elapsed"
-    );
-    state
-        .db
-        .write("test.fixture", |db| {
-            db.execute("UPDATE retention_candidates SET due_at=0", [])?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-    assert!(revalidate_operation(&state, &operation, true).await.is_ok());
-    delete_locked(&state, &candidate, None, true).await.unwrap();
-    assert!(!path.exists());
-    assert!(delete_locked(&state, &candidate, None, true).await.is_err());
-    state
-        .db
-        .write("test.fixture", |db| {
-            assert_eq!(
-                db.query_row("SELECT state FROM retention_candidates", [], |r| r
-                    .get::<_, String>(0))?,
-                "complete"
-            );
-            Ok(())
-        })
-        .await
-        .unwrap();
+    assert!(path.exists());
 }
 
 #[tokio::test]
-async fn season_requires_complete_confirmed_aired_metadata_and_one_users_watched_set() {
+async fn season_requires_complete_confirmed_aired_metadata_and_all_selected_users() {
     let (_temp, state, _) = movie().await;
     let refreshed = now();
     state.db.write("test.fixture", move |db| {
+        db.execute("UPDATE media_files SET ownership='managed'",[])?;
         db.execute("UPDATE library_roots SET kind='shows'",[])?;
         db.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at,metadata) VALUES ('show','ret-root','show','show','Show',1,?1)",[json!({"refreshed_at":refreshed,"status":"Ended","seasons":[{"season_number":1,"episode_count":2}]}).to_string()])?;
         db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES ('season','ret-root','season','show','season','Season',1,1)",[])?;
@@ -372,6 +318,8 @@ async fn season_requires_complete_confirmed_aired_metadata_and_one_users_watched
         db.execute("UPDATE retention_policies SET enabled=1,trigger_users='[\"alice\",\"bob\"]' WHERE domain='shows'",[])?;
         assert!(eligibility(db,"season")?.is_none(),"Users' partial watches cannot be combined");
         db.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES ('alice','e2',1,1)",[])?;
+        assert!(eligibility(db,"season")?.is_none(),"Every selected user must finish the season");
+        db.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES ('bob','e1',1,1)",[])?;
         assert!(eligibility(db,"season")?.is_some());
         db.execute("UPDATE media SET sort_number=0 WHERE id='season'",[])?;
         assert!(eligibility(db,"season")?.is_none(),"Specials are excluded by default");

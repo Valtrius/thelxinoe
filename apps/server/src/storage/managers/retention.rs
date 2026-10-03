@@ -10,17 +10,16 @@ pub(super) async fn revalidate_operation(
     db.read("managers.retention.revalidate_operation", move|db|{
         let candidate=db.query_row("SELECT media_id,stamp,due_at,state FROM retention_candidates WHERE operation_id=?1",[operation],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,String>(3)?))).optional()?;
         let Some((media,stamp,due,status))=candidate else {return Ok(true)};
-        Ok(["pending","executing"].contains(&status.as_str()) && eligibility(db,&media)?.is_some_and(|e|e.stamp==stamp && (!automatic||(e.automatic&&now()>=due))))
+        Ok(["pending","executing"].contains(&status.as_str()) && eligibility(db,&media)?.is_some_and(|e|e.stamp==stamp && (!automatic||now()>=due)))
     }).await
 }
 
 pub(super) async fn list(db: &Database) -> anyhow::Result<Value> {
     db.read("managers.retention.list", |db|{
-        let policies=db.prepare("SELECT domain,enabled,grace_seconds,exclude_specials,trigger_users FROM retention_policies")?.query_map([],|r|Ok(json!({"domain":r.get::<_,String>(0)?,"enabled":r.get::<_,bool>(1)?,"grace_seconds":r.get::<_,i64>(2)?,"exclude_specials":r.get::<_,bool>(3)?,"trigger_users":serde_json::from_str::<Value>(&r.get::<_,String>(4)?).unwrap_or_default()})))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let items=db.prepare("SELECT c.id,c.media_id,m.title,c.state,c.eligible_at,c.due_at,c.error,u.username FROM retention_candidates c JOIN media m ON m.id=c.media_id LEFT JOIN users u ON u.id=c.trigger_user ORDER BY c.eligible_at DESC LIMIT 200")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"media_id":r.get::<_,String>(1)?,"title":r.get::<_,String>(2)?,"state":r.get::<_,String>(3)?,"eligible_at":r.get::<_,i64>(4)?,"due_at":r.get::<_,i64>(5)?,"error":r.get::<_,Option<String>>(6)?,"trigger_user":r.get::<_,Option<String>>(7)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let policies=db.prepare("SELECT domain,enabled,grace_seconds,exclude_specials,trigger_users,storage_limit_bytes FROM retention_policies ORDER BY domain")?.query_map([],|r|Ok(json!({"domain":r.get::<_,String>(0)?,"enabled":r.get::<_,bool>(1)?,"grace_seconds":r.get::<_,i64>(2)?,"exclude_specials":r.get::<_,bool>(3)?,"trigger_users":serde_json::from_str::<Value>(&r.get::<_,String>(4)?).unwrap_or_default(),"storage_limit_bytes":r.get::<_,i64>(5)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let items=db.prepare("SELECT c.id,c.media_id,m.title,c.state,c.eligible_at,c.due_at,c.error,c.watched_users,m.kind FROM retention_candidates c JOIN media m ON m.id=c.media_id ORDER BY c.state='pending' DESC,c.eligible_at DESC LIMIT 200")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"media_id":r.get::<_,String>(1)?,"title":r.get::<_,String>(2)?,"state":r.get::<_,String>(3)?,"eligible_at":r.get::<_,i64>(4)?,"due_at":r.get::<_,i64>(5)?,"error":r.get::<_,Option<String>>(6)?,"watched_users":serde_json::from_str::<Value>(&r.get::<_,String>(7)?).unwrap_or_default(),"domain":if r.get::<_,String>(8)?=="movie" {"movies"}else{"shows"},"reason":"watched"})))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let users=db.prepare("SELECT id,username FROM users ORDER BY username")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"username":r.get::<_,String>(1)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let roots=db.prepare("SELECT id,name,automatic_unmanaged_deletion FROM library_roots WHERE kind IN ('movies','shows')")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"automatic_unmanaged_deletion":r.get::<_,bool>(2)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(json!({"policies":policies,"items":items,"users":users,"roots":roots}))
+        Ok(json!({"policies":policies,"items":items,"users":users}))
     }).await
 }
 
@@ -33,18 +32,14 @@ pub(super) async fn policy(
     db.write("managers.retention.policy", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;let users=json!(input.trigger_users).to_string();
         let count=tx.query_row("SELECT COUNT(*) FROM users WHERE id IN (SELECT value FROM json_each(?1))",[&users],|r|r.get::<_,i64>(0))?;
         if count!=input.trigger_users.len() as i64{return Ok(false);}
-        tx.execute("UPDATE retention_policies SET enabled=?1,grace_seconds=?2,exclude_specials=?3,trigger_users=?4,updated_at=MAX(updated_at+1,?5) WHERE domain=?6",params![input.enabled,input.grace_seconds,input.exclude_specials,users,now(),domain])?;
+        let changed=tx.execute("UPDATE retention_policies SET enabled=?1,grace_seconds=?2,exclude_specials=?3,trigger_users=?4,updated_at=MAX(updated_at+1,?5),storage_limit_bytes=?7 WHERE domain=?6 AND (enabled<>?1 OR grace_seconds<>?2 OR exclude_specials<>?3 OR trigger_users<>?4 OR storage_limit_bytes<>?7)",params![input.enabled,input.grace_seconds,input.exclude_specials,users,now(),domain,input.storage_limit_bytes])?;
+        if changed>0 {
+            tx.execute("UPDATE media_operations SET state='blocked',error='Auto-delete policy changed' WHERE state='pending' AND id IN (SELECT c.operation_id FROM retention_candidates c JOIN media m ON m.id=c.media_id WHERE c.state='pending' AND m.kind=CASE ?1 WHEN 'movies' THEN 'movie' WHEN 'shows' THEN 'season' ELSE '' END)",[&domain])?;
+            tx.execute("UPDATE retention_candidates SET state='cancelled',error='Auto-delete policy changed' WHERE state='pending' AND media_id IN (SELECT id FROM media WHERE kind=CASE ?1 WHEN 'movies' THEN 'movie' WHEN 'shows' THEN 'season' ELSE '' END)",[&domain])?;
+            if domain=="videos" { tx.execute("UPDATE video_retention_candidates SET state='cancelled',error='Auto-delete policy changed' WHERE state='pending'",[])?; }
+        }
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'retention.policy',?2,?3)",params![p.user.id,domain,now()])?;tx.commit()?;Ok(true)
     }).await
-}
-
-pub(super) async fn root_policy(
-    db: &Database,
-    key: String,
-    input: RootPolicy,
-    p: thelxinoe_core::Principal,
-) -> anyhow::Result<bool> {
-    db.write("managers.retention.root_policy", move|db|{let tx=db.transaction()?;let count=tx.execute("UPDATE library_roots SET automatic_unmanaged_deletion=?1 WHERE id=?2 AND kind IN ('movies','shows')",params![input.automatic_unmanaged_deletion,key])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'retention.root',?2,?3)",params![p.user.id,key,now()])?;tx.commit()?;Ok(count>0)}).await
 }
 
 pub(super) async fn evaluate_all_read_retention_policies(db: &Database) -> anyhow::Result<bool> {
@@ -52,7 +47,7 @@ pub(super) async fn evaluate_all_read_retention_policies(db: &Database) -> anyho
         "managers.retention.evaluate_all_read_retention_policies",
         |db| {
             Ok(db.query_row(
-                "SELECT EXISTS(SELECT 1 FROM retention_policies WHERE enabled=1)",
+                "SELECT EXISTS(SELECT 1 FROM retention_policies WHERE enabled=1 AND domain<>'videos')",
                 [],
                 |r| r.get::<_, bool>(0),
             )?)
@@ -71,9 +66,12 @@ pub(super) async fn evaluate_all_write_media(
         for media in ids {
             if let Some(e)=eligibility(&tx,&media)? {
                 tx.execute("UPDATE media_operations SET state='blocked',error='Retention eligibility changed' WHERE state='pending' AND id IN (SELECT operation_id FROM retention_candidates WHERE media_id=?1 AND stamp<>?2 AND state='pending')",params![media,e.stamp])?;
-                tx.execute("UPDATE retention_candidates SET state='blocked',error='Retention eligibility changed; a fresh grace period is required' WHERE media_id=?1 AND stamp<>?2 AND state='pending'",params![media,e.stamp])?;
-                let exists=tx.query_row("SELECT EXISTS(SELECT 1 FROM retention_candidates WHERE media_id=?1 AND (stamp=?2 OR state IN ('pending','executing')))",params![media,e.stamp],|r|r.get::<_,bool>(0))?;
+                tx.execute("UPDATE retention_candidates SET state='cancelled',error='Eligibility changed; a fresh countdown is required' WHERE media_id=?1 AND stamp<>?2 AND state='pending'",params![media,e.stamp])?;
+                let exists=tx.query_row("SELECT EXISTS(SELECT 1 FROM retention_candidates WHERE media_id=?1 AND ((stamp=?2 AND state IN ('complete','blocked')) OR state IN ('pending','executing')))",params![media,e.stamp],|r|r.get::<_,bool>(0))?;
                 if !exists {eligible.push((media,e));}
+            } else {
+                tx.execute("UPDATE media_operations SET state='blocked',error='Auto-delete eligibility changed' WHERE state='pending' AND id IN (SELECT operation_id FROM retention_candidates WHERE media_id=?1 AND state='pending')",[&media])?;
+                tx.execute("UPDATE retention_candidates SET state='cancelled',error='Auto-delete eligibility changed' WHERE media_id=?1 AND state='pending'",[&media])?;
             }
         }
         tx.commit()?;
@@ -89,7 +87,9 @@ pub(super) async fn evaluate_all_write_retention_candidates(
     actor: Option<String>,
     db: &Database,
 ) -> anyhow::Result<()> {
-    db.write("managers.retention.evaluate_all_write_retention_candidates", move|db|{let tx=db.transaction()?;tx.execute("INSERT INTO retention_candidates(id,media_id,operation_id,stamp,trigger_user,state,eligible_at,due_at) VALUES (?1,?2,?3,?4,?5,'pending',?6,?7)",params![key,media,operation["id"].as_str(),e.stamp,e.user,now(),now()+e.grace])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'retention.pending',?2,?3)",params![actor,key,now()])?;tx.commit()?;Ok(())}).await
+    db.write("managers.retention.evaluate_all_write_retention_candidates", move|db|{let tx=db.transaction()?;
+        let names=tx.prepare("SELECT username FROM users WHERE id IN (SELECT value FROM json_each(?1)) ORDER BY username")?.query_map([json!(e.users).to_string()],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        tx.execute("INSERT INTO retention_candidates(id,media_id,operation_id,stamp,trigger_user,state,eligible_at,due_at,watched_users) VALUES (?1,?2,?3,?4,?5,'pending',?6,?7,?8)",params![key,media,operation["id"].as_str(),e.stamp,e.user,now(),now()+e.grace,json!(names).to_string()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'retention.pending',?2,?3)",params![actor,key,now()])?;tx.commit()?;Ok(())}).await
 }
 
 pub(super) async fn action(
@@ -100,7 +100,7 @@ pub(super) async fn action(
 ) -> anyhow::Result<bool> {
     db.write("managers.retention.action", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;let record=tx.query_row("SELECT media_id,operation_id FROM retention_candidates WHERE id=?1 AND state='pending'",[&key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?;let Some((media,operation))=record else{return Ok(false)};
         if action=="keep" {tx.execute("INSERT INTO media_protection VALUES (?1,1) ON CONFLICT(media_id) DO UPDATE SET keep=1",[&media])?;}
-        tx.execute("UPDATE retention_candidates SET state='cancelled' WHERE id=?1",[&key])?;
+        tx.execute("UPDATE retention_candidates SET state='kept' WHERE id=?1",[&key])?;
         tx.execute("UPDATE media_operations SET state='blocked',error='Retention cancelled' WHERE id=?1 AND state='pending'",[operation])?;
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,?2,?3,?4)",params![p.user.id,format!("retention.{action}"),key,now()])?;tx.commit()?;Ok(true)
     }).await
@@ -155,7 +155,7 @@ pub(super) async fn run(db: &Database) -> anyhow::Result<Vec<String>> {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut ready = Vec::new();
         for (key, media) in items {
-            if eligibility(db, &media)?.is_some_and(|e| e.automatic) {
+            if eligibility(db, &media)?.is_some() {
                 ready.push(key);
             }
         }
@@ -216,7 +216,7 @@ pub(super) fn eligibility(
     db: &rusqlite::Connection,
     media: &str,
 ) -> anyhow::Result<Option<Eligible>> {
-    let Some((kind, root, parent, number)) = db
+    let Some((kind, _root, parent, number)) = db
         .query_row(
             "SELECT kind,root_id,parent_id,sort_number FROM media WHERE id=?1",
             [media],
@@ -247,11 +247,7 @@ pub(super) fn eligibility(
         return Ok(None);
     };
     let files=db.prepare("WITH RECURSIVE tree(id) AS (SELECT id FROM media WHERE id=?1 UNION ALL SELECT m.id FROM media m JOIN tree t ON m.parent_id=t.id) SELECT DISTINCT f.id,f.generation,f.ownership FROM tree JOIN media_sources ms ON ms.media_id=tree.id JOIN media_files f ON f.id=ms.file_id WHERE f.present=1 ORDER BY f.id")?.query_map([media],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    if files.is_empty()
-        || files
-            .iter()
-            .any(|f| !["managed", "unmanaged"].contains(&f.2.as_str()))
-    {
+    if files.is_empty() || files.iter().any(|f| f.2 != "managed") {
         return Ok(None);
     };
     let active=db.query_row("SELECT EXISTS(SELECT 1 FROM playback_sessions WHERE file_id IN (SELECT value FROM json_each(?1)) AND state IN ('ready','playing','paused') AND updated_at>?2)",params![json!(files.iter().map(|f|&f.0).collect::<Vec<_>>()).to_string(),now()-120],|r|r.get::<_,bool>(0))?;
@@ -272,35 +268,32 @@ pub(super) fn eligibility(
         episodes
     };
     let users: Vec<String> = serde_json::from_str(&users)?;
-    for user in users {
-        let mut watched = Vec::new();
+    if users.is_empty() {
+        return Ok(None);
+    }
+    let mut watched = Vec::new();
+    for user in &users {
         for unit in &units {
             let value=db.query_row("SELECT s.watched_revision FROM media_state s JOIN users u ON u.id=s.user_id WHERE s.user_id=?1 AND s.media_id=?2 AND s.watched=1",params![user,unit],|r|r.get::<_,i64>(0)).optional()?;
             if let Some(at) = value {
-                watched.push((unit.clone(), at));
+                watched.push((user.clone(), unit.clone(), at));
+            } else {
+                return Ok(None);
             }
         }
-        if watched.len() == units.len() {
-            let optin = db.query_row(
-                "SELECT automatic_unmanaged_deletion FROM library_roots WHERE id=?1",
-                [&root],
-                |r| r.get::<_, bool>(0),
-            )?;
-            let stamp = Sha256::digest(serde_json::to_vec(&(
-                media, revision, &files, &user, &watched,
-            ))?)
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-            return Ok(Some(Eligible {
-                stamp,
-                user,
-                grace,
-                automatic: optin || files.iter().all(|f| f.2 == "managed"),
-            }));
-        }
     }
-    Ok(None)
+    let stamp = Sha256::digest(serde_json::to_vec(&(
+        media, revision, &files, &users, &watched,
+    ))?)
+    .iter()
+    .map(|byte| format!("{byte:02x}"))
+    .collect();
+    Ok(Some(Eligible {
+        stamp,
+        user: users[0].clone(),
+        users,
+        grace,
+    }))
 }
 
 pub(super) fn complete_season(

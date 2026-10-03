@@ -3,6 +3,9 @@ use crate::test_support::{call, fixture};
 use axum::http::StatusCode;
 const VIDEO: &str = "abcdefghijk";
 
+#[path = "auto_delete_tests.rs"]
+mod auto_delete_tests;
+
 #[test]
 fn progress_accepts_estimates_and_rejects_invalid_byte_counts() {
     assert_eq!(
@@ -238,7 +241,7 @@ async fn public_file_sharing_keeps_progress_private_and_retention_fenced() {
         db.execute("INSERT INTO youtube_videos(user_id,video_id,title,privacy) VALUES ('alice',?1,'Public fixture','public')",[VIDEO])?;
         let list=crate::online::watchlists::default_list(db,"alice")?;
         db.execute("INSERT INTO youtube_watchlist_items VALUES('alice',?1,?2,0,1)",params![list,VIDEO])?;
-        db.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,path,size,modified,probe,requested_at,updated_at,unprotected_at) VALUES (?1,?2,'ready','{}',?3,?4,?5,?6,1,1,1)",params![VIDEO,generation_copy,path.to_string_lossy(),metadata.len() as i64,metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos().to_string(),json!({"format":{"duration":"100"},"streams":[{"index":0,"codec_type":"video","codec_name":"h264"}]}).to_string()])?;
+        db.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,path,size,modified,probe,requested_at,updated_at,completed_at) VALUES (?1,?2,'ready','{}',?3,?4,?5,?6,1,1,1)",params![VIDEO,generation_copy,path.to_string_lossy(),metadata.len() as i64,metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos().to_string(),json!({"format":{"duration":"100"},"streams":[{"index":0,"codec_type":"video","codec_name":"h264"}]}).to_string()])?;
         Ok(())
     }).await.unwrap();
     let bob_token = crate::test_support::issue_session(
@@ -269,7 +272,7 @@ async fn public_file_sharing_keeps_progress_private_and_retention_fenced() {
         .0,
         StatusCode::FORBIDDEN
     );
-    cleanup(&state).await.unwrap();
+    crate::auto_delete::evaluate(&state).await.unwrap();
     assert!(
         directory.exists(),
         "Alice watchlist protects the physical file"
@@ -330,7 +333,7 @@ async fn public_file_sharing_keeps_progress_private_and_retention_fenced() {
         .2["accepted"],
         false
     );
-    cleanup(&state).await.unwrap();
+    crate::auto_delete::evaluate(&state).await.unwrap();
     assert!(
         directory.exists(),
         "Bob pin protects shared file after Alice deletes data"
@@ -339,18 +342,24 @@ async fn public_file_sharing_keeps_progress_private_and_retention_fenced() {
         .db
         .write("test.fixture", |db| {
             db.execute("UPDATE youtube_state SET pinned=0", [])?;
-            db.execute("UPDATE youtube_downloads SET unprotected_at=1", [])?;
+            db.execute(
+                "UPDATE retention_policies SET storage_limit_bytes=1 WHERE domain='videos'",
+                [],
+            )?;
             Ok(())
         })
         .await
         .unwrap();
-    cleanup(&state).await.unwrap();
+    crate::auto_delete::evaluate(&state).await.unwrap();
     assert!(directory.exists(), "Active Bob playback protects the file");
     state
         .db
         .write("test.fixture", |db| {
             db.execute("UPDATE playback_sessions SET state='stopped'", [])?;
-            db.execute("UPDATE youtube_downloads SET unprotected_at=1", [])?;
+            db.execute(
+                "UPDATE retention_policies SET storage_limit_bytes=1 WHERE domain='videos'",
+                [],
+            )?;
             Ok(())
         })
         .await
@@ -359,32 +368,16 @@ async fn public_file_sharing_keeps_progress_private_and_retention_fenced() {
     tokio::fs::write(&replaced, b"a different replacement generation")
         .await
         .unwrap();
-    assert!(cleanup(&state).await.is_err());
+    crate::auto_delete::evaluate(&state).await.unwrap();
     assert!(
         replaced.exists(),
         "A replacement must not be deleted using old metadata"
     );
-    let metadata = std::fs::metadata(&replaced).unwrap();
-    state
-        .db
-        .write("test.fixture", move |db| {
-            db.execute(
-                "UPDATE youtube_downloads SET size=?1,modified=?2",
-                params![
-                    metadata.len() as i64,
-                    metadata
-                        .modified()?
-                        .duration_since(UNIX_EPOCH)?
-                        .as_nanos()
-                        .to_string()
-                ],
-            )?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-    cleanup(&state).await.unwrap();
-    assert!(!directory.exists());
+    crate::auto_delete::evaluate(&state).await.unwrap();
+    assert!(
+        replaced.exists(),
+        "Blocked generations must not be retried automatically"
+    );
     assert_eq!(
         state
             .db

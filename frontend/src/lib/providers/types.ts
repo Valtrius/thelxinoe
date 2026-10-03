@@ -182,6 +182,7 @@ export interface YoutubeDownload {
   mediaKind?: 'video' | 'audio' | 'media' | null;
   videoId: string;
   status:
+    | 'waiting_for_space'
     | 'queued'
     | 'downloading'
     | 'processing'
