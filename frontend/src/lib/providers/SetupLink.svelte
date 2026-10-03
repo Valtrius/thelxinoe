@@ -1,9 +1,18 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { invoke } from '@tauri-apps/api/core';
   import { desktop } from '../api';
   import { api } from './api';
 
-  let { href, children }: { href: string; children: Snippet } = $props();
+  let {
+    href,
+    publicPage,
+    children,
+  }: {
+    href: string;
+    publicPage?: 'home' | 'privacy';
+    children: Snippet;
+  } = $props();
   let error = $state('');
 </script>
 
@@ -16,7 +25,10 @@
     if (!desktop) return;
     event.preventDefault();
     error = '';
-    void api.openExternal(href).catch(() => {
+    const opening = publicPage
+      ? invoke('open_public_page', { page: publicPage })
+      : api.openExternal(href);
+    void opening.catch(() => {
       error = `Could not open your browser. Open ${href} manually.`;
     });
   }}>{@render children()}</a

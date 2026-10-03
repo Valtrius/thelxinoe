@@ -69,6 +69,33 @@ fn open_twitch_activation(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 async fn open_youtube_linking(app: tauri::AppHandle) -> Result<(), String> {
+    let url = youtube_linking_url(&app).await?;
+    app.opener()
+        .open_url(url.as_str(), None::<&str>)
+        .map_err(|_| "Could not open your browser".into())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PublicPage {
+    Home,
+    Privacy,
+}
+
+#[tauri::command]
+async fn open_public_page(app: tauri::AppHandle, page: PublicPage) -> Result<(), String> {
+    let mut url = youtube_linking_url(&app).await?;
+    url.set_path(match page {
+        PublicPage::Home => "/about/index.html",
+        PublicPage::Privacy => "/about/privacy.html",
+    });
+    url.set_query(None);
+    app.opener()
+        .open_url(url.as_str(), None::<&str>)
+        .map_err(|_| "Could not open your browser".into())
+}
+
+async fn youtube_linking_url(app: &tauri::AppHandle) -> Result<url::Url, String> {
     let response =
         backend_request(app.clone(), "/online/youtube".into(), "GET".into(), None).await?;
     if response["status"] != 200 {
@@ -88,9 +115,7 @@ async fn open_youtube_linking(app: tauri::AppHandle) -> Result<(), String> {
     {
         return Err("Invalid server linking URL".into());
     }
-    app.opener()
-        .open_url(url.as_str(), None::<&str>)
-        .map_err(|_| "Could not open your browser".into())
+    Ok(url)
 }
 
 fn credential(app: &tauri::AppHandle) -> Result<keyring::Entry, String> {
@@ -313,6 +338,7 @@ fn main() {
             backend_request,
             open_provider_url,
             open_youtube_linking,
+            open_public_page,
             open_service,
             open_twitch_activation,
             updates::desktop_update_check,

@@ -1,6 +1,32 @@
 <script lang="ts">
   import SetupLink from './SetupLink.svelte';
-  let { platform }: { platform: 'youtube' | 'twitch' | 'kick' } = $props();
+  import FormField from '../ui/FormField.svelte';
+  import { formControlClass } from '../ui/styles';
+
+  let {
+    platform,
+    redirectUri,
+  }: {
+    platform: 'youtube' | 'twitch' | 'kick';
+    redirectUri?: string | null;
+  } = $props();
+  const publicOrigin = $derived(
+    redirectUri ? new URL(redirectUri).origin : null,
+  );
+  const brandingPages = [
+    {
+      page: 'home',
+      file: 'index',
+      label: 'Application home page',
+      action: 'Open home page',
+    },
+    {
+      page: 'privacy',
+      file: 'privacy',
+      label: 'Application privacy policy link',
+      action: 'Open privacy policy',
+    },
+  ] as const;
 </script>
 
 <ol class="my-4 list-decimal space-y-2 pl-5 text-sm leading-6 text-muted">
@@ -22,17 +48,55 @@
       under Audience → Test users while in Testing.
     </li>
     <li>
+      In <SetupLink href="https://console.cloud.google.com/auth/branding"
+        >Branding</SetupLink
+      >, use the public pages below for the application home page and privacy
+      policy. Keep both reachable over HTTPS without signing in, including
+      through your reverse proxy. Add your domain under Authorized domains and
+      verify ownership if Google requests it.
+      {#if publicOrigin}
+        <div class="mt-3 space-y-3">
+          {#each brandingPages as link (link.page)}
+            {@const href = `${publicOrigin}/about/${link.file}.html`}
+            <div class="min-w-0">
+              <FormField class="mb-1">
+                {link.label}
+                <input
+                  class={formControlClass}
+                  readonly
+                  value={href}
+                  onclick={(event) => event.currentTarget.select()}
+                />
+              </FormField>
+              <SetupLink {href} publicPage={link.page}>{link.action}</SetupLink>
+            </div>
+          {/each}
+        </div>
+      {:else}
+        <p class="mt-2">Set the public server URL below to get these links.</p>
+      {/if}
+    </li>
+    <li>
       Under <SetupLink href="https://console.cloud.google.com/auth/clients"
         >Clients</SetupLink
       >, create a <strong>Web application</strong>. Add the exact Authorized
       redirect URI shown below, then paste its client ID and secret here.
     </li>
     <li>
-      Apply the application, then choose <strong>Connect YouTube</strong> on the
-      YouTube page. Testing grants expire after seven days; use Google's <SetupLink
+      In <SetupLink href="https://console.cloud.google.com/auth/audience"
+        >Audience</SetupLink
+      >, choose <strong>Publish app</strong> to switch to
+      <strong>In production</strong>
+      and remove the seven-day Testing expiry. Publishing and verification are separate;
+      Google's <SetupLink
         href="https://developers.google.com/identity/protocols/oauth2/production-readiness/overview"
         >publishing guidance</SetupLink
-      > for ongoing access.
+      > explains verification requirements and unverified-app limits.
+    </li>
+    <li>
+      Apply the application, then choose <strong>Connect YouTube</strong> on the YouTube
+      page. If you connected while in Testing, disconnect and reconnect after publishing.
+      Access can still expire or be revoked.
     </li>
   {:else if platform === 'twitch'}
     <li>

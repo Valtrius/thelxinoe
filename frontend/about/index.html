@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="referrer" content="no-referrer" />
+    <meta
+      name="description"
+      content="Thelxinoe is a self-hosted media server with web and desktop clients for a personal media library, YouTube subscriptions, Twitch streams and tracked Kick channels."
+    />
+    <title>Thelxinoe · Media server and clients</title>
+    <link rel="icon" href="../icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="../src/app.css" />
+  </head>
+  <body class="overflow-y-auto text-base">
+    <a
+      href="#main"
+      class="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:bg-surface-strong focus:p-3"
+      >Skip to content</a
+    >
+    <header class="border-b border-line">
+      <nav
+        aria-label="Main navigation"
+        class="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-4 px-6 py-5 sm:px-10"
+      >
+        <a
+          href="index.html"
+          aria-label="Thelxinoe home page"
+          class="flex items-center gap-3 font-semibold"
+          ><img src="../icon.svg" alt="" width="28" height="28" />Thelxinoe</a
+        >
+        <a
+          href="privacy.html"
+          class="text-sm text-accent underline underline-offset-4"
+          >Privacy Policy</a
+        >
+      </nav>
+    </header>
+    <main id="main" class="mx-auto max-w-5xl px-6 py-12 sm:px-10 sm:py-16">
+      <h1 class="text-4xl font-semibold tracking-tight sm:text-5xl">
+        Thelxinoe
+      </h1>
+      <p class="mt-5 max-w-2xl text-xl leading-relaxed text-muted">
+        A self-hosted media server with web and desktop clients for your media
+        library, YouTube subscriptions and live streams.
+      </p>
+      <div class="mt-8 flex flex-wrap gap-x-6 gap-y-3 text-sm">
+        <a
+          href="https://github.com/Valtrius/thelxinoe"
+          class="text-accent underline underline-offset-4"
+          >Source code and installation</a
+        >
+        <a
+          href="#account-access"
+          class="text-accent underline underline-offset-4"
+          >Connected accounts</a
+        >
+      </div>
+      <div class="mt-12 grid gap-10 border-t border-line pt-10 md:grid-cols-2">
+        <section
+          aria-labelledby="library"
+          class="space-y-3 leading-7 text-muted"
+        >
+          <h2 id="library" class="text-xl font-semibold text-foreground">
+            Library and playback
+          </h2>
+          <p>
+            Browse media on your server, play it from the web or desktop app,
+            and save viewing progress. The server stores accounts, settings and
+            viewing records for the people who use that installation.
+          </p>
+        </section>
+        <section
+          aria-labelledby="online"
+          class="space-y-3 leading-7 text-muted"
+        >
+          <h2 id="online" class="text-xl font-semibold text-foreground">
+            Videos and live streams
+          </h2>
+          <p>
+            Connect YouTube to browse subscription videos, connect Twitch to see
+            followed channels that are live, or track Kick channels by name.
+            Save videos to Thelxinoe watchlists and resume playback later.
+          </p>
+        </section>
+      </div>
+      <section
+        id="account-access"
+        class="mt-12 max-w-[70ch] space-y-4 border-t border-line pt-10 leading-7 text-muted"
+      >
+        <h2 class="text-2xl font-semibold text-foreground">
+          Connected accounts
+        </h2>
+        <p>
+          Thelxinoe uses
+          <strong class="text-foreground">YouTube API Services</strong> with
+          read-only permission to retrieve your YouTube channel identity,
+          subscriptions, and channel and video metadata. It does not use this
+          permission to upload videos, post comments or change subscriptions.
+        </p>
+        <p>
+          You authorize access on Google's own sign-in screen. Your Thelxinoe
+          server stores the resulting connection credentials in encrypted form
+          so it can refresh your feed. Each person connects their own account;
+          the server administrator configures the Google application.
+        </p>
+        <p>
+          The
+          <a
+            href="privacy.html"
+            class="text-accent underline underline-offset-4"
+            >Privacy Policy</a
+          >
+          explains what is stored, who operates the server, and how to
+          disconnect accounts or request data removal.
+        </p>
+      </section>
+      <section
+        class="mt-12 max-w-[70ch] space-y-4 border-t border-line pt-10 leading-7 text-muted"
+        aria-labelledby="terms"
+      >
+        <h2 id="terms" class="text-2xl font-semibold text-foreground">
+          Terms of use
+        </h2>
+        <p>
+          Use connected services in accordance with their terms and the
+          permissions for the content you access. By using Thelxinoe's YouTube
+          features, you agree to the
+          <a
+            href="https://www.youtube.com/t/terms"
+            class="text-accent underline underline-offset-4"
+            >YouTube Terms of Service</a
+          >. Google's handling of information is described in the
+          <a
+            href="https://policies.google.com/privacy"
+            class="text-accent underline underline-offset-4"
+            >Google Privacy Policy</a
+          >.
+        </p>
+        <p>
+          Thelxinoe is an independent open-source project, not affiliated with
+          or endorsed by Google, YouTube, Twitch or Kick.
+        </p>
+      </section>
+      <section
+        class="mt-12 max-w-[70ch] space-y-4 border-t border-line pt-10 leading-7 text-muted"
+        aria-labelledby="contact"
+      >
+        <h2 id="contact" class="text-2xl font-semibold text-foreground">
+          Support and privacy questions
+        </h2>
+        <p>
+          For account access or removal of data on this installation, contact
+          the administrator who provides your Thelxinoe account. For software
+          issues, use the
+          <a
+            href="https://github.com/Valtrius/thelxinoe/issues"
+            class="text-accent underline underline-offset-4"
+            >project issue tracker</a
+          >. Do not include credentials or private account information in public
+          issues.
+        </p>
+      </section>
+    </main>
+    <footer class="border-t border-line">
+      <div
+        class="mx-auto flex max-w-5xl flex-wrap justify-between gap-4 px-6 py-6 text-sm text-muted sm:px-10"
+      >
+        <span>Thelxinoe</span
+        ><a href="privacy.html" class="text-accent underline underline-offset-4"
+          >Privacy Policy</a
+        >
+      </div>
+    </footer>
+  </body>
+</html>
