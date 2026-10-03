@@ -52,7 +52,7 @@ fn collect(
             });
         }
     }
-    for provider in db.prepare("SELECT provider,generation FROM online_accounts WHERE user_id=?1 AND status='reconnect_required'")?.query_map([user], |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))? {
+    for provider in db.prepare("SELECT provider,generation FROM online_accounts WHERE user_id=?1 AND status='reconnect_required' AND NOT EXISTS (SELECT 1 FROM settings WHERE key='online.'||online_accounts.provider||'.enabled' AND value='false')")?.query_map([user], |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))? {
         let (provider, revision) = provider?;
         items.push(AttentionItem { id:format!("account:{provider}"), severity:Severity::Warning,message:"A linked account needs you to sign in again.".into(),target:AttentionTarget::Online,resource:Some(provider),revision,dismissible:false,media_ids:vec![] });
     }

@@ -1,6 +1,7 @@
 #[path = "../storage/online.rs"]
 mod storage;
 
+pub(crate) mod availability;
 mod browse;
 pub(crate) mod downloads;
 mod extract;
@@ -178,7 +179,7 @@ impl Runtime {
         })
     }
 }
-pub fn router() -> Router<AppState> {
+pub fn router(state: AppState) -> Router<AppState> {
     Router::new()
         .merge(twitch::router())
         .merge(kick::router())
@@ -248,6 +249,15 @@ pub fn router() -> Router<AppState> {
             "/api/v1/online/youtube/data",
             axum::routing::delete(feed::delete_data),
         )
+        .route("/api/v1/online/providers", get(availability::list))
+        .route(
+            "/api/v1/admin/online/providers/{provider}",
+            axum::routing::put(availability::save),
+        )
+        .route_layer(axum::middleware::from_fn_with_state(
+            state,
+            availability::gate,
+        ))
 }
 #[derive(Deserialize, Serialize)]
 pub(crate) struct Google {

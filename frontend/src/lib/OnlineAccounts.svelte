@@ -11,6 +11,7 @@
   import Panel from './ui/Panel.svelte';
   import AttentionDot from './ui/AttentionDot.svelte';
   import { attention } from './attention';
+  import { providers } from './providers/availability';
 
   let {
     navigate,
@@ -33,9 +34,9 @@
     const current = ++request;
     try {
       const [youtube, twitch, tracked] = await Promise.all([
-        api<OnlineAccount>('/online/youtube'),
-        api<OnlineAccount>('/online/twitch'),
-        api<KickFeed>('/online/kick'),
+        $providers.youtube ? api<OnlineAccount>('/online/youtube') : undefined,
+        $providers.twitch ? api<OnlineAccount>('/online/twitch') : undefined,
+        $providers.kick ? api<KickFeed>('/online/kick') : null,
       ]);
       if (current === request) {
         accounts = { youtube, twitch };
@@ -60,13 +61,14 @@
   }
   $effect(() => {
     void revision;
+    void $providers;
     untrack(() => void load().catch((caught) => (error = String(caught))));
   });
   onDestroy(() => request++);
 </script>
 
 <div class="col-span-full">
-  {#if Object.values(accounts).some((account) => !account.configured)}
+  {#if Object.values(accounts).some((account) => account && !account.configured)}
     <Notice>
       {#if configureProviders}<a
           href="#provider-applications"
@@ -84,137 +86,147 @@
   {#if error}<Notice variant="error" role="alert">{error}</Notice>{/if}
 </div>
 {#each [['youtube', 'YouTube'], ['twitch', 'Twitch']] as [provider, label] (provider)}
-  {@const account = accounts[provider as 'youtube' | 'twitch']}
+  {#if $providers[provider as 'youtube' | 'twitch']}
+    {@const account = accounts[provider as 'youtube' | 'twitch']}
+    <Panel
+      ><div class="flex flex-col items-start gap-4">
+        <div class="flex items-center gap-3">
+          {#if account?.account.status === 'connected' && account.account.avatar_url}
+            <img
+              src={account.account.avatar_url}
+              alt=""
+              referrerpolicy="no-referrer"
+              class="size-9 rounded-full border border-line object-cover"
+            />
+          {:else}
+            <span
+              class="grid size-9 place-items-center rounded-full border border-line bg-surface-soft text-xs font-semibold text-muted"
+              >{label[0]}</span
+            >
+          {/if}
+          <div>
+            <strong class="inline-flex items-center gap-2"
+              >{label}<AttentionDot
+                items={$attention.filter(
+                  (item) =>
+                    item.target === 'online' && item.resource === provider,
+                )}
+              /></strong
+            >
+            <p class="mt-1.5 mb-0 text-muted">
+              {account?.account.status === 'connected'
+                ? account.account.display_name
+                : account?.account.status === 'reconnect_required'
+                  ? 'Reconnect to resume synchronization.'
+                  : 'Not connected'}
+            </p>
+          </div>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <Button
+            variant="secondary"
+            size="form"
+            disabled={busy ||
+              !account?.configured ||
+              (provider === 'youtube' && !account.linking_available)}
+            onclick={() =>
+              void act(async () => {
+                if (provider === 'youtube') {
+                  await providerApi.connectYoutube();
+                  navigate(label);
+                } else {
+                  await providerApi.startTwitchAuth();
+                  navigate(label);
+                }
+              })}
+            >{account?.account.status === 'connected' ? 'Reconnect' : 'Connect'}
+            {label}</Button
+          >
+          {#if account && account.account.status !== 'disconnected'}<Button
+              variant="secondary"
+              size="form"
+              disabled={busy}
+              onclick={() =>
+                void act(() => api(`/online/${provider}`, 'DELETE'))}
+              >Disconnect {label}</Button
+            >{/if}
+          <Button
+            variant="secondary"
+            size="form"
+            disabled={busy}
+            onclick={() => (deleting = provider)}>Delete {label} data…</Button
+          >
+        </div>
+      </div>
+      {#if deleting === provider}<Notice variant="error">
+          <p>
+            Disconnect {label} and delete your {provider === 'youtube'
+              ? 'feed, watchlists, pins and history'
+              : 'cached channels and history'} from this server?
+          </p>
+          <Button
+            variant="secondary"
+            size="form"
+            disabled={busy}
+            onclick={() =>
+              void act(() => api(`/online/${provider}/data`, 'DELETE'))}
+            >Delete my {label} data</Button
+          ><Button
+            variant="secondary"
+            size="form"
+            onclick={() => (deleting = '')}>Cancel</Button
+          >
+        </Notice>{/if}
+    </Panel>
+  {/if}
+{/each}
+{#if $providers.kick}
   <Panel
     ><div class="flex flex-col items-start gap-4">
-      <div class="flex items-center gap-3">
-        {#if account?.account.status === 'connected' && account.account.avatar_url}
-          <img
-            src={account.account.avatar_url}
-            alt=""
-            referrerpolicy="no-referrer"
-            class="size-9 rounded-full border border-line object-cover"
-          />
-        {:else}
-          <span
-            class="grid size-9 place-items-center rounded-full border border-line bg-surface-soft text-xs font-semibold text-muted"
-            >{label[0]}</span
-          >
-        {/if}
-        <div>
-          <strong class="inline-flex items-center gap-2"
-            >{label}<AttentionDot
-              items={$attention.filter(
-                (item) =>
-                  item.target === 'online' && item.resource === provider,
-              )}
-            /></strong
-          >
-          <p class="mt-1.5 mb-0 text-muted">
-            {account?.account.status === 'connected'
-              ? account.account.display_name
-              : account?.account.status === 'reconnect_required'
-                ? 'Reconnect to resume synchronization.'
-                : 'Not connected'}
-          </p>
-        </div>
+      <div>
+        <strong>Kick</strong>
+        <p class="mt-1.5 mb-0 text-muted">
+          {kick?.items.length ?? 0} tracked channels. {kick?.connected
+            ? 'Synchronization enabled.'
+            : 'Synchronization paused.'}
+        </p>
       </div>
       <div class="flex flex-wrap gap-2">
         <Button
           variant="secondary"
           size="form"
-          disabled={busy ||
-            !account?.configured ||
-            (provider === 'youtube' && !account.linking_available)}
+          disabled={busy}
           onclick={() =>
-            void act(async () => {
-              if (provider === 'youtube') {
-                await providerApi.connectYoutube();
-                navigate(label);
-              } else {
-                await providerApi.startTwitchAuth();
-                navigate(label);
-              }
-            })}
-          >{account?.account.status === 'connected' ? 'Reconnect' : 'Connect'}
-          {label}</Button
-        >
-        {#if account && account.account.status !== 'disconnected'}<Button
-            variant="secondary"
-            size="form"
-            disabled={busy}
-            onclick={() => void act(() => api(`/online/${provider}`, 'DELETE'))}
-            >Disconnect {label}</Button
-          >{/if}
-        <Button
+            void act(() =>
+              api(
+                kick?.connected ? '/online/kick' : '/online/kick/connect',
+                kick?.connected ? 'DELETE' : 'POST',
+              ),
+            )}
+          >{kick?.connected ? 'Pause' : 'Resume'} Kick synchronization</Button
+        ><Button
+          variant="secondary"
+          size="form"
+          onclick={() => navigate('Kick')}>Manage channels</Button
+        ><Button
           variant="secondary"
           size="form"
           disabled={busy}
-          onclick={() => (deleting = provider)}>Delete {label} data…</Button
+          onclick={() => (deleting = 'kick')}>Delete Kick data…</Button
         >
       </div>
     </div>
-    {#if deleting === provider}<Notice variant="error">
-        <p>
-          Disconnect {label} and delete your {provider === 'youtube'
-            ? 'feed, watchlists, pins and history'
-            : 'cached channels and history'} from this server?
-        </p>
+    {#if deleting === 'kick'}<Notice variant="error">
+        <p>Delete your tracked Kick channels and history?</p>
         <Button
           variant="secondary"
           size="form"
           disabled={busy}
-          onclick={() =>
-            void act(() => api(`/online/${provider}/data`, 'DELETE'))}
-          >Delete my {label} data</Button
+          onclick={() => void act(() => api('/online/kick/data', 'DELETE'))}
+          >Delete my Kick data</Button
         ><Button variant="secondary" size="form" onclick={() => (deleting = '')}
           >Cancel</Button
         >
       </Notice>{/if}
   </Panel>
-{/each}
-<Panel
-  ><div class="flex flex-col items-start gap-4">
-    <div>
-      <strong>Kick</strong>
-      <p class="mt-1.5 mb-0 text-muted">
-        {kick?.items.length ?? 0} tracked channels. {kick?.connected
-          ? 'Synchronization enabled.'
-          : 'Synchronization paused.'}
-      </p>
-    </div>
-    <div class="flex flex-wrap gap-2">
-      <Button
-        variant="secondary"
-        size="form"
-        disabled={busy}
-        onclick={() =>
-          void act(() =>
-            api(
-              kick?.connected ? '/online/kick' : '/online/kick/connect',
-              kick?.connected ? 'DELETE' : 'POST',
-            ),
-          )}>{kick?.connected ? 'Pause' : 'Resume'} Kick synchronization</Button
-      ><Button variant="secondary" size="form" onclick={() => navigate('Kick')}
-        >Manage channels</Button
-      ><Button
-        variant="secondary"
-        size="form"
-        disabled={busy}
-        onclick={() => (deleting = 'kick')}>Delete Kick data…</Button
-      >
-    </div>
-  </div>
-  {#if deleting === 'kick'}<Notice variant="error">
-      <p>Delete your tracked Kick channels and history?</p>
-      <Button
-        variant="secondary"
-        size="form"
-        disabled={busy}
-        onclick={() => void act(() => api('/online/kick/data', 'DELETE'))}
-        >Delete my Kick data</Button
-      ><Button variant="secondary" size="form" onclick={() => (deleting = '')}
-        >Cancel</Button
-      >
-    </Notice>{/if}
-</Panel>
+{/if}

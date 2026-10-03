@@ -26,6 +26,7 @@
   import ViewingRhythmChart from './ViewingRhythmChart.svelte';
   import WatchTimeChart from './WatchTimeChart.svelte';
   import History from '../History.svelte';
+  import { providers, providerEnabled } from '../providers/availability';
 
   let { user } = $props<{ user: User }>();
   let scope = $state('mine');
@@ -37,10 +38,14 @@
     { value: '90d', label: '90D' },
     { value: 'all', label: 'All' },
   ];
-  const platforms: { value: StatisticsPlatform; label: string }[] = [
+  const platforms: { value: StatisticsPlatform; label: string }[] = $derived([
     { value: 'all', label: 'All' },
-    ...sources,
-  ];
+    ...sources.filter(
+      (source) =>
+        !Object.hasOwn($providers, source.value) ||
+        $providers[source.value as keyof typeof $providers],
+    ),
+  ]);
   const panelClass = 'panel min-w-0 border border-line bg-surface p-4';
   const timezone = $derived(user.timezone);
 
@@ -57,7 +62,10 @@
   const platformGraphSources = $derived(
     sources.filter(
       (source) =>
-        platformMetrics[source.value].seconds > 0 || platform === source.value,
+        (!Object.hasOwn($providers, source.value) ||
+          $providers[source.value as keyof typeof $providers]) &&
+        (platformMetrics[source.value].seconds > 0 ||
+          platform === source.value),
     ),
   );
   const completion = $derived(completionDetails(overview, platform));
@@ -92,7 +100,19 @@
   );
 
   $effect(() => {
-    const selection = [range, platform, scope, user.id, user.role, timezone];
+    void $providers;
+    if (!providerEnabled(platform)) platform = 'all';
+  });
+  $effect(() => {
+    const selection = [
+      range,
+      platform,
+      scope,
+      user.id,
+      user.role,
+      timezone,
+      $providers,
+    ];
     void selection;
     untrack(() => void loadOverview());
   });

@@ -245,6 +245,9 @@ struct Turn {
     failures: u32,
 }
 async fn tick(state: &AppState) -> anyhow::Result<()> {
+    if !super::availability::enabled(state, "kick").await? {
+        return Ok(());
+    }
     let turn = storage::tick_write_settings(&state.db).await?;
     let Some(t) = turn else { return Ok(()) };
     if let Err(error) = step(state, &t).await {

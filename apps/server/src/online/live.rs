@@ -19,6 +19,7 @@ pub(crate) async fn authorize(
     p: &Principal,
     media: &str,
 ) -> Result<(String, String)> {
+    super::availability::require_media(state, media).await?;
     if let Some(channel) = media.strip_prefix("kick:") {
         let channel = super::kick::slug(channel)?;
         let user = p.user.id.clone();
@@ -39,6 +40,7 @@ pub(crate) async fn authorize(
         .ok_or_else(ApiError::not_found)
 }
 pub(crate) async fn extract(state: &AppState, media: &str) -> Result<RemoteSource> {
+    super::availability::require_media(state, media).await?;
     let kick = media.starts_with("kick:");
     let login: String = if let Some(channel) = media.strip_prefix("kick:") {
         super::kick::slug(channel)?

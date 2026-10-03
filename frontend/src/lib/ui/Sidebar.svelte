@@ -18,6 +18,7 @@
   import { attention, attentionDescription } from '../attention';
   import Button from './Button.svelte';
   import type { User } from '../api';
+  import { providers as availability } from '../providers/availability';
   let { section, collapsed, user, navigate, toggle, logout, onClose } = $props<{
     section: string;
     collapsed: boolean;
@@ -118,8 +119,10 @@
             /></span
           ></SidebarButton
         >{/each}
-      <div class="h-px bg-line"></div>
-      {#each providers as item (item.name)}<SidebarButton
+      {#if Object.values($availability).some(Boolean)}<div
+          class="h-px bg-line"
+        ></div>{/if}
+      {#each providers.filter((item) => $availability[item.platform]) as item (item.name)}<SidebarButton
           label={item.name}
           resizeWithSidebar={false}
           {collapsed}

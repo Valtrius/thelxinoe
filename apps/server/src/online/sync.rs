@@ -60,6 +60,9 @@ pub(super) async fn run_classifications(state: AppState) -> anyhow::Result<()> {
     }
 }
 async fn classify_next(state: &AppState) -> anyhow::Result<()> {
+    if !super::availability::enabled(state, "youtube").await? {
+        return Ok(());
+    }
     let candidate = storage::claim_classification(&state.db).await?;
     if let Some((user, video, generation)) = candidate {
         let result = short(state, &video).await;
@@ -78,6 +81,9 @@ async fn claim(state: &AppState) -> anyhow::Result<Option<Turn>> {
     storage::claim(&state.db).await
 }
 async fn tick(state: &AppState) -> anyhow::Result<bool> {
+    if !super::availability::enabled(state, "youtube").await? {
+        return Ok(false);
+    }
     let Some(turn) = claim(state).await? else {
         return Ok(false);
     };

@@ -22,8 +22,14 @@ pub const ROOTS: [(&str, &str, &str); 3] = [
     ("d7df0f21-caa6-45a0-9798-267150600002", "twitch", "Twitch"),
     ("d7df0f21-caa6-45a0-9798-267150600003", "kick", "Kick"),
 ];
-pub fn views(server: &str) -> Vec<Value> {
-    ROOTS.iter().map(|(id, _, name)| json!({"Id":id,"Name":name,"Type":"CollectionFolder","CollectionType":"homevideos","IsFolder":true,"ServerId":server,"ImageTags":{}})).collect()
+pub async fn views(state: &AppState) -> Result<Vec<Value>> {
+    let mut items = Vec::new();
+    for (id, provider, name) in ROOTS {
+        if crate::online::availability::enabled(state, provider).await? {
+            items.push(json!({"Id":id,"Name":name,"Type":"CollectionFolder","CollectionType":"homevideos","IsFolder":true,"ServerId":state.server_id.as_str(),"ImageTags":{}}));
+        }
+    }
+    Ok(items)
 }
 fn column(kind: &str) -> &'static str {
     match kind {
@@ -55,9 +61,21 @@ impl Identity {
 pub async fn resolve(state: &AppState, p: &Principal, item: &str) -> Result<Option<Identity>> {
     let item = canonical(item);
     let user = p.user.id.clone();
-    Ok(storage::resolve(item, user, &state.db).await?)
+    let identity = storage::resolve(item, user, &state.db).await?;
+    if let Some(identity) = &identity {
+        let provider = if identity.kind == "watchlist" {
+            "youtube"
+        } else {
+            &identity.kind
+        };
+        crate::online::availability::require_enabled(state, provider).await?;
+    }
+    Ok(identity)
 }
 pub async fn ensure_lists(state: &AppState, p: &Principal) -> Result<()> {
+    if !crate::online::availability::enabled(state, "youtube").await? {
+        return Ok(());
+    }
     let user = p.user.id.clone();
     storage::ensure_lists(user, &state.db).await?;
     Ok(())
@@ -73,7 +91,7 @@ pub async fn browse(
 ) -> Result<Option<Value>> {
     let single = if let Some(item) = item {
         let key = canonical(item);
-        if let Some(root) = views(&state.server_id).into_iter().find(|r| r["Id"] == key) {
+        if let Some(root) = views(state).await?.into_iter().find(|r| r["Id"] == key) {
             return Ok(Some(root));
         }
         resolve(state, p, &key).await?
@@ -94,6 +112,9 @@ pub async fn browse(
     let provider = parent
         .as_ref()
         .and_then(|id| ROOTS.iter().find(|r| r.0 == id).map(|r| r.1));
+    if let Some(provider) = provider {
+        crate::online::availability::require_enabled(state, provider).await?;
+    }
     let list = if let Some(parent) = &parent {
         resolve(state, p, parent)
             .await?
@@ -235,6 +256,7 @@ pub async fn set_flag(
 }
 
 pub async fn playlist_create(state: &AppState, p: &Principal, input: Value) -> Result<Value> {
+    crate::online::availability::require_enabled(state, "youtube").await?;
     if input["IsPublic"] == true
         || input["UserId"]
             .as_str()
