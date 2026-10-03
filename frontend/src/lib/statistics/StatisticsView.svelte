@@ -3,7 +3,7 @@
   import { twMerge } from 'tailwind-merge';
   import { sources, completionDetails } from './helpers';
   import { statisticsPlatformMetrics } from './helpers';
-  import { LatestRequest } from '../providers/latest-request';
+  import { LatestRequest } from '../latest-request';
   import { onMount, untrack } from 'svelte';
   import { SvelteURLSearchParams } from 'svelte/reactivity';
   import {
@@ -29,7 +29,15 @@
   import History from '../History.svelte';
   import { providers, providerEnabled } from '../providers/availability';
 
-  let { user } = $props<{ user: User }>();
+  let { user, filters, filtersChanged } = $props<{
+    user: User;
+    filters: { range?: string; platform?: string; scope?: string };
+    filtersChanged: (filters: {
+      range: string;
+      platform: string;
+      scope: string;
+    }) => void;
+  }>();
   let scope = $state('mine');
   let people = $state<User[]>([]);
 
@@ -58,6 +66,18 @@
   let refreshing = $state(false);
   const requests = new LatestRequest();
   const channelListKey = $derived(`${range}:${platform}:${scope}:${user.id}`);
+  $effect(() => {
+    range = ranges.some((item) => item.value === filters.range)
+      ? (filters.range as StatisticsRange)
+      : '30d';
+    platform = platforms.some((item) => item.value === filters.platform)
+      ? (filters.platform as StatisticsPlatform)
+      : 'all';
+    scope = user.role === 'admin' ? (filters.scope ?? 'mine') : 'mine';
+  });
+  function publishFilters() {
+    filtersChanged({ range, platform, scope });
+  }
 
   const platformMetrics = $derived(statisticsPlatformMetrics(overview));
   const platformGraphSources = $derived(
@@ -208,6 +228,7 @@
     <div data-sidebar-resize="xy" class="flex flex-wrap items-end gap-3">
       <select
         bind:value={scope}
+        onchange={publishFilters}
         aria-label="Statistics user"
         class={twMerge(formControlClass, 'w-auto min-w-52 max-w-full')}
       >
@@ -225,7 +246,10 @@
         choices={ranges}
         value={range}
         ariaLabel="Statistics range"
-        onChange={(nextRange) => (range = nextRange)}
+        onChange={(nextRange) => {
+          range = nextRange;
+          publishFilters();
+        }}
       />
     </div>
 
@@ -234,7 +258,10 @@
         choices={platforms}
         value={platform}
         ariaLabel="Statistics platform"
-        onChange={(nextPlatform) => (platform = nextPlatform)}
+        onChange={(nextPlatform) => {
+          platform = nextPlatform;
+          publishFilters();
+        }}
       />
     </div>
     <Button

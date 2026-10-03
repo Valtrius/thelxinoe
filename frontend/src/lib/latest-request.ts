@@ -1,3 +1,5 @@
+import { captureSession } from './session';
+
 /** Only the newest request may publish results, errors, or loading state. */
 export class LatestRequest {
   private revision = 0;
@@ -12,4 +14,3 @@ export class LatestRequest {
     this.revision += 1;
   }
 }
-import { captureSession } from '../session';

@@ -330,12 +330,10 @@ try {
   expect((await link('prowlarr', 'radarr')).enabled).toBe(true);
   const page = await context.newPage();
   await page.goto(`${base}/?section=Settings`);
-  await page
-    .getByRole('button', { name: 'Media services', exact: true })
-    .click();
+  await page.getByRole('link', { name: 'Media services', exact: true }).click();
   await page
     .getByRole('navigation', { name: 'Select service' })
-    .getByRole('button', { name: 'Prowlarr', exact: true })
+    .getByRole('link', { name: 'Prowlarr', exact: true })
     .click();
   const applications = page.getByRole('region', {
     name: 'Applications',

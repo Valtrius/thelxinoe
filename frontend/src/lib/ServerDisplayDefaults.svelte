@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
   import { api } from './api';
-  import { LatestRequest } from './providers/latest-request';
+  import { LatestRequest } from './latest-request';
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
   import FormField from './ui/FormField.svelte';
   import Notice from './ui/Notice.svelte';

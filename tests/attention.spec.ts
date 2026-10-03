@@ -301,7 +301,7 @@ test('menu dots track live severity while pages are closed and survive sidebar c
   );
   await page.goto('/');
   await expect.poll(() => Boolean(sendEvent)).toBe(true);
-  const settings = page.getByRole('button', { name: 'Settings', exact: true });
+  const settings = page.getByRole('link', { name: 'Settings', exact: true });
   const dot = settings.locator('[data-attention-severity]');
   await expect(
     page.getByRole('button', { name: 'Notifications', exact: true }),
@@ -314,20 +314,18 @@ test('menu dots track live severity while pages are closed and survive sidebar c
   const nav = page.getByRole('navigation', { name: 'Settings navigation' });
   await expect(
     nav
-      .getByRole('button', { name: 'Media services', exact: true })
+      .getByRole('link', { name: 'Media services', exact: true })
       .locator('[data-attention-severity]'),
   ).toHaveAttribute('data-attention-severity', 'error');
-  await nav
-    .getByRole('button', { name: 'Media services', exact: true })
-    .click();
+  await nav.getByRole('link', { name: 'Media services', exact: true }).click();
   await expect(dot).toHaveAttribute('data-attention-severity', 'error');
   await expect(
     page
       .getByRole('navigation', { name: 'Select service' })
-      .getByRole('button', { name: 'Radarr', exact: true })
+      .getByRole('link', { name: 'Radarr', exact: true })
       .locator('[data-attention-severity]'),
   ).toHaveAttribute('data-attention-severity', 'error');
-  await page.getByRole('button', { name: 'Movies', exact: true }).click();
+  await page.getByRole('link', { name: 'Movies', exact: true }).click();
   for (const severity of ['warning', 'info', null]) {
     items = items.slice(1);
     await page.evaluate(() =>
@@ -352,7 +350,7 @@ test('menu dots track live severity while pages are closed and survive sidebar c
   sendEvent!('tools.changed');
   await expect(dot).toHaveAttribute('data-attention-severity', 'info');
   await settings.click();
-  const server = nav.getByRole('button', { name: 'Server', exact: true });
+  const server = nav.getByRole('link', { name: 'Server', exact: true });
   await expect(server.locator('[data-attention-severity]')).toHaveAttribute(
     'data-attention-severity',
     'info',
@@ -446,14 +444,26 @@ for (const [section, kind] of [
         },
       }),
     );
+    if (section === 'Music')
+      await page.route('**/api/v1/catalog/requested', (route) =>
+        route.fulfill({
+          json: {
+            id: 'requested',
+            kind,
+            title: 'Requested media',
+            available: true,
+            metadata: {},
+          },
+        }),
+      );
     await page.goto('/');
     const menu = page
       .getByRole('complementary', { name: 'Application sidebar' })
-      .getByRole('button', { name: section, exact: true });
+      .getByRole('link', { name: section, exact: true });
     await expect(menu.locator('[data-attention-severity]')).toBeVisible();
     await expect(
       page
-        .getByRole('button', { name: 'Home', exact: true })
+        .getByRole('link', { name: 'Home', exact: true })
         .locator('[data-attention-severity]'),
     ).toHaveCount(0);
     await menu.click();

@@ -85,7 +85,7 @@ test('auto-delete policies save on change and Audit owns scheduled deletions and
   await page.goto('/');
   await page
     .getByRole('navigation', { name: 'Settings navigation' })
-    .getByRole('button', { name: 'Auto-delete', exact: true })
+    .getByRole('link', { name: 'Auto-delete', exact: true })
     .click();
   const movies = page.getByRole('group', { name: 'Movies', exact: true });
   const videos = page.getByRole('group', {
@@ -187,7 +187,7 @@ test('auto-delete policies save on change and Audit owns scheduled deletions and
   }
   await page
     .getByRole('navigation', { name: 'Settings navigation' })
-    .getByRole('button', { name: 'Audit', exact: true })
+    .getByRole('link', { name: 'Audit', exact: true })
     .click();
   await page
     .getByLabel('Audit view', { exact: true })
@@ -224,7 +224,7 @@ test('auto-delete policies save on change and Audit owns scheduled deletions and
   });
   await page
     .getByRole('navigation', { name: 'Settings navigation' })
-    .getByRole('button', { name: 'Auto-delete', exact: true })
+    .getByRole('link', { name: 'Auto-delete', exact: true })
     .click();
   await expect(
     videos.getByLabel('Unpinned storage limit (GB)', { exact: true }),
@@ -428,7 +428,7 @@ test('adaptive settings keep navigation and service management accessible from m
   const fixture = await installUiFixture(page, { role: 'admin' });
   await page.goto('/');
   const nav = page.getByRole('navigation', { name: 'Settings navigation' });
-  const account = nav.getByRole('button', { name: 'Account', exact: true });
+  const account = nav.getByRole('link', { name: 'Account', exact: true });
   await expect(account).toBeVisible();
   await expect(nav.getByText('Personal', { exact: true })).toBeVisible();
   await expect(nav.getByText('Administration', { exact: true })).toBeVisible();
@@ -440,16 +440,14 @@ test('adaptive settings keep navigation and service management accessible from m
       exact: false,
     }),
   ).toHaveCount(0);
-  await nav
-    .getByRole('button', { name: 'Media services', exact: true })
-    .click();
+  await nav.getByRole('link', { name: 'Media services', exact: true }).click();
   const strip = page.getByRole('navigation', { name: 'Select service' });
   await expect(strip).toBeVisible();
-  await expect(strip.getByRole('button').first()).toHaveAccessibleName('Seerr');
-  await expect(strip.getByRole('button').nth(1)).toHaveAccessibleName(
+  await expect(strip.getByRole('link').first()).toHaveAccessibleName('Seerr');
+  await expect(strip.getByRole('link').nth(1)).toHaveAccessibleName(
     'Recyclarr',
   );
-  await strip.getByRole('button', { name: 'Radarr', exact: true }).click();
+  await strip.getByRole('link', { name: 'Radarr', exact: true }).click();
   for (const size of [
     { width: 3840, height: 2160 },
     { width: 1440, height: 1000 },
@@ -457,7 +455,7 @@ test('adaptive settings keep navigation and service management accessible from m
     { width: 390, height: 844 },
   ]) {
     await page.setViewportSize(size);
-    for (const button of await nav.getByRole('button').all()) {
+    for (const button of await nav.getByRole('link').all()) {
       const box = (await button.boundingBox())!;
       expect(box.x).toBeGreaterThanOrEqual(0);
       expect(box.x + box.width).toBeLessThanOrEqual(size.width);
@@ -522,7 +520,7 @@ test('service labels stay inside their tabs across the sidebar breakpoint', asyn
         ).toBeVisible();
       }
       await strip.scrollIntoViewIfNeeded();
-      await expect(strip.getByRole('button')).toHaveCount(8);
+      await expect(strip.getByRole('link')).toHaveCount(8);
       await page.screenshot({
         path: testInfo.outputPath(
           `service-tabs-${width}-${collapsed ? 'collapsed' : 'expanded'}.png`,
@@ -531,7 +529,7 @@ test('service labels stay inside their tabs across the sidebar breakpoint', asyn
       await expect
         .poll(
           async () =>
-            strip.getByRole('button').evaluateAll((buttons) =>
+            strip.getByRole('link').evaluateAll((buttons) =>
               buttons.flatMap((button) => {
                 const bounds = button.getBoundingClientRect();
                 const issues: string[] = [];
@@ -659,7 +657,7 @@ test('activity and audit filters preserve real actions and older-page queries', 
     .toBe(true);
   await page
     .getByRole('navigation', { name: 'Settings navigation' })
-    .getByRole('button', { name: 'Audit', exact: true })
+    .getByRole('link', { name: 'Audit', exact: true })
     .click();
   await page
     .getByLabel('Audit user', { exact: true })
@@ -723,7 +721,7 @@ test('settings sections adapt without hiding controls or stretching fields', asy
   await page
     .getByRole('searchbox', { name: 'Find a setting' })
     .fill('grace period');
-  await nav.getByRole('button', { name: 'Auto-delete', exact: true }).click();
+  await nav.getByRole('link', { name: 'Auto-delete', exact: true }).click();
   await expect(
     page.getByRole('searchbox', { name: 'Find a setting' }),
   ).toHaveValue('');
@@ -736,7 +734,7 @@ test('settings sections adapt without hiding controls or stretching fields', asy
       width: viewport.width,
       height: viewport.height,
     });
-    await nav.getByRole('button', { name: 'Account', exact: true }).click();
+    await nav.getByRole('link', { name: 'Account', exact: true }).click();
     await page
       .getByRole('button', { name: viewport.theme, exact: true })
       .click();
@@ -751,7 +749,7 @@ test('settings sections adapt without hiding controls or stretching fields', asy
       'Activity',
       'Audit',
     ]) {
-      await nav.getByRole('button', { name, exact: true }).click();
+      await nav.getByRole('link', { name, exact: true }).click();
       await expect(page.locator('.settings-content > h1')).toHaveText(name);
       await expect(
         page
@@ -863,7 +861,7 @@ for (const admin of [false, true]) {
       await expect(
         page
           .getByRole('navigation', { name: 'Settings navigation' })
-          .getByRole('button', { name: 'Provider applications' }),
+          .getByRole('link', { name: 'Provider applications' }),
       ).toHaveAttribute('aria-current', 'page');
     } else {
       await expect(page.getByRole('link', { name: text })).toHaveCount(0);

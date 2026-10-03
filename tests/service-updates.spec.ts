@@ -47,7 +47,7 @@ test('available service releases show versions, container rebuilds and honest fa
   await page.goto('/');
   await page
     .getByRole('navigation', { name: 'Select service' })
-    .getByRole('button', { name: 'Radarr', exact: true })
+    .getByRole('link', { name: 'Radarr', exact: true })
     .click();
   const updates = page.getByRole('region', { name: 'Updates', exact: true });
   await expect(
@@ -97,7 +97,7 @@ test('available service releases show versions, container rebuilds and honest fa
   await page.reload();
   await page
     .getByRole('navigation', { name: 'Select service' })
-    .getByRole('button', { name: 'Radarr', exact: true })
+    .getByRole('link', { name: 'Radarr', exact: true })
     .click();
   await expect(
     updates.getByText('Available image:', { exact: false }),

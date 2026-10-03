@@ -142,7 +142,7 @@ test('Home combines progress, subscription uploads and live channels on desktop 
   await expect(page.locator('.page-header h1')).toHaveText('Home');
   const nav = page.getByRole('navigation', { name: 'Main navigation' });
   expect(
-    (await nav.getByRole('button').allTextContents())
+    (await nav.getByRole('link').allTextContents())
       .slice(0, 2)
       .map((s) => s.trim()),
   ).toEqual(['Home', 'Discover']);
@@ -397,7 +397,7 @@ test('Home and Discover preserve default, saved and detail-link navigation', asy
   await expect(page.locator('.page-header h1')).toHaveText('Home');
   await page
     .getByRole('navigation', { name: 'Main navigation' })
-    .getByRole('button', { name: 'Discover', exact: true })
+    .getByRole('link', { name: 'Discover', exact: true })
     .click();
   await expect(page.locator('.page-header h1')).toHaveText('Discover');
   await page.reload();

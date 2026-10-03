@@ -154,9 +154,7 @@ try {
   // The source Compose service has an opt-in profile, disabled after this startup.
   const page = await context.newPage();
   await page.goto(`${base}/?section=Settings`);
-  await page
-    .getByRole('button', { name: 'Media services', exact: true })
-    .click();
+  await page.getByRole('link', { name: 'Media services', exact: true }).click();
   await page
     .getByLabel('Existing connected service')
     .selectOption(integration.id);

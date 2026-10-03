@@ -170,17 +170,17 @@ try {
   expect(JSON.stringify(diagnostic)).not.toContain(secret);
   const page = await context.newPage();
   await page.goto(origin);
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('link', { name: 'Settings', exact: true }).click();
   await page
     .getByRole('navigation', { name: 'Settings navigation' })
-    .getByRole('button', { name: 'Server', exact: true })
+    .getByRole('link', { name: 'Server', exact: true })
     .click();
   await expect(
     page.getByRole('region', { name: 'Administration overview' }),
   ).toBeVisible();
   await page
     .getByRole('navigation', { name: 'Settings navigation' })
-    .getByRole('button', { name: 'Backups', exact: true })
+    .getByRole('link', { name: 'Backups', exact: true })
     .click();
   await expect(
     page.getByRole('region', { name: 'Backups', exact: true }),

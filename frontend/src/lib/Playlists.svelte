@@ -4,8 +4,10 @@
   import FormField from './ui/FormField.svelte';
   import { formControlClass } from './ui/styles';
   import { onDestroy, untrack } from 'svelte';
-  import { LatestRequest } from './providers/latest-request';
+  import { LatestRequest } from './latest-request';
   import { api } from './api';
+  import { captureSession } from './session';
+  import { sessionPlaylistDrafts } from './playlist-drafts';
   import type { Card } from './media-state';
   import type { MediaChoice } from './playback';
   import Button from './ui/Button.svelte';
@@ -22,10 +24,12 @@
     revision: number;
     items?: Card[];
   };
-  let { userId, revision, play } = $props<{
+  let { userId, revision, play, selectedId, selectedChanged } = $props<{
     userId: string;
     revision: number;
     play: (item: MediaChoice) => void;
+    selectedId?: string;
+    selectedChanged: (id?: string, replace?: boolean) => void;
   }>();
   let items = $state<Playlist[]>([]),
     selected = $state<Playlist | null>(null),
@@ -37,14 +41,58 @@
     error = $state(''),
     busy = $state(false),
     creating = $state(false);
+  const drafts = sessionPlaylistDrafts();
+  const ownsSession = captureSession();
+  const editable = $derived(creating || selected?.owner_id === userId);
+  const dirty = $derived(
+    editable &&
+      JSON.stringify([name, description, tracks.map((track) => track.id)]) !==
+        JSON.stringify([
+          selected?.name ?? '',
+          selected?.description ?? '',
+          selected?.items?.map((track) => track.id) ?? [],
+        ]),
+  );
+  function rememberDraft() {
+    if (ownsSession() && dirty && !busy)
+      drafts.set(selected?.id ?? 'new', {
+        name,
+        description,
+        tracks: JSON.parse(JSON.stringify(tracks)),
+      });
+  }
   const lists = new LatestRequest(),
     selection = new LatestRequest(),
     searches = new LatestRequest();
   onDestroy(() => {
+    rememberDraft();
     lists.invalidate();
     selection.invalidate();
     searches.invalidate();
   });
+  $effect(() => {
+    const id = selectedId;
+    untrack(() => {
+      rememberDraft();
+      selection.invalidate();
+      searches.invalidate();
+      selected = null;
+      busy = false;
+      creating = id === 'new';
+      name = description = query = error = '';
+      tracks = results = [];
+      if (id && id !== 'new') void open(id);
+      else if (id === 'new') restoreDraft(id);
+    });
+  });
+  function restoreDraft(id: string) {
+    const draft = drafts.get(id);
+    if (draft) {
+      name = draft.name;
+      description = draft.description;
+      tracks = draft.tracks;
+    }
+  }
   $effect(() => {
     if (revision >= 0) untrack(() => void load());
   });
@@ -72,6 +120,7 @@
       name = selected.name;
       description = selected.description;
       tracks = selected.items ?? [];
+      restoreDraft(id);
       results = [];
     } catch (e) {
       if (current()) error = String(e);
@@ -97,9 +146,13 @@
         },
       );
       if (!current()) return;
+      drafts.delete(selected?.id ?? 'new');
       await load();
       if (!current()) return;
-      await open(value.id);
+      if (creating) {
+        creating = false;
+        selectedChanged(value.id, true);
+      } else await open(value.id);
     } catch (e) {
       if (current()) error = String(e);
     } finally {
@@ -114,7 +167,9 @@
     try {
       await api(`/playlists/${selected.id}`, 'DELETE');
       if (!current()) return;
+      drafts.delete(selected.id);
       selected = null;
+      selectedChanged(undefined, true);
       await load();
     } catch (e) {
       if (current()) error = String(e);
@@ -157,27 +212,14 @@
     const track = available[selectedIndex];
     if (track) play({ ...track, queueIndex: selectedIndex, queue: available });
   }
-  const editable = $derived(creating || selected?.owner_id === userId);
 </script>
 
 <SectionHeading>
   <p class="text-muted">
     Everyone can play and favorite a playlist. Its owner controls the tracks.
   </p>
-  <Button
-    size="form"
-    onclick={() => {
-      selection.invalidate();
-      searches.invalidate();
-      busy = false;
-      error = '';
-      creating = true;
-      selected = null;
-      name = '';
-      description = '';
-      tracks = [];
-      results = [];
-    }}>New playlist</Button
+  <Button size="form" onclick={() => selectedChanged('new')}
+    >New playlist</Button
   >
 </SectionHeading>
 {#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
@@ -187,16 +229,23 @@
       <Button
         variant="secondary"
         size="form"
-        onclick={() => {
-          selection.invalidate();
-          searches.invalidate();
-          busy = false;
-          creating = false;
-          selected = null;
-        }}>Close playlist</Button
+        onclick={() => selectedChanged(undefined)}>Close playlist</Button
       >
     </SectionHeading>
     <fieldset disabled={busy} class="min-w-0">
+      {#if dirty}<div class="flex flex-wrap items-center gap-3">
+          <p role="status">Unsaved playlist draft</p>
+          <Button
+            variant="secondary"
+            size="form"
+            onclick={() => {
+              drafts.delete(selected?.id ?? 'new');
+              name = selected?.name ?? '';
+              description = selected?.description ?? '';
+              tracks = selected?.items ?? [];
+            }}>Discard changes</Button
+          >
+        </div>{/if}
       {#if editable}<form
           class="my-4 grid gap-3 [&_button]:justify-self-start"
           onsubmit={(e) => {
@@ -300,8 +349,10 @@
   </Panel>{/if}
 {#each items as item (item.id)}<Panel>
     <div class={rowClass}>
-      <Button variant="secondary" size="form" onclick={() => void open(item.id)}
-        >{item.name}</Button
+      <Button
+        variant="secondary"
+        size="form"
+        onclick={() => selectedChanged(item.id)}>{item.name}</Button
       ><small>{item.owner} · {item.count} tracks</small><Button
         variant="secondary"
         size="form"

@@ -20,15 +20,22 @@
   } from '@lucide/svelte';
   import NavigationItem from './NavigationItem.svelte';
   import { desktop, type User } from '../api';
+  import { followLink, routeHref, sectionRoute } from '../navigation';
   import AttentionDot from './AttentionDot.svelte';
   import { attention, attentionDescription } from '../attention';
   import { formControlClass } from './styles';
   import { providers } from '../providers/availability';
   let {
     user,
-    active = $bindable('account'),
+    active = 'account',
     children,
-  } = $props<{ user: User; active?: string; children: Snippet }>();
+    openSettings,
+  } = $props<{
+    user: User;
+    active?: string;
+    children: Snippet;
+    openSettings: (name: string) => void;
+  }>();
   let query = $state('');
   const personal = [
     {
@@ -201,8 +208,11 @@
                   $attention.filter((entry) => entry.target === item.id),
                 )}
                 active={active === item.id}
-                onclick={() => {
-                  active = item.id;
+                href={routeHref(sectionRoute('Settings', item.id))}
+                onclick={(event) => {
+                  if (!followLink(event)) return;
+                  event.preventDefault();
+                  openSettings(item.id);
                   query = '';
                 }}
                 class="settings-nav-item flex min-h-10 items-center gap-2.5 border border-transparent px-2.5 py-2 text-xs aria-[current=page]:border-line-strong compact:min-h-11 compact:gap-1 compact:px-1 compact:text-[11px] [&_[data-nav-accent]]:hidden"

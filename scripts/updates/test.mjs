@@ -86,7 +86,7 @@ try {
   const page = await context.newPage();
   await page.goto(lab.baseUrl);
   await expect(
-    page.getByRole('button', { name: 'Settings', exact: true }),
+    page.getByRole('link', { name: 'Settings', exact: true }),
   ).toBeVisible();
   if (lab.desktop) {
     native = await connectDesktop(lab);

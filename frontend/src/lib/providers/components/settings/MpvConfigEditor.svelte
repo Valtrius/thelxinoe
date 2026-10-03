@@ -21,7 +21,7 @@
   import MpvConfigurationSource from './MpvConfigurationSource.svelte';
   import { toolsState } from '../../tools-state';
   import { loadMpvSchema } from '../../mpv-schema';
-  import { LatestRequest } from '../../latest-request';
+  import { LatestRequest } from '../../../latest-request';
   import { displayToolPath } from '../../tools-presentation';
   import { controlClass } from './settingsUi';
   let {

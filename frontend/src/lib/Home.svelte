@@ -11,7 +11,7 @@
     type KickFeed,
   } from './providers/api';
   import type { YoutubeVideo, TwitchLiveStream } from './providers/types';
-  import { LatestRequest } from './providers/latest-request';
+  import { LatestRequest } from './latest-request';
   import Button from './ui/Button.svelte';
   import Notice from './ui/Notice.svelte';
   import LibraryCard from './ui/LibraryCard.svelte';

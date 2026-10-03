@@ -5,7 +5,7 @@
   import { formControlClass } from './ui/styles';
   import { Folder, RefreshCw, ArrowLeft } from '@lucide/svelte';
   import { api } from './api';
-  import { LatestRequest } from './providers/latest-request';
+  import { LatestRequest } from './latest-request';
   import {
     attention,
     attentionErrors,
@@ -33,6 +33,11 @@
     timezone,
     timeFormat,
     focusId,
+    ancestors,
+    selectedChanged,
+    searchQuery,
+    collectionId,
+    filtersChanged,
   } = $props<{
     domain: string;
     admin: boolean;
@@ -43,6 +48,11 @@
     timezone: string;
     timeFormat: '12h' | '24h';
     focusId?: string;
+    ancestors?: string[];
+    selectedChanged?: (id?: string, ancestors?: string[]) => void;
+    searchQuery?: string;
+    collectionId?: string;
+    filtersChanged?: (query: string, collection: string) => void;
   }>();
   type Item = {
     id: string;
@@ -91,9 +101,12 @@
   });
   function searchChanged() {
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => void load(), 250);
+    searchTimer = setTimeout(() => {
+      if (filtersChanged) filtersChanged(search, collection);
+      else void load();
+    }, 250);
   }
-  async function load() {
+  async function load(refreshDetails = true) {
     const request = ++generation;
     busy = true;
     error = '';
@@ -107,7 +120,7 @@
       );
       if (request !== generation) return;
       items = result.items;
-      if (selected) await loadDetails(selected.id);
+      if (refreshDetails && selected) await loadDetails(selected.id);
       if (request !== generation) return;
       if (domain === 'Movies') {
         const result = await api<{ items: typeof collections }>(
@@ -130,36 +143,58 @@
     }
   }
   $effect(() => {
-    if (domain)
-      untrack(() => {
-        breadcrumbs = [];
-        closeDetails();
-        collection = '';
-        void load();
-      });
-  });
-  $effect(() => {
-    if (revision > 0) untrack(() => void load());
-  });
-  $effect(() => {
-    const id = focusId;
-    if (id)
-      untrack(() => {
-        const current = detailRequests.begin();
-        void api<Item & NonNullable<typeof details>>(`/catalog/${id}`)
-          .then((item) => {
+    void domain;
+    const parents: string[] = ancestors ?? [];
+    const id = focusId,
+      query = searchQuery ?? '',
+      group = collectionId ?? '';
+    untrack(() => {
+      generation++;
+      closeDetails();
+      breadcrumbs = [];
+      search = query;
+      collection = group;
+      error = '';
+      const current = detailRequests.begin();
+      void (async () => {
+        try {
+          const ancestry = await Promise.all(
+            parents.map((parent) => api<Item>(`/catalog/${parent}`)),
+          );
+          if (!current()) return;
+          breadcrumbs = ancestry.map(({ id, title }) => ({ id, title }));
+          if (id) {
+            const item = await api<Item & NonNullable<typeof details>>(
+              `/catalog/${id}`,
+            );
             if (!current()) return;
             if (['movie', 'episode', 'track'].includes(item.kind)) {
               selected = item;
               details = item;
-            } else void open(item);
-          })
-          .catch((e) => {
-            if (current()) error = String(e);
-          });
-      });
+            } else
+              breadcrumbs = [
+                ...breadcrumbs,
+                { id: item.id, title: item.title },
+              ];
+          }
+          if (current()) await load(false);
+        } catch (e) {
+          if (current()) error = String(e);
+        }
+      })();
+    });
+  });
+  $effect(() => {
+    if (revision > 0) untrack(() => void load());
   });
   async function open(item: Item) {
+    if (selectedChanged) {
+      selectedChanged(
+        item.id,
+        breadcrumbs.map((entry) => entry.id),
+      );
+      return;
+    }
     if (['movie', 'episode', 'track'].includes(item.kind)) {
       await select(item);
     } else {
@@ -172,6 +207,13 @@
     selected = item;
     details = null;
     error = '';
+    if (selectedChanged) {
+      selectedChanged(
+        item.id,
+        breadcrumbs.map((entry) => entry.id),
+      );
+      return;
+    }
     await loadDetails(item.id);
   }
   function closeDetails() {
@@ -201,6 +243,13 @@
       variant="secondary"
       size="form"
       onclick={() => {
+        if (selectedChanged) {
+          selectedChanged(
+            breadcrumbs.at(-2)?.id,
+            breadcrumbs.slice(0, -2).map((entry) => entry.id),
+          );
+          return;
+        }
         breadcrumbs = breadcrumbs.slice(0, -1);
         void load();
       }}><ArrowLeft size={15} />{breadcrumbs.at(-1)?.title}</Button
@@ -223,7 +272,8 @@
     >Collection<select
       class={formControlClass}
       bind:value={collection}
-      onchange={() => void load()}
+      onchange={() =>
+        filtersChanged ? filtersChanged(search, collection) : void load()}
       ><option value="">All movies</option
       >{#each collections as group (group.id)}<option value={String(group.id)}
           >{group.name} ({group.count})</option
@@ -263,8 +313,16 @@
 {#if selected}<Panel>
     <SectionHeading>
       <h2>{selected.title}</h2>
-      <Button variant="secondary" size="form" onclick={closeDetails}
-        >Close</Button
+      <Button
+        variant="secondary"
+        size="form"
+        onclick={() => {
+          closeDetails();
+          selectedChanged?.(
+            breadcrumbs.at(-1)?.id,
+            breadcrumbs.slice(0, -1).map((entry) => entry.id),
+          );
+        }}>Close</Button
       >
     </SectionHeading>
     {#if selected.overview}<p class="text-muted">{selected.overview}</p>{/if}

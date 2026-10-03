@@ -2,7 +2,7 @@
   import { untrack } from 'svelte';
   import { api, type User } from './api';
   import History from './History.svelte';
-  import { LatestRequest } from './providers/latest-request';
+  import { LatestRequest } from './latest-request';
   import Button from './ui/Button.svelte';
   import FormField from './ui/FormField.svelte';
   import Panel from './ui/Panel.svelte';

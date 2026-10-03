@@ -1,4 +1,4 @@
-import { LatestRequest } from './latest-request';
+import { LatestRequest } from '../latest-request';
 
 /** Coordinates replacement, pagination, and refresh of one retained feed. */
 export class FeedRequests extends LatestRequest {

@@ -5,7 +5,7 @@ import { waitForViewportFit } from '../scripts/ci-readiness.mjs';
 async function selectRadarr(page: Page) {
   await page
     .getByRole('navigation', { name: 'Select service' })
-    .getByRole('button', { name: 'Radarr', exact: true })
+    .getByRole('link', { name: 'Radarr', exact: true })
     .click();
 }
 
@@ -35,15 +35,15 @@ test('installation progress polls automatically without queued banners across ta
     });
   });
   await page.goto('/');
-  await page.getByRole('button', { name: 'Sonarr', exact: true }).click();
+  await page.getByRole('link', { name: 'Sonarr', exact: true }).click();
   await page
     .getByRole('button', { name: 'Install Sonarr', exact: true })
     .click();
   await expect(
-    page.getByRole('button', { name: 'Sonarr', exact: true }),
+    page.getByRole('link', { name: 'Sonarr', exact: true }),
   ).toContainText('Installing');
   await expect(page.getByText(/installation queued/i)).toHaveCount(0);
-  await page.getByRole('button', { name: 'Radarr', exact: true }).click();
+  await page.getByRole('link', { name: 'Radarr', exact: true }).click();
   await expect(page.locator('.service-workspace > .notice')).toHaveCount(0);
   phase = 'complete';
   const before = stackReads;
@@ -51,7 +51,7 @@ test('installation progress polls automatically without queued banners across ta
     .poll(() => stackReads, { timeout: 7000 })
     .toBeGreaterThan(before);
   await expect(
-    page.getByRole('button', { name: 'Sonarr', exact: true }),
+    page.getByRole('link', { name: 'Sonarr', exact: true }),
   ).not.toContainText('Installing');
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
@@ -104,14 +104,14 @@ test('a stopped service can be removed after reviewing its configuration cleanup
   await page.goto('/');
   await selectRadarr(page);
   await expect(
-    page.getByRole('button', { name: 'Radarr', exact: true }),
+    page.getByRole('link', { name: 'Radarr', exact: true }),
   ).toContainText('Running');
   await expect(
     page.getByRole('button', { name: 'Remove service', exact: true }),
   ).toHaveCount(0);
   stopped = true;
   await expect(
-    page.getByRole('button', { name: 'Radarr', exact: true }),
+    page.getByRole('link', { name: 'Radarr', exact: true }),
   ).toContainText('Stopped', { timeout: 7000 });
   await page
     .getByRole('button', { name: 'Remove service', exact: true })
@@ -205,7 +205,7 @@ test('removal and installation keep independent locks, feedback and polling', as
   await expect(
     page.getByRole('button', { name: 'Start', exact: true }),
   ).toBeDisabled();
-  await page.getByRole('button', { name: 'Sonarr', exact: true }).click();
+  await page.getByRole('link', { name: 'Sonarr', exact: true }).click();
   await page
     .getByRole('button', { name: 'Install Sonarr', exact: true })
     .click();
@@ -213,21 +213,21 @@ test('removal and installation keep independent locks, feedback and polling', as
   await expect(
     page.getByRole('button', { name: 'Install Sonarr', exact: true }),
   ).toBeDisabled();
-  await page.getByRole('button', { name: 'Lidarr', exact: true }).click();
+  await page.getByRole('link', { name: 'Lidarr', exact: true }).click();
   await expect(
     page.getByRole('button', { name: 'Install Lidarr', exact: true }),
   ).toBeEnabled();
   const reads = stackReads;
   await expect.poll(() => stackReads, { timeout: 7000 }).toBeGreaterThan(reads);
   finishRemoval!();
-  await page.getByRole('button', { name: 'Radarr', exact: true }).click();
+  await page.getByRole('link', { name: 'Radarr', exact: true }).click();
   await expect(page.locator('.rail-identity:not(.inactive)')).toContainText(
     'Removal needs attention',
   );
   await expect(
     page.getByRole('button', { name: 'Remove service', exact: true }),
   ).toBeEnabled();
-  await page.getByRole('button', { name: 'Sonarr', exact: true }).click();
+  await page.getByRole('link', { name: 'Sonarr', exact: true }).click();
   await expect(
     page.getByRole('button', { name: 'Install Sonarr', exact: true }),
   ).toBeDisabled();
@@ -323,11 +323,11 @@ test('an older update poll cannot unlock a newly queued update', async ({
   );
   finishOldPoll!();
   await staleResponse;
-  await page.getByRole('button', { name: 'Sonarr', exact: true }).click();
+  await page.getByRole('link', { name: 'Sonarr', exact: true }).click();
   await expect(
     page.getByRole('button', { name: 'Install Sonarr', exact: true }),
   ).toBeEnabled();
-  await page.getByRole('button', { name: 'Radarr', exact: true }).click();
+  await page.getByRole('link', { name: 'Radarr', exact: true }).click();
   await expect(check).toBeDisabled();
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
@@ -376,11 +376,11 @@ for (const state of [
         body: await page.screenshot(),
         contentType: 'image/png',
       });
-    await page.getByRole('button', { name: 'Sonarr', exact: true }).click();
+    await page.getByRole('link', { name: 'Sonarr', exact: true }).click();
     await expect(
       page.getByRole('button', { name: 'Install Sonarr', exact: true }),
     ).toBeEnabled();
-    await page.getByRole('button', { name: 'NZBGet', exact: true }).click();
+    await page.getByRole('link', { name: 'NZBGet', exact: true }).click();
     await expect(
       page.getByRole('button', { name: 'Pause all', exact: true }),
     ).toBeEnabled();
@@ -429,7 +429,7 @@ for (const savedControllerData of [false, true]) {
     if (savedControllerData) {
       await selectRadarr(page);
       await expect(
-        services.getByRole('button', { name: 'Radarr', exact: true }),
+        services.getByRole('link', { name: 'Radarr', exact: true }),
       ).toContainText('Setup mismatch');
       await expect(
         page.getByRole('status', { name: 'Service setup mismatch' }),
@@ -449,9 +449,9 @@ for (const savedControllerData of [false, true]) {
         'Prowlarr',
         'NZBGet',
       ]) {
-        await services.getByRole('button', { name, exact: true }).click();
+        await services.getByRole('link', { name, exact: true }).click();
         await expect(
-          services.getByRole('button', { name, exact: true }),
+          services.getByRole('link', { name, exact: true }),
         ).toContainText('Not connected');
         await expect(
           page.getByRole('button', { name: `Install ${name}`, exact: true }),
@@ -648,7 +648,7 @@ test('long admin navigation scrolls independently and keeps its last item reacha
   const fixture = await installUiFixture(page, { role: 'admin' });
   await page.goto('/');
   const nav = page.getByRole('navigation', { name: 'Settings navigation' });
-  const last = nav.getByRole('button', { name: 'Audit', exact: true });
+  const last = nav.getByRole('link', { name: 'Audit', exact: true });
   await last.scrollIntoViewIfNeeded();
   await expect(last).toBeInViewport();
   expect(await nav.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
@@ -732,7 +732,7 @@ test('all eight media services stay accessible without horizontal scrolling', as
   });
   await page.goto('/');
   const nav = page.getByRole('navigation', { name: 'Select service' });
-  const tabs = nav.getByRole('button');
+  const tabs = nav.getByRole('link');
   await expect(tabs).toHaveCount(8);
   for (const width of [1440, 1024, 390]) {
     await page.setViewportSize({ width, height: 900 });
@@ -813,7 +813,7 @@ test('media services preserve real controls across adaptive layouts', async ({
     'Prowlarr',
     'NZBGet',
   ]) {
-    await nav.getByRole('button', { name, exact: true }).click();
+    await nav.getByRole('link', { name, exact: true }).click();
     await expect(
       page.getByRole('article', { name: `${name} service` }),
     ).toBeVisible();
@@ -822,14 +822,14 @@ test('media services preserve real controls across adaptive layouts', async ({
       page.getByRole('complementary', { name: 'Service controls' }),
     ).toBeVisible();
   }
-  await nav.getByRole('button', { name: 'Sonarr', exact: true }).click();
+  await nav.getByRole('link', { name: 'Sonarr', exact: true }).click();
   await expect(
     page.getByRole('button', { name: 'Install Sonarr', exact: true }),
   ).toBeVisible();
   await expect(
     page.getByRole('form', { name: 'Connect existing Sonarr' }),
   ).toBeVisible();
-  await nav.getByRole('button', { name: 'Prowlarr', exact: true }).click();
+  await nav.getByRole('link', { name: 'Prowlarr', exact: true }).click();
   await expect(
     page.getByRole('switch', { name: 'Enable Fixture indexer' }),
   ).toBeVisible();
@@ -864,7 +864,7 @@ test('media services preserve real controls across adaptive layouts', async ({
       path: `.local/services-mobile-${width}.png`,
       fullPage: true,
     });
-    await nav.getByRole('button', { name: 'Sonarr', exact: true }).click();
+    await nav.getByRole('link', { name: 'Sonarr', exact: true }).click();
     const rail = await page.locator('.service-rail').boundingBox();
     const workspace = await page
       .getByRole('form', { name: 'Connect existing Sonarr' })
@@ -891,7 +891,7 @@ test('NZBGet combines active downloads with scrollable history and compact actio
   await page.goto('/');
   await page
     .getByRole('navigation', { name: 'Select service' })
-    .getByRole('button', { name: 'NZBGet', exact: true })
+    .getByRole('link', { name: 'NZBGet', exact: true })
     .click();
   const region = page.getByRole('region', {
     name: 'Current and recent downloads',
@@ -987,7 +987,7 @@ test('NZBGet URL has compact login and password copy buttons', async ({
   });
   await page.goto('/');
   const services = page.getByRole('navigation', { name: 'Select service' });
-  await services.getByRole('button', { name: 'NZBGet', exact: true }).click();
+  await services.getByRole('link', { name: 'NZBGet', exact: true }).click();
   const line = page.locator('.rail-identity:not(.inactive) .service-url-line');
   const url = line.getByRole('link', { name: 'Open NZBGet', exact: true });
   const copyLogin = line.getByRole('button', { name: 'Copy NZBGet login' });
@@ -1043,7 +1043,7 @@ test('NZBGet copy buttons appear after installation and use managed credentials'
   await page.goto('/');
   await page
     .getByRole('navigation', { name: 'Select service' })
-    .getByRole('button', { name: 'NZBGet', exact: true })
+    .getByRole('link', { name: 'NZBGet', exact: true })
     .click();
   const line = page.locator('.rail-identity:not(.inactive) .service-url-line');
   await expect(
@@ -1184,7 +1184,7 @@ for (const scenario of [
     await expect(banner).toHaveAttribute('data-tone', 'danger');
     await page
       .getByRole('navigation', { name: 'Select service' })
-      .getByRole('button', { name: scenario.unaffectedService, exact: true })
+      .getByRole('link', { name: scenario.unaffectedService, exact: true })
       .click();
 
     await expect(
@@ -1308,19 +1308,19 @@ test('mobile navigation opens over full-width content and restores the desktop s
     await page.mouse.click(width - 8, 100);
     await expect(drawer).toBeHidden();
     await menu.click();
-    await drawer.getByRole('button', { name: 'Home', exact: true }).click();
+    await drawer.getByRole('link', { name: 'Home', exact: true }).click();
     await expect(drawer).toBeHidden();
     await expect(
       page.getByRole('heading', { name: 'Home', exact: true }),
     ).toBeVisible();
     await menu.click();
-    await drawer.getByRole('button', { name: 'Discover', exact: true }).click();
+    await drawer.getByRole('link', { name: 'Discover', exact: true }).click();
     await expect(drawer).toBeHidden();
     await expect(page.locator('.page-header h1')).toHaveText('Discover');
     await menu.click();
-    await drawer.getByRole('button', { name: 'Settings', exact: true }).click();
+    await drawer.getByRole('link', { name: 'Settings', exact: true }).click();
     await expect(drawer).toBeHidden();
-    await expect(menu).toBeFocused();
+    await expect(page.locator('.page-header h1')).toBeFocused();
     await expect(
       page.getByRole('heading', { name: 'Settings', exact: true }),
     ).toBeVisible();
@@ -1376,10 +1376,10 @@ test('mobile settings show every category in a wrapping grid', async ({
       '20px 0px 0px',
     );
     await nav
-      .getByRole('button', { name: 'Audit', exact: true })
+      .getByRole('link', { name: 'Audit', exact: true })
       .scrollIntoViewIfNeeded();
     await expect(
-      nav.getByRole('button', { name: 'Audit', exact: true }),
+      nav.getByRole('link', { name: 'Audit', exact: true }),
     ).toBeInViewport();
     expect(
       await page.evaluate(
@@ -1433,7 +1433,7 @@ test('display, playback and skipping preferences save automatically', async ({
     .toBe(true);
   await page
     .getByRole('navigation', { name: 'Settings navigation' })
-    .getByRole('button', { name: 'Playback', exact: true })
+    .getByRole('link', { name: 'Playback', exact: true })
     .click();
   const choices = page.getByRole('group', { name: 'Intro skipping' });
   await choices.getByRole('button', { name: 'Ignore', exact: true }).click();

@@ -1,3 +1,73 @@
+import type { Provision, StackService, Update } from './feature';
+
+export function isSetupActive(item: Provision | undefined) {
+  return ['queued', 'installing', 'connecting', 'retiring'].includes(
+    item?.state ?? '',
+  );
+}
+
+export function activeServiceUpdate(updates: Update[]) {
+  return updates
+    .slice(0, 1)
+    .find((entry) =>
+      [
+        'queued',
+        'submitting',
+        'preparing',
+        'snapshotting',
+        'preflight',
+        'queued-activate',
+        'recovery-snapshot',
+        'isolated-live-validation',
+        'rollback-copying',
+        'rollback-activating',
+        'activating',
+        'queued-recover',
+      ].includes(entry.state),
+    );
+}
+
+export function serviceStatus({
+  item,
+  live,
+  connected,
+  update,
+  unavailable,
+}: {
+  item?: Provision;
+  live?: StackService;
+  connected?: { error?: string | null } | null;
+  update?: Update;
+  unavailable: boolean;
+}) {
+  if (live?.registered === false)
+    return { label: 'Setup mismatch', tone: 'warn' };
+  if (isSetupActive(item))
+    return {
+      label:
+        item?.state === 'connecting'
+          ? 'Connecting API'
+          : item?.state === 'retiring'
+            ? 'Retiring'
+            : 'Installing',
+      tone: 'busy',
+    };
+  if (item?.state === 'blocked') return { label: 'Setup blocked', tone: 'bad' };
+  if (update?.state === 'activating')
+    return { label: 'Connecting API', tone: 'busy' };
+  if (live?.status === 'unavailable')
+    return { label: 'Status unavailable', tone: 'warn' };
+  if (live?.status === 'missing')
+    return { label: 'Container missing', tone: 'bad' };
+  if (live?.status === 'ready') return { label: 'Ready', tone: 'ok' };
+  if (live?.running === false) return { label: 'Stopped', tone: 'muted' };
+  if (connected?.error) return { label: 'API unavailable', tone: 'warn' };
+  if (live?.running) return { label: 'Running', tone: 'ok' };
+  if (connected) return { label: 'Connected', tone: 'ok' };
+  if (unavailable) return { label: 'Status unavailable', tone: 'warn' };
+  return { label: 'Not connected', tone: 'muted' };
+}
+
 export function hasNativeAccess(kind: string | null) {
   return [
     'radarr',

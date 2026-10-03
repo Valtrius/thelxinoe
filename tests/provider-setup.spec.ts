@@ -165,7 +165,7 @@ for (const platform of ['YouTube', 'Twitch', 'Kick']) {
     const fixture = await providerFixture(page, 'Settings');
     await page.goto('/');
     await page
-      .getByRole('button', { name: 'Provider applications', exact: true })
+      .getByRole('link', { name: 'Provider applications', exact: true })
       .click();
     const toggle = page.getByRole('switch', {
       name: `Enable ${platform} integration`,
@@ -175,16 +175,16 @@ for (const platform of ['YouTube', 'Twitch', 'Kick']) {
     await expect(
       page
         .getByRole('navigation', { name: 'Main navigation' })
-        .getByRole('button', { name: platform, exact: true }),
+        .getByRole('link', { name: platform, exact: true }),
     ).toHaveCount(0);
     await expect(toggle).not.toBeChecked();
     await page.reload();
     await page
-      .getByRole('button', { name: 'Provider applications', exact: true })
+      .getByRole('link', { name: 'Provider applications', exact: true })
       .click();
     await expect(toggle).not.toBeChecked();
     await page
-      .getByRole('button', { name: 'Online accounts', exact: true })
+      .getByRole('link', { name: 'Online accounts', exact: true })
       .click();
     await expect(
       page.getByRole('button', { name: `Connect ${platform}`, exact: true }),
@@ -195,9 +195,9 @@ for (const platform of ['YouTube', 'Twitch', 'Kick']) {
       ).toHaveCount(0);
     await page.goto(`/?section=${platform}`);
     await expect(page.locator('.page-header h1')).toHaveText('Home');
-    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await page.getByRole('link', { name: 'Settings', exact: true }).click();
     await page
-      .getByRole('button', { name: 'Provider applications', exact: true })
+      .getByRole('link', { name: 'Provider applications', exact: true })
       .click();
     await expect(toggle).not.toBeChecked();
     await page.screenshot({
@@ -208,7 +208,7 @@ for (const platform of ['YouTube', 'Twitch', 'Kick']) {
     await expect(
       page
         .getByRole('navigation', { name: 'Main navigation' })
-        .getByRole('button', { name: platform, exact: true }),
+        .getByRole('link', { name: platform, exact: true }),
     ).toBeVisible();
     await expect(toggle).toBeChecked();
     await expect(
@@ -228,7 +228,7 @@ test('integration switches recover from failed saves and fit mobile settings', a
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');
   await page
-    .getByRole('button', { name: 'Provider applications', exact: true })
+    .getByRole('link', { name: 'Provider applications', exact: true })
     .click();
   fixture.state.failToggle = true;
   const toggle = page.getByRole('switch', {

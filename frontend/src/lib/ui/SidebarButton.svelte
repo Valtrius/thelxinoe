@@ -40,6 +40,7 @@
       resizeWithSidebar?: boolean;
       description?: string;
       class?: string;
+      href?: string;
     };
 
   let {

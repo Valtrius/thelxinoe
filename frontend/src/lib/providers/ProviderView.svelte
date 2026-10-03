@@ -1,8 +1,10 @@
 <script lang="ts">
+  import { providerPages } from '../pages';
   import { onMount, untrack } from 'svelte';
   import { toolsApi } from './tools-api';
   import { api as request, desktop } from '../api';
   import { captureSession } from '../session';
+  import { LatestRequest } from '../latest-request';
   import { appearance, updateAppearance } from '../appearance';
   import type { MediaChoice } from '../playback';
   import {
@@ -27,12 +29,20 @@
   } from './types';
   import { createYoutubeWatchlists } from './youtube-watchlist-controller.svelte';
   import { showToast, clearToasts } from './toasts';
-  import YoutubeView from './components/youtube/YoutubeView.svelte';
-  import TwitchView from './components/twitch/TwitchView.svelte';
-  import KickView from './components/kick/KickView.svelte';
+  import Notice from '../ui/Notice.svelte';
   import ToastViewport from './components/ui/ToastViewport.svelte';
 
-  let { platform, admin, userId, revision, playing, play, settings } = $props<{
+  let {
+    platform,
+    admin,
+    userId,
+    revision,
+    playing,
+    play,
+    settings,
+    watchlistId,
+    watchlistChanged,
+  } = $props<{
     platform: 'youtube' | 'twitch' | 'kick';
     admin: boolean;
     userId: string;
@@ -40,6 +50,8 @@
     playing: MediaChoice | null;
     play: (choice: MediaChoice) => Promise<void>;
     settings: (section: string) => void;
+    watchlistId?: number;
+    watchlistChanged: (id: number) => void;
   }>();
   const disconnect = untrack(() => connectPresentation(userId, play));
   const ownsSession = captureSession();
@@ -60,7 +72,8 @@
   let pendingGoogle = $state(false);
   let nativeReady = $state(true);
   let disposed = false;
-  let loading = false;
+  let loadingPlatform: typeof platform | null = null;
+  const accountRequests = new LatestRequest();
   let lastSnapshot = '';
   let refreshAfter = 0;
   let refreshTimer: ReturnType<typeof setTimeout>;
@@ -162,14 +175,15 @@
       : [],
   );
   async function load() {
-    if (loading || disposed || !ownsSession()) return;
+    if (loadingPlatform === platform || disposed || !ownsSession()) return;
     const selected: 'youtube' | 'twitch' | 'kick' = platform;
-    loading = true;
+    loadingPlatform = selected;
+    const current = accountRequests.begin();
     try {
       const value = await request<OnlineAccount | KickFeed>(
         `/online/${selected}`,
       );
-      if (disposed || !ownsSession() || selected !== platform) return;
+      if (disposed || !current() || selected !== platform) return;
       if (selected === 'kick') kick = value as KickFeed;
       else accounts[selected] = value as OnlineAccount;
       if (
@@ -183,7 +197,7 @@
         refreshData();
       }
     } catch (error) {
-      if (!disposed && ownsSession() && selected === platform)
+      if (!disposed && current() && selected === platform)
         showToast({
           key: 'providers-load',
           tone: 'error',
@@ -191,8 +205,7 @@
           message: normalizeError(error).message,
         });
     } finally {
-      loading = false;
-      if (!disposed && ownsSession() && selected !== platform) void load();
+      if (current()) loadingPlatform = null;
     }
   }
   $effect(() => {
@@ -205,12 +218,13 @@
   });
   $effect(() => {
     const selected = $preferences['youtube-selected-watchlist-id'];
+    const linked = watchlistId;
     if (
       platform === 'youtube' &&
-      selected &&
-      Number.isSafeInteger(Number(selected))
+      (linked || selected) &&
+      Number.isSafeInteger(Number(linked ?? selected))
     )
-      watchlistController.selectedWatchlistId = Number(selected);
+      watchlistController.selectedWatchlistId = Number(linked ?? selected);
   });
   $effect(() => {
     const selected = watchlistController.selectedWatchlistId;
@@ -265,6 +279,7 @@
     document.addEventListener('visibilitychange', refreshVisible);
     return () => {
       disposed = true;
+      accountRequests.invalidate();
       clearInterval(timer);
       document.removeEventListener('visibilitychange', refreshVisible);
       clearTimeout(refreshTimer);
@@ -305,61 +320,78 @@
   data-sidebar-resize-origin
 >
   {#if platform === 'youtube'}
-    <YoutubeView
-      {admin}
-      {account}
-      {watchlistController}
-      {syncStatus}
-      {playback}
-      {activeSessions}
-      cardColumns={$appearance.card_columns}
-      fadeWatchedCards={$appearance.fade_watched}
-      youtubeCardShortcuts={$appearance.youtube_card_shortcuts}
-      signedInPlaybackAvailable={false}
-      {authState}
-      clientConfigured={!!rawAccount?.configured &&
-        !!rawAccount.linking_available}
-      {dataRevision}
-      {youtubeProgress}
-      {youtubeDownload}
-      {youtubeDownloadRemoval}
-      onAuthStarted={authStarted}
-      onNavigateSettings={navigateSettings}
-      onAccountChanged={() => void load()}
-      onYoutubeCardShortcutsChanged={(youtube_card_shortcuts) =>
-        updateAppearance({ youtube_card_shortcuts })}
-      onCardColumnsChange={(card_columns) => updateAppearance({ card_columns })}
-    />
+    {#await providerPages.YoutubeView()}<p role="status">
+        Loading provider…
+      </p>{:then { default: YoutubeView }}<YoutubeView
+        {admin}
+        {account}
+        {watchlistController}
+        onWatchlistSelected={watchlistChanged}
+        showWatchlist={watchlistId !== undefined}
+        {syncStatus}
+        {playback}
+        {activeSessions}
+        cardColumns={$appearance.card_columns}
+        fadeWatchedCards={$appearance.fade_watched}
+        youtubeCardShortcuts={$appearance.youtube_card_shortcuts}
+        signedInPlaybackAvailable={false}
+        {authState}
+        clientConfigured={!!rawAccount?.configured &&
+          !!rawAccount.linking_available}
+        {dataRevision}
+        {youtubeProgress}
+        {youtubeDownload}
+        {youtubeDownloadRemoval}
+        onAuthStarted={authStarted}
+        onNavigateSettings={navigateSettings}
+        onAccountChanged={() => void load()}
+        onYoutubeCardShortcutsChanged={(youtube_card_shortcuts) =>
+          updateAppearance({ youtube_card_shortcuts })}
+        onCardColumnsChange={(card_columns) =>
+          updateAppearance({ card_columns })}
+      />{:catch error}<Notice role="alert" variant="error"
+        >{String(error)}</Notice
+      >{/await}
   {:else if platform === 'twitch'}
-    <TwitchView
-      {admin}
-      {account}
-      {syncStatus}
-      {playback}
-      {activeSessions}
-      cardColumns={$appearance.card_columns}
-      {authState}
-      clientConfigured={!!rawAccount?.configured}
-      {dataRevision}
-      onAuthStarted={authStarted}
-      onNavigateSettings={navigateSettings}
-      onAccountChanged={() => void load()}
-      onCardColumnsChange={(card_columns) => updateAppearance({ card_columns })}
-    />
+    {#await providerPages.TwitchView()}<p role="status">
+        Loading provider…
+      </p>{:then { default: TwitchView }}<TwitchView
+        {admin}
+        {account}
+        {syncStatus}
+        {playback}
+        {activeSessions}
+        cardColumns={$appearance.card_columns}
+        {authState}
+        clientConfigured={!!rawAccount?.configured}
+        {dataRevision}
+        onAuthStarted={authStarted}
+        onNavigateSettings={navigateSettings}
+        onAccountChanged={() => void load()}
+        onCardColumnsChange={(card_columns) =>
+          updateAppearance({ card_columns })}
+      />{:catch error}<Notice role="alert" variant="error"
+        >{String(error)}</Notice
+      >{/await}
   {:else}
-    <KickView
-      {admin}
-      connected={!!kick?.connected}
-      onAccountChanged={() => void load()}
-      {syncStatus}
-      {playback}
-      {activeSessions}
-      cardColumns={$appearance.card_columns}
-      metadataConfigured={!!kick?.configured}
-      {dataRevision}
-      onNavigateSettings={navigateSettings}
-      onCardColumnsChange={(card_columns) => updateAppearance({ card_columns })}
-    />
+    {#await providerPages.KickView()}<p role="status">
+        Loading provider…
+      </p>{:then { default: KickView }}<KickView
+        {admin}
+        connected={!!kick?.connected}
+        onAccountChanged={() => void load()}
+        {syncStatus}
+        {playback}
+        {activeSessions}
+        cardColumns={$appearance.card_columns}
+        metadataConfigured={!!kick?.configured}
+        {dataRevision}
+        onNavigateSettings={navigateSettings}
+        onCardColumnsChange={(card_columns) =>
+          updateAppearance({ card_columns })}
+      />{:catch error}<Notice role="alert" variant="error"
+        >{String(error)}</Notice
+      >{/await}
   {/if}
   <ToastViewport />
 </div>

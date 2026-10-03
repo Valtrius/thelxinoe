@@ -45,7 +45,7 @@ test('installation keeps the workspace empty until the API is connected', async 
   await page.clock.install();
   await page.goto('/');
   const select = page.getByRole('navigation', { name: 'Select service' });
-  await select.getByRole('button', { name: 'Sonarr', exact: true }).click();
+  await select.getByRole('link', { name: 'Sonarr', exact: true }).click();
   await expect(
     page.getByRole('heading', { name: 'Set up Sonarr' }),
   ).toHaveCount(0);
@@ -56,7 +56,7 @@ test('installation keeps the workspace empty until the API is connected', async 
   await expect(
     page.getByText('Enter the prefix already configured', { exact: false }),
   ).toHaveCount(0);
-  await select.getByRole('button', { name: 'Radarr', exact: true }).click();
+  await select.getByRole('link', { name: 'Radarr', exact: true }).click();
   for (const state of ['queued', 'installing', 'connecting']) {
     options.stackProvisionState = state;
     await page.clock.runFor(4000);
@@ -159,7 +159,7 @@ test('connection actions spin locally, survive polling, and show errors in their
   await page.goto('/');
   await page
     .getByRole('navigation', { name: 'Select service' })
-    .getByRole('button', { name: 'Prowlarr', exact: true })
+    .getByRole('link', { name: 'Prowlarr', exact: true })
     .click();
   const row = page.getByLabel('Radarr connection', { exact: true });
   await expect(row.getByText('Connected', { exact: true })).toBeVisible();
@@ -236,7 +236,7 @@ for (const reducedMotion of ['no-preference', 'reduce'] as const) {
     });
     await page.goto('/');
     const select = page.getByRole('navigation', { name: 'Select service' });
-    await select.getByRole('button', { name: 'Radarr', exact: true }).click();
+    await select.getByRole('link', { name: 'Radarr', exact: true }).click();
     const group = page.getByRole('group', { name: 'Update policy' });
     await expect(
       group.getByRole('button', { name: 'Inherit', exact: true }),
@@ -269,8 +269,8 @@ for (const reducedMotion of ['no-preference', 'reduce'] as const) {
         );
       })
       .toBeLessThan(1);
-    await select.getByRole('button', { name: 'Prowlarr', exact: true }).click();
-    await select.getByRole('button', { name: 'Radarr', exact: true }).click();
+    await select.getByRole('link', { name: 'Prowlarr', exact: true }).click();
+    await select.getByRole('link', { name: 'Radarr', exact: true }).click();
     await expect(highlight).toBeVisible();
     await page.setViewportSize({ width: 900, height: 900 });
     expect(await events()).toEqual(
@@ -310,7 +310,7 @@ test('saved Prowlarr indexers use the same one-second test feedback as setup', a
   await page.goto('/');
   await page
     .getByRole('navigation', { name: 'Select service' })
-    .getByRole('button', { name: 'Prowlarr', exact: true })
+    .getByRole('link', { name: 'Prowlarr', exact: true })
     .click();
   const row = page
     .locator('.service-row')
@@ -370,7 +370,7 @@ for (const reducedMotion of ['no-preference', 'reduce'] as const) {
     await page.goto('/');
     await page
       .getByRole('navigation', { name: 'Select service' })
-      .getByRole('button', { name: 'Lidarr', exact: true })
+      .getByRole('link', { name: 'Lidarr', exact: true })
       .click();
     await page.getByRole('button', { name: 'Create quality profile' }).click();
     const dialog = page.getByRole('dialog');
@@ -507,7 +507,7 @@ test('indexer test success briefly replaces the button without moving the form',
   await page.goto('/');
   await page
     .getByRole('navigation', { name: 'Select service' })
-    .getByRole('button', { name: 'Prowlarr', exact: true })
+    .getByRole('link', { name: 'Prowlarr', exact: true })
     .click();
   await page.getByRole('button', { name: 'Add indexer', exact: true }).click();
   await page.getByRole('button', { name: 'DrunkenSlug' }).click();
@@ -640,7 +640,7 @@ for (const width of [1440, 390]) {
     await page.goto('/');
     await page
       .getByRole('navigation', { name: 'Select service' })
-      .getByRole('button', { name: 'Prowlarr', exact: true })
+      .getByRole('link', { name: 'Prowlarr', exact: true })
       .click();
     const trigger = page.getByRole('button', {
       name: 'Add indexer',
@@ -810,7 +810,7 @@ for (const kind of ['lidarr']) {
     await page.goto('/');
     await page
       .getByRole('navigation', { name: 'Select service' })
-      .getByRole('button', { name: label, exact: true })
+      .getByRole('link', { name: label, exact: true })
       .click();
     const trigger = page.getByRole('button', {
       name: 'Create quality profile',
@@ -926,7 +926,7 @@ test('quality dragging cancels with Escape and scrolls a long list to its drop t
   await page.goto('/');
   await page
     .getByRole('navigation', { name: 'Select service' })
-    .getByRole('button', { name: 'Lidarr', exact: true })
+    .getByRole('link', { name: 'Lidarr', exact: true })
     .click();
   await page.getByRole('button', { name: 'Create quality profile' }).click();
   const dialog = page.getByRole('dialog');

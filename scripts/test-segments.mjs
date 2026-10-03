@@ -100,10 +100,7 @@ try {
   );
   const page = await context.newPage();
   await page.goto(origin);
-  await page
-    .getByRole('button', { name: 'Shows', exact: true })
-    .first()
-    .click();
+  await page.getByRole('link', { name: 'Shows', exact: true }).first().click();
   await page
     .locator('button.media-card')
     .filter({ hasText: 'Segment Fixture' })

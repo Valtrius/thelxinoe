@@ -245,12 +245,12 @@ export async function serverScenarios({
       ).toBe(true);
       await expect(
         page
-          .getByRole('button', { name: 'Settings', exact: true })
+          .getByRole('link', { name: 'Settings', exact: true })
           .locator('[data-attention-severity]'),
       ).toBeVisible();
-      await page.getByRole('button', { name: 'Settings', exact: true }).click();
+      await page.getByRole('link', { name: 'Settings', exact: true }).click();
       await page
-        .getByRole('button', { name: 'Server', exact: true })
+        .getByRole('link', { name: 'Server', exact: true })
         .first()
         .click();
       await expect(
@@ -261,10 +261,10 @@ export async function serverScenarios({
       ).toBeVisible();
       if (native) {
         await native.page
-          .getByRole('button', { name: 'Settings', exact: true })
+          .getByRole('link', { name: 'Settings', exact: true })
           .click();
         await native.page
-          .getByRole('button', { name: 'Server', exact: true })
+          .getByRole('link', { name: 'Server', exact: true })
           .first()
           .click();
         await expect(
@@ -489,7 +489,7 @@ export async function serverScenarios({
       });
       await page
         .getByRole('navigation', { name: 'Settings navigation' })
-        .getByRole('button', { name: 'Account', exact: true })
+        .getByRole('link', { name: 'Account', exact: true })
         .click();
       await api(`/playback/${playback.id}/progress`, 'POST', {
         sequence: 0,
@@ -503,7 +503,7 @@ export async function serverScenarios({
       );
       await page
         .getByRole('navigation', { name: 'Settings navigation' })
-        .getByRole('button', { name: 'Server', exact: true })
+        .getByRole('link', { name: 'Server', exact: true })
         .click();
       const downloading = await until(async () => {
         const operation = operations().items.find(
@@ -576,7 +576,7 @@ export async function serverScenarios({
       expect((await api('/auth/event-ticket', 'POST')).epoch).not.toBe(epoch);
       await page
         .getByRole('navigation', { name: 'Settings navigation' })
-        .getByRole('button', { name: 'Server', exact: true })
+        .getByRole('link', { name: 'Server', exact: true })
         .click();
       await expect(
         page.getByRole('button', { name: 'Retry server update', exact: true }),
@@ -636,10 +636,14 @@ export async function serverScenarios({
     'UI installs both server and controller and preserves sessions and preferences',
     async () => {
       let webReloads = 0;
-      const navigated = (frame) => {
-        if (frame === page.mainFrame()) webReloads++;
+      const navigated = (request) => {
+        if (
+          request.isNavigationRequest() &&
+          request.frame() === page.mainFrame()
+        )
+          webReloads++;
       };
-      page.on('framenavigated', navigated);
+      page.on('request', navigated);
       const previous = (await state()).request?.id;
       const client = native?.page ?? page;
       await client
@@ -685,13 +689,13 @@ export async function serverScenarios({
       await expect
         .poll(() => webReloads, { timeout: 45000 })
         .toBeGreaterThan(0);
-      page.off('framenavigated', navigated);
+      page.off('request', navigated);
       await expect(
         page.getByLabel('Product version', { exact: true }).locator('strong'),
       ).toHaveText(lab.next, { timeout: 45000 });
       await page.screenshot({ path: join(output, 'server-committed.png') });
       await expect(
-        page.getByRole('button', { name: 'Settings', exact: true }),
+        page.getByRole('link', { name: 'Settings', exact: true }),
       ).toBeVisible();
       await expect(
         page.getByRole('button', { name: 'Reload web app', exact: true }),
@@ -798,10 +802,10 @@ export async function serverScenarios({
   await scenario(
     'Explicit restore returns both binaries and all server state to the snapshot',
     async () => {
-      await page.getByRole('button', { name: 'Settings', exact: true }).click();
+      await page.getByRole('link', { name: 'Settings', exact: true }).click();
       await page
         .getByRole('navigation', { name: 'Settings navigation' })
-        .getByRole('button', { name: 'Server', exact: true })
+        .getByRole('link', { name: 'Server', exact: true })
         .click();
       // Force the connected client's event cursor beyond the restored database.
       for (let i = 0; i < 30; i++)

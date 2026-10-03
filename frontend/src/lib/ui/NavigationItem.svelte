@@ -19,6 +19,7 @@
     children,
     class: className,
     type = 'button',
+    href,
     ...rest
   }: Omit<HTMLButtonAttributes, 'children' | 'class'> & {
     active?: boolean;
@@ -26,12 +27,15 @@
     description?: string;
     children: Snippet;
     class?: string;
+    href?: string;
   } = $props();
   const descriptionId = $props.id();
 </script>
 
-<button
-  {type}
+<svelte:element
+  this={href ? 'a' : 'button'}
+  type={href ? undefined : type}
+  {href}
   aria-current={active ? 'page' : undefined}
   class={styles({ active, class: className })}
   {...rest}
@@ -60,4 +64,4 @@
   {@render children()}
   {#if description}<span id={descriptionId} class="sr-only">{description}</span
     >{/if}
-</button>
+</svelte:element>

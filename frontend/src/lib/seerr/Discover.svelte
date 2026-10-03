@@ -27,10 +27,28 @@
     type Results,
     type MediaRequest,
   } from './types';
-  let { user, settings, navigate } = $props<{
+  let {
+    user,
+    settings,
+    navigate,
+    detail,
+    showRequests = false,
+    openMedia,
+    back,
+    searchQuery,
+    searchChanged,
+    requestsChanged,
+  } = $props<{
     user: User;
     settings: () => void;
     navigate: (section: string) => void;
+    detail?: { kind: MediaKind; id: number };
+    showRequests?: boolean;
+    openMedia: (detail: { kind: MediaKind; id: number }) => void;
+    back: () => void;
+    searchQuery?: string;
+    searchChanged: (query: string) => void;
+    requestsChanged: (requests: boolean) => void;
   }>();
   type Feed = { id: string; label: string; items: Media[]; error: string };
   let feeds = $state<Feed[]>([
@@ -50,7 +68,7 @@
     loading = $state(true),
     configured = $state(true),
     error = $state('');
-  let selected = $state<{ kind: MediaKind; id: number } | null>(null);
+  const selected = $derived(detail ?? null);
   let requests = $state<(MediaRequest & { detail?: Media })[]>([]),
     requestPages = $state(1),
     requestPage = $state(1),
@@ -102,38 +120,33 @@
   const scrollWorkspace = () =>
     document.querySelector('[data-workspace-scroll]') ??
     document.querySelector('.workspace-scroll');
-  function route() {
-    const wasDetails = selected !== null;
-    const match = /^#discover\/(movie|tv)\/(\d+)$/.exec(location.hash);
-    selected = match
-      ? { kind: match[1] as MediaKind, id: Number(match[2]) }
-      : null;
-    if (wasDetails && !selected)
+  $effect(() => {
+    if (!selected)
       void tick().then(() => {
         if (active && !selected)
           scrollWorkspace()?.scrollTo({ top: browseScroll });
       });
-  }
+  });
+  $effect(() => {
+    if (showRequests) tab = 'requests';
+    else
+      untrack(() => {
+        if (tab === 'requests') tab = 'discover';
+      });
+  });
+  $effect(() => {
+    const term = searchQuery ?? '';
+    untrack(() => {
+      if (query !== term) {
+        query = term;
+        changed(false);
+      }
+    });
+  });
   function open(item: Media) {
     if (!selected) browseScroll = scrollWorkspace()?.scrollTop ?? 0;
-    history.pushState(
-      { ...history.state, seerr: true },
-      '',
-      `${location.pathname}${location.search}#discover/${kind(item)}/${item.id}`,
-    );
-    route();
+    openMedia({ kind: kind(item), id: item.id });
     scrollWorkspace()?.scrollTo({ top: 0 });
-  }
-  function back() {
-    if (history.state?.seerr) history.back();
-    else {
-      history.replaceState(
-        history.state,
-        '',
-        `${location.pathname}${location.search}`,
-      );
-      route();
-    }
   }
   async function load() {
     loading = true;
@@ -207,7 +220,7 @@
       if (version === searchGeneration) searching = false;
     }
   }
-  function changed() {
+  function changed(publish = true) {
     clearTimeout(searchTimer);
     searchGeneration++;
     results = [];
@@ -215,6 +228,7 @@
     pages = 1;
     if (tab === 'requests') tab = 'discover';
     searching = query.trim().length >= 2;
+    if (publish) searchChanged(query);
     searchTimer = setTimeout(() => void search(), 300);
   }
   async function loadRequests(nextPage = 1) {
@@ -281,6 +295,8 @@
     }
   }
   function changeTab(value: string) {
+    if ((value === 'requests') !== showRequests)
+      requestsChanged(value === 'requests');
     if (value === 'requests' && tab === value) void loadRequests();
     tab = value;
     if (value === 'requests') {
@@ -292,9 +308,6 @@
     }
   }
   onMount(() => {
-    route();
-    window.addEventListener('popstate', route);
-    window.addEventListener('hashchange', route);
     void load();
   });
   onDestroy(() => {
@@ -302,8 +315,6 @@
     searchGeneration++;
     requestGeneration++;
     clearTimeout(searchTimer);
-    window.removeEventListener('popstate', route);
-    window.removeEventListener('hashchange', route);
   });
 </script>
 
@@ -330,7 +341,7 @@
         aria-label="Search movies and series"
         placeholder="Search movies and series…"
         bind:value={query}
-        oninput={changed}
+        oninput={() => changed()}
         maxlength="200"
       />
       {#if searching}<LoaderCircle

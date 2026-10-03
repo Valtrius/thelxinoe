@@ -92,7 +92,7 @@ export async function desktopScenarios({
       .getByRole('button', { name: 'Sign in', exact: true })
       .click();
     await expect(
-      native.page.getByRole('button', { name: 'Settings', exact: true }),
+      native.page.getByRole('link', { name: 'Settings', exact: true }),
     ).toBeVisible();
     expect(await native.invoke('server_url')).toBe(lab.baseUrl);
   };
@@ -126,11 +126,11 @@ export async function desktopScenarios({
       });
       await login();
       await native.page
-        .getByRole('button', { name: 'Settings', exact: true })
+        .getByRole('link', { name: 'Settings', exact: true })
         .click();
       await native.page
         .getByRole('navigation', { name: 'Settings navigation' })
-        .getByRole('button', { name: 'Desktop', exact: true })
+        .getByRole('link', { name: 'Desktop', exact: true })
         .click();
       await expect(
         native.page.getByLabel('Desktop version', { exact: true }),
@@ -396,11 +396,11 @@ export async function desktopScenarios({
       await mode('base');
       await check();
       await native.page
-        .getByRole('button', { name: 'Settings', exact: true })
+        .getByRole('link', { name: 'Settings', exact: true })
         .click();
       await native.page
         .getByRole('navigation', { name: 'Settings navigation' })
-        .getByRole('button', { name: 'Desktop', exact: true })
+        .getByRole('link', { name: 'Desktop', exact: true })
         .click();
       await mode('slow-download');
       await native.page
@@ -502,7 +502,7 @@ export async function desktopScenarios({
       });
       expect(session.status).toBe(200);
       await expect(
-        native.page.getByRole('button', { name: 'Settings', exact: true }),
+        native.page.getByRole('link', { name: 'Settings', exact: true }),
       ).toBeVisible();
       await native.page.screenshot({
         path: join(output, 'desktop-installed.png'),

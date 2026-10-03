@@ -157,10 +157,10 @@ for (const exit of ['replace', 'close', 'revoke'] as const) {
         page.getByRole('region', { name: 'Music player' }),
       ).toHaveCount(0);
     } else {
-      await page.getByRole('button', { name: 'Settings', exact: true }).click();
+      await page.getByRole('link', { name: 'Settings', exact: true }).click();
       await page
         .getByRole('navigation', { name: 'Settings navigation' })
-        .getByRole('button', { name: 'Devices', exact: true })
+        .getByRole('link', { name: 'Devices', exact: true })
         .click();
       await page
         .getByRole('button', { name: 'Revoke', exact: true })
@@ -253,6 +253,51 @@ test('a provider screen reads only its account and does not depend on sibling pr
   });
 });
 
+test('switching providers can load the new account while the previous account request is held', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, { section: 'YouTube' });
+  const held = responseGate();
+  let started = false;
+  await page.route('**/api/v1/online/youtube', async (route) => {
+    started = true;
+    await held.promise;
+    return route.fulfill({
+      json: {
+        configured: true,
+        account: { status: 'disconnected', display_name: '' },
+      },
+    });
+  });
+  await page.route('**/api/v1/online/youtube/watchlists', (route) =>
+    route.fulfill({ json: [] }),
+  );
+  await page.route('**/api/v1/online/twitch', (route) =>
+    route.fulfill({
+      json: {
+        configured: true,
+        account: { status: 'connected', display_name: 'Twitch viewer' },
+      },
+    }),
+  );
+  await page.route('**/api/v1/online/twitch/feed', (route) =>
+    route.fulfill({ json: { items: [] } }),
+  );
+  await page.goto('/');
+  await expect.poll(() => started).toBe(true);
+  await page.getByRole('link', { name: 'Twitch', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'Refresh', exact: true }),
+  ).toBeVisible();
+  held.release();
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+  await testInfo.attach('provider-switch', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+});
+
 for (const exit of ['navigation', 'logout', 'revoke'] as const) {
   test(`queued display saves stop on ${exit}`, async ({ page }, testInfo) => {
     const fixture = await installUiFixture(page);
@@ -295,7 +340,7 @@ for (const exit of ['navigation', 'logout', 'revoke'] as const) {
     } else {
       await page
         .getByRole('navigation', { name: 'Settings navigation' })
-        .getByRole('button', { name: 'Devices', exact: true })
+        .getByRole('link', { name: 'Devices', exact: true })
         .click();
       if (exit === 'revoke')
         await page
@@ -322,7 +367,7 @@ for (const exit of ['navigation', 'logout', 'revoke'] as const) {
     await response;
     await page
       .getByRole('navigation', { name: 'Main navigation' })
-      .getByRole('button', { name: 'Movies', exact: true })
+      .getByRole('link', { name: 'Movies', exact: true })
       .click();
     await expect(
       page.getByRole('heading', { name: 'Movies', exact: true }),
@@ -450,7 +495,7 @@ for (const intent of ['select', 'close', 'domain'] as const) {
         .click();
     else if (intent === 'close')
       await page.getByRole('button', { name: 'Close', exact: true }).click();
-    else await page.getByRole('button', { name: 'Shows', exact: true }).click();
+    else await page.getByRole('link', { name: 'Shows', exact: true }).click();
     const response = page.waitForResponse((response) =>
       response.url().endsWith('/catalog/movie-0'),
     );

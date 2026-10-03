@@ -472,11 +472,11 @@ scenario: try {
     const page = await context.newPage();
     await page.goto(`${base}/?section=Settings`);
     await page
-      .getByRole('button', { name: 'Media services', exact: true })
+      .getByRole('link', { name: 'Media services', exact: true })
       .click();
     await page
       .getByRole('navigation', { name: 'Select service' })
-      .getByRole('button', { name: 'Recyclarr', exact: true })
+      .getByRole('link', { name: 'Recyclarr', exact: true })
       .click();
     await exerciseConfigurationEditor({ page, api, root, record });
     evidence.passed = true;
@@ -730,11 +730,11 @@ scenario: try {
     const page = await context.newPage();
     await page.goto(`${base}/?section=Settings`);
     await page
-      .getByRole('button', { name: 'Media services', exact: true })
+      .getByRole('link', { name: 'Media services', exact: true })
       .click();
     const navigation = page.getByRole('navigation', { name: 'Select service' });
     for (const kind of ['Radarr', 'Sonarr']) {
-      await navigation.getByRole('button', { name: kind, exact: true }).click();
+      await navigation.getByRole('link', { name: kind, exact: true }).click();
       const profiles = page.getByRole('combobox', {
         name: 'Default request profile',
         exact: true,
@@ -771,7 +771,7 @@ scenario: try {
       name: 'Recyclarr guide configuration',
     });
     await navigation
-      .getByRole('button', { name: 'Recyclarr', exact: true })
+      .getByRole('link', { name: 'Recyclarr', exact: true })
       .click();
     await expect(
       guideRegion.getByRole('button', { name: 'Sync now', exact: true }),
@@ -883,7 +883,7 @@ scenario: try {
       );
       if (kind === 'sonarr') {
         await navigation
-          .getByRole('button', { name: 'Sonarr', exact: true })
+          .getByRole('link', { name: 'Sonarr', exact: true })
           .click();
         const saved = page.waitForResponse(
           (r) =>

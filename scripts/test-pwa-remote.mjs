@@ -85,7 +85,7 @@ try {
   ]) {
     if (section !== 'Home')
       await page
-        .getByRole('button', { name: section, exact: true })
+        .getByRole('link', { name: section, exact: true })
         .first()
         .click();
     await expect
@@ -276,7 +276,7 @@ try {
   );
   await page
     .getByRole('navigation', { name: 'Main navigation' })
-    .getByRole('button', { name: 'Movies', exact: true })
+    .getByRole('link', { name: 'Movies', exact: true })
     .click();
   await expect(
     page.getByRole('heading', { name: 'Update required' }),

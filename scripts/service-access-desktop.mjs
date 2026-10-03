@@ -79,9 +79,9 @@ export async function desktopLaunch(fixture, output, kinds = ['radarr']) {
       .getByLabel('Password', { exact: true })
       .fill('test-only long passphrase');
     await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await page.getByRole('link', { name: 'Settings', exact: true }).click();
     await page
-      .getByRole('button', { name: 'Media services', exact: true })
+      .getByRole('link', { name: 'Media services', exact: true })
       .click();
     const source = await page.evaluate(() => ({
       cookie: document.cookie,
@@ -99,7 +99,7 @@ export async function desktopLaunch(fixture, output, kinds = ['radarr']) {
         kind === 'nzbget' ? 'NZBGet' : kind[0].toUpperCase() + kind.slice(1);
       await page
         .getByRole('navigation', { name: 'Select service' })
-        .getByRole('button', { name: label, exact: true })
+        .getByRole('link', { name: label, exact: true })
         .click();
       await page
         .getByRole('link', { name: `Open ${label}`, exact: true })
