@@ -13,6 +13,10 @@ export default defineConfig({
           new URL('./splashscreen.html', import.meta.url),
         ),
         offline: fileURLToPath(new URL('./offline.html', import.meta.url)),
+        about: fileURLToPath(new URL('./about/index.html', import.meta.url)),
+        privacy: fileURLToPath(
+          new URL('./about/privacy.html', import.meta.url),
+        ),
       },
     },
   },
