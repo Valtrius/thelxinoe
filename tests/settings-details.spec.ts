@@ -235,6 +235,135 @@ test('auto-delete policies save on change and Audit owns scheduled deletions and
   expect(fixture.errors).toEqual([]);
 });
 
+test('administration overview shows loading until health and devices arrive and on refresh', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'server',
+  });
+  let releaseHealth: (() => void) | undefined;
+  let releaseDevices: (() => void) | undefined;
+  await page.route('**/api/v1/admin/operations', async (route) => {
+    await new Promise<void>((resolve) => {
+      releaseHealth = resolve;
+    });
+    await route.fallback();
+  });
+  await page.route('**/api/v1/admin/devices', async (route) => {
+    await new Promise<void>((resolve) => {
+      releaseDevices = resolve;
+    });
+    await route.fallback();
+  });
+  await page.goto('/');
+  const overview = page.getByRole('region', {
+    name: 'Administration overview',
+  });
+  const loading = overview.getByRole('status', {
+    name: 'Loading administration overview',
+  });
+  await expect(loading).toBeVisible();
+  await expect(overview).toHaveAttribute('aria-busy', 'true');
+  await expect.poll(() => Boolean(releaseHealth)).toBe(true);
+  releaseHealth!();
+  await expect.poll(() => Boolean(releaseDevices)).toBe(true);
+  await expect(loading).toBeVisible();
+  await testInfo.attach('administration-loading', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+  releaseDevices!();
+  await expect(loading).toHaveCount(0);
+  await expect(
+    overview.getByRole('heading', { name: 'Storage', exact: true }),
+  ).toBeVisible();
+  releaseHealth = releaseDevices = undefined;
+  await overview.getByRole('button', { name: 'Refresh health' }).click();
+  await expect(loading).toBeVisible();
+  await expect(
+    overview.getByRole('heading', { name: 'Storage', exact: true }),
+  ).toBeVisible();
+  await expect.poll(() => Boolean(releaseHealth)).toBe(true);
+  releaseHealth!();
+  await expect.poll(() => Boolean(releaseDevices)).toBe(true);
+  releaseDevices!();
+  await expect(loading).toHaveCount(0);
+  await expect(overview).toHaveAttribute('aria-busy', 'false');
+  await testInfo.attach('administration-loaded', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('episode analysis saves responsive toggles, reverts a failed edit and persists across reloads', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'analysis',
+  });
+  let config = { local: true, external: false };
+  let release: (() => void) | undefined;
+  let fail = false;
+  const writes: (typeof config)[] = [];
+  await page.route('**/api/v1/admin/segments', async (route) => {
+    if (route.request().method() === 'PUT') {
+      writes.push(route.request().postDataJSON());
+      if (writes.length === 1)
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      if (fail)
+        return route.fulfill({
+          status: 503,
+          json: { error: { message: 'Analysis settings unavailable' } },
+        });
+      config = route.request().postDataJSON();
+      return route.fulfill({ json: { saved: true } });
+    }
+    return route.fulfill({ json: { config, items: [] } });
+  });
+  await page.goto('/');
+  const local = page.getByRole('switch', {
+    name: 'Detect recurring intro and credit audio locally',
+  });
+  const external = page.getByRole('switch', {
+    name: 'Fetch TheIntroDB timestamps for confirmed episode matches',
+  });
+  await expect(local).toBeEnabled();
+  await expect(
+    page.getByRole('button', { name: 'Save analysis settings' }),
+  ).toHaveCount(0);
+  await local.uncheck();
+  await expect.poll(() => Boolean(release)).toBe(true);
+  await expect(external).toBeEnabled();
+  await external.check();
+  release!();
+  await expect.poll(() => config).toEqual({ local: false, external: true });
+  await page.reload();
+  await expect(local).not.toBeChecked();
+  await expect(external).toBeChecked();
+  fail = true;
+  await local.check();
+  await expect(page.getByRole('alert')).toContainText(
+    'Analysis settings unavailable',
+  );
+  await expect(local).not.toBeChecked();
+  fail = false;
+  await local.check();
+  await expect.poll(() => config.local).toBe(true);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await testInfo.attach('episode-analysis-autosave', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 test('display preferences group account controls and clear cancelled avatar edits', async ({
   page,
 }, testInfo) => {

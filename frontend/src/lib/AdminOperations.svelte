@@ -5,6 +5,7 @@
     timeFormat: '12h' | '24h';
   }>();
   import { onMount } from 'svelte';
+  import { LoaderCircle } from '@lucide/svelte';
   import { api } from './api';
   import { isServerUpdateInterruption } from './server-updates';
   import Button from './ui/Button.svelte';
@@ -52,8 +53,12 @@
     if (busy) return;
     busy = true;
     try {
-      data = await api<Dashboard>('/admin/operations');
-      devices = (await api<{ items: typeof devices }>('/admin/devices')).items;
+      const [dashboard, connected] = await Promise.all([
+        api<Dashboard>('/admin/operations'),
+        api<{ items: typeof devices }>('/admin/devices'),
+      ]);
+      data = dashboard;
+      devices = connected.items;
       error = '';
     } catch (e) {
       if (!isServerUpdateInterruption(e)) error = String(e);
@@ -85,9 +90,29 @@
   }
 </script>
 
-<Panel class="col-span-full" aria-label="Administration overview">
+<Panel
+  class="col-span-full"
+  aria-label="Administration overview"
+  aria-busy={busy}
+>
   <SectionHeading>
-    <h2>Administration overview</h2>
+    <div class="flex items-center gap-3">
+      <h2>Administration overview</h2>
+      {#if busy}
+        <span
+          role="status"
+          aria-label="Loading administration overview"
+          class="text-muted"
+        >
+          <LoaderCircle
+            size={18}
+            class="animate-spin motion-reduce:animate-none"
+            aria-hidden="true"
+          />
+          <span class="sr-only">Loading administration overview</span>
+        </span>
+      {/if}
+    </div>
     <Button
       variant="secondary"
       size="form"

@@ -155,7 +155,7 @@
       </div>
     </div>
   </div>
-  <table class="sr-only">
+  <table class="sr-only table-fixed">
     <caption>Exact watch time by {interval}</caption>
     <thead>
       <tr>

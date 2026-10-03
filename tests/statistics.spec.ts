@@ -164,6 +164,71 @@ test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
 
+test('statistics user and account dropdowns use themed surfaces in light and dark modes', async ({
+  page,
+}, testInfo) => {
+  const state = await fixture(page, 'admin');
+  await page.goto('/');
+  for (const theme of ['Dark', 'Light']) {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page
+      .getByRole('complementary', { name: 'Application sidebar' })
+      .getByRole('button', { name: 'Settings', exact: true })
+      .click();
+    await page
+      .getByRole('button', { name: `${theme} theme`, exact: true })
+      .click();
+    const colors = await page.evaluate(() => {
+      const probe = document.createElement('span');
+      probe.style.backgroundColor = 'var(--surface-strong)';
+      probe.style.color = 'var(--foreground)';
+      document.body.append(probe);
+      const style = getComputedStyle(probe);
+      const result = {
+        background: style.backgroundColor,
+        foreground: style.color,
+      };
+      probe.remove();
+      return result;
+    });
+    for (const select of await page.locator('.settings-content select').all()) {
+      await expect(select).toHaveCSS('background-color', colors.background);
+      await expect(select).toHaveCSS('color', colors.foreground);
+    }
+    await page
+      .getByRole('complementary', { name: 'Application sidebar' })
+      .getByRole('button', { name: 'Statistics', exact: true })
+      .click();
+    const scope = page.getByRole('combobox', { name: 'Statistics user' });
+    await expect(scope).toHaveCSS('background-color', colors.background);
+    await expect(scope).toHaveCSS('color', colors.foreground);
+    await scope.selectOption('all');
+    await expect(
+      page.getByRole('region', { name: 'Watch time by user' }),
+    ).toBeVisible();
+    await scope.selectOption('mine');
+    await testInfo.attach(`statistics-${theme.toLowerCase()}`, {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(scope).toBeVisible();
+    await expect
+      .poll(() =>
+        page
+          .locator('.workspace-scroll')
+          .evaluate((node) => node.scrollWidth <= node.clientWidth),
+      )
+      .toBe(true);
+    await testInfo.attach(`statistics-${theme.toLowerCase()}-mobile`, {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+  }
+  expect(state.errors).toEqual([]);
+  expect(state.unexpected).toEqual([]);
+});
+
 test('legacy History navigation opens Statistics', async ({ page }) => {
   await fixture(page);
   await page.goto('/?section=History');

@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { eyebrowTextClass } from '../ui/styles';
+  import { eyebrowTextClass, formControlClass } from '../ui/styles';
+  import { twMerge } from 'tailwind-merge';
   import { sources, completionDetails } from './helpers';
   import { statisticsPlatformMetrics } from './helpers';
   import { LatestRequest } from '../providers/latest-request';
@@ -208,7 +209,7 @@
       <select
         bind:value={scope}
         aria-label="Statistics user"
-        class="w-auto min-w-52 max-w-full"
+        class={twMerge(formControlClass, 'w-auto min-w-52 max-w-full')}
       >
         <option value="mine">My statistics</option>
         <option value="all">All users</option>
