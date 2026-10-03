@@ -492,9 +492,13 @@ test('request menu puts the default first and sends a native profile override wi
     [390, 844],
   ]) {
     await page.setViewportSize({ width, height });
-    const bounds = await entries.first().boundingBox();
-    expect(bounds!.x).toBeGreaterThanOrEqual(0);
-    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+    await expect
+      .poll(async () => {
+        const bounds = await entries.first().boundingBox();
+        if (!bounds) return Infinity;
+        return Math.max(-bounds.x, bounds.x + bounds.width - width);
+      })
+      .toBeLessThanOrEqual(0);
     const path = testInfo.outputPath(`request-profile-${width}.png`);
     await page.screenshot({ path });
     await testInfo.attach(`request-profile-menu-${width}`, {
