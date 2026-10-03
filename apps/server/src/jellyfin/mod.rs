@@ -10,6 +10,8 @@ mod online;
 mod playback;
 mod profile;
 pub(crate) mod quick_connect;
+mod user_data;
+pub(crate) const API_VERSION: &str = "12.1.0";
 use crate::{
     AppState,
     error::{ApiError, Result},
@@ -143,6 +145,9 @@ fn safe_route(path: &str) -> String {
         "Branding",
         "Configuration",
         "MediaSegments",
+        "UserData",
+        "Filters2",
+        "Collections",
         "Playlists",
     ];
     path.split('/')
@@ -192,6 +197,8 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
                 "sortorder",
                 "genreids",
                 "genres",
+                "audiolanguages",
+                "subtitlelanguages",
                 "artistids",
                 "albumartistids",
                 "container",
@@ -215,7 +222,7 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
     }
     // The SDK's discovery checks ProductName literally. Version names the emulated
     // API contract; the actual product and release remain visible in ServerName.
-    let public_info = || json!({"Id":state.server_id.as_str(),"ServerName":format!("Thelxinoe {}",thelxinoe_core::VERSION),"Version":"10.10.7","ProductName":"Jellyfin Server","ThelxinoeVersion":thelxinoe_core::VERSION,"OperatingSystem":std::env::consts::OS,"LocalAddress":context.origin,"StartupWizardCompleted":true});
+    let public_info = || json!({"Id":state.server_id.as_str(),"ServerName":format!("Thelxinoe {}",thelxinoe_core::VERSION),"Version":API_VERSION,"ProductName":"Jellyfin Server","ThelxinoeVersion":thelxinoe_core::VERSION,"OperatingSystem":std::env::consts::OS,"LocalAddress":context.origin,"StartupWizardCompleted":true});
     if method == "GET" && lower == "/system/info/public" {
         return Ok(axum::Json(public_info()).into_response());
     }
@@ -303,6 +310,17 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
     }
     if method == "GET" && lower == "/system/info" {
         return Ok(axum::Json(public_info()).into_response());
+    }
+    if parts.len() == 3 && parts[0] == "UserItems" && parts[2] == "UserData" {
+        let id = canonical(parts[1]);
+        let update = if method == "POST" {
+            Some(body(request).await?)
+        } else if method == "GET" {
+            None
+        } else {
+            return Err(ApiError::not_found());
+        };
+        return Ok(axum::Json(user_data::handle(&state, &p, &id, update).await?).into_response());
     }
     if method == "POST" && lower == "/playlists" {
         return Ok(
@@ -468,6 +486,17 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
         );
     }
     if method == "GET" {
+        if lower == "/items/filters2" {
+            return Ok(axum::Json(catalog::filters(&state, &p, &query).await?).into_response());
+        }
+        if parts.len() == 3 && parts[0] == "Items" && parts[2] == "Collections" {
+            catalog::browse(&state, &p, &Query::new(), Some(&canonical(parts[1]))).await?;
+            let start = query
+                .get("startindex")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
+            return Ok(axum::Json(catalog::result(Vec::new(), 0, start)).into_response());
+        }
         if parts.len() == 2 && parts[0] == "MediaSegments" {
             let media = canonical(parts[1]);
             let segments = crate::segments::for_jellyfin(&state, &p, &media).await?;

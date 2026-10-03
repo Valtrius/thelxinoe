@@ -313,6 +313,7 @@ async function containers() {
           'test-playback.mjs',
           'test-playback-tracks.mjs',
           'test-user-media.mjs',
+          'test-jellyfin.mjs',
         ])
           run(process.execPath, ['scripts/' + script], {
             env: playbackEnvironment,

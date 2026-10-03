@@ -613,7 +613,7 @@ async fn bootstrap_endpoint(
 ) -> Result<Response> {
     let method = request.method().clone();
     if path == "System/Info/Public" && method == "GET" {
-        return Ok(Json(json!({"Id":state.server_id.as_str(),"ServerName":"Thelxinoe","Version":"10.10.7","ProductName":"Jellyfin Server"})).into_response());
+        return Ok(Json(json!({"Id":state.server_id.as_str(),"ServerName":"Thelxinoe","Version":crate::jellyfin::API_VERSION,"ProductName":"Jellyfin Server"})).into_response());
     }
     let fields = crate::jellyfin::seerr_authorization(request.headers())?;
     let login = path == "Users/AuthenticateByName" && method == "POST";
@@ -645,7 +645,7 @@ async fn bootstrap_endpoint(
     }
     match (method.as_str(), path.as_str()) {
         ("GET", "System/Info") => Ok(Json(
-            json!({"Id":state.server_id.as_str(),"ServerName":"Thelxinoe","Version":"10.10.7"}),
+            json!({"Id":state.server_id.as_str(),"ServerName":"Thelxinoe","Version":crate::jellyfin::API_VERSION}),
         )
         .into_response()),
         ("POST", "Auth/Keys") => Ok(StatusCode::NO_CONTENT.into_response()),

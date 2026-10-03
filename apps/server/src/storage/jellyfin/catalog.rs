@@ -37,48 +37,234 @@ pub(super) async fn browse_media(
         limit,
     } = input;
 
-    db.read("jellyfin.catalog.browse_media", move|db| {
-        let mut args:Vec<rusqlite::types::Value>=vec![uid.into()];
-        let mut conditions=Vec::new();
-        let mut bind=|value:String|{args.push(value.into());format!("?{}",args.len())};
-        if let Some(id)=id {conditions.push(format!("m.id={}",bind(id)));}
-        if let Some(parent)=parent {
-            let arg=bind(parent);
-            if q.get("recursive").is_some_and(|v|v.eq_ignore_ascii_case("true")) {
-                conditions.push(format!("(m.root_id={arg} OR m.id IN (WITH RECURSIVE descendants(id) AS (SELECT id FROM media WHERE parent_id={arg} UNION ALL SELECT m.id FROM media m JOIN descendants d ON m.parent_id=d.id) SELECT id FROM descendants))"));
-            }else{conditions.push(format!("(m.parent_id={arg} OR (m.root_id={arg} AND m.parent_id IS NULL))"));}
+    db.read("jellyfin.catalog.browse_media", move |db| {
+        let (args, filter) = media_filter(db, &q, uid, id, parent)?;
+        let directions = q
+            .get("sortorder")
+            .map(String::as_str)
+            .unwrap_or("Ascending")
+            .split(',')
+            .collect::<Vec<_>>();
+        let sort = q
+            .get("sortby")
+            .map(String::as_str)
+            .unwrap_or("SortName")
+            .split(',')
+            .take(8)
+            .enumerate()
+            .map(|(index, key)| {
+                let column = match key.to_ascii_lowercase().as_str() {
+                    "datecreated" => "m.created_at",
+                    "dateplayed" => "ep.updated_at",
+                    "random" => "random()",
+                    "premieredate" | "productionyear" => "m.year",
+                    "indexnumber" => "m.sort_number",
+                    "parentindexnumber" => {
+                        "CASE WHEN m.kind='track' THEN m.sort_number/10000 ELSE p.sort_number END"
+                    }
+                    "communityrating" => "json_extract(m.metadata,'$.vote_average')",
+                    _ => "c.title COLLATE NOCASE",
+                };
+                let direction = if directions
+                    .get(index)
+                    .or(directions.first())
+                    .is_some_and(|s| s.eq_ignore_ascii_case("Descending"))
+                {
+                    "DESC"
+                } else {
+                    "ASC"
+                };
+                format!("{column} {direction}")
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql =
+            format!("{SELECT} {FROM} {filter} ORDER BY {sort},m.id LIMIT {limit} OFFSET {start}");
+        let rows = db
+            .prepare(&sql)?
+            .query_map(rusqlite::params_from_iter(&args), |r| {
+                Ok((row(r, &server)?, r.get::<_, i64>(21)? as usize))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let total = if let Some(row) = rows.first() {
+            row.1
+        } else {
+            db.query_row(
+                &format!("SELECT COUNT(*) FROM ({SELECT} {FROM} {filter})"),
+                rusqlite::params_from_iter(&args),
+                |r| r.get::<_, i64>(0),
+            )? as usize
+        };
+        Ok((rows.into_iter().map(|v| v.0).collect::<Vec<_>>(), total))
+    })
+    .await
+}
+
+fn media_filter(
+    db: &rusqlite::Connection,
+    q: &Query,
+    uid: String,
+    id: Option<String>,
+    parent: Option<String>,
+) -> anyhow::Result<(Vec<rusqlite::types::Value>, String)> {
+    let mut args: Vec<rusqlite::types::Value> = vec![uid.into()];
+    let mut conditions = Vec::new();
+    let mut bind = |value: String| {
+        args.push(value.into());
+        format!("?{}", args.len())
+    };
+    if let Some(id) = id {
+        conditions.push(format!("m.id={}", bind(id)));
+    }
+    if let Some(parent) = parent {
+        let arg = bind(parent);
+        if q.get("recursive")
+            .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+        {
+            conditions.push(format!("(m.root_id={arg} OR m.id IN (WITH RECURSIVE descendants(id) AS (SELECT id FROM media WHERE parent_id={arg} UNION ALL SELECT m.id FROM media m JOIN descendants d ON m.parent_id=d.id) SELECT id FROM descendants))"));
+        } else {
+            conditions.push(format!(
+                "(m.parent_id={arg} OR (m.root_id={arg} AND m.parent_id IS NULL))"
+            ));
         }
-        if let Some(types)=q.get("includeitemtypes") {
-            let types=types.to_ascii_lowercase().split(',').map(kind).map(str::to_owned).collect::<Vec<_>>();
-            conditions.push(format!("m.kind IN (SELECT value FROM json_each({}))",bind(json!(types).to_string())));
+    }
+    if let Some(types) = q.get("includeitemtypes") {
+        let types = types
+            .to_ascii_lowercase()
+            .split(',')
+            .map(kind)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        conditions.push(format!(
+            "m.kind IN (SELECT value FROM json_each({}))",
+            bind(json!(types).to_string())
+        ));
+    }
+    if let Some(types) = q.get("excludeitemtypes") {
+        let types = types
+            .to_ascii_lowercase()
+            .split(',')
+            .map(kind)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        conditions.push(format!(
+            "m.kind NOT IN (SELECT value FROM json_each({}))",
+            bind(json!(types).to_string())
+        ));
+    }
+    if let Some(folder) = q.get("isfolder") {
+        conditions.push(format!(
+            "m.kind {} IN ('movie','episode','track')",
+            if folder.eq_ignore_ascii_case("true") {
+                "NOT"
+            } else {
+                ""
+            }
+        ));
+    }
+    if let Some(artists) = q.get("artistids").or(q.get("albumartistids")) {
+        let arg = bind(json!(artists.split(',').map(canonical).collect::<Vec<_>>()).to_string());
+        conditions.push(format!("(m.parent_id IN (SELECT value FROM json_each({arg})) OR p.parent_id IN (SELECT value FROM json_each({arg})))"));
+    }
+    if let Some(season) = q.get("season").and_then(|v| v.parse::<i64>().ok()) {
+        conditions.push(format!("p.kind='season' AND p.sort_number={season}"));
+    }
+    if let Some(search) = q.get("searchterm") {
+        conditions.push(format!(
+            "instr(lower(c.title),lower({}))>0",
+            bind(search.clone())
+        ));
+    }
+    if let Some(ids) = q.get("ids") {
+        conditions.push(format!(
+            "m.id IN (SELECT value FROM json_each({}))",
+            bind(json!(ids.split(',').map(canonical).collect::<Vec<_>>()).to_string())
+        ));
+    }
+    for (key, column) in [("isfavorite", "favorite"), ("isplayed", "watched")] {
+        if let Some(value) = q.get(key) {
+            conditions.push(format!(
+                "COALESCE(u.{column},0)={}",
+                i32::from(value.eq_ignore_ascii_case("true"))
+            ));
         }
-        if let Some(types)=q.get("excludeitemtypes") {
-            let types=types.to_ascii_lowercase().split(',').map(kind).map(str::to_owned).collect::<Vec<_>>();
-            conditions.push(format!("m.kind NOT IN (SELECT value FROM json_each({}))",bind(json!(types).to_string())));
+    }
+    if let Some(filters) = q.get("filters") {
+        for filter in filters.to_ascii_lowercase().split(',') {
+            match filter{"isfavorite"=>conditions.push("COALESCE(u.favorite,0)=1".into()),"isplayed"=>conditions.push("COALESCE(u.watched,0)=1".into()),"isunplayed"=>conditions.push("COALESCE(u.watched,0)=0".into()),"isresumable"=>conditions.push("ep.position>0 AND ep.position<ep.duration*0.9 AND m.kind IN ('movie','episode')".into()),_=>{}}
         }
-        if let Some(folder)=q.get("isfolder") {conditions.push(format!("m.kind {} IN ('movie','episode','track')",if folder.eq_ignore_ascii_case("true"){ "NOT" } else { "" }));}
-        if let Some(artists)=q.get("artistids").or(q.get("albumartistids")) {
-            let arg=bind(json!(artists.split(',').map(canonical).collect::<Vec<_>>()).to_string());
-            conditions.push(format!("(m.parent_id IN (SELECT value FROM json_each({arg})) OR p.parent_id IN (SELECT value FROM json_each({arg})))"));
+    }
+
+    if let Some(genres) = q.get("genres") {
+        conditions.push(format!("EXISTS(SELECT 1 FROM json_each(m.metadata,'$.genres') genre WHERE json_extract(genre.value,'$.name') IN (SELECT value FROM json_each({})))", bind(json!(genres.split(',').collect::<Vec<_>>()).to_string())));
+    }
+    if let Some(ids) = q.get("genreids") {
+        let ids = ids
+            .split(',')
+            .map(canonical)
+            .collect::<std::collections::BTreeSet<_>>();
+        let genres = db.prepare("SELECT DISTINCT json_extract(genre.value,'$.name') FROM media m,json_each(m.metadata,'$.genres') genre WHERE json_type(genre.value,'$.name')='text'")?
+            .query_map([], |row| row.get::<_,String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter().filter(|name| ids.contains(&genre_id(name))).collect::<Vec<_>>();
+        conditions.push(format!("EXISTS(SELECT 1 FROM json_each(m.metadata,'$.genres') genre WHERE json_extract(genre.value,'$.name') IN (SELECT value FROM json_each({})))", bind(json!(genres).to_string())));
+    }
+    for (key, kind) in [
+        ("audiolanguages", "audio"),
+        ("subtitlelanguages", "subtitle"),
+    ] {
+        if let Some(languages) = q.get(key) {
+            let languages = bind(
+                json!(
+                    languages
+                        .to_lowercase()
+                        .split(',')
+                        .map(str::trim)
+                        .collect::<Vec<_>>()
+                )
+                .to_string(),
+            );
+            conditions.push(format!("EXISTS(SELECT 1 FROM media_sources source JOIN media_files file ON file.id=source.file_id,json_each(file.probe,'$.streams') stream WHERE source.media_id=m.id AND file.present=1 AND json_extract(stream.value,'$.codec_type')='{kind}' AND lower(json_extract(stream.value,'$.tags.language')) IN (SELECT value FROM json_each({languages})))"));
         }
-        if let Some(season)=q.get("season").and_then(|v|v.parse::<i64>().ok()) {conditions.push(format!("p.kind='season' AND p.sort_number={season}"));}
-        if let Some(search)=q.get("searchterm") {conditions.push(format!("instr(lower(c.title),lower({}))>0",bind(search.clone())));}
-        if let Some(ids)=q.get("ids") {conditions.push(format!("m.id IN (SELECT value FROM json_each({}))",bind(json!(ids.split(',').map(canonical).collect::<Vec<_>>()).to_string())));}
-        for (key,column) in [("isfavorite","favorite"),("isplayed","watched")] {
-            if let Some(value)=q.get(key) { conditions.push(format!("COALESCE(u.{column},0)={}",i32::from(value.eq_ignore_ascii_case("true")))); }
+    }
+    let filter = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conditions.join(" AND "))
+    };
+    Ok((args, filter))
+}
+
+pub(super) async fn filters(db: &Database, user: String, q: Query) -> anyhow::Result<Value> {
+    db.read("jellyfin.catalog.filters", move |db| {
+        let parent = q.get("parentid").map(|value| canonical(value));
+        let (args, filter) = media_filter(db, &q, user, None, parent)?;
+        let mut genres = std::collections::BTreeSet::new();
+        let mut audio = std::collections::BTreeSet::new();
+        let mut subtitles = std::collections::BTreeSet::new();
+        let sql = format!("SELECT m.metadata,file.probe {FROM} LEFT JOIN media_sources source ON source.media_id=m.id LEFT JOIN media_files file ON file.id=source.file_id AND file.present=1 {filter}");
+        let mut statement = db.prepare(&sql)?;
+        let mut rows = statement.query(rusqlite::params_from_iter(&args))?;
+        while let Some(row) = rows.next()? {
+            let metadata: Value = serde_json::from_str(&row.get::<_,String>(0)?)?;
+            for genre in metadata["genres"].as_array().into_iter().flatten() {
+                if let Some(name) = genre["name"].as_str().filter(|name| !name.is_empty()) {
+                    genres.insert(name.to_owned());
+                }
+            }
+            let probe = row.get::<_,Option<String>>(1)?.and_then(|value| serde_json::from_str::<Value>(&value).ok()).unwrap_or_default();
+            for stream in probe["streams"].as_array().into_iter().flatten() {
+                if let Some(language) = stream["tags"]["language"].as_str().map(str::trim).filter(|value| !value.is_empty() && *value != "und") {
+                    match stream["codec_type"].as_str() {
+                        Some("audio") => { audio.insert(language.to_lowercase()); }
+                        Some("subtitle") => { subtitles.insert(language.to_lowercase()); }
+                        _ => {}
+                    }
+                }
+            }
         }
-        if let Some(filters)=q.get("filters") {for filter in filters.to_ascii_lowercase().split(','){match filter{"isfavorite"=>conditions.push("COALESCE(u.favorite,0)=1".into()),"isplayed"=>conditions.push("COALESCE(u.watched,0)=1".into()),"isunplayed"=>conditions.push("COALESCE(u.watched,0)=0".into()),"isresumable"=>conditions.push("ep.position>0 AND ep.position<ep.duration*0.9 AND m.kind IN ('movie','episode')".into()),_=>{}}}}
-        let directions=q.get("sortorder").map(String::as_str).unwrap_or("Ascending").split(',').collect::<Vec<_>>();
-        let sort=q.get("sortby").map(String::as_str).unwrap_or("SortName").split(',').take(8).enumerate().map(|(index,key)| {
-            let column=match key.to_ascii_lowercase().as_str(){"datecreated"=>"m.created_at","dateplayed"=>"ep.updated_at","random"=>"random()","premieredate"|"productionyear"=>"m.year","indexnumber"=>"m.sort_number","parentindexnumber"=>"CASE WHEN m.kind='track' THEN m.sort_number/10000 ELSE p.sort_number END","communityrating"=>"json_extract(m.metadata,'$.vote_average')",_=>"c.title COLLATE NOCASE"};
-            let direction=if directions.get(index).or(directions.first()).is_some_and(|s|s.eq_ignore_ascii_case("Descending")){"DESC"}else{"ASC"};
-            format!("{column} {direction}")
-        }).collect::<Vec<_>>().join(",");
-        let filter=if conditions.is_empty(){String::new()}else{format!("WHERE {}",conditions.join(" AND "))};
-        let sql=format!("{SELECT} {filter} ORDER BY {sort},m.id LIMIT {limit} OFFSET {start}");
-        let rows=db.prepare(&sql)?.query_map(rusqlite::params_from_iter(&args),|r|Ok((row(r,&server)?,r.get::<_,i64>(21)? as usize)))?.collect::<std::result::Result<Vec<_>,_>>()?;
-        let total=if let Some(row)=rows.first(){row.1}else{db.query_row(&format!("SELECT COUNT(*) FROM ({SELECT} {filter})"),rusqlite::params_from_iter(&args),|r|r.get::<_,i64>(0))? as usize};
-        Ok((rows.into_iter().map(|v|v.0).collect::<Vec<_>>(),total))
+        let languages = |values: std::collections::BTreeSet<String>| values.into_iter().map(|value| json!({"Name":value,"Value":value})).collect::<Vec<_>>();
+        Ok(json!({"Genres":genres.into_iter().map(|name|json!({"Id":genre_id(&name),"Name":name})).collect::<Vec<_>>(),"Tags":[],"AudioLanguages":languages(audio),"SubtitleLanguages":languages(subtitles)}))
     }).await
 }
 
@@ -177,7 +363,8 @@ pub(super) async fn display_preferences(
     }).await
 }
 
-pub(super) const SELECT: &str = "SELECT m.id,m.kind,c.title,m.parent_id,m.year,m.sort_number,m.metadata,m.overrides,m.created_at,m.root_id,COALESCE(u.favorite,0),COALESCE(u.watched,0),COALESCE(ep.position,0),COALESCE(ep.duration,0),p.kind,p.sort_number,pc.title,p.parent_id,gc.title,(SELECT f.probe FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1 ORDER BY f.edition,f.id LIMIT 1),(SELECT COUNT(*) FROM media ch WHERE ch.parent_id=m.id),COUNT(*) OVER() FROM media m JOIN media_cards c ON c.id=m.id LEFT JOIN media_state u ON u.media_id=m.id AND u.user_id=?1 LEFT JOIN edition_progress ep ON ep.rowid=(SELECT rowid FROM edition_progress WHERE media_id=m.id AND user_id=?1 ORDER BY updated_at DESC,edition LIMIT 1) LEFT JOIN media p ON p.id=m.parent_id LEFT JOIN media_cards pc ON pc.id=p.id LEFT JOIN media_cards gc ON gc.id=p.parent_id";
+pub(super) const SELECT: &str = "SELECT m.id,m.kind,c.title,m.parent_id,m.year,m.sort_number,m.metadata,m.overrides,m.created_at,m.root_id,COALESCE(u.favorite,0),COALESCE(u.watched,0),COALESCE(ep.position,0),COALESCE(ep.duration,0),p.kind,p.sort_number,pc.title,p.parent_id,gc.title,(SELECT f.probe FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1 ORDER BY f.edition,f.id LIMIT 1),(SELECT COUNT(*) FROM media ch WHERE ch.parent_id=m.id),COUNT(*) OVER()";
+const FROM: &str = "FROM media m JOIN media_cards c ON c.id=m.id LEFT JOIN media_state u ON u.media_id=m.id AND u.user_id=?1 LEFT JOIN edition_progress ep ON ep.rowid=(SELECT rowid FROM edition_progress WHERE media_id=m.id AND user_id=?1 ORDER BY updated_at DESC,edition LIMIT 1) LEFT JOIN media p ON p.id=m.parent_id LEFT JOIN media_cards pc ON pc.id=p.id LEFT JOIN media_cards gc ON gc.id=p.parent_id";
 
 pub(super) fn row(r: &rusqlite::Row<'_>, server: &str) -> rusqlite::Result<Value> {
     let id: String = r.get(0)?;
