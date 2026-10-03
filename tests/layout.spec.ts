@@ -1681,9 +1681,10 @@ test('update choices save eagerly, roll back failures, and respect reduced motio
     exact: true,
   });
   const notify = choices.getByRole('button', { name: 'Notify', exact: true });
-  await automatic.click();
   await expect(automatic).toHaveAttribute('aria-pressed', 'true');
-  await expect(notify).toBeEnabled();
+  await notify.click();
+  await expect(notify).toHaveAttribute('aria-pressed', 'true');
+  await expect(automatic).toBeEnabled();
   await expect(choices.locator('[data-choice-selection]')).toHaveCSS(
     'transition-property',
     'none',
@@ -1691,7 +1692,7 @@ test('update choices save eagerly, roll back failures, and respect reduced motio
   await expect.poll(() => Boolean(finish)).toBe(true);
   finish!();
   await expect(page.getByRole('alert')).toContainText('Policy save failed');
-  await expect(notify).toHaveAttribute('aria-pressed', 'true');
+  await expect(automatic).toHaveAttribute('aria-pressed', 'true');
   await expect(
     choices.getByRole('button', { name: 'Manual', exact: true }),
   ).toHaveCount(0);

@@ -4,7 +4,7 @@
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
   import ExclusiveChoiceGroup from './ui/ExclusiveChoiceGroup.svelte';
   import { formControlClass } from './ui/styles';
-  let policy = $state('notify'),
+  let policy = $state('automatic'),
     start = $state(3),
     end = $state(5);
   let initialized = $state(false);

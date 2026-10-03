@@ -238,6 +238,9 @@ for (const reducedMotion of ['no-preference', 'reduce'] as const) {
     const select = page.getByRole('navigation', { name: 'Select service' });
     await select.getByRole('button', { name: 'Radarr', exact: true }).click();
     const group = page.getByRole('group', { name: 'Update policy' });
+    await expect(
+      group.getByRole('button', { name: 'Inherit', exact: true }),
+    ).toHaveAttribute('aria-pressed', 'true');
     const highlight = group.locator('[data-choice-selection]');
     await expect(highlight).toBeVisible();
     const events = () =>

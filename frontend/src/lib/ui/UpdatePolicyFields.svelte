@@ -4,7 +4,7 @@
   import { formControlClass } from './styles';
 
   let {
-    policy = $bindable('notify'),
+    policy = $bindable('inherit'),
     start = $bindable(3),
     end = $bindable(5),
     timezone,
@@ -19,7 +19,7 @@
     onChange: () => void;
   } = $props();
   const choices = $derived([
-    ...(inherited ? [{ value: 'inherit', label: 'Server default' }] : []),
+    ...(inherited ? [{ value: 'inherit', label: 'Inherit' }] : []),
     { value: 'notify', label: 'Notify' },
     { value: 'automatic', label: 'Automatic' },
   ]);

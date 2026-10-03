@@ -371,7 +371,7 @@
     approvalUsers = $state<ApprovalUser[]>([]);
   let timezone = $state(''),
     serverPolicy = $state<ServerUpdatePolicy>({
-      policy: 'notify',
+      policy: 'automatic',
       window_start: 3,
       window_end: 5,
     });

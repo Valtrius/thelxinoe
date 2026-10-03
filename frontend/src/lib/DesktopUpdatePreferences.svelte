@@ -2,7 +2,7 @@
   import { desktopUpdates, desktopUpdate } from './desktop-updates';
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
   import ExclusiveChoiceGroup from './ui/ExclusiveChoiceGroup.svelte';
-  let policy = $state<'notify' | 'automatic'>('notify');
+  let policy = $state<'notify' | 'automatic'>('automatic');
   let initialized = $state(false);
   $effect(() => {
     if ($desktopUpdates && !initialized) {

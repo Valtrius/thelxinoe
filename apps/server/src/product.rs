@@ -96,7 +96,7 @@ pub(crate) struct Policy {
 impl Default for Policy {
     fn default() -> Self {
         Self {
-            policy: "notify".into(),
+            policy: "automatic".into(),
             window_start: 3,
             window_end: 5,
         }

@@ -58,8 +58,8 @@ pub enum ToolSource {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum UpdatePolicy {
-    Automatic,
     #[default]
+    Automatic,
     Notify,
     Manual,
 }
@@ -85,7 +85,7 @@ impl Default for ToolPreference {
             active: None,
             previous: None,
             pinned: false,
-            update_policy: UpdatePolicy::Notify,
+            update_policy: UpdatePolicy::Automatic,
             channel: "recommended".into(),
             enabled: false,
             held_versions: Vec::new(),
