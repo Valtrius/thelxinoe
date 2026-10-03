@@ -5,6 +5,7 @@
   import { api, type User } from './api';
   import TimezoneSelect from './TimezoneSelect.svelte';
   import { onDestroy } from 'svelte';
+  import { captureSession } from './session';
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
   import Panel from './ui/Panel.svelte';
   import ProfilePicture from './ProfilePicture.svelte';
@@ -37,6 +38,7 @@
     busy = $state(true),
     error = $state('');
   let active = true;
+  const ownsSession = captureSession();
   onDestroy(() => (active = false));
   $effect(() => {
     void userId;
@@ -67,11 +69,12 @@
     timezone: string;
     time_format: '' | '12h' | '24h';
   }) {
+    if (!active || !ownsSession()) return;
     const value = await api<Preferences>('/me/preferences', 'PUT', {
       timezone: submitted.timezone || null,
       time_format: submitted.time_format || null,
     });
-    if (!active) return;
+    if (!active || !ownsSession()) return;
     serverTimezone = value.server_timezone;
     serverTimeFormat = value.server_time_format;
     if (timezone === submitted.timezone && timeFormat === submitted.time_format)

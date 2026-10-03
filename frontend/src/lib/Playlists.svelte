@@ -3,7 +3,8 @@
   import Notice from './ui/Notice.svelte';
   import FormField from './ui/FormField.svelte';
   import { formControlClass } from './ui/styles';
-  import { untrack } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
+  import { LatestRequest } from './providers/latest-request';
   import { api } from './api';
   import type { Card } from './media-state';
   import type { MediaChoice } from './playback';
@@ -36,33 +37,52 @@
     error = $state(''),
     busy = $state(false),
     creating = $state(false);
+  const lists = new LatestRequest(),
+    selection = new LatestRequest(),
+    searches = new LatestRequest();
+  onDestroy(() => {
+    lists.invalidate();
+    selection.invalidate();
+    searches.invalidate();
+  });
   $effect(() => {
     if (revision >= 0) untrack(() => void load());
   });
   async function load() {
+    const current = lists.begin();
     try {
-      items = (await api<{ items: Playlist[] }>('/playlists')).items;
+      const value = await api<{ items: Playlist[] }>('/playlists');
+      if (current()) items = value.items;
     } catch (e) {
-      error = String(e);
+      if (current()) error = String(e);
     }
   }
   async function open(id: string) {
+    const current = selection.begin();
+    searches.invalidate();
     busy = true;
     error = '';
+    selected = null;
+    creating = false;
     try {
-      selected = await api<Playlist>(`/playlists/${id}`);
+      const value = await api<Playlist>(`/playlists/${id}`);
+      if (!current()) return;
+      selected = value;
       creating = false;
       name = selected.name;
       description = selected.description;
       tracks = selected.items ?? [];
       results = [];
     } catch (e) {
-      error = String(e);
+      if (current()) error = String(e);
     } finally {
-      busy = false;
+      if (current()) busy = false;
     }
   }
   async function save() {
+    if (busy || !editable) return;
+    const current = selection.begin();
+    searches.invalidate();
     busy = true;
     error = '';
     try {
@@ -76,26 +96,30 @@
           revision: selected?.revision ?? 0,
         },
       );
+      if (!current()) return;
       await load();
+      if (!current()) return;
       await open(value.id);
     } catch (e) {
-      error = String(e);
+      if (current()) error = String(e);
     } finally {
-      busy = false;
+      if (current()) busy = false;
     }
   }
   async function remove() {
     if (!selected) return;
+    const current = selection.begin();
     busy = true;
     error = '';
     try {
       await api(`/playlists/${selected.id}`, 'DELETE');
+      if (!current()) return;
       selected = null;
       await load();
     } catch (e) {
-      error = String(e);
+      if (current()) error = String(e);
     } finally {
-      busy = false;
+      if (current()) busy = false;
     }
   }
   async function favorite(p: Playlist) {
@@ -110,14 +134,14 @@
     }
   }
   async function search() {
+    const current = searches.begin();
     try {
-      results = (
-        await api<{ items: Card[] }>(
-          `/catalog?kind=track&q=${encodeURIComponent(query)}`,
-        )
-      ).items;
+      const value = await api<{ items: Card[] }>(
+        `/catalog?kind=track&q=${encodeURIComponent(query)}`,
+      );
+      if (current()) results = value.items;
     } catch (e) {
-      error = String(e);
+      if (current()) error = String(e);
     }
   }
   function move(index: number, delta: number) {
@@ -143,6 +167,10 @@
   <Button
     size="form"
     onclick={() => {
+      selection.invalidate();
+      searches.invalidate();
+      busy = false;
+      error = '';
       creating = true;
       selected = null;
       name = '';
@@ -160,109 +188,115 @@
         variant="secondary"
         size="form"
         onclick={() => {
+          selection.invalidate();
+          searches.invalidate();
+          busy = false;
           creating = false;
           selected = null;
         }}>Close playlist</Button
       >
     </SectionHeading>
-    {#if editable}<form
-        class="my-4 grid gap-3 [&_button]:justify-self-start"
-        onsubmit={(e) => {
-          e.preventDefault();
-          void save();
-        }}
-      >
-        <FormField
-          >Playlist name<input
-            class={formControlClass}
-            bind:value={name}
-            required
-            maxlength="160"
-          /></FormField
-        ><FormField
-          >Description<textarea
-            class={formControlClass}
-            bind:value={description}
-            maxlength="2000"></textarea></FormField
-        ><Button type="submit" size="form" disabled={busy}>Save playlist</Button
+    <fieldset disabled={busy} class="min-w-0">
+      {#if editable}<form
+          class="my-4 grid gap-3 [&_button]:justify-self-start"
+          onsubmit={(e) => {
+            e.preventDefault();
+            void save();
+          }}
         >
-      </form>{:else}<p>{selected?.description}</p>
-      <small>Owned by {selected?.owner}</small>{/if}
-    <SectionHeading>
-      <h3>{tracks.length} tracks</h3>
-      <Button
-        size="form"
-        disabled={!tracks.some((t) => t.available)}
-        onclick={() => start()}>Play playlist</Button
-      >
-    </SectionHeading>
-    {#each tracks as track, index (index)}<div class={rowClass}>
-        <span
-          >{index + 1}. {track.title}{!track.available
-            ? ' · Unavailable'
-            : ''}</span
-        >
-        <div class="flex flex-wrap gap-2">
-          <Button
-            variant="secondary"
-            size="form"
-            disabled={!track.available}
-            onclick={() => start(index)}>Play track {index + 1}</Button
-          >{#if editable}<Button
-              variant="secondary"
-              size="form"
-              aria-label={`Move track ${index + 1} up`}
-              disabled={index === 0}
-              onclick={() => move(index, -1)}>↑</Button
-            ><Button
-              variant="secondary"
-              size="form"
-              aria-label={`Move track ${index + 1} down`}
-              disabled={index === tracks.length - 1}
-              onclick={() => move(index, 1)}>↓</Button
-            ><Button
-              variant="secondary"
-              size="form"
-              onclick={() => (tracks = tracks.filter((_, i) => i !== index))}
-              >Remove track {index + 1}</Button
-            >{/if}
-        </div>
-      </div>{/each}
-    {#if editable}<form
-        class={inlineFormClass}
-        onsubmit={(e) => {
-          e.preventDefault();
-          void search();
-        }}
-      >
-        <FormField
-          >Find tracks<input
-            class={formControlClass}
-            bind:value={query}
-          /></FormField
-        ><Button type="submit" variant="secondary" size="form"
-          >Search tracks</Button
-        >
-      </form>
-      {#each results as track (track.id)}<div class={rowClass}>
-          <span>{track.title}</span><Button
-            variant="secondary"
-            size="form"
-            disabled={tracks.length >= 500}
-            onclick={() => (tracks = [...tracks, track])}
-            >Add {track.title}</Button
+          <FormField
+            >Playlist name<input
+              class={formControlClass}
+              bind:value={name}
+              required
+              maxlength="160"
+            /></FormField
+          ><FormField
+            >Description<textarea
+              class={formControlClass}
+              bind:value={description}
+              maxlength="2000"></textarea></FormField
+          ><Button type="submit" size="form" disabled={busy}
+            >Save playlist</Button
           >
-        </div>{/each}{/if}
-    {#if selected && editable}<details class="mt-5">
-        <summary>Delete playlist</summary>
-        <p>Remove this playlist and its favorites for all users.</p>
+        </form>{:else}<p>{selected?.description}</p>
+        <small>Owned by {selected?.owner}</small>{/if}
+      <SectionHeading>
+        <h3>{tracks.length} tracks</h3>
         <Button
-          variant="danger"
           size="form"
-          disabled={busy}
-          onclick={() => void remove()}>Delete this playlist</Button
+          disabled={!tracks.some((t) => t.available)}
+          onclick={() => start()}>Play playlist</Button
         >
-      </details>{/if}
+      </SectionHeading>
+      {#each tracks as track, index (index)}<div class={rowClass}>
+          <span
+            >{index + 1}. {track.title}{!track.available
+              ? ' · Unavailable'
+              : ''}</span
+          >
+          <div class="flex flex-wrap gap-2">
+            <Button
+              variant="secondary"
+              size="form"
+              disabled={!track.available}
+              onclick={() => start(index)}>Play track {index + 1}</Button
+            >{#if editable}<Button
+                variant="secondary"
+                size="form"
+                aria-label={`Move track ${index + 1} up`}
+                disabled={index === 0}
+                onclick={() => move(index, -1)}>↑</Button
+              ><Button
+                variant="secondary"
+                size="form"
+                aria-label={`Move track ${index + 1} down`}
+                disabled={index === tracks.length - 1}
+                onclick={() => move(index, 1)}>↓</Button
+              ><Button
+                variant="secondary"
+                size="form"
+                onclick={() => (tracks = tracks.filter((_, i) => i !== index))}
+                >Remove track {index + 1}</Button
+              >{/if}
+          </div>
+        </div>{/each}
+      {#if editable}<form
+          class={inlineFormClass}
+          onsubmit={(e) => {
+            e.preventDefault();
+            void search();
+          }}
+        >
+          <FormField
+            >Find tracks<input
+              class={formControlClass}
+              bind:value={query}
+            /></FormField
+          ><Button type="submit" variant="secondary" size="form"
+            >Search tracks</Button
+          >
+        </form>
+        {#each results as track (track.id)}<div class={rowClass}>
+            <span>{track.title}</span><Button
+              variant="secondary"
+              size="form"
+              disabled={tracks.length >= 500}
+              onclick={() => (tracks = [...tracks, track])}
+              >Add {track.title}</Button
+            >
+          </div>{/each}{/if}
+      {#if selected && editable}<details class="mt-5">
+          <summary>Delete playlist</summary>
+          <p>Remove this playlist and its favorites for all users.</p>
+          <Button
+            variant="danger"
+            size="form"
+            disabled={busy}
+            onclick={() => void remove()}>Delete this playlist</Button
+          >
+        </details>{/if}
+    </fieldset>
   </Panel>{/if}
 {#each items as item (item.id)}<Panel>
     <div class={rowClass}>

@@ -395,6 +395,39 @@ async function discoverFixture(page: Page, role: 'admin' | 'user' = 'user') {
   return { ...fixture, requests };
 }
 
+test('Discover history restores the rendered screen after navigating away', async ({
+  page,
+}, testInfo) => {
+  const fixture = await discoverFixture(page);
+  await page.goto('/#discover/movie/11');
+  await expect(
+    page.getByRole('heading', { name: 'Arrival', exact: true }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'Movies', exact: true }).click();
+  await expect(
+    page.getByRole('heading', { name: 'Movies', exact: true }),
+  ).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(/#discover\/movie\/11$/);
+  await expect(
+    page.getByRole('heading', { name: 'Arrival', exact: true }),
+  ).toBeVisible();
+  await page.goForward();
+  await expect(
+    page.getByRole('heading', { name: 'Movies', exact: true }),
+  ).toBeVisible();
+  await page.reload();
+  await expect(
+    page.getByRole('heading', { name: 'Movies', exact: true }),
+  ).toBeVisible();
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+  await testInfo.attach('cross-feature-history', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+});
+
 test('posters align at the top of discovery rows and search rows with wrapped titles', async ({
   page,
 }, testInfo) => {

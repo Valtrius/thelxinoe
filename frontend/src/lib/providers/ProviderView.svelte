@@ -2,6 +2,7 @@
   import { onMount, untrack } from 'svelte';
   import { toolsApi } from './tools-api';
   import { api as request, desktop } from '../api';
+  import { captureSession } from '../session';
   import { appearance, updateAppearance } from '../appearance';
   import type { MediaChoice } from '../playback';
   import {
@@ -41,6 +42,7 @@
     settings: (section: string) => void;
   }>();
   const disconnect = untrack(() => connectPresentation(userId, play));
+  const ownsSession = captureSession();
   const watchlistController = createYoutubeWatchlists(
     Number(preferences.getItem('youtube-selected-watchlist-id')),
   );
@@ -63,7 +65,11 @@
   let refreshAfter = 0;
   let refreshTimer: ReturnType<typeof setTimeout>;
   function refreshData() {
-    if (disposed) return;
+    if (disposed || !ownsSession()) return;
+    if (platform !== 'youtube') {
+      dataRevision++;
+      return;
+    }
     if (watchlistController.pendingManualWatchedVideoIds.size)
       refreshAfter = Date.now() + 5000;
     clearTimeout(refreshTimer);
@@ -156,25 +162,28 @@
       : [],
   );
   async function load() {
-    if (loading || disposed) return;
+    if (loading || disposed || !ownsSession()) return;
+    const selected: 'youtube' | 'twitch' | 'kick' = platform;
     loading = true;
     try {
-      const [youtube, twitch, tracked] = await Promise.all([
-        request<OnlineAccount>('/online/youtube'),
-        request<OnlineAccount>('/online/twitch'),
-        request<KickFeed>('/online/kick'),
-      ]);
-      if (disposed) return;
-      accounts = { youtube, twitch };
-      kick = tracked;
-      if (youtube.account.status === 'connected') pendingGoogle = false;
-      const snapshot = JSON.stringify([youtube, twitch, tracked]);
+      const value = await request<OnlineAccount | KickFeed>(
+        `/online/${selected}`,
+      );
+      if (disposed || !ownsSession() || selected !== platform) return;
+      if (selected === 'kick') kick = value as KickFeed;
+      else accounts[selected] = value as OnlineAccount;
+      if (
+        selected === 'youtube' &&
+        (value as OnlineAccount).account.status === 'connected'
+      )
+        pendingGoogle = false;
+      const snapshot = JSON.stringify([selected, value]);
       if (snapshot !== lastSnapshot) {
         lastSnapshot = snapshot;
         refreshData();
       }
     } catch (error) {
-      if (!disposed)
+      if (!disposed && ownsSession() && selected === platform)
         showToast({
           key: 'providers-load',
           tone: 'error',
@@ -183,9 +192,11 @@
         });
     } finally {
       loading = false;
+      if (!disposed && ownsSession() && selected !== platform) void load();
     }
   }
   $effect(() => {
+    void platform;
     void revision;
     untrack(() => {
       refreshData();
@@ -194,12 +205,16 @@
   });
   $effect(() => {
     const selected = $preferences['youtube-selected-watchlist-id'];
-    if (selected && Number.isSafeInteger(Number(selected)))
+    if (
+      platform === 'youtube' &&
+      selected &&
+      Number.isSafeInteger(Number(selected))
+    )
       watchlistController.selectedWatchlistId = Number(selected);
   });
   $effect(() => {
     const selected = watchlistController.selectedWatchlistId;
-    if (selected !== null)
+    if (platform === 'youtube' && selected !== null)
       preferences.setItem('youtube-selected-watchlist-id', String(selected));
   });
   onMount(() => {
@@ -243,10 +258,15 @@
         .catch(() => {
           nativeReady = false;
         });
-    const timer = setInterval(() => void load(), 5000);
+    const refreshVisible = () => {
+      if (!document.hidden) void load();
+    };
+    const timer = setInterval(refreshVisible, 5000);
+    document.addEventListener('visibilitychange', refreshVisible);
     return () => {
       disposed = true;
       clearInterval(timer);
+      document.removeEventListener('visibilitychange', refreshVisible);
       clearTimeout(refreshTimer);
       clearToasts();
       window.removeEventListener('thelxinoe-download-progress', downloading);
@@ -256,9 +276,11 @@
       );
       window.removeEventListener('thelxinoe-youtube-progress', progress);
       window.removeEventListener('thelxinoe-youtube-download-removed', removed);
-      void watchlistController
-        .flushWatchlistRemovals()
-        .finally(() => watchlistController.reset());
+      if (ownsSession())
+        void watchlistController
+          .flushWatchlistRemovals()
+          .finally(() => watchlistController.reset());
+      else watchlistController.reset();
       disconnect();
     };
   });

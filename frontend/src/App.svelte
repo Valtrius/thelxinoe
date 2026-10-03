@@ -9,6 +9,8 @@
   import Panel from './lib/ui/Panel.svelte';
   import { inlineFormClass, rowClass, statsClass } from './lib/ui/styles';
   import { onMount, tick } from 'svelte';
+  import { SvelteURL } from 'svelte/reactivity';
+  import { captureSession, invalidateSession } from './lib/session';
   import { Accordion } from 'bits-ui';
   import Sidebar from './lib/ui/Sidebar.svelte';
   import NavigationDrawer from './lib/ui/NavigationDrawer.svelte';
@@ -65,7 +67,7 @@
   import LibraryView from './lib/LibraryView.svelte';
   import PlaybackSettings from './lib/PlaybackSettings.svelte';
   import SegmentSettings from './lib/SegmentSettings.svelte';
-  import TimezoneSelect from './lib/TimezoneSelect.svelte';
+  import ServerDisplayDefaults from './lib/ServerDisplayDefaults.svelte';
   import AdminOperations from './lib/AdminOperations.svelte';
   import BackupSettings from './lib/BackupSettings.svelte';
   import ProductVersion from './lib/ProductVersion.svelte';
@@ -88,7 +90,6 @@
   import AuditSettings from './lib/AuditSettings.svelte';
   import StatisticsView from './lib/statistics/StatisticsView.svelte';
   import UserPreferences from './lib/UserPreferences.svelte';
-  import AutoSaveForm from './lib/ui/AutoSaveForm.svelte';
   import PasswordSettings from './lib/PasswordSettings.svelte';
   import QuickConnect from './lib/QuickConnect.svelte';
   import OnlineAccounts from './lib/OnlineAccounts.svelte';
@@ -166,8 +167,8 @@
     newRole = $state<'admin' | 'user'>('user');
   let expandedUser = $state('');
   let preferencesRevision = $state(0);
+  let unsavedChanges = $state(false);
   let timeFormat = $state<'12h' | '24h'>('24h'),
-    serverTimeFormat = $state<'12h' | '24h'>('24h'),
     timezone = $state('UTC'),
     health = $state<{
       version: string;
@@ -348,17 +349,21 @@
     loading = false;
   }
   async function loadDisplayPreferences() {
+    const ownsSession = captureSession();
     const value = await api<{
       timezone: string;
       time_format: '12h' | '24h';
     }>('/me/preferences');
+    if (!ownsSession()) return;
     timeFormat = value.time_format;
     if (user) user = { ...user, timezone: value.timezone };
   }
   function startEvents() {
+    const ownsSession = captureSession();
     events?.close();
     events = new Events(
       (event) => {
+        if (!ownsSession()) return;
         if (
           ['online.configuration.changed', 'server.reconnected'].includes(
             event.kind,
@@ -425,7 +430,6 @@
               time_format: '12h' | '24h';
             };
             timezone = settings.timezone;
-            serverTimeFormat = settings.time_format;
             void loadDisplayPreferences().catch((e) => (error = String(e)));
           }
           const userId = user?.id;
@@ -467,6 +471,7 @@
         }
       },
       (value) => {
+        if (!ownsSession()) return;
         connected = value;
         if (value && user) void refreshAppearance(user.id);
       },
@@ -475,6 +480,7 @@
   }
   async function authenticate() {
     await act(async () => {
+      teardownSession();
       if (desktop) {
         await changeServer(serverAddress);
         serverAddress = serverUrl();
@@ -515,40 +521,68 @@
   }
   async function logout() {
     await act(async () => {
+      teardownSession();
       await api('/auth/logout', 'POST');
-      navigationReady = false;
-      resetAppearance();
-      playing = null;
-      user = null;
-      events?.close();
     });
+  }
+  function teardownSession() {
+    invalidateSession();
+    navigationReady = false;
+    playbackRequest++;
+    resetAppearance();
+    playing = null;
+    user = null;
+    events?.close();
+    events = undefined;
+    connected = false;
+    clearTimeout(settingsTimer);
+    settingsLoading = false;
+    sessions = [];
+    users = [];
+    jobs = [];
+    health = null;
+    currentSession = '';
+    expandedUser = '';
+    newUsername = newPassword = '';
+    focusId = undefined;
+    scans = {};
+    unsavedChanges = false;
+    mobileNavOpen = false;
+    section = 'Home';
+    settingsSection = 'account';
+    timezone = 'UTC';
+    timeFormat = '24h';
   }
   async function loadSettings() {
     if (settingsLoading) return;
     settingsLoading = true;
+    const ownsSession = captureSession();
     try {
       error = '';
       const result = await api<{ items: Session[]; current: string }>(
         '/auth/sessions',
       );
+      if (!ownsSession()) return;
       sessions = result.items;
       currentSession = result.current;
       if (user?.role === 'admin') {
-        users = (await api<{ items: User[] }>('/users')).items;
-        jobs = (await api<{ items: Job[] }>('/admin/jobs')).items;
-        health = await api('/admin/health');
-        const settings = await api<{
-          timezone: string;
-          time_format: '12h' | '24h';
-        }>('/admin/settings');
-        timezone = settings.timezone;
-        serverTimeFormat = settings.time_format;
+        const [people, activity, status, defaults] = await Promise.all([
+          api<{ items: User[] }>('/users'),
+          api<{ items: Job[] }>('/admin/jobs'),
+          api<typeof health>('/admin/health'),
+          api<{ timezone: string }>('/admin/settings'),
+        ]);
+        if (!ownsSession()) return;
+        users = people.items;
+        jobs = activity.items;
+        health = status;
+        timezone = defaults.timezone;
       }
     } catch (e) {
-      if (!isServerUpdateInterruption(e))
+      if (ownsSession() && !isServerUpdateInterruption(e))
         error = e instanceof Error ? e.message : String(e);
     } finally {
-      settingsLoading = false;
+      if (ownsSession()) settingsLoading = false;
     }
   }
   $effect(() => {
@@ -556,14 +590,14 @@
     if (workspace) workspace.scrollTop = 0;
   });
   async function navigate(name: string) {
+    unsavedChanges = false;
     mobileNavOpen = false;
     focusId = undefined;
-    if (location.hash.startsWith('#discover/'))
-      history.replaceState(
-        history.state,
-        '',
-        `${location.pathname}${location.search}`,
-      );
+    const url = new SvelteURL(location.href);
+    url.hash = '';
+    url.searchParams.delete('youtube_link');
+    url.searchParams.set('section', name);
+    history.pushState({ ...history.state, seerr: false }, '', url);
     section = name;
     error = '';
     if (name === 'Settings') await loadSettings();
@@ -667,6 +701,17 @@
       updateRequired = (event as CustomEvent<string>).detail;
       events?.close();
     };
+    const locationChanged = () => {
+      if (user) restoreNavigation();
+    };
+    const sessionExpired = () => teardownSession();
+    const cancelledEdits = () => {
+      unsavedChanges = true;
+    };
+    window.addEventListener('popstate', locationChanged);
+    window.addEventListener('hashchange', locationChanged);
+    window.addEventListener('thelxinoe-session-expired', sessionExpired);
+    window.addEventListener('thelxinoe-unsaved-changes', cancelledEdits);
     const openSettings = (event: Event) => {
       if (
         (event as CustomEvent<string>).detail === 'server' &&
@@ -699,7 +744,11 @@
       void updateConnection.then((disconnect) => disconnect());
       window.removeEventListener('thelxinoe-update-required', incompatible);
       window.removeEventListener('thelxinoe-open-settings', openSettings);
-      events?.close();
+      window.removeEventListener('popstate', locationChanged);
+      window.removeEventListener('hashchange', locationChanged);
+      window.removeEventListener('thelxinoe-session-expired', sessionExpired);
+      window.removeEventListener('thelxinoe-unsaved-changes', cancelledEdits);
+      teardownSession();
       clearTimeout(settingsTimer);
       sidebarMotion.destroy();
       media.removeEventListener('change', resize);
@@ -907,6 +956,9 @@
             {$appearanceError}
           </p>{/if}
         {#if error}<Notice variant="error" role="alert">{error}</Notice>{/if}
+        {#if unsavedChanges}<Notice role="status"
+            >Unsaved changes were cancelled when leaving the form.</Notice
+          >{/if}
         {#if playing && desktop}<NativePlayer
             choice={playing}
             closed={(closedChoice) => {
@@ -969,10 +1021,8 @@
                   onsubmit={(e) => {
                     e.preventDefault();
                     void act(async () => {
+                      teardownSession();
                       await changeServer(serverAddress);
-                      playing = null;
-                      events?.close();
-                      user = null;
                       await boot();
                     });
                   }}
@@ -1018,8 +1068,7 @@
                         act(async () => {
                           await api(`/auth/sessions/${session.id}`, 'DELETE');
                           if (session.id === currentSession) {
-                            user = null;
-                            events?.close();
+                            teardownSession();
                           } else await loadSettings();
                         })}>Revoke</Button
                     >
@@ -1062,37 +1111,10 @@
                     </div>
                   </div>
                 </Panel>
-                <Panel
-                  ><h2>Display defaults</h2>
-                  <AutoSaveForm
-                    label="Server display defaults"
-                    class={inlineFormClass}
-                    disabled={busy}
-                    value={{ timezone, time_format: serverTimeFormat }}
-                    onRevert={(previous) => {
-                      timezone = previous.timezone;
-                      serverTimeFormat = previous.time_format;
-                    }}
-                    onsave={(submitted) =>
-                      api('/admin/settings', 'PUT', submitted)}
-                  >
-                    <TimezoneSelect
-                      label="Server default timezone"
-                      bind:value={timezone}
-                      disabled={busy}
-                    />
-                    <FormField
-                      >Server default time format<select
-                        class={formControlClass}
-                        bind:value={serverTimeFormat}
-                        disabled={busy}
-                        ><option value="24h">24-hour</option><option value="12h"
-                          >12-hour</option
-                        ></select
-                      ></FormField
-                    >
-                  </AutoSaveForm>
-                </Panel>
+                <ServerDisplayDefaults
+                  revision={preferencesRevision}
+                  changed={(value) => (timezone = value)}
+                />
                 <Panel
                   ><h2>Server updates</h2>
                   <ProductUpdatePreferences /></Panel

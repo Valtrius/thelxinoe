@@ -1,4 +1,5 @@
 import { api } from './api';
+import { captureSession } from './session';
 import { PlaybackActivity } from './playback-activity';
 import {
   capabilities,
@@ -46,6 +47,8 @@ export class GaplessQueue {
   private index = 0;
   private next = 0;
   private closed = false;
+  private closing?: Promise<void>;
+  private ownsSession = captureSession();
   private loading = false;
   private initialized = false;
   private deferred?: StreamingRequired;
@@ -82,6 +85,7 @@ export class GaplessQueue {
     const first = this.next === 0;
     const choice = this.choices[this.next++];
     const info = await api<MediaInfo>(`/catalog/${choice.id}/playback`);
+    if (this.closed || !this.ownsSession()) return;
     const source = info.sources.find(
       (s) => !choice.fileId || s.id === choice.fileId,
     );
@@ -114,7 +118,7 @@ export class GaplessQueue {
       first ? undefined : 0,
     );
     try {
-      if (this.closed) return;
+      if (this.closed || !this.ownsSession()) return;
       if (playback.mode !== 'direct')
         throw new StreamingRequired('This track requires conversion.', choice);
       const response = await fetch(mediaUrl(playback.url));
@@ -145,7 +149,10 @@ export class GaplessQueue {
       });
       return;
     } finally {
-      if (!this.entries.some((e) => e.playback.id === playback.id))
+      if (
+        this.ownsSession() &&
+        !this.entries.some((e) => e.playback.id === playback.id)
+      )
         await api(`/playback/${playback.id}`, 'DELETE').catch(() => {});
     }
   }
@@ -190,6 +197,7 @@ export class GaplessQueue {
       this.loading = true;
       void this.load()
         .then(() => {
+          if (this.closed || !this.ownsSession()) return;
           this.schedule(
             Math.max(
               this.context.currentTime + 0.05,
@@ -198,6 +206,7 @@ export class GaplessQueue {
           );
         })
         .catch((e) => {
+          if (this.closed || !this.ownsSession()) return;
           if (e instanceof StreamingRequired) {
             this.deferred = e;
             this.next = this.choices.length;
@@ -259,12 +268,14 @@ export class GaplessQueue {
     entry.reports = entry.reports
       .catch(() => {})
       .then(() =>
-        api(`/playback/${entry.playback.id}/progress`, 'POST', {
-          sequence,
-          state,
-          position,
-          active_seconds: activeSeconds,
-        }),
+        this.ownsSession()
+          ? api(`/playback/${entry.playback.id}/progress`, 'POST', {
+              sequence,
+              state,
+              position,
+              active_seconds: activeSeconds,
+            })
+          : undefined,
       );
     return entry.reports.catch((e) => {
       if (!this.closed) {
@@ -274,9 +285,12 @@ export class GaplessQueue {
     });
   }
   private async keepalive() {
+    if (this.closed || !this.ownsSession()) return;
     try {
-      for (const e of this.entries)
+      for (const e of this.entries) {
+        if (this.closed || !this.ownsSession()) return;
         await api(`/playback/${e.playback.id}/keepalive`, 'POST');
+      }
       const current = this.entries[0];
       if (current)
         await this.report(
@@ -337,24 +351,32 @@ export class GaplessQueue {
     }
     this.update();
   }
-  async close() {
-    if (this.closed) return;
+  close(): Promise<void> {
+    if (this.closing) return this.closing;
     this.closed = true;
     clearInterval(this.timer);
     clearInterval(this.heartbeat);
     const position = this.context.currentTime;
-    for (const [i, e] of this.entries.entries()) {
+    const entries = this.entries;
+    this.entries = [];
+    for (const e of entries) {
       e.activity.setActive(false);
       e.node?.source.stop();
-      if (i === 0 && e.node)
-        await this.report(
-          e,
-          'stopped',
-          Math.max(0, position - e.start + e.offset),
-        );
-      else await api(`/playback/${e.playback.id}`, 'DELETE').catch(() => {});
+      e.node?.volume.disconnect();
     }
-    this.entries = [];
-    await this.context.close();
+    this.closing = (async () => {
+      await this.context.close();
+      for (const [i, e] of entries.entries()) {
+        if (!this.ownsSession()) break;
+        if (i === 0 && e.node)
+          await this.report(
+            e,
+            'stopped',
+            Math.max(0, position - e.start + e.offset),
+          );
+        else await api(`/playback/${e.playback.id}`, 'DELETE').catch(() => {});
+      }
+    })();
+    return this.closing;
   }
 }

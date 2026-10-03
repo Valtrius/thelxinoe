@@ -1,11 +1,13 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { version as clientVersion } from '../../package.json';
+import { captureSession, invalidateSession } from './session';
 export const desktop = typeof window !== 'undefined' && isTauri();
 let desktopServer = '';
 export async function initializeTransport() {
   if (desktop) desktopServer = await invoke<string>('server_url');
 }
 export async function changeServer(value: string) {
+  invalidateSession();
   if (desktop) desktopServer = await invoke<string>('change_server', { value });
 }
 export type User = {
@@ -43,17 +45,29 @@ export async function api<T>(
   method = 'GET',
   body?: unknown,
 ): Promise<T> {
+  const ownsSession = captureSession();
+  const invalidateExpired = (status: number) => {
+    if (
+      status === 401 &&
+      ownsSession() &&
+      path !== '/auth/login' &&
+      path !== '/setup'
+    )
+      window.dispatchEvent(new Event('thelxinoe-session-expired'));
+  };
   if (desktop) {
     const response = await invoke<{
       status: number;
       body: { error?: { code: string; message: string } };
     }>('backend_request', { path, method, body: body ?? null });
-    if (response.status >= 400)
+    if (response.status >= 400) {
+      invalidateExpired(response.status);
       throw new ApiError(
         response.status,
         response.body.error?.code ?? 'request_failed',
         response.body.error?.message ?? 'Request failed',
       );
+    }
     return response.body as T;
   }
   const response = await fetch(`${serverUrl()}/api/v1${path}`, {
@@ -67,12 +81,14 @@ export async function api<T>(
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const value = await response.json();
-  if (!response.ok)
+  if (!response.ok) {
+    invalidateExpired(response.status);
     throw new ApiError(
       response.status,
       value.error?.code ?? 'request_failed',
       value.error?.message ?? 'Request failed',
     );
+  }
   return value as T;
 }
 export type ServerEvent = { id: number; kind: string; payload: unknown };

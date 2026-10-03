@@ -1,5 +1,6 @@
 import { get, writable } from 'svelte/store';
 import { api } from '../api';
+import { captureSession } from '../session';
 
 export type Provider = 'youtube' | 'twitch' | 'kick';
 export type ProviderAvailability = Record<Provider, boolean>;
@@ -22,8 +23,9 @@ export function acceptProviders(value: ProviderAvailability) {
 
 export async function loadProviders() {
   const current = ++revision;
+  const ownsSession = captureSession();
   const value = await api<ProviderAvailability>('/online/providers');
-  if (current === revision) providers.set(value);
+  if (current === revision && ownsSession()) providers.set(value);
 }
 
 export async function saveProvider(provider: Provider, enabled: boolean) {

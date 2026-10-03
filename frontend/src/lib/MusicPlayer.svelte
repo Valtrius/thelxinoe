@@ -24,6 +24,8 @@
   let streamChoice = $state<MediaChoice | null>(null);
   let queue = $state<GaplessQueue>();
   let generation = 0;
+  let disposed = false;
+  let closing = Promise.resolve();
   $effect(() => {
     queue?.setVolume($appearance.audio_volume);
   });
@@ -33,14 +35,19 @@
   });
   async function open(selected: MediaChoice) {
     const revision = ++generation;
-    await queue?.close();
+    const previous = queue;
+    queue = undefined;
     musicState = null;
     busy = true;
     error = '';
     streaming = false;
+    streamChoice = null;
+    closing = closing.then(() => previous?.close());
+    await closing;
+    if (disposed || generation !== revision) return;
     const choices = selected.queue ?? [selected];
     const index = choiceIndex(choices, selected);
-    queue = new GaplessQueue(
+    const ownedQueue = new GaplessQueue(
       [
         { ...choices[index], ...selected, queue: undefined },
         ...choices.slice(index + 1),
@@ -57,11 +64,13 @@
         }
       },
     );
+    queue = ownedQueue;
     try {
-      queue.setVolume($appearance.audio_volume);
-      await queue.start();
+      ownedQueue.setVolume($appearance.audio_volume);
+      await ownedQueue.start();
     } catch (e) {
-      await queue.close();
+      await ownedQueue.close();
+      if (disposed || generation !== revision) return;
       if (e instanceof StreamingRequired) {
         streamChoice = e.choice ?? selected;
         streaming = true;
@@ -71,6 +80,7 @@
     }
   }
   onDestroy(() => {
+    disposed = true;
     generation++;
     void queue?.close();
   });
@@ -88,13 +98,8 @@
   />{:else}<Panel aria-label="Music player">
     <SectionHeading>
       <h2>{musicState?.title ?? choice.title}</h2>
-      <Button
-        variant="secondary"
-        size="form"
-        onclick={async () => {
-          await queue?.close();
-          closed();
-        }}>Close player</Button
+      <Button variant="secondary" size="form" onclick={closed}
+        >Close player</Button
       >
     </SectionHeading>
     {#if error}<Notice variant="error" role="alert">{error}</Notice

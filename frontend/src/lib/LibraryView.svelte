@@ -5,6 +5,7 @@
   import { formControlClass } from './ui/styles';
   import { Folder, RefreshCw, ArrowLeft } from '@lucide/svelte';
   import { api } from './api';
+  import { LatestRequest } from './providers/latest-request';
   import {
     attention,
     attentionErrors,
@@ -80,11 +81,13 @@
       local_trailers?: { file_id: string }[];
     } | null>(null);
   let generation = 0;
+  const detailRequests = new LatestRequest();
   let search = $state('');
   let searchTimer: ReturnType<typeof setTimeout>;
   onDestroy(() => {
     clearTimeout(searchTimer);
     generation++;
+    detailRequests.invalidate();
   });
   function searchChanged() {
     clearTimeout(searchTimer);
@@ -104,14 +107,8 @@
       );
       if (request !== generation) return;
       items = result.items;
-      if (selected) {
-        const detail = await api<Item & NonNullable<typeof details>>(
-          `/catalog/${selected.id}`,
-        );
-        if (request !== generation) return;
-        selected = detail;
-        details = detail;
-      }
+      if (selected) await loadDetails(selected.id);
+      if (request !== generation) return;
       if (domain === 'Movies') {
         const result = await api<{ items: typeof collections }>(
           '/catalog/collections',
@@ -136,8 +133,7 @@
     if (domain)
       untrack(() => {
         breadcrumbs = [];
-        selected = null;
-        details = null;
+        closeDetails();
         collection = '';
         void load();
       });
@@ -148,17 +144,26 @@
   $effect(() => {
     const id = focusId;
     if (id)
-      untrack(
-        () =>
-          void api<Item>(`/catalog/${id}`)
-            .then((item) => open(item))
-            .catch((e) => (error = String(e))),
-      );
+      untrack(() => {
+        const current = detailRequests.begin();
+        void api<Item & NonNullable<typeof details>>(`/catalog/${id}`)
+          .then((item) => {
+            if (!current()) return;
+            if (['movie', 'episode', 'track'].includes(item.kind)) {
+              selected = item;
+              details = item;
+            } else void open(item);
+          })
+          .catch((e) => {
+            if (current()) error = String(e);
+          });
+      });
   });
   async function open(item: Item) {
     if (['movie', 'episode', 'track'].includes(item.kind)) {
       await select(item);
     } else {
+      closeDetails();
       breadcrumbs = [...breadcrumbs, { id: item.id, title: item.title }];
       await load();
     }
@@ -166,16 +171,26 @@
   async function select(item: Item) {
     selected = item;
     details = null;
+    error = '';
+    await loadDetails(item.id);
+  }
+  function closeDetails() {
+    detailRequests.invalidate();
+    selected = null;
+    details = null;
+  }
+  async function loadDetails(id: string) {
+    const current = detailRequests.begin();
     try {
       const detail = await api<Item & NonNullable<typeof details>>(
-        `/catalog/${item.id}`,
+        `/catalog/${id}`,
       );
-      if (selected?.id === item.id) {
+      if (current() && selected?.id === id) {
         selected = detail;
         details = detail;
       }
     } catch (e) {
-      error = String(e);
+      if (current() && selected?.id === id) error = String(e);
     }
   }
 </script>
@@ -248,7 +263,7 @@
 {#if selected}<Panel>
     <SectionHeading>
       <h2>{selected.title}</h2>
-      <Button variant="secondary" size="form" onclick={() => (selected = null)}
+      <Button variant="secondary" size="form" onclick={closeDetails}
         >Close</Button
       >
     </SectionHeading>

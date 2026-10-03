@@ -4,10 +4,12 @@ export class LatestRequest {
 
   begin(): () => boolean {
     const revision = ++this.revision;
-    return () => revision === this.revision;
+    const ownsSession = captureSession();
+    return () => revision === this.revision && ownsSession();
   }
 
   invalidate() {
     this.revision += 1;
   }
 }
+import { captureSession } from '../session';
