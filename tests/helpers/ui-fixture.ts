@@ -47,7 +47,7 @@ export async function installUiFixture(
     version: '0.1.0',
     timezone: 'UTC',
     configured: false,
-    policy: { policy: 'notify', window_start: 3, window_end: 5 },
+    policy: { policy: 'automatic', window_start: 3, window_end: 5 },
     release: null,
     observation: null,
     controller: { items: [] },

@@ -165,12 +165,17 @@ test('server tools keep four inline rows through discovery, progress and eager p
   await page.evaluate(() => window.dispatchEvent(new Event('thelxinoe-tools')));
   await expect(row).toContainText('Downloading');
   const policy = row.getByRole('group', { name: 'yt-dlp update policy' });
+  const inherit = policy.getByRole('button', { name: 'Inherit', exact: true });
+  await expect(inherit).toHaveAttribute('aria-pressed', 'true');
   await policy.getByRole('button', { name: 'Automatic', exact: true }).click();
   await policy.getByRole('button', { name: 'Notify', exact: true }).click();
   await expect(
     policy.getByRole('button', { name: 'Notify', exact: true }),
   ).toBeEnabled();
   await expect.poll(() => items[0].policy).toBe('notify');
+  await inherit.click();
+  await expect(inherit).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(() => items[0].policy).toBe('inherit');
   await expect(row.getByRole('spinbutton')).toHaveCount(0);
   const pin = row.getByRole('switch', { name: 'Pin yt-dlp', exact: true });
   await pin.check();

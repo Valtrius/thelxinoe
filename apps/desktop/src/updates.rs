@@ -39,8 +39,8 @@ fn change(app: &tauri::AppHandle, patch: Value) -> Value {
         let policy = policy_path(app)
             .ok()
             .and_then(|p| std::fs::read_to_string(p).ok())
-            .filter(|v| v == "automatic")
-            .unwrap_or_else(|| "notify".into());
+            .filter(|v| v == "automatic" || v == "notify")
+            .unwrap_or_else(|| "automatic".into());
         *value = json!({"installed":app.package_info().version.to_string(),"policy":policy,"phase":"idle","checked_at":null,"release":null,"error":null,"received":0,"total":0});
     }
     for (key, field) in patch.as_object().into_iter().flatten() {

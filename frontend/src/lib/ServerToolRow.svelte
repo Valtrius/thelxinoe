@@ -269,7 +269,7 @@
           ariaLabel={item.id + ' update policy'}
           value={policy}
           choices={[
-            { value: 'inherit', label: 'Default' },
+            { value: 'inherit', label: 'Inherit' },
             { value: 'notify', label: 'Notify' },
             { value: 'automatic', label: 'Automatic' },
           ]}
