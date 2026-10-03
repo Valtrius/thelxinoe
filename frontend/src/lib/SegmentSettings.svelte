@@ -23,6 +23,7 @@
       { media_id: string; title: string; state: string; error: string | null }[]
     >([]),
     busy = $state(true),
+    savingConfig = $state(false),
     message = $state('');
   async function refresh() {
     if (admin) {
@@ -89,12 +90,23 @@
   </Panel>
 {:else}<Panel class="grid gap-4"
     ><h2>Episode analysis</h2>
-    <Switch bind:checked={config.local} disabled={busy}
-      >Detect recurring intro and credit audio locally</Switch
-    >
-    <Switch bind:checked={config.external} disabled={busy}
-      >Fetch TheIntroDB timestamps for confirmed episode matches</Switch
-    >
+    {#if !busy && !message}
+      <AutoSaveForm
+        label="Episode analysis settings"
+        class="grid justify-items-start gap-4"
+        value={config}
+        bind:busy={savingConfig}
+        onRevert={(previous) => (config = previous)}
+        onsave={(submitted) => api('/admin/segments', 'PUT', submitted)}
+      >
+        <Switch bind:checked={config.local}
+          >Detect recurring intro and credit audio locally</Switch
+        >
+        <Switch bind:checked={config.external}
+          >Fetch TheIntroDB timestamps for confirmed episode matches</Switch
+        >
+      </AutoSaveForm>
+    {/if}
     <p>
       External lookups send the show's public identifier, episode coordinates
       and runtime. Local analysis runs one task at a time while playback and
@@ -103,15 +115,10 @@
     </p>
     <div class="flex flex-wrap gap-4">
       <Button
-        size="form"
-        disabled={busy}
-        onclick={() => work(() => api('/admin/segments', 'PUT', config))}
-        >Save analysis settings</Button
-      ><Button
         variant="secondary"
         size="form"
-        disabled={busy}
-        onclick={() => work(refresh)}>Refresh analysis</Button
+        disabled={busy || savingConfig}
+        onclick={() => work(async () => {})}>Refresh analysis</Button
       >
     </div>
     {#if message}<p role="alert">{message}</p>{/if}
