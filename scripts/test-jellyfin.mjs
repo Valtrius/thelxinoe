@@ -3,6 +3,22 @@ import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import dgram from 'node:dgram';
+import { Jellyfin, API_VERSION } from '@jellyfin/sdk';
+import { getAuthenticationApi } from '@jellyfin/sdk/lib/utils/api/authentication-api.js';
+import { getFilterApi } from '@jellyfin/sdk/lib/utils/api/filter-api.js';
+import { getLibraryApi } from '@jellyfin/sdk/lib/utils/api/library-api.js';
+import { getSystemApi } from '@jellyfin/sdk/lib/utils/api/system-api.js';
+import { getUserDataApi } from '@jellyfin/sdk/lib/utils/api/user-data-api.js';
+const httpPort = Number(process.env.THELXINOE_TEST_HTTP_PORT ?? 18787);
+const origin = `http://127.0.0.1:${httpPort}`;
+const sdk = new Jellyfin({
+  clientInfo: { name: 'Protocol validation', version: '1' },
+  deviceInfo: { name: 'Automated test', id: 'thelxinoe-compat-test' },
+});
+const sdkApi = sdk.createApi(origin);
+const publicInfo = (await getSystemApi(sdkApi).getPublicSystemInfo()).data;
+assert.equal(publicInfo.Version, '12.1.0');
+assert.match(publicInfo.ServerName, /^Thelxinoe /);
 const discovery = dgram.createSocket('udp4');
 try {
   const discovered = await new Promise((resolve, reject) => {
@@ -14,16 +30,16 @@ try {
       clearTimeout(timeout);
       resolve(JSON.parse(data));
     });
-    discovery.send('who is JellyfinServer?', 18787, '127.0.0.1');
+    discovery.send('who is JellyfinServer?', httpPort, '127.0.0.1');
   });
-  assert.equal(discovered.Address, 'http://127.0.0.1:18787');
+  assert.equal(discovered.Address, origin);
   assert.ok(discovered.Id);
   assert.match(discovered.Name, /^Thelxinoe /);
 } finally {
   discovery.close();
 }
 const api = await request.newContext({
-  baseURL: 'https://localhost:21443',
+  baseURL: process.env.THELXINOE_PLAYBACK_URL ?? 'https://localhost:21443',
   ignoreHTTPSErrors: true,
   extraHTTPHeaders: { 'X-Thelxinoe-Client': '1' },
 });
@@ -57,17 +73,26 @@ for (const kind of ['movies', 'shows', 'music']) {
   }
 }
 const compat = await request.newContext({
-  baseURL: 'http://127.0.0.1:18787',
+  baseURL: origin,
   extraHTTPHeaders: {
     Authorization:
       'MediaBrowser Client="Protocol validation", Device="Automated test", DeviceId="thelxinoe-compat-test", Version="1"',
   },
 });
-let r = await compat.post('/Users/AuthenticateByName', {
-  data: { Username: credentials.username, Pw: credentials.password },
-});
-assert.equal(r.status(), 200);
-const login = await r.json();
+const login = (
+  await getAuthenticationApi(sdkApi).authenticateUserByName({
+    authenticateUserByName: {
+      Username: credentials.username,
+      Pw: credentials.password,
+    },
+  })
+).data;
+sdkApi.update({ accessToken: login.AccessToken });
+assert.equal(
+  (await getSystemApi(sdkApi).getSystemInfo()).data.Version,
+  publicInfo.Version,
+);
+let r;
 const headers = { 'X-Emby-Token': login.AccessToken };
 const otherLogin = await compat.post('/Users/AuthenticateByName', {
   headers: {
@@ -78,6 +103,42 @@ const otherLogin = await compat.post('/Users/AuthenticateByName', {
 });
 assert.equal(otherLogin.status(), 200);
 const otherHeaders = { 'X-Emby-Token': (await otherLogin.json()).AccessToken };
+const pairingClient = await request.newContext({
+  baseURL: origin,
+  extraHTTPHeaders: {
+    Authorization:
+      'MediaBrowser Client="Protocol validation", Device="Pairing test", DeviceId="thelxinoe-compat-pairing", Version="1"',
+  },
+});
+const pairing = await pairingClient.post('/QuickConnect/Initiate', {
+  data: {},
+});
+assert.equal(pairing.status(), 200);
+const pendingPairing = await pairing.json();
+const review = await call('/auth/quick-connect/inspect', 'POST', {
+  code: pendingPairing.Code,
+});
+await call('/auth/quick-connect/approve', 'POST', {
+  code: pendingPairing.Code,
+  confirmation: review.confirmation,
+});
+const connected = await pairingClient.post(
+  '/Users/AuthenticateWithQuickConnect',
+  {
+    data: { Secret: pendingPairing.Secret },
+  },
+);
+assert.equal(connected.status(), 200);
+assert.equal((await connected.json()).User.Id, login.User.Id);
+assert.equal(
+  (
+    await pairingClient.post('/Users/AuthenticateWithQuickConnect', {
+      data: { Secret: pendingPairing.Secret },
+    })
+  ).status(),
+  401,
+);
+await pairingClient.dispose();
 r = await compat.get('/UserViews', { headers });
 assert.equal(r.status(), 200);
 const views = await r.json();
@@ -145,6 +206,112 @@ r = await compat.get('/api/v1/auth/me', {
 });
 assert.equal(r.status(), 401);
 const direct = movies.Items.find((i) => i.Name === 'Direct');
+const userDataApi = getUserDataApi(sdkApi);
+const itemParameters = { itemId: direct.Id, userId: login.User.Id };
+const originalData = (await userDataApi.getItemUserData(itemParameters)).data;
+const filters = (
+  await getFilterApi(sdkApi).getQueryFilters({
+    parentId: views.Items.find((i) => i.CollectionType === 'movies').Id,
+    includeItemTypes: ['Movie'],
+    recursive: true,
+  })
+).data;
+assert.ok(Array.isArray(filters.Genres));
+assert.ok(Array.isArray(filters.Tags));
+assert.ok(filters.AudioLanguages.some((language) => language.Value === 'fra'));
+assert.ok(
+  filters.SubtitleLanguages.some((language) => language.Value === 'eng'),
+);
+const frenchMovies = await compat.get(
+  '/Items?IncludeItemTypes=Movie&AudioLanguages=fra',
+  { headers },
+);
+assert.deepEqual(
+  (await frenchMovies.json()).Items.map((item) => item.Name),
+  ['Tracks'],
+);
+const musicFilters = (
+  await getFilterApi(sdkApi).getQueryFilters({
+    parentId: views.Items.find((item) => item.CollectionType === 'music').Id,
+    recursive: true,
+  })
+).data;
+assert.deepEqual(musicFilters.SubtitleLanguages, []);
+const collections = (
+  await getLibraryApi(sdkApi).getItemCollections(itemParameters)
+).data;
+assert.deepEqual(collections.Items, []);
+assert.equal(collections.TotalRecordCount, 0);
+const updatedData = (
+  await userDataApi.updateItemUserData({
+    ...itemParameters,
+    updateUserItemDataDto: {
+      IsFavorite: true,
+      Played: false,
+      PlaybackPositionTicks: 40_000_000,
+    },
+  })
+).data;
+assert.equal(updatedData.IsFavorite, true);
+assert.equal(updatedData.PlaybackPositionTicks, 40_000_000);
+assert.equal((await call(`/catalog/${direct.Id}/state`)).favorite, true);
+assert.equal(
+  (await userDataApi.getItemUserData(itemParameters)).data
+    .PlaybackPositionTicks,
+  40_000_000,
+);
+assert.equal(
+  (await compat.get(`/Items/${direct.Id}`, { headers })).status(),
+  200,
+);
+assert.equal(
+  (
+    await compat.get(
+      `/UserItems/${direct.Id}/UserData?UserId=00000000-0000-0000-0000-000000000000`,
+      { headers },
+    )
+  ).status(),
+  403,
+);
+for (const invalid of [
+  { IsFavorite: false, Rating: 5 },
+  { PlaybackPositionTicks: -1 },
+  { IsFavorite: 'false' },
+  { ItemId: '00000000-0000-0000-0000-000000000000', IsFavorite: false },
+]) {
+  assert.equal(
+    (
+      await compat.post(`/UserItems/${direct.Id}/UserData`, {
+        headers,
+        data: invalid,
+      })
+    ).status(),
+    400,
+  );
+}
+assert.equal(
+  (await userDataApi.getItemUserData(itemParameters)).data.IsFavorite,
+  true,
+);
+for (const suffix of ['UserData', 'Collections']) {
+  assert.equal(
+    (
+      await compat.get(
+        `/${suffix === 'UserData' ? 'UserItems' : 'Items'}/00000000-0000-0000-0000-000000000000/${suffix}`,
+        { headers },
+      )
+    ).status(),
+    404,
+  );
+}
+await userDataApi.updateItemUserData({
+  ...itemParameters,
+  updateUserItemDataDto: {
+    IsFavorite: originalData.IsFavorite,
+    Played: false,
+    PlaybackPositionTicks: 0,
+  },
+});
 await call(`/catalog/${direct.Id}/state`, 'PUT', { watched: false });
 const profile = {
   SubtitleProfiles: [{ Format: 'srt', Method: 'External' }],
@@ -178,7 +345,7 @@ assert.equal(source.SupportsDirectPlay, true);
 const subtitle = source.MediaStreams.find((s) => s.Type === 'Subtitle');
 assert.equal(subtitle.Codec, 'srt');
 for (const format of ['srt', 'vtt']) {
-  const url = new URL(subtitle.DeliveryUrl, 'http://127.0.0.1:18787');
+  const url = new URL(subtitle.DeliveryUrl, origin);
   url.searchParams.set('format', format);
   r = await compat.get(url.toString());
   assert.equal(r.status(), 200);
@@ -295,10 +462,7 @@ for (const mode of [
   assert.equal(converted.SupportsDirectPlay, false);
   assert.equal(converted.SupportsTranscoding, true);
   assert.equal(converted.SupportsDirectStream, false);
-  const playlistUrl = new URL(
-    converted.TranscodingUrl,
-    'http://127.0.0.1:18787',
-  );
+  const playlistUrl = new URL(converted.TranscodingUrl, origin);
   r = await compat.get(playlistUrl.toString());
   assert.equal(r.status(), 200);
   const playlist = await r.text();
@@ -399,7 +563,7 @@ const serverLogs = execFileSync(
   [
     'compose',
     '-p',
-    'thelxinoe-compat',
+    process.env.COMPOSE_PROJECT_NAME ?? 'thelxinoe-compat',
     '-f',
     'compose.test.yaml',
     'logs',
@@ -415,6 +579,12 @@ writeFileSync(
   JSON.stringify(
     {
       server: login.ServerId,
+      apiVersion: publicInfo.Version,
+      sdkApiVersion: API_VERSION,
+      currentSdkUserDataRoundTrip: true,
+      approvedSingleUseQuickConnect: true,
+      filterLanguagesAndCollectionReads: true,
+      rejectedInvalidUpdatesWithoutMutation: true,
       views: views.Items.map((i) => i.Name),
       movies: movies.Items.map((i) => i.Name),
       compatibilityTokenRejectedByFirstParty: true,

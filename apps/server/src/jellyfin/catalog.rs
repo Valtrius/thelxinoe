@@ -53,6 +53,30 @@ pub async fn views(state: &AppState) -> Result<Value> {
     Ok(result(items, total, 0))
 }
 
+pub fn genre_id(name: &str) -> String {
+    uuid::Uuid::parse_str(
+        &thelxinoe_auth::digest(&format!("jellyfin-genre:{}", name.to_lowercase()))[..32],
+    )
+    .expect("genre digest is a UUID")
+    .to_string()
+}
+
+pub async fn filters(state: &AppState, p: &Principal, query: &Query) -> Result<Value> {
+    let mut query = query.clone();
+    if let Some(parent) = query.get("parentid").cloned() {
+        let parent = canonical(&parent);
+        let item = browse(state, p, &Query::new(), Some(&parent)).await?;
+        if item["LocationType"] == "Remote" || item["CollectionType"] == "playlists" {
+            return Ok(json!({"Genres":[],"Tags":[],"AudioLanguages":[],"SubtitleLanguages":[]}));
+        }
+        query.insert("parentid".into(), parent);
+    }
+    query
+        .entry("recursive".into())
+        .or_insert_with(|| "true".into());
+    Ok(storage::filters(&state.db, p.user.id.clone(), query).await?)
+}
+
 pub async fn browse(
     state: &AppState,
     p: &Principal,
