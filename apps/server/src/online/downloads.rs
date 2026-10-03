@@ -25,6 +25,7 @@ use thelxinoe_playback::Source;
 mod tests;
 
 pub(crate) async fn authorize(state: &AppState, p: &Principal, video: &str) -> Result<()> {
+    super::availability::require_enabled(state, "youtube").await?;
     if !sync::identifier(video, 11) {
         return Err(ApiError::not_found());
     }
@@ -41,7 +42,10 @@ pub async fn settings(State(state): State<AppState>, headers: HeaderMap) -> Resu
     Ok(Json(json!({"enabled":enabled(&state).await?})))
 }
 pub(super) async fn enabled(state: &AppState) -> anyhow::Result<bool> {
-    storage::enabled(&state.db).await
+    Ok(
+        super::availability::enabled(state, "youtube").await?
+            && storage::enabled(&state.db).await?,
+    )
 }
 
 pub async fn remove(
@@ -75,6 +79,9 @@ pub(super) async fn run_watchlists(state: AppState) -> anyhow::Result<()> {
 }
 
 async fn maintain_watchlists(state: &AppState) -> anyhow::Result<()> {
+    if !super::availability::enabled(state, "youtube").await? {
+        return Ok(());
+    }
     let users = storage::maintain_watchlists_write_youtube_watchlist_items(&state.db).await?;
     for user in users {
         state.emit(Some(user), "youtube.changed", json!({})).await?;

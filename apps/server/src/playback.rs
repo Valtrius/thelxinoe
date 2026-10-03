@@ -306,9 +306,11 @@ struct Session {
 async fn session(state: &AppState, p: &Principal, id: &str) -> Result<Session> {
     let id = id.to_owned();
     let p = p.clone();
-    storage::session(id, p, &state.db)
+    let session = storage::session(id, p, &state.db)
         .await?
-        .ok_or_else(ApiError::not_found)
+        .ok_or_else(ApiError::not_found)?;
+    crate::online::availability::require_media(state, &session.media).await?;
+    Ok(session)
 }
 async fn current_source(state: &AppState, session: &Session) -> Result<Source> {
     let src = if let Some(video) = session.media.strip_prefix("youtube:") {

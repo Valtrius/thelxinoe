@@ -9,6 +9,8 @@
   import Panel from './ui/Panel.svelte';
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
   import { inlineFormClass } from './ui/styles';
+  import ProviderIntegrationSwitch from './providers/ProviderIntegrationSwitch.svelte';
+  import { providers } from './providers/availability';
   let { onConfigured }: { onConfigured?: () => void } = $props();
   type Configuration = {
     google_configured: boolean;
@@ -64,93 +66,96 @@
 
 <Panel>
   <h2>YouTube application</h2>
-  <p class="text-muted">
-    Configure one Google Web application for this server. Each person connects
-    their own YouTube account. Replacing the application credentials requires
-    everyone to reconnect.
-  </p>
-  <ProviderSetupInstructions
-    platform="youtube"
-    redirectUri={config?.redirect_uri}
-  />
-  {#if config?.redirect_uri}
-    <FormField
-      >Authorized redirect URI<input
-        class={formControlClass}
-        readonly
-        value={config.redirect_uri}
-      /></FormField
-    >
-  {:else}<p role="status">
-      Set THELXINOE_PUBLIC_URL to this server's HTTPS origin in its environment
-      and restart the server to get the redirect URI. Configure
-      THELXINOE_TRUSTED_PROXIES for your HTTPS reverse proxy. HTTP localhost is
-      supported for development.
-    </p>{/if}
-  <form
-    class={inlineFormClass}
-    onsubmit={(e) => {
-      e.preventDefault();
-      void save();
-    }}
-  >
-    <FormField
-      >Google client ID<input
-        class={formControlClass}
-        bind:value={clientId}
-        required
-        autocomplete="off"
-        placeholder={config?.google_configured
-          ? 'Configured — enter credentials to replace it'
-          : 'Web application client ID'}
-      /></FormField
-    >
-    <FormField
-      >Google client secret<input
-        class={formControlClass}
-        type="password"
-        bind:value={clientSecret}
-        required
-        autocomplete="new-password"
-        placeholder="Enter with the client ID"
-      /></FormField
-    >
-    <Button
-      type="submit"
-      size="form"
-      disabled={busy || savingPreferences || !config}
-      >Apply Google application</Button
-    >
-  </form>
-  {#if config}<AutoSaveForm
-      label="YouTube preferences"
-      class={inlineFormClass}
-      bind:busy={savingPreferences}
-      disabled={busy || !config}
-      value={{ youtube_downloads: downloads, youtube_daily_quota: budget }}
-      onRevert={(previous) => {
-        downloads = previous.youtube_downloads;
-        budget = previous.youtube_daily_quota;
-      }}
-      onsave={(submitted) => api('/admin/online', 'PUT', submitted)}
-    >
+  <ProviderIntegrationSwitch platform="youtube" />
+  {#if $providers.youtube}
+    <p class="text-muted">
+      Configure one Google Web application for this server. Each person connects
+      their own YouTube account. Replacing the application credentials requires
+      everyone to reconnect.
+    </p>
+    <ProviderSetupInstructions
+      platform="youtube"
+      redirectUri={config?.redirect_uri}
+    />
+    {#if config?.redirect_uri}
       <FormField
-        >Daily API budget<input
+        >Authorized redirect URI<input
           class={formControlClass}
-          type="number"
-          bind:value={budget}
-          min="1"
-          max="10000000"
-          required
+          readonly
+          value={config.redirect_uri}
         /></FormField
       >
-      <Switch bind:checked={downloads}>Allow YouTube downloads</Switch>
-    </AutoSaveForm>{/if}
-  {#if config}<p class="text-muted">
-      {config.quota.used.toLocaleString()} API units used today. The shared budget
-      resets at midnight Pacific time.{config.quota.blocked
-        ? ' YouTube has paused requests for today.'
-        : ''}
-    </p>{/if}
-  {#if message}<p role="status">{message}</p>{/if}
+    {:else}<p role="status">
+        Set THELXINOE_PUBLIC_URL to this server's HTTPS origin in its
+        environment and restart the server to get the redirect URI. Configure
+        THELXINOE_TRUSTED_PROXIES for your HTTPS reverse proxy. HTTP localhost
+        is supported for development.
+      </p>{/if}
+    <form
+      class={inlineFormClass}
+      onsubmit={(e) => {
+        e.preventDefault();
+        void save();
+      }}
+    >
+      <FormField
+        >Google client ID<input
+          class={formControlClass}
+          bind:value={clientId}
+          required
+          autocomplete="off"
+          placeholder={config?.google_configured
+            ? 'Configured — enter credentials to replace it'
+            : 'Web application client ID'}
+        /></FormField
+      >
+      <FormField
+        >Google client secret<input
+          class={formControlClass}
+          type="password"
+          bind:value={clientSecret}
+          required
+          autocomplete="new-password"
+          placeholder="Enter with the client ID"
+        /></FormField
+      >
+      <Button
+        type="submit"
+        size="form"
+        disabled={busy || savingPreferences || !config}
+        >Apply Google application</Button
+      >
+    </form>
+    {#if config}<AutoSaveForm
+        label="YouTube preferences"
+        class={inlineFormClass}
+        bind:busy={savingPreferences}
+        disabled={busy || !config}
+        value={{ youtube_downloads: downloads, youtube_daily_quota: budget }}
+        onRevert={(previous) => {
+          downloads = previous.youtube_downloads;
+          budget = previous.youtube_daily_quota;
+        }}
+        onsave={(submitted) => api('/admin/online', 'PUT', submitted)}
+      >
+        <FormField
+          >Daily API budget<input
+            class={formControlClass}
+            type="number"
+            bind:value={budget}
+            min="1"
+            max="10000000"
+            required
+          /></FormField
+        >
+        <Switch bind:checked={downloads}>Allow YouTube downloads</Switch>
+      </AutoSaveForm>{/if}
+    {#if config}<p class="text-muted">
+        {config.quota.used.toLocaleString()} API units used today. The shared budget
+        resets at midnight Pacific time.{config.quota.blocked
+          ? ' YouTube has paused requests for today.'
+          : ''}
+      </p>{/if}
+    {#if message}<p role="status">{message}</p>{/if}
+  {/if}
 </Panel>

@@ -45,6 +45,7 @@ async fn invalidate(state: &AppState, user: &str, generation: &str) -> Result<()
     Ok(())
 }
 pub(super) async fn access(state: &AppState, user: &str) -> Result<Access> {
+    super::availability::require_enabled(state, "youtube").await?;
     let saved = stored(state, user).await?;
     if saved.expires > now() + 120 {
         return Ok(Access {
@@ -138,6 +139,7 @@ pub(super) async fn get(
     endpoint: &str,
     query: &[(&str, &str)],
 ) -> Result<Value> {
+    super::availability::require_enabled(state, "youtube").await?;
     // The endpoint is internal, never a viewer-supplied URL.
     if !matches!(
         endpoint,

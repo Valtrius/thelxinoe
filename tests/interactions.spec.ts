@@ -21,6 +21,145 @@ async function login(context: BrowserContext) {
   );
   expect(response.ok()).toBe(true);
 }
+
+test('provider switches persist, block disabled APIs and update another session', async ({
+  page,
+  context,
+}, testInfo) => {
+  await login(context);
+  const initial = await (
+    await context.request.get('/api/v1/online/providers')
+  ).json();
+  const providers = ['youtube', 'twitch', 'kick'] as const;
+  const peer = await context.newPage();
+  try {
+    for (const provider of providers)
+      expect(
+        (
+          await context.request.put(
+            `/api/v1/admin/online/providers/${provider}`,
+            { headers, data: { enabled: true } },
+          )
+        ).ok(),
+      ).toBe(true);
+    const watchlists = await (
+      await context.request.get('/api/v1/online/youtube/watchlists')
+    ).json();
+    const compatLogin = await context.request.post(
+      '/Users/AuthenticateByName',
+      {
+        headers: {
+          Authorization:
+            'MediaBrowser Client="Provider switches", Device="Browser", DeviceId="provider-switches", Version="1"',
+        },
+        data: { Username: credentials.username, Pw: credentials.password },
+      },
+    );
+    expect(compatLogin.ok()).toBe(true);
+    const compatHeaders = {
+      'X-Emby-Token': (await compatLogin.json()).AccessToken,
+    };
+    await page.goto('/');
+    await peer.goto('/?section=YouTube');
+    await expect(peer.locator('.page-header h1')).toHaveText('YouTube');
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await page
+      .getByRole('button', { name: 'Provider applications', exact: true })
+      .click();
+    for (const provider of providers) {
+      const name =
+        provider === 'youtube'
+          ? 'YouTube'
+          : provider === 'twitch'
+            ? 'Twitch'
+            : 'Kick';
+      await page
+        .getByRole('switch', { name: `Enable ${name} integration` })
+        .uncheck();
+      await expect(
+        peer
+          .getByRole('navigation', { name: 'Main navigation' })
+          .getByRole('button', { name, exact: true }),
+      ).toHaveCount(0);
+      expect(
+        (await context.request.get(`/api/v1/online/${provider}`)).status(),
+      ).toBe(404);
+      const views = await (
+        await context.request.get('/UserViews', { headers: compatHeaders })
+      ).json();
+      expect(
+        views.Items.map((item: { Name: string }) => item.Name),
+      ).not.toContain(name);
+      expect(
+        (
+          await context.request.post(`/api/v1/online/${provider}/connect`, {
+            headers,
+            data: {},
+          })
+        ).status(),
+      ).toBe(404);
+      expect(
+        (
+          await context.request.get(
+            `/api/v1/catalog/${provider}:testvideo00/playback`,
+          )
+        ).status(),
+      ).toBe(404);
+    }
+    await expect(peer.locator('.page-header h1')).toHaveText('Discover');
+    await page.reload();
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await page
+      .getByRole('button', { name: 'Provider applications', exact: true })
+      .click();
+    for (const provider of providers) {
+      const name =
+        provider === 'youtube'
+          ? 'YouTube'
+          : provider === 'twitch'
+            ? 'Twitch'
+            : 'Kick';
+      await expect(
+        page.getByRole('switch', { name: `Enable ${name} integration` }),
+      ).not.toBeChecked();
+    }
+    await page.screenshot({
+      path: testInfo.outputPath('disabled-providers-server.png'),
+      fullPage: true,
+    });
+    for (const provider of providers) {
+      const name =
+        provider === 'youtube'
+          ? 'YouTube'
+          : provider === 'twitch'
+            ? 'Twitch'
+            : 'Kick';
+      await page
+        .getByRole('switch', { name: `Enable ${name} integration` })
+        .check();
+      await expect(
+        peer
+          .getByRole('navigation', { name: 'Main navigation' })
+          .getByRole('button', { name, exact: true }),
+      ).toBeVisible();
+      expect(
+        (await context.request.get(`/api/v1/online/${provider}`)).ok(),
+      ).toBe(true);
+    }
+    expect(
+      await (
+        await context.request.get('/api/v1/online/youtube/watchlists')
+      ).json(),
+    ).toEqual(watchlists);
+  } finally {
+    for (const provider of providers)
+      await context.request.put(`/api/v1/admin/online/providers/${provider}`, {
+        headers,
+        data: { enabled: initial[provider] },
+      });
+    await peer.close();
+  }
+});
 async function providers(page: Page) {
   await page.route('**/api/v1/online/youtube', async (route) => {
     const response = await route.fetch();

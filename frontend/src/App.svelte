@@ -100,6 +100,11 @@
   import { invoke } from '@tauri-apps/api/core';
   import type { MediaChoice } from './lib/playback';
   import { youtubeVideoIdFromInput } from './lib/providers/youtube-video-input';
+  import {
+    providers,
+    loadProviders,
+    providerEnabled,
+  } from './lib/providers/availability';
   let playing = $state<MediaChoice | null>(null);
   let playbackRequest = 0;
   let mediaRevision = $state(0),
@@ -191,7 +196,7 @@
           'Statistics',
         ].includes(destination)
       )
-        section = destination;
+        section = providerEnabled(destination) ? destination : 'Home';
       if (typeof saved?.settingsSection === 'string')
         settingsSection = saved.settingsSection;
       if (settingsSection === 'library') settingsSection = 'services';
@@ -205,6 +210,12 @@
     } catch {
       /* Ignore an obsolete device preference. */
     }
+    if (!providerEnabled(section)) section = 'Home';
+    if (
+      settingsSection === 'online' &&
+      !Object.values($providers).some(Boolean)
+    )
+      settingsSection = 'account';
     navigationReady = true;
     if (section === 'Settings') void loadSettings();
   }
@@ -290,6 +301,7 @@
           await Promise.all([
             loadAppearance(user.id),
             loadDisplayPreferences(),
+            loadProviders(),
           ]);
           restoreNavigation();
           startEvents();
@@ -336,6 +348,15 @@
     events?.close();
     events = new Events(
       (event) => {
+        if (
+          ['online.configuration.changed', 'server.reconnected'].includes(
+            event.kind,
+          )
+        ) {
+          void loadProviders().catch((e) => (error = String(e)));
+          accountRevision++;
+          void refreshAttention();
+        }
         if (event.kind === 'online.download.progress')
           window.dispatchEvent(
             new CustomEvent('thelxinoe-download-progress', {
@@ -464,7 +485,11 @@
       passwordConfirmation = '';
       setup = false;
       if (returnToService()) return;
-      await Promise.all([loadAppearance(user.id), loadDisplayPreferences()]);
+      await Promise.all([
+        loadAppearance(user.id),
+        loadDisplayPreferences(),
+        loadProviders(),
+      ]);
       restoreNavigation();
       startEvents();
     });
@@ -535,6 +560,7 @@
   function playYoutubeLink(event: MouseEvent) {
     if (
       !user ||
+      !$providers.youtube ||
       event.defaultPrevented ||
       event.button !== 0 ||
       event.ctrlKey ||
@@ -563,6 +589,7 @@
     );
   }
   async function playMedia(choice: MediaChoice, resolveYoutube = false) {
+    if (!providerEnabled(choice.id)) return;
     const request = ++playbackRequest;
     const owner = user?.id;
     await act(async () => {
@@ -582,6 +609,24 @@
       }
     });
   }
+  $effect(() => {
+    void $providers;
+    if (!navigationReady || !user) return;
+    if (!providerEnabled(section)) void navigate('Home');
+    if (
+      settingsSection === 'online' &&
+      !Object.values($providers).some(Boolean)
+    )
+      settingsSection = 'account';
+    if (playing && !providerEnabled(playing.id)) {
+      playbackRequest++;
+      if (desktop)
+        void invoke('mpv_command', { command: 'stop', value: null }).catch(
+          (e) => (error = String(e)),
+        );
+      playing = null;
+    }
+  });
   async function createUser() {
     await act(async () => {
       await api('/users', 'POST', {

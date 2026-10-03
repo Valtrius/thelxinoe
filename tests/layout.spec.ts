@@ -736,13 +736,20 @@ test('all eight media services stay accessible without horizontal scrolling', as
   await expect(tabs).toHaveCount(8);
   for (const width of [1440, 1024, 390]) {
     await page.setViewportSize({ width, height: 900 });
+    await expect
+      .poll(() =>
+        tabs.evaluateAll(
+          (nodes) =>
+            new Set(nodes.map((node) => node.getBoundingClientRect().top)).size,
+        ),
+      )
+      .toBeLessThanOrEqual(2);
     const geometry = await tabs.evaluateAll((nodes) =>
       nodes.map((node) => {
         const rect = node.getBoundingClientRect();
         return { top: rect.top, width: rect.width, content: node.scrollWidth };
       }),
     );
-    expect(new Set(geometry.map((tab) => tab.top)).size).toBeLessThanOrEqual(2);
     expect(geometry.every((tab) => tab.content <= tab.width + 1)).toBe(true);
     if (width === 390) {
       expect(

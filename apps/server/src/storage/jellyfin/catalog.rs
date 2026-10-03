@@ -153,7 +153,7 @@ pub(super) async fn playlists(
           UNION ALL
           SELECT c.id,w.name,CASE WHEN w.auto_download=1 THEN 'YouTube watchlist · Automatic server downloads enabled' ELSE 'YouTube watchlist' END,'Video',c.favorite,
           (SELECT COUNT(*) FROM youtube_watchlist_items i WHERE i.watchlist_id=w.id),w.updated_at
-          FROM youtube_watchlists w JOIN compat_online_items c ON c.user_id=w.user_id AND c.watchlist_id=w.id WHERE w.user_id=?1)";
+          FROM youtube_watchlists w JOIN compat_online_items c ON c.user_id=w.user_id AND c.watchlist_id=w.id WHERE w.user_id=?1 AND NOT EXISTS (SELECT 1 FROM settings WHERE key='online.youtube.enabled' AND value='false'))";
         let filter="(?2 IS NULL OR id=?2) AND (?3=0 OR favorite=1) AND (?4 IS NULL OR instr(lower(name),lower(?4))>0) AND (?5 IS NULL OR instr(lower(?5),lower(media_type))>0)";
         let total=db.query_row(&format!("{source} SELECT COUNT(*) FROM lists WHERE {filter}"),params![user,id,favorite,search,media],|r|r.get::<_,i64>(0).map(|v|v as usize))?;
         let items=db.prepare(&format!("{source} SELECT id,name,description,media_type,favorite,children FROM lists WHERE {filter} ORDER BY {order} {direction},id LIMIT ?6 OFFSET ?7"))?.query_map(params![user,id,favorite,search,media,limit,start],|r|Ok(json!({"Id":r.get::<_,String>(0)?,"Name":r.get::<_,String>(1)?,"Overview":r.get::<_,String>(2)?,"Type":"Playlist","MediaType":r.get::<_,String>(3)?,"IsFolder":true,"LocationType":"Remote","ServerId":server,"ChildCount":r.get::<_,i64>(5)?,"ImageTags":{},"UserData":{"Key":r.get::<_,String>(0)?,"ItemId":r.get::<_,String>(0)?,"IsFavorite":r.get::<_,bool>(4)?,"PlayCount":0,"Played":false,"PlaybackPositionTicks":0}})))?.collect::<rusqlite::Result<Vec<_>>>()?;

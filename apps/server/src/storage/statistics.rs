@@ -153,7 +153,7 @@ pub(super) fn aggregate(
         "all" => "month",
         _ => "day",
     };
-    let tracking: Option<i64> = db.query_row("SELECT MIN(bucket_started_at) FROM playback_activity WHERE (?1 IS NULL OR user_id=?1) AND (?2='all' OR platform=?2)",params![user,platform],|r|r.get(0))?;
+    let tracking: Option<i64> = db.query_row("SELECT MIN(bucket_started_at) FROM playback_activity WHERE (?1 IS NULL OR user_id=?1) AND (?2='all' OR platform=?2) AND NOT EXISTS (SELECT 1 FROM settings WHERE key='online.'||playback_activity.platform||'.enabled' AND value='false')",params![user,platform],|r|r.get(0))?;
     let mut activity = BTreeMap::<NaiveDate, [f64; 6]>::new();
     let mut rhythm = [[0.0; 6]; 168];
     let mut totals = [0.0; 6];
@@ -161,7 +161,7 @@ pub(super) fn aggregate(
     let mut channels = HashMap::<(String, String), Channel>::new();
     let mut people = BTreeMap::<String, f64>::new();
     let mut streams = [HashSet::<String>::new(), HashSet::<String>::new()];
-    let mut statement = db.prepare("SELECT bucket_started_at,platform,media_id,active_seconds,channel_id,channel_name,user_id FROM playback_activity WHERE (?1 IS NULL OR user_id=?1) AND (?2='all' OR platform=?2) AND (?3 IS NULL OR bucket_started_at>=?3) AND bucket_started_at<=?4 ORDER BY bucket_started_at")?;
+    let mut statement = db.prepare("SELECT bucket_started_at,platform,media_id,active_seconds,channel_id,channel_name,user_id FROM playback_activity WHERE (?1 IS NULL OR user_id=?1) AND (?2='all' OR platform=?2) AND NOT EXISTS (SELECT 1 FROM settings WHERE key='online.'||playback_activity.platform||'.enabled' AND value='false') AND (?3 IS NULL OR bucket_started_at>=?3) AND bucket_started_at<=?4 ORDER BY bucket_started_at")?;
     let mut rows = statement.query(params![user, platform, cutoff, now.timestamp()])?;
     while let Some(row) = rows.next()? {
         let timestamp: i64 = row.get(0)?;
@@ -247,7 +247,7 @@ pub(super) fn aggregate(
     let mut statement = db.prepare("SELECT s.platform,CASE WHEN s.platform='youtube' THEN s.first_played_at ELSE s.last_played_at END,s.content_type,COALESCE(y.watched,m.watched,s.completed),s.channel_id,s.category_name
         FROM playback_statistics s LEFT JOIN youtube_state y ON y.user_id=s.user_id AND 'youtube:'||y.video_id=s.media_id
         LEFT JOIN media_state m ON m.user_id=s.user_id AND m.media_id=s.media_id
-        WHERE (?1 IS NULL OR s.user_id=?1) AND (?2='all' OR s.platform=?2) AND (?3 IS NULL OR CASE WHEN s.platform='youtube' THEN s.first_played_at ELSE s.last_played_at END>=?3) AND s.last_played_at<=?4")?;
+        WHERE (?1 IS NULL OR s.user_id=?1) AND (?2='all' OR s.platform=?2) AND NOT EXISTS (SELECT 1 FROM settings WHERE key='online.'||s.platform||'.enabled' AND value='false') AND (?3 IS NULL OR CASE WHEN s.platform='youtube' THEN s.first_played_at ELSE s.last_played_at END>=?3) AND s.last_played_at<=?4")?;
     let mut rows = statement.query(params![user, platform, cutoff, now.timestamp()])?;
     while let Some(row) = rows.next()? {
         let Some(date) =

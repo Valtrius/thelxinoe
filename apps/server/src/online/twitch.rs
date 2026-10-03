@@ -339,6 +339,10 @@ pub(super) async fn run(state: AppState) -> anyhow::Result<()> {
     // Force validation on server startup in addition to the hourly check.
     storage::run_write_twitch_sync(&state.db).await?;
     loop {
+        if !super::availability::enabled(&state, "twitch").await? {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            continue;
+        }
         if let Some(a) = claim_attempt(&state).await?
             && let Err(error) = poll(&state, &a).await
         {

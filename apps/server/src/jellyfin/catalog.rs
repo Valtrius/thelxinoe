@@ -48,7 +48,7 @@ pub fn result(items: Vec<Value>, total: usize, start: usize) -> Value {
 pub async fn views(state: &AppState) -> Result<Value> {
     let server = state.server_id.to_string();
     let mut items = storage::views(server, &state.db).await?;
-    items.extend(super::online::views(&state.server_id));
+    items.extend(super::online::views(state).await?);
     let total = items.len();
     Ok(result(items, total, 0))
 }

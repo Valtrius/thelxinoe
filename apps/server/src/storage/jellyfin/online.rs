@@ -58,6 +58,7 @@ pub(super) async fn browse(
     db.write("jellyfin.online.browse", move |db| {
         let mut args:Vec<rusqlite::types::Value>=vec![user.clone().into()];
         let mut filter=Vec::new();
+        filter.push("NOT EXISTS (SELECT 1 FROM settings WHERE key='online.'||entries.kind||'.enabled' AND value='false')".into());
         let mut bind=|value:String|{args.push(value.into());format!("?{}",args.len())};
         if let Some(provider)=provider {filter.push(format!("kind={}",bind(provider.into())));}
         if let Some(single)=single {filter.push(format!("kind={} AND provider_id={}",bind(single.kind),bind(single.key)));}

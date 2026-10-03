@@ -138,6 +138,10 @@ async function fixture(
   await page.route('**/api/v1/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (options.app) {
+      if (path === '/api/v1/online/providers')
+        return route.fulfill({
+          json: { youtube: true, twitch: true, kick: true },
+        });
       if (path === '/api/v1/health')
         return route.fulfill({ json: { api_version: 1 } });
       if (path === '/api/v1/setup')

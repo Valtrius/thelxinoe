@@ -23,6 +23,7 @@
   import AttentionDot from './AttentionDot.svelte';
   import { attention, attentionDescription } from '../attention';
   import { formControlClass } from './styles';
+  import { providers } from '../providers/availability';
   let {
     user,
     active = $bindable('account'),
@@ -130,7 +131,16 @@
     },
   ];
   const groups = $derived([
-    { label: 'Personal', items: [...personal, ...(desktop ? native : [])] },
+    {
+      label: 'Personal',
+      items: [
+        ...personal.filter(
+          (item) =>
+            item.id !== 'online' || Object.values($providers).some(Boolean),
+        ),
+        ...(desktop ? native : []),
+      ],
+    },
     ...(user.role === 'admin'
       ? [{ label: 'Administration', items: admin }]
       : []),

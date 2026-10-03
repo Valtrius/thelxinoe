@@ -5,6 +5,8 @@
   import Panel from '../ui/Panel.svelte';
   import { formControlClass, inlineFormClass } from '../ui/styles';
   import ProviderSetupInstructions from './ProviderSetupInstructions.svelte';
+  import ProviderIntegrationSwitch from './ProviderIntegrationSwitch.svelte';
+  import { providers } from './availability';
 
   let {
     platform,
@@ -78,40 +80,43 @@
 
 <Panel>
   <h2>{definition.name} application</h2>
-  <p>{definition.description}</p>
-  <ProviderSetupInstructions {platform} />
-  <form
-    class={inlineFormClass}
-    onsubmit={(event) => {
-      event.preventDefault();
-      void save();
-    }}
-  >
-    <FormField>
-      {definition.name} client ID<input
-        class={formControlClass}
-        bind:value={clientId}
-        required
-        autocomplete="off"
-        placeholder={configured
-          ? definition.replacement
-          : definition.placeholder}
-      />
-    </FormField>
-    {#if platform === 'kick'}
+  <ProviderIntegrationSwitch {platform} />
+  {#if $providers[platform]}
+    <p>{definition.description}</p>
+    <ProviderSetupInstructions {platform} />
+    <form
+      class={inlineFormClass}
+      onsubmit={(event) => {
+        event.preventDefault();
+        void save();
+      }}
+    >
       <FormField>
-        Kick client secret<input
+        {definition.name} client ID<input
           class={formControlClass}
-          type="password"
-          bind:value={clientSecret}
+          bind:value={clientId}
           required
-          autocomplete="new-password"
+          autocomplete="off"
+          placeholder={configured
+            ? definition.replacement
+            : definition.placeholder}
         />
       </FormField>
-    {/if}
-    <Button type="submit" size="form" disabled={busy}
-      >Save {definition.name} settings</Button
-    >
-  </form>
-  {#if message}<p role="status">{message}</p>{/if}
+      {#if platform === 'kick'}
+        <FormField>
+          Kick client secret<input
+            class={formControlClass}
+            type="password"
+            bind:value={clientSecret}
+            required
+            autocomplete="new-password"
+          />
+        </FormField>
+      {/if}
+      <Button type="submit" size="form" disabled={busy}
+        >Save {definition.name} settings</Button
+      >
+    </form>
+    {#if message}<p role="status">{message}</p>{/if}
+  {/if}
 </Panel>

@@ -148,7 +148,7 @@ pub fn router(state: AppState) -> Router {
         .merge(product::router())
         .merge(tools::router())
         .merge(jellyfin::router())
-        .merge(online::router())
+        .merge(online::router(state.clone()))
         .merge(managers::router())
         .merge(segments::router())
         .merge(operations::router())
