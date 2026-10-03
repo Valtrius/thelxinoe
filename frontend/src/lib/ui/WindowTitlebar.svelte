@@ -8,7 +8,6 @@
     type Window as TauriWindow,
   } from '@tauri-apps/api/window';
   const appIconUrl = '/icon.svg';
-  import ThemeControls from './ThemeControls.svelte';
 
   let maximized = $state(false);
   let appVersion = $state<string | null>(null);
@@ -90,8 +89,6 @@
     </span>
   </div>
   <div class="ml-auto flex h-full shrink-0 items-center">
-    <ThemeControls />
-    <span aria-hidden="true" class="mx-2 h-4 w-px bg-line"></span>
     <div class="flex h-full" aria-label="Window controls">
       <button
         type="button"

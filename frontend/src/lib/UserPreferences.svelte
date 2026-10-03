@@ -7,14 +7,18 @@
   import { onDestroy } from 'svelte';
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
   import Panel from './ui/Panel.svelte';
+  import ProfilePicture from './ProfilePicture.svelte';
+  import AppearanceSettings from './AppearanceSettings.svelte';
   import { inlineFormClass } from './ui/styles';
   let {
     user,
     changed,
+    avatarChanged,
     revision = 0,
   } = $props<{
     user: User;
     changed: (zone: string, timeFormat: '12h' | '24h') => void;
+    avatarChanged: (id: string, avatar: string | null) => void;
     revision?: number;
   }>();
   type Preferences = {
@@ -75,38 +79,42 @@
   }
 </script>
 
-<Panel>
+<Panel aria-label="Your display preferences">
   <h2>Your display preferences</h2>
-  {#if !busy && !error}<AutoSaveForm
-      label="Display preferences"
-      class={inlineFormClass}
-      onsave={save}
-      value={{ timezone, time_format: timeFormat }}
-      onRevert={(previous) => {
-        timezone = previous.timezone;
-        timeFormat = previous.time_format;
-      }}
-    >
-      <TimezoneSelect
-        label="Display timezone"
-        bind:value={timezone}
-        defaultTimezone={serverTimezone}
-        disabled={busy}
-      />
-      <FormField
-        >Display time format<select
-          class={formControlClass}
-          bind:value={timeFormat}
-          disabled={busy}
-          ><option value=""
-            >Use server default ({serverTimeFormat === '12h'
-              ? '12-hour'
-              : '24-hour'})</option
-          ><option value="24h">24-hour</option><option value="12h"
-            >12-hour</option
-          ></select
-        ></FormField
+  <div class="grid gap-6">
+    <ProfilePicture {user} changed={avatarChanged} />
+    {#if !busy && !error}<AutoSaveForm
+        label="Display preferences"
+        class={inlineFormClass}
+        onsave={save}
+        value={{ timezone, time_format: timeFormat }}
+        onRevert={(previous) => {
+          timezone = previous.timezone;
+          timeFormat = previous.time_format;
+        }}
       >
-    </AutoSaveForm>{/if}
-  {#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
+        <TimezoneSelect
+          label="Display timezone"
+          bind:value={timezone}
+          defaultTimezone={serverTimezone}
+          disabled={busy}
+        />
+        <FormField
+          >Display time format<select
+            class={formControlClass}
+            bind:value={timeFormat}
+            disabled={busy}
+            ><option value=""
+              >Use server default ({serverTimeFormat === '12h'
+                ? '12-hour'
+                : '24-hour'})</option
+            ><option value="24h">24-hour</option><option value="12h"
+              >12-hour</option
+            ></select
+          ></FormField
+        >
+      </AutoSaveForm>{/if}
+    {#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
+    <AppearanceSettings />
+  </div>
 </Panel>

@@ -1,14 +1,38 @@
 import { expect, test } from '@playwright/test';
 import { installUiFixture } from './helpers/ui-fixture';
 
-test('closing the avatar picker clears its edit overlay without a click elsewhere', async ({
+test('display preferences group account controls and clear cancelled avatar edits', async ({
   page,
-}) => {
+}, testInfo) => {
   const fixture = await installUiFixture(page);
   await page.goto('/');
-  const input = page.getByLabel('Change profile picture');
+  const preferences = page.getByRole('region', {
+    name: 'Your display preferences',
+    exact: true,
+  });
+  const input = preferences.getByLabel('Change profile picture');
   const avatar = input.locator('..');
+  const timezone = preferences.getByLabel('Display timezone');
+  await expect(timezone).toBeVisible();
+  await expect(
+    preferences.getByRole('group', { name: 'Theme', exact: true }),
+  ).toBeVisible();
+  await expect(
+    preferences.getByRole('button', { name: 'Larger media cards' }),
+  ).toBeVisible();
+  await expect(
+    preferences.getByRole('switch', { name: 'Fade watched videos' }),
+  ).toBeVisible();
   const avatarBounds = (await avatar.boundingBox())!;
+  expect(avatarBounds.y + avatarBounds.height).toBeLessThan(
+    (await timezone.boundingBox())!.y,
+  );
+  await expect(
+    page.getByRole('heading', { name: 'Profile picture', exact: true }),
+  ).toHaveCount(0);
+  await expect(page.getByText('YOUR WORKSPACE', { exact: true })).toHaveCount(
+    0,
+  );
   expect(avatarBounds.width).toBeCloseTo(avatarBounds.height, 0);
   const overlay = avatar.locator('span[aria-hidden="true"]');
   await avatar.hover();
@@ -29,6 +53,10 @@ test('closing the avatar picker clears its edit overlay without a click elsewher
   await page.mouse.move(10, 10);
   await expect(overlay).toHaveCSS('opacity', '0');
   expect(fixture.errors).toEqual([]);
+  await testInfo.attach('account-display-preferences', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
 });
 
 test('adaptive settings keep navigation and service management accessible from mobile to 4K', async ({
@@ -345,6 +373,7 @@ test('settings sections adapt without hiding controls or stretching fields', asy
       width: viewport.width,
       height: viewport.height,
     });
+    await nav.getByRole('button', { name: 'Account', exact: true }).click();
     await page
       .getByRole('button', { name: viewport.theme, exact: true })
       .click();
@@ -386,7 +415,7 @@ test('settings sections adapt without hiding controls or stretching fields', asy
           .evaluateAll((nodes) =>
             nodes.map((node) => node.getBoundingClientRect().x),
           );
-        expect(new Set(panels).size).toBe(3);
+        expect(new Set(panels).size).toBe(2);
       }
       expect(
         await page
