@@ -3,11 +3,16 @@
   import { appearance, appearanceError, updateAppearance } from './appearance';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
+  import ThemeControls from './ui/ThemeControls.svelte';
   import { eyebrowClass } from './ui/styles';
 </script>
 
 <Panel aria-label="Appearance preferences">
   <p class={eyebrowClass}>YOUR WORKSPACE</p>
+  <div class="flex flex-wrap items-center justify-between gap-4 py-4">
+    <strong>Theme</strong>
+    <ThemeControls />
+  </div>
   <div
     class="mb-4.5 flex items-center justify-between gap-4 py-4 [&_p]:mt-1.25 [&_p]:mb-0 compact:flex-wrap compact:items-start"
   >

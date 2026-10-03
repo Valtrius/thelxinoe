@@ -13,7 +13,7 @@ test.beforeEach(async ({ page }) => {
   ).toBeVisible();
 });
 
-test('sidebar footer keeps its rows and animates controls without stretching icons', async ({
+test('sidebar footer keeps its rows and animates profile controls', async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1360, height: 900 });
@@ -30,12 +30,6 @@ test('sidebar footer keeps its rows and animates controls without stretching ico
           return { x: r.x, y: r.y, width: r.width, height: r.height };
         };
         return {
-          buttons: [
-            ...document.querySelectorAll('.web-theme-controls button'),
-          ].map(rect),
-          icons: [...document.querySelectorAll('.web-theme-controls svg')].map(
-            rect,
-          ),
           avatar: rect(document.querySelector('.sidebar-profile .avatar')!),
           logout: rect(document.querySelector('.sidebar-profile button')!),
           statistics: rect(
@@ -60,18 +54,8 @@ test('sidebar footer keeps its rows and animates controls without stretching ico
     for (const frame of samples) {
       expect(frame.statistics.y).toBeCloseTo(first.statistics.y, 0);
       expect(frame.navigation.height).toBeCloseTo(first.navigation.height, 0);
-      for (const button of frame.buttons) {
-        expect(button.y).toBeCloseTo(first.buttons[0].y, 0);
-        expect(button.height).toBe(32);
-      }
-      for (const icon of frame.icons) {
-        expect(icon.width).toBeCloseTo(14, 0);
-        expect(icon.height).toBeCloseTo(14, 0);
-      }
     }
     const moves = [
-      (s: typeof first) => s.buttons[0].x,
-      (s: typeof first) => s.buttons[2].x,
       (s: typeof first) => s.avatar.x,
       (s: typeof first) => s.logout.x,
     ];
@@ -86,7 +70,6 @@ test('sidebar footer keeps its rows and animates controls without stretching ico
         samples.every((s) => position(s) >= lo - 1 && position(s) <= hi + 1),
       ).toBe(true);
     }
-    expect(last.buttons[0].width).toBe(label === 'Collapse sidebar' ? 20 : 32);
   }
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page
@@ -115,6 +98,13 @@ test('appearance persists, native menus stay hidden on web, and cards animate du
 }) => {
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('button', { name: 'Account', exact: true }).click();
+  await expect(
+    page
+      .getByRole('complementary', { name: 'Application sidebar' })
+      .getByRole('group', { name: 'Theme', exact: true }),
+  ).toHaveCount(0);
   await page.getByRole('button', { name: 'Dark theme', exact: true }).click();
   await expect
     .poll(
@@ -205,7 +195,13 @@ test('appearance persists, native menus stay hidden on web, and cards animate du
     .poll(async () => (await cards.first().boundingBox())!.width)
     .toBeGreaterThan(final.width);
   await page.screenshot({ path: '.local/ui-validation/movies-dark.png' });
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('button', { name: 'Account', exact: true }).click();
   await page.getByRole('button', { name: 'Light theme', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Movies', exact: true })
+    .first()
+    .click();
   await page.waitForTimeout(250);
   await page.screenshot({ path: '.local/ui-validation/movies-light.png' });
   await page.setViewportSize({ width: 480, height: 850 });

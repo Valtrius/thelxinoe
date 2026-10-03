@@ -345,6 +345,7 @@ test('settings sections adapt without hiding controls or stretching fields', asy
       width: viewport.width,
       height: viewport.height,
     });
+    await nav.getByRole('button', { name: 'Account', exact: true }).click();
     await page
       .getByRole('button', { name: viewport.theme, exact: true })
       .click();

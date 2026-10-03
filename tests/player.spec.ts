@@ -601,9 +601,6 @@ test('sidebar controls stay aligned through collapse, expansion, and reversal', 
       const railBox = box(rail);
       return {
         surface: box(element.querySelector('.sidebar-surface')!),
-        group: box(
-          element.querySelector('.web-theme-controls [role="group"]')!,
-        ),
         label: box(label),
         opacity: Number(getComputedStyle(label).opacity),
         rail: railBox,
@@ -613,12 +610,6 @@ test('sidebar controls stay aligned through collapse, expansion, and reversal', 
             railBox.y + railBox.height / 2,
           )
           .includes(selected),
-        themes: [...element.querySelectorAll('.web-theme-controls button')].map(
-          (button) => ({
-            button: box(button),
-            icon: box(button.querySelector('svg')!),
-          }),
-        ),
       };
     });
   }
@@ -629,21 +620,6 @@ test('sidebar controls stay aligned through collapse, expansion, and reversal', 
     expect(frame.rail.right).toBeCloseTo(frame.surface.right, 1);
     expect(frame.rail.width).toBeCloseTo(expanded.rail.width, 1);
     expect(frame.railVisible).toBe(true);
-    expect(frame.group.x + frame.group.width / 2).toBeCloseTo(
-      frame.surface.width / 2,
-      1,
-    );
-    expect(frame.themes[0].button.x).toBeCloseTo(frame.group.x, 1);
-    expect(frame.themes[2].button.right).toBeCloseTo(frame.group.right, 1);
-    for (const { button, icon } of frame.themes) {
-      expect(button.width * 3).toBeCloseTo(frame.group.width, 1);
-      expect(icon.x + icon.width / 2).toBeCloseTo(
-        button.x + button.width / 2,
-        1,
-      );
-      expect(icon.width).toBeCloseTo(14, 1);
-      expect(icon.height).toBe(14);
-    }
   }
   for (const direction of ['Collapse', 'Expand']) {
     await toggle(`${direction} sidebar`);
@@ -663,11 +639,7 @@ test('sidebar controls stay aligned through collapse, expansion, and reversal', 
     const end = await snapshot();
     expect(end.opacity).toBe(direction === 'Collapse' ? 0 : 1);
     if (direction === 'Collapse') {
-      expect(end.group.width).toBe(end.surface.width);
-      expect(end.group.x).toBe(end.surface.x);
       await page.screenshot({ path: '.local/player-ui/sidebar-collapsed.png' });
-    } else {
-      expect(end.group).toEqual(expanded.group);
     }
   }
   await toggle('Collapse sidebar');
@@ -675,8 +647,7 @@ test('sidebar controls stay aligned through collapse, expansion, and reversal', 
   const interrupted = await snapshot();
   await toggle('Expand sidebar');
   const reversed = await snapshot();
-  expect(reversed.group.x).toBeCloseTo(interrupted.group.x, 1);
-  expect(reversed.group.width).toBeCloseTo(interrupted.group.width, 1);
+  expect(reversed.surface.width).toBeCloseTo(interrupted.surface.width, 1);
   for (const time of [0, 50, 100, 200]) {
     await seek(time);
     aligned(await snapshot());
@@ -687,13 +658,8 @@ test('sidebar controls stay aligned through collapse, expansion, and reversal', 
   await expect(sidebar).toHaveCSS('width', '72px');
   const reduced = await snapshot();
   aligned(reduced);
-  expect(reduced.group.width).toBe(reduced.surface.width);
-  await page.getByRole('button', { name: 'Light theme' }).click();
-  await expect(
-    page.getByRole('button', { name: 'Light theme' }),
-  ).toHaveAttribute('aria-pressed', 'true');
   // Preserve scrolling on shorter windows while the navigation clip resizes.
-  await page.setViewportSize({ width: 1000, height: 520 });
+  await page.setViewportSize({ width: 1000, height: 480 });
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   const navigation = page.getByRole('navigation', { name: 'Main navigation' });
   const scrollTop = await navigation.evaluate((element) => {

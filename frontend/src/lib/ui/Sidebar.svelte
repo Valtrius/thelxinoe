@@ -15,9 +15,8 @@
   import PlatformIcon from './PlatformIcon.svelte';
   import AttentionDot from './AttentionDot.svelte';
   import { attention, attentionDescription } from '../attention';
-  import ThemeControls from './ThemeControls.svelte';
   import Button from './Button.svelte';
-  import { desktop, type User } from '../api';
+  import type { User } from '../api';
   let { section, collapsed, user, navigate, toggle, logout } = $props<{
     section: string;
     collapsed: boolean;
@@ -162,16 +161,6 @@
           /></span
         ></SidebarButton
       >
-      {#if !desktop}<div
-          class="web-theme-controls relative flex justify-center group-[.collapsed]/sidebar:[--compact-choice-width:24px]"
-        >
-          <span
-            class="pointer-events-none absolute inset-x-0 top-0 h-px bg-line"
-            data-sidebar-resize="x"
-            aria-hidden="true"
-          ></span>
-          <ThemeControls resizeWithSidebar />
-        </div>{/if}
       <div
         class="sidebar-profile relative flex h-14.5 items-center gap-2 pr-3 pl-5.25 group-[.collapsed]/sidebar:gap-0 group-[.collapsed]/sidebar:px-1.5"
       >
