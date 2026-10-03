@@ -103,7 +103,16 @@ const otherLogin = await compat.post('/Users/AuthenticateByName', {
 });
 assert.equal(otherLogin.status(), 200);
 const otherHeaders = { 'X-Emby-Token': (await otherLogin.json()).AccessToken };
-const pairing = await compat.post('/QuickConnect/Initiate', { data: {} });
+const pairingClient = await request.newContext({
+  baseURL: origin,
+  extraHTTPHeaders: {
+    Authorization:
+      'MediaBrowser Client="Protocol validation", Device="Pairing test", DeviceId="thelxinoe-compat-pairing", Version="1"',
+  },
+});
+const pairing = await pairingClient.post('/QuickConnect/Initiate', {
+  data: {},
+});
 assert.equal(pairing.status(), 200);
 const pendingPairing = await pairing.json();
 const review = await call('/auth/quick-connect/inspect', 'POST', {
@@ -113,19 +122,23 @@ await call('/auth/quick-connect/approve', 'POST', {
   code: pendingPairing.Code,
   confirmation: review.confirmation,
 });
-const connected = await compat.post('/Users/AuthenticateWithQuickConnect', {
-  data: { Secret: pendingPairing.Secret },
-});
+const connected = await pairingClient.post(
+  '/Users/AuthenticateWithQuickConnect',
+  {
+    data: { Secret: pendingPairing.Secret },
+  },
+);
 assert.equal(connected.status(), 200);
 assert.equal((await connected.json()).User.Id, login.User.Id);
 assert.equal(
   (
-    await compat.post('/Users/AuthenticateWithQuickConnect', {
+    await pairingClient.post('/Users/AuthenticateWithQuickConnect', {
       data: { Secret: pendingPairing.Secret },
     })
   ).status(),
   401,
 );
+await pairingClient.dispose();
 r = await compat.get('/UserViews', { headers });
 assert.equal(r.status(), 200);
 const views = await r.json();
