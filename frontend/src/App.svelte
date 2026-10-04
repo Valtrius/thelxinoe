@@ -451,21 +451,27 @@
       url,
     );
   }
-  function go(destination: AppRoute, replace = false) {
+  function go(
+    destination: AppRoute,
+    replace = false,
+    preserveWorkspace = false,
+  ) {
     if (!user) return;
     const next = allowedRoute(destination, user, desktop, $providers);
     if (routeHref(next) === routeHref(route)) return;
-    history.replaceState(
-      { ...history.state, scroll: workspace?.scrollTop ?? 0 },
-      '',
-      location.href,
-    );
+    const scroll = workspace?.scrollTop ?? 0;
+    history.replaceState({ ...history.state, scroll }, '', location.href);
     route = next;
-    mobileNavOpen = false;
-    unsavedChanges = false;
-    error = '';
-    writeLocation(next, replace);
-    void restoreWorkspace(0, true);
+    writeLocation(next, replace, preserveWorkspace ? scroll : 0);
+    if (!preserveWorkspace) {
+      mobileNavOpen = false;
+      unsavedChanges = false;
+      error = '';
+      void restoreWorkspace(0, true);
+    }
+  }
+  function updateFilters(destination: AppRoute, replace = true) {
+    go(destination, replace, true);
   }
   async function restoreWorkspace(scroll: number, focus = false) {
     const destination = route;
@@ -914,6 +920,7 @@
           navigate={(name) => void navigate(name)}
           {openSettings}
           {go}
+          {updateFilters}
           {back}
           sessionEnded={teardownSession}
           {switchServer}

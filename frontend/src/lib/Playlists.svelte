@@ -5,7 +5,7 @@
   import { formControlClass } from './ui/styles';
   import { onDestroy, untrack } from 'svelte';
   import { LatestRequest } from './latest-request';
-  import { api } from './api';
+  import { api, ApiError } from './api';
   import { captureSession } from './session';
   import { sessionPlaylistDrafts } from './playlist-drafts';
   import type { Card } from './media-state';
@@ -40,7 +40,8 @@
     results = $state<Card[]>([]),
     error = $state(''),
     busy = $state(false),
-    creating = $state(false);
+    creating = $state(false),
+    baseRevision = $state(0);
   const drafts = sessionPlaylistDrafts();
   const ownsSession = captureSession();
   const editable = $derived(creating || selected?.owner_id === userId);
@@ -53,13 +54,17 @@
           selected?.items?.map((track) => track.id) ?? [],
         ]),
   );
+  const conflict = $derived(selected && baseRevision !== selected.revision);
   function rememberDraft() {
-    if (ownsSession() && dirty && !busy)
+    if (!ownsSession() || busy || (!selected && !creating)) return;
+    if (dirty)
       drafts.set(selected?.id ?? 'new', {
+        baseRevision,
         name,
         description,
         tracks: JSON.parse(JSON.stringify(tracks)),
       });
+    else drafts.delete(selected?.id ?? 'new');
   }
   const lists = new LatestRequest(),
     selection = new LatestRequest(),
@@ -77,6 +82,7 @@
       selection.invalidate();
       searches.invalidate();
       selected = null;
+      baseRevision = 0;
       busy = false;
       creating = id === 'new';
       name = description = query = error = '';
@@ -88,10 +94,18 @@
   function restoreDraft(id: string) {
     const draft = drafts.get(id);
     if (draft) {
+      baseRevision = draft.baseRevision;
       name = draft.name;
       description = draft.description;
       tracks = draft.tracks;
     }
+  }
+  function discardDraft() {
+    drafts.delete(selected?.id ?? 'new');
+    baseRevision = selected?.revision ?? 0;
+    name = selected?.name ?? '';
+    description = selected?.description ?? '';
+    tracks = selected?.items ?? [];
   }
   $effect(() => {
     if (revision >= 0) untrack(() => void load());
@@ -116,6 +130,7 @@
       const value = await api<Playlist>(`/playlists/${id}`);
       if (!current()) return;
       selected = value;
+      baseRevision = value.revision;
       creating = false;
       name = selected.name;
       description = selected.description;
@@ -128,8 +143,8 @@
       if (current()) busy = false;
     }
   }
-  async function save() {
-    if (busy || !editable) return;
+  async function save(replace = false) {
+    if (busy || !editable || (conflict && !replace)) return;
     const current = selection.begin();
     searches.invalidate();
     busy = true;
@@ -142,7 +157,7 @@
           name,
           description,
           items: tracks.map((t) => t.id),
-          revision: selected?.revision ?? 0,
+          revision: replace ? (selected?.revision ?? 0) : baseRevision,
         },
       );
       if (!current()) return;
@@ -154,7 +169,20 @@
         selectedChanged(value.id, true);
       } else await open(value.id);
     } catch (e) {
-      if (current()) error = String(e);
+      if (current()) {
+        error = String(e);
+        if (e instanceof ApiError && e.status === 409 && selected) {
+          try {
+            const latest = await api<Playlist>(`/playlists/${selected.id}`);
+            if (current()) {
+              selected = latest;
+              error = '';
+            }
+          } catch (caught) {
+            if (current()) error = String(caught);
+          }
+        }
+      }
     } finally {
       if (current()) busy = false;
     }
@@ -233,17 +261,34 @@
       >
     </SectionHeading>
     <fieldset disabled={busy} class="min-w-0">
+      {#if conflict && editable}<Notice tone="warning" role="alert">
+          <p>
+            This playlist changed elsewhere. Choose the saved version or
+            explicitly replace it with your draft.
+          </p>
+          <details class="my-2">
+            <summary>Saved playlist</summary>
+            <p>{selected?.name}</p>
+            {#if selected?.description}<p>{selected.description}</p>{/if}
+            <ol class="list-inside list-decimal">
+              {#each selected?.items ?? [] as track, index (index)}<li>
+                  {track.title}
+                </li>{/each}
+            </ol>
+          </details>
+          <div class="flex flex-wrap gap-3">
+            <Button variant="secondary" size="form" onclick={discardDraft}
+              >Use saved playlist</Button
+            >
+            <Button variant="danger" size="form" onclick={() => void save(true)}
+              >Replace with my draft</Button
+            >
+          </div>
+        </Notice>{/if}
       {#if dirty}<div class="flex flex-wrap items-center gap-3">
           <p role="status">Unsaved playlist draft</p>
-          <Button
-            variant="secondary"
-            size="form"
-            onclick={() => {
-              drafts.delete(selected?.id ?? 'new');
-              name = selected?.name ?? '';
-              description = selected?.description ?? '';
-              tracks = selected?.items ?? [];
-            }}>Discard changes</Button
+          <Button variant="secondary" size="form" onclick={discardDraft}
+            >Discard changes</Button
           >
         </div>{/if}
       {#if editable}<form
@@ -265,8 +310,10 @@
               class={formControlClass}
               bind:value={description}
               maxlength="2000"></textarea></FormField
-          ><Button type="submit" size="form" disabled={busy}
-            >Save playlist</Button
+          ><Button
+            type="submit"
+            size="form"
+            disabled={busy || Boolean(conflict)}>Save playlist</Button
           >
         </form>{:else}<p>{selected?.description}</p>
         <small>Owned by {selected?.owner}</small>{/if}

@@ -6,6 +6,225 @@ test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
 
+test('preference events before a save response preserve the next queued edit', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page);
+  const held = responseGate();
+  let socket: WebSocketRoute | undefined;
+  let preferences = {
+    timezone: 'UTC',
+    timezone_override: null as string | null,
+    server_timezone: 'UTC',
+    time_format: '24h',
+    time_format_override: null as string | null,
+    server_time_format: '24h',
+  };
+  const writes: unknown[] = [];
+  let userReads = 0;
+  await page.routeWebSocket('**/api/v1/events**', (ws) => {
+    socket = ws;
+  });
+  await page.route('**/api/v1/auth/event-ticket', (route) =>
+    route.fulfill({ json: { ticket: 'fixture', cursor: 0, epoch: 'fixture' } }),
+  );
+  await page.route('**/api/v1/auth/me', async (route) => {
+    userReads++;
+    await route.fallback();
+  });
+  await page.route('**/api/v1/me/preferences', async (route) => {
+    if (route.request().method() === 'PUT') {
+      const body = route.request().postDataJSON();
+      writes.push(body);
+      preferences = {
+        ...preferences,
+        timezone_override: body.timezone,
+        timezone: body.timezone ?? 'UTC',
+        time_format_override: body.time_format,
+        time_format: body.time_format ?? '24h',
+      };
+      const saved = { ...preferences };
+      if (writes.length === 1) await held.promise;
+      return route.fulfill({ json: saved });
+    }
+    return route.fulfill({ json: preferences });
+  });
+  await page.goto('/');
+  await expect.poll(() => Boolean(socket)).toBe(true);
+  const zone = page.getByRole('combobox', {
+    name: 'Display timezone',
+    exact: true,
+  });
+  const format = page.getByRole('combobox', {
+    name: 'Display time format',
+    exact: true,
+  });
+  await zone.selectOption('Europe/Paris');
+  await expect.poll(() => writes.length).toBe(1);
+  await format.selectOption('12h');
+  const before = userReads;
+  socket!.send(
+    JSON.stringify({
+      id: 1,
+      kind: 'preferences.changed',
+      payload: preferences,
+    }),
+  );
+  await expect.poll(() => userReads).toBeGreaterThan(before);
+  await expect(zone).toHaveValue('Europe/Paris');
+  await expect(format).toHaveValue('12h');
+  const response = page.waitForResponse(
+    (response) =>
+      response.url().endsWith('/me/preferences') &&
+      response.request().method() === 'PUT',
+  );
+  held.release();
+  await (await response).finished();
+  await expect.poll(() => writes.length).toBe(2);
+  expect(writes).toEqual([
+    { timezone: 'Europe/Paris', time_format: null },
+    { timezone: 'Europe/Paris', time_format: '12h' },
+  ]);
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  await format.focus();
+  preferences = {
+    ...preferences,
+    timezone: 'America/New_York',
+    timezone_override: 'America/New_York',
+    time_format: '24h',
+    time_format_override: '24h',
+  };
+  socket!.send(
+    JSON.stringify({
+      id: 2,
+      kind: 'preferences.changed',
+      payload: preferences,
+    }),
+  );
+  await expect(zone).toHaveValue('America/New_York');
+  await expect(format).toHaveValue('24h');
+  await expect(format).toBeFocused();
+  await testInfo.attach('preference-event-ordering', {
+    body: JSON.stringify({ writes, preferences }),
+    contentType: 'application/json',
+  });
+  await page.screenshot({
+    path: testInfo.outputPath('queued-preferences-preserved.png'),
+  });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('server-setting events cannot invalidate a save acknowledgement or block later remote updates', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'server',
+  });
+  const held = responseGate();
+  let socket: WebSocketRoute | undefined;
+  let settings = { timezone: 'UTC', time_format: '24h' };
+  let reads = 0;
+  const writes: unknown[] = [];
+  await page.routeWebSocket('**/api/v1/events**', (ws) => {
+    socket = ws;
+  });
+  await page.route('**/api/v1/auth/event-ticket', (route) =>
+    route.fulfill({ json: { ticket: 'fixture', cursor: 0, epoch: 'fixture' } }),
+  );
+  await page.route('**/api/v1/admin/settings', async (route) => {
+    if (route.request().method() === 'PUT') {
+      writes.push(route.request().postDataJSON());
+      if (writes.length > 1)
+        return route.fulfill({
+          status: 503,
+          json: { error: { message: 'Save unavailable' } },
+        });
+      settings = route.request().postDataJSON();
+      const saved = { ...settings };
+      await held.promise;
+      return route.fulfill({ json: { ok: true, ...saved } });
+    }
+    reads++;
+    return route.fulfill({
+      json: {
+        ...settings,
+        public_url: 'https://media.example',
+        trusted_proxies: [],
+      },
+    });
+  });
+  await page.goto('/');
+  await expect.poll(() => Boolean(socket)).toBe(true);
+  const zone = page.getByRole('combobox', {
+    name: 'Server default timezone',
+    exact: true,
+  });
+  const format = page.getByRole('combobox', {
+    name: 'Server default time format',
+    exact: true,
+  });
+  await expect(format).toHaveValue('24h');
+  await format.selectOption('12h');
+  await expect.poll(() => writes.length).toBe(1);
+  const before = reads;
+  socket!.send(
+    JSON.stringify({
+      id: 1,
+      kind: 'server.settings.changed',
+      payload: settings,
+    }),
+  );
+  await expect.poll(() => reads).toBeGreaterThan(before);
+  settings = { timezone: 'Europe/Paris', time_format: '24h' };
+  const beforeRemote = reads;
+  socket!.send(
+    JSON.stringify({
+      id: 2,
+      kind: 'server.settings.changed',
+      payload: settings,
+    }),
+  );
+  await expect.poll(() => reads).toBeGreaterThan(beforeRemote);
+  await format.focus();
+  const response = page.waitForResponse(
+    (response) =>
+      response.url().endsWith('/admin/settings') &&
+      response.request().method() === 'PUT',
+  );
+  held.release();
+  await (await response).finished();
+  await expect(zone).toHaveValue('Europe/Paris');
+  await expect(format).toHaveValue('24h');
+  await expect(format).toBeFocused();
+  await format.focus();
+  settings = { timezone: 'America/New_York', time_format: '24h' };
+  socket!.send(
+    JSON.stringify({
+      id: 3,
+      kind: 'server.settings.changed',
+      payload: settings,
+    }),
+  );
+  await expect(zone).toHaveValue('America/New_York');
+  await expect(format).toHaveValue('24h');
+  await expect(format).toBeFocused();
+  await format.selectOption('12h');
+  await expect(page.getByRole('alert')).toContainText('Save unavailable');
+  await expect(format).toHaveValue('24h');
+  await expect(zone).toHaveValue('America/New_York');
+  await testInfo.attach('server-setting-event-ordering', {
+    body: JSON.stringify({ reads, writes, settings }),
+    contentType: 'application/json',
+  });
+  await page.screenshot({
+    path: testInfo.outputPath('acknowledged-server-defaults.png'),
+  });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 for (const exit of ['replace', 'close', 'revoke'] as const) {
   test(`music teardown owns pending queue replacement on ${exit}`, async ({
     page,

@@ -20,6 +20,7 @@
     navigate,
     openSettings,
     go,
+    updateFilters,
     back,
     sessionEnded,
     switchServer,
@@ -40,6 +41,7 @@
     navigate: (name: string) => void;
     openSettings: (name: string, service?: string) => void;
     go: (route: AppRoute, replace?: boolean) => void;
+    updateFilters: (route: AppRoute, replace?: boolean) => void;
     back: () => void;
     sessionEnded: () => void;
     switchServer: (address: string) => Promise<void>;
@@ -109,7 +111,7 @@
         showRequests={route.requests}
         searchQuery={route.query}
         searchChanged={(query) =>
-          go({ ...route, query, requests: false }, true)}
+          updateFilters({ ...route, query, requests: false })}
         requestsChanged={(requests) =>
           go({ ...route, detail: undefined, requests, query: undefined })}
         openMedia={(detail) => go({ ...route, detail, requests: false })}
@@ -131,7 +133,7 @@
         searchQuery={route.query}
         collectionId={route.collection}
         filtersChanged={(query, collection) =>
-          go({ ...route, query, collection }, true)}
+          updateFilters({ ...route, query, collection })}
         selectedChanged={(item, ancestors) => go({ ...route, item, ancestors })}
         {play}
       />
@@ -152,7 +154,8 @@
       <StatisticsView
         {user}
         filters={route}
-        filtersChanged={(filters) => go({ ...route, ...filters })}
+        filtersChanged={(filters) =>
+          updateFilters({ ...route, ...filters }, false)}
       />
     {:catch error}{@render failed(error)}{/await}
   {:else}

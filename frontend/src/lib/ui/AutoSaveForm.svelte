@@ -6,6 +6,7 @@
   let {
     onsave,
     value,
+    baseline,
     onRevert,
     children,
     disabled = false,
@@ -14,6 +15,7 @@
     label = 'Preferences',
   } = $props<{
     value: Value;
+    baseline?: Value;
     onsave: (value: Value) => Promise<unknown>;
     onRevert: (value: Value) => void;
     children: Snippet<[() => Promise<void>]>;
@@ -29,6 +31,10 @@
   let pending: Value | undefined;
   let active = true;
   const ownsSession = captureSession();
+  $effect(() => {
+    const next = baseline;
+    if (next && !busy) untrack(() => (confirmed = copy(next)));
+  });
   onDestroy(() => {
     active = false;
     if (pending && ownsSession())

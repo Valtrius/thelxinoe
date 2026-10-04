@@ -1,6 +1,7 @@
 import { captureSession } from './session';
 import type { Card } from './media-state';
 export type PlaylistDraft = {
+  baseRevision: number;
   name: string;
   description: string;
   tracks: Card[];
