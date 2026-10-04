@@ -167,6 +167,53 @@
       ),
     })),
   );
+  function panelMotion(node: HTMLElement) {
+    let owned: { element: Element; hadOrigin: boolean }[] = [];
+    function release(element: Element, hadOrigin: boolean) {
+      element.removeAttribute('data-sidebar-resize');
+      if (!hadOrigin) element.removeAttribute('data-sidebar-resize-origin');
+    }
+    function register() {
+      owned = owned.filter(({ element, hadOrigin }) => {
+        if (node.contains(element)) return true;
+        release(element, hadOrigin);
+        return false;
+      });
+      for (const panel of node.querySelectorAll('.settings-grid > .panel')) {
+        for (const element of [
+          panel,
+          ...panel.children,
+          ...panel.querySelectorAll(
+            'h2, h3, h4, p, strong, small, label, button, input, select, textarea, table, th, td, [role="group"]',
+          ),
+        ]) {
+          if (element.hasAttribute('data-sidebar-resize')) continue;
+          owned.push({
+            element,
+            hadOrigin: element.hasAttribute('data-sidebar-resize-origin'),
+          });
+          element.setAttribute(
+            'data-sidebar-resize',
+            element === panel
+              ? 'xy'
+              : element.matches('input, select, textarea')
+                ? 'xy-width'
+                : 'xy-pos',
+          );
+          element.setAttribute('data-sidebar-resize-origin', '');
+        }
+      }
+    }
+    register();
+    const observer = new MutationObserver(register);
+    observer.observe(node, { childList: true, subtree: true });
+    return {
+      destroy() {
+        observer.disconnect();
+        for (const { element, hadOrigin } of owned) release(element, hadOrigin);
+      },
+    };
+  }
 </script>
 
 <div
@@ -174,6 +221,7 @@
 >
   <nav
     aria-label="Settings navigation"
+    data-sidebar-resize="xy-pos"
     class="settings-navigation @container/settings-nav sticky top-0 z-1 max-h-[calc(var(--workspace-height)-2rem)] w-49 overflow-y-auto shrink-0 space-y-6 py-1 compact:static compact:max-h-none compact:w-full compact:overflow-visible compact:space-y-4"
   >
     <label class="relative block">
@@ -244,11 +292,17 @@
   </nav>
   <div
     class="settings-content @container/settings min-w-0 flex-1 compact:w-full"
+    data-sidebar-resize="xy-pos"
     data-sidebar-resize-origin
   >
-    <h1 class="mb-7 text-[25px] font-semibold tracking-tight compact:mb-5">
+    <h1
+      class="mb-7 text-[25px] font-semibold tracking-tight compact:mb-5"
+      data-sidebar-resize="xy-pos"
+    >
       {title}
     </h1>
-    <div class="settings-panels settings-grid">{@render children()}</div>
+    <div class="settings-panels settings-grid" use:panelMotion>
+      {@render children()}
+    </div>
   </div>
 </div>
