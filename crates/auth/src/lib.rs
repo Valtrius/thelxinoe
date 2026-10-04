@@ -12,7 +12,7 @@ use anyhow::{Result, anyhow, bail};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
 use rand::{RngCore, rngs::OsRng};
 use rusqlite::{OptionalExtension, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     io::{Read, Write},
@@ -189,8 +189,10 @@ pub struct Session {
     pub created_at: i64,
     pub expires_at: i64,
     pub last_seen: i64,
+    pub remembered: bool,
 }
 
+#[derive(Serialize, Deserialize)]
 pub enum SessionAuthorization {
     Password {
         user_id: String,
@@ -200,11 +202,33 @@ pub enum SessionAuthorization {
         user_id: String,
         session_id: String,
     },
+    Verified {
+        user_id: String,
+        auth_version: i64,
+        verified_at: i64,
+        remembered_device_id: Option<String>,
+    },
+    Oidc {
+        user_id: String,
+        auth_version: i64,
+        verified_at: i64,
+        provider_version: String,
+        issuer: String,
+        subject: String,
+    },
+    ClientPassword {
+        user_id: String,
+        credential_id: String,
+    },
 }
 impl SessionAuthorization {
     pub fn user_id(&self) -> &str {
         match self {
-            Self::Password { user_id, .. } | Self::ApprovedSession { user_id, .. } => user_id,
+            Self::Password { user_id, .. }
+            | Self::ApprovedSession { user_id, .. }
+            | Self::Verified { user_id, .. }
+            | Self::Oidc { user_id, .. }
+            | Self::ClientPassword { user_id, .. } => user_id,
         }
     }
 }

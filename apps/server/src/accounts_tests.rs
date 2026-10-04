@@ -131,7 +131,7 @@ async fn open_setup_has_bounded_admission_and_an_attempt_limit() {
 }
 
 #[tokio::test]
-async fn own_password_change_verifies_current_password_and_revokes_other_devices() {
+async fn stale_password_change_verifies_current_password_and_revokes_other_devices() {
     let (_temp, state, cookie) = fixture().await;
     let old = "previous passphrase";
     let new = "12345678";
@@ -140,6 +140,10 @@ async fn own_password_change_verifies_current_password_and_revokes_other_devices
         .db
         .write("test.fixture", move |db| {
             db.execute("UPDATE users SET password_hash=?1 WHERE id='alice'", [hash])?;
+            db.execute(
+                "UPDATE sessions SET verified_at=?1 WHERE user_id='alice'",
+                [thelxinoe_core::now() - 301],
+            )?;
             Ok(())
         })
         .await

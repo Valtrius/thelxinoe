@@ -93,6 +93,12 @@ export async function fixture({ scheme = 'https' } = {}) {
   }
   const stack = (timeout) =>
     api('/admin/stack', 'GET', undefined, context.request, timeout);
+  async function createUser(data) {
+    await api('/auth/verify', 'POST', {
+      password: 'test-only long passphrase',
+    });
+    return api('/users', 'POST', data);
+  }
   async function install(kind) {
     const host_port = await freePort();
     const created = await api('/admin/stack/install', 'POST', {
@@ -530,6 +536,7 @@ export async function fixture({ scheme = 'https' } = {}) {
       browser,
       context,
       api,
+      createUser,
       install,
       services,
       config,

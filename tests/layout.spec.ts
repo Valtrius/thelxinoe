@@ -15,7 +15,9 @@ for (const width of [1280, 1760, 1920, 2560]) {
     await expect(
       page.getByRole('combobox', { name: 'Server default timezone' }),
     ).toBeEnabled();
-    await expect(page.locator('.settings-panels > .panel')).toHaveCount(5);
+    await expect(
+      page.getByRole('heading', { name: 'OpenID Connect', exact: true }),
+    ).toBeVisible();
     await page.evaluate(() => {
       const animate = Element.prototype.animate;
       Element.prototype.animate = function (keyframes, options) {

@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { existsSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { until, installBase } from './lab.mjs';
+import { authenticationScenario } from './auth-desktop.mjs';
 
 export async function connectDesktop(lab, version) {
   return until(async () => {
@@ -125,6 +126,13 @@ export async function desktopScenarios({
         path: join(output, 'desktop-login.png'),
       });
       await login();
+      await authenticationScenario({
+        native,
+        lab,
+        credentials,
+        scenario,
+        output,
+      });
       await native.page
         .getByRole('link', { name: 'Settings', exact: true })
         .click();

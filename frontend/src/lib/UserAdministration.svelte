@@ -2,7 +2,8 @@
   import Notice from './ui/Notice.svelte';
   import FormField from './ui/FormField.svelte';
   import { formControlClass } from './ui/styles';
-  import { api, type User } from './api';
+  import { api, serverUrl, type User } from './api';
+  import { withVerification } from './authentication';
   import { Accordion } from 'bits-ui';
   import { ChevronDown } from '@lucide/svelte';
   import Button from './ui/Button.svelte';
@@ -14,7 +15,7 @@
     close: () => void;
   }>();
   let role = $state<'user' | 'admin'>('user'),
-    password = $state(''),
+    recoveryUrl = $state(''),
     confirm = $state(''),
     error = $state(''),
     busy = $state(false);
@@ -22,11 +23,12 @@
     error = '';
     busy = true;
     try {
-      await api(`/users/${person.id}`, 'PUT', {
-        role,
-        password: password || null,
+      const executed = await withVerification(async () => {
+        await api(`/users/${person.id}`, 'PUT', {
+          role,
+        });
       });
-      password = '';
+      if (!executed) return;
       close();
       if (person.id === currentId) location.reload();
       else await changed();
@@ -40,10 +42,31 @@
     error = '';
     busy = true;
     try {
-      await api(`/users/${person.id}`, 'DELETE');
-      await changed();
+      await withVerification(async () => {
+        await api(`/users/${person.id}`, 'DELETE');
+        await changed();
+      });
     } catch (e) {
       error = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+  async function recover() {
+    busy = true;
+    error = '';
+    try {
+      await withVerification(async () => {
+        recoveryUrl = (
+          await api<{ url: string }>(`/users/${person.id}/recovery`, 'POST')
+        ).url;
+        recoveryUrl = new URL(
+          recoveryUrl,
+          serverUrl() || location.origin,
+        ).toString();
+      });
+    } catch (caught) {
+      error = String(caught);
     } finally {
       busy = false;
     }
@@ -85,19 +108,26 @@
           ></select
         ></FormField
       >
-      <FormField class="my-4 block max-w-120"
-        >New password (optional)<input
-          class={formControlClass}
-          type="password"
-          autocomplete="new-password"
-          minlength="8"
-          bind:value={password}
-        /></FormField
-      >
       <Button variant="secondary" size="form" type="submit" disabled={busy}
         >Save user</Button
       >
     </form>
+    {#if person.id !== currentId}
+      <Button variant="secondary" disabled={busy} onclick={() => recover()}
+        >Create recovery link</Button
+      >
+    {/if}
+    {#if recoveryUrl}<FormField class="my-4 block"
+        >Recovery link<input
+          class={formControlClass}
+          value={recoveryUrl}
+          readonly
+        /></FormField
+      >
+      <p class="text-muted">
+        Expires in 10 minutes. The user's previous sign-in methods and devices
+        have been revoked.
+      </p>{/if}
     {#if person.id !== currentId}<FormField class="my-4 block max-w-120"
         >Type {person.username} to confirm deletion<input
           class={formControlClass}

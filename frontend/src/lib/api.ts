@@ -51,6 +51,11 @@ export async function api<T>(
       status === 401 &&
       ownsSession() &&
       path !== '/auth/login' &&
+      !path.startsWith('/auth/totp') &&
+      !path.startsWith('/auth/passkey') &&
+      !path.startsWith('/auth/recovery') &&
+      !path.startsWith('/auth/desktop/') &&
+      path !== '/auth/verify' &&
       path !== '/setup'
     )
       window.dispatchEvent(new Event('thelxinoe-session-expired'));

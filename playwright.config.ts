@@ -20,6 +20,11 @@ export default defineConfig({
         ? [
             { name: 'proxy', testMatch: 'proxy.spec.ts' },
             {
+              name: 'authentication',
+              testMatch: 'auth-methods.spec.ts',
+              dependencies: ['proxy'],
+            },
+            {
               name: 'catalog',
               testMatch: 'library.spec.ts',
               dependencies: ['proxy'],

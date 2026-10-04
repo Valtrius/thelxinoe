@@ -23,7 +23,7 @@ pub(super) async fn open_write_settings(db: &Database) -> anyhow::Result<String>
 pub(super) async fn open_read_secrets(db: &Database) -> anyhow::Result<i64> {
     db
         .read("server.open_read_secrets", |c| {
-            Ok(c.query_row("SELECT (SELECT COUNT(*) FROM secrets)+(SELECT COUNT(*) FROM manager_services)+(SELECT COUNT(*) FROM support_services)+(SELECT COUNT(*) FROM stack_provisions)+(SELECT COUNT(*) FROM online_accounts WHERE credential IS NOT NULL)", [], |r| r.get::<_, i64>(0))?)
+            Ok(c.query_row("SELECT (SELECT COUNT(*) FROM secrets)+(SELECT COUNT(*) FROM auth_totp)+(SELECT COUNT(*) FROM auth_oidc_provider)+(SELECT COUNT(*) FROM auth_attempts)+(SELECT COUNT(*) FROM manager_services)+(SELECT COUNT(*) FROM support_services)+(SELECT COUNT(*) FROM stack_provisions)+(SELECT COUNT(*) FROM online_accounts WHERE credential IS NOT NULL)", [], |r| r.get::<_, i64>(0))?)
         })
         .await
 }

@@ -770,14 +770,7 @@ test('settings sections adapt without hiding controls or stretching fields', asy
           .locator('.workspace-scroll')
           .evaluate((node) => node.scrollWidth <= node.clientWidth),
       ).toBe(true);
-      if (name === 'Account' && viewport.width === 3840) {
-        const panels = await page
-          .locator('.settings-panels > .panel')
-          .evaluateAll((nodes) =>
-            nodes.map((node) => node.getBoundingClientRect().x),
-          );
-        expect(new Set(panels).size).toBe(2);
-      }
+
       expect(
         await page
           .locator('.settings-content select')

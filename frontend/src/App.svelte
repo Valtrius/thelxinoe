@@ -5,6 +5,11 @@
   import { formControlClass } from './lib/ui/styles';
   import AuthLayout from './lib/ui/AuthLayout.svelte';
   import Button from './lib/ui/Button.svelte';
+  import SignIn from './lib/SignIn.svelte';
+  import Recovery from './lib/Recovery.svelte';
+  import DesktopApproval from './lib/DesktopApproval.svelte';
+  import AuthVerification from './lib/AuthVerification.svelte';
+  import { cancelVerification, type AuthOptions } from './lib/authentication';
   import { statsClass } from './lib/ui/styles';
   import { onMount, tick } from 'svelte';
   import { SvelteURL } from 'svelte/reactivity';
@@ -103,11 +108,18 @@
     setup = $state(false),
     user = $state<User | null>(null),
     error = $state(''),
-    busy = $state(false),
     connected = $state(false);
-  let username = $state(''),
-    password = $state(''),
-    passwordConfirmation = $state('');
+  let authOptions = $state<AuthOptions | null>(null);
+  let recoveryToken = $state(
+    new URL(location.href).hash.startsWith('#recovery=')
+      ? new URL(location.href).hash.slice(10)
+      : '',
+  );
+  let desktopRequest = $state(
+    new URLSearchParams(location.search).get('desktop') ?? '',
+  );
+  const signInError =
+    new URLSearchParams(location.search).get('auth_error') ?? '';
   const providerPage = $derived(
     ['YouTube', 'Twitch', 'Kick'].includes(section),
   );
@@ -170,14 +182,11 @@
   let serverAddress = $state('');
   let updateRequired = $state('');
   async function act(fn: () => Promise<void>) {
-    busy = true;
     error = '';
     try {
       await fn();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
-    } finally {
-      busy = false;
     }
   }
   async function checkServer() {
@@ -197,6 +206,8 @@
       return false;
     }
     setup = (await api<{ setup_required: boolean }>('/setup')).setup_required;
+    if (!setup)
+      authOptions = await api<AuthOptions>('/auth/methods').catch(() => null);
     return true;
   }
   async function boot() {
@@ -378,38 +389,25 @@
     );
     events.connect();
   }
-  async function authenticate() {
-    await act(async () => {
-      teardownSession();
-      if (desktop) {
-        await changeServer(serverAddress);
-        serverAddress = serverUrl();
-      }
-      if (!(await checkServer())) return;
-      if (setup && password !== passwordConfirmation) {
-        error = passwordConfirmation
-          ? 'Passwords do not match.'
-          : 'Confirm your password to create the administrator account.';
-        return;
-      }
-      user = (
-        await api<{ user: User }>(setup ? '/setup' : '/auth/login', 'POST', {
-          username,
-          password,
-        })
-      ).user;
-      password = '';
-      passwordConfirmation = '';
-      setup = false;
-      if (returnToService()) return;
-      await Promise.all([
-        loadAppearance(user.id),
-        loadDisplayPreferences(),
-        loadProviders(),
-      ]);
-      restoreNavigation();
-      startEvents();
-    });
+  async function prepareSignIn(address: string) {
+    teardownSession();
+    if (desktop) {
+      await changeServer(address);
+      serverAddress = serverUrl();
+    }
+    return checkServer();
+  }
+  async function signedIn(current: User) {
+    user = current;
+    setup = false;
+    if (returnToService()) return;
+    await Promise.all([
+      loadAppearance(user.id),
+      loadDisplayPreferences(),
+      loadProviders(),
+    ]);
+    restoreNavigation();
+    startEvents();
   }
   function returnToService() {
     const kind = new URLSearchParams(location.search).get('service');
@@ -426,6 +424,7 @@
     });
   }
   function teardownSession() {
+    cancelVerification();
     invalidateSession();
     navigationReady = false;
     playbackRequest++;
@@ -601,6 +600,11 @@
       events?.close();
     };
     const locationChanged = () => {
+      if (location.hash.startsWith('#recovery=')) {
+        teardownSession();
+        recoveryToken = location.hash.slice(10);
+        return;
+      }
       if (!user) return;
       route = allowedRoute(
         readRoute(new URL(location.href), route),
@@ -666,6 +670,7 @@
 <svelte:document onclick={playYoutubeLink} />
 
 {#if desktop}<WindowTitlebar />{/if}
+<AuthVerification />
 <WebUpdateReload playing={Boolean(playing)} admin={user?.role === 'admin'} />
 {#if loading}
   <AuthLayout card={false}>
@@ -704,77 +709,38 @@
         onclick={() => location.reload()}>Reload current web app</Button
       >{/if}
   </AuthLayout>
-{:else if !user}
-  <AuthLayout>
-    <img
-      class="block size-10.5 object-contain"
-      src="/icon.svg"
-      alt="Thelxinoe"
-      width="42"
-      height="42"
-    />
-    <h1>{setup ? 'Welcome to Thelxinoe' : 'Welcome back'}</h1>
-    <p class="text-muted">
-      {setup
-        ? 'Create the administrator account for your media server.'
-        : 'Sign in to pick up where you left off.'}
-    </p>
-    <form
-      onsubmit={(event) => {
-        event.preventDefault();
-        void authenticate();
+{:else if recoveryToken}
+  <AuthLayout
+    ><Recovery
+      token={recoveryToken}
+      completed={() => {
+        recoveryToken = '';
+        void boot();
       }}
-    >
-      {#if desktop}<FormField
-          >Server address<input
-            class={formControlClass}
-            bind:value={serverAddress}
-            placeholder="https://media.example.com"
-            required
-          /></FormField
-        >{/if}
-      <FormField
-        >Username<input
-          {@attach (element) => element.focus()}
-          class={formControlClass}
-          bind:value={username}
-          required
-          autocomplete="username"
-        /></FormField
-      >
-      <FormField
-        >Password<input
-          class={formControlClass}
-          bind:value={password}
-          type="password"
-          required
-          minlength={setup ? 8 : 1}
-          autocomplete={setup ? 'new-password' : 'current-password'}
-        /></FormField
-      >
-      {#if setup}<FormField
-          >Confirm password<input
-            class={formControlClass}
-            bind:value={passwordConfirmation}
-            type="password"
-            required
-            minlength="8"
-            autocomplete="new-password"
-          /></FormField
-        >
-        <p class="text-[11px] text-muted">
-          Use at least 8 characters. You can create other users after setup.
-        </p>{/if}
-      {#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
-      <Button size="form" type="submit" class="w-full" disabled={busy}
-        >{busy
-          ? 'Connecting…'
-          : setup
-            ? 'Create your server'
-            : 'Sign in'}</Button
-      >
-    </form>
-  </AuthLayout>
+    /></AuthLayout
+  >
+{:else if !user}
+  <AuthLayout
+    ><SignIn
+      {setup}
+      bind:serverAddress
+      options={authOptions}
+      prepare={prepareSignIn}
+      authenticated={signedIn}
+      initialError={signInError || error}
+    /></AuthLayout
+  >
+{:else if !desktop && desktopRequest}
+  <AuthLayout
+    ><DesktopApproval
+      request={desktopRequest}
+      {user}
+      completed={() => {
+        desktopRequest = '';
+        history.replaceState(null, '', location.pathname);
+      }}
+    /></AuthLayout
+  >
 {:else}
   <div
     class="app-shell flex h-dvh overflow-hidden desktop-shell:mt-8 desktop-shell:h-[calc(100dvh-32px)]"

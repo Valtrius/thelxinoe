@@ -121,6 +121,28 @@ async fn youtube_linking_url(app: &tauri::AppHandle) -> Result<url::Url, String>
 fn credential(app: &tauri::AppHandle) -> Result<keyring::Entry, String> {
     keyring::Entry::new(&app.config().identifier, "server-session").map_err(|e| e.to_string())
 }
+fn remembered_credential(app: &tauri::AppHandle) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(&app.config().identifier, "server-remember").map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn open_auth_browser(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    let response = backend_request(app.clone(), "/auth/methods".into(), "GET".into(), None).await?;
+    let canonical = response["body"]["canonical_url"]
+        .as_str()
+        .ok_or("Authentication hostname is unavailable")?;
+    let target = url::Url::parse(&url).map_err(|_| "Invalid authentication URL")?;
+    if target.origin().ascii_serialization() != canonical
+        || target.path() != "/"
+        || !target.username().is_empty()
+        || target.password().is_some()
+        || target.fragment().is_some_and(|f| f != "settings/account")
+    {
+        return Err("Invalid authentication URL".into());
+    }
+    app.opener()
+        .open_url(target.as_str(), None::<&str>)
+        .map_err(|_| "Could not open your browser".into())
+}
 
 #[tauri::command]
 async fn open_service(app: tauri::AppHandle, id: String) -> Result<(), String> {
@@ -210,6 +232,10 @@ async fn change_server(app: tauri::AppHandle, value: String) -> Result<String, S
         Ok(()) | Err(keyring::Error::NoEntry) => {}
         Err(e) => return Err(e.to_string()),
     }
+    match remembered_credential(&app)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => {}
+        Err(e) => return Err(e.to_string()),
+    }
     std::fs::write(config_path(&app)?, &origin).map_err(|e| e.to_string())?;
     Ok(origin)
 }
@@ -229,10 +255,23 @@ async fn backend_request(
         return Err("Invalid API path".into());
     }
     let base = server_url(app.clone())?;
-    let auth = matches!(path.as_str(), "/auth/login" | "/setup") && method == "POST";
-    if auth && let Some(value) = body.as_mut() {
+    let auth = matches!(
+        path.as_str(),
+        "/auth/login" | "/setup" | "/auth/totp" | "/auth/desktop/exchange"
+    ) && method == "POST";
+    if matches!(path.as_str(), "/auth/login" | "/setup")
+        && method == "POST"
+        && let Some(value) = body.as_mut()
+    {
         value["transport"] = Value::String("device".into());
         value["device_name"] = Value::String("Windows desktop".into());
+        if path == "/auth/login" {
+            match remembered_credential(&app)?.get_password() {
+                Ok(raw) => value["remember_token"] = Value::String(raw),
+                Err(keyring::Error::NoEntry) => {}
+                Err(e) => return Err(e.to_string()),
+            }
+        }
     }
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -266,6 +305,9 @@ async fn backend_request(
         .await
         .map_err(|_| "Server returned an invalid response".to_string())?;
     if auth && status == 200 {
+        if server_url(app.clone())? != base {
+            return Err("The configured server changed during sign-in".into());
+        }
         if let Some(token) = value["token"].as_str() {
             credential(&app)?
                 .set_password(token)
@@ -273,6 +315,14 @@ async fn backend_request(
         }
         if let Some(object) = value.as_object_mut() {
             object.remove("token");
+            if let Some(raw) = object
+                .remove("remember_token")
+                .and_then(|v| v.as_str().map(str::to_owned))
+            {
+                remembered_credential(&app)?
+                    .set_password(&raw)
+                    .map_err(|e| e.to_string())?;
+            }
         }
     }
     if path == "/auth/logout" && status == 200 {
@@ -336,6 +386,7 @@ fn main() {
             server_url,
             change_server,
             backend_request,
+            open_auth_browser,
             open_provider_url,
             open_youtube_linking,
             open_public_page,

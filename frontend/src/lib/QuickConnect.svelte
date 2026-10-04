@@ -3,6 +3,7 @@
   import FormField from './ui/FormField.svelte';
   import { formControlClass } from './ui/styles';
   import { api } from './api';
+  import { withVerification } from './authentication';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
   import { inlineFormClass } from './ui/styles';
@@ -32,12 +33,15 @@
   }
   async function approve() {
     if (!device) return;
+    const confirmation = device.confirmation;
     busy = true;
     error = '';
     try {
-      await api('/auth/quick-connect/approve', 'POST', {
-        code,
-        confirmation: device.confirmation,
+      await withVerification(async () => {
+        await api('/auth/quick-connect/approve', 'POST', {
+          code,
+          confirmation,
+        });
       });
       approved = true;
       device = null;

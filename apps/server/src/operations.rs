@@ -168,23 +168,16 @@ async fn change_user(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(key): Path<String>,
-    Json(mut input): Json<UserChange>,
+    Json(input): Json<UserChange>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageUsers).await?;
-    let hash = if let Some(password) = input.password.take() {
-        thelxinoe_auth::validate_credentials("valid-user", &password)
-            .map_err(|e| ApiError::bad(e.to_string()))?;
-        let slot = state
-            .password_slots
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(anyhow::Error::from)?;
-        Some(thelxinoe_auth::password_hash_with_permit(password, slot).await?)
-    } else {
-        None
-    };
-    let status = storage::change_user(&state.db, key, input, p, hash).await?;
+    crate::authentication::require_fresh(&state, &p).await?;
+    if input.password.is_some() {
+        return Err(ApiError::bad(
+            "Use an account recovery link to reset sign-in methods",
+        ));
+    }
+    let status = storage::change_user(&state.db, key, input, p, None).await?;
     match status {
         404 => Err(ApiError::not_found()),
         409 => Err(ApiError::conflict("Keep at least one administrator")),
@@ -197,6 +190,7 @@ async fn delete_user(
     Path(key): Path<String>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageUsers).await?;
+    crate::authentication::require_fresh(&state, &p).await?;
     if key == p.user.id {
         return Err(ApiError::conflict(
             "Use another administrator account to delete this account",

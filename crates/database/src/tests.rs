@@ -119,7 +119,7 @@ fn playback_ownership_is_enforced_and_history_survives_source_removal() -> Resul
     let db = Database::open(temp.path().join("main.db"))?.connect()?;
     user(&db, "alice")?;
     user(&db, "bob")?;
-    db.execute_batch("INSERT INTO sessions VALUES ('session','alice','hash','web','Browser',1,9999999999,1);
+    db.execute_batch("INSERT INTO sessions(id,user_id,token_hash,transport,name,created_at,expires_at,last_seen) VALUES ('session','alice','hash','web','Browser',1,9999999999,1);
         INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Films','movies','/media');
         INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES ('film','root','movie','film','Film',1);
         INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES ('file','root','/media/film.mkv','g',1,'1','hash','{}',1);

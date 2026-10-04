@@ -1,3 +1,4 @@
+import { qualifyHostRecovery } from './auth-host-recovery.mjs';
 import { spawnSync } from 'node:child_process';
 import {
   mkdirSync,
@@ -266,6 +267,7 @@ async function containers() {
         await freePort({ udp: true }),
       );
       process.env.THELXINOE_TEST_HTTPS_PORT = String(await freePort());
+      process.env.THELXINOE_TEST_OIDC_PORT = String(await freePort());
       const catalog = composeFixture({
         project,
         file: 'compose.test.yaml',
@@ -281,6 +283,10 @@ async function containers() {
             THELXINOE_TEST_URL: `https://localhost:${process.env.THELXINOE_TEST_HTTPS_PORT ?? '9443'}`,
           },
         });
+        await qualifyHostRecovery(
+          catalog,
+          'test-results/e2e/host-recovery.json',
+        );
       } finally {
         catalog.close();
       }
@@ -295,6 +301,7 @@ async function containers() {
         ...process.env,
         THELXINOE_TEST_HTTP_PORT: String(await freePort({ udp: true })),
         THELXINOE_TEST_HTTPS_PORT: String(await freePort()),
+        THELXINOE_TEST_OIDC_PORT: String(await freePort()),
         COMPOSE_PROJECT_NAME: playbackProject,
       };
       playbackEnvironment.THELXINOE_PLAYBACK_URL = `https://localhost:${playbackEnvironment.THELXINOE_TEST_HTTPS_PORT}`;
