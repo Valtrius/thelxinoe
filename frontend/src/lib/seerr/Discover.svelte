@@ -15,6 +15,8 @@
   import Notice from '../ui/Notice.svelte';
   import { formControlClass } from '../ui/styles';
   import MediaRow from './MediaRow.svelte';
+  import MediaSkeleton from '../ui/MediaSkeleton.svelte';
+  import ContentSkeleton from '../ui/ContentSkeleton.svelte';
   import PosterCard from './PosterCard.svelte';
   import MediaDetails from './MediaDetails.svelte';
   import {
@@ -50,13 +52,37 @@
     searchChanged: (query: string) => void;
     requestsChanged: (requests: boolean) => void;
   }>();
-  type Feed = { id: string; label: string; items: Media[]; error: string };
+  type Feed = {
+    id: string;
+    label: string;
+    items: Media[];
+    error: string;
+    loading: boolean;
+  };
   let feeds = $state<Feed[]>([
-    { id: 'trending', label: 'Trending', items: [], error: '' },
-    { id: 'movies', label: 'Popular movies', items: [], error: '' },
-    { id: 'tv', label: 'Popular series', items: [], error: '' },
-    { id: 'upcoming', label: 'Upcoming movies', items: [], error: '' },
-    { id: 'upcoming-tv', label: 'Upcoming series', items: [], error: '' },
+    { id: 'trending', label: 'Trending', items: [], error: '', loading: true },
+    {
+      id: 'movies',
+      label: 'Popular movies',
+      items: [],
+      error: '',
+      loading: true,
+    },
+    { id: 'tv', label: 'Popular series', items: [], error: '', loading: true },
+    {
+      id: 'upcoming',
+      label: 'Upcoming movies',
+      items: [],
+      error: '',
+      loading: true,
+    },
+    {
+      id: 'upcoming-tv',
+      label: 'Upcoming series',
+      items: [],
+      error: '',
+      loading: true,
+    },
   ]);
   let tab = $state('discover'),
     query = $state(''),
@@ -65,7 +91,6 @@
     pages = $state(1),
     total = $state(0),
     searching = $state(false),
-    loading = $state(true),
     configured = $state(true),
     error = $state('');
   const selected = $derived(detail ?? null);
@@ -149,7 +174,7 @@
     scrollWorkspace()?.scrollTo({ top: 0 });
   }
   async function load() {
-    loading = true;
+    for (const feed of feeds) feed.loading = true;
     error = '';
     try {
       const state = await api<{ configured: boolean; ready: boolean }>(
@@ -174,13 +199,17 @@
             }
           } catch (caught) {
             if (active) feed.error = String(caught);
+          } finally {
+            if (active) feed.loading = false;
           }
         }),
       );
     } catch (caught) {
       if (active) error = String(caught);
     } finally {
-      if (active) loading = false;
+      if (active) {
+        for (const feed of feeds) feed.loading = false;
+      }
     }
   }
   async function search(nextPage = 1) {
@@ -418,9 +447,9 @@
           ><RefreshCw size={14} /> Refresh</Button
         >
       </div>
-      {#if requestLoading}<p class="py-8 text-sm text-muted" role="status">
-          Loading requests…
-        </p>{:else if !requests.length}<p
+      {#if requestLoading && !requests.length}<ContentSkeleton
+          label="Loading requests"
+        />{:else if !requests.length}<p
           class="py-12 text-center text-sm text-muted"
         >
           No requests yet. Find a movie or series to get started.
@@ -518,7 +547,10 @@
     {:else if query.trim()}
       {#if query.trim().length < 2}<p class="py-8 text-sm text-muted">
           Enter at least two characters.
-        </p>{:else if !searching && !filtered.length}<p
+        </p>{:else if searching && !results.length}<MediaSkeleton
+          label="Loading search results"
+          layout="posters"
+        />{:else if !searching && !filtered.length}<p
           class="py-8 text-sm text-muted"
         >
           No results for “{query}”.
@@ -548,19 +580,6 @@
             >{searching ? 'Loading…' : 'Load more'}</Button
           >
         </div>{/if}
-    {:else if loading}<div
-        class="grid gap-8"
-        aria-label="Loading discovery"
-        role="status"
-      >
-        {#each [1, 2, 3] as row (row)}<div
-            class="grid grid-cols-6 gap-4 compact:grid-cols-3"
-          >
-            {#each [1, 2, 3, 4, 5, 6] as card (card)}<div
-                class="aspect-2/3 animate-pulse bg-surface-strong motion-reduce:animate-none"
-              ></div>{/each}
-          </div>{/each}
-      </div>
     {:else}
       {#if featured}<button
           class="relative mb-9 flex min-h-75 w-full items-end overflow-hidden border border-line bg-surface p-7 text-left compact:min-h-60 compact:p-5"
@@ -591,6 +610,11 @@
               label={feed.label}
               items={feed.items}
               {open}
+            />{:else if feed.loading}<MediaSkeleton
+              label={`Loading ${feed.label}`}
+              heading={feed.label}
+              layout="poster-row"
+              count={6}
             />{:else if feed.error}<Notice variant="error"
               ><strong>{feed.label}</strong>
               <p>{feed.error}</p>

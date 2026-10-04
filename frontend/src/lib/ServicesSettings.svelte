@@ -13,6 +13,7 @@
   import { followLink } from './navigation';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
+  import ContentSkeleton from './ui/ContentSkeleton.svelte';
   import ConfirmDialog from './providers/components/ui/ConfirmDialog.svelte';
   import Switch from './ui/Switch.svelte';
   import { Copy, LoaderCircle } from '@lucide/svelte';
@@ -1388,12 +1389,10 @@
                   >
                     {detailErrors[selectedKind]}
                   </Notice>{/if}
-                {#if detailLoading[selectedKind] && !supportData && !defaults[selectedKind]?.loaded}<p
-                    class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
-                    role="status"
-                  >
-                    Loading service settings…
-                  </p>{/if}
+                {#if detailLoading[selectedKind] && !supportData && !defaults[selectedKind]?.loaded}<ContentSkeleton
+                    label="Loading service settings"
+                    variant="settings"
+                  />{/if}
                 {#if definition.role === 'manager'}
                   {#if defaults[definition.kind]?.loaded}
                     {@const options = managerOptions[definition.kind]}

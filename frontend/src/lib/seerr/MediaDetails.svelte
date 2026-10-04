@@ -1,15 +1,9 @@
 <script lang="ts">
-  import {
-    ArrowLeft,
-    Check,
-    LoaderCircle,
-    Star,
-    Play,
-    ExternalLink,
-  } from '@lucide/svelte';
+  import { ArrowLeft, Check, Star, Play, ExternalLink } from '@lucide/svelte';
   import { onDestroy } from 'svelte';
   import { api } from '../api';
   import Button from '../ui/Button.svelte';
+  import ContentSkeleton from '../ui/ContentSkeleton.svelte';
   import Notice from '../ui/Notice.svelte';
   import MediaRow from './MediaRow.svelte';
   import RequestButton, { type ProfileRef } from './RequestButton.svelte';
@@ -155,14 +149,7 @@
     ><ArrowLeft size={16} /> Back to discover</Button
   >
 </div>
-{#if loading}<div
-    class="grid min-h-100 place-items-center text-muted"
-    role="status"
-  >
-    <LoaderCircle class="animate-spin" size={28} /><span class="sr-only"
-      >Loading details</span
-    >
-  </div>
+{#if loading}<ContentSkeleton label="Loading details" variant="detail" />
 {:else if media}
   <article class="min-w-0">
     <div

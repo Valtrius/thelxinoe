@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ContentSkeleton from './ui/ContentSkeleton.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
   import AutoDeletePolicy, {
@@ -65,7 +66,11 @@
   </div>
 {/if}
 {#if !loaded && loading}
-  <p class="col-span-full text-muted" role="status">Loading settings…</p>
+  <ContentSkeleton
+    label="Loading retention settings"
+    variant="settings"
+    class="col-span-full"
+  />
 {/if}
 {#each policies as policy, i (policy.domain)}
   <AutoDeletePolicy

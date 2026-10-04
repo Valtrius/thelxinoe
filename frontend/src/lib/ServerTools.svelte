@@ -3,6 +3,7 @@
   import { api } from './api';
   import ServerToolRow from './ServerToolRow.svelte';
   import type { ServerToolStatus } from './server-tools';
+  import ContentSkeleton from './ui/ContentSkeleton.svelte';
   let status = $state<ServerToolStatus | null>(null);
   let error = $state('');
   let checking = $state(false);
@@ -69,7 +70,11 @@
         ></thead
       >
       <tbody
-        >{#each status?.items ?? [] as item (item.id)}<ServerToolRow
+        >{#if !status && !error}<tr
+            ><td colspan="5"
+              ><ContentSkeleton label="Loading server tools" count={3} /></td
+            ></tr
+          >{/if}{#each status?.items ?? [] as item (item.id)}<ServerToolRow
             {item}
             supported={status?.supported ?? false}
             {refresh}

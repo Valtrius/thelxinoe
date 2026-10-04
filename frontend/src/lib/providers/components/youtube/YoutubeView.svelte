@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MediaSkeleton from '../../../ui/MediaSkeleton.svelte';
   import {
     captureScrollAnchor,
     restoreScrollAnchor,
@@ -945,10 +946,10 @@
           />
         {/if}
       {:else if feed.loading && feed.videos.length === 0}
-        <EmptyState
-          eyebrow="CACHE / READ"
-          title="Loading your subscription feed"
-          message="Thelxinoe is reading cached videos while the backend refresh continues."
+        <MediaSkeleton
+          label="Loading YouTube videos"
+          layout="feed"
+          shape="landscape"
         />
       {:else if feed.videos.length === 0}
         {#if syncStatus.error}

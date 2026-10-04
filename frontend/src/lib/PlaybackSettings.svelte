@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ContentSkeleton from './ui/ContentSkeleton.svelte';
   import Notice from './ui/Notice.svelte';
   import FormField from './ui/FormField.svelte';
   import { formControlClass } from './ui/styles';
@@ -84,5 +85,8 @@
           ></FormField
         >
       </section>
-    </AutoSaveForm>{/if}
+    </AutoSaveForm>{:else if !error}<ContentSkeleton
+      label="Loading playback preferences"
+      variant="settings"
+    />{/if}
 </div>

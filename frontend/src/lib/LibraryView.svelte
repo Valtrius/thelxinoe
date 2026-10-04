@@ -13,6 +13,9 @@
   } from './attention';
   import MediaGrid from './ui/MediaGrid.svelte';
   import LibraryCard from './ui/LibraryCard.svelte';
+  import MediaSkeleton from './ui/MediaSkeleton.svelte';
+  import ContentSkeleton from './ui/ContentSkeleton.svelte';
+  import Skeleton from './ui/Skeleton.svelte';
   import MetadataEditor from './MetadataEditor.svelte';
   import EpisodeMapping from './EpisodeMapping.svelte';
   import MediaActions from './MediaActions.svelte';
@@ -76,7 +79,7 @@
   let items = $state<Item[]>([]),
     roots = $state<Root[]>([]),
     error = $state(''),
-    busy = $state(false);
+    busy = $state(true);
   let collections = $state<{ id: number; name: string; count: number }[]>([]),
     collection = $state('');
   let breadcrumbs = $state<{ id: string; title: string }[]>([]),
@@ -150,6 +153,7 @@
       group = collectionId ?? '';
     untrack(() => {
       generation++;
+      busy = true;
       closeDetails();
       breadcrumbs = [];
       search = query;
@@ -179,7 +183,10 @@
           }
           if (current()) await load(false);
         } catch (e) {
-          if (current()) error = String(e);
+          if (current()) {
+            error = String(e);
+            busy = false;
+          }
         }
       })();
     });
@@ -264,7 +271,9 @@
       oninput={searchChanged}
       placeholder={`Search your ${domain.toLowerCase()}`}
     /></FormField
-  ><span class="text-muted">{items.length} items</span>
+  >{#if busy && !items.length}<Skeleton class="w-16" />{:else}<span
+      class="text-muted">{items.length} items</span
+    >{/if}
 </div>
 {#if error}<Notice variant="error" role="alert">{error}</Notice>{/if}
 {#if domain === 'Movies' && collections.length}
@@ -334,6 +343,7 @@
     {#if details?.local_trailers?.length}<p class="text-muted">
         {details.local_trailers.length} local trailer(s) indexed.
       </p>{/if}
+    {#if !details && !error}<ContentSkeleton label="Loading media files" />{/if}
     {#each details?.files ?? [] as file (file.id)}<div class={rowClass}>
         <span>{file.edition || 'Original edition'}</span><span
           class="text-muted"
@@ -412,10 +422,13 @@
               })
           : undefined}
       />{/each}
-  </MediaGrid>{:else}<section class={emptyClass}>
+  </MediaGrid>{:else if busy}<MediaSkeleton
+    label={`Loading ${domain.toLowerCase()}`}
+    shape={domain === 'Music' ? 'square' : 'poster'}
+  />{:else if !error}<section class={emptyClass}>
     <Folder size={42} />
     <h2>
-      {busy ? 'Loading your library…' : search ? 'No matches' : 'No media yet'}
+      {search ? 'No matches' : 'No media yet'}
     </h2>
     <p>
       {search ? 'Try a different search.' : 'Imported media will appear here.'}

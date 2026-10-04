@@ -30,6 +30,7 @@
   import { createYoutubeWatchlists } from './youtube-watchlist-controller.svelte';
   import { showToast, clearToasts } from './toasts';
   import Notice from '../ui/Notice.svelte';
+  import MediaSkeleton from '../ui/MediaSkeleton.svelte';
   import ToastViewport from './components/ui/ToastViewport.svelte';
 
   let {
@@ -73,6 +74,7 @@
   let nativeReady = $state(true);
   let disposed = false;
   let loadingPlatform: typeof platform | null = null;
+  const loadedAccounts = $state<Partial<Record<typeof platform, boolean>>>({});
   const accountRequests = new LatestRequest();
   let lastSnapshot = '';
   let refreshAfter = 0;
@@ -205,7 +207,10 @@
           message: normalizeError(error).message,
         });
     } finally {
-      if (current()) loadingPlatform = null;
+      if (current()) {
+        loadedAccounts[selected] = true;
+        loadingPlatform = null;
+      }
     }
   }
   $effect(() => {
@@ -319,10 +324,16 @@
   data-sidebar-resize="xy"
   data-sidebar-resize-origin
 >
-  {#if platform === 'youtube'}
-    {#await providerPages.YoutubeView()}<p role="status">
-        Loading provider…
-      </p>{:then { default: YoutubeView }}<YoutubeView
+  {#if !loadedAccounts[platform]}
+    <MediaSkeleton
+      label={`Loading ${platform === 'youtube' ? 'YouTube' : platform === 'twitch' ? 'Twitch' : 'Kick'}`}
+      shape="landscape"
+    />
+  {:else if platform === 'youtube'}
+    {#await providerPages.YoutubeView()}<MediaSkeleton
+        label="Loading YouTube"
+        shape="landscape"
+      />{:then { default: YoutubeView }}<YoutubeView
         {admin}
         {account}
         {watchlistController}
@@ -353,9 +364,10 @@
         >{String(error)}</Notice
       >{/await}
   {:else if platform === 'twitch'}
-    {#await providerPages.TwitchView()}<p role="status">
-        Loading provider…
-      </p>{:then { default: TwitchView }}<TwitchView
+    {#await providerPages.TwitchView()}<MediaSkeleton
+        label="Loading Twitch"
+        shape="landscape"
+      />{:then { default: TwitchView }}<TwitchView
         {admin}
         {account}
         {syncStatus}
@@ -374,9 +386,10 @@
         >{String(error)}</Notice
       >{/await}
   {:else}
-    {#await providerPages.KickView()}<p role="status">
-        Loading provider…
-      </p>{:then { default: KickView }}<KickView
+    {#await providerPages.KickView()}<MediaSkeleton
+        label="Loading Kick"
+        shape="landscape"
+      />{:then { default: KickView }}<KickView
         {admin}
         connected={!!kick?.connected}
         onAccountChanged={() => void load()}

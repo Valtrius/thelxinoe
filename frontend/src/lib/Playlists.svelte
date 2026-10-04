@@ -12,6 +12,7 @@
   import type { MediaChoice } from './playback';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
+  import ContentSkeleton from './ui/ContentSkeleton.svelte';
   import { inlineFormClass, rowClass } from './ui/styles';
   type Playlist = {
     id: string;
@@ -43,6 +44,7 @@
     creating = $state(false),
     baseRevision = $state(0);
   const drafts = sessionPlaylistDrafts();
+  let loadingLists = $state(true);
   const ownsSession = captureSession();
   const editable = $derived(creating || selected?.owner_id === userId);
   const dirty = $derived(
@@ -112,11 +114,14 @@
   });
   async function load() {
     const current = lists.begin();
+    loadingLists = true;
     try {
       const value = await api<{ items: Playlist[] }>('/playlists');
       if (current()) items = value.items;
     } catch (e) {
       if (current()) error = String(e);
+    } finally {
+      if (current()) loadingLists = false;
     }
   }
   async function open(id: string) {
@@ -250,6 +255,9 @@
   >
 </SectionHeading>
 {#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
+{#if busy && !creating && !selected}<ContentSkeleton
+    label="Loading playlist"
+  />{/if}
 {#if creating || selected}<Panel aria-label="Playlist details">
     <SectionHeading>
       <h2>{creating ? 'Create playlist' : selected?.name}</h2>
@@ -393,20 +401,22 @@
         </details>{/if}
     </fieldset>
   </Panel>{/if}
-{#each items as item (item.id)}<Panel>
-    <div class={rowClass}>
-      <Button
-        variant="secondary"
-        size="form"
-        onclick={() => selectedChanged(item.id)}>{item.name}</Button
-      ><small>{item.owner} · {item.count} tracks</small><Button
-        variant="secondary"
-        size="form"
-        aria-pressed={item.favorite}
-        onclick={() => void favorite(item)}
-        >{item.favorite ? 'Unfavorite playlist' : 'Favorite playlist'}</Button
-      >
-    </div>
-  </Panel>{:else}<p class="text-muted">
-    Create a playlist or save tracks from Music.
-  </p>{/each}
+{#if loadingLists && !items.length}<ContentSkeleton
+    label="Loading playlists"
+  />{:else}{#each items as item (item.id)}<Panel>
+      <div class={rowClass}>
+        <Button
+          variant="secondary"
+          size="form"
+          onclick={() => selectedChanged(item.id)}>{item.name}</Button
+        ><small>{item.owner} · {item.count} tracks</small><Button
+          variant="secondary"
+          size="form"
+          aria-pressed={item.favorite}
+          onclick={() => void favorite(item)}
+          >{item.favorite ? 'Unfavorite playlist' : 'Favorite playlist'}</Button
+        >
+      </div>
+    </Panel>{:else}{#if !error}<p class="text-muted">
+        Create a playlist or save tracks from Music.
+      </p>{/if}{/each}{/if}

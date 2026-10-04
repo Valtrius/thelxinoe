@@ -5,6 +5,8 @@
   import { pages } from './pages';
   import Notice from './ui/Notice.svelte';
   import Button from './ui/Button.svelte';
+  import ContentSkeleton from './ui/ContentSkeleton.svelte';
+  import MediaSkeleton from './ui/MediaSkeleton.svelte';
   let {
     route,
     user,
@@ -51,9 +53,33 @@
   let retry = $state(0);
 </script>
 
-{#snippet loading()}<p role="status">
-    Loading {route.section.toLowerCase()}…
-  </p>{/snippet}
+{#snippet loading()}
+  {#if route.section === 'Settings' || route.section === 'Playlists'}
+    <ContentSkeleton
+      label={`Loading ${route.section.toLowerCase()}`}
+      variant={route.section === 'Settings' ? 'settings' : 'rows'}
+    />
+  {:else if route.section === 'Statistics'}
+    <ContentSkeleton label="Loading statistics" variant="statistics" />
+  {:else if route.section === 'Discover' && route.detail}
+    <ContentSkeleton label="Loading details" variant="detail" />
+  {:else}
+    <MediaSkeleton
+      label={`Loading ${route.section.toLowerCase()}`}
+      heading={route.section === 'Home' ? 'Continue watching' : undefined}
+      layout={route.section === 'Home'
+        ? 'row'
+        : route.section === 'Discover'
+          ? 'posters'
+          : 'grid'}
+      shape={route.section === 'Music'
+        ? 'square'
+        : ['Home', 'YouTube', 'Twitch', 'Kick'].includes(route.section)
+          ? 'landscape'
+          : 'poster'}
+    />
+  {/if}
+{/snippet}
 {#snippet failed(error: unknown)}
   <Notice variant="error" role="alert"
     >{String(error)}

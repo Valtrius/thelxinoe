@@ -74,6 +74,24 @@ function reveals(page: Page) {
   );
 }
 
+test('window controls use the standard arrow cursor', async ({
+  page,
+}, testInfo) => {
+  const fixture = await desktopFixture(page, true);
+  await page.goto('/');
+  for (const name of ['Minimize window', 'Maximize window', 'Close window']) {
+    const control = page.getByRole('button', { name, exact: true });
+    await control.hover();
+    await expect(control).toHaveCSS('cursor', 'default');
+  }
+  await testInfo.attach('window-controls', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 test('desktop waits for its connection screen and icon before revealing the window', async ({
   page,
 }, testInfo) => {
