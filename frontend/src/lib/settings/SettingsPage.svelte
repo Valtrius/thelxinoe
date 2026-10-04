@@ -18,6 +18,8 @@
   } from '../ui/styles';
   import Button from '../ui/Button.svelte';
   import Panel from '../ui/Panel.svelte';
+  import ContentSkeleton from '../ui/ContentSkeleton.svelte';
+  import Skeleton from '../ui/Skeleton.svelte';
   import { Accordion } from 'bits-ui';
   let {
     user,
@@ -71,6 +73,11 @@
   let busy = $state(false),
     error = $state('');
   const requests = new LatestRequest();
+  let loadingSection = $state<string | null>(null);
+  const loadedSections = $state<Record<string, boolean>>({});
+  const loadingData = $derived(
+    loadingSection === settingsSection && !loadedSections[settingsSection],
+  );
   const ownsSession = captureSession();
   onDestroy(() => requests.invalidate());
   $effect(() => {
@@ -92,6 +99,8 @@
   }
   async function loadSettings() {
     const current = requests.begin();
+    const section = settingsSection;
+    loadingSection = section;
     error = '';
     try {
       if (settingsSection === 'devices') {
@@ -118,6 +127,11 @@
     } catch (caught) {
       if (current() && !isServerUpdateInterruption(caught))
         error = String(caught);
+    } finally {
+      if (current()) {
+        loadedSections[section] = true;
+        loadingSection = null;
+      }
     }
   }
   async function createUser() {
@@ -137,9 +151,11 @@
 <SettingsLayout {user} active={settingsSection} {openSettings}>
   {#if error}<Notice variant="error" role="alert">{error}</Notice>{/if}
   {#if settingsSection === 'account'}
-    {#await settingsPages.UserPreferences()}<p role="status">
-        Loading settings…
-      </p>{:then { default: UserPreferences }}<UserPreferences
+    {#await settingsPages.UserPreferences()}<ContentSkeleton
+        label="Loading settings"
+        variant="settings"
+        class="col-span-full"
+      />{:then { default: UserPreferences }}<UserPreferences
         {user}
         revision={preferencesRevision}
         avatarChanged={(id, avatar) => {
@@ -151,18 +167,20 @@
       />{:catch error}<Notice variant="error" role="alert"
         >{String(error)}</Notice
       >{/await}
-    {#await settingsPages.PasswordSettings()}<p role="status">
-        Loading settings…
-      </p>{:then { default: PasswordSettings }}<PasswordSettings
+    {#await settingsPages.PasswordSettings()}<ContentSkeleton
+        label="Loading settings"
+        variant="settings"
+        class="col-span-full"
+      />{:then { default: PasswordSettings }}<PasswordSettings
         changed={() => void loadSettings()}
       />{:catch error}<Notice variant="error" role="alert"
         >{String(error)}</Notice
       >{/await}{/if}
-  {#if settingsSection === 'online'}{#await settingsPages.OnlineAccounts()}<p
-        role="status"
-      >
-        Loading settings…
-      </p>{:then { default: OnlineAccounts }}<OnlineAccounts
+  {#if settingsSection === 'online'}{#await settingsPages.OnlineAccounts()}<ContentSkeleton
+        label="Loading settings"
+        variant="settings"
+        class="col-span-full"
+      />{:then { default: OnlineAccounts }}<OnlineAccounts
         revision={accountRevision}
         navigate={(name) => void navigate(name)}
         configureProviders={user.role === 'admin'
@@ -171,35 +189,37 @@
       />{:catch error}<Notice variant="error" role="alert"
         >{String(error)}</Notice
       >{/await}{/if}
-  {#if settingsSection === 'playback'}{#await settingsPages.PlaybackSettings()}<p
-        role="status"
-      >
-        Loading settings…
-      </p>{:then { default: PlaybackSettings }}<PlaybackSettings
+  {#if settingsSection === 'playback'}{#await settingsPages.PlaybackSettings()}<ContentSkeleton
+        label="Loading settings"
+        variant="settings"
+        class="col-span-full"
+      />{:then { default: PlaybackSettings }}<PlaybackSettings
       />{:catch error}<Notice variant="error" role="alert"
         >{String(error)}</Notice
       >{/await}
-    {#await settingsPages.SegmentSettings()}<p role="status">
-        Loading settings…
-      </p>{:then { default: SegmentSettings }}<SegmentSettings
+    {#await settingsPages.SegmentSettings()}<ContentSkeleton
+        label="Loading settings"
+        variant="settings"
+        class="col-span-full"
+      />{:then { default: SegmentSettings }}<SegmentSettings
       />{:catch error}<Notice variant="error" role="alert"
         >{String(error)}</Notice
       >{/await}
   {/if}
-  {#if settingsSection === 'devices'}{#await settingsPages.QuickConnect()}<p
-        role="status"
-      >
-        Loading settings…
-      </p>{:then { default: QuickConnect }}<QuickConnect
+  {#if settingsSection === 'devices'}{#await settingsPages.QuickConnect()}<ContentSkeleton
+        label="Loading settings"
+        variant="settings"
+        class="col-span-full"
+      />{:then { default: QuickConnect }}<QuickConnect
         username={user.username}
       />{:catch error}<Notice variant="error" role="alert"
         >{String(error)}</Notice
       >{/await}{/if}
-  {#if desktop && settingsSection === 'mpv'}{#await settingsPages.MpvSettings()}<p
-        role="status"
-      >
-        Loading settings…
-      </p>{:then { default: MpvSettings }}<MpvSettings />{:catch error}<Notice
+  {#if desktop && settingsSection === 'mpv'}{#await settingsPages.MpvSettings()}<ContentSkeleton
+        label="Loading settings"
+        variant="settings"
+        class="col-span-full"
+      />{:then { default: MpvSettings }}<MpvSettings />{:catch error}<Notice
         variant="error"
         role="alert">{String(error)}</Notice
       >{/await}{/if}
@@ -208,9 +228,11 @@
       <div class={statsClass}>
         <DesktopVersion />
       </div>
-      {#await settingsPages.DesktopUpdatePreferences()}<p role="status">
-          Loading settings…
-        </p>{:then { default: DesktopUpdatePreferences }}<DesktopUpdatePreferences
+      {#await settingsPages.DesktopUpdatePreferences()}<ContentSkeleton
+          label="Loading settings"
+          variant="settings"
+          class="col-span-full"
+        />{:then { default: DesktopUpdatePreferences }}<DesktopUpdatePreferences
         />{:catch error}<Notice variant="error" role="alert"
           >{String(error)}</Notice
         >{/await}
@@ -239,6 +261,7 @@
       <p class="text-muted">
         Revoke access to a browser or desktop at any time.
       </p>
+      {#if loadingData}<ContentSkeleton label="Loading devices" />{/if}
       {#each sessions as session (session.id)}<div class={rowClass}>
           <div>
             <strong>{session.name}</strong><small
@@ -268,38 +291,38 @@
     </Panel>
   {/if}
   {#if user.role === 'admin'}
-    {#if settingsSection === 'analysis'}{#await settingsPages.SegmentSettings()}<p
-          role="status"
-        >
-          Loading settings…
-        </p>{:then { default: SegmentSettings }}<SegmentSettings
+    {#if settingsSection === 'analysis'}{#await settingsPages.SegmentSettings()}<ContentSkeleton
+          label="Loading settings"
+          variant="settings"
+          class="col-span-full"
+        />{:then { default: SegmentSettings }}<SegmentSettings
           admin
         />{:catch error}<Notice variant="error" role="alert"
           >{String(error)}</Notice
         >{/await}{/if}
-    {#if settingsSection === 'backups'}{#await settingsPages.BackupSettings()}<p
-          role="status"
-        >
-          Loading settings…
-        </p>{:then { default: BackupSettings }}<BackupSettings
+    {#if settingsSection === 'backups'}{#await settingsPages.BackupSettings()}<ContentSkeleton
+          label="Loading settings"
+          variant="settings"
+          class="col-span-full"
+        />{:then { default: BackupSettings }}<BackupSettings
           {timezone}
           {timeFormat}
         />{:catch error}<Notice variant="error" role="alert"
           >{String(error)}</Notice
         >{/await}{/if}
-    {#if settingsSection === 'providers'}{#await settingsPages.OnlineSettings()}<p
-          role="status"
-        >
-          Loading settings…
-        </p>{:then { default: OnlineSettings }}<OnlineSettings
+    {#if settingsSection === 'providers'}{#await settingsPages.OnlineSettings()}<ContentSkeleton
+          label="Loading settings"
+          variant="settings"
+          class="col-span-full"
+        />{:then { default: OnlineSettings }}<OnlineSettings
         />{:catch error}<Notice variant="error" role="alert"
           >{String(error)}</Notice
         >{/await}{/if}
-    {#if settingsSection === 'services'}{#await settingsPages.ServicesSettings()}<p
-          role="status"
-        >
-          Loading settings…
-        </p>{:then { default: ServicesSettings }}<ServicesSettings
+    {#if settingsSection === 'services'}{#await settingsPages.ServicesSettings()}<ContentSkeleton
+          label="Loading settings"
+          variant="settings"
+          class="col-span-full"
+        />{:then { default: ServicesSettings }}<ServicesSettings
           {timeFormat}
           selected={route.service}
           workflow={route.workflow}
@@ -307,19 +330,19 @@
         />{:catch error}<Notice variant="error" role="alert"
           >{String(error)}</Notice
         >{/await}{/if}
-    {#if settingsSection === 'services'}{#await settingsPages.ManagerOwnership()}<p
-          role="status"
-        >
-          Loading settings…
-        </p>{:then { default: ManagerOwnership }}<ManagerOwnership
+    {#if settingsSection === 'services'}{#await settingsPages.ManagerOwnership()}<ContentSkeleton
+          label="Loading settings"
+          variant="settings"
+          class="col-span-full"
+        />{:then { default: ManagerOwnership }}<ManagerOwnership
         />{:catch error}<Notice variant="error" role="alert"
           >{String(error)}</Notice
         >{/await}{/if}
-    {#if settingsSection === 'retention'}{#await settingsPages.RetentionSettings()}<p
-          role="status"
-        >
-          Loading settings…
-        </p>{:then { default: RetentionSettings }}<RetentionSettings
+    {#if settingsSection === 'retention'}{#await settingsPages.RetentionSettings()}<ContentSkeleton
+          label="Loading settings"
+          variant="settings"
+          class="col-span-full"
+        />{:then { default: RetentionSettings }}<RetentionSettings
         />{:catch error}<Notice variant="error" role="alert"
           >{String(error)}</Notice
         >{/await}{/if}
@@ -330,29 +353,36 @@
         <div
           class="grid divide-y divide-line [&>div]:py-3 [&_strong]:text-base [&_strong]:font-medium [&_small]:mt-1 [&_small]:block [&_small]:text-xs [&_small]:text-muted"
         >
-          {#await settingsPages.ProductVersion()}<p role="status">
-              Loading settings…
-            </p>{:then { default: ProductVersion }}<ProductVersion
+          {#await settingsPages.ProductVersion()}<ContentSkeleton
+              label="Loading settings"
+              variant="settings"
+              class="col-span-full"
+            />{:then { default: ProductVersion }}<ProductVersion
               installed={health?.version ?? '—'}
             />{:catch error}<Notice variant="error" role="alert"
               >{String(error)}</Notice
             >{/await}
           <div>
-            <strong>{health?.controller ? 'Connected' : 'Unavailable'}</strong
-            ><small>Docker controller</small>
+            {#if loadingData}<Skeleton class="h-5 w-24" />{:else}<strong
+                >{health?.controller ? 'Connected' : 'Unavailable'}</strong
+              >{/if}
+            <small>Docker controller</small>
           </div>
           <div>
-            <strong
-              >{health
-                ? `${(health.cache_free_bytes / 1024 ** 3).toFixed(1)} GB`
-                : '—'}</strong
-            ><small>Cache space available</small>
+            {#if loadingData}<Skeleton class="h-5 w-24" />{:else}<strong
+                >{health
+                  ? `${(health.cache_free_bytes / 1024 ** 3).toFixed(1)} GB`
+                  : '—'}</strong
+              >{/if}
+            <small>Cache space available</small>
           </div>
         </div>
       </Panel>
-      {#await settingsPages.ServerDisplayDefaults()}<p role="status">
-          Loading settings…
-        </p>{:then { default: ServerDisplayDefaults }}<ServerDisplayDefaults
+      {#await settingsPages.ServerDisplayDefaults()}<ContentSkeleton
+          label="Loading settings"
+          variant="settings"
+          class="col-span-full"
+        />{:then { default: ServerDisplayDefaults }}<ServerDisplayDefaults
           revision={preferencesRevision}
           changed={(value) => (timezone = value)}
         />{:catch error}<Notice variant="error" role="alert"
@@ -360,24 +390,30 @@
         >{/await}
       <Panel
         ><h2>Server updates</h2>
-        {#await settingsPages.ProductUpdatePreferences()}<p role="status">
-            Loading settings…
-          </p>{:then { default: ProductUpdatePreferences }}<ProductUpdatePreferences
+        {#await settingsPages.ProductUpdatePreferences()}<ContentSkeleton
+            label="Loading settings"
+            variant="settings"
+            class="col-span-full"
+          />{:then { default: ProductUpdatePreferences }}<ProductUpdatePreferences
           />{:catch error}<Notice variant="error" role="alert"
             >{String(error)}</Notice
           >{/await}</Panel
       >
       <Panel class="settings-wide"
-        >{#await settingsPages.ServerTools()}<p role="status">
-            Loading settings…
-          </p>{:then { default: ServerTools }}<ServerTools
-          />{:catch error}<Notice variant="error" role="alert"
-            >{String(error)}</Notice
+        >{#await settingsPages.ServerTools()}<ContentSkeleton
+            label="Loading settings"
+            variant="settings"
+            class="col-span-full"
+          />{:then { default: ServerTools }}<ServerTools />{:catch error}<Notice
+            variant="error"
+            role="alert">{String(error)}</Notice
           >{/await}</Panel
       >
-      {#await settingsPages.AdminOperations()}<p role="status">
-          Loading settings…
-        </p>{:then { default: AdminOperations }}<AdminOperations
+      {#await settingsPages.AdminOperations()}<ContentSkeleton
+          label="Loading settings"
+          variant="settings"
+          class="col-span-full"
+        />{:then { default: AdminOperations }}<AdminOperations
           {timezone}
           {timeFormat}
         />{:catch error}<Notice variant="error" role="alert"
@@ -421,12 +457,13 @@
       </Panel>
       <Panel class="settings-wide"
         ><h2>User access</h2>
+        {#if loadingData}<ContentSkeleton label="Loading users" />{/if}
         <Accordion.Root type="single" bind:value={expandedUser}>
-          {#each users as person (person.id)}{#await settingsPages.UserAdministration()}<p
-                role="status"
-              >
-                Loading settings…
-              </p>{:then { default: UserAdministration }}<UserAdministration
+          {#each users as person (person.id)}{#await settingsPages.UserAdministration()}<ContentSkeleton
+                label="Loading settings"
+                variant="settings"
+                class="col-span-full"
+              />{:then { default: UserAdministration }}<UserAdministration
                 {person}
                 currentId={user.id}
                 changed={loadSettings}
@@ -437,22 +474,23 @@
         </Accordion.Root>
       </Panel>
     {/if}
-    {#if settingsSection === 'audit'}{#await settingsPages.AuditSettings()}<p
-          role="status"
-        >
-          Loading settings…
-        </p>{:then { default: AuditSettings }}<AuditSettings
+    {#if settingsSection === 'audit'}{#await settingsPages.AuditSettings()}<ContentSkeleton
+          label="Loading settings"
+          variant="settings"
+          class="col-span-full"
+        />{:then { default: AuditSettings }}<AuditSettings
           {user}
           {timeFormat}
         />{:catch error}<Notice variant="error" role="alert"
           >{String(error)}</Notice
         >{/await}{/if}
-    {#if settingsSection === 'jobs'}{#await settingsPages.ActivitySettings()}<p
-          role="status"
-        >
-          Loading settings…
-        </p>{:then { default: ActivitySettings }}<ActivitySettings
+    {#if settingsSection === 'jobs'}{#await settingsPages.ActivitySettings()}<ContentSkeleton
+          label="Loading settings"
+          variant="settings"
+          class="col-span-full"
+        />{:then { default: ActivitySettings }}<ActivitySettings
           {jobs}
+          loading={loadingData}
           checkpoint={() =>
             act(async () => {
               await api('/admin/jobs', 'POST', {

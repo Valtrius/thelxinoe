@@ -25,6 +25,7 @@ export default defineConfig({
         'authentication.spec.ts',
         'frontend-ownership.spec.ts',
         'navigation.spec.ts',
+        'loading.spec.ts',
         'desktop-startup.spec.ts',
         'attention.spec.ts',
       ],

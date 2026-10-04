@@ -6,14 +6,7 @@
   import { LatestRequest } from '../latest-request';
   import { onMount, untrack } from 'svelte';
   import { SvelteURLSearchParams } from 'svelte/reactivity';
-  import {
-    CalendarDays,
-    Clock3,
-    Eye,
-    LoaderCircle,
-    RefreshCw,
-    Timer,
-  } from '@lucide/svelte';
+  import { CalendarDays, Clock3, Eye, RefreshCw, Timer } from '@lucide/svelte';
   import { api, type User } from '../api';
   import { formatWatchDuration, watchedCompletionPercent } from './helpers';
   import type {
@@ -23,6 +16,7 @@
   } from './types';
   import PlatformIcon from './StatisticsIcon.svelte';
   import Button from '../ui/Button.svelte';
+  import ContentSkeleton from '../ui/ContentSkeleton.svelte';
   import ExclusiveChoiceGroup from '../ui/ExclusiveChoiceGroup.svelte';
   import ViewingRhythmChart from './ViewingRhythmChart.svelte';
   import WatchTimeChart from './WatchTimeChart.svelte';
@@ -296,16 +290,7 @@
   {/if}
 
   {#if loading && !overview}
-    <section
-      data-sidebar-resize="xy"
-      class="panel grid min-h-72 place-items-center border border-line bg-surface"
-    >
-      <div class="text-center">
-        <LoaderCircle class="mx-auto size-6 animate-spin text-accent" />
-        <p class={[eyebrowTextClass, 'm-0 mt-4']}>LOCAL / STATISTICS</p>
-        <p class="mt-2 text-sm text-muted">Reading viewing history.</p>
-      </div>
-    </section>
+    <ContentSkeleton label="Loading statistics" variant="statistics" />
   {:else if overview}
     {#if overview.totalActiveSeconds === 0}
       <section

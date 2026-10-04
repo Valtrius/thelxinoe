@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ContentSkeleton from './ui/ContentSkeleton.svelte';
   import Notice from './ui/Notice.svelte';
   import FormField from './ui/FormField.svelte';
   import { formControlClass } from './ui/styles';
@@ -141,9 +142,11 @@
             ></select
           ></FormField
         >
-      </AutoSaveForm>{:else if !error}<p role="status">
-        Loading display preferences…
-      </p>{/if}
+      </AutoSaveForm>{:else if !error}<ContentSkeleton
+        label="Loading display preferences"
+        variant="settings"
+        count={2}
+      />{/if}
     {#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
     <AppearanceSettings />
   </div>

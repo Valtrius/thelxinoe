@@ -9,6 +9,7 @@
   import type { StatisticsPlatform, StatisticsRange } from './statistics/types';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
+  import ContentSkeleton from './ui/ContentSkeleton.svelte';
   import FormField from './ui/FormField.svelte';
   import { rowClass, formControlClass } from './ui/styles';
   let {
@@ -260,13 +261,17 @@
         </table>
       </div>
     {/if}
-  {:else}
+  {:else if busy}
+    <ContentSkeleton
+      label={audit
+        ? 'Loading administrative activity'
+        : 'Loading playback history'}
+    />
+  {:else if !error}
     <p class="text-muted" role="status">
-      {busy
-        ? 'Loading activity…'
-        : audit && (auditUser || auditAction)
-          ? 'No activity matches these filters.'
-          : 'No activity in this view yet.'}
+      {audit && (auditUser || auditAction)
+        ? 'No activity matches these filters.'
+        : 'No activity in this view yet.'}
     </p>
   {/if}
   {#if result?.next_before}<Button

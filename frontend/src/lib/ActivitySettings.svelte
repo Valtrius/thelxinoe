@@ -7,14 +7,17 @@
   import FormField from './ui/FormField.svelte';
   import Panel from './ui/Panel.svelte';
   import SectionHeading from './ui/SectionHeading.svelte';
+  import ContentSkeleton from './ui/ContentSkeleton.svelte';
   import { badgeClass, formControlClass, rowClass } from './ui/styles';
 
   let {
     jobs,
     checkpoint,
+    loading = false,
   }: {
     jobs: Job[];
     checkpoint: () => Promise<void>;
+    loading?: boolean;
   } = $props();
   let state = $state<'all' | Job['state']>('all');
   const states: Record<Job['state'], string> = {
@@ -54,27 +57,29 @@
         : 'jobs'}</span
     >
   </div>
-  {#each visible as job (job.id)}
-    {@const entries = $attention.filter(
-      (item) => item.target === 'jobs' && item.resource === job.id,
-    )}
-    <div class={rowClass}>
-      <div class="flex-1">
-        <strong>{job.kind}</strong>{#if job.error}<small>{job.error}</small
-          >{/if}
+  {#if loading}<ContentSkeleton
+      label="Loading background jobs"
+    />{:else}{#each visible as job (job.id)}
+      {@const entries = $attention.filter(
+        (item) => item.target === 'jobs' && item.resource === job.id,
+      )}
+      <div class={rowClass}>
+        <div class="flex-1">
+          <strong>{job.kind}</strong>{#if job.error}<small>{job.error}</small
+            >{/if}
+        </div>
+        <span class={badgeClass}>{states[job.state]}</span>
+        <AttentionDot items={entries} />
+        {#each entries as entry (entry.id)}<Button
+            variant="secondary"
+            size="sm"
+            onclick={() => void acknowledgeAttention(entry)}
+            >Dismiss failure</Button
+          >{/each}
       </div>
-      <span class={badgeClass}>{states[job.state]}</span>
-      <AttentionDot items={entries} />
-      {#each entries as entry (entry.id)}<Button
-          variant="secondary"
-          size="sm"
-          onclick={() => void acknowledgeAttention(entry)}
-          >Dismiss failure</Button
-        >{/each}
-    </div>
-  {:else}<p class="text-muted">
-      {state === 'all'
-        ? 'No background jobs yet.'
-        : 'No matching jobs in the latest activity.'}
-    </p>{/each}
+    {:else}<p class="text-muted">
+        {state === 'all'
+          ? 'No background jobs yet.'
+          : 'No matching jobs in the latest activity.'}
+      </p>{/each}{/if}
 </Panel>

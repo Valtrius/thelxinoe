@@ -16,6 +16,7 @@
   import Notice from './ui/Notice.svelte';
   import LibraryCard from './ui/LibraryCard.svelte';
   import MediaRow from './ui/MediaRow.svelte';
+  import MediaSkeleton from './ui/MediaSkeleton.svelte';
   import LiveCard from './providers/components/ui/LiveCard.svelte';
   import LiveCardBadge from './providers/components/ui/LiveCardBadge.svelte';
   import PlatformIcon from './ui/PlatformIcon.svelte';
@@ -83,6 +84,18 @@
     kick: true,
   });
   let progressRefresh = $state(0);
+  let loaded = $state({
+    library: false,
+    youtube: false,
+    twitch: false,
+    kick: false,
+  });
+  const initialLoading = $derived({
+    library: loading.library && !loaded.library,
+    youtube: loading.youtube && !loaded.youtube,
+    twitch: loading.twitch && !loaded.twitch,
+    kick: loading.kick && !loaded.kick,
+  });
   let progressReady = false;
   let libraryAgain = false;
   let youtubeAgain = false;
@@ -166,6 +179,7 @@
     } finally {
       if (current()) {
         loading.library = false;
+        loaded.library = true;
         if (libraryAgain) {
           libraryAgain = false;
           void loadLibrary();
@@ -179,6 +193,7 @@
     loading.youtube = enabled;
     if (!enabled) {
       youtube = { continue_watching: [], next_up: [] };
+      loaded.youtube = true;
       return;
     }
     try {
@@ -203,6 +218,7 @@
     } finally {
       if (current()) {
         loading.youtube = false;
+        loaded.youtube = true;
         if (youtubeAgain) {
           youtubeAgain = false;
           void loadYoutube(enabled);
@@ -216,6 +232,7 @@
     loading.twitch = enabled;
     if (!enabled) {
       twitch = [];
+      loaded.twitch = true;
       return;
     }
     try {
@@ -245,7 +262,10 @@
         errors.twitch = String(error);
       }
     } finally {
-      if (current()) loading.twitch = false;
+      if (current()) {
+        loading.twitch = false;
+        loaded.twitch = true;
+      }
     }
   }
   async function loadKick(enabled: boolean) {
@@ -254,6 +274,7 @@
     loading.kick = enabled;
     if (!enabled) {
       kick = [];
+      loaded.kick = true;
       return;
     }
     try {
@@ -283,7 +304,10 @@
         errors.kick = String(error);
       }
     } finally {
-      if (current()) loading.kick = false;
+      if (current()) {
+        loading.kick = false;
+        loaded.kick = true;
+      }
     }
   }
   $effect(() => {
@@ -293,6 +317,7 @@
     untrack(() => {
       if (id !== owner) {
         owner = id;
+        loaded = { library: false, youtube: false, twitch: false, kick: false };
         library = emptyLibrary();
         youtube = { continue_watching: [], next_up: [] };
         twitch = [];
@@ -432,8 +457,15 @@
         />
       {/each}
     </MediaRow>
+  {:else if initialLoading.library || initialLoading.youtube}
+    <MediaSkeleton
+      label="Loading continue watching"
+      heading="Continue watching"
+      layout="row"
+      shape="landscape"
+    />
   {/if}
-  {#if library.next_up.length || youtube.next_up.length}
+  {#if library.next_up.length || youtube.next_up.length || initialLoading.library || initialLoading.youtube}
     <div class="grid min-w-0 gap-6">
       {#if library.next_up.length}
         <MediaRow label="Next up">
@@ -448,6 +480,13 @@
             />
           {/each}
         </MediaRow>
+      {:else if initialLoading.library}
+        <MediaSkeleton
+          label="Loading library"
+          heading="Next up"
+          layout="row"
+          shape="landscape"
+        />
       {/if}
       {#if youtube.next_up.length}
         <MediaRow label="YouTube subscriptions">
@@ -461,6 +500,13 @@
             />
           {/each}
         </MediaRow>
+      {:else if initialLoading.youtube}
+        <MediaSkeleton
+          label="Loading YouTube subscriptions"
+          heading="YouTube subscriptions"
+          layout="row"
+          shape="landscape"
+        />
       {/if}
     </div>
   {/if}
@@ -499,6 +545,13 @@
         </LiveCard>
       {/each}
     </MediaRow>
+  {:else if initialLoading.twitch || initialLoading.kick}
+    <MediaSkeleton
+      label="Loading live streams"
+      heading="Live now"
+      layout="row"
+      shape="landscape"
+    />
   {/if}
   {#each [{ label: 'Watch later', items: library.watch_later }, { label: 'Favorites', items: library.favorites }] as shelf (shelf.label)}
     {#if shelf.items.length}

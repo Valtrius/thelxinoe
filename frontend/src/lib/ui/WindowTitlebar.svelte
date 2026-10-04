@@ -92,13 +92,13 @@
     <div class="flex h-full" aria-label="Window controls">
       <button
         type="button"
-        class="grid h-full w-11 place-items-center text-muted hover:bg-surface-soft hover:text-foreground"
+        class="grid h-full w-11 cursor-default place-items-center text-muted hover:bg-surface-soft hover:text-foreground"
         aria-label="Minimize window"
         onclick={minimize}><Minus class="size-3.5" /></button
       >
       <button
         type="button"
-        class="grid h-full w-11 place-items-center text-muted hover:bg-surface-soft hover:text-foreground"
+        class="grid h-full w-11 cursor-default place-items-center text-muted hover:bg-surface-soft hover:text-foreground"
         aria-label={maximized ? 'Restore window' : 'Maximize window'}
         onclick={toggleMaximize}
         >{#if maximized}<Copy class="size-3" />{:else}<Square
@@ -107,7 +107,7 @@
       >
       <button
         type="button"
-        class="grid h-full w-11 place-items-center text-muted hover:bg-danger hover:text-white"
+        class="grid h-full w-11 cursor-default place-items-center text-muted hover:bg-danger hover:text-white"
         aria-label="Close window"
         onclick={close}><X class="size-3.5" /></button
       >

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MediaSkeleton from '../../../ui/MediaSkeleton.svelte';
   import {
     captureScrollAnchor,
     restoreScrollAnchor,
@@ -369,10 +370,10 @@
         />
       {/if}
     {:else if loading && streams.length === 0}
-      <EmptyState
-        eyebrow="CACHE / READ"
-        title="Loading the live snapshot"
-        message="Thelxinoe is reading the latest saved snapshot while refresh runs."
+      <MediaSkeleton
+        label="Loading Twitch streams"
+        layout="feed"
+        shape="landscape"
       />
     {:else if streams.length === 0}
       {#if syncStatus.error}

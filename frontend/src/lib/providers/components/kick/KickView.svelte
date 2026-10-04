@@ -1,4 +1,5 @@
 <script lang="ts">
+  import MediaSkeleton from '../../../ui/MediaSkeleton.svelte';
   import { LatestRequest } from '../../../latest-request';
   import { untrack } from 'svelte';
   import { Plus, RefreshCw, Settings2, Trash2 } from '@lucide/svelte';
@@ -432,10 +433,10 @@
     data-feed-content
   >
     {#if loading}
-      <EmptyState
-        eyebrow="CACHE / READ"
-        title="Loading Kick channels"
-        message="Thelxinoe is reading the tracked list and latest live snapshot."
+      <MediaSkeleton
+        label="Loading Kick channels"
+        layout="feed"
+        shape="landscape"
       />
     {:else if error && channels.length === 0}
       <EmptyState

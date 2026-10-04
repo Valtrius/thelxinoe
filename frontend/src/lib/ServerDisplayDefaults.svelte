@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ContentSkeleton from './ui/ContentSkeleton.svelte';
   import { onDestroy, untrack } from 'svelte';
   import { api } from './api';
   import { LatestRequest } from './latest-request';
@@ -101,7 +102,11 @@
         </select></FormField
       >
     </AutoSaveForm>
-  {:else if !error}<p role="status">Loading display defaults…</p>{/if}
+  {:else if !error}<ContentSkeleton
+      label="Loading display defaults"
+      variant="settings"
+      count={2}
+    />{/if}
   {#if error}<Notice role="alert" variant="error">{error}</Notice>
     <Button variant="secondary" size="form" onclick={() => void load()}
       >Retry display defaults</Button

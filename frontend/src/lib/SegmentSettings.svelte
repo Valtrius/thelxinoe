@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ContentSkeleton from './ui/ContentSkeleton.svelte';
   import Switch from './ui/Switch.svelte';
   import ExclusiveChoiceGroup from './ui/ExclusiveChoiceGroup.svelte';
   import { onMount } from 'svelte';
@@ -85,7 +86,10 @@
             </div>
           {/each}
         {/snippet}
-      </AutoSaveForm>{/if}
+      </AutoSaveForm>{:else if busy}<ContentSkeleton
+        label="Loading skipping preferences"
+        variant="settings"
+      />{/if}
     {#if message}<p role="alert">{message}</p>{/if}
   </Panel>
 {:else}<Panel class="grid gap-4"
@@ -106,6 +110,12 @@
           >Fetch TheIntroDB timestamps for confirmed episode matches</Switch
         >
       </AutoSaveForm>
+    {:else if busy}
+      <ContentSkeleton
+        label="Loading episode analysis settings"
+        variant="settings"
+        count={2}
+      />
     {/if}
     <p>
       External lookups send the show's public identifier, episode coordinates

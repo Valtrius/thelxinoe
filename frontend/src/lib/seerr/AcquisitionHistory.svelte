@@ -8,6 +8,7 @@
   } from '../attention';
   import AttentionDot from '../ui/AttentionDot.svelte';
   import Button from '../ui/Button.svelte';
+  import ContentSkeleton from '../ui/ContentSkeleton.svelte';
   let { navigate } = $props<{ navigate: (section: string) => void }>();
   type RequestRow = {
     id: string;
@@ -80,6 +81,9 @@
       >Try again</Button
     >
   </div>{/if}
+{#if loading && !items.length}<ContentSkeleton
+    label="Loading request history"
+  />{/if}
 {#each items as item (item.id)}
   <article
     class="mt-3 flex items-center gap-4 border border-line bg-surface p-4"
