@@ -74,7 +74,7 @@ async fn replacement_and_restart_keep_resume_but_invalidate_old_playback_generat
     state.db.write("test.fixture", move|db|{
         db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Movies','movies',?1)",[root.to_string_lossy().to_string()])?;
         db.execute("INSERT INTO users(id,username,password_hash,role,created_at) VALUES ('user','viewer','unused','user',?1)",[now()])?;
-        db.execute("INSERT INTO sessions VALUES ('device','user','unused','device','test',?1,?2,?1)",rusqlite::params![now(),now()+3600])?;Ok(())
+        db.execute("INSERT INTO sessions(id,user_id,token_hash,transport,name,created_at,expires_at,last_seen) VALUES ('device','user','unused','device','test',?1,?2,?1)",rusqlite::params![now(),now()+3600])?;Ok(())
     }).await.unwrap();
     let root = thelxinoe_catalog::roots(&state.db).await.unwrap().remove(0);
     thelxinoe_catalog::scan(

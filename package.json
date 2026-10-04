@@ -21,6 +21,7 @@
     "test:rust": "cargo test --locked --workspace --exclude thelxinoe-desktop",
     "test:python": "node scripts/python-tests.mjs",
     "test:e2e": "playwright test",
+    "test:authentication": "node scripts/test-authentication.mjs",
     "test:service-access": "node --import ./scripts/service-access-errors.mjs scripts/test-service-access.mjs",
     "test:recyclarr": "node scripts/test-recyclarr.mjs",
     "test:ui:player": "pnpm run build:web && playwright test --config playwright.ui.config.ts --project player",

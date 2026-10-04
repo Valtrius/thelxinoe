@@ -7,6 +7,7 @@ mod accounts;
 #[cfg(test)]
 mod accounts_tests;
 mod appearance;
+pub mod authentication;
 mod auto_delete;
 mod avatars;
 pub mod config;
@@ -146,6 +147,7 @@ impl AppState {
 }
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .merge(authentication::router())
         .merge(product::router())
         .merge(tools::router())
         .merge(jellyfin::router())

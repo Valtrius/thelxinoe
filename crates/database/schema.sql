@@ -7,7 +7,8 @@
 CREATE TABLE users (
     id TEXT NOT NULL PRIMARY KEY,
     username TEXT NOT NULL COLLATE NOCASE UNIQUE,
-    password_hash TEXT NOT NULL,
+    password_hash TEXT,
+    auth_version INTEGER NOT NULL DEFAULT 0,
     role TEXT NOT NULL CHECK(role IN ('admin','user')),
     timezone_override TEXT,
     created_at INTEGER NOT NULL,
@@ -23,7 +24,86 @@ CREATE TABLE sessions (
     created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL,
     last_seen INTEGER NOT NULL,
+    verified_at INTEGER NOT NULL DEFAULT 0,
+    remembered_device_id TEXT,
+    client_password_id TEXT,
     UNIQUE(user_id,id)
+) STRICT;
+
+CREATE TABLE auth_passkeys (
+    id TEXT NOT NULL PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    credential TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX auth_passkeys_user ON auth_passkeys(user_id);
+CREATE TABLE auth_totp (
+    user_id TEXT NOT NULL PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    secret BLOB NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+    last_step INTEGER NOT NULL DEFAULT -1
+) STRICT;
+CREATE TABLE auth_oidc_identities (
+    issuer TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(issuer,subject),
+    UNIQUE(user_id)
+) STRICT;
+CREATE TABLE auth_oidc_provider (
+    id INTEGER NOT NULL PRIMARY KEY CHECK(id=1),
+    discovery_url TEXT NOT NULL,
+    issuer TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    client_secret BLOB NOT NULL,
+    label TEXT NOT NULL,
+    version TEXT NOT NULL
+) STRICT;
+CREATE TABLE auth_attempts (
+    token_hash TEXT NOT NULL PRIMARY KEY,
+    kind TEXT NOT NULL,
+    user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+    session_id TEXT,
+    auth_version INTEGER,
+    binding_hash TEXT,
+    payload BLOB NOT NULL,
+    expires_at INTEGER NOT NULL,
+    failures INTEGER NOT NULL DEFAULT 0
+) STRICT;
+CREATE INDEX auth_attempts_expiry ON auth_attempts(expires_at);
+CREATE TABLE auth_remembered_devices (
+    id TEXT NOT NULL PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    last_seen INTEGER NOT NULL
+) STRICT;
+CREATE TABLE auth_client_passwords (
+    id TEXT NOT NULL PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    last_seen INTEGER NOT NULL
+) STRICT;
+CREATE TABLE auth_recovery (
+    token_hash TEXT NOT NULL PRIMARY KEY,
+    user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE auth_desktop_requests (
+    id TEXT NOT NULL PRIMARY KEY,
+    secret_hash TEXT NOT NULL,
+    name TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+    authorizer_session_id TEXT,
+    verified_at INTEGER,
+    target_user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+    target_session_id TEXT
 ) STRICT;
 
 CREATE TABLE secrets (

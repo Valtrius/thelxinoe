@@ -3,10 +3,21 @@
   import FormField from './ui/FormField.svelte';
   import { formControlClass } from './ui/styles';
   import { api } from './api';
+  import { withVerification } from './authentication';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
 
-  let { changed } = $props<{ changed: () => void }>();
+  let {
+    changed,
+    hasPassword = true,
+    totp = false,
+    fresh = false,
+  } = $props<{
+    changed: () => void;
+    hasPassword?: boolean;
+    totp?: boolean;
+    fresh?: boolean;
+  }>();
   let current = $state(''),
     password = $state(''),
     confirmation = $state(''),
@@ -23,10 +34,14 @@
     }
     busy = true;
     try {
-      await api('/me/password', 'PUT', {
-        current_password: current,
-        new_password: password,
-      });
+      const action = async () => {
+        await api('/me/password', 'PUT', {
+          current_password: current,
+          new_password: password,
+        });
+      };
+      if (hasPassword && !totp && current) await action();
+      else if (!(await withVerification(action))) return;
       current = password = confirmation = '';
       saved = true;
       changed();
@@ -39,7 +54,7 @@
 </script>
 
 <Panel>
-  <h2>Change password</h2>
+  <h2>{hasPassword ? 'Change password' : 'Set password'}</h2>
   <p class="text-muted">
     Choose a password with at least 8 characters. Your other devices will be
     signed out; this device stays connected.
@@ -51,16 +66,16 @@
       void save();
     }}
   >
-    <FormField
-      >Current password<input
-        class={formControlClass}
-        type="password"
-        bind:value={current}
-        required
-        autocomplete="current-password"
-        disabled={busy}
-      /></FormField
-    >
+    {#if hasPassword && !totp && !fresh}<FormField
+        >Current password<input
+          class={formControlClass}
+          type="password"
+          bind:value={current}
+          required
+          autocomplete="current-password"
+          disabled={busy}
+        /></FormField
+      >{/if}
     <FormField
       >New password<input
         class={formControlClass}

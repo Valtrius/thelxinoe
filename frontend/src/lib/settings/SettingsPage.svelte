@@ -4,6 +4,7 @@
   import { settingsPages } from '../pages';
   import { api, desktop, serverUrl, type User, type Job } from '../api';
   import { captureSession } from '../session';
+  import { withVerification } from '../authentication';
   import { LatestRequest } from '../latest-request';
   import type { AppRoute } from '../navigation';
   import { isServerUpdateInterruption } from '../server-updates';
@@ -54,6 +55,7 @@
     name: string;
     transport: string;
     last_seen: number;
+    remembered?: boolean;
   };
   let sessions = $state<Session[]>([]),
     users = $state<User[]>([]),
@@ -136,14 +138,16 @@
   }
   async function createUser() {
     await act(async () => {
-      await api('/users', 'POST', {
-        username: newUsername,
-        password: newPassword,
-        role: newRole,
+      await withVerification(async () => {
+        await api('/users', 'POST', {
+          username: newUsername,
+          password: newPassword,
+          role: newRole,
+        });
+        if (!ownsSession()) return;
+        newUsername = newPassword = '';
+        await loadSettings();
       });
-      if (!ownsSession()) return;
-      newUsername = newPassword = '';
-      await loadSettings();
     });
   }
 </script>
@@ -167,14 +171,13 @@
       />{:catch error}<Notice variant="error" role="alert"
         >{String(error)}</Notice
       >{/await}
-    {#await settingsPages.PasswordSettings()}<ContentSkeleton
+    {#await settingsPages.AuthSettings()}<ContentSkeleton
         label="Loading settings"
         variant="settings"
         class="col-span-full"
-      />{:then { default: PasswordSettings }}<PasswordSettings
-        changed={() => void loadSettings()}
-      />{:catch error}<Notice variant="error" role="alert"
-        >{String(error)}</Notice
+      />{:then { default: AuthSettings }}<AuthSettings />{:catch error}<Notice
+        variant="error"
+        role="alert">{String(error)}</Notice
       >{/await}{/if}
   {#if settingsSection === 'online'}{#await settingsPages.OnlineAccounts()}<ContentSkeleton
         label="Loading settings"
@@ -206,7 +209,14 @@
         >{String(error)}</Notice
       >{/await}
   {/if}
-  {#if settingsSection === 'devices'}{#await settingsPages.QuickConnect()}<ContentSkeleton
+  {#if settingsSection === 'devices'}{#await settingsPages.AuthDevices()}<ContentSkeleton
+        label="Loading settings"
+        variant="settings"
+        class="col-span-full"
+      />{:then { default: AuthDevices }}<AuthDevices />{:catch caught}<Notice
+        variant="error"
+        role="alert">{String(caught)}</Notice
+      >{/await}{#await settingsPages.QuickConnect()}<ContentSkeleton
         label="Loading settings"
         variant="settings"
         class="col-span-full"
@@ -280,7 +290,9 @@
             disabled={busy}
             onclick={() =>
               act(async () => {
-                await api(`/auth/sessions/${session.id}`, 'DELETE');
+                await withVerification(async () => {
+                  await api(`/auth/sessions/${session.id}`, 'DELETE');
+                });
                 if (!ownsSession()) return;
                 if (session.id === currentSession) {
                   sessionEnded();
@@ -409,6 +421,14 @@
             role="alert">{String(error)}</Notice
           >{/await}</Panel
       >
+      {#await settingsPages.OidcSettings()}<ContentSkeleton
+          label="Loading settings"
+          variant="settings"
+          class="col-span-full"
+        />{:then { default: OidcSettings }}<OidcSettings
+        />{:catch caught}<Notice variant="error" role="alert"
+          >{String(caught)}</Notice
+        >{/await}
       {#await settingsPages.AdminOperations()}<ContentSkeleton
           label="Loading settings"
           variant="settings"

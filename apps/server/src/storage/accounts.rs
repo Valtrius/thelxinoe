@@ -56,7 +56,7 @@ pub(super) async fn check_credentials(
     db.read("accounts.check_credentials", move |db| {
         Ok(db
             .query_row(
-                "SELECT id,password_hash FROM users WHERE username=?1",
+                "SELECT id,password_hash FROM users WHERE username=?1 AND password_hash IS NOT NULL",
                 [username],
                 |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
             )
@@ -74,46 +74,6 @@ pub(super) async fn allow_password_attempt(db: &Database, address: String) -> an
     }).await
 }
 
-pub(super) async fn change_password_read_users(
-    db: &Database,
-    user_id: String,
-) -> anyhow::Result<String> {
-    db.read("accounts.change_password_read_users", move |db| {
-        Ok(db.query_row(
-            "SELECT password_hash FROM users WHERE id=?1",
-            [user_id],
-            |row| row.get::<_, String>(0),
-        )?)
-    })
-    .await
-}
-
-pub(super) async fn change_password_write_users(
-    db: &Database,
-    principal: &thelxinoe_core::Principal,
-    previous_hash: String,
-    hash: String,
-    user_id: String,
-) -> anyhow::Result<bool> {
-    let principal = principal.clone();
-
-    db.write("accounts.change_password_write_users", move |db| {
-        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        // A concurrent reset or session revocation must invalidate this change.
-        let changed = tx.execute(
-            "UPDATE users SET password_hash=?1 WHERE id=?2 AND password_hash=?3
-             AND EXISTS(SELECT 1 FROM sessions WHERE id=?4 AND user_id=?2 AND expires_at>?5)",
-            params![hash, user_id, previous_hash, principal.session_id, now()],
-        )? == 1;
-        if changed {
-            tx.execute("DELETE FROM sessions WHERE user_id=?1 AND id<>?2", params![user_id, principal.session_id])?;
-            tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'user.password',?1,?2)", params![user_id, now()])?;
-        }
-        tx.commit()?;
-        Ok(changed)
-    }).await
-}
-
 pub(super) async fn logout(db: &Database, p: thelxinoe_core::Principal) -> anyhow::Result<()> {
     db.write("accounts.logout", move |db| {
         db.execute("DELETE FROM sessions WHERE id=?1", [p.session_id])?;
@@ -127,20 +87,8 @@ pub(super) async fn sessions(
     p: thelxinoe_core::Principal,
 ) -> anyhow::Result<Vec<thelxinoe_auth::Session>> {
     db.read("accounts.sessions", move |db|{
-        let mut query=db.prepare("SELECT id,name,transport,created_at,expires_at,last_seen FROM sessions WHERE user_id=?1 AND expires_at>?2 ORDER BY last_seen DESC")?;
-        Ok(query.query_map(params![p.user.id,now()],|r|Ok(thelxinoe_auth::Session{id:r.get(0)?,name:r.get(1)?,transport:r.get(2)?,created_at:r.get(3)?,expires_at:r.get(4)?,last_seen:r.get(5)?}))?.collect::<std::result::Result<Vec<_>,_>>()?)
-    }).await
-}
-
-pub(super) async fn revoke(
-    db: &Database,
-    session: String,
-    p: thelxinoe_core::Principal,
-) -> anyhow::Result<()> {
-    db.write("accounts.revoke", move |db|{
-        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        tx.execute("DELETE FROM sessions WHERE id=?1 AND (user_id=?2 OR ?3)",params![session,p.user.id,p.user.role.allows(Capability::ManageUsers)])?;
-        tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'session.revoke',?2,?3)",params![p.user.id,session,now()])?;tx.commit()?;Ok(())
+        let mut query=db.prepare("SELECT id,name,transport,created_at,expires_at,last_seen,remembered_device_id IS NOT NULL FROM sessions WHERE user_id=?1 AND expires_at>?2 ORDER BY last_seen DESC")?;
+        Ok(query.query_map(params![p.user.id,now()],|r|Ok(thelxinoe_auth::Session{id:r.get(0)?,name:r.get(1)?,transport:r.get(2)?,created_at:r.get(3)?,expires_at:r.get(4)?,last_seen:r.get(5)?,remembered:r.get(6)?}))?.collect::<std::result::Result<Vec<_>,_>>()?)
     }).await
 }
 
@@ -161,7 +109,7 @@ pub(super) async fn create_user(
     hash: String,
 ) -> anyhow::Result<Option<String>> {
     db.write("accounts.create_user", move |db|{
-        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;let uid=id();
+        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;crate::authentication::authorize_admin(&tx,&p)?;let uid=id();
         let n=tx.execute("INSERT OR IGNORE INTO users(id,username,password_hash,role,created_at) VALUES (?1,?2,?3,?4,?5)",params![uid,user.username,hash,user.role.as_str(),now()])?;
         if n==0{return Ok(None);}
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'user.create',?2,?3)",params![p.user.id,uid,now()])?;tx.commit()?;Ok(Some(uid))

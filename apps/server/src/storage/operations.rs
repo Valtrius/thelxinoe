@@ -38,6 +38,7 @@ pub(super) async fn change_user(
 ) -> anyhow::Result<i32> {
     db.write("operations.change_user", move |db| {
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        crate::authentication::authorize_admin(&tx,&p)?;
         let current = tx
             .query_row("SELECT role FROM users WHERE id=?1", [&key], |r| {
                 r.get::<_, String>(0)
@@ -55,10 +56,13 @@ pub(super) async fn change_user(
             return Ok(409);
         }
         tx.execute(
-            "UPDATE users SET role=?1,password_hash=COALESCE(?2,password_hash) WHERE id=?3",
+            "UPDATE users SET role=?1,password_hash=COALESCE(?2,password_hash),auth_version=auth_version+1 WHERE id=?3",
             params![input.role.as_str(), hash, key],
         )?;
         tx.execute("DELETE FROM sessions WHERE user_id=?1", [&key])?;
+        tx.execute("DELETE FROM auth_remembered_devices WHERE user_id=?1",[&key])?;
+        tx.execute("DELETE FROM auth_attempts WHERE user_id=?1",[&key])?;
+        tx.execute("DELETE FROM auth_desktop_requests WHERE user_id=?1",[&key])?;
         tx.execute(
             "INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'user.update',?2,?3)",
             params![p.user.id, key, now()],
@@ -76,6 +80,7 @@ pub(super) async fn delete_user(
 ) -> anyhow::Result<Option<Vec<String>>> {
     db.write("operations.delete_user", move|db|{
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        crate::authentication::authorize_admin(&tx,&p)?;
         let current=tx.query_row("SELECT role FROM users WHERE id=?1",[&key],|r|r.get::<_,String>(0)).optional()?;
         if current.is_none(){return Ok(None);}
         let playbacks=tx.prepare("SELECT id FROM playback_sessions WHERE user_id=?1")?.query_map([&key],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;

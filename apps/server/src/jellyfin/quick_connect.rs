@@ -83,6 +83,7 @@ pub async fn approve(
     Json(input): Json<Approval>,
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
+    crate::authentication::require_fresh(&state, &p).await?;
     let hash = thelxinoe_auth::digest(&input.code);
     let grant = crate::grants::resolve(
         &state,

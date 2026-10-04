@@ -96,6 +96,25 @@ export async function installUiFixture(
       return json({ youtube: true, twitch: true, kick: true });
     if (path === '/seerr/status') return json({ configured: false });
     if (path === '/setup') return json({ setup_required: false });
+    if (path === '/auth/methods')
+      return json({
+        canonical_url: new URL(route.request().url()).origin,
+        passkeys: false,
+        oidc: null,
+        server_id: 'ui-fixture',
+      });
+    if (path === '/me/auth')
+      return json({
+        password: true,
+        totp: false,
+        passkeys: [],
+        oidc: null,
+        fresh: true,
+      });
+    if (path === '/auth/devices' || path === '/me/auth/client-passwords')
+      return json({ items: [] });
+    if (path === '/admin/auth/oidc')
+      return json({ provider: null, redirect_uri: null });
     if (path === '/auth/login') {
       signedIn = true;
       return json({ user });

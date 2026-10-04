@@ -70,7 +70,7 @@ async fn setup(state: &AppState) -> String {
     cookie.split(';').next().unwrap().into()
 }
 #[tokio::test]
-async fn setup_user_creation_and_admin_password_reset_accept_eight_characters() {
+async fn setup_and_user_creation_accept_eight_characters() {
     let (_temp, state) = fixture().await;
     let (status, _, _) = request(
         &state,
@@ -98,33 +98,12 @@ async fn setup_user_creation_and_admin_password_reset_accept_eight_characters() 
         .split(';')
         .next()
         .unwrap();
-    let (status, _, member) = request(
+    let (status, _, _) = request(
         &state,
         "/api/v1/users",
         "POST",
         json!({"username":"member","password":"abcdefgh","role":"user"}),
         Some(cookie),
-        &[],
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    let path = format!("/api/v1/users/{}", member["id"].as_str().unwrap());
-    let (status, _, _) = request(
-        &state,
-        &path,
-        "PUT",
-        json!({"password":"87654321","role":"user"}),
-        Some(cookie),
-        &[],
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    let (status, _, _) = request(
-        &state,
-        "/api/v1/auth/login",
-        "POST",
-        json!({"username":"member","password":"87654321","transport":"device"}),
-        None,
         &[],
     )
     .await;

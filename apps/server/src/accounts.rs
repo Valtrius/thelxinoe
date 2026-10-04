@@ -24,12 +24,14 @@ use thelxinoe_core::{Capability, Role, id, now};
 
 #[derive(Deserialize)]
 pub struct Credentials {
-    username: String,
-    password: String,
+    pub(crate) username: String,
+    pub(crate) password: String,
     #[serde(default)]
-    transport: Option<String>,
+    pub(crate) transport: Option<String>,
     #[serde(default)]
-    device_name: Option<String>,
+    pub(crate) device_name: Option<String>,
+    #[serde(default)]
+    pub(crate) remember_token: Option<String>,
 }
 
 pub async fn setup_status(State(state): State<AppState>) -> Result<Json<Value>> {
@@ -38,7 +40,7 @@ pub async fn setup_status(State(state): State<AppState>) -> Result<Json<Value>> 
         json!({"setup_required":count==0,"version":thelxinoe_core::VERSION}),
     ))
 }
-async fn respond_session(
+pub(crate) async fn respond_session(
     state: &AppState,
     authorization: SessionAuthorization,
     c: &Credentials,
@@ -49,6 +51,13 @@ async fn respond_session(
         return Err(ApiError::bad("Unsupported credential transport"));
     }
     let user_id = authorization.user_id().to_owned();
+    let remembered = matches!(
+        &authorization,
+        SessionAuthorization::Verified {
+            remembered_device_id: Some(_),
+            ..
+        }
+    );
     let raw = issue_session(
         &state.db,
         authorization,
@@ -74,7 +83,13 @@ async fn respond_session(
     if transport == "web" {
         response.headers_mut().insert(
             header::SET_COOKIE,
-            security::cookie(&raw, secure).parse().unwrap(),
+            if remembered {
+                crate::authentication::session_cookie(&raw, secure)
+            } else {
+                security::cookie(&raw, secure)
+            }
+            .parse()
+            .unwrap(),
         );
     }
     response
@@ -135,7 +150,7 @@ pub async fn login(
 ) -> Result<Response> {
     let context = security::request_context(&state.config, &headers, peer)?;
     let user = check_credentials(&state, context.address, &c.username, &c.password).await?;
-    respond_session(&state, user, &c, context.secure).await
+    crate::authentication::password_login(&state, user, &c, &headers, context.secure).await
 }
 pub(crate) async fn check_credentials(
     state: &AppState,
@@ -169,7 +184,7 @@ pub(crate) async fn check_credentials(
         expected_hash,
     })
 }
-async fn allow_password_attempt(state: &AppState, address: String) -> Result<()> {
+pub(crate) async fn allow_password_attempt(state: &AppState, address: String) -> Result<()> {
     let allowed = storage::allow_password_attempt(&state.db, address).await?;
     if !allowed {
         return Err(ApiError(
@@ -184,6 +199,7 @@ async fn allow_password_attempt(state: &AppState, address: String) -> Result<()>
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PasswordChange {
+    #[serde(default)]
     current_password: String,
     new_password: String,
 }
@@ -196,21 +212,8 @@ pub async fn change_password(
     let principal = security::principal(&state, &headers).await?;
     validate_credentials(&principal.user.username, &input.new_password)
         .map_err(|e| ApiError::bad(e.to_string()))?;
-    if input.current_password.len() > 256 {
-        return Err(ApiError::bad("Current password is incorrect"));
-    }
-    allow_password_attempt(&state, format!("password:{}", principal.user.id)).await?;
-    let slot = state
-        .password_slots
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(anyhow::Error::from)?;
-    let user_id = principal.user.id.clone();
-    let previous_hash = storage::change_password_read_users(&state.db, user_id).await?;
-    if !verify_password_with_permit(input.current_password, previous_hash.clone(), slot).await? {
-        return Err(ApiError::bad("Current password is incorrect"));
-    }
+    crate::authentication::password_change_proof(&state, &principal, input.current_password)
+        .await?;
     let slot = state
         .password_slots
         .clone()
@@ -218,15 +221,7 @@ pub async fn change_password(
         .await
         .map_err(anyhow::Error::from)?;
     let hash = password_hash_with_permit(input.new_password, slot).await?;
-    let user_id = principal.user.id.clone();
-    let changed =
-        storage::change_password_write_users(&state.db, &principal, previous_hash, hash, user_id)
-            .await?;
-    if !changed {
-        return Err(ApiError::conflict(
-            "Your account changed. Sign in again before changing your password",
-        ));
-    }
+    crate::authentication::set_password(&state, principal.clone(), hash).await?;
     state
         .emit(
             Some(principal.user.id),
@@ -267,7 +262,7 @@ pub async fn revoke(
     Path(session): Path<String>,
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
-    storage::revoke(&state.db, session, p).await?;
+    crate::authentication::revoke_session(&state, p, session).await?;
     state.notify_events();
     Ok(Json(json!({"ok":true})))
 }
@@ -288,6 +283,7 @@ pub async fn create_user(
     Json(mut user): Json<NewUser>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageUsers).await?;
+    crate::authentication::require_fresh(&state, &p).await?;
     validate_credentials(&user.username, &user.password)
         .map_err(|e| ApiError::bad(e.to_string()))?;
     let slot = state

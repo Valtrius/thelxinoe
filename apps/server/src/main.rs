@@ -18,8 +18,22 @@ async fn main() -> Result<()> {
         .open(config.state.join("server.lock"))?;
     fs2::FileExt::try_lock_exclusive(&lock)?;
     if let Some(command) = std::env::args().nth(1) {
-        anyhow::ensure!(command == "validate-state", "Unknown server command");
-        return thelxinoe_server::validation::run(config).await;
+        return match command.as_str() {
+            "validate-state" => thelxinoe_server::validation::run(config).await,
+            "recover-user" => {
+                let username = std::env::args().nth(2).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Usage: thelxinoe-server recover-user <username> (stop the server first)"
+                    )
+                })?;
+                println!(
+                    "{}",
+                    thelxinoe_server::authentication::recover_from_host(config, username).await?
+                );
+                Ok(())
+            }
+            _ => anyhow::bail!("Unknown server command"),
+        };
     }
     let bind = config.bind;
     let state = AppState::open(config).await?;
