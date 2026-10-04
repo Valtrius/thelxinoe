@@ -13,6 +13,10 @@ pub(crate) enum Fault {
     CreateReply,
     CreateReplyAndInspection,
     JournalWrite,
+    JournalBefore(&'static str),
+    JournalAfter(&'static str),
+    StartBefore(&'static str),
+    StartReply(&'static str),
 }
 struct Engine {
     containers: BTreeMap<String, Value>,
@@ -20,6 +24,8 @@ struct Engine {
     disconnected: bool,
     creates: usize,
     deletes: usize,
+    copies: usize,
+    starts: usize,
 }
 pub(crate) struct Docker {
     root: tempfile::TempDir,
@@ -28,21 +34,27 @@ pub(crate) struct Docker {
 tokio::task_local! {
     pub(crate) static DOCKER: DockerContext;
 }
+#[derive(Clone)]
 pub(crate) struct DockerContext {
     pub root: std::path::PathBuf,
     engine: Arc<Mutex<Engine>>,
 }
 impl Docker {
     pub(crate) fn new() -> Self {
-        let original = json!({"Id":"original","Name":"/service","Image":"old-image","State":{"Running":false,"StartedAt":"0001-01-01T00:00:00Z"},"Config":{"Image":"old-image","Labels":{"app.thelxinoe.deployment":"deployment","app.thelxinoe.managed-id":"11111111-1111-1111-1111-111111111111"}},"HostConfig":{},"NetworkSettings":{"Networks":{"media":{}}}});
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("appdata");
+        std::fs::create_dir(&source).unwrap();
+        let original = json!({"Id":"original","Name":"/service","Image":"old-image","State":{"Running":false,"StartedAt":"0001-01-01T00:00:00Z"},"Config":{"Image":"old-image","Labels":{"app.thelxinoe.deployment":"deployment","app.thelxinoe.managed-id":"11111111-1111-1111-1111-111111111111"}},"Mounts":[{"Destination":"/config","Source":source}],"HostConfig":{},"NetworkSettings":{"Networks":{"media":{}}}});
         Self {
-            root: tempfile::tempdir().unwrap(),
+            root,
             engine: Arc::new(Mutex::new(Engine {
                 containers: BTreeMap::from([("original".into(), original)]),
                 fault: None,
                 disconnected: false,
                 creates: 0,
                 deletes: 0,
+                copies: 0,
+                starts: 0,
             })),
         }
     }
@@ -64,6 +76,29 @@ impl Docker {
     }
     pub(crate) fn fault(&self, fault: Fault) {
         self.engine.lock().unwrap().fault = Some(fault);
+    }
+    pub(crate) fn backup_deployment<D: DeserializeOwned>(&self) -> D {
+        let mut engine = self.engine.lock().unwrap();
+        let server = engine.containers.get_mut("original").unwrap();
+        server["Mounts"][0]["Destination"] = json!("/var/lib/thelxinoe");
+        serde_json::from_value(json!({"id":"deployment","generation":1,"version":"test","server":server,"controller":{"Image":"controller-image"},"network":"media","media_source":"/media","appdata_source":self.root.path()})).unwrap()
+    }
+    pub(crate) fn root(&self) -> &std::path::Path {
+        self.root.path()
+    }
+    pub(crate) fn copies(&self) -> usize {
+        self.engine.lock().unwrap().copies
+    }
+    pub(crate) fn add_component(&self, id: &str) -> String {
+        let source = self.root.path().join(id);
+        std::fs::create_dir(&source).unwrap();
+        let mut e = self.engine.lock().unwrap();
+        let mut raw = e.containers["original"].clone();
+        raw["Id"] = json!(id);
+        raw["Name"] = json!(format!("/{id}"));
+        raw["Mounts"][0]["Source"] = json!(source);
+        e.containers.insert(id.into(), raw);
+        source.to_string_lossy().into_owned()
     }
     pub(crate) fn reconnect(&self) {
         let mut e = self.engine.lock().unwrap();
@@ -108,6 +143,22 @@ impl DockerContext {
             e.fault = None;
             return true;
         }
+        if let Some(Fault::JournalBefore(stage)) = e.fault
+            && serde_json::from_slice::<Value>(bytes).is_ok_and(|v| v["stage"] == stage)
+        {
+            e.fault = None;
+            return true;
+        }
+        false
+    }
+    pub(crate) fn fail_after_write(&self, bytes: &[u8]) -> bool {
+        let mut e = self.engine.lock().unwrap();
+        if let Some(Fault::JournalAfter(stage)) = e.fault
+            && serde_json::from_slice::<Value>(bytes).is_ok_and(|v| v["stage"] == stage)
+        {
+            e.fault = None;
+            return true;
+        }
         false
     }
     pub(crate) fn request(
@@ -126,6 +177,9 @@ impl DockerContext {
         if path.starts_with("/images/") {
             return Ok(json!({"Config":{}}));
         }
+        if path == "/containers/controller-fixture/json" {
+            return Ok(json!({"Image":format!("sha256:{}", "a".repeat(64))}));
+        }
         if let Some(name) = path.strip_prefix("/containers/create?name=") {
             assert_eq!(method, Method::POST);
             let spec = body.unwrap();
@@ -137,7 +191,15 @@ impl DockerContext {
             );
             let mut config = spec.clone();
             config.as_object_mut().unwrap().remove("HostConfig");
-            e.containers.insert("replacement".into(),json!({"Id":"replacement","Name":format!("/{name}"),"Image":spec["Image"],"Config":config,"HostConfig":spec["HostConfig"],"State":{"Running":false,"StartedAt":"0001-01-01T00:00:00Z"},"NetworkSettings":{"Networks":{"media":{}}}}));
+            let id = if spec["Cmd"][0]
+                .as_str()
+                .is_some_and(|c| c.starts_with("snapshot-"))
+            {
+                format!("worker-{}", e.creates)
+            } else {
+                "replacement".into()
+            };
+            e.containers.insert(id.clone(),json!({"Id":id,"Name":format!("/{name}"),"Image":spec["Image"],"Config":config,"HostConfig":spec["HostConfig"],"State":{"Running":false,"StartedAt":"0001-01-01T00:00:00Z"},"NetworkSettings":{"Networks":{"media":{}}}}));
             match e.fault {
                 Some(Fault::CreateReplyAndInspection) => {
                     e.disconnected = true;
@@ -149,7 +211,7 @@ impl DockerContext {
                 }
                 _ => {}
             }
-            return Ok(json!({"Id":"replacement"}));
+            return Ok(json!({"Id":id}));
         }
         let tail = path
             .strip_prefix("/containers/")
@@ -179,7 +241,40 @@ impl DockerContext {
         } else if action.starts_with("stop") {
             e.containers.get_mut(id).unwrap()["State"]["Running"] = json!(false);
         } else if action == "start" {
+            if matches!(e.fault,Some(Fault::StartBefore(target)) if target == id) {
+                e.fault = None;
+                return Err(unavailable());
+            }
+            e.starts += 1;
+            let started = format!("2026-10-03T22:00:{:02}Z", e.starts);
+            e.containers.get_mut(id).unwrap()["State"]["StartedAt"] = json!(started);
             e.containers.get_mut(id).unwrap()["State"]["Running"] = json!(true);
+            let raw = e.containers[id].clone();
+            if raw["Config"]["Cmd"][0]
+                .as_str()
+                .is_some_and(|c| c.starts_with("snapshot-"))
+            {
+                let mounts = raw["HostConfig"]["Mounts"].as_array().unwrap();
+                let source = std::path::Path::new(mounts[0]["Source"].as_str().unwrap());
+                let destination = std::path::Path::new(mounts[1]["Source"].as_str().unwrap());
+                assert!(source.starts_with(&self.root) && destination.starts_with(&self.root));
+                std::fs::create_dir_all(destination).unwrap();
+                std::fs::copy(source.join("marker"), destination.join("marker")).unwrap();
+                e.copies += 1;
+                e.containers.get_mut(id).unwrap()["State"]["Running"] = json!(false);
+                e.containers.get_mut(id).unwrap()["State"]["ExitCode"] = json!(0);
+            }
+            if let Some(source) = raw["Mounts"][0]["Source"].as_str() {
+                std::fs::write(
+                    std::path::Path::new(source).join("marker"),
+                    "production-after-start",
+                )
+                .unwrap();
+            }
+            if matches!(e.fault,Some(Fault::StartReply(target)) if target == id) {
+                e.fault = None;
+                return Err(unavailable());
+            }
         } else {
             panic!("Unexpected Docker operation {method} {path}");
         }

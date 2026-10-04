@@ -1,5 +1,6 @@
 //! Journaled, isolated service updates. Production activation is an explicit one-way boundary.
 use super::*;
+use crate::recovery::{RollbackAction, RollbackPhase};
 use reqwest::Method;
 use std::{path::PathBuf, time::Duration};
 
@@ -16,6 +17,8 @@ struct Update {
     snapshot_complete: bool,
     recovery_complete: bool,
     activation_crossed: bool,
+    #[serde(default)]
+    rollback_phase: Option<RollbackPhase>,
     candidate_container: Option<String>,
     replacement: Option<String>,
     #[serde(default)]
@@ -30,7 +33,18 @@ fn path(key: &str) -> PathBuf {
 }
 fn read(key: &str) -> Result<Update> {
     id(key)?;
-    persisted(store::read(&path(key).join("update.json")))
+    let update: Update = persisted(store::read(&path(key).join("update.json")))?;
+    validate_record(&update)?;
+    Ok(update)
+}
+fn validate_record(u: &Update) -> Result<()> {
+    crate::recovery::validate(u.rollback_phase, &u.stage)?;
+    if u.rollback_phase == Some(RollbackPhase::Activating) && u.activation_crossed {
+        return Err(conflict(
+            "Recovery journal mixes replacement activation and original restart",
+        ));
+    }
+    Ok(())
 }
 fn read_listed(key: &str) -> Result<Option<Update>> {
     id(key)?;
@@ -40,11 +54,12 @@ fn read_listed(key: &str) -> Result<Option<Update>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(unavailable()),
     };
-    serde_json::from_slice(&bytes)
-        .map(Some)
-        .map_err(|_| unavailable())
+    let update: Update = serde_json::from_slice(&bytes).map_err(|_| unavailable())?;
+    validate_record(&update)?;
+    Ok(Some(update))
 }
 fn write(u: &Update) -> Result<()> {
+    validate_record(u)?;
     persisted(store::write_json(&path(&u.id).join("update.json"), u))
 }
 fn public(u: &Update) -> Value {
@@ -72,7 +87,7 @@ pub(super) fn invalidate_recyclarr(service: &str) -> Result<()> {
     }
     Ok(())
 }
-pub(super) async fn list() -> Result<Json<Value>> {
+pub(super) async fn list(State(runtime): State<Runtime>) -> Result<Json<Value>> {
     let root = store::root().join("updates");
     let mut items = Vec::new();
     if root.exists() {
@@ -81,7 +96,20 @@ pub(super) async fn list() -> Result<Json<Value>> {
             if entry.path().join("update.json").is_file()
                 && let Some(update) = read_listed(&entry.file_name().to_string_lossy())?
             {
-                items.push(public(&update));
+                // A free gate proves no worker can still copy or restart this service.
+                // Reread under that gate so a worker's terminal write cannot be mistaken for an orphan.
+                let guard = runtime.0.try_service(&update.old.kind).ok();
+                let update = if guard.is_some() {
+                    let Some(current) = read_listed(&entry.file_name().to_string_lossy())? else {
+                        continue;
+                    };
+                    current
+                } else {
+                    update
+                };
+                let mut value = public(&update);
+                value["operation_active"] = json!(guard.is_none());
+                items.push(value);
             }
         }
     }
@@ -199,6 +227,7 @@ pub(super) async fn preflight(
         snapshot_complete: false,
         recovery_complete: false,
         activation_crossed: false,
+        rollback_phase: Some(RollbackPhase::Copying),
         candidate_container: None,
         replacement: None,
         replacement_intent: None,
@@ -229,7 +258,13 @@ pub(super) async fn preflight(
     Ok(Json(result))
 }
 pub(super) async fn current_image() -> Result<String> {
-    let self_id = std::env::var("HOSTNAME").map_err(|_| unavailable())?;
+    let self_id = std::env::var("HOSTNAME").ok();
+    #[cfg(test)]
+    let self_id = crate::test_support::DOCKER
+        .try_with(|_| "controller-fixture".to_owned())
+        .ok()
+        .or(self_id);
+    let self_id = self_id.ok_or_else(unavailable)?;
     let c = engine(&format!("/containers/{self_id}/json")).await?;
     let image = immutable(&c)?;
     // Keep the trusted worker image addressable when the bootstrap tag advances.
@@ -275,7 +310,10 @@ pub(super) async fn remove(container: &str) -> Result<()> {
     }
 }
 async fn restart_old(u: &Update) -> Result<()> {
-    if u.was_running {
+    if u.was_running
+        && engine(&format!("/containers/{}/json", u.old.container)).await?["State"]["Running"]
+            != true
+    {
         start(&u.old.container).await?;
     }
     Ok(())
@@ -554,7 +592,7 @@ pub(super) async fn activate(
     s.active_update = Some(u.id.clone());
     save(&s)?;
     let result = public(&u);
-    tokio::spawn(async move {
+    crate::recovery::spawn(async move {
         let _guard = guard;
         if let Err(error) = replace(&d, &mut u).await {
             u.error = Some(error.1.into());
@@ -565,7 +603,9 @@ pub(super) async fn activate(
             } else {
                 u.stage = "recovery-required".into();
             }
-            let _ = write(&u);
+            if let Err(error) = write(&u) {
+                eprintln!("Service update recovery journal failed: {}", error.1);
+            }
         }
     });
     Ok(Json(result))
@@ -688,6 +728,18 @@ async fn rollback(d: &Deployment, u: &mut Update) -> Result<()> {
             "Production activation requires explicit recovery planning",
         ));
     }
+    let action = crate::recovery::plan(u.rollback_phase, u.recovery_complete)?;
+    if u.rollback_phase == Some(RollbackPhase::Activating) {
+        let raw = verified(&u.old, d).await?;
+        if raw["Name"].as_str().unwrap_or("").trim_start_matches('/') != u.old.name {
+            return Err(conflict("Original service identity changed after rollback"));
+        }
+        restart_old(u).await?;
+        return save(&u.old);
+    }
+    u.rollback_phase = Some(RollbackPhase::Copying);
+    u.stage = "rollback-copying".into();
+    write(u)?;
     cleanup_candidate(u).await?;
     if let Some(intent) = &u.replacement_intent {
         if let Some(container) = intent.find(d).await? {
@@ -715,8 +767,13 @@ async fn rollback(d: &Deployment, u: &mut Update) -> Result<()> {
         ));
     }
     let raw = verified(&u.old, d).await?;
+    if matches!(action, RollbackAction::CopyRecovery) && raw["State"]["Running"] != false {
+        return Err(conflict(
+            "Original service resumed before recovery; explicit recovery is required",
+        ));
+    }
     stop(&u.old.container).await?;
-    if u.recovery_complete {
+    if matches!(action, RollbackAction::CopyRecovery) {
         let source = mount(&raw, "/config")?["Source"]
             .as_str()
             .ok_or_else(unavailable)?;
@@ -730,6 +787,9 @@ async fn rollback(d: &Deployment, u: &mut Update) -> Result<()> {
         )
         .await?;
     }
+    u.rollback_phase = Some(RollbackPhase::Activating);
+    u.stage = "rollback-activating".into();
+    write(u)?;
     restart_old(u).await?;
     save(&u.old)
 }

@@ -1,5 +1,11 @@
 //! Database operations for managers.requests.
-use super::*;
+use crate::managers::domain::{
+    AcquisitionRequest, CreateAcquisition, DecideAcquisition, RequestAction, RequestReceipt,
+    RequestState,
+};
+use rusqlite::{OptionalExtension, params};
+use serde_json::{Value, json};
+use thelxinoe_core::{id, now};
 use thelxinoe_database::Database;
 
 pub(super) async fn services(db: &Database) -> anyhow::Result<Vec<Value>> {
@@ -41,36 +47,31 @@ pub(super) async fn list(
 
 pub(super) async fn request(
     db: &Database,
-    input: Request,
-    p: thelxinoe_core::Principal,
-    s: Service,
-    title: String,
-) -> anyhow::Result<(String, String)> {
+    input: CreateAcquisition,
+) -> anyhow::Result<RequestReceipt> {
     db.write("managers.requests.request", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        if let Some(existing)=tx.query_row("SELECT id,state FROM acquisition_requests WHERE user_id=?1 AND service_id=?2 AND external_id=?3 AND state NOT IN ('denied','cancelled','failed')",params![p.user.id,s.id,input.external_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?{return Ok(existing)}
-        let auto=p.user.role==Role::Admin||tx.query_row("SELECT auto_approve FROM acquisition_users WHERE user_id=?1",[&p.user.id],|r|r.get::<_,bool>(0)).optional()?.unwrap_or(false);
-        let key=id();let status=if auto{"approved"}else{"pending"};
-        tx.execute("INSERT INTO acquisition_requests(id,user_id,service_id,generation,external_id,title,state,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8)",params![key,p.user.id,s.id,s.generation,input.external_id,title,status,now()])?;
-        if auto{enqueue(&tx,&key)?;}tx.commit()?;Ok((key,status.into()))}).await
+        if let Some((id,state))=tx.query_row("SELECT id,state FROM acquisition_requests WHERE user_id=?1 AND service_id=?2 AND external_id=?3 AND state NOT IN ('denied','cancelled','failed')",params![input.user_id,input.service_id,input.external_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?{return Ok(RequestReceipt{id,state:serde_json::from_value(json!(state))?})}
+        let auto=input.administrator||tx.query_row("SELECT auto_approve FROM acquisition_users WHERE user_id=?1",[&input.user_id],|r|r.get::<_,bool>(0)).optional()?.unwrap_or(false);
+        let key=id();let state=if auto{RequestState::Approved}else{RequestState::Pending};
+        tx.execute("INSERT INTO acquisition_requests(id,user_id,service_id,generation,external_id,title,state,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8)",params![key,input.user_id,input.service_id,input.service_generation,input.external_id,input.title,state.as_str(),now()])?;
+        if auto{enqueue(&tx,&key)?;}tx.commit()?;Ok(RequestReceipt{id:key,state})}).await
 }
 
-pub(super) async fn decide(
-    db: &Database,
-    key: String,
-    input: Decision,
-    p: thelxinoe_core::Principal,
-) -> anyhow::Result<bool> {
+pub(super) async fn decide(db: &Database, input: DecideAcquisition) -> anyhow::Result<bool> {
     db.write("managers.requests.decide", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let row=tx.query_row("SELECT r.user_id,r.state,s.generation FROM acquisition_requests r JOIN manager_services s ON s.id=r.service_id WHERE r.id=?1",[&key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional()?;
+        let key=&input.id;
+        let row=tx.query_row("SELECT r.user_id,r.state,s.generation FROM acquisition_requests r JOIN manager_services s ON s.id=r.service_id WHERE r.id=?1",[key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional()?;
         let Some((owner,status,generation))=row else{return Ok(false)};
-        if owner!=p.user.id&&p.user.role!=Role::Admin{return Ok(false)}
-        let reacquire=input.action=="reacquire";
-        if if reacquire {!matches!(status.as_str(),"requested"|"available")}else{!matches!(status.as_str(),"pending"|"failed"|"uncertain")} {return Ok(false)}
-        let auto=p.user.role==Role::Admin||tx.query_row("SELECT auto_approve FROM acquisition_users WHERE user_id=?1",[&owner],|r|r.get::<_,bool>(0)).optional()?.unwrap_or(false);
-        let next=match input.action.as_str(){"approve"=>"approved","deny"=>"denied","reacquire"=>if auto{"approved"}else{"pending"},_=>"cancelled"};
-        tx.execute("UPDATE acquisition_requests SET state=?1,generation=?2,error=NULL,updated_at=?3 WHERE id=?4",params![next,generation,now(),key])?;
-        if next=="approved"{enqueue(&tx,&key)?;}
-        tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,?2,?3,?4)",params![p.user.id,format!("request.{}",input.action),key,now()])?;tx.commit()?;Ok(true)}).await
+        if owner!=input.actor&&!input.administrator{return Ok(false)}
+        if matches!(input.action,RequestAction::Approve|RequestAction::Deny)&&!input.administrator{return Ok(false)}
+        let state:RequestState=serde_json::from_value(json!(status))?;
+        let reacquire=input.action==RequestAction::Reacquire;
+        if if reacquire {!matches!(state,RequestState::Requested|RequestState::Available)}else{!matches!(state,RequestState::Pending|RequestState::Failed|RequestState::Uncertain)} {return Ok(false)}
+        let auto=input.administrator||tx.query_row("SELECT auto_approve FROM acquisition_users WHERE user_id=?1",[&owner],|r|r.get::<_,bool>(0)).optional()?.unwrap_or(false);
+        let next=match input.action{RequestAction::Approve=>RequestState::Approved,RequestAction::Deny=>RequestState::Denied,RequestAction::Reacquire=>if auto{RequestState::Approved}else{RequestState::Pending},RequestAction::Cancel=>RequestState::Cancelled};
+        tx.execute("UPDATE acquisition_requests SET state=?1,generation=?2,error=NULL,updated_at=?3 WHERE id=?4",params![next.as_str(),generation,now(),key])?;
+        if next==RequestState::Approved{enqueue(&tx,key)?;}
+        tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,?2,?3,?4)",params![input.actor,format!("request.{}",input.action.as_str()),key,now()])?;tx.commit()?;Ok(true)}).await
 }
 
 pub(super) async fn approval_users(db: &Database) -> anyhow::Result<Vec<Value>> {
@@ -80,19 +81,19 @@ pub(super) async fn approval_users(db: &Database) -> anyhow::Result<Vec<Value>> 
 pub(super) async fn auto_approve(
     db: &Database,
     user: String,
-    input: Auto,
-    p: thelxinoe_core::Principal,
+    enabled: bool,
+    actor: String,
 ) -> anyhow::Result<()> {
-    db.write("managers.requests.auto_approve", move|db|{let tx=db.transaction()?;tx.execute("INSERT INTO acquisition_users VALUES (?1,?2) ON CONFLICT(user_id) DO UPDATE SET auto_approve=excluded.auto_approve",params![user,input.enabled])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'request.auto_approve',?2,?3)",params![p.user.id,user,now()])?;tx.commit()?;Ok(())}).await
+    db.write("managers.requests.auto_approve", move|db|{let tx=db.transaction()?;tx.execute("INSERT INTO acquisition_users VALUES (?1,?2) ON CONFLICT(user_id) DO UPDATE SET auto_approve=excluded.auto_approve",params![user,enabled])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'request.auto_approve',?2,?3)",params![actor,user,now()])?;tx.commit()?;Ok(())}).await
 }
 
 pub(super) async fn update(
     key: String,
-    status: String,
+    status: RequestState,
     db: &Database,
     manager: Option<i64>,
 ) -> anyhow::Result<()> {
-    db.write("managers.requests.update", move|db|{db.execute("UPDATE acquisition_requests SET state=?1,manager_id=COALESCE(?2,manager_id),updated_at=?3 WHERE id=?4",params![status,manager,now(),key])?;Ok(())}).await
+    db.write("managers.requests.update", move|db|{db.execute("UPDATE acquisition_requests SET state=?1,manager_id=COALESCE(?2,manager_id),updated_at=?3 WHERE id=?4",params![status.as_str(),manager,now(),key])?;Ok(())}).await
 }
 
 pub(super) async fn acquire(key: String, message: String, db: &Database) -> anyhow::Result<()> {
@@ -102,8 +103,11 @@ pub(super) async fn acquire(key: String, message: String, db: &Database) -> anyh
 pub(super) async fn perform(
     request_id: String,
     db: &Database,
-) -> anyhow::Result<Option<(String, String, String, String)>> {
-    db.read("managers.requests.perform", move|db|Ok(db.query_row("SELECT service_id,generation,external_id,state FROM acquisition_requests WHERE id=?1",[request_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?))).optional()?)).await
+) -> anyhow::Result<Option<AcquisitionRequest>> {
+    db.read("managers.requests.perform", move|db|{
+        let row=db.query_row("SELECT service_id,generation,external_id,state FROM acquisition_requests WHERE id=?1",[request_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?))).optional()?;
+        row.map(|(service_id,service_generation,external_id,state)|Ok(AcquisitionRequest{service_id,service_generation,external_id,state:serde_json::from_value(json!(state))?})).transpose()
+    }).await
 }
 
 pub(super) fn enqueue(tx: &rusqlite::Transaction<'_>, request: &str) -> anyhow::Result<()> {

@@ -1,6 +1,7 @@
 #[path = "../storage/managers/requests.rs"]
 mod storage;
 
+use super::domain::{CreateAcquisition, DecideAcquisition, RequestAction, RequestState};
 use super::*;
 use axum::extract::Query;
 use thelxinoe_core::Role;
@@ -142,8 +143,19 @@ async fn request(
         .chars()
         .take(500)
         .collect::<String>();
-    let result = storage::request(&state.db, input, p, s, title).await?;
-    Ok(Json(json!({"id":result.0,"state":result.1})))
+    let result = storage::request(
+        &state.db,
+        CreateAcquisition {
+            user_id: p.user.id,
+            administrator: p.user.role == Role::Admin,
+            service_id: s.id,
+            service_generation: s.generation,
+            external_id: input.external_id,
+            title,
+        },
+    )
+    .await?;
+    Ok(Json(json!({"id":result.id,"state":result.state})))
 }
 #[derive(Deserialize)]
 struct Decision {
@@ -156,16 +168,22 @@ async fn decide(
     Json(input): Json<Decision>,
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
-    if !matches!(
-        input.action.as_str(),
-        "approve" | "deny" | "cancel" | "reacquire"
-    ) {
-        return Err(ApiError::bad("Unknown request action"));
-    }
-    if matches!(input.action.as_str(), "approve" | "deny") && p.user.role != Role::Admin {
+    let action: RequestAction = serde_json::from_value(json!(input.action))
+        .map_err(|_| ApiError::bad("Unknown request action"))?;
+    if matches!(action, RequestAction::Approve | RequestAction::Deny) && p.user.role != Role::Admin
+    {
         return Err(ApiError::forbidden());
     }
-    let changed = storage::decide(&state.db, key, input, p).await?;
+    let changed = storage::decide(
+        &state.db,
+        DecideAcquisition {
+            id: key,
+            actor: p.user.id,
+            administrator: p.user.role == Role::Admin,
+            action,
+        },
+    )
+    .await?;
     if !changed {
         return Err(ApiError::conflict(
             "This request cannot be changed in its current state",
@@ -189,12 +207,16 @@ async fn auto_approve(
     Json(input): Json<Auto>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageUsers).await?;
-    storage::auto_approve(&state.db, user, input, p).await?;
+    storage::auto_approve(&state.db, user, input.enabled, p.user.id).await?;
     Ok(Json(json!({"saved":true})))
 }
-async fn update(state: &AppState, key: &str, status: &str, manager: Option<i64>) -> Result<()> {
+async fn update(
+    state: &AppState,
+    key: &str,
+    status: RequestState,
+    manager: Option<i64>,
+) -> Result<()> {
     let key = key.to_owned();
-    let status = status.to_owned();
     storage::update(key, status, &state.db, manager).await?;
     Ok(())
 }
@@ -218,21 +240,24 @@ async fn perform(state: &AppState, key: &str) -> Result<()> {
         .await?
         .ok_or_else(ApiError::not_found)?;
     if matches!(
-        row.3.as_str(),
-        "requested" | "available" | "denied" | "cancelled"
+        row.state,
+        RequestState::Requested
+            | RequestState::Available
+            | RequestState::Denied
+            | RequestState::Cancelled
     ) {
         return Ok(());
     }
-    if row.3 == "searching" {
+    if row.state == RequestState::Searching {
         return Err(ApiError::conflict(
             "The previous search may have reached the manager. Review its queue before retrying.",
         ));
     }
-    if !matches!(row.3.as_str(), "approved" | "adding") {
+    if !matches!(row.state, RequestState::Approved | RequestState::Adding) {
         return Err(ApiError::conflict("Request is not approved"));
     }
-    let s = service(state, &row.0).await?;
-    if s.generation != row.1 {
+    let s = service(state, &row.service_id).await?;
+    if s.generation != row.service_generation {
         return Err(ApiError::conflict(
             "Manager configuration changed; approve this request again",
         ));
@@ -247,15 +272,15 @@ async fn perform(state: &AppState, key: &str) -> Result<()> {
     let c = Connection::open(state, &s).await?;
     let kind = endpoint(&s.kind);
     // Re-read manager metadata and ownership instead of accepting a client-supplied object.
-    let mut item = lookup(&c, &row.2).await?;
+    let mut item = lookup(&c, &row.external_id).await?;
     let existing = c.get(kind).await?;
     let existing = existing
         .as_array()
         .ok_or_else(unavailable)?
         .iter()
-        .find(|r| external(&s.kind, r).as_deref() == Some(&row.2))
+        .find(|r| external(&s.kind, r).as_deref() == Some(&row.external_id))
         .cloned();
-    update(state, key, "adding", None).await?;
+    update(state, key, RequestState::Adding, None).await?;
     let mut item = if let Some(existing) = existing {
         existing
     } else {
@@ -337,11 +362,11 @@ async fn perform(state: &AppState, key: &str) -> Result<()> {
         .await?;
     }
     if !defaults.monitored {
-        update(state, key, "requested", Some(manager)).await?;
+        update(state, key, RequestState::Requested, Some(manager)).await?;
         return Ok(());
     }
-    super::retention::reacquire(state, &s, &c, &row.2, manager).await?;
-    update(state, key, "searching", Some(manager)).await?;
+    super::retention::reacquire(state, &s, &c, &row.external_id, manager).await?;
+    update(state, key, RequestState::Searching, Some(manager)).await?;
     let command = match s.kind.as_str() {
         "radarr" => json!({"name":"MoviesSearch","movieIds":[manager]}),
         "sonarr" => json!({"name":"SeriesSearch","seriesId":manager}),
@@ -349,6 +374,6 @@ async fn perform(state: &AppState, key: &str) -> Result<()> {
     };
     c.call(reqwest::Method::POST, "command", &[], Some(command))
         .await?;
-    update(state, key, "requested", Some(manager)).await?;
+    update(state, key, RequestState::Requested, Some(manager)).await?;
     Ok(())
 }

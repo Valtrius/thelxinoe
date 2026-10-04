@@ -1,5 +1,9 @@
 //! Quiesced component snapshots and encrypted portable archives, independent of server SQLite.
 use super::*;
+use crate::recovery::{RollbackAction, RollbackPhase};
+#[cfg(test)]
+#[path = "backup_recovery_tests.rs"]
+mod recovery_tests;
 use std::{
     os::unix::fs::PermissionsExt,
     path::{Path as FsPath, PathBuf},
@@ -32,6 +36,8 @@ struct Record {
     #[serde(default)]
     recovery_ready: bool,
     #[serde(default)]
+    rollback_phase: Option<RollbackPhase>,
+    #[serde(default)]
     release_restore: Option<String>,
 }
 #[derive(Deserialize)]
@@ -50,10 +56,31 @@ fn work(key: &str) -> PathBuf {
     root().join(key)
 }
 fn record(r: &Record) -> Result<()> {
+    validate_record(r)?;
     persisted(store::write_json(&work(&r.id).join("operation.json"), r))
+}
+fn validate_record(r: &Record) -> Result<()> {
+    crate::recovery::validate(r.rollback_phase, &r.stage)?;
+    if r.recovery_ready {
+        let recovery = r
+            .recovery
+            .as_deref()
+            .and_then(|v| v.strip_prefix("recovery-"))
+            .ok_or_else(|| conflict("Recovery journal is missing its captured state"))?;
+        id(recovery)?;
+    }
+    Ok(())
 }
 fn public(r: &Record) -> Value {
     json!({"id":r.id,"stage":r.stage,"created_at":r.created_at,"error":r.error,"archive":format!("{}.age",r.id)})
+}
+fn failure_stage(r: &Record) -> &'static str {
+    // The restore attempt is persisted before quiescence, even if its snapshot never completes.
+    if r.recovery.is_some() {
+        "restore-failed"
+    } else {
+        "failed"
+    }
 }
 fn private_dir(path: &FsPath) -> Result<()> {
     persisted(std::fs::create_dir_all(path).map_err(Into::into))?;
@@ -71,6 +98,7 @@ pub(super) async fn list() -> Result<Json<Value>> {
             let entry = entry.map_err(|_| unavailable())?;
             if entry.path().join("operation.json").is_file() {
                 let r: Record = persisted(store::read(&entry.path().join("operation.json")))?;
+                validate_record(&r)?;
                 items.push(public(&r));
             }
         }
@@ -167,11 +195,52 @@ async fn stop_all(components: &[Component]) -> Result<()> {
 }
 async fn restart(components: &[Component]) -> Result<()> {
     for c in components.iter().rev() {
-        if c.running {
+        if c.running
+            && engine(&format!("/containers/{}/json", c.container)).await?["State"]["Running"]
+                != true
+        {
             updates::start(&c.container).await?;
         }
     }
     Ok(())
+}
+async fn rollback_original(d: &Deployment, r: &mut Record, copy: bool) -> Result<()> {
+    let action = crate::recovery::plan(r.rollback_phase, copy && r.recovery_ready)?;
+    if matches!(action, RollbackAction::CopyRecovery) {
+        r.stage = "rollback-copying".into();
+        record(r)?;
+        // A journal that still permits copying cannot authorize overwriting a resumed service.
+        for c in &r.components {
+            if engine(&format!("/containers/{}/json", c.container)).await?["State"]["Running"]
+                != false
+            {
+                return Err(conflict(
+                    "A component resumed before recovery; explicit recovery is required",
+                ));
+            }
+        }
+        stop_all(&r.components).await?;
+        let recovery = r.recovery.as_deref().ok_or_else(unavailable)?;
+        let key = recovery.strip_prefix("recovery-").ok_or_else(unavailable)?;
+        id(key)?;
+        for (i, c) in r.components.iter().enumerate() {
+            updates::copy_state(
+                d,
+                &r.id,
+                &host(d, &r.id, &format!("{recovery}/{}", c.key)),
+                &c.source,
+                true,
+                &format!("recover{i}"),
+            )
+            .await?;
+        }
+    }
+    r.rollback_phase = Some(RollbackPhase::Activating);
+    r.stage = "rollback-activating".into();
+    record(r)?;
+    restart(&r.components).await?;
+    r.stage = failure_stage(r).into();
+    record(r)
 }
 async fn capture(d: &Deployment, r: &Record, leaf: &str) -> Result<()> {
     for (i, c) in r.components.iter().enumerate() {
@@ -217,6 +286,7 @@ pub(super) async fn create(
         components,
         recovery: None,
         recovery_ready: false,
+        rollback_phase: None,
         release_restore: None,
     };
     record(&r)?;
@@ -298,6 +368,7 @@ pub(super) async fn restore(
             components: vec![],
             recovery: None,
             recovery_ready: false,
+            rollback_phase: None,
             release_restore: None,
         }
     };
@@ -349,6 +420,7 @@ pub(super) async fn restore(
     r.error = None;
     r.recovery = Some(format!("recovery-{restore_id}"));
     r.recovery_ready = false;
+    r.rollback_phase = Some(RollbackPhase::Copying);
     let change_release = manifest.deployment.server["Image"] != d.server["Image"]
         || manifest.deployment.controller["Image"] != d.controller["Image"];
     if change_release {
@@ -360,7 +432,7 @@ pub(super) async fn restore(
     r.release_restore = change_release.then(|| restore_id.clone());
     record(&r)?;
     let response = public(&r);
-    tokio::spawn(async move {
+    crate::recovery::spawn(async move {
         let _guard = guard;
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let recovery = format!("recovery-{restore_id}");
@@ -434,32 +506,18 @@ pub(super) async fn restore(
                     let _ = record(&r);
                     return;
                 }
-                r.stage = "restore-failed".into();
                 r.error = Some(e.1.into());
-                if crossed && captured {
-                    for (i, c) in r.components.iter().enumerate() {
-                        if updates::copy_state(
-                            &d,
-                            &key,
-                            &host(&d, &key, &format!("{recovery}/{}", c.key)),
-                            &c.source,
-                            true,
-                            &format!("undo{i}"),
-                        )
-                        .await
-                        .is_err()
-                        {
-                            r.stage = "recovery-required".into();
-                            break;
-                        }
+                if let Err(error) = rollback_original(&d, &mut r, crossed && captured).await {
+                    r.error = Some(error.1.into());
+                    if r.rollback_phase != Some(RollbackPhase::Activating) {
+                        r.stage = "recovery-required".into();
                     }
-                }
-                if r.stage != "recovery-required" && restart(&r.components).await.is_err() {
-                    r.stage = "recovery-required".into();
                 }
             }
         }
-        let _ = record(&r);
+        if let Err(error) = record(&r) {
+            eprintln!("Backup recovery journal failed: {}", error.1);
+        }
     });
     Ok(Json(response))
 }
@@ -473,6 +531,7 @@ pub(super) async fn recover_interrupted() -> Result<()> {
             continue;
         }
         let mut r: Record = persisted(store::read(&entry.path().join("operation.json")))?;
+        validate_record(&r)?;
         if r.stage == "release-handoff" {
             match r
                 .release_restore
@@ -510,6 +569,8 @@ pub(super) async fn recover_interrupted() -> Result<()> {
                 | "restore-queued"
                 | "restoring"
                 | "restore-activating"
+                | "rollback-activating"
+                | "rollback-copying"
                 | "recovery-required"
         ) {
             continue;
@@ -533,34 +594,21 @@ pub(super) async fn recover_interrupted() -> Result<()> {
                 updates::remove(c["Id"].as_str().ok_or_else(unavailable)?).await?;
             }
         }
-        if matches!(r.stage.as_str(), "restoring" | "recovery-required") && r.recovery_ready {
-            stop_all(&r.components).await?;
-            let recovery = r.recovery.as_deref().ok_or_else(unavailable)?;
-            if !recovery.starts_with("recovery-") {
-                return Err(unavailable());
-            }
-            id(&recovery[9..])?;
-            for (i, c) in r.components.iter().enumerate() {
-                updates::copy_state(
-                    &d,
-                    &r.id,
-                    &host(&d, &r.id, &format!("{recovery}/{}", c.key)),
-                    &c.source,
-                    true,
-                    &format!("recover{i}"),
-                )
-                .await?;
-            }
-        }
-        restart(&r.components).await?;
-        r.stage = if r.stage == "restore-activating" {
+        let terminal = if r.stage == "restore-activating" {
             "restored"
-        } else if r.stage.starts_with("restore") || r.recovery_ready {
-            "restore-failed"
         } else {
-            "failed"
+            failure_stage(&r)
+        };
+        if terminal == "restored" {
+            restart(&r.components).await?;
+        } else {
+            let copy = matches!(
+                r.stage.as_str(),
+                "restoring" | "recovery-required" | "rollback-activating" | "rollback-copying"
+            );
+            rollback_original(&d, &mut r, copy).await?;
         }
-        .into();
+        r.stage = terminal.into();
         r.error = Some("Controller interrupted the operation; component startup recovered".into());
         record(&r)?;
     }

@@ -7,6 +7,7 @@ pub(crate) mod access;
 mod bindings;
 mod connections;
 mod controls;
+mod domain;
 mod indexers;
 mod metadata;
 mod operations;

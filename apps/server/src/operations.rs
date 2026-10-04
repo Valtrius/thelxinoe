@@ -171,15 +171,16 @@ async fn change_user(
     Json(mut input): Json<UserChange>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageUsers).await?;
-    let _slot = state
-        .password_slots
-        .acquire()
-        .await
-        .map_err(anyhow::Error::from)?;
     let hash = if let Some(password) = input.password.take() {
         thelxinoe_auth::validate_credentials("valid-user", &password)
             .map_err(|e| ApiError::bad(e.to_string()))?;
-        Some(thelxinoe_auth::password_hash(password).await?)
+        let slot = state
+            .password_slots
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(anyhow::Error::from)?;
+        Some(thelxinoe_auth::password_hash_with_permit(password, slot).await?)
     } else {
         None
     };

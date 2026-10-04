@@ -2,6 +2,148 @@ use super::*;
 use crate::test_support::fixture;
 
 #[tokio::test]
+async fn batch_inventory_is_shared_and_does_not_exclude_unrelated_playback() {
+    for change in ["none", "service", "candidate-write"] {
+        let (temp, mut state, cookie) = fixture().await;
+        Arc::get_mut(&mut state.config).unwrap().media = "/media".into();
+        let control = Arc::new(crate::test_support::FaultControl::default());
+        let (entered, ready) = tokio::sync::oneshot::channel();
+        let (release, resume) = tokio::sync::oneshot::channel();
+        *control.pause.lock().await = Some((entered, resume));
+        let calls = control.clone();
+        let file_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let files = file_calls.clone();
+        let stub = Router::new()
+            .route("/api/v3/movie", get(move || {
+                let calls = calls.clone();
+                async move {
+                    calls.reached().await;
+                    Json(json!((1..=5).map(|i| json!({"id":i,"tmdbId":i,"hasFile":true})).collect::<Vec<_>>()))
+                }
+            }))
+            .route("/api/v3/moviefile", get(move |axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String,String>>| {
+                let files = files.clone();
+                async move {
+                    files.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let i = query["movieId"].parse::<i64>().unwrap();
+                    Json(json!([{"id":i,"movieId":i,"path":format!("/media/movies/{i}.mp4")}]))
+                }
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move { axum::serve(listener, stub).await.unwrap() });
+        let container = "a".repeat(64);
+        let evidence = json!({"id":container,"running":true,"mounts":[{"kind":"bind","source":"/physical","destination":"/media","writable":true}],"networks":[{"id":"network","address":"127.0.0.1"}]});
+        state.managers.docker.lock().unwrap().extend([
+            ("containers/self".into(), evidence.clone()),
+            (format!("containers/{container}"), evidence),
+        ]);
+        let credential = state
+            .secrets
+            .encrypt("manager:radarr", b"fixture-key")
+            .unwrap();
+        let other = temp.path().join("other.mp4");
+        std::fs::write(&other, b"unrelated playback fixture").unwrap();
+        let other = other.canonicalize().unwrap();
+        let meta = std::fs::metadata(&other).unwrap();
+        let modified = meta
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .to_string();
+        state.db.write("test.batch", move |db| {
+            db.execute("UPDATE users SET role='admin' WHERE id='alice'", [])?;
+            db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('batch','Batch','movies','/media/movies')", [])?;
+            db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('other-root','Other','movies',?1)",[other.parent().unwrap().to_string_lossy()])?;
+            db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,defaults,version,enabled,checked_at) VALUES ('radarr','Fixture','radarr',?1,?2,'g',?3,'/physical','{}','1',1,1)",params![container,port,credential])?;
+            for i in 1..=5 {
+                let key = format!("batch-{i}");
+                db.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES (?1,'batch','movie',?1,?1,1)",[&key])?;
+                db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,ownership,scanned_at) VALUES (?1,'batch',?2,'first',1,'1','1','{}','unmanaged',1)",params![key,format!("/media/movies/{i}.mp4")])?;
+                db.execute("INSERT INTO media_sources VALUES (?1,?1)",[&key])?;
+                db.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES ('alice',?1,1,1)",[&key])?;
+            }
+            db.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES ('other','other-root','movie','other','Other',1)", [])?;
+            db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,ownership,scanned_at) VALUES ('other','other-root',?1,'first',?2,?3,'1',?4,'unmanaged',1)",params![other.to_string_lossy(),meta.len() as i64,modified,json!({"format":{"duration":"120"},"streams":[{"index":0,"codec_type":"video","codec_name":"h264"}]}).to_string()])?;
+            db.execute("INSERT INTO media_sources VALUES ('other','other')", [])?;
+            db.execute("UPDATE retention_policies SET enabled=1,trigger_users='[\"alice\"]',grace_seconds=3600 WHERE domain='movies'", [])?;
+            Ok(())
+        }).await.unwrap();
+        let evaluation = {
+            let state = state.clone();
+            tokio::spawn(async move { evaluate_all(&state, None).await })
+        };
+        ready.await.unwrap();
+        let playback = tokio::time::timeout(std::time::Duration::from_secs(2), crate::test_support::call(&state,"/api/v1/playback","POST",json!({"media_id":"other","options":{"quality":"auto","capabilities":{"containers":["mp4"],"video":["h264"],"audio":[],"hls":false}}}),&cookie)).await;
+        let progress = if let Ok((_, _, body)) = &playback {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                crate::test_support::call(
+                    &state,
+                    &format!("/api/v1/playback/{}/progress", body["id"].as_str().unwrap()),
+                    "POST",
+                    json!({"sequence":1,"position":1,"state":"playing"}),
+                    &cookie,
+                ),
+            )
+            .await
+            .ok()
+        } else {
+            None
+        };
+        if change == "service" {
+            state
+                .db
+                .write("test.change_service", |db| {
+                    db.execute(
+                        "UPDATE manager_services SET generation='new' WHERE id='radarr'",
+                        [],
+                    )?;
+                    Ok(())
+                })
+                .await
+                .unwrap();
+        } else if change == "candidate-write" {
+            state.db.write("test.reject_candidate", |db| { db.execute_batch("CREATE TRIGGER reject_candidate BEFORE INSERT ON retention_candidates BEGIN SELECT RAISE(ABORT,'injected candidate failure'); END;")?; Ok(()) }).await.unwrap();
+        }
+        release.send(()).unwrap();
+        let result = evaluation.await.unwrap();
+        server.abort();
+        assert_eq!(
+            playback
+                .expect("inventory must not block unrelated playback")
+                .0,
+            axum::http::StatusCode::OK
+        );
+        assert_eq!(progress.unwrap().0, axum::http::StatusCode::OK);
+        if change == "none" {
+            assert_eq!(result.unwrap(), 5);
+            assert_eq!(control.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(file_calls.load(std::sync::atomic::Ordering::SeqCst), 5);
+        } else {
+            assert!(result.is_err());
+            let count = state
+                .db
+                .read("test.no_orphans", |db| {
+                    Ok(
+                        db.query_row("SELECT COUNT(*) FROM media_operations", [], |r| {
+                            r.get::<_, i64>(0)
+                        })?,
+                    )
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                count, 0,
+                "failed proposals must not leave pending operations"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn validation_of_one_file_keeps_unrelated_playback_responsive_and_hashes_once() {
     let (_temp, state, path) = movie().await;
     let other = path.with_file_name("other.mp4");
@@ -26,13 +168,14 @@ async fn validation_of_one_file_keeps_unrelated_playback_responsive_and_hashes_o
             .await
             .unwrap();
     let cookie = format!("thelxinoe_session={token}");
-    let operation = operations::prepare_locked(&state, None, "ret-movie".into(), "delete".into())
-        .await
-        .unwrap()
-        .0["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let operation =
+        operations::prepare_operation(&state, None, "ret-movie".into(), "delete".into())
+            .await
+            .unwrap()
+            .0["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
     let control = Arc::new(crate::test_support::FaultControl::default());
     let (entered, ready) = tokio::sync::oneshot::channel();
     let (release, resume) = tokio::sync::oneshot::channel();
@@ -76,7 +219,7 @@ async fn mutation_rechecks_protection_generation_and_open_file_identity_after_va
     for change in ["keep", "generation", "replacement", "content"] {
         let (_temp, state, path) = movie().await;
         let operation =
-            operations::prepare_locked(&state, None, "ret-movie".into(), "delete".into())
+            operations::prepare_operation(&state, None, "ret-movie".into(), "delete".into())
                 .await
                 .unwrap()
                 .0["id"]

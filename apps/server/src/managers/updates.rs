@@ -284,7 +284,7 @@ async fn run_locked(state: &AppState, key: &str, action: &str) -> Result<()> {
         };
         controller(state, &path, Some(json!({"operation_id":key}))).await?;
     }
-    for _ in 0..1200 {
+    loop {
         let items = controller(state, "/updates", None).await?;
         let update = items["items"]
             .as_array()
@@ -328,11 +328,28 @@ async fn run_locked(state: &AppState, key: &str, action: &str) -> Result<()> {
                 .await?;
             return Ok(());
         }
+        if update["operation_active"] == false {
+            progress(
+                state,
+                key,
+                "recovery-required",
+                None,
+                Some("Controller operation was interrupted; explicit recovery is required".into()),
+            )
+            .await?;
+            state
+                .emit(
+                    None,
+                    "service.update.changed",
+                    json!({"id":key,"state":"recovery-required"}),
+                )
+                .await?;
+            return Ok(());
+        }
+        // Keep the playback lease until work is terminal or the controller proves its gate is free.
+        // Missing ownership information is inconclusive, including with an older controller.
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
-    Err(ApiError::conflict(
-        "Update remains unfinished; inspect controller recovery state",
-    ))
 }
 async fn reconnect(state: &AppState, provision: &str, container: &str) -> Result<()> {
     let provision = provision.to_owned();

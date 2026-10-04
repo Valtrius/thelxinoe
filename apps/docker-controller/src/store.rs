@@ -41,6 +41,13 @@ pub fn write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     file.sync_all()?;
     std::fs::rename(&temporary, path)?;
     File::open(parent)?.sync_all()?;
+    #[cfg(test)]
+    if crate::test_support::DOCKER
+        .try_with(|context| context.fail_after_write(bytes))
+        .unwrap_or(false)
+    {
+        anyhow::bail!("Injected lost journal acknowledgement");
+    }
     Ok(())
 }
 pub fn read<T: DeserializeOwned>(path: &Path) -> anyhow::Result<T> {
