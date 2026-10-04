@@ -33,7 +33,7 @@ pub(super) async fn enqueue(
     actor: Option<String>,
 ) -> anyhow::Result<bool> {
     db.write("managers.updates.enqueue", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let available=tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE id=?1 AND state='complete' AND (service_id IS NOT NULL OR kind='recyclarr')) AND NOT EXISTS(SELECT 1 FROM service_updates WHERE service_id=?1 AND state IN ('queued','submitting','preparing','snapshotting','preflight','ready','queued-activate','activating','recovery-snapshot','isolated-live-validation','recovery-required','queued-recover'))",[&service],|r|r.get::<_,bool>(0))?;
+        let available=tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE id=?1 AND state='complete' AND (service_id IS NOT NULL OR kind='recyclarr')) AND NOT EXISTS(SELECT 1 FROM service_updates WHERE service_id=?1 AND state IN ('queued','submitting','preparing','snapshotting','preflight','ready','queued-activate','activating','recovery-snapshot','isolated-live-validation','rollback-copying','rollback-activating','recovery-required','queued-recover'))",[&service],|r|r.get::<_,bool>(0))?;
         if !available{return Ok(false);}
         tx.execute("INSERT INTO service_updates(id,service_id,actor_id,state,created_at,updated_at,automatic,candidate) VALUES (?1,?2,?3,'queued',?4,?4,?5,(SELECT candidate FROM service_update_policy WHERE service_id=?2))",params![key,service,actor,now(),actor.is_none()])?;
         tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'service.update',?2,?3,'queued',?4,?4)",params![id(),json!({"id":key,"action":"preflight"}).to_string(),format!("update:{key}:preflight"),now()])?;
@@ -50,7 +50,7 @@ pub(super) async fn queue_action(
 ) -> anyhow::Result<bool> {
     db.write("managers.updates.queue_action", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let current=tx.query_row("SELECT state FROM service_updates WHERE id=?1",[&key],|r|r.get::<_,String>(0)).optional()?;
-        let allowed=if action=="activate" {current.as_deref()==Some("ready")} else {current.as_deref().is_some_and(|s|["blocked","recovery-required"].contains(&s))};
+        let allowed=if action=="activate" {current.as_deref()==Some("ready")} else {current.as_deref().is_some_and(|s|["blocked","recovery-required","rollback-activating"].contains(&s))};
         if !allowed{return Ok(false);}
         tx.execute("UPDATE service_updates SET state=?1,error=NULL,actor_id=?2,updated_at=?3,automatic=?5 WHERE id=?4",params![format!("queued-{action}"),actor,now(),key,actor.is_none()])?;
         tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'service.update',?2,?3,'queued',?4,?4)",params![id(),json!({"id":key,"action":action}).to_string(),format!("update:{key}:{action}:{}",id()),now()])?;

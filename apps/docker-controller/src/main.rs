@@ -9,6 +9,8 @@ mod lease;
 #[cfg(unix)]
 mod policy;
 #[cfg(unix)]
+mod recovery;
+#[cfg(unix)]
 mod service_releases;
 #[cfg(unix)]
 mod stack;

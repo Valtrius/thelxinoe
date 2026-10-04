@@ -275,6 +275,8 @@
     'queued-activate': 'Waiting to install',
     'recovery-snapshot': 'Saving recovery copy',
     'isolated-live-validation': 'Validating before activation',
+    'rollback-copying': 'Restoring previous service',
+    'rollback-activating': 'Restarting previous service',
     activating: 'Starting updated service',
     committed: 'Update complete',
     'rolled-back': 'Previous service restored',
@@ -493,6 +495,8 @@
           'queued-activate',
           'recovery-snapshot',
           'isolated-live-validation',
+          'rollback-copying',
+          'rollback-activating',
           'activating',
           'queued-recover',
         ].includes(entry.state),
@@ -1911,7 +1915,7 @@
                         updateAction(update.id, 'activate'),
                       )}>Install verified update</Button
                   >{/if}
-                {#if ['blocked', 'recovery-required'].includes(update.state)}<Button
+                {#if ['blocked', 'recovery-required', 'rollback-activating'].includes(update.state)}<Button
                     variant="secondary"
                     size="sm"
                     disabled={busy}
