@@ -17,8 +17,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use thelxinoe_auth::{
-    SessionAuthorization, issue_session, password_hash, user_row, validate_credentials,
-    verify_password,
+    SessionAuthorization, issue_session, password_hash_with_permit, user_row, validate_credentials,
+    verify_password_with_permit,
 };
 use thelxinoe_core::{Capability, Role, id, now};
 
@@ -97,14 +97,18 @@ pub async fn setup(
     }
     validate_credentials(&c.username, &c.password).map_err(|e| ApiError::bad(e.to_string()))?;
     allow_password_attempt(&state, format!("setup:{}", context.address)).await?;
-    let _slot = state.password_slots.try_acquire().map_err(|_| {
-        ApiError(
-            axum::http::StatusCode::TOO_MANY_REQUESTS,
-            "rate_limited",
-            "Authentication is busy. Try again shortly.".into(),
-        )
-    })?;
-    let hash = password_hash(c.password.clone()).await?;
+    let slot = state
+        .password_slots
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            ApiError(
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                "rate_limited",
+                "Authentication is busy. Try again shortly.".into(),
+            )
+        })?;
+    let hash = password_hash_with_permit(c.password.clone(), slot).await?;
     let user_id = id();
     let uid = user_id.clone();
     let username = c.username.clone();
@@ -143,9 +147,10 @@ pub(crate) async fn check_credentials(
     if password.len() > 256 || username.len() > 64 {
         return Err(ApiError::unauthorized());
     }
-    let _slot = state
+    let slot = state
         .password_slots
-        .acquire()
+        .clone()
+        .acquire_owned()
         .await
         .map_err(anyhow::Error::from)?;
     let username = username.to_owned();
@@ -154,7 +159,7 @@ pub(crate) async fn check_credentials(
         .as_ref()
         .map(|r| r.1.clone())
         .unwrap_or_else(|| state.dummy_hash.as_ref().clone());
-    let valid = verify_password(password.to_owned(), hash).await?;
+    let valid = verify_password_with_permit(password.to_owned(), hash, slot).await?;
     if !valid || record.is_none() {
         return Err(ApiError::unauthorized());
     }
@@ -195,17 +200,24 @@ pub async fn change_password(
         return Err(ApiError::bad("Current password is incorrect"));
     }
     allow_password_attempt(&state, format!("password:{}", principal.user.id)).await?;
-    let _slot = state
+    let slot = state
         .password_slots
-        .acquire()
+        .clone()
+        .acquire_owned()
         .await
         .map_err(anyhow::Error::from)?;
     let user_id = principal.user.id.clone();
     let previous_hash = storage::change_password_read_users(&state.db, user_id).await?;
-    if !verify_password(input.current_password, previous_hash.clone()).await? {
+    if !verify_password_with_permit(input.current_password, previous_hash.clone(), slot).await? {
         return Err(ApiError::bad("Current password is incorrect"));
     }
-    let hash = password_hash(input.new_password).await?;
+    let slot = state
+        .password_slots
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(anyhow::Error::from)?;
+    let hash = password_hash_with_permit(input.new_password, slot).await?;
     let user_id = principal.user.id.clone();
     let changed =
         storage::change_password_write_users(&state.db, &principal, previous_hash, hash, user_id)
@@ -278,12 +290,13 @@ pub async fn create_user(
     let p = security::require(&state, &headers, Capability::ManageUsers).await?;
     validate_credentials(&user.username, &user.password)
         .map_err(|e| ApiError::bad(e.to_string()))?;
-    let _slot = state
+    let slot = state
         .password_slots
-        .acquire()
+        .clone()
+        .acquire_owned()
         .await
         .map_err(anyhow::Error::from)?;
-    let hash = password_hash(std::mem::take(&mut user.password)).await?;
+    let hash = password_hash_with_permit(std::mem::take(&mut user.password), slot).await?;
     let result = storage::create_user(&state.db, user, p, hash).await?;
     result
         .map(|id| Json(json!({"id":id})))

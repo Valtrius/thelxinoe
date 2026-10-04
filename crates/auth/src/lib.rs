@@ -1,6 +1,9 @@
 #[path = "storage.rs"]
 mod storage;
 
+#[cfg(test)]
+mod password_work_tests;
+
 use aes_gcm::{
     Aes256Gcm, KeyInit, Nonce,
     aead::{Aead, Payload},
@@ -122,23 +125,59 @@ pub fn validate_credentials(username: &str, password: &str) -> Result<()> {
     }
     Ok(())
 }
-pub async fn password_hash(password: String) -> Result<String> {
+async fn password_work<T: Send + 'static>(
+    permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    work: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
     tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        work()
+    })
+    .await?
+}
+pub async fn password_hash(password: String) -> Result<String> {
+    hash_password(password, None).await
+}
+pub async fn password_hash_with_permit(
+    password: String,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) -> Result<String> {
+    hash_password(password, Some(permit)).await
+}
+async fn hash_password(
+    password: String,
+    permit: Option<tokio::sync::OwnedSemaphorePermit>,
+) -> Result<String> {
+    password_work(permit, move || {
         Argon2::default()
             .hash_password(password.as_bytes(), &SaltString::generate(&mut OsRng))
             .map(|v| v.to_string())
             .map_err(|_| anyhow!("Password hashing failed"))
     })
-    .await?
+    .await
 }
 pub async fn verify_password(password: String, hash: String) -> Result<bool> {
-    tokio::task::spawn_blocking(move || {
+    check_password(password, hash, None).await
+}
+pub async fn verify_password_with_permit(
+    password: String,
+    hash: String,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) -> Result<bool> {
+    check_password(password, hash, Some(permit)).await
+}
+async fn check_password(
+    password: String,
+    hash: String,
+    permit: Option<tokio::sync::OwnedSemaphorePermit>,
+) -> Result<bool> {
+    password_work(permit, move || {
         let parsed = PasswordHash::new(&hash).map_err(|_| anyhow!("Invalid password hash"))?;
         Ok(Argon2::default()
             .verify_password(password.as_bytes(), &parsed)
             .is_ok())
     })
-    .await?
+    .await
 }
 pub use storage::user_row;
 
