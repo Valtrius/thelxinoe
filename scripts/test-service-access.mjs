@@ -603,7 +603,7 @@ try {
           'cookie' in headers ||
           'x-thelxinoe-client' in headers,
       ).toBe(false);
-      expect(headers['x-forwarded-host']).toBe(new URL(f.base).host);
+      expect(headers['x-forwarded-host']).toBe(`${f.project}-peer:7878`);
       const cookies = await f.context.request.get(
         `${f.base}/services/radarr/cookies`,
       );

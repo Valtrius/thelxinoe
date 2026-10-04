@@ -111,6 +111,15 @@ export type TransferReview = {
   managed_config: string;
   compose_project: string | null;
   compose_service: string | null;
+  authentication: 'external' | 'preserved' | 'generated';
+  publish_ports: boolean;
+  allowed_hosts: boolean;
+  nzbget?: {
+    append_log: boolean;
+    empty_password: boolean;
+    cert_check_disabled: boolean;
+    cert_store: string | null;
+  };
 };
 export type UpdatePolicy = {
   service_id: string;

@@ -19,6 +19,7 @@ export async function installUiFixture(
       can_recreate: boolean;
     };
     managedNzbget?: boolean;
+    nzbgetCertStore?: string | null;
     managerKind?: 'radarr' | 'sonarr' | 'lidarr';
     serviceUpdateState?: string;
   } = {},
@@ -356,6 +357,31 @@ export async function installUiFixture(
           history_time: 1789984800 - i,
         })),
       });
+    if (
+      path === '/admin/stack/adopt/preview' &&
+      request.postDataJSON()?.service_id === 'support-nzbget'
+    )
+      return json({
+        review_id: 'review-nzbget',
+        name: 'nzbget',
+        image: 'linuxserver/nzbget',
+        source_config: '/external/nzbget',
+        managed_config: '/managed/nzbget',
+        compose_project: null,
+        compose_service: null,
+        authentication: 'generated',
+        publish_ports: true,
+        allowed_hosts: false,
+        nzbget: {
+          append_log: true,
+          empty_password: true,
+          cert_check_disabled: true,
+          cert_store:
+            options.nzbgetCertStore === undefined
+              ? '/etc/ssl/certs/ca-certificates.crt'
+              : options.nzbgetCertStore,
+        },
+      });
     if (path === '/admin/stack/adopt/preview')
       return json({
         review_id: 'review-prowlarr',
@@ -365,6 +391,9 @@ export async function installUiFixture(
         managed_config: '/managed/prowlarr',
         compose_project: 'media',
         compose_service: 'prowlarr',
+        authentication: 'external',
+        publish_ports: false,
+        allowed_hosts: true,
       });
     if (
       path === '/admin/stack/adopt' ||

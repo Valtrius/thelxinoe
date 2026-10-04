@@ -248,13 +248,14 @@ fn shared_media_source(server: &Value, manager: &Value, media: &str) -> Result<S
     Ok(source)
 }
 async fn evidence(state: &AppState, container: &str, port: u16) -> Result<(String, String)> {
-    evidence_for(state, container, port, true).await
+    evidence_for(state, container, port, true, true).await
 }
 async fn evidence_for(
     state: &AppState,
     container: &str,
     port: u16,
     needs_media: bool,
+    named_host: bool,
 ) -> Result<(String, String)> {
     if !(12..=64).contains(&container.len())
         || !container.bytes().all(|b| b.is_ascii_hexdigit())
@@ -302,7 +303,11 @@ async fn evidence_for(
             ApiError::conflict("Manager must share a Docker network with this server")
         })?;
     Ok((
-        format!("http://{address}:{port}"),
+        if named_host {
+            format!("http://{}:{port}", support::docker_host(&manager)?)
+        } else {
+            format!("http://{address}:{port}")
+        },
         if needs_media {
             shared_media_source(&server, &manager, &state.config.media.to_string_lossy())?
         } else {

@@ -36,6 +36,8 @@ pub(super) struct Link {
     upstream_id: Option<i64>,
     applied_hash: Option<String>,
     pending_hash: Option<String>,
+    #[serde(default)]
+    credential_revision: Option<String>,
     prepared: bool,
     recreate_missing: bool,
     #[serde(default)]
@@ -78,6 +80,7 @@ impl Link {
             upstream_id: None,
             applied_hash: None,
             pending_hash: None,
+            credential_revision: None,
             prepared: false,
             recreate_missing: false,
             retain_missing: false,

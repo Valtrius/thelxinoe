@@ -239,11 +239,12 @@ pub(super) async fn restore_original_write_jobs(
     kind: String,
     integration: Option<String>,
     container: String,
+    original_credential: Option<Vec<u8>>,
 ) -> anyhow::Result<()> {
     db.write("managers.stack.restore_original_write_jobs", move|db|{
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let table=if matches!(kind.as_str(),"radarr"|"sonarr"|"lidarr"){"manager_services"}else{"support_services"};
-        if let Some(integration)=integration { tx.execute(&format!("UPDATE {table} SET container_id=?1,generation=?2,access_revision=?2,url_base=(SELECT original_url_base FROM stack_provisions WHERE id=?4) WHERE id=?3"),params![container,id(),integration,key])?; }
+        if let Some(integration)=integration { tx.execute(&format!("UPDATE {table} SET container_id=?1,generation=?2,access_revision=?2,url_base=(SELECT original_url_base FROM stack_provisions WHERE id=?4),credential=COALESCE(?5,credential) WHERE id=?3"),params![container,id(),integration,key,original_credential])?; }
         tx.execute("UPDATE jobs SET state='complete',error=NULL WHERE kind='stack.install' AND json_extract(payload,'$.id')=?1",[&key])?;
         tx.execute("DELETE FROM stack_provisions WHERE id=?1",[&key])?;
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'stack.restore-original',?2,?3)",params![actor.user.id,key,now()])?;
@@ -266,7 +267,7 @@ pub(super) async fn adopt_write_stack_provisions(
     key: String,
     credential: Vec<u8>,
 ) -> anyhow::Result<bool> {
-    db.write("managers.stack.adopt_write_stack_provisions", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;if tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE kind=?1)",[&item.0],|r|r.get::<_,bool>(0))?{return Ok(false);}tx.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,container_id,service_id,origin,created_at,updated_at,native_url,original_url_base) VALUES (?1,?2,?3,0,?4,'queued',?5,?6,'adopted',?7,?7,?8,(SELECT url_base FROM manager_services WHERE id=?6 UNION ALL SELECT url_base FROM support_services WHERE id=?6))",params![key,item.0,p.user.id,credential,item.1,input.service_id,now(),item.2])?;tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'stack.install',?2,?3,'queued',?4,?4)",params![id(),json!({"id":key}).to_string(),format!("stack:{key}"),now()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'stack.adopt',?2,?3)",params![p.user.id,key,now()])?;tx.commit()?;Ok(true)}).await
+    db.write("managers.stack.adopt_write_stack_provisions", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;if tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE kind=?1)",[&item.0],|r|r.get::<_,bool>(0))?{return Ok(false);}tx.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,container_id,service_id,origin,created_at,updated_at,native_url,original_url_base) VALUES (?1,?2,?3,0,?4,'queued',?5,?6,'adopted',?7,?7,?8,(SELECT url_base FROM manager_services WHERE id=?6 UNION ALL SELECT url_base FROM support_services WHERE id=?6))",params![key,item.0,p.user.id,credential,item.1,input.service_id,now(),item.2])?;tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'stack.install',?2,?3,'queued',?4,?4)",params![id(),json!({"id":key,"nzbget":input.nzbget}).to_string(),format!("stack:{key}"),now()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'stack.adopt',?2,?3)",params![p.user.id,key,now()])?;tx.commit()?;Ok(true)}).await
 }
 
 pub(super) async fn retry(db: &Database, key: String) -> anyhow::Result<bool> {

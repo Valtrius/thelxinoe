@@ -373,6 +373,45 @@ async fn progress(
     storage::progress(key, stage, &state.db, container, error).await?;
     Ok(())
 }
+
+async fn verify_gateway_access(state: &AppState, kind: &str, integration: &str) -> Result<()> {
+    let connection = if kind == "prowlarr" {
+        support::connect(state, &support::load(state, integration).await?).await?
+    } else {
+        Connection::open(state, &service(state, integration).await?).await?
+    };
+    let host = connection.get("config/host").await?;
+    if !host["authenticationMethod"]
+        .as_str()
+        .is_some_and(|value| value.eq_ignore_ascii_case("external"))
+        || !host["authenticationRequired"]
+            .as_str()
+            .is_some_and(|value| value.eq_ignore_ascii_case("enabled"))
+    {
+        return Err(ApiError::conflict(
+            "Managed service must use Thelxinoe login before completing adoption",
+        ));
+    }
+    let response = state
+        .managers
+        .http
+        .get(format!("{}{}/", connection.base, connection.url_base))
+        .send()
+        .await
+        .map_err(|_| unavailable())?;
+    if !response.status().is_success()
+        || !response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("text/html"))
+    {
+        return Err(ApiError::conflict(
+            "Managed web UI is not ready; restore the original service or retry adoption",
+        ));
+    }
+    Ok(())
+}
 pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> anyhow::Result<()> {
     let key = job.payload["id"]
         .as_str()
@@ -409,11 +448,14 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
     } else {
         String::new()
     };
-    let credentials: support::Credentials =
-        serde_json::from_str(&secret_input).unwrap_or(support::Credentials {
+    let credentials = serde_json::from_str::<ProvisionCredentials>(&secret_input)
+        .map(|stored| stored.credentials)
+        .unwrap_or(support::Credentials {
             username: "thelxinoe".into(),
             secret: secret_input,
         });
+    let fixes: Option<thelxinoe_core::NzbgetAdoptionFixes> =
+        serde_json::from_value(job.payload["nzbget"].clone())?;
     let secret = credentials.secret;
     let result=async {
   let templates=controller(state,"/templates",None).await?;let template=templates["items"].as_array().into_iter().flatten().find(|t|t["kind"]==row.0).cloned().ok_or_else(unavailable)?;
@@ -430,7 +472,10 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
    if row.7=="adopted" {
        let _lease=state.managers.maintenance(state).await;let _guard=state.managers.guard.service(&row.0).await;
        if matches!(row.0.as_str(),"radarr"|"sonarr"|"lidarr"){operations::ensure_idle(state,row.6.as_deref().ok_or_else(unavailable)?).await?;}
-       controller(state,"/adopt",Some(json!({"operation_id":key,"kind":row.0,"container_id":row.5,"released_compose":true}))).await?
+       else if row.0=="nzbget" {support::ensure_idle(state,row.6.as_deref().ok_or_else(unavailable)?).await?;}
+       let mut request=json!({"operation_id":key,"kind":row.0,"container_id":row.5,"released_compose":true});
+       if row.0=="nzbget" {request["nzbget"]=json!({"fixes":fixes.unwrap_or_default(),"secret":secret});}
+       controller(state,"/adopt",Some(request)).await?
    } else {controller(state,"/install",Some(json!({"operation_id":key,"kind":row.0,"host_port":row.2,"username":"thelxinoe","secret":secret}))).await?}
   };
   let container=installed["container_id"].as_str().ok_or_else(unavailable)?.to_owned();progress(state,&key,"connecting",Some(container.clone()),None).await?;
@@ -449,6 +494,20 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
   }
   let registered=registered.ok_or_else(||last.unwrap_or_else(unavailable))?;
   let integration=registered["id"].as_str().ok_or_else(unavailable)?.to_owned();
+  if row.7 == "adopted" && thelxinoe_core::service_gateway_auth(&row.0) {verify_gateway_access(state,&row.0,&integration).await?;}
+  if row.7 == "adopted" && row.0 == "nzbget" {
+    let service=support::load(state,&integration).await?;
+    let connection=support::connect(state,&service).await?;
+    let config=support::rpc(&connection,&service.credentials,"config",json!([])).await?;
+    if nzbget_value(&config,"ControlUsername")? != "thelxinoe" || nzbget_value(&config,"ControlPassword")? != secret {
+        return Err(ApiError::conflict("NZBGet must use its generated credentials before completing adoption"));
+    }
+    let fixes=fixes.unwrap_or_default();
+    if (fixes.rotate_logs && (!nzbget_value(&config,"WriteLog")?.eq_ignore_ascii_case("rotate") || nzbget_value(&config,"RotateLog")? != "3"))
+       || (fixes.cert_check && !nzbget_value(&config,"CertCheck")?.eq_ignore_ascii_case("yes")) {
+        return Err(ApiError::conflict("NZBGet did not apply the reviewed warning fixes"));
+    }
+  }
   let key=key.clone();storage::provision_write_stack_provisions(registered, key, &state.db).await?;
   if row.7=="installed" && matches!(row.0.as_str(),"radarr"|"sonarr"|"lidarr") {
     let _guard=state.managers.guard.service(&row.0).await;
@@ -510,6 +569,31 @@ async fn wire(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<
 struct AdoptPreview {
     service_id: String,
 }
+
+#[derive(Deserialize, Serialize)]
+struct ProvisionCredentials {
+    #[serde(flatten)]
+    credentials: support::Credentials,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    original: Option<support::Credentials>,
+}
+
+fn nzbget_value<'a>(config: &'a Value, key: &str) -> Result<&'a str> {
+    let rows = config.as_array().ok_or_else(unavailable)?;
+    let mut matching = rows.iter().filter(|row| {
+        row["Name"]
+            .as_str()
+            .is_some_and(|name| name.eq_ignore_ascii_case(key))
+    });
+    let value = matching
+        .next()
+        .and_then(|row| row["Value"].as_str())
+        .ok_or_else(unavailable)?;
+    if matching.next().is_some() {
+        return Err(ApiError::conflict("NZBGet returned duplicate settings"));
+    }
+    Ok(value)
+}
 async fn adopt_preview(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -546,14 +630,49 @@ async fn adopt_preview(
             ));
         }
     }
-    Ok(Json(
-        controller(
-            &state,
-            "/adopt/preview",
-            Some(json!({"kind":kind,"container_id":container})),
-        )
-        .await?,
-    ))
+    let allowed_hosts = if thelxinoe_core::service_gateway_auth(&kind) {
+        let connection = if kind == "prowlarr" {
+            support::connect(&state, &support::load(&state, &input.service_id).await?).await?
+        } else {
+            Connection::open(&state, &service(&state, &input.service_id).await?).await?
+        };
+        connection.get("config/host").await?["allowedHosts"].is_string()
+    } else {
+        false
+    };
+    let nzbget = if kind == "nzbget" {
+        let service = support::load(&state, &input.service_id).await?;
+        let c = support::connect(&state, &service).await?;
+        let config = support::rpc(&c, &service.credentials, "config", json!([])).await?;
+        Some(json!({
+            "append_log":nzbget_value(&config,"WriteLog")?.eq_ignore_ascii_case("append"),
+            "empty_password":nzbget_value(&config,"ControlPassword")?.is_empty(),
+            "cert_check_disabled":!nzbget_value(&config,"CertCheck")?.eq_ignore_ascii_case("yes"),
+            "configured_cert_store":nzbget_value(&config,"CertStore")?,
+        }))
+    } else {
+        None
+    };
+    let mut review = controller(
+        &state,
+        "/adopt/preview",
+        Some(json!({"kind":kind,"container_id":container,"cert_store":nzbget.as_ref().and_then(|v| v["configured_cert_store"].as_str()).unwrap_or("")})),
+    )
+    .await?;
+    review["allowed_hosts"] = json!(allowed_hosts);
+    if let Some(mut nzbget) = nzbget {
+        nzbget
+            .as_object_mut()
+            .ok_or_else(unavailable)?
+            .remove("configured_cert_store");
+        nzbget["cert_store"] = review["nzbget_cert_store"].take();
+        review
+            .as_object_mut()
+            .ok_or_else(unavailable)?
+            .remove("nzbget_cert_store");
+        review["nzbget"] = nzbget;
+    }
+    Ok(Json(review))
 }
 async fn restore_original(
     State(state): State<AppState>,
@@ -575,6 +694,27 @@ async fn restore_original(
         .ok_or_else(|| {
             ApiError::conflict("Only a finished, blocked transfer can restore the original")
         })?;
+    let original_credential = if kind == "nzbget" {
+        let (_, encrypted, _) = storage::login(key.clone(), &state.db)
+            .await?
+            .ok_or_else(unavailable)?;
+        let stored: ProvisionCredentials = serde_json::from_slice(
+            &state
+                .secrets
+                .decrypt(&format!("provision:{key}"), &encrypted)?,
+        )
+        .map_err(|_| unavailable())?;
+        let original = stored.original.ok_or_else(unavailable)?;
+        Some(state.secrets.encrypt(
+            &format!(
+                "support:{}",
+                integration.as_deref().ok_or_else(unavailable)?
+            ),
+            &serde_json::to_vec(&original).map_err(|_| unavailable())?,
+        )?)
+    } else {
+        None
+    };
     let result = controller(
         &state,
         &format!("/{key}/action"),
@@ -585,8 +725,16 @@ async fn restore_original(
         .as_str()
         .ok_or_else(unavailable)?
         .to_owned();
-    storage::restore_original_write_jobs(&state.db, key, actor, kind, integration, container)
-        .await?;
+    storage::restore_original_write_jobs(
+        &state.db,
+        key,
+        actor,
+        kind,
+        integration,
+        container,
+        original_credential,
+    )
+    .await?;
     state
         .emit(None, "stack.changed", json!({"restored":true}))
         .await?;
@@ -598,6 +746,8 @@ struct Adopt {
     review_id: String,
     #[serde(default)]
     released_compose: bool,
+    #[serde(default)]
+    nzbget: Option<thelxinoe_core::NzbgetAdoptionFixes>,
 }
 async fn adopt(
     State(state): State<AppState>,
@@ -609,6 +759,9 @@ async fn adopt(
     let item = storage::adopt_read_manager_services(&state.db, service_id)
         .await?
         .ok_or_else(ApiError::not_found)?;
+    if item.0 != "nzbget" && input.nzbget.is_some() {
+        return Err(ApiError::bad("NZBGet fixes apply only to NZBGet"));
+    }
     let credentials = if matches!(item.0.as_str(), "radarr" | "sonarr" | "lidarr") {
         let service = service(&state, &input.service_id).await?;
         support::Credentials {
@@ -628,12 +781,31 @@ async fn adopt(
             "Review this service before transferring ownership",
         ));
     }
-    controller(&state,"/adopt/check",Some(json!({"operation_id":input.review_id,"kind":item.0,"container_id":item.1,"released_compose":input.released_compose}))).await?;
+    let stored = if item.0 == "nzbget" {
+        ProvisionCredentials {
+            credentials: support::Credentials {
+                username: "thelxinoe".into(),
+                secret: id().replace('-', ""),
+            },
+            original: Some(credentials),
+        }
+    } else {
+        ProvisionCredentials {
+            credentials,
+            original: None,
+        }
+    };
+    let mut request = json!({"operation_id":input.review_id,"kind":item.0,"container_id":item.1,"released_compose":input.released_compose});
+    if item.0 == "nzbget" {
+        request["nzbget"] =
+            json!({"fixes":input.nzbget.unwrap_or_default(),"secret":stored.credentials.secret});
+    }
+    controller(&state, "/adopt/check", Some(request)).await?;
     let key = input.review_id.clone();
     let returned = key.clone();
     let credential = state.secrets.encrypt(
         &format!("provision:{key}"),
-        &serde_json::to_vec(&credentials).map_err(|_| unavailable())?,
+        &serde_json::to_vec(&stored).map_err(|_| unavailable())?,
     )?;
     let inserted =
         storage::adopt_write_stack_provisions(&state.db, input, p, item, key, credential).await?;

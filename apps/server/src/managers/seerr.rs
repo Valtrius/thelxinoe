@@ -883,7 +883,7 @@ mod tests {
             let port = listener.local_addr().unwrap().port();
             let upstream = tokio::spawn(async move { axum::serve(listener, stub).await.unwrap() });
             let container = "a".repeat(64);
-            let inspection = json!({"id":container,"running":true,"mounts":[{"kind":"bind","source":"/media","destination":"/media","writable":true}],"networks":[{"id":"shared","address":"127.0.0.1"}]});
+            let inspection = json!({"id":container,"name":"localhost","running":true,"mounts":[{"kind":"bind","source":"/media","destination":"/media","writable":true}],"networks":[{"id":"shared","address":"127.0.0.1"}]});
             state
                 .managers
                 .docker

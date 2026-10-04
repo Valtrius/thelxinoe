@@ -1,4 +1,6 @@
 import { expect } from '@playwright/test';
+import { writeFileSync } from 'node:fs';
+import { docker } from './service-access-fixture.mjs';
 
 export async function nzbgetAccess({ f, page, manager, scenario, output }) {
   const prefix = '/services/nzbget';
@@ -17,6 +19,48 @@ export async function nzbgetAccess({ f, page, manager, scenario, output }) {
       },
       { method, params },
     );
+
+  await scenario(
+    'nzbget: fresh installation rejects untrusted HTTPS certificates',
+    async () => {
+      const config = await f.upstream('nzbget', 'config');
+      const store = config.find((option) => option.Name === 'CertStore').Value;
+      docker(
+        'exec',
+        '--user',
+        '10001:10001',
+        f.services.nzbget.container_id,
+        'openssl',
+        'x509',
+        '-in',
+        store,
+        '-noout',
+      );
+      const endpoint = 'proxy:9080/api/v1/health';
+      expect(
+        JSON.parse(
+          await f.upstream('nzbget', 'readurl', 'POST', [
+            `http://${endpoint}`,
+            'HTTP certificate fixture',
+          ]),
+        ).status,
+      ).toBe('ok');
+      await expect(
+        f.upstream('nzbget', 'readurl', 'POST', [
+          'https://proxy:9443/api/v1/health',
+          'Untrusted certificate fixture',
+        ]),
+      ).rejects.toThrow('RPC rejected');
+      const failures = (await f.upstream('nzbget', 'log', 'POST', [0, 100]))
+        .filter((entry) => /certificate verification failed/i.test(entry.Text))
+        .map((entry) => entry.Text);
+      expect(failures.length).toBeGreaterThan(0);
+      writeFileSync(
+        `${output}/nzbget-certificates.json`,
+        JSON.stringify({ cert_store: store, rejected: failures }, null, 2),
+      );
+    },
+  );
 
   await scenario(
     'nzbget: private root, native assets, polling, settings and NZB upload',

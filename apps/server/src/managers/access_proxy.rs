@@ -104,9 +104,9 @@ fn request_headers(
         );
     }
     let public = url::Url::parse(&context.origin).map_err(|_| ApiError::forbidden())?;
-    // Keep Prowlarr's Host allowlist scoped to its registered private address.
+    // Keep Arr Host allowlists scoped to their registered Docker names.
     // Its native redirects are translated back into paths below.
-    let host = if s.kind == "prowlarr" {
+    let host = if thelxinoe_core::service_gateway_auth(&s.kind) {
         private
             .strip_prefix("http://")
             .ok_or_else(unavailable_proxy)?

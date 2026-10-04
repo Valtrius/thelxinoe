@@ -221,9 +221,11 @@ async fn connected_services_on(
             let field = |name: &str| fields.iter().find(|f|f["name"]==name).unwrap()["value"].as_str().unwrap().to_owned();
             let source = field("prowlarrUrl");
             let target = field("baseUrl");
-            if split && (!source.starts_with("http://prowlarr.fixture:") || !target.starts_with("http://127.0.0.3:")) { return StatusCode::BAD_REQUEST; }
+            if split && (!source.starts_with("http://prowlarr.fixture:") || !target.starts_with(&format!("http://{}.fixture:", record["implementation"].as_str().unwrap().to_lowercase()))) { return StatusCode::BAD_REQUEST; }
             let client = reqwest::Client::builder().no_proxy()
                 .resolve("prowlarr.fixture", std::net::SocketAddr::from(([127,0,0,if split {2} else {1}],0)))
+                .resolve("radarr.fixture", std::net::SocketAddr::from(([127,0,0,if split {3} else {1}],0)))
+                .resolve("sonarr.fixture", std::net::SocketAddr::from(([127,0,0,if split {3} else {1}],0)))
                 .build().unwrap();
             for (base, api, app) in [(source, "v1", "Prowlarr"), (target, "v3", record["implementation"].as_str().unwrap())] {
                 let response = client.get(format!("{base}/api/{api}/system/status")).send().await.unwrap();
@@ -281,6 +283,14 @@ async fn connected_services_on(
     Arc::get_mut(&mut state.managers).unwrap().http = reqwest::Client::builder()
         .no_proxy()
         .resolve(
+            "radarr.fixture",
+            std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+        )
+        .resolve(
+            "sonarr.fixture",
+            std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+        )
+        .resolve(
             "prowlarr.fixture",
             std::net::SocketAddr::from(([127, 0, 0, 1], source_port)),
         )
@@ -336,7 +346,7 @@ async fn connected_services_on(
         } else {
             json!([{"id":"shared","address":"127.0.0.1"}])
         };
-        let inspection = json!({"id":container,"name":if kind=="prowlarr" {"prowlarr.fixture"} else {kind},"running":true,"mounts":[{"kind":"bind","source":"/media","destination":"/media","writable":true}],"networks":networks});
+        let inspection = json!({"id":container,"name":format!("{kind}.fixture"),"running":true,"mounts":[{"kind":"bind","source":"/media","destination":"/media","writable":true}],"networks":networks});
         state
             .managers
             .docker
@@ -437,7 +447,7 @@ async fn prowlarr_advertises_the_peer_route_on_three_networks_with_url_bases() {
                 .unwrap()
                 .iter()
                 .any(|f| f["name"] == "baseUrl"
-                    && f["value"] == format!("http://127.0.0.3:{}{prefix}", target.port))
+                    && f["value"] == format!("http://radarr.fixture:{}{prefix}", target.port))
         );
     }
 }

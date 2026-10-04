@@ -1,4 +1,4 @@
-import { expect } from '@playwright/test';
+import { expect, request } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
@@ -199,20 +199,25 @@ export async function fixture({ scheme = 'https' } = {}) {
     if (kind === 'nzbget') {
       const username = raw.match(/^ControlUsername=(.*)$/m)[1].trim();
       const password = raw.match(/^ControlPassword=(.*)$/m)[1].trim();
-      const response = await context.request.post(
-        `http://localhost:${services[kind].host_port}/jsonrpc`,
-        {
-          headers: {
-            Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`,
+      const client = await request.newContext();
+      try {
+        const response = await client.post(
+          `http://localhost:${services[kind].host_port}/jsonrpc`,
+          {
+            headers: {
+              Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`,
+            },
+            data: { method: path, params: data ?? [], id: 1 },
           },
-          data: { method: path, params: data ?? [], id: 1 },
-        },
-      );
-      if (!response.ok())
-        throw Error(`NZBGet/${path}: HTTP ${response.status()}`);
-      const body = await response.json();
-      if (body.error) throw Error(`NZBGet/${path}: RPC rejected`);
-      return body.result;
+        );
+        if (!response.ok())
+          throw Error(`NZBGet/${path}: HTTP ${response.status()}`);
+        const body = await response.json();
+        if (body.error) throw Error(`NZBGet/${path}: RPC rejected`);
+        return body.result;
+      } finally {
+        await client.dispose();
+      }
     }
     const key =
       kind === 'bazarr'
@@ -232,9 +237,19 @@ export async function fixture({ scheme = 'https' } = {}) {
             .replace(/\/$/, '')
         : (raw.match(/<UrlBase>(.*?)<\/UrlBase>/)?.[1] ?? '');
     const version = ['lidarr', 'prowlarr', 'seerr'].includes(kind) ? 1 : 3;
+    const address = services[kind].host_port
+      ? `http://localhost:${services[kind].host_port}`
+      : base;
     const response = await context.request.fetch(
-      `http://localhost:${services[kind].host_port}${prefix}/api/${kind === 'bazarr' ? '' : `v${version}/`}${path}`,
-      { method, data, headers: { 'X-Api-Key': key } },
+      `${address}${prefix}/api/${kind === 'bazarr' ? '' : `v${version}/`}${path}`,
+      {
+        method,
+        data,
+        headers: {
+          'X-Api-Key': key,
+          ...(!services[kind].host_port ? { Origin: base } : {}),
+        },
+      },
     );
     if (!response.ok())
       throw Error(`${kind}/${path}: HTTP ${response.status()}`);
@@ -270,7 +285,12 @@ export async function fixture({ scheme = 'https' } = {}) {
     closed = true;
   }
 
-  async function attach(kind, urlBase, image) {
+  async function attach(
+    kind,
+    urlBase,
+    image,
+    { authentication = 'External', nzbgetWarnings = false } = {},
+  ) {
     const name = `${project}-attached-${kind}-${attachedContainers.length}`;
     const directory = `${root}/attached-${kind}-${attachedContainers.length}`;
     const internalPort = {
@@ -282,8 +302,8 @@ export async function fixture({ scheme = 'https' } = {}) {
       nzbget: 6789,
     }[kind];
     const port = await freePort();
-    const key = randomBytes(16).toString('hex');
-    secrets.add(key);
+    const key = nzbgetWarnings ? '' : randomBytes(16).toString('hex');
+    if (key) secrets.add(key);
     mkdirSync(directory, { recursive: true });
     if (kind === 'bazarr') {
       mkdirSync(`${directory}/config`, { recursive: true });
@@ -292,14 +312,19 @@ export async function fixture({ scheme = 'https' } = {}) {
         `auth:\n  apikey: ${key}\ngeneral:\n  hostname: attached-bazarr\n  ip: 0.0.0.0\n  port: 6767\n  base_url: ${urlBase || '/'}\n  use_sonarr: false\n  use_radarr: false\n`,
       );
     } else if (kind === 'nzbget') {
+      writeFileSync(`${directory}/invalid-ca.pem`, 'not a certificate');
+      const categories = Array.from(
+        { length: 6 },
+        (_, index) => `Category${index + 1}.Name=existing-${index + 1}\n`,
+      ).join('');
       writeFileSync(
         `${directory}/nzbget.conf`,
-        `MainDir=/media/downloads\nDestDir=/media/downloads/completed\nInterDir=/media/downloads/intermediate\nNzbDir=/config/nzb\nQueueDir=/config/queue\nTempDir=/config/tmp\nWebDir=\${AppDir}/webui\nConfigTemplate=\${AppDir}/webui/nzbget.conf.template\nControlIP=0.0.0.0\nControlPort=6789\nControlUsername=fixture\nControlPassword=${key}\n`,
+        `MainDir=/media/downloads\nDestDir=\${MainDir}/completed\nInterDir=\${MainDir}/intermediate\nNzbDir=/config/nzb\nQueueDir=/config/queue\nTempDir=/config/tmp\nWebDir=\${AppDir}/webui\nConfigTemplate=\${AppDir}/webui/nzbget.conf.template\nControlIP=0.0.0.0\nControlPort=6789\nControlUsername=fixture\nControlPassword=${key}\nWriteLog=${nzbgetWarnings ? 'append' : 'rotate'}\nRotateLog=3\nCertCheck=no\nCertStore=\n${categories}Category7.Name=custom\nCategory7.DestDir=\${MainDir}/custom\n`,
       );
     } else
       writeFileSync(
         `${directory}/config.xml`,
-        `<Config><BindAddress>*</BindAddress><Port>${internalPort}</Port><UrlBase>${urlBase}</UrlBase>${kind === 'prowlarr' ? `<AllowedHosts>${name}</AllowedHosts>` : ''}<EnableSsl>False</EnableSsl><LaunchBrowser>False</LaunchBrowser><ApiKey>${key}</ApiKey><AuthenticationMethod>External</AuthenticationMethod><AuthenticationRequired>Enabled</AuthenticationRequired><UpdateAutomatically>False</UpdateAutomatically></Config>`,
+        `<Config><BindAddress>*</BindAddress><Port>${internalPort}</Port><UrlBase>${urlBase}</UrlBase><AllowedHosts>${name};custom.example</AllowedHosts><EnableSsl>False</EnableSsl><LaunchBrowser>False</LaunchBrowser><ApiKey>${key}</ApiKey><AuthenticationMethod>${authentication}</AuthenticationMethod><AuthenticationRequired>Enabled</AuthenticationRequired>${kind === 'radarr' && authentication === 'Forms' ? '<AuthenticationEnabled>True</AuthenticationEnabled>' : ''}<UpdateAutomatically>False</UpdateAutomatically></Config>`,
       );
     attachedContainers.push(name);
     infrastructure.update({ containers: attachedContainers });
@@ -347,7 +372,7 @@ export async function fixture({ scheme = 'https' } = {}) {
           data,
           headers: {
             'X-Api-Key': key,
-            ...(kind === 'prowlarr' ? { Host: `${name}:${internalPort}` } : {}),
+            Host: `${name}:${internalPort}`,
           },
         },
       );

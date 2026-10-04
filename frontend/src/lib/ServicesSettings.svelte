@@ -143,6 +143,7 @@
       definitions.map((definition) => [definition.kind, false]),
     ) as Record<ServiceKind, boolean>,
   );
+  const nzbgetAdoption = $state({ rotate_logs: false, cert_check: false });
   const snapshots = $state<Partial<Record<ServiceKind, SupportSnapshot>>>({});
   const managerOptions = $state<Partial<Record<ServiceKind, ManagerOptions>>>(
     {},
@@ -712,6 +713,11 @@
       { service_id: connected.id },
     );
     releasedCompose[definition.kind] = false;
+    if (definition.kind === 'nzbget') {
+      nzbgetAdoption.rotate_logs =
+        transferReviews.nzbget?.nzbget?.append_log ?? false;
+      nzbgetAdoption.cert_check = false;
+    }
   }
   async function adopt(definition: Definition) {
     const connected = integration(definition);
@@ -721,6 +727,7 @@
       service_id: connected.id,
       review_id: review.review_id,
       released_compose: releasedCompose[definition.kind],
+      ...(definition.kind === 'nzbget' ? { nzbget: nzbgetAdoption } : {}),
     });
     transferReviews[definition.kind] = null;
     await refresh();
@@ -1162,8 +1169,49 @@
             <p class="my-2 text-[11px] leading-[1.6] text-muted">
               The managed copy will use <code>/services/{selectedKind}</code> as its
               URL Base. Thelxinoe updates connections it manages. Other API clients
-              must include this prefix after the service's address and port.
+              on the shared Docker network must use this prefix.
             </p>
+          {/if}
+          {#if review.authentication === 'external'}
+            <p class="my-2 text-[11px] leading-[1.6] text-muted">
+              The managed copy uses Thelxinoe login. Published ports are
+              removed; open its web UI through Thelxinoe.
+              {#if review.allowed_hosts}Allowed hosts retain your entries and
+                include the managed container's network names.{/if}
+            </p>
+          {:else if selectedKind === 'nzbget'}
+            <p class="my-2 text-[11px] leading-[1.6] text-muted">
+              NZBGet will use login <code>thelxinoe</code> with a new random password.
+              Thelxinoe updates connections it manages. Other clients need the new
+              credentials.
+            </p>
+            {#if review.nzbget}
+              <div class="my-3 grid gap-3 text-[11px]">
+                {#if review.nzbget.append_log}
+                  <Switch size="sm" bind:checked={nzbgetAdoption.rotate_logs}
+                    >Rotate logs; keep 3 days</Switch
+                  >
+                {/if}
+                {#if review.nzbget.cert_check_disabled}
+                  <div class="grid gap-1.5">
+                    <Switch
+                      size="sm"
+                      bind:checked={nzbgetAdoption.cert_check}
+                      disabled={!review.nzbget.cert_store}
+                      >Verify outgoing TLS certificates</Switch
+                    >
+                    <p class="text-muted">
+                      {#if review.nzbget.cert_store}Checks connections to Usenet
+                        providers and HTTPS sources. Invalid certificates will
+                        block those connections.
+                      {:else}The certificate store is unavailable. Correct
+                        NZBGet's CertStore setting and review again to enable
+                        this fix.{/if}
+                    </p>
+                  </div>
+                {/if}
+              </div>
+            {/if}
           {/if}
           <dl class="review-paths my-3.75 grid gap-3">
             <div>
@@ -1305,7 +1353,6 @@
                     >NZBGet username<input
                       class={formControlClass}
                       bind:value={setup.nzbget.username}
-                      required
                       autocomplete="off"
                     /></FormField
                   >
@@ -1317,7 +1364,7 @@
                     class={formControlClass}
                     type="password"
                     bind:value={setup[definition.kind].secret}
-                    required
+                    required={definition.kind !== 'nzbget'}
                     autocomplete="new-password"
                   /></FormField
                 >

@@ -32,7 +32,7 @@ export async function ownershipAccess({ f, page, scenario, output }) {
     'nzbget',
   ]) {
     await scenario(
-      `${kind}: attachment preserves configuration and adoption sets the fixed prefix`,
+      `${kind}: adoption preserves data and configures protected native access`,
       async () => {
         await page.goto(f.base);
         const image = f.services[kind].image;
@@ -63,7 +63,13 @@ export async function ownershipAccess({ f, page, scenario, output }) {
           bazarr: '/old-bazarr',
           nzbget: '',
         }[kind];
-        const attached = await f.attach(kind, oldBase, image);
+        const gatewayAuth = ['radarr', 'sonarr', 'lidarr', 'prowlarr'].includes(
+          kind,
+        );
+        const attached = await f.attach(kind, oldBase, image, {
+          authentication: gatewayAuth ? 'Forms' : 'External',
+          nzbgetWarnings: kind === 'nzbget',
+        });
         if (['bazarr', 'nzbget'].includes(kind)) {
           // Automatic links write Bazarr's configuration and reload NZBGet.
           // Finish setup before issuing tickets or snapshotting the original.
@@ -80,7 +86,7 @@ export async function ownershipAccess({ f, page, scenario, output }) {
                   )
                   .map(
                     (link) =>
-                      `${link.source_kind} -> ${link.target_kind}: ${link.state}`,
+                      `${link.source_kind} -> ${link.target_kind}: ${link.state}${link.error ? ` (${link.error})` : ''}`,
                   ),
               { timeout: 180000, intervals: [1000] },
             )
@@ -152,18 +158,22 @@ export async function ownershipAccess({ f, page, scenario, output }) {
               exchanged.ok() ? undefined : await exchanged.text(),
             ).toBe(200);
             await expect(
-              kind === 'nzbget'
-                ? tab.locator('#ConfigTabLink')
-                : tab.getByRole('link', { name: 'Settings', exact: true }),
+              gatewayAuth
+                ? tab.locator('input[type="password"]')
+                : kind === 'nzbget'
+                  ? tab.locator('#ConfigTabLink')
+                  : tab.getByRole('link', { name: 'Settings', exact: true }),
             ).toBeVisible({ timeout: 30000 });
             expect(new URL(tab.url()).pathname.startsWith(`${mount}/`)).toBe(
               true,
             );
             await tab.reload();
             await expect(
-              kind === 'nzbget'
-                ? tab.locator('#ConfigTabLink')
-                : tab.getByRole('link', { name: 'Settings', exact: true }),
+              gatewayAuth
+                ? tab.locator('input[type="password"]')
+                : kind === 'nzbget'
+                  ? tab.locator('#ConfigTabLink')
+                  : tab.getByRole('link', { name: 'Settings', exact: true }),
             ).toBeVisible({ timeout: 30000 });
             expect(
               (await browser.request.get(`${f.base}/api/v1/auth/me`)).status(),
@@ -227,10 +237,77 @@ export async function ownershipAccess({ f, page, scenario, output }) {
           await expect(
             page.getByRole('region', { name: 'Ownership review' }),
           ).toContainText('/services/radarr');
+          await expect(
+            page.getByRole('region', { name: 'Ownership review' }),
+          ).toContainText('Thelxinoe login');
+          await expect(
+            page.getByRole('region', { name: 'Ownership review' }),
+          ).toContainText('Published ports are removed');
           await page.screenshot({
             path: `${output}/ownership-review.png`,
             fullPage: true,
           });
+        }
+        if (kind === 'nzbget') {
+          await scenario(
+            'NZBGet rejects an invalid certificate store without blocking adoption review',
+            async () => {
+              const config = await attached.direct('loadconfig');
+              const store = config.find((row) => row.Name === 'CertStore');
+              const saved = store.Value;
+              store.Value = '/config/invalid-ca.pem';
+              await attached.direct('saveconfig', 'POST', [config]);
+              await attached.direct('reload');
+              await expect
+                .poll(
+                  async () => {
+                    try {
+                      return (await attached.direct('config')).find(
+                        (row) => row.Name === 'CertStore',
+                      )?.Value;
+                    } catch {
+                      return null;
+                    }
+                  },
+                  { timeout: 30000 },
+                )
+                .toBe('/config/invalid-ca.pem');
+              const invalid = await f.api(
+                '/admin/stack/adopt/preview',
+                'POST',
+                { service_id: attached.id },
+              );
+              expect(invalid.nzbget.cert_store).toBeNull();
+              await expect(
+                f.api('/admin/stack/adopt', 'POST', {
+                  service_id: attached.id,
+                  review_id: invalid.review_id,
+                  nzbget: { rotate_logs: true, cert_check: true },
+                }),
+              ).rejects.toThrow();
+              expect(
+                JSON.parse(docker('inspect', attached.container))[0].State
+                  .Running,
+              ).toBe(true);
+              store.Value = saved;
+              await attached.direct('saveconfig', 'POST', [config]);
+              await attached.direct('reload');
+              await expect
+                .poll(
+                  async () => {
+                    try {
+                      return (await attached.direct('config')).find(
+                        (row) => row.Name === 'CertStore',
+                      )?.Value;
+                    } catch {
+                      return null;
+                    }
+                  },
+                  { timeout: 30000 },
+                )
+                .toBe(saved);
+            },
+          );
         }
         const filename =
           kind === 'bazarr'
@@ -344,6 +421,13 @@ export async function ownershipAccess({ f, page, scenario, output }) {
               expect((await record()).url_base).toBe(oldBase);
               expect((await record()).container_id).toBe(attached.container);
               expect((await record()).access_url).toBe('/services/sonarr');
+              expect(
+                readFileSync(`${attached.directory}/${filename}`, 'utf8'),
+              ).toBe(original);
+              expect(
+                JSON.parse(docker('inspect', attached.container))[0]
+                  .NetworkSettings.Ports['8989/tcp'][0].HostPort,
+              ).toBe(String(attached.port));
               await expect
                 .poll(
                   async () => {
@@ -359,12 +443,107 @@ export async function ownershipAccess({ f, page, scenario, output }) {
             },
           );
         }
+        if (kind === 'nzbget') {
+          await scenario(
+            'NZBGet can skip warning fixes and recover its original credentials after failed adoption',
+            async () => {
+              const skipped = await f.api(
+                '/admin/stack/adopt/preview',
+                'POST',
+                {
+                  service_id: attached.id,
+                },
+              );
+              expect(skipped.nzbget.append_log).toBe(true);
+              expect(skipped.nzbget.empty_password).toBe(true);
+              expect(skipped.nzbget.cert_check_disabled).toBe(true);
+              expect(skipped.nzbget.cert_store).toMatch(/^\//);
+              const sql = (statement) =>
+                f.compose(
+                  'exec',
+                  '-T',
+                  'server',
+                  'python',
+                  '-c',
+                  'import sqlite3,sys; db=sqlite3.connect("/var/lib/thelxinoe/thelxinoe.sqlite3"); db.execute(sys.argv[1]); db.commit()',
+                  statement,
+                );
+              sql(
+                "CREATE TRIGGER fail_nzbget_adoption BEFORE UPDATE OF service_id ON stack_provisions WHEN NEW.kind='nzbget' BEGIN SELECT RAISE(ABORT, 'fixture acceptance failure'); END",
+              );
+              try {
+                await f.api('/admin/stack/adopt', 'POST', {
+                  service_id: attached.id,
+                  review_id: skipped.review_id,
+                  nzbget: { rotate_logs: false, cert_check: false },
+                });
+                let failed;
+                await expect
+                  .poll(
+                    async () => {
+                      failed = await f.stack();
+                      return failed.provisions.find(
+                        (p) => p.id === skipped.review_id,
+                      )?.state;
+                    },
+                    { timeout: 180000 },
+                  )
+                  .toBe('blocked');
+                f.services.nzbget = {
+                  ...failed.items.find((s) => s.id === skipped.review_id),
+                  host_port: attached.port,
+                };
+                const copied = f.config('nzbget');
+                expect(copied).toMatch(/^WriteLog=append$/m);
+                expect(copied).toMatch(/^CertCheck=no$/m);
+                expect(copied).toMatch(/^ControlUsername=thelxinoe$/m);
+                await f.api(
+                  `/admin/stack/${skipped.review_id}/restore-original`,
+                  'POST',
+                );
+                await expect
+                  .poll(
+                    async () => {
+                      try {
+                        return (await check()).healthy;
+                      } catch {
+                        return false;
+                      }
+                    },
+                    { timeout: 90000 },
+                  )
+                  .toBe(true);
+                const login = await f.api(
+                  `/admin/support/${attached.id}/login`,
+                  'POST',
+                );
+                expect(login).toEqual({ username: 'fixture', password: '' });
+                expect(
+                  readFileSync(`${attached.directory}/${filename}`, 'utf8'),
+                ).toBe(original);
+              } finally {
+                sql('DROP TRIGGER fail_nzbget_adoption');
+              }
+            },
+          );
+        }
         const review = await f.api('/admin/stack/adopt/preview', 'POST', {
           service_id: attached.id,
         });
+        expect(review.authentication).toBe(
+          gatewayAuth
+            ? 'external'
+            : kind === 'nzbget'
+              ? 'generated'
+              : 'preserved',
+        );
+        expect(review.publish_ports).toBe(!gatewayAuth);
         await f.api('/admin/stack/adopt', 'POST', {
           service_id: attached.id,
           review_id: review.review_id,
+          ...(kind === 'nzbget'
+            ? { nzbget: { rotate_logs: true, cert_check: true } }
+            : {}),
         });
         let stack;
         await expect
@@ -383,7 +562,7 @@ export async function ownershipAccess({ f, page, scenario, output }) {
           .toBe('complete');
         f.services[kind] = {
           ...stack.items.find((s) => s.id === review.review_id),
-          host_port: attached.port,
+          host_port: gatewayAuth ? null : attached.port,
         };
         expect(readFileSync(`${attached.directory}/${filename}`, 'utf8')).toBe(
           original,
@@ -396,6 +575,125 @@ export async function ownershipAccess({ f, page, scenario, output }) {
         );
         expect((await record()).access_url).toBe(`/services/${kind}`);
         expect((await check()).healthy).toBe(true);
+        if (gatewayAuth) {
+          const managed = JSON.parse(
+            docker('inspect', f.services[kind].container_id),
+          )[0];
+          expect(
+            Object.values(managed.NetworkSettings.Ports ?? {})
+              .flat()
+              .filter(Boolean),
+          ).toEqual([]);
+          const host = await f.upstream(kind, 'config/host');
+          expect(host.authenticationMethod.toLowerCase()).toBe('external');
+          expect(host.authenticationRequired.toLowerCase()).toBe('enabled');
+          if (typeof host.allowedHosts === 'string') {
+            const allowed = host.allowedHosts
+              .split(/[;,]/)
+              .map((value) => value.trim());
+            expect(allowed).toContain('custom.example');
+            expect(allowed).toContain(managed.Name.slice(1));
+            expect(allowed).toContain(`thelxinoe-${kind}`);
+            expect(allowed).toContain(
+              JSON.parse(docker('inspect', attached.container))[0].Name.slice(
+                1,
+              ),
+            );
+            expect(review.allowed_hosts).toBe(true);
+            expect(
+              f.compose(
+                'exec',
+                '-T',
+                'server',
+                'curl',
+                '-s',
+                '-o',
+                '/dev/null',
+                '-w',
+                '%{http_code}',
+                '-H',
+                'Host: unreviewed.example',
+                `http://${managed.Name.slice(1)}:${(await record()).port}/services/${kind}/`,
+              ),
+            ).toBe('400');
+          } else {
+            expect(review.allowed_hosts).toBe(false);
+          }
+          await expect(
+            f.context.request.get(
+              `http://localhost:${attached.port}${oldBase}/`,
+              { timeout: 3000 },
+            ),
+          ).rejects.toThrow();
+          const anonymous = await f.browser.newContext({
+            ignoreHTTPSErrors: true,
+          });
+          try {
+            expect(
+              (
+                await anonymous.request.get(`${f.base}/services/${kind}/`)
+              ).status(),
+            ).toBe(401);
+          } finally {
+            await anonymous.close();
+          }
+        } else if (kind === 'nzbget') {
+          const config = f.config(kind);
+          const password = config.match(/^ControlPassword=(.*)$/m)[1];
+          expect(config).toMatch(/^ControlUsername=thelxinoe$/m);
+          expect(password).toMatch(/^[a-f0-9]{32}$/);
+          expect(config).toMatch(/^WriteLog=rotate$/m);
+          expect(config).toMatch(/^RotateLog=3$/m);
+          expect(config).toMatch(/^CertCheck=yes$/m);
+          expect(config).toContain(`CertStore=${review.nzbget.cert_store}`);
+          expect(config).toContain('DestDir=${MainDir}/completed');
+          expect(config).toContain('Category7.DestDir=${MainDir}/custom');
+          expect(
+            await f.api(`/admin/stack/${review.review_id}/login`, 'POST'),
+          ).toEqual({ username: 'thelxinoe', password });
+          expect(
+            (await f.upstream('nzbget', 'config')).find(
+              (row) => row.Name === 'CertCheck',
+            ).Value,
+          ).toBe('yes');
+          expect(
+            (
+              await f.context.request.post(
+                `http://localhost:${attached.port}/jsonrpc`,
+                { data: { method: 'version', params: [], id: 1 } },
+              )
+            ).status(),
+          ).toBe(401);
+          await expect
+            .poll(
+              async () =>
+                (await f.api('/admin/service-connections')).items
+                  .filter(
+                    (link) => link.target_id === attached.id && link.enabled,
+                  )
+                  .map((link) => link.state),
+              { timeout: 180000 },
+            )
+            .toEqual(['connected', 'connected', 'connected']);
+          for (const source of ['radarr', 'sonarr', 'lidarr']) {
+            await expect
+              .poll(
+                async () => {
+                  const clients = await f.upstream(source, 'downloadclient');
+                  return clients
+                    .find((row) => row.implementation === 'Nzbget')
+                    ?.fields.find((field) => field.name === 'username')?.value;
+                },
+                { timeout: 90000 },
+              )
+              .toBe('thelxinoe');
+            const clients = await f.upstream(source, 'downloadclient');
+            const client = clients.find(
+              (row) => row.implementation === 'Nzbget',
+            );
+            await f.upstream(source, 'downloadclient/test', 'POST', client);
+          }
+        }
         if (kind === 'radarr') {
           await expect
             .poll(

@@ -8,9 +8,37 @@ use std::{
 const MAX_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 const MAX_FILES: u64 = 500_000;
 
+fn setting(text: &str, key: &str) -> anyhow::Result<Option<(std::ops::Range<usize>, String)>> {
+    let document = roxmltree::Document::parse(text)?;
+    let root = document.root_element();
+    anyhow::ensure!(root.has_tag_name("Config"), "Invalid service configuration");
+    let mut entries = root.children().filter(|node| node.has_tag_name(key));
+    let entry = entries.next();
+    anyhow::ensure!(entries.next().is_none(), "Duplicate {key} setting");
+    Ok(entry.map(|entry| (entry.range(), entry.text().unwrap_or("").to_owned())))
+}
+
+fn set_setting(text: &mut String, key: &str, value: &str) -> anyhow::Result<()> {
+    let range = if let Some((range, _)) = setting(text, key)? {
+        range
+    } else {
+        let document = roxmltree::Document::parse(text)?;
+        let end = text[..document.root_element().range().end]
+            .rfind("</Config>")
+            .ok_or_else(|| anyhow::anyhow!("Missing service configuration end"))?;
+        end..end
+    };
+    let value = value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    text.replace_range(range, &format!("<{key}>{value}</{key}>"));
+    Ok(())
+}
+
 pub fn adopt(kind: &str, name: &str) -> anyhow::Result<()> {
     anyhow::ensure!(crate::templates::find(kind).is_some(), "Unknown service");
-    if kind == "prowlarr" {
+    if thelxinoe_core::service_gateway_auth(kind) {
         anyhow::ensure!(
             !name.is_empty()
                 && name.len() <= 63
@@ -29,6 +57,32 @@ pub fn adopt(kind: &str, name: &str) -> anyhow::Result<()> {
         );
     }
     run(false)?;
+    if kind == "nzbget" {
+        let settings: crate::stack::adoption::Nzbget =
+            crate::store::read(Path::new("/adoption.json"))?;
+        let path = Path::new("/destination/nzbget.conf");
+        let mut text = fs::read_to_string(path)?;
+        nzbget_setting(&mut text, "ControlUsername", "thelxinoe")?;
+        nzbget_setting(&mut text, "ControlPassword", &settings.secret)?;
+        if settings.fixes.rotate_logs {
+            nzbget_setting(&mut text, "WriteLog", "rotate")?;
+            nzbget_setting(&mut text, "RotateLog", "3")?;
+        }
+        if settings.fixes.cert_check {
+            nzbget_setting(
+                &mut text,
+                "CertStore",
+                settings
+                    .cert_store
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("Missing certificate store"))?,
+            )?;
+            nzbget_setting(&mut text, "CertCheck", "yes")?;
+        }
+        fs::write(path, text)?;
+        fs::File::open(path)?.sync_all()?;
+        return Ok(());
+    }
     if kind == "recyclarr" {
         // Ownership metadata belongs to this deployment, never to an imported
         // scheduler. Rebuild it from the explicitly reviewed import selections.
@@ -75,55 +129,45 @@ pub fn adopt(kind: &str, name: &str) -> anyhow::Result<()> {
         general.insert("base_url".into(), base.into());
         text = serde_yaml_ng::to_string(&config)?;
     } else {
-        let document = roxmltree::Document::parse(&text)?;
-        let root = document.root_element();
-        anyhow::ensure!(root.has_tag_name("Config"), "Invalid service configuration");
-        let mut entries = root.children().filter(|node| node.has_tag_name("UrlBase"));
-        let entry = entries.next();
-        anyhow::ensure!(entries.next().is_none(), "Duplicate URL Base setting");
-        let range = if let Some(entry) = entry {
-            entry.range()
-        } else {
-            let end = text[..root.range().end]
-                .rfind("</Config>")
-                .ok_or_else(|| anyhow::anyhow!("Missing service configuration end"))?;
-            end..end
-        };
-        text.replace_range(range, &format!("<UrlBase>{base}</UrlBase>"));
-        if kind == "prowlarr" {
-            let document = roxmltree::Document::parse(&text)?;
-            let mut entries = document
-                .root_element()
-                .children()
-                .filter(|node| node.has_tag_name("AllowedHosts"));
-            let entry = entries.next();
-            anyhow::ensure!(entries.next().is_none(), "Duplicate allowed hosts setting");
-            if let Some(entry) = entry {
-                let hosts = entry.text().unwrap_or("").trim();
-                let additions = [name, "thelxinoe-prowlarr"]
-                    .into_iter()
-                    .filter(|name| {
-                        !hosts.split([',', ';']).any(|host| {
-                            host.trim() == "*" || host.trim().eq_ignore_ascii_case(name)
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                // Preserve existing restrictions while allowing the replacement's
-                // name and its stable network alias for API calls and service links.
-                if !hosts.is_empty() && !additions.is_empty() {
-                    let hosts = hosts
-                        .replace('&', "&amp;")
-                        .replace('<', "&lt;")
-                        .replace('>', "&gt;");
-                    let range = entry.range();
-                    text.replace_range(
-                        range,
-                        &format!(
-                            "<AllowedHosts>{hosts};{}</AllowedHosts>",
-                            additions.join(";")
-                        ),
+        set_setting(&mut text, "UrlBase", base)?;
+        if thelxinoe_core::service_gateway_auth(kind) {
+            set_setting(&mut text, "AuthenticationMethod", "External")?;
+            set_setting(&mut text, "AuthenticationRequired", "Enabled")?;
+            // Legacy Arr configurations can otherwise override External at startup.
+            set_setting(&mut text, "AuthenticationEnabled", "False")?;
+            if let Some((_, value)) = setting(&text, "AllowedHosts")? {
+                let mut hosts: Vec<String> = value
+                    .split([',', ';'])
+                    .map(str::trim)
+                    .filter(|host| !host.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+                let mut required: Vec<String> =
+                    serde_json::from_str(&std::env::var("THELXINOE_ADOPTION_HOSTS")?)?;
+                required.extend([
+                    name.to_owned(),
+                    format!("thelxinoe-{kind}"),
+                    "localhost".into(),
+                    "127.0.0.1".into(),
+                ]);
+                for host in required {
+                    anyhow::ensure!(
+                        !host.is_empty()
+                            && host.len() <= 253
+                            && host
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric()
+                                    || matches!(b, b'-' | b'_' | b'.')),
+                        "Invalid managed service alias"
                     );
+                    if !hosts
+                        .iter()
+                        .any(|existing| existing.eq_ignore_ascii_case(&host))
+                    {
+                        hosts.push(host);
+                    }
                 }
+                set_setting(&mut text, "AllowedHosts", &hosts.join(";"))?;
             }
         }
     }
@@ -131,6 +175,35 @@ pub fn adopt(kind: &str, name: &str) -> anyhow::Result<()> {
     // worker leaves the transfer blocked and its original available for recovery.
     fs::write(&path, text)?;
     fs::File::open(path)?.sync_all()?;
+    Ok(())
+}
+
+fn nzbget_setting(text: &mut String, key: &str, value: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !value.contains(['\n', '\r', '\0']),
+        "Invalid NZBGet setting"
+    );
+    let mut offset = 0;
+    let mut found = None;
+    for line in text.split_inclusive('\n') {
+        if line
+            .split_once('=')
+            .is_some_and(|(name, _)| name.trim().eq_ignore_ascii_case(key))
+        {
+            anyhow::ensure!(found.is_none(), "Duplicate NZBGet setting");
+            let end = offset + line.trim_end_matches(['\n', '\r']).len();
+            found = Some(offset..end);
+        }
+        offset += line.len();
+    }
+    if let Some(range) = found {
+        text.replace_range(range, &format!("{key}={value}"));
+    } else {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&format!("{key}={value}\n"));
+    }
     Ok(())
 }
 

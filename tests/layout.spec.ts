@@ -1026,6 +1026,33 @@ test('media services preserve real controls across adaptive layouts', async ({
     page.getByRole('region', { name: 'Ownership review' }),
   ).toContainText('stops the original container');
   await expect(
+    page.getByRole('region', { name: 'Ownership review' }),
+  ).toContainText('Thelxinoe login');
+  await expect(
+    page.getByRole('region', { name: 'Ownership review' }),
+  ).toContainText('Published ports are removed');
+  await expect(
+    page.getByRole('region', { name: 'Ownership review' }),
+  ).toContainText('Allowed hosts');
+  await page.screenshot({
+    path: '.local/services-ownership-review.png',
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 320, height: 850 });
+  await page
+    .getByRole('region', { name: 'Ownership review' })
+    .scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: '.local/services-ownership-review-mobile.png',
+    fullPage: true,
+  });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await expect(
     page.getByRole('button', { name: 'Take ownership', exact: true }),
   ).toBeDisabled();
   await page
@@ -1213,6 +1240,102 @@ test('NZBGet URL has compact login and password copy buttons', async ({
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
     .toBe('fixture-password');
   await expect(page.getByText('fixture-password')).toHaveCount(0);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('NZBGet adoption offers optional warning fixes and generated credentials', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+  });
+  await page.goto('/');
+  await page
+    .getByRole('navigation', { name: 'Select service' })
+    .getByRole('link', { name: 'NZBGet', exact: true })
+    .click();
+  await page.getByRole('button', { name: 'Review ownership transfer' }).click();
+  const review = page.getByRole('region', { name: 'Ownership review' });
+  await expect(review).toContainText('thelxinoe');
+  await expect(review).toContainText('random password');
+  await expect(
+    review.getByRole('switch', { name: 'Rotate logs; keep 3 days' }),
+  ).toBeChecked();
+  const certificate = review.getByRole('switch', {
+    name: 'Verify outgoing TLS certificates',
+  });
+  await expect(certificate).not.toBeChecked();
+  await certificate.press('Space');
+  for (const width of [1280, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    await review.scrollIntoViewIfNeeded();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    await page.screenshot({
+      path: `.local/nzbget-adoption-${width}.png`,
+      fullPage: true,
+    });
+  }
+  await page
+    .getByRole('button', { name: 'Take ownership', exact: true })
+    .click();
+  await expect
+    .poll(
+      () =>
+        fixture.writes.find((write) => write.path === '/admin/stack/adopt')
+          ?.body,
+    )
+    .toEqual({
+      service_id: 'support-nzbget',
+      review_id: 'review-nzbget',
+      released_compose: false,
+      nzbget: { rotate_logs: true, cert_check: true },
+    });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('NZBGet adoption remains available when its certificate store is unavailable', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+    nzbgetCertStore: null,
+  });
+  await page.goto('/');
+  await page
+    .getByRole('navigation', { name: 'Select service' })
+    .getByRole('link', { name: 'NZBGet', exact: true })
+    .click();
+  await page.getByRole('button', { name: 'Review ownership transfer' }).click();
+  const review = page.getByRole('region', { name: 'Ownership review' });
+  await expect(
+    review.getByRole('switch', { name: 'Verify outgoing TLS certificates' }),
+  ).toBeDisabled();
+  await review
+    .getByRole('switch', { name: 'Rotate logs; keep 3 days' })
+    .press('Space');
+  await page
+    .getByRole('button', { name: 'Take ownership', exact: true })
+    .click();
+  await expect
+    .poll(
+      () =>
+        fixture.writes.find((write) => write.path === '/admin/stack/adopt')
+          ?.body,
+    )
+    .toEqual({
+      service_id: 'support-nzbget',
+      review_id: 'review-nzbget',
+      released_compose: false,
+      nzbget: { rotate_logs: false, cert_check: false },
+    });
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });

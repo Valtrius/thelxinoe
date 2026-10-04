@@ -10,7 +10,7 @@ pub(super) fn router() -> Router<AppState> {
         .route("/api/v1/admin/support/{id}", get(inspect).post(action))
         .route("/api/v1/admin/support/{id}/login", post(login))
 }
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub(super) struct Credentials {
     #[serde(default)]
     pub(super) username: String,
@@ -122,21 +122,14 @@ pub(super) async fn api_evidence(
     port: u16,
     kind: &str,
 ) -> Result<(String, String)> {
-    let (mut base, media) = evidence_for(
+    evidence_for(
         state,
         container,
         port,
         !matches!(kind, "prowlarr" | "seerr"),
+        thelxinoe_core::service_gateway_auth(kind),
     )
-    .await?;
-    if kind == "prowlarr" {
-        // Prowlarr filters Host against its saved allowlist. Docker names stay
-        // stable when a stopped container receives a different private IP.
-        let observed = docker(state, &format!("containers/{container}")).await?;
-        let name = docker_host(&observed)?;
-        base = format!("http://{name}:{port}");
-    }
-    Ok((base, media))
+    .await
 }
 pub(super) fn docker_host(observed: &Value) -> Result<&str> {
     let name = observed["name"]
@@ -239,7 +232,7 @@ async fn register_with_actor(
         "bazarr" | "prowlarr" | "nzbget" | "seerr"
     ) || input.name.trim().is_empty()
         || input.name.len() > 100
-        || input.credentials.secret.is_empty()
+        || (input.kind != "nzbget" && input.credentials.secret.is_empty())
         || input.credentials.secret.len() > 1024
         || input.credentials.username.len() > 100
         || input.native_url.len() > 2000
@@ -299,10 +292,13 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<
     Ok(Json(json!({"items":rows})))
 }
 fn text(value: &Value, secret: &str) -> String {
+    let value = value.as_str().unwrap_or("");
+    let value = if secret.is_empty() {
+        value.to_owned()
+    } else {
+        value.replace(secret, "[redacted]")
+    };
     value
-        .as_str()
-        .unwrap_or("")
-        .replace(secret, "[redacted]")
         .split_whitespace()
         .map(|w| {
             if w.contains("://") || w.contains("apikey=") || w.contains("token=") {

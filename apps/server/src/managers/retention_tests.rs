@@ -33,7 +33,7 @@ async fn batch_inventory_is_shared_and_does_not_exclude_unrelated_playback() {
         let port = listener.local_addr().unwrap().port();
         let server = tokio::spawn(async move { axum::serve(listener, stub).await.unwrap() });
         let container = "a".repeat(64);
-        let evidence = json!({"id":container,"running":true,"mounts":[{"kind":"bind","source":"/physical","destination":"/media","writable":true}],"networks":[{"id":"network","address":"127.0.0.1"}]});
+        let evidence = json!({"id":container,"name":"localhost","running":true,"mounts":[{"kind":"bind","source":"/physical","destination":"/media","writable":true}],"networks":[{"id":"network","address":"127.0.0.1"}]});
         state.managers.docker.lock().unwrap().extend([
             ("containers/self".into(), evidence.clone()),
             (format!("containers/{container}"), evidence),

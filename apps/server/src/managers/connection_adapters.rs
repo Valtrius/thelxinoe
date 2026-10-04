@@ -58,10 +58,10 @@ async fn addresses(state: &AppState, source: &Endpoint, target: &Endpoint) -> At
                     .filter(|ip| ip.is_private() || ip.is_loopback())
                     .map(|ip| ip.to_string())
             };
-            if let (Some(_), Some(target)) =
+            if let (Some(_), Some(target_address)) =
                 (private(&network["address"]), private(&peer["address"]))
             {
-                let mut names = vec![target.clone()];
+                let mut names = vec![target_address.clone()];
                 names.extend(
                     b["name"]
                         .as_str()
@@ -80,7 +80,11 @@ async fn addresses(state: &AppState, source: &Endpoint, target: &Endpoint) -> At
                     // Docker DNS resolves this name on a network shared by the
                     // caller. Prowlarr's Host allowlist also survives IP changes.
                     source_host: support::docker_host(&a)?.to_owned(),
-                    target,
+                    target: if thelxinoe_core::service_gateway_auth(&target.kind) {
+                        support::docker_host(&b)?.to_owned()
+                    } else {
+                        target_address
+                    },
                     target_names: names,
                 });
             }
@@ -140,11 +144,18 @@ pub(super) async fn apply(
             &category,
         )
         .await?;
+        // NZBGet disables authentication with an empty control password;
+        // Arr requires either both credentials or neither.
+        let username = if download.credentials.secret.is_empty() {
+            ""
+        } else {
+            download.credentials.username.as_str()
+        };
         (
             "downloadclient",
             "Nzbget".into(),
             json!({"host":target_address,"port":target.port,
-            "useSsl":false,"username":download.credentials.username,"password":download.credentials.secret,
+            "useSsl":false,"username":username,"password":download.credentials.secret,
             "movieCategory":category,"tvCategory":category,"musicCategory":category,"category":category}),
         )
     };
@@ -386,13 +397,18 @@ async fn upsert(
         record
     };
     let current = digest(&fields(&record));
+    let credential_revision = (path == "downloadclient")
+        .then(|| digest(&json!([values["username"], values["password"]])));
+    let rotate_credentials =
+        credential_revision.is_some() && credential_revision != link.credential_revision;
     for field in record["fields"]
         .as_array_mut()
         .ok_or_else(|| Failure::unavailable("Invalid connection fields"))?
     {
         if let Some(value) = field["name"].as_str().and_then(|name| values.get(name))
             && (!matches!(field["name"].as_str(), Some("apiKey" | "password"))
-                || link.upstream_id.is_none())
+                || link.upstream_id.is_none()
+                || rotate_credentials)
         {
             field["value"] = value.clone();
         }
@@ -403,12 +419,13 @@ async fn upsert(
         record["enable"] = json!(true);
     }
     let wanted = digest(&fields(&record));
-    if link.upstream_id.is_some() && current == wanted {
+    if link.upstream_id.is_some() && current == wanted && !rotate_credentials {
         c.call(reqwest::Method::POST, &format!("{path}/test"), &[], Some(record)).await
             .map_err(|_|Failure::unavailable("The saved connection failed its service test; review its settings and credentials in the service"))?;
         link.applied_hash = Some(wanted);
         link.pending_hash = None;
         link.prepared = false;
+        link.credential_revision = credential_revision;
         return Ok(());
     }
     link.pending_hash = Some(wanted.clone());
@@ -433,6 +450,7 @@ async fn upsert(
     link.applied_hash = Some(wanted);
     link.pending_hash = None;
     link.prepared = false;
+    link.credential_revision = credential_revision;
     Ok(())
 }
 

@@ -1,6 +1,7 @@
 //! Copy an existing service into managed storage, with a durable original for recovery.
 use super::*;
 use reqwest::Method;
+use std::time::Duration;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Review {
@@ -9,6 +10,16 @@ struct Review {
     original: Value,
     image: String,
     deployment: String,
+    #[serde(default)]
+    nzbget_cert_store: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct Nzbget {
+    pub fixes: thelxinoe_core::NzbgetAdoptionFixes,
+    pub secret: String,
+    #[serde(default)]
+    pub cert_store: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Transfer {
@@ -33,6 +44,62 @@ pub(super) fn pending(s: &Managed) -> bool {
 pub(super) struct Preview {
     kind: String,
     container_id: String,
+    #[serde(default)]
+    cert_store: String,
+}
+
+async fn valid_cert_store(container: &str, path: &str) -> Result<bool> {
+    if !path.starts_with('/') || path.len() > 4096 || path.contains(['\0', '\n', '\r']) {
+        return Ok(false);
+    }
+    let raw = engine(&format!("/containers/{container}/json")).await?;
+    let identity = |key: &str| {
+        raw["Config"]["Env"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .find_map(|entry| entry.strip_prefix(key))
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(911)
+    };
+    let exec = request(Method::POST, &format!("/containers/{container}/exec"), Some(json!({
+        "User":format!("{}:{}", identity("PUID="), identity("PGID=")), "Env":[format!("THELXINOE_CERT_STORE={path}")],
+        "Cmd":["sh","-c","test -r \"$THELXINOE_CERT_STORE\" && test -s \"$THELXINOE_CERT_STORE\" && openssl crl2pkcs7 -nocrl -certfile \"$THELXINOE_CERT_STORE\" 2>/dev/null | openssl pkcs7 -print_certs 2>/dev/null | grep -q -- '-----BEGIN CERTIFICATE-----'"],
+        "AttachStdout":false,"AttachStderr":false,
+    }))).await?;
+    let exec_id = exec["Id"].as_str().ok_or_else(unavailable)?;
+    request(
+        Method::POST,
+        &format!("/exec/{exec_id}/start"),
+        Some(json!({"Detach":true,"Tty":false})),
+    )
+    .await?;
+    for _ in 0..20 {
+        let status = engine(&format!("/exec/{exec_id}/json")).await?;
+        if status["Running"] == false {
+            return Ok(status["ExitCode"] == 0);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Ok(false)
+}
+
+async fn cert_store(container: &str, configured: &str) -> Result<Option<String>> {
+    let paths = if configured.is_empty() {
+        vec![
+            "/etc/ssl/certs/ca-certificates.crt",
+            "/app/nzbget/cacert.pem",
+        ]
+    } else {
+        vec![configured]
+    };
+    for path in paths {
+        if valid_cert_store(container, path).await? {
+            return Ok(Some(path.into()));
+        }
+    }
+    Ok(None)
 }
 async fn inspect(d: &Deployment, input: &Preview) -> Result<(Value, String)> {
     let t = templates::find(&input.kind).ok_or_else(|| bad("Unknown curated service"))?;
@@ -90,15 +157,33 @@ pub(super) async fn preview(
     let d = bootstrap().await?;
     ensure_kind_available(&d, &input.kind).await?;
     let (raw, image) = inspect(&d, &input).await?;
+    let nzbget_cert_store = if input.kind == "nzbget" {
+        cert_store(&input.container_id, &input.cert_store).await?
+    } else {
+        None
+    };
     let review = Review {
         id: thelxinoe_core::id(),
         kind: input.kind,
         original: raw,
         image,
         deployment: d.id.clone(),
+        nzbget_cert_store,
     };
     persisted(store::write_json(&review_path(&review.id), &review))?;
     let mut value = json!({"review_id":review.id,"kind":review.kind,"container_id":review.original["Id"],"name":review.original["Name"].as_str().unwrap_or("").trim_start_matches('/'),"image":review.image,"source_config":mount(&review.original,"/config")?["Source"],"managed_config":format!("{}/services/{}/appdata",d.appdata_source,review.id),"media":d.media_source,"compose_project":review.original["Config"]["Labels"]["com.docker.compose.project"],"compose_service":review.original["Config"]["Labels"]["com.docker.compose.service"],"ports":review.original["HostConfig"]["PortBindings"]});
+    let gateway_auth = thelxinoe_core::service_gateway_auth(&review.kind);
+    value["authentication"] = json!(if review.kind == "nzbget" {
+        "generated"
+    } else if gateway_auth {
+        "external"
+    } else {
+        "preserved"
+    });
+    value["publish_ports"] = json!(!gateway_auth);
+    if review.kind == "nzbget" {
+        value["nzbget_cert_store"] = json!(review.nzbget_cert_store);
+    }
     if review.kind == "recyclarr" {
         value["configuration"] = recyclarr::review_config(&d, &review.id, &review.original).await?;
     }
@@ -111,6 +196,8 @@ pub(super) struct Adopt {
     container_id: String,
     #[serde(default)]
     released_compose: bool,
+    #[serde(default)]
+    nzbget: Option<Nzbget>,
 }
 async fn checked(d: &Deployment, input: &Adopt) -> Result<Review> {
     id(&input.operation_id)?;
@@ -124,11 +211,37 @@ async fn checked(d: &Deployment, input: &Adopt) -> Result<Review> {
         ));
     }
     policy::transfer_owner(&review.original, input.released_compose).map_err(conflict)?;
+    if review.kind == "nzbget" {
+        let settings = input
+            .nzbget
+            .as_ref()
+            .ok_or_else(|| bad("NZBGet adoption requires generated credentials"))?;
+        if settings.secret.len() != 32
+            || !settings.secret.bytes().all(|b| b.is_ascii_alphanumeric())
+        {
+            return Err(bad("NZBGet adoption requires a generated credential"));
+        }
+        if settings.fixes.cert_check {
+            let path = review.nzbget_cert_store.as_deref().ok_or_else(|| {
+                conflict(
+                    "A valid NZBGet certificate store is required to enable certificate checks",
+                )
+            })?;
+            if !valid_cert_store(&input.container_id, path).await? {
+                return Err(conflict(
+                    "NZBGet certificate store changed; review adoption again or leave certificate checks unchanged",
+                ));
+            }
+        }
+    } else if input.nzbget.is_some() {
+        return Err(bad("NZBGet fixes apply only to NZBGet"));
+    }
     let (current, image) = inspect(
         d,
         &Preview {
             kind: input.kind.clone(),
             container_id: input.container_id.clone(),
+            cert_store: String::new(),
         },
     )
     .await?;
@@ -227,6 +340,9 @@ pub(super) async fn adopt(
     aliases.dedup();
     aliases.retain(|alias| !alias.is_empty());
     let mut spec = json!({"Image":review.image,"Env":review.original["Config"]["Env"],"Labels":{"app.thelxinoe.managed-id":key,"app.thelxinoe.deployment":d.id,"app.thelxinoe.kind":t.kind},"HostConfig":{"Mounts":mounts,"NetworkMode":d.network,"RestartPolicy":{"Name":"unless-stopped"},"PortBindings":review.original["HostConfig"]["PortBindings"]},"NetworkingConfig":{"EndpointsConfig":{d.network.clone():{"Aliases":aliases}}}});
+    if thelxinoe_core::service_gateway_auth(t.kind) {
+        spec["HostConfig"]["PortBindings"] = json!({});
+    }
     if t.kind == "recyclarr" {
         spec["User"] = review.original["Config"]["User"].clone();
         spec["Cmd"] = json!(["--version"]);
@@ -266,7 +382,11 @@ pub(super) async fn adopt(
         .await?;
         updates::stop(&input.container_id).await?;
         original_stopped(&transfer).await?;
-        updates::copy_state(&d, key, &source, &destination, false, "takeover").await?;
+        let settings = input.nzbget.as_ref().map(|settings| Nzbget {
+            cert_store: transfer.review.nzbget_cert_store.clone(),
+            ..settings.clone()
+        });
+        updates::copy_adoption(&d, key, &source, &destination, settings.as_ref()).await?;
         transfer.copied = true;
         persisted(store::write_json(&transfer_path(key), &transfer))?;
         original_stopped(&transfer).await?;
@@ -376,6 +496,10 @@ pub(super) async fn restore(d: &Deployment, s: &mut Managed) -> Result<Json<Valu
         {
             updates::remove(row["Id"].as_str().ok_or_else(unavailable)?).await?;
         }
+    }
+    let credentials = service_path(&s.id).with_file_name("nzbget-adoption.json");
+    if credentials.exists() {
+        persisted(std::fs::remove_file(credentials).map_err(Into::into))?;
     }
     request(
         Method::POST,

@@ -142,7 +142,7 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
     let port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(async move { axum::serve(listener, stub).await.unwrap() });
     let container = "a".repeat(64);
-    let inspection = json!({"id":container,"running":true,"mounts":[{"kind":"bind","source":"/physical","destination":"/media","writable":true}],"networks":[{"id":"network","address":"127.0.0.1"}]});
+    let inspection = json!({"id":container,"name":"localhost","running":true,"mounts":[{"kind":"bind","source":"/physical","destination":"/media","writable":true}],"networks":[{"id":"network","address":"127.0.0.1"}]});
     state
         .managers
         .docker
@@ -174,7 +174,7 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
     let replacement = "c".repeat(64);
     state.managers.docker.lock().unwrap().insert(
         format!("containers/{replacement}"),
-        json!({"id":replacement,"running":true,"mounts":[{"kind":"bind","source":"/physical","destination":"/media","writable":true}],"networks":[{"id":"network","address":"127.0.0.1"}]}),
+        json!({"id":replacement,"name":"localhost","running":true,"mounts":[{"kind":"bind","source":"/physical","destination":"/media","writable":true}],"networks":[{"id":"network","address":"127.0.0.1"}]}),
     );
     let replaced = call(
         &state,

@@ -149,7 +149,7 @@ async fn partial_controller_result_remains_terminal_when_arr_cannot_be_read_afte
         })
         .await
         .unwrap();
-    let docker = json!({"id":"aaaaaaaaaaaa","running":true,"networks":[{"id":"shared","address":"127.0.0.1"}],"mounts":[{"destination":"/media","source":"/media","kind":"bind","writable":true}]});
+    let docker = json!({"id":"aaaaaaaaaaaa","name":"localhost","running":true,"networks":[{"id":"shared","address":"127.0.0.1"}],"mounts":[{"destination":"/media","source":"/media","kind":"bind","writable":true}]});
     state.managers.docker.lock().unwrap().extend([
         ("containers/self".into(), docker.clone()),
         ("containers/aaaaaaaaaaaa".into(), docker),

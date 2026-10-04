@@ -339,6 +339,28 @@ pub(super) async fn copy_state(
     restore: bool,
     label: &str,
 ) -> Result<()> {
+    copy_state_inner(d, operation, source, destination, restore, label, None).await
+}
+
+pub(super) async fn copy_adoption(
+    d: &Deployment,
+    operation: &str,
+    source: &str,
+    destination: &str,
+    nzbget: Option<&adoption::Nzbget>,
+) -> Result<()> {
+    copy_state_inner(d, operation, source, destination, false, "takeover", nzbget).await
+}
+
+async fn copy_state_inner(
+    d: &Deployment,
+    operation: &str,
+    source: &str,
+    destination: &str,
+    restore: bool,
+    label: &str,
+    nzbget: Option<&adoption::Nzbget>,
+) -> Result<()> {
     let name = format!("thelxinoe-state-{}-{label}", &operation[..8]);
     let command = if label == "takeover" {
         let service = load(operation)?;
@@ -354,6 +376,14 @@ pub(super) async fn copy_state(
         ]
     };
     let mut spec = json!({"Image":current_image().await?,"Cmd":command,"Healthcheck":{"Test":["NONE"]},"Labels":{"app.thelxinoe.update":operation,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":"none","ReadonlyRootfs":true,"CapDrop":["ALL"],"CapAdd":["CHOWN","FOWNER","DAC_OVERRIDE"],"SecurityOpt":["no-new-privileges:true"],"Memory":536870912,"NanoCpus":1000000000u64,"PidsLimit":32,"Mounts":[{"Type":"bind","Source":source,"Target":"/source","ReadOnly":true},{"Type":"bind","Source":destination,"Target":"/destination"}]}});
+    if label == "takeover" {
+        let service = load(operation)?;
+        if thelxinoe_core::service_gateway_auth(&service.kind) {
+            let aliases =
+                &service.spec["NetworkingConfig"]["EndpointsConfig"][&d.network]["Aliases"];
+            spec["Env"] = json!([format!("THELXINOE_ADOPTION_HOSTS={aliases}")]);
+        }
+    }
     if label == "takeover" && load(operation)?.kind == "recyclarr" {
         let hash = std::fs::read_to_string(
             store::root()
@@ -363,12 +393,29 @@ pub(super) async fn copy_state(
         .map_err(|_| unavailable())?;
         spec["Env"] = json!([format!("THELXINOE_RECYCLARR_IMPORT_HASH={hash}")]);
     }
+    let credentials_path = service_path(operation).with_file_name("nzbget-adoption.json");
+    if let Some(settings) = nzbget {
+        persisted(store::write_json(&credentials_path, settings))?;
+        spec["HostConfig"]["Mounts"].as_array_mut().ok_or_else(unavailable)?.push(json!({
+            "Type":"bind","Source":format!("{}/services/{operation}/nzbget-adoption.json",d.appdata_source),
+            "Target":"/adoption.json","ReadOnly":true,
+        }));
+    }
     let value = request(
         Method::POST,
         &format!("/containers/create?name={name}"),
         Some(spec),
     )
-    .await?;
+    .await;
+    let value = match value {
+        Ok(value) => value,
+        Err(error) => {
+            if nzbget.is_some() {
+                let _ = std::fs::remove_file(&credentials_path);
+            }
+            return Err(error);
+        }
+    };
     let container = value["Id"].as_str().ok_or_else(unavailable)?;
     let result = async {
         start(container).await?;
@@ -376,6 +423,9 @@ pub(super) async fn copy_state(
     }
     .await;
     let cleaned = remove(container).await;
+    if nzbget.is_some() {
+        persisted(std::fs::remove_file(credentials_path).map_err(Into::into))?;
+    }
     result?;
     cleaned
 }
