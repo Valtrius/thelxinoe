@@ -2,6 +2,59 @@ use super::*;
 use crate::test_support::{Docker, Fault};
 
 #[tokio::test]
+async fn update_api_reports_live_operation_ownership_without_persisting_it() {
+    let fixture = Docker::new();
+    fixture
+        .scope(async {
+            let (_, mut update): (Deployment, Update) = fixture.update();
+            update.stage = "rollback-activating".into();
+            update.rollback_phase = Some(RollbackPhase::Activating);
+            write(&update).unwrap();
+            let runtime = Runtime(Default::default());
+            let context = crate::test_support::DOCKER.with(Clone::clone);
+            let app = axum::Router::new()
+                .route("/stack/updates", axum::routing::get(list))
+                .with_state(runtime.clone())
+                .layer(axum::middleware::from_fn(
+                    move |request: axum::extract::Request, next: axum::middleware::Next| {
+                        let context = context.clone();
+                        async move {
+                            crate::test_support::DOCKER
+                                .scope(context, next.run(request))
+                                .await
+                        }
+                    },
+                ));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/stack/updates", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            let client = reqwest::Client::new();
+            let owner = runtime.0.try_service("radarr").unwrap();
+            let live: Value = client.get(&url).send().await.unwrap().json().await.unwrap();
+            assert_eq!(live["items"][0]["operation_active"], true);
+            drop(owner);
+            let unrelated = runtime.0.try_service("sonarr").unwrap();
+            let orphan: Value = client.get(&url).send().await.unwrap().json().await.unwrap();
+            assert_eq!(orphan["items"][0]["operation_active"], false);
+            drop(unrelated);
+            let deployment = runtime.0.try_lock_owned().unwrap();
+            let protected: Value = client.get(&url).send().await.unwrap().json().await.unwrap();
+            assert_eq!(protected["items"][0]["operation_active"], true);
+            drop(deployment);
+            assert_eq!(
+                serde_json::to_value(read(&update.id).unwrap())
+                    .unwrap()
+                    .get("operation_active"),
+                None
+            );
+            server.abort();
+        })
+        .await;
+}
+
+#[tokio::test]
 async fn rollback_restart_and_journal_faults_never_replay_resumed_appdata() {
     for fault in [
         Fault::JournalBefore("rollback-activating"),

@@ -87,7 +87,7 @@ pub(super) fn invalidate_recyclarr(service: &str) -> Result<()> {
     }
     Ok(())
 }
-pub(super) async fn list() -> Result<Json<Value>> {
+pub(super) async fn list(State(runtime): State<Runtime>) -> Result<Json<Value>> {
     let root = store::root().join("updates");
     let mut items = Vec::new();
     if root.exists() {
@@ -96,7 +96,20 @@ pub(super) async fn list() -> Result<Json<Value>> {
             if entry.path().join("update.json").is_file()
                 && let Some(update) = read_listed(&entry.file_name().to_string_lossy())?
             {
-                items.push(public(&update));
+                // A free gate proves no worker can still copy or restart this service.
+                // Reread under that gate so a worker's terminal write cannot be mistaken for an orphan.
+                let guard = runtime.0.try_service(&update.old.kind).ok();
+                let update = if guard.is_some() {
+                    let Some(current) = read_listed(&entry.file_name().to_string_lossy())? else {
+                        continue;
+                    };
+                    current
+                } else {
+                    update
+                };
+                let mut value = public(&update);
+                value["operation_active"] = json!(guard.is_none());
+                items.push(value);
             }
         }
     }

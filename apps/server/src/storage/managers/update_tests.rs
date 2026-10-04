@@ -3,6 +3,213 @@ use crate::test_support::{call, fixture};
 use axum::http::StatusCode;
 use chrono::Timelike;
 
+async fn interrupted_activation(
+    state: &AppState,
+    cookie: &str,
+) -> (String, thelxinoe_jobs::Queue, thelxinoe_jobs::Job) {
+    let service = managed(state, "notify").await;
+    let key = id();
+    let insert = key.clone();
+    state.db.write("test.interrupted_activation",move |db| {
+        db.execute("INSERT INTO service_updates(id,service_id,actor_id,state,created_at,updated_at,automatic,candidate) VALUES (?1,?2,'alice','ready',1,1,0,'repository@new')",params![insert,service])?;
+        Ok(())
+    }).await.unwrap();
+    let queued = call(
+        state,
+        &format!("/api/v1/admin/service-updates/{key}/activate"),
+        "POST",
+        json!({}),
+        cookie,
+    )
+    .await;
+    assert_eq!(queued.0, StatusCode::OK, "{}", queued.2);
+    let queue = thelxinoe_jobs::Queue(state.db.clone());
+    queue.claim_services().await.unwrap().unwrap();
+    queue.recover().await.unwrap();
+    let resumed = queue.claim_services().await.unwrap().unwrap();
+    (key, queue, resumed)
+}
+
+async fn unrelated_playback(state: &AppState, temp: &std::path::Path, cookie: &str) -> String {
+    let file = temp.join("unrelated.mp4");
+    std::fs::write(&file, b"unrelated playback fixture").unwrap();
+    let file = file.canonicalize().unwrap();
+    let meta = std::fs::metadata(&file).unwrap();
+    let modified = meta
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        .to_string();
+    state.db.write("test.update_playback",move |db| {
+        db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('other-root','Other','movies',?1)",[file.parent().unwrap().to_string_lossy()])?;
+        db.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES ('other','other-root','movie','other','Other',1)",[])?;
+        db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,ownership,scanned_at) VALUES ('other','other-root',?1,'first',?2,?3,'1',?4,'unmanaged',1)",params![file.to_string_lossy(),meta.len() as i64,modified,json!({"format":{"duration":"120"},"streams":[{"index":0,"codec_type":"video","codec_name":"h264"}]}).to_string()])?;
+        db.execute("INSERT INTO media_sources VALUES ('other','other')",[])?;
+        Ok(())
+    }).await.unwrap();
+    let playback = call(
+        state,
+        "/api/v1/playback",
+        "POST",
+        playback_request(),
+        cookie,
+    )
+    .await;
+    assert_eq!(playback.0, StatusCode::OK, "{}", playback.2);
+    playback.2["id"].as_str().unwrap().into()
+}
+
+fn playback_request() -> Value {
+    json!({"media_id":"other","options":{"quality":"auto","capabilities":{"containers":["mp4"],"video":["h264"],"audio":[],"hls":false}}})
+}
+
+#[tokio::test]
+async fn resumed_activation_releases_orphaned_rollback_for_playback_and_public_recovery() {
+    let (temp, state, cookie) = fixture().await;
+    let (key, queue, job) = interrupted_activation(&state, &cookie).await;
+    let playback = unrelated_playback(&state, temp.path(), &cookie).await;
+    state.managers.docker.lock().unwrap().insert("stack/updates".into(),json!({"items":[{"id":key,"stage":"rollback-activating","candidate":"repository@new","operation_active":false}]}));
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), run_job(&state, &job))
+            .await
+            .expect("an orphaned rollback must not retain the playback lease")
+            .unwrap()
+    );
+    queue.finish(&job, None).await.unwrap();
+    assert_eq!(
+        storage::list(&state.db).await.unwrap()["items"][0]["state"],
+        "recovery-required"
+    );
+    let path = format!("/api/v1/playback/{playback}/progress");
+    let progress = call(
+        &state,
+        &path,
+        "POST",
+        json!({"sequence":1,"position":1,"state":"playing"}),
+        &cookie,
+    );
+    let create = call(
+        &state,
+        "/api/v1/playback",
+        "POST",
+        playback_request(),
+        &cookie,
+    );
+    let (progress, create) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::join!(progress, create)
+    })
+    .await
+    .expect("unrelated playback must proceed after orphan detection");
+    assert_eq!(progress.0, StatusCode::OK, "{}", progress.2);
+    assert_eq!(create.0, StatusCode::OK, "{}", create.2);
+    let recover = call(
+        &state,
+        &format!("/api/v1/admin/service-updates/{key}/recover"),
+        "POST",
+        json!({}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(recover.0, StatusCode::OK, "{}", recover.2);
+    state.managers.docker.lock().unwrap().extend([
+        (
+            format!("stack/updates/{key}/recover"),
+            json!({"id":key,"stage":"rolled-back"}),
+        ),
+        (
+            "stack/updates".into(),
+            json!({"items":[{"id":key,"stage":"rolled-back","operation_active":false}]}),
+        ),
+    ]);
+    let recovery_job = queue.claim_services().await.unwrap().unwrap();
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            run_job(&state, &recovery_job)
+        )
+        .await
+        .expect("public recovery must acquire the released service guard")
+        .unwrap()
+    );
+    assert_eq!(
+        storage::list(&state.db).await.unwrap()["items"][0]["state"],
+        "rolled-back"
+    );
+}
+
+#[tokio::test]
+async fn resumed_activation_protects_playback_while_rollback_ownership_is_live_or_unknown() {
+    for ownership in [json!(true), Value::Null] {
+        let (temp, state, cookie) = fixture().await;
+        let (key, _queue, job) = interrupted_activation(&state, &cookie).await;
+        let playback = unrelated_playback(&state, temp.path(), &cookie).await;
+        state.managers.docker.lock().unwrap().insert(
+            "stack/updates".into(),
+            json!({"items":[{"id":key,"stage":"rollback-copying","operation_active":ownership}]}),
+        );
+        let worker_state = state.clone();
+        let worker = tokio::spawn(async move { run_job(&worker_state, &job).await });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if storage::list(&state.db).await.unwrap()["items"][0]["state"]
+                    == "rollback-copying"
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let path = format!("/api/v1/playback/{playback}/progress");
+        let mut progress = Box::pin(call(
+            &state,
+            &path,
+            "POST",
+            json!({"sequence":1,"position":1,"state":"playing"}),
+            &cookie,
+        ));
+        let mut create = Box::pin(call(
+            &state,
+            "/api/v1/playback",
+            "POST",
+            playback_request(),
+            &cookie,
+        ));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut progress)
+                .await
+                .is_err()
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut create)
+                .await
+                .is_err()
+        );
+        assert!(!worker.is_finished());
+        state.managers.docker.lock().unwrap().insert(
+            "stack/updates".into(),
+            json!({"items":[{"id":key,"stage":"rolled-back","operation_active":false}]}),
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(3), worker)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+        );
+        let (progress, create) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::join!(progress, create)
+        })
+        .await
+        .unwrap();
+        assert_eq!(progress.0, StatusCode::OK, "{}", progress.2);
+        assert_eq!(create.0, StatusCode::OK, "{}", create.2);
+    }
+}
+
 // Browser fixtures do not exercise discovery persistence. A new candidate with
 // missing metadata must clear the previous version/link, including after an outage.
 #[tokio::test]
