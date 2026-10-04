@@ -170,15 +170,22 @@ struct Pending {
     redirect: String,
 }
 fn return_path(value: &str) -> String {
-    if value.starts_with('/')
-        && !value.starts_with("//")
-        && !value.contains(['\\', '\r', '\n'])
-        && value.len() < 2048
+    if !value.starts_with('/')
+        || value.starts_with("//")
+        || value.contains('\\')
+        || value.chars().any(|c| c.is_ascii_control())
+        || value.len() >= 2048
     {
-        value.into()
-    } else {
-        "/".into()
+        return "/".into();
     }
+    let base = url::Url::parse("https://return.invalid/").unwrap();
+    let Ok(target) = base.join(value) else {
+        return "/".into();
+    };
+    if target.origin() != base.origin() || target.path().starts_with("//") {
+        return "/".into();
+    }
+    target[url::Position::BeforePath..].into()
 }
 async fn start(
     State(state): State<AppState>,
@@ -347,14 +354,21 @@ async fn complete(
     let issuer = claims.issuer().as_str().to_owned();
     let subject = claims.subject().as_str().to_owned();
     let mut result = if pending.purpose == "login" {
-        let account = storage::oidc_account(&state.db, issuer, subject)
+        let account = storage::oidc_account(&state.db, issuer.clone(), subject.clone())
             .await?
             .ok_or_else(|| {
                 ApiError::bad("This identity-provider account is not linked to a Thelxinoe account")
             })?;
         accounts::respond_session(
             state,
-            verified(&account, auth_time, None),
+            SessionAuthorization::Oidc {
+                user_id: account.id,
+                auth_version: account.version,
+                verified_at: auth_time,
+                provider_version: pending.provider_version,
+                issuer,
+                subject,
+            },
             &LoginDetails {
                 transport: None,
                 device_name: None,
@@ -382,27 +396,36 @@ async fn complete(
             transport: "web".into(),
         };
         if pending.purpose == "link" {
-            storage::oidc_link(&state.db, p, account.version, issuer, subject)
-                .await
-                .map_err(failure)?;
+            storage::oidc_link(
+                &state.db,
+                p,
+                account.version,
+                pending.provider_version,
+                issuer,
+                subject,
+            )
+            .await
+            .map_err(failure)?;
         } else {
-            let linked = storage::oidc_account(&state.db, issuer, subject)
-                .await?
-                .ok_or_else(ApiError::unauthorized)?;
-            if linked.id != account.id {
-                return Err(ApiError::bad(
-                    "Use the identity-provider account linked to this user",
-                ));
-            }
-            storage::verify(&state.db, p, account.version, None)
-                .await
-                .map_err(failure)?;
+            storage::oidc_verify(
+                &state.db,
+                p,
+                account.version,
+                pending.provider_version,
+                issuer,
+                subject,
+            )
+            .await
+            .map_err(failure)?;
         }
         Json(json!({"saved":true})).into_response()
     };
     *result.status_mut() = StatusCode::SEE_OTHER;
-    let mut target = url::Url::parse(&format!("https://return.invalid{}", pending.return_to))
-        .map_err(anyhow::Error::from)?;
+    let mut target = url::Url::parse(&format!(
+        "https://return.invalid{}",
+        return_path(&pending.return_to)
+    ))
+    .map_err(anyhow::Error::from)?;
     if pending.purpose == "link" {
         target
             .query_pairs_mut()
@@ -412,15 +435,7 @@ async fn complete(
             .query_pairs_mut()
             .append_pair("auth_notice", "verified");
     }
-    let location = format!(
-        "{}{}{}",
-        target.path(),
-        target.query().map(|q| format!("?{q}")).unwrap_or_default(),
-        target
-            .fragment()
-            .map(|f| format!("#{f}"))
-            .unwrap_or_default()
-    );
+    let location = &target[url::Position::BeforePath..];
     result.headers_mut().insert(
         header::LOCATION,
         location

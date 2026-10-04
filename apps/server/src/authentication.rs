@@ -70,6 +70,9 @@ fn failure(error: anyhow::Error) -> ApiError {
         Some(storage::Fault::Conflict) => {
             ApiError::conflict("This sign-in method is already configured or unavailable")
         }
+        Some(storage::Fault::SelfRecovery) => ApiError::conflict(
+            "An administrator cannot create a recovery link for their own account",
+        ),
         None => error.into(),
     }
 }

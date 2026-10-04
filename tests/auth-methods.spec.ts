@@ -47,6 +47,78 @@ async function authenticator(context: BrowserContext, page: Page) {
   return cdp;
 }
 
+async function oidcCallback(
+  page: Page,
+  subject: string,
+  purpose = 'login',
+  returnTo = '/#home',
+) {
+  const start = await post(page, '/auth/oidc/start', {
+    purpose,
+    return_to: returnTo,
+  });
+  expect(start.ok()).toBeTruthy();
+  const { url } = await start.json();
+  const form = await page.request.get(url);
+  const ticket = (await form.text()).match(
+    /name="ticket" value="([a-f0-9]+)"/,
+  )?.[1];
+  expect(ticket).toBeTruthy();
+  const authorized = await page.request.post(url, {
+    form: { ticket: ticket!, subject },
+    maxRedirects: 0,
+  });
+  expect(authorized.status()).toBe(302);
+  return authorized.headers().location;
+}
+
+test('the sole administrator cannot recover their own account while events are connected', async ({
+  page,
+}, info) => {
+  test.skip(
+    !process.env.THELXINOE_PROXY_TEST,
+    'Requires the real HTTPS server',
+  );
+  await login(page, 'admin', 'test-only long passphrase');
+  await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+  const users = await (await page.request.get('/api/v1/users')).json();
+  expect(
+    users.items.filter((user: { role: string }) => user.role === 'admin'),
+  ).toHaveLength(1);
+  const admin = users.items.find(
+    (user: { username: string }) => user.username === 'admin',
+  );
+  const before = await (await page.request.get('/api/v1/me/auth')).json();
+  const sessions = await (
+    await page.request.get('/api/v1/auth/sessions')
+  ).json();
+  await page.goto('/#settings/people');
+  await page.getByRole('button', { name: /^admin\s+admin$/ }).click();
+  await expect(
+    page.getByRole('button', { name: 'Create recovery link', exact: true }),
+  ).not.toBeVisible();
+  await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+  expect((await post(page, `/users/${admin.id}/recovery`)).status()).toBe(409);
+  expect(await (await page.request.get('/api/v1/me/auth')).json()).toEqual(
+    before,
+  );
+  const after = await (await page.request.get('/api/v1/auth/sessions')).json();
+  expect(after.current).toBe(sessions.current);
+  expect(after.items.map((session: { id: string }) => session.id)).toEqual(
+    sessions.items.map((session: { id: string }) => session.id),
+  );
+  await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+  await page.screenshot({
+    path: info.outputPath('self-recovery-rejected.png'),
+    fullPage: true,
+  });
+  await post(page, '/auth/logout');
+  await login(page, 'admin', 'test-only long passphrase');
+  await expect(
+    page.getByRole('heading', { name: 'Home', exact: true }),
+  ).toBeVisible();
+});
+
 test('real password, TOTP, passkey, remembered device, client access and administrator recovery', async ({
   browser,
 }, info) => {
@@ -499,6 +571,257 @@ test('generic OIDC explicitly links accounts, verifies identities and binds nati
   await page.screenshot({
     path: info.outputPath('desktop-approved.png'),
     fullPage: true,
+  });
+  await context.close();
+});
+
+test('OIDC completion cannot commit after its provider is disabled or replaced', async ({
+  browser,
+}, info) => {
+  test.skip(
+    !process.env.THELXINOE_PROXY_TEST,
+    'Requires the real server and disposable OIDC provider',
+  );
+  test.setTimeout(180000);
+  const adminContext = await browser.newContext({
+    ignoreHTTPSErrors: true,
+    baseURL: info.project.use.baseURL,
+    extraHTTPHeaders: { 'X-Thelxinoe-Fixture-Address': '192.0.2.20' },
+  });
+  const admin = await adminContext.newPage();
+  await login(admin, 'admin', 'test-only long passphrase');
+  await expect(
+    admin.getByRole('heading', { name: 'Home', exact: true }),
+  ).toBeVisible();
+  const issuer = `http://127.0.0.1:${process.env.THELXINOE_TEST_OIDC_PORT ?? '18989'}`;
+  const configure = async (replacement = false) => {
+    expect(
+      (
+        await post(admin, '/admin/auth/oidc', {
+          discovery_url: `${issuer}${replacement ? '/replacement' : ''}/.well-known/openid-configuration`,
+          client_id: 'thelxinoe-e2e',
+          client_secret: 'fixture-only',
+          label: 'Fixture SSO',
+        })
+      ).ok(),
+    ).toBeTruthy();
+  };
+  const decisions = [];
+  let clientAddress = 30;
+  for (const change of ['disable', 'replace']) {
+    for (const purpose of ['login', 'verify', 'link']) {
+      await configure();
+      const username = `race${Date.now()}${purpose}`;
+      const subject = `${username}-subject`;
+      expect(
+        (
+          await post(admin, '/users', { username, password, role: 'user' })
+        ).ok(),
+      ).toBeTruthy();
+      const context = await browser.newContext({
+        ignoreHTTPSErrors: true,
+        baseURL: info.project.use.baseURL,
+        extraHTTPHeaders: {
+          'X-Thelxinoe-Fixture-Address': `192.0.2.${clientAddress++}`,
+        },
+      });
+      const page = await context.newPage();
+      await login(page, username);
+      await expect(
+        page.getByRole('heading', { name: 'Home', exact: true }),
+      ).toBeVisible();
+      if (purpose !== 'link') {
+        const linked = await page.request.get(
+          await oidcCallback(page, subject, 'link'),
+          { maxRedirects: 0 },
+        );
+        expect(linked.headers().location).toContain('auth_notice=oidc-linked');
+      }
+      if (purpose === 'verify') {
+        const { secret } = await (
+          await post(page, '/me/auth/totp/start')
+        ).json();
+        expect(
+          (
+            await post(page, '/me/auth/totp/confirm', { code: otp(secret) })
+          ).ok(),
+        ).toBeTruthy();
+        await post(page, '/auth/logout');
+        const challenge = await (
+          await post(page, '/auth/login', { username, password })
+        ).json();
+        expect(
+          (
+            await post(page, '/auth/totp', {
+              attempt: challenge.attempt,
+              code: otp(secret, 1),
+              remember_device: true,
+            })
+          ).ok(),
+        ).toBeTruthy();
+        await post(page, '/auth/logout');
+        expect(
+          (await post(page, '/auth/login', { username, password })).ok(),
+        ).toBeTruthy();
+        expect(
+          (await (await page.request.get('/api/v1/me/auth')).json()).fresh,
+        ).toBe(false);
+      } else if (purpose === 'login') {
+        await post(page, '/auth/logout');
+      }
+      await admin.request.post(`${issuer}/control/pause`, {
+        form: { subject },
+      });
+      const callback = await oidcCallback(page, subject, purpose);
+      const completion = page.request.get(callback, { maxRedirects: 0 });
+      // The callback has consumed its attempt and is awaiting a valid token response.
+      await expect
+        .poll(
+          async () =>
+            (
+              await (
+                await admin.request.get(
+                  `${issuer}/control/status?subject=${subject}`,
+                )
+              ).json()
+            ).waiting,
+        )
+        .toBe(true);
+      if (change === 'disable') {
+        expect(
+          (
+            await admin.request.delete('/api/v1/admin/auth/oidc', { headers })
+          ).ok(),
+        ).toBeTruthy();
+      } else {
+        await configure(purpose === 'link');
+      }
+      await admin.request.post(`${issuer}/control/release`, {
+        form: { subject },
+      });
+      const result = await completion;
+      expect(
+        new URL(
+          result.headers().location,
+          info.project.use.baseURL,
+        ).searchParams.get('auth_error'),
+      ).toBe('Please sign in');
+      expect(result.headers()['set-cookie'] ?? '').not.toContain(
+        'thelxinoe_session=',
+      );
+      if (purpose === 'login') {
+        expect((await page.request.get('/api/v1/auth/me')).status()).toBe(401);
+      } else if (purpose === 'verify') {
+        expect(
+          (await (await page.request.get('/api/v1/me/auth')).json()).fresh,
+        ).toBe(false);
+        await configure();
+        const verified = await page.request.get(
+          await oidcCallback(page, subject, 'verify'),
+          { maxRedirects: 0 },
+        );
+        expect(verified.headers().location).toContain('auth_notice=verified');
+        expect(
+          (await (await page.request.get('/api/v1/me/auth')).json()).fresh,
+        ).toBe(true);
+      } else {
+        // Restore the old issuer so an obsolete inserted identity cannot hide behind the replacement.
+        await configure();
+        expect(
+          (await (await page.request.get('/api/v1/me/auth')).json()).oidc,
+        ).toBeNull();
+      }
+      decisions.push({ change, purpose, rejected: true });
+      await context.close();
+    }
+  }
+  await info.attach('provider change races', {
+    body: Buffer.from(JSON.stringify(decisions)),
+    contentType: 'application/json',
+  });
+  await adminContext.close();
+});
+
+test('OIDC return redirects stay on the application origin after URL normalization', async ({
+  browser,
+}, info) => {
+  test.skip(
+    !process.env.THELXINOE_PROXY_TEST,
+    'Requires the real server and disposable OIDC provider',
+  );
+  const context = await browser.newContext({
+    ignoreHTTPSErrors: true,
+    baseURL: info.project.use.baseURL,
+    extraHTTPHeaders: { 'X-Thelxinoe-Fixture-Address': '192.0.2.40' },
+  });
+  const page = await context.newPage();
+  await login(page, 'admin', 'test-only long passphrase');
+  await expect(
+    page.getByRole('heading', { name: 'Home', exact: true }),
+  ).toBeVisible();
+  const issuer = `http://127.0.0.1:${process.env.THELXINOE_TEST_OIDC_PORT ?? '18989'}`;
+  expect(
+    (
+      await post(page, '/admin/auth/oidc', {
+        discovery_url: `${issuer}/.well-known/openid-configuration`,
+        client_id: 'thelxinoe-e2e',
+        client_secret: 'fixture-only',
+        label: 'Fixture SSO',
+      })
+    ).ok(),
+  ).toBeTruthy();
+  const username = `redirect${Date.now()}`;
+  const created = await post(page, '/users', {
+    username,
+    password,
+    role: 'user',
+  });
+  expect(created.ok()).toBeTruthy();
+  await post(page, '/auth/logout');
+  await login(page, username);
+  await expect(
+    page.getByRole('heading', { name: 'Home', exact: true }),
+  ).toBeVisible();
+  const linked = await page.request.get(
+    await oidcCallback(page, username, 'link', '/#settings/account'),
+    { maxRedirects: 0 },
+  );
+  expect(linked.headers().location).toContain('auth_notice=oidc-linked');
+  expect(
+    new URL(linked.headers().location, info.project.use.baseURL).hash,
+  ).toBe('#settings/account');
+  const decisions = [];
+  for (const path of [
+    '/a/..//attacker.example',
+    '/a/%2e%2e//attacker.example',
+    '/a/.%2e//attacker.example',
+    '/a/%2e.//attacker.example',
+    '//attacker.example',
+    '/a/../?kept=1#settings/account',
+  ]) {
+    await post(page, '/auth/logout');
+    const response = await page.request.get(
+      await oidcCallback(page, username, 'login', path),
+      { maxRedirects: 0 },
+    );
+    expect(response.status()).toBe(303);
+    const destination = new URL(
+      response.headers().location,
+      info.project.use.baseURL,
+    );
+    expect(destination.origin).toBe(new URL(info.project.use.baseURL!).origin);
+    if (path.includes('attacker.example'))
+      expect(destination.pathname).toBe('/');
+    else {
+      expect(destination.search).toBe('?kept=1');
+      expect(destination.hash).toBe('#settings/account');
+    }
+    expect((await page.request.get('/api/v1/auth/me')).ok()).toBeTruthy();
+    decisions.push({ path, location: response.headers().location });
+  }
+  await info.attach('normalized return redirects', {
+    body: Buffer.from(JSON.stringify(decisions)),
+    contentType: 'application/json',
   });
   await context.close();
 });

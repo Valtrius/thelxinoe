@@ -208,6 +208,14 @@ pub enum SessionAuthorization {
         verified_at: i64,
         remembered_device_id: Option<String>,
     },
+    Oidc {
+        user_id: String,
+        auth_version: i64,
+        verified_at: i64,
+        provider_version: String,
+        issuer: String,
+        subject: String,
+    },
     ClientPassword {
         user_id: String,
         credential_id: String,
@@ -219,6 +227,7 @@ impl SessionAuthorization {
             Self::Password { user_id, .. }
             | Self::ApprovedSession { user_id, .. }
             | Self::Verified { user_id, .. }
+            | Self::Oidc { user_id, .. }
             | Self::ClientPassword { user_id, .. } => user_id,
         }
     }

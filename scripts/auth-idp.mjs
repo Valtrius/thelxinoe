@@ -20,6 +20,7 @@ const jwk = {
   alg: 'RS256',
 };
 const codes = new Map();
+const tokenGates = new Map();
 const encode = (value) =>
   Buffer.from(JSON.stringify(value)).toString('base64url');
 function jwt(claims) {
@@ -29,17 +30,21 @@ function jwt(claims) {
 const server = createServer(async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   const url = new URL(req.url, issuer);
+  const providerIssuer = url.pathname.startsWith('/replacement/')
+    ? `${issuer}/replacement`
+    : issuer;
+  const path = url.pathname.replace(/^\/replacement/, '');
   const json = (status, body) => {
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(body));
   };
   if (url.pathname === '/health') return json(200, { ready: true });
-  if (url.pathname === '/.well-known/openid-configuration')
+  if (path === '/.well-known/openid-configuration')
     return json(200, {
-      issuer,
-      authorization_endpoint: `${issuer}/authorize`,
-      token_endpoint: `${issuer}/token`,
-      jwks_uri: `${issuer}/jwks`,
+      issuer: providerIssuer,
+      authorization_endpoint: `${providerIssuer}/authorize`,
+      token_endpoint: `${providerIssuer}/token`,
+      jwks_uri: `${providerIssuer}/jwks`,
       response_types_supported: ['code'],
       subject_types_supported: ['public'],
       id_token_signing_alg_values_supported: ['RS256'],
@@ -47,8 +52,8 @@ const server = createServer(async (req, res) => {
       scopes_supported: ['openid'],
       code_challenge_methods_supported: ['S256'],
     });
-  if (url.pathname === '/jwks') return json(200, { keys: [jwk] });
-  if (url.pathname === '/authorize' && req.method === 'GET') {
+  if (path === '/jwks') return json(200, { keys: [jwk] });
+  if (path === '/authorize' && req.method === 'GET') {
     const ticket = randomBytes(32).toString('hex');
     codes.set(ticket, {
       parameters: url.searchParams,
@@ -65,7 +70,21 @@ const server = createServer(async (req, res) => {
     if (body.length > 4096) return json(413, {});
   }
   const input = new URLSearchParams(body);
-  if (url.pathname === '/authorize' && req.method === 'POST') {
+  if (path === '/control/pause' && req.method === 'POST') {
+    tokenGates.set(input.get('subject'), { waiting: false });
+    return json(200, {});
+  }
+  if (path === '/control/status')
+    return json(200, {
+      waiting:
+        tokenGates.get(url.searchParams.get('subject'))?.waiting ?? false,
+    });
+  if (path === '/control/release' && req.method === 'POST') {
+    tokenGates.get(input.get('subject'))?.release?.();
+    tokenGates.delete(input.get('subject'));
+    return json(200, {});
+  }
+  if (path === '/authorize' && req.method === 'POST') {
     const pending = codes.get(input.get('ticket'));
     codes.delete(input.get('ticket'));
     if (!pending || pending.expires < Date.now())
@@ -93,7 +112,7 @@ const server = createServer(async (req, res) => {
     res.writeHead(302, { Location: redirect.href });
     return res.end();
   }
-  if (url.pathname === '/token' && req.method === 'POST') {
+  if (path === '/token' && req.method === 'POST') {
     const pending = codes.get(input.get('code'));
     codes.delete(input.get('code'));
     if (!pending || pending.expires < Date.now() || !pending.subject)
@@ -110,13 +129,25 @@ const server = createServer(async (req, res) => {
         `Basic ${Buffer.from('thelxinoe-e2e:fixture-only').toString('base64')}`
     )
       return json(400, { error: 'invalid_grant' });
+    const gate = tokenGates.get(pending.subject);
+    if (gate) {
+      await new Promise((resolve) => {
+        gate.waiting = true;
+        gate.release = resolve;
+        res.once('close', resolve);
+      });
+      if (res.destroyed) return;
+    }
     const time = Math.floor(Date.now() / 1000);
     return json(200, {
       token_type: 'Bearer',
       access_token: randomBytes(32).toString('hex'),
       expires_in: 300,
       id_token: jwt({
-        iss: pending.subject === 'bad-issuer' ? issuer + '/other' : issuer,
+        iss:
+          pending.subject === 'bad-issuer'
+            ? providerIssuer + '/other'
+            : providerIssuer,
         sub: pending.subject,
         aud:
           pending.subject === 'bad-audience' ? 'other-client' : 'thelxinoe-e2e',

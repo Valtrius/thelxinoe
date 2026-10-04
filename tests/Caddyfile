@@ -3,7 +3,16 @@
 }
 https://localhost:9443 {
     tls internal
-    reverse_proxy server:8484
+    @fixture_client header X-Thelxinoe-Fixture-Address *
+    handle @fixture_client {
+        reverse_proxy server:8484 {
+            header_up X-Forwarded-For {http.request.header.X-Thelxinoe-Fixture-Address}
+            header_up -X-Thelxinoe-Fixture-Address
+        }
+    }
+    handle {
+        reverse_proxy server:8484
+    }
 }
 http://:9080 {
     reverse_proxy server:8484

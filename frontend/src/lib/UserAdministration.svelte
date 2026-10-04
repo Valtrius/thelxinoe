@@ -2,7 +2,7 @@
   import Notice from './ui/Notice.svelte';
   import FormField from './ui/FormField.svelte';
   import { formControlClass } from './ui/styles';
-  import { api, type User } from './api';
+  import { api, serverUrl, type User } from './api';
   import { withVerification } from './authentication';
   import { Accordion } from 'bits-ui';
   import { ChevronDown } from '@lucide/svelte';
@@ -60,8 +60,10 @@
         recoveryUrl = (
           await api<{ url: string }>(`/users/${person.id}/recovery`, 'POST')
         ).url;
-        if (recoveryUrl.startsWith('/'))
-          recoveryUrl = location.origin + recoveryUrl;
+        recoveryUrl = new URL(
+          recoveryUrl,
+          serverUrl() || location.origin,
+        ).toString();
       });
     } catch (caught) {
       error = String(caught);
@@ -110,9 +112,11 @@
         >Save user</Button
       >
     </form>
-    <Button variant="secondary" disabled={busy} onclick={() => recover()}
-      >Create recovery link</Button
-    >
+    {#if person.id !== currentId}
+      <Button variant="secondary" disabled={busy} onclick={() => recover()}
+        >Create recovery link</Button
+      >
+    {/if}
     {#if recoveryUrl}<FormField class="my-4 block"
         >Recovery link<input
           class={formControlClass}

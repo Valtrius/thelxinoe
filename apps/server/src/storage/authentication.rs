@@ -11,6 +11,7 @@ pub(super) enum Fault {
     Verify,
     LastMethod,
     Conflict,
+    SelfRecovery,
 }
 impl std::fmt::Display for Fault {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -505,13 +506,49 @@ pub(super) async fn oidc_link(
     db: &Database,
     p: Principal,
     version: i64,
+    provider_version: String,
     issuer: String,
     subject: String,
 ) -> Result<()> {
     db.write("authentication.oidc.link",move |c|{let tx=c.transaction()?;authorized(&tx,&p,true)?;
+        require_provider(&tx, &provider_version, &issuer)?;
         if !tx.query_row("SELECT EXISTS(SELECT 1 FROM users WHERE id=?1 AND auth_version=?2)",params![p.user.id,version],|r|r.get::<_,bool>(0))?{return Err(Fault::Unauthorized.into());}
         if tx.query_row("SELECT EXISTS(SELECT 1 FROM auth_oidc_identities WHERE user_id=?1 OR (issuer=?2 AND subject=?3))",params![p.user.id,issuer,subject],|r|r.get::<_,bool>(0))?{return Err(Fault::Conflict.into());}
         tx.execute("INSERT INTO auth_oidc_identities VALUES(?1,?2,?3,?4)",params![issuer,subject,p.user.id,now()])?;audit(&tx,&p,"auth.oidc.linked",&p.user.id)?;tx.commit()?;Ok(())}).await
+}
+fn require_provider(c: &Connection, version: &str, issuer: &str) -> Result<()> {
+    if !c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM auth_oidc_provider WHERE id=1 AND version=?1 AND issuer=?2)",
+        params![version, issuer],
+        |r| r.get::<_, bool>(0),
+    )? {
+        return Err(Fault::Unauthorized.into());
+    }
+    Ok(())
+}
+pub(super) async fn oidc_verify(
+    db: &Database,
+    p: Principal,
+    version: i64,
+    provider_version: String,
+    issuer: String,
+    subject: String,
+) -> Result<()> {
+    db.write("authentication.oidc.verify", move |c| {
+        let tx = c.transaction()?;
+        authorized(&tx, &p, false)?;
+        require_provider(&tx, &provider_version, &issuer)?;
+        if tx.execute(
+            "UPDATE sessions SET verified_at=?1 WHERE id=?2 AND user_id=?3
+             AND EXISTS(SELECT 1 FROM users WHERE id=?3 AND auth_version=?4)
+             AND EXISTS(SELECT 1 FROM auth_oidc_identities WHERE user_id=?3 AND issuer=?5 AND subject=?6)",
+            params![now(), p.session_id, p.user.id, version, issuer, subject],
+        )? != 1 {
+            return Err(Fault::Unauthorized.into());
+        }
+        tx.commit()?;
+        Ok(())
+    }).await
 }
 pub(super) async fn recovery(
     db: &Database,
@@ -523,10 +560,7 @@ pub(super) async fn recovery(
     db.write("authentication.recovery", move |c| {
         let tx = c.transaction()?;
         if let Some(p) = &p {
-            authorized(&tx, p, true)?;
-            if !p.user.role.allows(thelxinoe_core::Capability::ManageUsers) {
-                return Err(Fault::Unauthorized.into());
-            }
+            authorize_admin(&tx, p)?;
         }
         let user: String = tx
             .query_row(
@@ -540,6 +574,9 @@ pub(super) async fn recovery(
             )
             .optional()?
             .ok_or(Fault::Unauthorized)?;
+        if p.as_ref().is_some_and(|p| p.user.id == user) {
+            return Err(Fault::SelfRecovery.into());
+        }
         tx.execute(
             "UPDATE users SET password_hash=NULL,auth_version=auth_version+1 WHERE id=?1",
             [&user],

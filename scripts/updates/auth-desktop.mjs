@@ -204,6 +204,70 @@ export async function authenticationScenario({
       });
       // Restore the account for the existing update scenarios using the genuinely verified session.
       expect((await invoke('/me/auth/totp', 'DELETE')).status).toBe(200);
+      const username = `recovery${Date.now()}`;
+      const created = await invoke('/users', 'POST', {
+        username,
+        password: 'native recovery fixture passphrase',
+        role: 'user',
+      });
+      expect(created.status).toBe(200);
+      await native.page
+        .getByRole('link', { name: 'Settings', exact: true })
+        .click();
+      await native.page
+        .getByRole('navigation', { name: 'Settings navigation' })
+        .getByRole('link', { name: 'People', exact: true })
+        .click();
+      await native.page
+        .getByRole('button', { name: new RegExp(username) })
+        .click();
+      await native.page
+        .getByRole('button', { name: 'Create recovery link', exact: true })
+        .click();
+      const recovery = native.page.getByLabel('Recovery link', { exact: true });
+      await expect(recovery).toHaveValue(/^https?:\/\/.+\/#recovery=/);
+      const recoveryUrl = await recovery.inputValue();
+      expect(new URL(recoveryUrl).origin).toBe(new URL(lab.baseUrl).origin);
+      const token = new URL(recoveryUrl).hash.slice('#recovery='.length);
+      expect(
+        (
+          await fetch(`${lab.baseUrl}/api/v1/auth/recovery/info`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ token }),
+          })
+        ).status,
+      ).toBe(200);
+      expect(
+        (
+          await fetch(`${lab.baseUrl}/api/v1/auth/recovery/enroll`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              token,
+              password: 'native recovered fixture passphrase',
+            }),
+          })
+        ).status,
+      ).toBe(200);
+      expect(
+        (
+          await fetch(`${lab.baseUrl}/api/v1/auth/login`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              username,
+              password: 'native recovered fixture passphrase',
+            }),
+          })
+        ).status,
+      ).toBe(200);
+      await native.page.screenshot({
+        path: join(output, 'native-recovery-origin.png'),
+      });
+      expect((await invoke(`/users/${created.body.id}`, 'DELETE')).status).toBe(
+        200,
+      );
     },
   );
 }
