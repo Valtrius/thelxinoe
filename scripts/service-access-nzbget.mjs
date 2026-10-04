@@ -149,7 +149,7 @@ export async function nzbgetAccess({ f, page, manager, scenario, output }) {
             })
           ).status(),
         ).toBe(401);
-        await f.api('/users', 'POST', {
+        await f.createUser({
           username: 'nzbget-viewer',
           password: 'test-only long passphrase',
           role: 'user',

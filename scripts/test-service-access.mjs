@@ -329,7 +329,7 @@ try {
         { headers: { 'X-Api-Key': key }, maxRedirects: 0 },
       );
       expect(denied.status()).toBe(401);
-      await f.api('/users', 'POST', {
+      await f.createUser({
         username: 'viewer',
         password: 'test-only viewer passphrase',
         role: 'user',
@@ -734,11 +734,30 @@ try {
   await scenario(
     'current administrator role is checked again on each native request',
     async () => {
-      await f.api('/users', 'POST', {
+      f.compose(
+        'exec',
+        '-T',
+        'server',
+        'python',
+        '-c',
+        "import sqlite3; c=sqlite3.connect('/var/lib/thelxinoe/thelxinoe.sqlite3'); c.execute(\"UPDATE sessions SET verified_at=0 WHERE user_id=(SELECT id FROM users WHERE username='admin')\"); c.commit()",
+      );
+      const remainingAdmin = {
         username: 'remaining-admin',
         password: 'test-only remaining admin passphrase',
         role: 'admin',
+      };
+      const stale = await f.context.request.post(`${f.base}/api/v1/users`, {
+        headers: { 'X-Thelxinoe-Client': '1' },
+        data: remainingAdmin,
       });
+      expect(stale.status()).toBe(403);
+      expect((await stale.json()).error.code).toBe('verification_required');
+      await f.createUser(remainingAdmin);
+      result.role_recheck = {
+        stale_verification_rejected: true,
+        created_after_verification: true,
+      };
       f.compose(
         'exec',
         '-T',
