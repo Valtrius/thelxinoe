@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { installUiFixture } from './helpers/ui-fixture';
+import { responseGate } from './helpers/response-gate';
 
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: 'ignoreErrors' });
@@ -137,7 +138,9 @@ for (const decision of [
       ],
     };
     const writes: { revision: number; name: string; items: string[] }[] = [];
-    await page.route('**/api/v1/playlists**', (route) => {
+    const conflictReload = responseGate();
+    let conflictReloadStarted = false;
+    await page.route('**/api/v1/playlists**', async (route) => {
       const path = new URL(route.request().url()).pathname;
       if (route.request().method() === 'PUT') {
         const body = route.request().postDataJSON();
@@ -184,6 +187,14 @@ for (const decision of [
           })),
         };
         return route.fulfill({ json: { id: playlist.id } });
+      }
+      if (
+        decision === 'racing replace' &&
+        writes.length === 1 &&
+        path.endsWith('/shared')
+      ) {
+        conflictReloadStarted = true;
+        await conflictReload.promise;
       }
       return route.fulfill({
         json: path.endsWith('/playlists') ? { items: [playlist] } : playlist,
@@ -241,6 +252,19 @@ for (const decision of [
           .getByRole('button', { name: 'Replace with my draft', exact: true })
           .click();
         if (decision === 'racing replace') {
+          await expect.poll(() => conflictReloadStarted).toBe(true);
+          await page.screenshot({
+            path: testInfo.outputPath('playlist-conflict-refresh-pending.png'),
+          });
+          await expect(page.getByRole('alert')).toHaveCount(1);
+          await expect(name).toHaveValue('Local draft');
+          await expect(
+            page.getByRole('button', {
+              name: 'Replace with my draft',
+              exact: true,
+            }),
+          ).toBeDisabled();
+          conflictReload.release();
           await expect(page.getByRole('alert')).toContainText('Later track');
           await expect(name).toHaveValue('Local draft');
           await expect(

@@ -170,7 +170,6 @@
       } else await open(value.id);
     } catch (e) {
       if (current()) {
-        error = String(e);
         if (e instanceof ApiError && e.status === 409 && selected) {
           try {
             const latest = await api<Playlist>(`/playlists/${selected.id}`);
@@ -181,7 +180,7 @@
           } catch (caught) {
             if (current()) error = String(caught);
           }
-        }
+        } else error = String(e);
       }
     } finally {
       if (current()) busy = false;
