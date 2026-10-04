@@ -366,7 +366,9 @@ for (const exit of ['replace', 'close', 'revoke'] as const) {
         .getByRole('button', { name: 'Play Track B', exact: true })
         .click();
       await expect(
-        page.getByRole('heading', { name: 'Track B', exact: true }),
+        page
+          .getByRole('region', { name: 'Music player', exact: true })
+          .getByRole('heading', { name: 'Track B', exact: true }),
       ).toBeVisible();
     } else if (exit === 'close') {
       await page
