@@ -2,6 +2,96 @@
 mod storage;
 
 use super::*;
+use std::collections::BTreeMap;
+
+pub(super) struct ServiceInventory {
+    pub generation: String,
+    pub kind: String,
+    pub claims: Result<BTreeMap<(i64, i64), Claim>>,
+}
+pub(super) struct ManagerInventory {
+    pub services: BTreeMap<String, ServiceInventory>,
+    files: BTreeMap<String, (String, String)>,
+}
+impl ServiceInventory {
+    pub fn from_claims(generation: String, kind: String, result: Result<Vec<Claim>>) -> Self {
+        let claims = result.and_then(|claims| {
+            let mut indexed = BTreeMap::new();
+            for claim in claims {
+                if indexed
+                    .insert((claim.entity_id, claim.manager_file_id), claim)
+                    .is_some()
+                {
+                    return Err(ApiError::conflict(
+                        "Manager inventory contains duplicate file identities",
+                    ));
+                }
+            }
+            Ok(indexed)
+        });
+        Self {
+            generation,
+            kind,
+            claims,
+        }
+    }
+    pub fn current(&self) -> Result<&BTreeMap<(i64, i64), Claim>> {
+        self.claims
+            .as_ref()
+            .map_err(|e| ApiError(e.0, e.1, e.2.clone()))
+    }
+}
+
+pub(super) async fn observe(state: &AppState) -> Result<ManagerInventory> {
+    let files = storage::file_generations(&state.db).await?;
+    let keys = storage::reconcile_read_manager_services(&state.db).await?;
+    let mut services = BTreeMap::new();
+    for key in keys {
+        let s = service(state, &key).await?;
+        let result = inventory(state, &s).await;
+        services.insert(
+            key,
+            ServiceInventory::from_claims(s.generation, s.kind, result),
+        );
+    }
+    Ok(ManagerInventory { services, files })
+}
+
+pub(super) async fn reconcile_observation(
+    state: &AppState,
+    observed: &ManagerInventory,
+) -> Result<()> {
+    let keys = storage::reconcile_read_manager_services(&state.db).await?;
+    if keys != observed.services.keys().cloned().collect::<Vec<_>>()
+        || storage::file_generations(&state.db).await? != observed.files
+    {
+        return Err(ApiError::conflict(
+            "Manager configuration or local files changed during inventory acquisition",
+        ));
+    }
+    for (key, inventory) in &observed.services {
+        if service(state, key).await?.generation != inventory.generation {
+            return Err(ApiError::conflict(
+                "Manager configuration changed during inventory acquisition",
+            ));
+        }
+    }
+    for (key, inventory) in &observed.services {
+        let result = inventory
+            .current()
+            .map(|claims| claims.values().cloned().collect());
+        storage::reconcile_write_media_files(
+            key.clone(),
+            result,
+            inventory.generation.clone(),
+            &state.db,
+        )
+        .await?;
+    }
+    storage::refresh_ownership(&state.db).await?;
+    super::metadata::enqueue_managed_refreshes(state).await?;
+    Ok(())
+}
 
 pub(super) fn router() -> Router<AppState> {
     Router::new()
@@ -125,17 +215,8 @@ pub(super) async fn inventory(state: &AppState, s: &Service) -> Result<Vec<Claim
     Ok(claims)
 }
 pub(super) async fn reconcile(state: &AppState) -> Result<()> {
-    let services = storage::reconcile_read_manager_services(&state.db).await?;
-    for key in services {
-        let s = service(state, &key).await?;
-        let result = inventory(state, &s).await;
-        let generation = s.generation;
-        // Failed reconciliation preserves every historical claim.
-        storage::reconcile_write_media_files(key, result, generation, &state.db).await?;
-    }
-    storage::refresh_ownership(&state.db).await?;
-    super::metadata::enqueue_managed_refreshes(state).await?;
-    Ok(())
+    let observed = observe(state).await?;
+    reconcile_observation(state, &observed).await
 }
 async fn reconcile_api(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;

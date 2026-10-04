@@ -1,5 +1,13 @@
 //! Database operations for managers.retention.
-use super::*;
+use crate::managers::{
+    domain::{PreparedOperation, RetentionEligibility as Eligible, RetentionPolicy as Policy},
+    operations,
+};
+use rusqlite::{OptionalExtension, params};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
+use thelxinoe_core::now;
 use thelxinoe_database::Database;
 
 pub(super) async fn revalidate_operation(
@@ -80,16 +88,16 @@ pub(super) async fn evaluate_all_write_media(
 }
 
 pub(super) async fn evaluate_all_write_retention_candidates(
-    media: String,
     e: Eligible,
-    operation: Value,
+    operation: PreparedOperation,
     key: String,
-    actor: Option<String>,
     db: &Database,
 ) -> anyhow::Result<()> {
     db.write("managers.retention.evaluate_all_write_retention_candidates", move|db|{let tx=db.transaction()?;
+        anyhow::ensure!(eligibility(&tx,&operation.media_id)?.is_some_and(|current|current.stamp==e.stamp),"Retention eligibility changed before proposal persistence");
+        operations::storage::insert_prepared(&tx,&operation)?;
         let names=tx.prepare("SELECT username FROM users WHERE id IN (SELECT value FROM json_each(?1)) ORDER BY username")?.query_map([json!(e.users).to_string()],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        tx.execute("INSERT INTO retention_candidates(id,media_id,operation_id,stamp,trigger_user,state,eligible_at,due_at,watched_users) VALUES (?1,?2,?3,?4,?5,'pending',?6,?7,?8)",params![key,media,operation["id"].as_str(),e.stamp,e.user,now(),now()+e.grace,json!(names).to_string()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'retention.pending',?2,?3)",params![actor,key,now()])?;tx.commit()?;Ok(())}).await
+        tx.execute("INSERT INTO retention_candidates(id,media_id,operation_id,stamp,trigger_user,state,eligible_at,due_at,watched_users) VALUES (?1,?2,?3,?4,?5,'pending',?6,?7,?8)",params![key,operation.media_id,operation.id,e.stamp,e.user,now(),now()+e.grace,json!(names).to_string()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'retention.pending',?2,?3)",params![operation.actor,key,now()])?;tx.commit()?;Ok(())}).await
 }
 
 pub(super) async fn action(

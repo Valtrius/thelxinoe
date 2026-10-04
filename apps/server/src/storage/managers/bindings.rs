@@ -1,6 +1,22 @@
 //! Database operations for managers.bindings.
-use super::*;
+use crate::{error::ApiError, managers::bindings::Claim};
+use rusqlite::{OptionalExtension, params};
+use serde_json::{Value, json};
+use std::collections::BTreeMap;
+use thelxinoe_core::now;
 use thelxinoe_database::Database;
+
+pub(super) async fn file_generations(
+    db: &Database,
+) -> anyhow::Result<BTreeMap<String, (String, String)>> {
+    db.read("managers.bindings.file_generations", |db| {
+        Ok(db
+            .prepare("SELECT path,id,generation FROM media_files WHERE present=1 ORDER BY path")?
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?))))?
+            .collect::<rusqlite::Result<_>>()?)
+    })
+    .await
+}
 
 pub(super) async fn reconcile_read_manager_services(db: &Database) -> anyhow::Result<Vec<String>> {
     db.read("managers.bindings.reconcile_read_manager_services", |db| {
@@ -20,6 +36,7 @@ pub(super) async fn reconcile_write_media_files(
 ) -> anyhow::Result<()> {
     db.write("managers.bindings.reconcile_write_media_files", move|db| {
         let tx=db.transaction()?;
+        anyhow::ensure!(tx.query_row("SELECT EXISTS(SELECT 1 FROM manager_services WHERE id=?1 AND enabled=1 AND generation=?2)",params![key,generation],|r|r.get::<_,bool>(0))?,"Manager configuration changed during reconciliation");
         match result {
             Ok(claims)=> {
                 let mut current=Vec::new();

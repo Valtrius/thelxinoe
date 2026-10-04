@@ -1,8 +1,10 @@
 //! Durable destructive commands share the same file-generation and ownership checks.
 
 #[path = "../storage/managers/operations.rs"]
-mod storage;
+pub(super) mod storage;
 
+pub(super) use super::domain::Target;
+use super::domain::{MediaAction, PreparedOperation, ValidatedSelection};
 use super::*;
 #[path = "validated_file.rs"]
 mod validated_file;
@@ -12,18 +14,6 @@ pub(super) fn router() -> Router<AppState> {
         .route("/api/v1/admin/media/operations", get(list).post(prepare))
         .route("/api/v1/admin/media/operations/{id}/execute", post(execute))
         .route("/api/v1/admin/media/{id}/keep", axum::routing::put(keep))
-}
-#[derive(Clone, Serialize, Deserialize, PartialEq)]
-pub(super) struct Target {
-    id: String,
-    generation: String,
-    path: String,
-    root: String,
-    size: u64,
-    modified: String,
-    fingerprint: String,
-    ownership: String,
-    pub(super) claims: Vec<bindings::Claim>,
 }
 async fn targets(state: &AppState, media: &str) -> Result<Vec<Target>> {
     let media = media.to_owned();
@@ -42,31 +32,49 @@ async fn prepare(
     Json(input): Json<Prepare>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
-    if !matches!(input.action.as_str(), "delete" | "unmonitor" | "monitor") {
-        return Err(ApiError::bad("Unknown media operation"));
-    }
-    let _lease = state.media_operations.write().await;
-    let _manager = state.managers.guard.lock().await;
-    prepare_locked(&state, Some(p.user.id), input.media_id, input.action).await
+    prepare_operation(&state, Some(p.user.id), input.media_id, input.action).await
 }
-pub(super) async fn prepare_locked(
+pub(super) async fn prepare_operation(
     state: &AppState,
     actor: Option<String>,
     media_id: String,
     action: String,
 ) -> Result<Json<Value>> {
-    bindings::reconcile(state).await?;
+    let action: MediaAction = serde_json::from_value(json!(action))
+        .map_err(|_| ApiError::bad("Unknown media operation"))?;
+    let observed = bindings::observe(state).await?;
+    let _lease = state.media_operations.write().await;
+    let _manager = state.managers.guard.lock().await;
+    bindings::reconcile_observation(state, &observed).await?;
+    let operation = prepare_from_inventory(state, actor, media_id, action, &observed).await?;
+    persist_prepared(state, operation).await
+}
+async fn persist_prepared(state: &AppState, operation: PreparedOperation) -> Result<Json<Value>> {
+    let response =
+        json!({"id":operation.id,"state":"pending","files":operation.selection.files.len()});
+    storage::prepare_locked(operation, &state.db).await?;
+    Ok(Json(response))
+}
+pub(super) async fn prepare_from_inventory(
+    state: &AppState,
+    actor: Option<String>,
+    media_id: String,
+    action: MediaAction,
+    observed: &bindings::ManagerInventory,
+) -> Result<PreparedOperation> {
     let captured = targets(state, &media_id).await?;
     if captured.is_empty() {
         return Err(ApiError::conflict("No current files belong to this target"));
     }
-    validate_ownership(&captured, &action)?;
-    complete_manager_scope(state, &captured).await?;
-    let key = id();
-    let returned = key.clone();
-    let count = captured.len();
-    storage::prepare_locked(captured, key, &state.db, actor, media_id, action).await?;
-    Ok(Json(json!({"id":returned,"state":"pending","files":count})))
+    validate_ownership(&captured, action.as_str())?;
+    validate_scope(&captured, &observed.services)?;
+    Ok(PreparedOperation {
+        id: id(),
+        actor,
+        media_id,
+        action,
+        selection: ValidatedSelection { files: captured },
+    })
 }
 fn validate_ownership(files: &[Target], action: &str) -> Result<()> {
     for file in files {
@@ -83,38 +91,60 @@ fn validate_ownership(files: &[Target], action: &str) -> Result<()> {
     Ok(())
 }
 async fn complete_manager_scope(state: &AppState, files: &[Target]) -> Result<()> {
-    let mut checked = std::collections::HashSet::new();
+    let mut inventories = std::collections::BTreeMap::new();
     for file in files {
         for claim in &file.claims {
-            if !checked.insert(claim.service_id.clone()) {
+            if inventories.contains_key(&claim.service_id) {
                 continue;
             }
             let s = service(state, &claim.service_id).await?;
-            let inventory = bindings::inventory(state, &s).await?;
-            for current in &inventory {
-                let selected = files.iter().flat_map(|f| &f.claims).any(|c| {
-                    c.service_id == current.service_id && c.entity_id == current.entity_id
-                });
-                if !selected {
-                    continue;
-                }
-                if s.kind != "sonarr" && !files.iter().flat_map(|f| &f.claims).any(|c| c == current)
-                {
-                    return Err(ApiError::conflict(
-                        "Movie or album monitoring affects files outside this selection; select its complete file set",
-                    ));
-                }
-            }
-            for selected in files
+            let inventory = bindings::inventory(state, &s).await;
+            inventories.insert(
+                s.id,
+                bindings::ServiceInventory::from_claims(s.generation, s.kind, inventory),
+            );
+        }
+    }
+    validate_scope(files, &inventories)
+}
+fn validate_scope(
+    files: &[Target],
+    inventories: &std::collections::BTreeMap<String, bindings::ServiceInventory>,
+) -> Result<()> {
+    let mut checked = std::collections::HashSet::new();
+    for claim in files.iter().flat_map(|f| &f.claims) {
+        if !checked.insert(&claim.service_id) {
+            continue;
+        }
+        let s = inventories
+            .get(&claim.service_id)
+            .ok_or_else(|| ApiError::conflict("Owning manager is absent from this inventory"))?;
+        let inventory = s.current()?;
+        for current in inventory.values() {
+            let selected = files
                 .iter()
                 .flat_map(|f| &f.claims)
-                .filter(|c| c.service_id == s.id)
+                .any(|c| c.service_id == current.service_id && c.entity_id == current.entity_id);
+            if !selected {
+                continue;
+            }
+            if s.kind != "sonarr" && !files.iter().flat_map(|f| &f.claims).any(|c| c == current) {
+                return Err(ApiError::conflict(
+                    "Movie or album monitoring affects files outside this selection; select its complete file set",
+                ));
+            }
+        }
+        for selected in files
+            .iter()
+            .flat_map(|f| &f.claims)
+            .filter(|c| c.service_id == claim.service_id)
+        {
+            if selected.service_generation != s.generation
+                || inventory.get(&(selected.entity_id, selected.manager_file_id)) != Some(selected)
             {
-                if !inventory.contains(selected) {
-                    return Err(ApiError::conflict(
-                        "Manager file or episode identity changed",
-                    ));
-                }
+                return Err(ApiError::conflict(
+                    "Manager file or episode identity changed",
+                ));
             }
         }
     }
@@ -407,7 +437,7 @@ async fn keep(
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
     let _lease = state.media_operations.write().await;
-    storage::keep(&state.db, media, input, p).await?;
+    storage::keep(&state.db, media, input.keep, p.user.id).await?;
     Ok(Json(json!({"saved":true})))
 }
 async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {

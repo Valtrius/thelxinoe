@@ -3,7 +3,9 @@
 #[path = "../storage/managers/retention.rs"]
 mod storage;
 
+use super::domain::{MediaAction, RetentionPolicy as Policy};
 use super::*;
+#[cfg(test)]
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 fn exclusion_endpoint(kind: &str) -> &'static str {
@@ -23,25 +25,6 @@ pub(super) fn router() -> Router<AppState> {
         .route("/api/v1/admin/retention/policy/{domain}", post(policy))
         .route("/api/v1/admin/retention/evaluate", post(evaluate))
         .route("/api/v1/admin/retention/{id}/{action}", post(action))
-}
-#[derive(Deserialize, Serialize, Clone)]
-struct Policy {
-    enabled: bool,
-    grace_seconds: i64,
-    exclude_specials: bool,
-    trigger_users: Vec<String>,
-    #[serde(default = "default_video_limit")]
-    storage_limit_bytes: i64,
-}
-fn default_video_limit() -> i64 {
-    100_000_000_000
-}
-#[derive(Clone)]
-struct Eligible {
-    stamp: String,
-    user: String,
-    users: Vec<String>,
-    grace: i64,
 }
 
 #[cfg(test)]
@@ -116,26 +99,27 @@ async fn evaluate(State(state): State<AppState>, headers: HeaderMap) -> Result<J
     Ok(Json(json!({"created":count})))
 }
 async fn evaluate_all(state: &AppState, actor: Option<String>) -> Result<usize> {
-    let _lease = state.media_operations.write().await;
-    let _guard = state.managers.guard.lock().await;
     let enabled = storage::evaluate_all_read_retention_policies(&state.db).await?;
     if !enabled {
         return Ok(0);
     };
-    bindings::reconcile(state).await?;
+    let observed = bindings::observe(state).await?;
+    let _lease = state.media_operations.write().await;
+    let _guard = state.managers.guard.lock().await;
+    bindings::reconcile_observation(state, &observed).await?;
     let candidates = storage::evaluate_all_write_media(&state.db).await?;
     let mut count = 0;
     for (media, e) in candidates {
-        let operation =
-            operations::prepare_locked(state, actor.clone(), media.clone(), "delete".into())
-                .await?
-                .0;
-        let key = id();
-        let actor = actor.clone();
-        storage::evaluate_all_write_retention_candidates(
-            media, e, operation, key, actor, &state.db,
+        let operation = operations::prepare_from_inventory(
+            state,
+            actor.clone(),
+            media.clone(),
+            MediaAction::Delete,
+            &observed,
         )
         .await?;
+        let key = id();
+        storage::evaluate_all_write_retention_candidates(e, operation, key, &state.db).await?;
         count += 1;
     }
     if count > 0 {
