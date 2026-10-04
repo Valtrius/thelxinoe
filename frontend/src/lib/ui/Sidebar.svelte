@@ -19,8 +19,18 @@
   import { attention, attentionDescription } from '../attention';
   import Button from './Button.svelte';
   import type { User } from '../api';
+  import { followLink, routeHref, sectionRoute } from '../navigation';
   import { providers as availability } from '../providers/availability';
-  let { section, collapsed, user, navigate, toggle, logout, onClose } = $props<{
+  let {
+    section,
+    collapsed,
+    user,
+    navigate,
+    toggle,
+    logout,
+    onClose,
+    settingsSection = 'account',
+  } = $props<{
     section: string;
     collapsed: boolean;
     user: User;
@@ -28,6 +38,7 @@
     toggle: () => void;
     logout: () => void;
     onClose?: () => void;
+    settingsSection?: string;
   }>();
   const library = [
     { name: 'Home', icon: House },
@@ -75,6 +86,7 @@
         href="#home"
         class="flex h-16 min-w-0 flex-1 items-center overflow-hidden whitespace-nowrap"
         onclick={(e) => {
+          if (!followLink(e)) return;
           e.preventDefault();
           navigate('Home');
         }}
@@ -113,7 +125,13 @@
           aria-label={item.name}
           description={attentionDescription(menuAttention(item.name))}
           active={section === item.name}
-          onclick={() => navigate(item.name)}
+          href={routeHref(sectionRoute(item.name))}
+          onclick={(event) => {
+            if (followLink(event)) {
+              event.preventDefault();
+              navigate(item.name);
+            }
+          }}
           ><span class="relative size-5 shrink-0"
             ><item.icon class="size-5" /><AttentionDot
               items={menuAttention(item.name)}
@@ -137,7 +155,13 @@
             ),
           )}
           active={section === item.name}
-          onclick={() => navigate(item.name)}
+          href={routeHref(sectionRoute(item.name))}
+          onclick={(event) => {
+            if (followLink(event)) {
+              event.preventDefault();
+              navigate(item.name);
+            }
+          }}
           ><span class="relative size-5 shrink-0"
             ><PlatformIcon
               platform={item.platform}
@@ -159,8 +183,13 @@
         aria-label="Statistics"
         title={collapsed ? 'Statistics' : undefined}
         active={section === 'Statistics'}
-        onclick={() => navigate('Statistics')}
-        ><ChartNoAxesCombined class="size-5 shrink-0" /></SidebarButton
+        href={routeHref(sectionRoute('Statistics'))}
+        onclick={(event) => {
+          if (followLink(event)) {
+            event.preventDefault();
+            navigate('Statistics');
+          }
+        }}><ChartNoAxesCombined class="size-5 shrink-0" /></SidebarButton
       >
       <SidebarButton
         label="Settings"
@@ -169,7 +198,13 @@
         description={attentionDescription(settingsAttention)}
         title={collapsed ? 'Settings' : undefined}
         active={section === 'Settings'}
-        onclick={() => navigate('Settings')}
+        href={routeHref(sectionRoute('Settings', settingsSection))}
+        onclick={(event) => {
+          if (followLink(event)) {
+            event.preventDefault();
+            navigate('Settings');
+          }
+        }}
         ><span class="relative size-5 shrink-0"
           ><Settings class="size-5" /><AttentionDot
             items={settingsAttention}

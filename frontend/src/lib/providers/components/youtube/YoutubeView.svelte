@@ -79,10 +79,14 @@
     onAccountChanged,
     onYoutubeCardShortcutsChanged,
     onCardColumnsChange,
+    onWatchlistSelected,
+    showWatchlist = false,
   }: {
     admin: boolean;
     account?: PlatformAccount | null;
     watchlistController: YoutubeWatchlistController;
+    onWatchlistSelected?: (id: number) => void;
+    showWatchlist?: boolean;
     syncStatus: SyncStatus;
     playback: PlaybackDiagnostics;
     activeSessions: PlaybackSession[];
@@ -141,6 +145,9 @@
   let watchlistSidebarOpen = $state(
     preferences.getItem(watchlistSidebarKey) === 'true',
   );
+  $effect(() => {
+    if (showWatchlist) watchlistSidebarOpen = true;
+  });
 
   let actionBusy = $state(false);
   let lastSyncErrorFingerprint = $state<string | null>(null);
@@ -1064,8 +1071,10 @@
             mpvReady={playback.mpv.detected}
             ytdlpReady={playback.ytdlp.detected}
             ffmpegReady={playback.ffmpeg.detected}
-            onSelect={(watchlistId) =>
-              (watchlistController.selectedWatchlistId = watchlistId)}
+            onSelect={(watchlistId) => {
+              watchlistController.selectedWatchlistId = watchlistId;
+              onWatchlistSelected?.(watchlistId);
+            }}
             onCreate={watchlistController.createWatchlist}
             onUpdate={watchlistController.updateWatchlist}
             onDelete={watchlistController.deleteWatchlist}

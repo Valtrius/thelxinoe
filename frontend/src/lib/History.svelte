@@ -4,7 +4,7 @@
   import { onDestroy, untrack } from 'svelte';
   import { SvelteURLSearchParams } from 'svelte/reactivity';
   import { api, type User } from './api';
-  import { LatestRequest } from './providers/latest-request';
+  import { LatestRequest } from './latest-request';
   import { time } from './playback';
   import type { StatisticsPlatform, StatisticsRange } from './statistics/types';
   import Button from './ui/Button.svelte';

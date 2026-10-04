@@ -25,10 +25,10 @@ try {
     password: 'test-only long passphrase',
   });
   await page.goto(base);
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('link', { name: 'Settings', exact: true }).click();
   await page
     .getByRole('navigation', { name: 'Settings navigation' })
-    .getByRole('button', { name: 'Media services', exact: true })
+    .getByRole('link', { name: 'Media services', exact: true })
     .click();
   const containers = (await api('/admin/managers/containers')).items;
   for (const [kind, port] of [
@@ -65,7 +65,7 @@ try {
     ];
     await page
       .getByRole('navigation', { name: 'Select service' })
-      .getByRole('button', { name: label, exact: true })
+      .getByRole('link', { name: label, exact: true })
       .click();
     const form = page.getByRole('form', { name: `Connect existing ${label}` });
     await form.getByLabel('Name', { exact: true }).fill(`Fixture ${kind}`);

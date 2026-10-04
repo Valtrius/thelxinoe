@@ -171,10 +171,10 @@ try {
     path: '.local/youtube-watchlist.png',
     fullPage: true,
   });
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('link', { name: 'Settings', exact: true }).click();
   await page
     .getByRole('navigation', { name: 'Settings navigation' })
-    .getByRole('button', { name: 'Online accounts', exact: true })
+    .getByRole('link', { name: 'Online accounts', exact: true })
     .click();
   await expect(
     page.getByRole('textbox', { name: 'Authorized redirect URI' }),

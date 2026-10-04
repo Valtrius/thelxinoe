@@ -23,10 +23,10 @@ try {
   });
   const page = await context.newPage();
   await page.goto(origin);
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('link', { name: 'Settings', exact: true }).click();
   await page
     .getByRole('navigation', { name: 'Settings navigation' })
-    .getByRole('button', { name: 'People', exact: true })
+    .getByRole('link', { name: 'People', exact: true })
     .click();
   const name = 'cleanup-' + Date.now();
   await page.getByLabel('Username', { exact: true }).fill(name);
@@ -57,7 +57,7 @@ try {
       path: '/media/broken',
     }));
   await api(`/catalog/roots/${root.id}/scan`, 'POST');
-  const button = page.getByRole('button', { name: 'Settings', exact: true });
+  const button = page.getByRole('link', { name: 'Settings', exact: true });
   await expect(button.locator('[data-attention-severity]')).toBeVisible({
     timeout: 90000,
   });
@@ -66,7 +66,7 @@ try {
       .items,
   ).toHaveLength(0);
   const nav = page.getByRole('navigation', { name: 'Settings navigation' });
-  await nav.getByRole('button', { name: 'Activity', exact: true }).click();
+  await nav.getByRole('link', { name: 'Activity', exact: true }).click();
   await expect(
     page.getByRole('button', { name: 'Dismiss failure', exact: true }).first(),
   ).toBeVisible();
@@ -81,10 +81,10 @@ try {
   }
   await expect(
     nav
-      .getByRole('button', { name: 'Activity', exact: true })
+      .getByRole('link', { name: 'Activity', exact: true })
       .locator('[data-attention-severity]'),
   ).toHaveCount(0);
-  await nav.getByRole('button', { name: 'People', exact: true }).click();
+  await nav.getByRole('link', { name: 'People', exact: true }).click();
   await person
     .getByRole('button', { name: 'Manage user', exact: true })
     .click();
@@ -100,7 +100,7 @@ try {
   );
   await page
     .getByRole('navigation', { name: 'Settings navigation' })
-    .getByRole('button', { name: 'Server', exact: true })
+    .getByRole('link', { name: 'Server', exact: true })
     .click();
   const dashboard = page.getByRole('region', {
     name: 'Administration overview',

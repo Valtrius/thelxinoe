@@ -40,10 +40,10 @@ try {
   });
   const page = await admin.newPage();
   await page.goto(`${origin}/?section=Settings`);
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('link', { name: 'Settings', exact: true }).click();
   await page
     .getByRole('navigation', { name: 'Settings navigation' })
-    .getByRole('button', { name: 'Media services', exact: true })
+    .getByRole('link', { name: 'Media services', exact: true })
     .click();
   for (const [kind, port, , version, root, term, external] of [
     ['radarr', 27878, 7878, 3, 'movies', 'tmdb:603', '603'],

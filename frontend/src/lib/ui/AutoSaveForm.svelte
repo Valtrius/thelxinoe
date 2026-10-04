@@ -1,10 +1,12 @@
 <script lang="ts" generics="Value extends object">
   import Notice from './Notice.svelte';
   import { onDestroy, untrack, type Snippet } from 'svelte';
+  import { captureSession } from '../session';
 
   let {
     onsave,
     value,
+    baseline,
     onRevert,
     children,
     disabled = false,
@@ -13,6 +15,7 @@
     label = 'Preferences',
   } = $props<{
     value: Value;
+    baseline?: Value;
     onsave: (value: Value) => Promise<unknown>;
     onRevert: (value: Value) => void;
     children: Snippet<[() => Promise<void>]>;
@@ -27,10 +30,20 @@
   let confirmed = copy(untrack(() => value));
   let pending: Value | undefined;
   let active = true;
-  onDestroy(() => (active = false));
+  const ownsSession = captureSession();
+  $effect(() => {
+    const next = baseline;
+    if (next && !busy) untrack(() => (confirmed = copy(next)));
+  });
+  onDestroy(() => {
+    active = false;
+    if (pending && ownsSession())
+      window.dispatchEvent(new Event('thelxinoe-unsaved-changes'));
+    pending = undefined;
+  });
 
   export async function submit() {
-    if (disabled || !form.reportValidity()) return;
+    if (!active || !ownsSession() || disabled || !form.reportValidity()) return;
     pending = copy(value);
     if (busy) return;
     // Keep the latest edit visible while serializing complete snapshots. An
@@ -38,15 +51,16 @@
     busy = true;
     error = '';
     try {
-      while (pending) {
+      while (pending && active && ownsSession()) {
         const submitted = pending;
         pending = undefined;
         try {
           await onsave(submitted);
+          if (!active || !ownsSession()) return;
           confirmed = submitted;
           error = '';
         } catch (caught) {
-          if (!pending && active) {
+          if (!pending && active && ownsSession()) {
             // Text fields can contain a newer edit before their change/blur
             // event submits it. Preserve that draft when rolling back.
             const reverted = copy(value);
@@ -62,6 +76,7 @@
         }
       }
     } finally {
+      pending = undefined;
       busy = false;
     }
   }

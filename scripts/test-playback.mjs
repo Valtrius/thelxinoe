@@ -136,7 +136,7 @@ try {
   await page.goto(origin);
   await page
     .getByRole('navigation', { name: 'Main navigation' })
-    .getByRole('button', { name: 'Movies', exact: true })
+    .getByRole('link', { name: 'Movies', exact: true })
     .click();
   await page.getByRole('button', { name: 'Direct 2020', exact: true }).click();
   await page.getByRole('button', { name: 'Play media', exact: true }).click();
@@ -241,7 +241,7 @@ try {
       .click();
   }
   console.log('Real Chromium HLS remux/transcode decoding and seeks passed.');
-  await page.getByRole('button', { name: 'Music', exact: true }).click();
+  await page.getByRole('link', { name: 'Music', exact: true }).click();
   await page
     .getByRole('button', { name: 'Gapless Artist artist', exact: true })
     .click();

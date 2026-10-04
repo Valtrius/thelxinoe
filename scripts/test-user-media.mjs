@@ -26,7 +26,7 @@ async function login(page, username) {
     .fill('test-only long passphrase');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(page.getByText('Connected', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Home', exact: true }).click();
+  await page.getByRole('link', { name: 'Home', exact: true }).click();
   await expect(
     page.getByRole('heading', { name: 'Home', exact: true }),
   ).toBeVisible();
@@ -51,7 +51,7 @@ try {
   });
   await page
     .getByRole('navigation', { name: 'Main navigation' })
-    .getByRole('button', { name: 'Movies', exact: true })
+    .getByRole('link', { name: 'Movies', exact: true })
     .click();
   await page.getByRole('button', { name: 'Direct 2020', exact: true }).click();
   await page.getByRole('button', { name: 'Favorite', exact: true }).click();
@@ -64,7 +64,7 @@ try {
     .toMatchObject({ favorite: true, watch_later: true });
   await login(other, 'state-user');
   expect((await api(guest, `/catalog/${movie.id}/state`)).favorite).toBe(false);
-  await page.getByRole('button', { name: 'Playlists', exact: true }).click();
+  await page.getByRole('link', { name: 'Playlists', exact: true }).click();
   await page.getByRole('button', { name: 'New playlist', exact: true }).click();
   const name = `Shared music ${Date.now()}`;
   await page.getByLabel('Playlist name', { exact: true }).fill(name);
@@ -90,7 +90,7 @@ try {
       return item?.count;
     })
     .toBe(2);
-  await other.getByRole('button', { name: 'Playlists', exact: true }).click();
+  await other.getByRole('link', { name: 'Playlists', exact: true }).click();
   await other.getByRole('button', { name, exact: true }).click();
   await expect(
     other.getByRole('button', { name: 'Save playlist', exact: true }),
@@ -134,7 +134,7 @@ try {
   expect((await api(owner, `/me/queue/${client}`)).completed).toBe(true);
   const another = await second.newPage();
   await login(another, 'admin');
-  await another.getByRole('button', { name: 'Playlists', exact: true }).click();
+  await another.getByRole('link', { name: 'Playlists', exact: true }).click();
   await another.getByRole('button', { name, exact: true }).click();
   await another
     .getByRole('button', { name: 'Play playlist', exact: true })
@@ -149,14 +149,14 @@ try {
   expect(otherClient).not.toBe(client);
   expect((await api(second, `/me/queue/${otherClient}`)).items).toHaveLength(2);
   expect((await api(owner, `/me/queue/${client}`)).completed).toBe(true);
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('link', { name: 'Settings', exact: true }).click();
   await page
     .getByRole('combobox', { name: 'Display timezone', exact: true })
     .selectOption('Europe/Paris');
   await expect
     .poll(async () => (await api(owner, '/me/preferences')).timezone_override)
     .toBe('Europe/Paris');
-  await page.getByRole('button', { name: 'Statistics', exact: true }).click();
+  await page.getByRole('link', { name: 'Statistics', exact: true }).click();
   await expect(
     page.getByRole('heading', { name: 'Playback history', exact: true }),
   ).toBeVisible();
@@ -166,7 +166,7 @@ try {
   await expect(
     page.getByRole('region', { name: 'Watch time by user', exact: true }),
   ).toBeVisible();
-  await other.getByRole('button', { name: 'Statistics', exact: true }).click();
+  await other.getByRole('link', { name: 'Statistics', exact: true }).click();
   await expect(
     other.getByRole('heading', { name: 'Playback history', exact: true }),
   ).toBeVisible();

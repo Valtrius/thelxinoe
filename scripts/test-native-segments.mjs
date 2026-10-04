@@ -48,10 +48,7 @@ try {
   const segments = await api(`/catalog/${episode.id}/segments`);
   const intro = segments.items.find((s) => s.kind === 'Intro');
   expect(intro).toBeTruthy();
-  await page
-    .getByRole('button', { name: 'Shows', exact: true })
-    .first()
-    .click();
+  await page.getByRole('link', { name: 'Shows', exact: true }).first().click();
   await page
     .locator('button.media-card')
     .filter({ hasText: 'Segment Fixture' })

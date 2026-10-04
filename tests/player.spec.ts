@@ -1078,7 +1078,7 @@ test('the player and its controls follow sidebar resizing without clipping or st
     [1280, 'Kick'],
   ] as const) {
     await page.setViewportSize({ width, height: 900 });
-    await page.getByRole('button', { name: section, exact: true }).click();
+    await page.getByRole('link', { name: section, exact: true }).click();
     if (section === 'YouTube')
       await page
         .getByRole('button', { name: 'Open watchlists', exact: true })
@@ -1364,7 +1364,7 @@ test('YouTube and Kick use page scrolling while the watchlist stays within the v
   page,
 }) => {
   const state = await fixture(page, { app: true });
-  await page.getByRole('button', { name: 'YouTube', exact: true }).click();
+  await page.getByRole('link', { name: 'YouTube', exact: true }).click();
   await expect(page.locator('[data-feed-content] [data-video-id]')).toHaveCount(
     80,
   );
@@ -1396,7 +1396,7 @@ test('YouTube and Kick use page scrolling while the watchlist stays within the v
     page.locator('[data-card-group-header][data-stuck]'),
   ).toHaveCount(1);
   await page.screenshot({ path: '.local/player-ui/youtube-scroll.png' });
-  await page.getByRole('button', { name: 'Kick', exact: true }).click();
+  await page.getByRole('link', { name: 'Kick', exact: true }).click();
   await expect
     .poll(() => workspace.evaluate((element) => element.scrollTop))
     .toBe(0);

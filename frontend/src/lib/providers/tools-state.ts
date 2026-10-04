@@ -1,6 +1,6 @@
 import { writable } from 'svelte/store';
 import { normalizeError } from './api';
-import { LatestRequest } from './latest-request';
+import { LatestRequest } from '../latest-request';
 import {
   isPlugin,
   toolNames,

@@ -70,8 +70,10 @@ export function sidebarResizeTransform(
   finalScrollTop: number,
 ): LayoutTransform {
   const transform = rectTransform(previous, final, zoom);
-  if (!['x', 'xy', 'x-pos', 'xy-pos'].includes(mode)) transform.x = 0;
-  if (!['y', 'xy', 'y-pos', 'xy-pos'].includes(mode)) transform.y = 0;
+  if (!['x', 'xy', 'x-pos', 'xy-pos', 'xy-width'].includes(mode))
+    transform.x = 0;
+  if (!['y', 'xy', 'y-pos', 'xy-pos', 'xy-width'].includes(mode))
+    transform.y = 0;
   if (!['x', 'xy'].includes(mode)) transform.scaleX = 1;
   if (!['y', 'xy', 'y-scale', 'y-scale-scroll'].includes(mode))
     transform.scaleY = 1;
@@ -113,7 +115,7 @@ function originKeyframes(
     };
     // A one-axis child keeps the other axis supplied by its moving viewport.
     // Countering both axes would pin vertical-only feed rows to their final X.
-    if (!['x', 'xy', 'x-pos', 'xy-pos', 'video'].includes(mode)) {
+    if (!['x', 'xy', 'x-pos', 'xy-pos', 'xy-width', 'video'].includes(mode)) {
       relative.x = 0;
       relative.scaleX = 1;
     }
@@ -123,6 +125,7 @@ function originKeyframes(
         'xy',
         'y-pos',
         'xy-pos',
+        'xy-width',
         'y-scale',
         'y-scale-scroll',
         'video',
@@ -173,6 +176,15 @@ export function sidebarResizePlans(
       scrollTop,
       element.parentElement?.scrollTop ?? 0,
     );
+    const widthChanged =
+      mode === 'xy-width' && Math.abs(rect.width - final.width) >= 0.5;
+    const withWidth = (keyframes: Keyframe[]) =>
+      mode !== 'xy-width'
+        ? keyframes
+        : keyframes.map((frame, index) => ({
+            ...frame,
+            width: `${(rect.width + (final.width - rect.width) * (frame.offset ?? index / (keyframes.length - 1))) / zoom}px`,
+          }));
     if (mode === 'video') {
       const video = element as HTMLVideoElement;
       const aspect =
@@ -208,23 +220,33 @@ export function sidebarResizePlans(
         0,
         0,
       );
-      if (!hasTransform(transform) && !hasTransform(originTransform)) continue;
+      if (
+        !hasTransform(transform) &&
+        !hasTransform(originTransform) &&
+        !widthChanged
+      )
+        continue;
       plans.push({
         element,
-        keyframes: originKeyframes(
-          transform,
-          final,
-          finalOrigin,
-          originTransform,
-          zoom,
-          mode,
+        keyframes: withWidth(
+          originKeyframes(
+            transform,
+            final,
+            finalOrigin,
+            originTransform,
+            zoom,
+            mode,
+          ),
         ),
       });
-    } else if (!hasTransform(transform)) continue;
+    } else if (!hasTransform(transform) && !widthChanged) continue;
     else if (element.hasAttribute('data-feed-scroll')) {
       plans.push(...feedTransformPlans(element, transform, final));
     } else {
-      plans.push({ element, keyframes: transformKeyframes(transform) });
+      plans.push({
+        element,
+        keyframes: withWidth(transformKeyframes(transform)),
+      });
     }
   }
   return plans;

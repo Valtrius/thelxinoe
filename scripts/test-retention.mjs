@@ -120,10 +120,10 @@ try {
   );
   const page = await context.newPage();
   await page.goto('https://localhost:23443');
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('link', { name: 'Settings', exact: true }).click();
   await page
     .getByRole('navigation', { name: 'Settings navigation' })
-    .getByRole('button', { name: 'Auto-delete', exact: true })
+    .getByRole('link', { name: 'Auto-delete', exact: true })
     .click();
   await expect(
     page.getByRole('heading', { name: 'Auto-delete', exact: true }),

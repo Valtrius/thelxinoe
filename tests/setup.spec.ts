@@ -67,7 +67,7 @@ test('matching passwords create the administrator and empty provider pages load'
     ['Twitch', 'Connect Twitch'],
     ['Kick', 'Track Kick channels'],
   ]) {
-    await page.getByRole('button', { name, exact: true }).click();
+    await page.getByRole('link', { name, exact: true }).click();
     await expect(
       page.getByRole('heading', { name: heading, exact: true }),
     ).toBeVisible();
@@ -86,10 +86,10 @@ test('administrators filter the persisted audit trail by actor and action', asyn
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await page
     .getByRole('navigation', { name: 'Main navigation' })
-    .getByRole('button', { name: 'Settings', exact: true })
+    .getByRole('link', { name: 'Settings', exact: true })
     .click();
   const nav = page.getByRole('navigation', { name: 'Settings navigation' });
-  await nav.getByRole('button', { name: 'People', exact: true }).click();
+  await nav.getByRole('link', { name: 'People', exact: true }).click();
   const form = page.getByRole('form', { name: 'Create user' });
   await form
     .getByLabel('Username', { exact: true })
@@ -104,7 +104,7 @@ test('administrators filter the persisted audit trail by actor and action', asyn
   await expect(
     page.getByText('audit-filter-member', { exact: true }).first(),
   ).toBeVisible();
-  await nav.getByRole('button', { name: 'Audit', exact: true }).click();
+  await nav.getByRole('link', { name: 'Audit', exact: true }).click();
   await page
     .getByLabel('Audit user', { exact: true })
     .selectOption({ label: 'admin' });

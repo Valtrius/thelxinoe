@@ -98,8 +98,8 @@ test('appearance persists, native menus stay hidden on web, and cards animate du
 }) => {
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('button', { name: 'Account', exact: true }).click();
+  await page.getByRole('link', { name: 'Settings', exact: true }).click();
+  await page.getByRole('link', { name: 'Account', exact: true }).click();
   await expect(
     page
       .getByRole('complementary', { name: 'Application sidebar' })
@@ -114,7 +114,7 @@ test('appearance persists, native menus stay hidden on web, and cards animate du
     .toBe('dark');
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('link', { name: 'Settings', exact: true }).click();
   await expect(page.getByRole('button', { name: /MPV/i })).toHaveCount(0);
   await expect(page.getByText(/yt-dlp/i)).toHaveCount(0);
   await page.getByRole('button', { name: 'Light theme', exact: true }).click();
@@ -128,10 +128,7 @@ test('appearance persists, native menus stay hidden on web, and cards animate du
     )
     .toBe('#edf1f3');
   await page.getByRole('button', { name: 'Dark theme', exact: true }).click();
-  await page
-    .getByRole('button', { name: 'Movies', exact: true })
-    .first()
-    .click();
+  await page.getByRole('link', { name: 'Movies', exact: true }).first().click();
   const cards = page.locator('.library-tile');
   await expect(cards.first()).toBeVisible();
   // Normalize density through the supported account preference, then reload.
@@ -140,10 +137,7 @@ test('appearance persists, native menus stay hidden on web, and cards animate du
     data: { card_columns: 6, sidebar_collapsed: false },
   });
   await page.reload();
-  await page
-    .getByRole('button', { name: 'Movies', exact: true })
-    .first()
-    .click();
+  await page.getByRole('link', { name: 'Movies', exact: true }).first().click();
   await expect(cards.first()).toBeVisible();
   await page.waitForTimeout(250);
   const initial = await cards.first().boundingBox();
@@ -195,13 +189,10 @@ test('appearance persists, native menus stay hidden on web, and cards animate du
     .poll(async () => (await cards.first().boundingBox())!.width)
     .toBeGreaterThan(final.width);
   await page.screenshot({ path: '.local/ui-validation/movies-dark.png' });
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('button', { name: 'Account', exact: true }).click();
+  await page.getByRole('link', { name: 'Settings', exact: true }).click();
+  await page.getByRole('link', { name: 'Account', exact: true }).click();
   await page.getByRole('button', { name: 'Light theme', exact: true }).click();
-  await page
-    .getByRole('button', { name: 'Movies', exact: true })
-    .first()
-    .click();
+  await page.getByRole('link', { name: 'Movies', exact: true }).first().click();
   await page.waitForTimeout(250);
   await page.screenshot({ path: '.local/ui-validation/movies-light.png' });
   await page.setViewportSize({ width: 480, height: 850 });
@@ -306,7 +297,7 @@ test('Settings use available width while keeping form controls bounded', async (
   page,
 }) => {
   await page.setViewportSize({ width: 1600, height: 1000 });
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('link', { name: 'Settings', exact: true }).click();
   const panels = page.locator('.settings-panels');
   await expect(panels).toBeVisible();
   const geometry = await panels.evaluate((element) => {
@@ -363,7 +354,7 @@ test('provider Ctrl+wheel zoom has one owner and sidebar motion keeps cards visi
     data: { card_columns: 6, sidebar_collapsed: false },
   });
   await page.reload();
-  await page.getByRole('button', { name: 'Twitch', exact: true }).click();
+  await page.getByRole('link', { name: 'Twitch', exact: true }).click();
   const card = page.locator('[data-stream-id]').first();
   await expect(card).toBeVisible();
   const before = (await card.boundingBox())!;
@@ -407,7 +398,7 @@ test('provider Ctrl+wheel zoom has one owner and sidebar motion keeps cards visi
   expect(samples.every((s) => s.width > 0)).toBe(true);
   await page.setViewportSize({ width: 480, height: 850 });
   for (const name of ['YouTube', 'Twitch', 'Kick']) {
-    await page.getByRole('button', { name, exact: true }).click();
+    await page.getByRole('link', { name, exact: true }).click();
     await expect(page.locator('.provider-surface')).toBeVisible();
     expect(
       await page.evaluate(

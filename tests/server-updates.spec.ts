@@ -138,8 +138,9 @@ test('desktop reconciles a lost install acceptance response through pending and 
 }, testInfo) => {
   const flow = await setup(page, { desktop: true, loseInstallResponse: true });
   let reloads = 0;
-  page.on('framenavigated', (frame) => {
-    if (frame === page.mainFrame()) reloads++;
+  page.on('request', (request) => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame())
+      reloads++;
   });
   await flow.version
     .getByRole('button', { name: 'Update server to 0.1.1', exact: true })
@@ -513,8 +514,9 @@ test('web clients reload accepted updates and rollbacks without a popup', async 
   await page.clock.install();
   const flow = await setup(page);
   let reloads = 0;
-  page.on('framenavigated', (frame) => {
-    if (frame === page.mainFrame()) reloads++;
+  page.on('request', (request) => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame())
+      reloads++;
   });
   flow.status.version = '0.1.1';
   flow.status.release = null;

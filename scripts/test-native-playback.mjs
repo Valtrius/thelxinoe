@@ -46,10 +46,10 @@ try {
     .getByLabel('Password', { exact: true })
     .fill('test-only long passphrase');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('link', { name: 'Settings', exact: true }).click();
   await page
     .getByRole('navigation', { name: 'Settings navigation' })
-    .getByRole('button', { name: 'MPV', exact: true })
+    .getByRole('link', { name: 'MPV', exact: true })
     .click();
   originalConfig = (await native('mpv_config_read', { name: 'mpv.conf' })).text;
   let settings = await native('tools_get');
@@ -77,7 +77,7 @@ try {
   ).toMatch(/^[a-f0-9]{64}$/);
   await page
     .getByRole('navigation', { name: 'Main navigation' })
-    .getByRole('button', { name: 'Movies', exact: true })
+    .getByRole('link', { name: 'Movies', exact: true })
     .click();
   await page.getByRole('button', { name: 'Direct 2020', exact: true }).click();
   await page.getByRole('button', { name: 'Play media', exact: true }).click();
@@ -169,7 +169,7 @@ try {
   await saveConfig(
     `${originalConfig}\nao=pcm\nao-pcm-file=${pcm}\naudio-format=s16\naudio-samplerate=48000\naudio-channels=mono\nvolume=100\n`,
   );
-  await page.getByRole('button', { name: 'Music', exact: true }).click();
+  await page.getByRole('link', { name: 'Music', exact: true }).click();
   await page
     .getByRole('button', { name: 'Gapless Artist artist', exact: true })
     .click();

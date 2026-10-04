@@ -1,18 +1,26 @@
 <script lang="ts">
   import { hasNativeAccess } from './lib/services/presentation';
   import Notice from './lib/ui/Notice.svelte';
-  import ActivitySettings from './lib/ActivitySettings.svelte';
   import FormField from './lib/ui/FormField.svelte';
   import { formControlClass } from './lib/ui/styles';
   import AuthLayout from './lib/ui/AuthLayout.svelte';
   import Button from './lib/ui/Button.svelte';
-  import Panel from './lib/ui/Panel.svelte';
-  import { inlineFormClass, rowClass, statsClass } from './lib/ui/styles';
+  import { statsClass } from './lib/ui/styles';
   import { onMount, tick } from 'svelte';
-  import { Accordion } from 'bits-ui';
+  import { SvelteURL } from 'svelte/reactivity';
+  import { players, preloadPage } from './lib/pages';
+  import FeatureOutlet from './lib/FeatureOutlet.svelte';
+  import {
+    allowedRoute,
+    readRoute,
+    routeHref,
+    sectionRoute,
+    homeRoute,
+    type AppRoute,
+  } from './lib/navigation';
+  import { captureSession, invalidateSession } from './lib/session';
   import Sidebar from './lib/ui/Sidebar.svelte';
   import NavigationDrawer from './lib/ui/NavigationDrawer.svelte';
-  import SettingsLayout from './lib/ui/SettingsLayout.svelte';
   import { connectAttention, refreshAttention } from './lib/attention';
   import WindowTitlebar from './lib/ui/WindowTitlebar.svelte';
   import {
@@ -51,7 +59,9 @@
   let workspaceHeight = $state(0);
   let compact = $state(false),
     mobileNavOpen = $state(false);
-  let settingsSection = $state('account');
+  let route = $state<AppRoute>({ ...homeRoute });
+  const section = $derived(route.section);
+  const settingsSection = $derived(route.settings);
   const sidebarMotion = createSidebarMotion();
   const collapsed = $derived(compact ? false : $appearance.sidebar_collapsed);
   async function toggleSidebar() {
@@ -62,41 +72,10 @@
     syncMediaLayouts();
     animate();
   }
-  import LibraryView from './lib/LibraryView.svelte';
-  import PlaybackSettings from './lib/PlaybackSettings.svelte';
-  import SegmentSettings from './lib/SegmentSettings.svelte';
-  import TimezoneSelect from './lib/TimezoneSelect.svelte';
-  import AdminOperations from './lib/AdminOperations.svelte';
-  import BackupSettings from './lib/BackupSettings.svelte';
-  import ProductVersion from './lib/ProductVersion.svelte';
-  import { isServerUpdateInterruption } from './lib/server-updates';
-  import ProductUpdatePreferences from './lib/ProductUpdatePreferences.svelte';
-  import ServerTools from './lib/ServerTools.svelte';
   import DesktopVersion from './lib/DesktopVersion.svelte';
-  import DesktopUpdatePreferences from './lib/DesktopUpdatePreferences.svelte';
   import WebUpdateReload from './lib/WebUpdateReload.svelte';
   import { connectDesktopUpdates } from './lib/desktop-updates';
-  import UserAdministration from './lib/UserAdministration.svelte';
-  import Player from './lib/Player.svelte';
-  import MusicPlayer from './lib/MusicPlayer.svelte';
-  import MpvSettings from './lib/MpvSettings.svelte';
   import { connectTools } from './lib/providers/tools-events';
-  import NativePlayer from './lib/NativePlayer.svelte';
-  import Discover from './lib/seerr/Discover.svelte';
-  import Home from './lib/Home.svelte';
-  import Playlists from './lib/Playlists.svelte';
-  import AuditSettings from './lib/AuditSettings.svelte';
-  import StatisticsView from './lib/statistics/StatisticsView.svelte';
-  import UserPreferences from './lib/UserPreferences.svelte';
-  import AutoSaveForm from './lib/ui/AutoSaveForm.svelte';
-  import PasswordSettings from './lib/PasswordSettings.svelte';
-  import QuickConnect from './lib/QuickConnect.svelte';
-  import OnlineAccounts from './lib/OnlineAccounts.svelte';
-  import OnlineSettings from './lib/OnlineSettings.svelte';
-  import ProviderView from './lib/providers/ProviderView.svelte';
-  import ServicesSettings from './lib/ServicesSettings.svelte';
-  import ManagerOwnership from './lib/ManagerOwnership.svelte';
-  import RetentionSettings from './lib/RetentionSettings.svelte';
   import { persistQueue } from './lib/media-state';
   import { invoke } from '@tauri-apps/api/core';
   import type { MediaChoice } from './lib/playback';
@@ -108,35 +87,18 @@
   } from './lib/providers/availability';
   let playing = $state<MediaChoice | null>(null);
   let playbackRequest = 0;
-  let mediaRevision = $state(0),
-    focusId = $state<string | undefined>(undefined);
-  import {
-    House,
-    Compass,
-    Film,
-    Tv,
-    Music,
-    Play,
-    Radio,
-    Menu,
-  } from '@lucide/svelte';
+  let mediaRevision = $state(0);
+  import { Menu } from '@lucide/svelte';
   import {
     api,
     ApiError,
     Events,
     type User,
-    type Job,
     desktop,
     initializeTransport,
     changeServer,
     serverUrl,
   } from './lib/api';
-  type Session = {
-    id: string;
-    name: string;
-    transport: string;
-    last_seen: number;
-  };
   let loading = $state(true),
     setup = $state(false),
     user = $state<User | null>(null),
@@ -145,112 +107,58 @@
     connected = $state(false);
   let username = $state(''),
     password = $state(''),
-    passwordConfirmation = $state(''),
-    section = $state(
-      new URLSearchParams(location.search).has('youtube_link') ||
-        new URLSearchParams(location.search).get('section') === 'YouTube'
-        ? 'YouTube'
-        : new URLSearchParams(location.search).get('section') === 'Twitch'
-          ? 'Twitch'
-          : 'Home',
-    );
+    passwordConfirmation = $state('');
   const providerPage = $derived(
     ['YouTube', 'Twitch', 'Kick'].includes(section),
   );
-  let sessions = $state<Session[]>([]),
-    users = $state<User[]>([]),
-    jobs = $state<Job[]>([]),
-    currentSession = $state('');
-  let newUsername = $state(''),
-    newPassword = $state(''),
-    newRole = $state<'admin' | 'user'>('user');
-  let expandedUser = $state('');
   let preferencesRevision = $state(0);
-  let timeFormat = $state<'12h' | '24h'>('24h'),
-    serverTimeFormat = $state<'12h' | '24h'>('24h'),
-    timezone = $state('UTC'),
-    health = $state<{
-      version: string;
-      controller: boolean;
-      cache_free_bytes: number;
-    } | null>(null);
-  const sections = [
-    { name: 'Home', icon: House },
-    { name: 'Discover', icon: Compass },
-    { name: 'Movies', icon: Film },
-    { name: 'Shows', icon: Tv },
-    { name: 'Music', icon: Music },
-    { name: 'Playlists', icon: Music },
-    { name: 'YouTube', icon: Play },
-    { name: 'Twitch', icon: Radio },
-    { name: 'Kick', icon: Radio },
-  ];
+  let unsavedChanges = $state(false);
+  let timeFormat = $state<'12h' | '24h'>('24h');
   let events: Events | undefined;
   let navigationReady = $state(false);
+  let settingsRevision = $state(0);
   function restoreNavigation() {
     if (!user) return;
-    const key = `thelxinoe:${serverUrl()}:${user.id}:navigation`;
+    let saved: AppRoute = { ...homeRoute };
     try {
-      const saved = JSON.parse(localStorage.getItem(key) ?? 'null');
-      const query = new URLSearchParams(location.search);
-      const requested = /^#discover\/(movie|tv)\/\d+$/.test(location.hash)
-        ? 'Discover'
-        : query.has('youtube_link')
-          ? 'YouTube'
-          : query.get('section');
-      const restored = requested ?? saved?.section;
-      const destination = restored === 'History' ? 'Statistics' : restored;
-      if (
-        [
-          ...sections.map((item) => item.name),
-          'Settings',
-          'Statistics',
-        ].includes(destination)
-      )
-        section = providerEnabled(destination) ? destination : 'Home';
-      if (typeof saved?.settingsSection === 'string')
-        settingsSection = saved.settingsSection;
-      if (settingsSection === 'library') settingsSection = 'services';
-      if (settingsSection === 'server-updates') settingsSection = 'server';
-      if (desktop && settingsSection === 'updates')
-        settingsSection = 'connection';
-      if (!desktop && ['mpv', 'connection'].includes(settingsSection))
-        settingsSection = 'account';
-      if (!desktop && settingsSection === 'updates')
-        settingsSection = user.role === 'admin' ? 'server' : 'account';
+      const value = JSON.parse(
+        localStorage.getItem(
+          `thelxinoe:${serverUrl()}:${user.id}:navigation`,
+        ) ?? 'null',
+      );
+      if (value)
+        saved = sectionRoute(
+          value.section,
+          value.settingsSection === 'updates'
+            ? desktop
+              ? 'connection'
+              : user.role === 'admin'
+                ? 'server'
+                : 'account'
+            : value.settingsSection,
+        );
     } catch {
-      /* Ignore an obsolete device preference. */
+      /* Ignore obsolete device navigation. */
     }
-    if (!providerEnabled(section)) section = 'Home';
-    if (
-      settingsSection === 'online' &&
-      !Object.values($providers).some(Boolean)
-    )
-      settingsSection = 'account';
+    route = allowedRoute(
+      readRoute(new URL(location.href), saved),
+      user,
+      desktop,
+      $providers,
+    );
+    writeLocation(route, true);
     navigationReady = true;
-    if (section === 'Settings') void loadSettings();
   }
   $effect(() => {
-    if (navigationReady && user) {
-      localStorage.setItem(
-        `thelxinoe:${serverUrl()}:${user.id}:navigation`,
-        JSON.stringify({ section, settingsSection }),
-      );
-      if (!desktop) {
-        const url = new URL(location.href);
-        if (
-          url.searchParams.has('section') ||
-          url.searchParams.has('youtube_link')
-        ) {
-          url.searchParams.delete('youtube_link');
-          url.searchParams.set('section', section);
-          window.history.replaceState(null, '', url);
-        }
-      }
-    }
+    if (!navigationReady || !user) return;
+    localStorage.setItem(
+      `thelxinoe:${serverUrl()}:${user.id}:navigation`,
+      JSON.stringify({ section, settingsSection }),
+    );
+    const allowed = allowedRoute(route, user, desktop, $providers);
+    if (routeHref(allowed) !== routeHref(route)) go(allowed, true);
+    document.title = `${section} · Thelxinoe`;
   });
-  let settingsTimer: ReturnType<typeof setTimeout> | undefined,
-    settingsLoading = false;
   let catalogRevision = $state(0);
   const attentionUserId = $derived(user?.id);
   $effect(() => {
@@ -348,17 +256,21 @@
     loading = false;
   }
   async function loadDisplayPreferences() {
+    const ownsSession = captureSession();
     const value = await api<{
       timezone: string;
       time_format: '12h' | '24h';
     }>('/me/preferences');
+    if (!ownsSession()) return;
     timeFormat = value.time_format;
     if (user) user = { ...user, timezone: value.timezone };
   }
   function startEvents() {
+    const ownsSession = captureSession();
     events?.close();
     events = new Events(
       (event) => {
+        if (!ownsSession()) return;
         if (
           ['online.configuration.changed', 'server.reconnected'].includes(
             event.kind,
@@ -398,7 +310,7 @@
           mediaRevision++;
           catalogRevision++;
           accountRevision++;
-          if (section === 'Settings') void loadSettings();
+          settingsRevision++;
         }
         if (['tools.changed', 'server.reconnected'].includes(event.kind))
           window.dispatchEvent(new Event('thelxinoe-tools'));
@@ -420,12 +332,7 @@
             if (user) user = { ...user, timezone: preference.timezone };
           }
           if (event.kind === 'server.settings.changed') {
-            const settings = event.payload as {
-              timezone: string;
-              time_format: '12h' | '24h';
-            };
-            timezone = settings.timezone;
-            serverTimeFormat = settings.time_format;
+            settingsRevision++;
             void loadDisplayPreferences().catch((e) => (error = String(e)));
           }
           const userId = user?.id;
@@ -461,12 +368,10 @@
           };
           scans[scan.root_id] = scan;
         }
-        if (section === 'Settings' && event.kind === 'jobs.changed') {
-          clearTimeout(settingsTimer);
-          settingsTimer = setTimeout(() => void loadSettings(), 250);
-        }
+        if (event.kind === 'jobs.changed') settingsRevision++;
       },
       (value) => {
+        if (!ownsSession()) return;
         connected = value;
         if (value && user) void refreshAppearance(user.id);
       },
@@ -475,6 +380,7 @@
   }
   async function authenticate() {
     await act(async () => {
+      teardownSession();
       if (desktop) {
         await changeServer(serverAddress);
         serverAddress = serverUrl();
@@ -515,58 +421,97 @@
   }
   async function logout() {
     await act(async () => {
+      teardownSession();
       await api('/auth/logout', 'POST');
-      navigationReady = false;
-      resetAppearance();
-      playing = null;
-      user = null;
-      events?.close();
     });
   }
-  async function loadSettings() {
-    if (settingsLoading) return;
-    settingsLoading = true;
-    try {
+  function teardownSession() {
+    invalidateSession();
+    navigationReady = false;
+    playbackRequest++;
+    resetAppearance();
+    playing = null;
+    user = null;
+    events?.close();
+    events = undefined;
+    connected = false;
+    unsavedChanges = false;
+    mobileNavOpen = false;
+    route = { ...homeRoute };
+    timeFormat = '24h';
+  }
+  function writeLocation(destination: AppRoute, replace: boolean, scroll = 0) {
+    const url = new SvelteURL(location.href);
+    url.searchParams.delete('section');
+    url.searchParams.delete('youtube_link');
+    url.hash = routeHref(destination);
+    history[replace ? 'replaceState' : 'pushState'](
+      { thelxinoeRoute: !replace || history.state?.thelxinoeRoute, scroll },
+      '',
+      url,
+    );
+  }
+  function go(
+    destination: AppRoute,
+    replace = false,
+    preserveWorkspace = false,
+  ) {
+    if (!user) return;
+    const next = allowedRoute(destination, user, desktop, $providers);
+    if (routeHref(next) === routeHref(route)) return;
+    const scroll = workspace?.scrollTop ?? 0;
+    history.replaceState({ ...history.state, scroll }, '', location.href);
+    route = next;
+    writeLocation(next, replace, preserveWorkspace ? scroll : 0);
+    if (!preserveWorkspace) {
+      mobileNavOpen = false;
+      unsavedChanges = false;
       error = '';
-      const result = await api<{ items: Session[]; current: string }>(
-        '/auth/sessions',
-      );
-      sessions = result.items;
-      currentSession = result.current;
-      if (user?.role === 'admin') {
-        users = (await api<{ items: User[] }>('/users')).items;
-        jobs = (await api<{ items: Job[] }>('/admin/jobs')).items;
-        health = await api('/admin/health');
-        const settings = await api<{
-          timezone: string;
-          time_format: '12h' | '24h';
-        }>('/admin/settings');
-        timezone = settings.timezone;
-        serverTimeFormat = settings.time_format;
-      }
-    } catch (e) {
-      if (!isServerUpdateInterruption(e))
-        error = e instanceof Error ? e.message : String(e);
-    } finally {
-      settingsLoading = false;
+      void restoreWorkspace(0, true);
     }
   }
-  $effect(() => {
-    void section;
-    if (workspace) workspace.scrollTop = 0;
-  });
+  function updateFilters(destination: AppRoute, replace = true) {
+    go(destination, replace, true);
+  }
+  async function restoreWorkspace(scroll: number, focus = false) {
+    const destination = route;
+    await preloadPage(destination).catch(() => {});
+    if (routeHref(destination) !== routeHref(route)) return;
+    await tick();
+    if (workspace) workspace.scrollTop = scroll;
+    if (focus) {
+      const heading = main?.querySelector<HTMLElement>('header h1');
+      if (heading) {
+        heading.tabIndex = -1;
+        heading.focus({ preventScroll: true });
+      }
+    }
+  }
   async function navigate(name: string) {
     mobileNavOpen = false;
-    focusId = undefined;
-    if (location.hash.startsWith('#discover/'))
-      history.replaceState(
-        history.state,
-        '',
-        `${location.pathname}${location.search}`,
+    go(sectionRoute(name, settingsSection));
+  }
+  function openSettings(name: string, service?: string) {
+    go({ ...sectionRoute('Settings', name), service });
+  }
+  function back() {
+    if (history.state?.thelxinoeRoute) history.back();
+    else
+      go(
+        {
+          ...route,
+          detail: undefined,
+          item: undefined,
+          playlist: undefined,
+          requests: false,
+        },
+        true,
       );
-    section = name;
-    error = '';
-    if (name === 'Settings') await loadSettings();
+  }
+  async function switchServer(address: string) {
+    teardownSession();
+    await changeServer(address);
+    await boot();
   }
   function playYoutubeLink(event: MouseEvent) {
     if (
@@ -628,7 +573,7 @@
       settingsSection === 'online' &&
       !Object.values($providers).some(Boolean)
     )
-      settingsSection = 'account';
+      openSettings('account');
     if (playing && !providerEnabled(playing.id)) {
       playbackRequest++;
       if (desktop)
@@ -638,18 +583,6 @@
       playing = null;
     }
   });
-  async function createUser() {
-    await act(async () => {
-      await api('/users', 'POST', {
-        username: newUsername,
-        password: newPassword,
-        role: newRole,
-      });
-      newUsername = '';
-      newPassword = '';
-      users = (await api<{ items: User[] }>('/users')).items;
-    });
-  }
   onMount(() => {
     document.body.classList.toggle('desktop-app', desktop);
     const updateConnection = connectDesktopUpdates();
@@ -667,19 +600,39 @@
       updateRequired = (event as CustomEvent<string>).detail;
       events?.close();
     };
-    const openSettings = (event: Event) => {
+    const locationChanged = () => {
+      if (!user) return;
+      route = allowedRoute(
+        readRoute(new URL(location.href), route),
+        user,
+        desktop,
+        $providers,
+      );
+      mobileNavOpen = false;
+      void restoreWorkspace(history.state?.scroll ?? 0, true);
+    };
+    const sessionExpired = () => teardownSession();
+    const cancelledEdits = () => {
+      unsavedChanges = true;
+    };
+    window.addEventListener('popstate', locationChanged);
+    window.addEventListener('hashchange', locationChanged);
+    window.addEventListener('thelxinoe-session-expired', sessionExpired);
+    window.addEventListener('thelxinoe-unsaved-changes', cancelledEdits);
+    const settingsRequested = (event: Event) => {
       if (
         (event as CustomEvent<string>).detail === 'server' &&
         user?.role === 'admin'
       ) {
-        settingsSection = 'server';
-        void navigate('Settings');
+        openSettings('server');
       }
     };
-    window.addEventListener('thelxinoe-open-settings', openSettings);
+    window.addEventListener('thelxinoe-open-settings', settingsRequested);
     window.addEventListener('thelxinoe-update-required', incompatible);
     void boot().then(async () => {
       if (!desktop) return;
+      if (user) await preloadPage(route).catch(() => {});
+      if (playing) await players.native().catch(() => {});
       await tick();
       await document.fonts.ready;
       await Promise.all(
@@ -698,9 +651,12 @@
       void toolsConnection.then((disconnect) => disconnect());
       void updateConnection.then((disconnect) => disconnect());
       window.removeEventListener('thelxinoe-update-required', incompatible);
-      window.removeEventListener('thelxinoe-open-settings', openSettings);
-      events?.close();
-      clearTimeout(settingsTimer);
+      window.removeEventListener('thelxinoe-open-settings', settingsRequested);
+      window.removeEventListener('popstate', locationChanged);
+      window.removeEventListener('hashchange', locationChanged);
+      window.removeEventListener('thelxinoe-session-expired', sessionExpired);
+      window.removeEventListener('thelxinoe-unsaved-changes', cancelledEdits);
+      teardownSession();
       sidebarMotion.destroy();
       media.removeEventListener('change', resize);
     };
@@ -827,6 +783,7 @@
     {#snippet navigation(currentUser: User)}
       <Sidebar
         {section}
+        {settingsSection}
         {collapsed}
         user={currentUser}
         navigate={(name) => void navigate(name)}
@@ -907,15 +864,28 @@
             {$appearanceError}
           </p>{/if}
         {#if error}<Notice variant="error" role="alert">{error}</Notice>{/if}
-        {#if playing && desktop}<NativePlayer
-            choice={playing}
-            closed={(closedChoice) => {
-              if (playing === closedChoice) playing = null;
-            }}
-          />{:else if playing && playing.kind === 'track'}<MusicPlayer
-            choice={playing}
-            closed={() => (playing = null)}
-          />{:else if playing}<div
+        {#if unsavedChanges}<Notice role="status"
+            >Unsaved changes were cancelled when leaving the form.</Notice
+          >{/if}
+        {#if playing && desktop}{#await players.native()}<p role="status">
+              Loading player…
+            </p>{:then { default: NativePlayer }}<NativePlayer
+              choice={playing}
+              closed={(closedChoice) => {
+                if (playing === closedChoice) playing = null;
+              }}
+            />{:catch error}<Notice role="alert" variant="error"
+              >{String(error)}</Notice
+            >{/await}{:else if playing && playing.kind === 'track'}{#await players.music()}<p
+              role="status"
+            >
+              Loading player…
+            </p>{:then { default: MusicPlayer }}<MusicPlayer
+              choice={playing}
+              closed={() => (playing = null)}
+            />{:catch error}<Notice role="alert" variant="error"
+              >{String(error)}</Notice
+            >{/await}{:else if playing}<div
             class={[
               'player-frame',
               providerPage
@@ -925,305 +895,43 @@
                   : '-mx-6 -mt-6 narrow:-mx-4 narrow:-mt-4 compact:-mx-3 compact:-mt-3',
             ]}
           >
-            <Player
-              choice={playing}
-              closed={() => (playing = null)}
-              resizable
-            />
+            {#await players.video()}<p role="status">
+                Loading player…
+              </p>{:then { default: Player }}<Player
+                choice={playing}
+                closed={() => (playing = null)}
+                resizable
+              />{:catch error}<Notice role="alert" variant="error"
+                >{String(error)}</Notice
+              >{/await}
           </div>{/if}
-        {#if section === 'Settings'}
-          <SettingsLayout {user} bind:active={settingsSection}>
-            {#if settingsSection === 'account'}
-              <UserPreferences
-                {user}
-                revision={preferencesRevision}
-                avatarChanged={(id, avatar) => {
-                  if (user?.id === id) user = { ...user, avatar };
-                }}
-                changed={(zone, format) => {
-                  timeFormat = format;
-                  if (user) user = { ...user, timezone: zone };
-                }}
-              />
-              <PasswordSettings changed={() => void loadSettings()} />{/if}
-            {#if settingsSection === 'online'}<OnlineAccounts
-                revision={accountRevision}
-                navigate={(name) => void navigate(name)}
-                configureProviders={user.role === 'admin'
-                  ? () => (settingsSection = 'providers')
-                  : undefined}
-              />{/if}
-            {#if settingsSection === 'playback'}<PlaybackSettings />
-              <SegmentSettings />
-            {/if}
-            {#if settingsSection === 'devices'}<QuickConnect
-                username={user.username}
-              />{/if}
-            {#if desktop && settingsSection === 'mpv'}<MpvSettings />{/if}
-            {#if desktop && settingsSection === 'connection'}<Panel>
-                <h2>Desktop</h2>
-                <div class={statsClass}><DesktopVersion /></div>
-                <DesktopUpdatePreferences />
-                <form
-                  class={inlineFormClass}
-                  onsubmit={(e) => {
-                    e.preventDefault();
-                    void act(async () => {
-                      await changeServer(serverAddress);
-                      playing = null;
-                      events?.close();
-                      user = null;
-                      await boot();
-                    });
-                  }}
-                >
-                  <FormField
-                    >Server address<input
-                      class={formControlClass}
-                      bind:value={serverAddress}
-                      required
-                    /></FormField
-                  ><Button
-                    size="form"
-                    variant="secondary"
-                    type="submit"
-                    disabled={busy}>Change server</Button
-                  >
-                </form>
-              </Panel>{/if}
-            {#if settingsSection === 'devices'}<Panel>
-                <h2>Your devices</h2>
-                <p class="text-muted">
-                  Revoke access to a browser or desktop at any time.
-                </p>
-                {#each sessions as session (session.id)}<div class={rowClass}>
-                    <div>
-                      <strong>{session.name}</strong><small
-                        >{session.transport} · {new Date(
-                          session.last_seen * 1000,
-                        ).toLocaleString(undefined, {
-                          timeZone: user.timezone,
-                          hour12: timeFormat === '12h',
-                        })}{session.id === currentSession
-                          ? ' · This device'
-                          : ''}</small
-                      >
-                    </div>
-                    <Button
-                      size="form"
-                      variant="secondary"
-                      type="submit"
-                      disabled={busy}
-                      onclick={() =>
-                        act(async () => {
-                          await api(`/auth/sessions/${session.id}`, 'DELETE');
-                          if (session.id === currentSession) {
-                            user = null;
-                            events?.close();
-                          } else await loadSettings();
-                        })}>Revoke</Button
-                    >
-                  </div>{/each}
-              </Panel>
-            {/if}
-            {#if user.role === 'admin'}
-              {#if settingsSection === 'analysis'}<SegmentSettings admin />{/if}
-              {#if settingsSection === 'backups'}<BackupSettings
-                  {timezone}
-                  {timeFormat}
-                />{/if}
-              {#if settingsSection === 'providers'}<OnlineSettings />{/if}
-              {#if settingsSection === 'services'}<ServicesSettings
-                  {timeFormat}
-                />{/if}
-              {#if settingsSection === 'services'}<ManagerOwnership />{/if}
-              {#if settingsSection === 'retention'}<RetentionSettings />{/if}
-              {#if settingsSection === 'server'}<Panel>
-                  <div class="flex items-center justify-between gap-3">
-                    <h2>Server status</h2>
-                  </div>
-                  <div
-                    class="grid divide-y divide-line [&>div]:py-3 [&_strong]:text-base [&_strong]:font-medium [&_small]:mt-1 [&_small]:block [&_small]:text-xs [&_small]:text-muted"
-                  >
-                    <ProductVersion installed={health?.version ?? '—'} />
-                    <div>
-                      <strong
-                        >{health?.controller
-                          ? 'Connected'
-                          : 'Unavailable'}</strong
-                      ><small>Docker controller</small>
-                    </div>
-                    <div>
-                      <strong
-                        >{health
-                          ? `${(health.cache_free_bytes / 1024 ** 3).toFixed(1)} GB`
-                          : '—'}</strong
-                      ><small>Cache space available</small>
-                    </div>
-                  </div>
-                </Panel>
-                <Panel
-                  ><h2>Display defaults</h2>
-                  <AutoSaveForm
-                    label="Server display defaults"
-                    class={inlineFormClass}
-                    disabled={busy}
-                    value={{ timezone, time_format: serverTimeFormat }}
-                    onRevert={(previous) => {
-                      timezone = previous.timezone;
-                      serverTimeFormat = previous.time_format;
-                    }}
-                    onsave={(submitted) =>
-                      api('/admin/settings', 'PUT', submitted)}
-                  >
-                    <TimezoneSelect
-                      label="Server default timezone"
-                      bind:value={timezone}
-                      disabled={busy}
-                    />
-                    <FormField
-                      >Server default time format<select
-                        class={formControlClass}
-                        bind:value={serverTimeFormat}
-                        disabled={busy}
-                        ><option value="24h">24-hour</option><option value="12h"
-                          >12-hour</option
-                        ></select
-                      ></FormField
-                    >
-                  </AutoSaveForm>
-                </Panel>
-                <Panel
-                  ><h2>Server updates</h2>
-                  <ProductUpdatePreferences /></Panel
-                >
-                <Panel class="settings-wide"><ServerTools /></Panel>
-                <AdminOperations {timezone} {timeFormat} />
-              {/if}
-              {#if settingsSection === 'people'}<Panel>
-                  <h2>Add user</h2>
-                  <form
-                    class={inlineFormClass}
-                    aria-label="Create user"
-                    onsubmit={(e) => {
-                      e.preventDefault();
-                      void createUser();
-                    }}
-                  >
-                    <FormField
-                      >Username<input
-                        class={formControlClass}
-                        bind:value={newUsername}
-                        required
-                        autocomplete="off"
-                      /></FormField
-                    ><FormField
-                      >Password<input
-                        class={formControlClass}
-                        bind:value={newPassword}
-                        type="password"
-                        required
-                        minlength="8"
-                        autocomplete="new-password"
-                      /></FormField
-                    ><FormField
-                      >Role<select class={formControlClass} bind:value={newRole}
-                        ><option value="user">User</option><option value="admin"
-                          >Administrator</option
-                        ></select
-                      ></FormField
-                    ><Button size="form" type="submit" disabled={busy}
-                      >Add user</Button
-                    >
-                  </form>
-                </Panel>
-                <Panel class="settings-wide"
-                  ><h2>User access</h2>
-                  <Accordion.Root type="single" bind:value={expandedUser}>
-                    {#each users as person (person.id)}<UserAdministration
-                        {person}
-                        currentId={user.id}
-                        changed={loadSettings}
-                        close={() => (expandedUser = '')}
-                      />{/each}
-                  </Accordion.Root>
-                </Panel>
-              {/if}
-              {#if settingsSection === 'audit'}<AuditSettings
-                  {user}
-                  {timeFormat}
-                />{/if}
-              {#if settingsSection === 'jobs'}<ActivitySettings
-                  {jobs}
-                  checkpoint={() =>
-                    act(async () => {
-                      await api('/admin/jobs', 'POST', {
-                        key: crypto.randomUUID(),
-                      });
-                      await loadSettings();
-                    })}
-                />{/if}
-            {/if}
-          </SettingsLayout>
-        {:else if section === 'Home'}
-          <Home
-            {user}
-            revision={mediaRevision}
-            {accountRevision}
-            {playing}
-            play={playMedia}
-            navigate={(name) => void navigate(name)}
-            details={(id, kind) => {
-              void navigate(
-                ['artist', 'album', 'track'].includes(kind)
-                  ? 'Music'
-                  : ['show', 'season', 'episode'].includes(kind)
-                    ? 'Shows'
-                    : 'Movies',
-              ).then(() => (focusId = id));
-            }}
-          />
-        {:else if section === 'Discover'}
-          <Discover
-            {user}
-            navigate={(name) => void navigate(name)}
-            settings={() => {
-              settingsSection = 'services';
-              void navigate('Settings');
-            }}
-          />
-        {:else if ['Movies', 'Shows', 'Music'].includes(section)}
-          <LibraryView
-            domain={section}
-            admin={user.role === 'admin'}
-            revision={catalogRevision}
-            {scans}
-            userId={user.id}
-            timezone={user.timezone}
-            {timeFormat}
-            {focusId}
-            play={(choice) => void playMedia(choice)}
-          />
-        {:else if section === 'Playlists'}<Playlists
-            userId={user.id}
-            revision={mediaRevision}
-            play={(choice) => void playMedia(choice)}
-          />
-        {:else if section === 'Statistics'}<StatisticsView {user} />
-        {:else if providerPage}<ProviderView
-            admin={user.role === 'admin'}
-            platform={section.toLowerCase() as 'youtube' | 'twitch' | 'kick'}
-            userId={user.id}
-            revision={mediaRevision}
-            {playing}
-            play={playMedia}
-            settings={(tab) => {
-              settingsSection =
-                tab === 'providers' && user?.role !== 'admin' ? 'online' : tab;
-              void navigate('Settings');
-            }}
-          />
-        {/if}
+        <FeatureOutlet
+          {route}
+          {user}
+          {timeFormat}
+          {mediaRevision}
+          {catalogRevision}
+          {accountRevision}
+          {preferencesRevision}
+          {settingsRevision}
+          {scans}
+          {playing}
+          play={playMedia}
+          navigate={(name) => void navigate(name)}
+          {openSettings}
+          {go}
+          {updateFilters}
+          {back}
+          sessionEnded={teardownSession}
+          {switchServer}
+          displayChanged={(zone, format) => {
+            timeFormat = format;
+            if (user) user = { ...user, timezone: zone };
+          }}
+          profileChanged={(id, avatar) => {
+            if (user?.id === id) user = { ...user, avatar };
+          }}
+        />
       </div>
     </main>
   </div>

@@ -3,7 +3,7 @@
     captureScrollAnchor,
     restoreScrollAnchor,
   } from '../../../scroll-anchor';
-  import { LatestRequest } from '../../latest-request';
+  import { LatestRequest } from '../../../latest-request';
   import { tick, untrack } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import { Copy, ExternalLink, RefreshCw, X } from '@lucide/svelte';

@@ -164,6 +164,38 @@ test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
 
+test('statistics filter URLs survive reload and Back restores the previous scope', async ({
+  page,
+}, testInfo) => {
+  const base = await fixture(page, 'admin');
+  await page.goto('/#statistics?range=7d&platform=music&scope=all');
+  await expect(page.getByLabel('Statistics user')).toHaveValue('all');
+  await expect(
+    page.getByRole('button', { name: '7D', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true');
+  await expect(
+    page.getByRole('button', { name: 'Music', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true');
+  await page.reload();
+  await expect(page.getByLabel('Statistics user')).toHaveValue('all');
+  await page.getByLabel('Statistics user').selectOption('bob');
+  await expect(page).toHaveURL(/scope=bob$/);
+  await page.goBack();
+  await expect(page.getByLabel('Statistics user')).toHaveValue('all');
+  await expect
+    .poll(() => base.queries.at(-1)?.searchParams.get('range'))
+    .toBe('7d');
+  await expect
+    .poll(() => base.queries.at(-1)?.searchParams.get('user'))
+    .toBe(null);
+  expect(base.errors).toEqual([]);
+  expect(base.unexpected).toEqual([]);
+  await testInfo.attach('statistics-route', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+});
+
 test('statistics user and account dropdowns use themed surfaces in light and dark modes', async ({
   page,
 }, testInfo) => {
@@ -173,7 +205,7 @@ test('statistics user and account dropdowns use themed surfaces in light and dar
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page
       .getByRole('complementary', { name: 'Application sidebar' })
-      .getByRole('button', { name: 'Settings', exact: true })
+      .getByRole('link', { name: 'Settings', exact: true })
       .click();
     await page
       .getByRole('button', { name: `${theme} theme`, exact: true })
@@ -197,7 +229,7 @@ test('statistics user and account dropdowns use themed surfaces in light and dar
     }
     await page
       .getByRole('complementary', { name: 'Application sidebar' })
-      .getByRole('button', { name: 'Statistics', exact: true })
+      .getByRole('link', { name: 'Statistics', exact: true })
       .click();
     const scope = page.getByRole('combobox', { name: 'Statistics user' });
     await expect(scope).toHaveCSS('background-color', colors.background);

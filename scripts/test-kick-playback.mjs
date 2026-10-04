@@ -41,7 +41,7 @@ try {
   };
   const page = await context.newPage();
   await page.goto(origin);
-  await page.getByRole('button', { name: 'Kick', exact: true }).click();
+  await page.getByRole('link', { name: 'Kick', exact: true }).click();
   await page.getByRole('button', { name: `Play ${slug}`, exact: true }).click();
   await page.waitForFunction(
     () => {

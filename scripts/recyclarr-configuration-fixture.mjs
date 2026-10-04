@@ -447,12 +447,10 @@ export async function exerciseConfigurationUpgrades({
   base,
 }) {
   await page.goto(`${base}/?section=Settings`);
-  await page
-    .getByRole('button', { name: 'Media services', exact: true })
-    .click();
+  await page.getByRole('link', { name: 'Media services', exact: true }).click();
   await page
     .getByRole('navigation', { name: 'Select service' })
-    .getByRole('button', { name: 'Recyclarr', exact: true })
+    .getByRole('link', { name: 'Recyclarr', exact: true })
     .click();
   const before = Object.fromEntries(
     await Promise.all(

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { LatestRequest } from '../../latest-request';
+  import { LatestRequest } from '../../../latest-request';
   import { untrack } from 'svelte';
   import { Plus, RefreshCw, Settings2, Trash2 } from '@lucide/svelte';
   import { SvelteSet } from 'svelte/reactivity';

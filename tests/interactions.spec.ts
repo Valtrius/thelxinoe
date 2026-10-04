@@ -62,9 +62,9 @@ test('provider switches persist, block disabled APIs and update another session'
     await page.goto('/');
     await peer.goto('/?section=YouTube');
     await expect(peer.locator('.page-header h1')).toHaveText('YouTube');
-    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await page.getByRole('link', { name: 'Settings', exact: true }).click();
     await page
-      .getByRole('button', { name: 'Provider applications', exact: true })
+      .getByRole('link', { name: 'Provider applications', exact: true })
       .click();
     for (const provider of providers) {
       const name =
@@ -79,7 +79,7 @@ test('provider switches persist, block disabled APIs and update another session'
       await expect(
         peer
           .getByRole('navigation', { name: 'Main navigation' })
-          .getByRole('button', { name, exact: true }),
+          .getByRole('link', { name, exact: true }),
       ).toHaveCount(0);
       expect(
         (await context.request.get(`/api/v1/online/${provider}`)).status(),
@@ -108,9 +108,9 @@ test('provider switches persist, block disabled APIs and update another session'
     }
     await expect(peer.locator('.page-header h1')).toHaveText('Home');
     await page.reload();
-    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await page.getByRole('link', { name: 'Settings', exact: true }).click();
     await page
-      .getByRole('button', { name: 'Provider applications', exact: true })
+      .getByRole('link', { name: 'Provider applications', exact: true })
       .click();
     for (const provider of providers) {
       const name =
@@ -140,7 +140,7 @@ test('provider switches persist, block disabled APIs and update another session'
       await expect(
         peer
           .getByRole('navigation', { name: 'Main navigation' })
-          .getByRole('button', { name, exact: true }),
+          .getByRole('link', { name, exact: true }),
       ).toBeVisible();
       expect(
         (await context.request.get(`/api/v1/online/${provider}`)).ok(),
@@ -366,7 +366,7 @@ test('filters synchronize, refresh stays usable during sync, switches use the sh
       .click();
     await expect(page.getByRole('switch').first()).toBeVisible();
     await page.keyboard.press('Escape');
-    await page.getByRole('button', { name: 'Twitch', exact: true }).click();
+    await page.getByRole('link', { name: 'Twitch', exact: true }).click();
     await page.reload();
     await expect(page.locator('.page-header h1')).toHaveText('Twitch');
     await page.goto('/');

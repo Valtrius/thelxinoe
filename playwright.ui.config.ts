@@ -23,6 +23,8 @@ export default defineConfig({
         'server-updates.spec.ts',
         'server-tools.spec.ts',
         'authentication.spec.ts',
+        'frontend-ownership.spec.ts',
+        'navigation.spec.ts',
         'desktop-startup.spec.ts',
         'attention.spec.ts',
       ],

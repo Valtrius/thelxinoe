@@ -205,11 +205,11 @@ export async function ownershipAccess({ f, page, scenario, output }) {
         ).toBe(404);
         await page.goto(`${f.base}/?section=Settings`);
         await page
-          .getByRole('button', { name: 'Media services', exact: true })
+          .getByRole('link', { name: 'Media services', exact: true })
           .click();
         await page
           .getByRole('navigation', { name: 'Select service' })
-          .getByRole('button', { name: new RegExp(`^${kind}$`, 'i') })
+          .getByRole('link', { name: new RegExp(`^${kind}$`, 'i') })
           .click();
         await expect(
           page.getByText('Service access', { exact: true }),

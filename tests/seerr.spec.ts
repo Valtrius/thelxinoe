@@ -102,7 +102,7 @@ test('Recyclarr installs with one click and no dialog', async ({
   await page.goto('/');
   await page
     .getByRole('navigation', { name: 'Select service' })
-    .getByRole('button', { name: 'Recyclarr', exact: true })
+    .getByRole('link', { name: 'Recyclarr', exact: true })
     .click();
   await page
     .getByRole('button', { name: 'Import existing Recyclarr', exact: true })
@@ -238,7 +238,7 @@ test('Recyclarr sync uses only button progress and retains failures', async ({
   await page.goto('/');
   await page
     .getByRole('navigation', { name: 'Select service' })
-    .getByRole('button', { name: 'Recyclarr', exact: true })
+    .getByRole('link', { name: 'Recyclarr', exact: true })
     .click();
   const region = page.getByRole('region', {
     name: 'Recyclarr guide configuration',
@@ -395,6 +395,39 @@ async function discoverFixture(page: Page, role: 'admin' | 'user' = 'user') {
   return { ...fixture, requests };
 }
 
+test('Discover history restores the rendered screen after navigating away', async ({
+  page,
+}, testInfo) => {
+  const fixture = await discoverFixture(page);
+  await page.goto('/#discover/movie/11');
+  await expect(
+    page.getByRole('heading', { name: 'Arrival', exact: true }),
+  ).toBeVisible();
+  await page.getByRole('link', { name: 'Movies', exact: true }).click();
+  await expect(
+    page.getByRole('heading', { name: 'Movies', exact: true }),
+  ).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(/#discover\/movie\/11$/);
+  await expect(
+    page.getByRole('heading', { name: 'Arrival', exact: true }),
+  ).toBeVisible();
+  await page.goForward();
+  await expect(
+    page.getByRole('heading', { name: 'Movies', exact: true }),
+  ).toBeVisible();
+  await page.reload();
+  await expect(
+    page.getByRole('heading', { name: 'Movies', exact: true }),
+  ).toBeVisible();
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+  await testInfo.attach('cross-feature-history', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+});
+
 test('posters align at the top of discovery rows and search rows with wrapped titles', async ({
   page,
 }, testInfo) => {
@@ -455,7 +488,7 @@ test('search opens dedicated details, requests once, and returns to the search',
     .getByRole('textbox', { name: 'Search movies and series' })
     .fill('Arrival');
   await page.getByRole('button', { name: 'View Arrival', exact: true }).click();
-  await expect(page).toHaveURL(/#discover\/movie\/11$/);
+  await expect(page).toHaveURL(/#discover\/movie\/11\?q=Arrival$/);
   await expect(
     page.getByRole('heading', { name: 'Arrival', exact: true }),
   ).toBeVisible();
@@ -947,7 +980,7 @@ test('manager defaults allow guide and native profiles and roll back a removed p
   await page.goto('/');
   await page
     .getByRole('navigation', { name: 'Select service' })
-    .getByRole('button', { name: /Radarr/ })
+    .getByRole('link', { name: /Radarr/ })
     .click();
   const form = page.getByRole('form', { name: 'Radarr acquisition defaults' });
   const profile = form.getByRole('combobox', {
@@ -1012,7 +1045,7 @@ test('service defaults save eagerly and roll back a rejected edit', async ({
   await page.goto('/');
   await page
     .getByRole('navigation', { name: 'Select service' })
-    .getByRole('button', { name: /Radarr/ })
+    .getByRole('link', { name: /Radarr/ })
     .click();
   const form = page.getByRole('form', { name: 'Radarr acquisition defaults' });
   const monitor = form.getByRole('switch', {
@@ -1082,7 +1115,7 @@ test('Lidarr custom profiles retain the chosen quality order and become the sele
   await page.goto('/');
   await page
     .getByRole('navigation', { name: 'Select service' })
-    .getByRole('button', { name: /Lidarr/ })
+    .getByRole('link', { name: /Lidarr/ })
     .click();
   await page
     .getByRole('button', { name: 'Create quality profile', exact: true })
@@ -1185,7 +1218,7 @@ test('indexer onboarding loads provider addresses and retains a rejected draft',
   await page.goto('/');
   await page
     .getByRole('navigation', { name: 'Select service' })
-    .getByRole('button', { name: /Prowlarr/ })
+    .getByRole('link', { name: /Prowlarr/ })
     .click();
   await page.getByRole('button', { name: 'Add indexer', exact: true }).click();
   await page.getByRole('button', { name: /Fixture provider/ }).click();

@@ -6,10 +6,11 @@
   import StatusIndicator from './ui/StatusIndicator.svelte';
   import Notice from './ui/Notice.svelte';
   import ProgressBar from './ui/ProgressBar.svelte';
-  import { onMount } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import AttentionDot from './ui/AttentionDot.svelte';
   import { attention, attentionDescription } from './attention';
   import { api, desktop } from './api';
+  import { followLink } from './navigation';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
   import ConfirmDialog from './providers/components/ui/ConfirmDialog.svelte';
@@ -19,12 +20,12 @@
   import RecyclarrSetup from './services/RecyclarrSetup.svelte';
   import DownloadsTable from './services/DownloadsTable.svelte';
   import NativeServiceLink from './services/NativeServiceLink.svelte';
-  import ServiceUpdateRelease, {
-    type ServiceRelease,
-  } from './services/ServiceUpdateRelease.svelte';
-  import type { SupportDownload } from './services/downloads';
+  import ServiceUpdateRelease from './services/ServiceUpdateRelease.svelte';
   import {
     hasNativeAccess,
+    activeServiceUpdate,
+    isSetupActive,
+    serviceStatus,
     hasServiceUrlBase,
     type Container,
   } from './services/presentation';
@@ -43,257 +44,42 @@
     type ServiceConnection,
   } from './ServiceConnections.svelte';
 
-  let { timeFormat = '24h' } = $props<{ timeFormat?: '12h' | '24h' }>();
+  let {
+    timeFormat = '24h',
+    selected,
+    workflow,
+    onSelect,
+  } = $props<{
+    timeFormat?: '12h' | '24h';
+    selected?: string;
+    workflow?: 'setup' | 'updates';
+    onSelect?: (kind: string) => void;
+  }>();
 
-  type ServiceKind =
-    | 'radarr'
-    | 'sonarr'
-    | 'lidarr'
-    | 'bazarr'
-    | 'prowlarr'
-    | 'nzbget'
-    | 'seerr'
-    | 'recyclarr';
-  type Definition = {
-    kind: ServiceKind;
-    label: string;
-    role: 'manager' | 'support' | 'job';
-    internalPort: number | null;
-    hostPort: number | null;
-    description: string;
-  };
-  type ManagerDefaults = {
-    root_folder: string;
-    quality_profile: number;
-    metadata_profile: number | null;
-    monitored: boolean;
-  };
-  type ManagerService = {
-    id: string;
-    name: string;
-    kind: ServiceKind;
-    container_id: string;
-    port: number;
-    url_base: string;
-    access_url: string | null;
-    version: string;
-    defaults: Partial<ManagerDefaults>;
-    checked_at: number;
-    error: string | null;
-  };
-  type SupportService = {
-    id: string;
-    name: string;
-    kind: ServiceKind;
-    container_id: string;
-    port: number;
-    version: string;
-    url_base: string;
-    access_url: string | null;
-    checked_at: number;
-    error?: string | null;
-  };
-  type ManagerOptions = {
-    defaults: ManagerDefaults;
-    roots: { id: number; path: string }[];
-    profiles: {
-      id: number;
-      name: string;
-      trash_id?: string | null;
-      url?: string | null;
-    }[];
-    metadata_profiles: { id: number; name: string }[];
-  };
-  type SupportSnapshot = {
-    health?: ({ message: string; type: string } | string)[];
-    indexers?: {
-      id: number;
-      name: string;
-      enabled: boolean;
-      disabled_until: string | null;
-    }[];
-    queue?: SupportDownload[];
-    history?: SupportDownload[];
-    rate?: number;
-    limit?: number;
-    paused?: boolean;
-    free_mb?: number;
-  };
-  type StackService = {
-    id: string;
-    registered?: boolean;
-    kind: ServiceKind;
-    name: string;
-    phase: string;
-    image: string;
-    drift: boolean | null;
-    running: boolean | null;
-    existence: 'present' | 'missing' | 'unknown';
-    status:
-      'running' | 'stopped' | 'missing' | 'unavailable' | 'drifted' | 'ready';
-    inspection_error: string | null;
-    can_recreate: boolean;
-    can_retire: boolean;
-    can_remove: boolean;
-    error: string | null;
-    transfer_pending: boolean;
-  };
-  type Provision = {
-    id: string;
-    kind: ServiceKind;
-    state: string;
-    host_port: number | null;
-    container_id: string | null;
-    service_id: string | null;
-    error: string | null;
-    origin: string;
-  };
-  type TransferReview = {
-    review_id: string;
-    name: string;
-    image: string;
-    source_config: string;
-    managed_config: string;
-    compose_project: string | null;
-    compose_service: string | null;
-  };
-  type UpdatePolicy = {
-    service_id: string;
-    policy: string;
-    window_start: number;
-    window_end: number;
-    candidate: string | null;
-    release?: ServiceRelease | null;
-    checked_at: number;
-    error: string | null;
-  };
-  type Update = {
-    id: string;
-    service_id: string;
-    state: string;
-    candidate: string | null;
-    error: string | null;
-    classification?: string;
-  };
-  type UpdateTarget = { id: string; kind: ServiceKind };
-  type ServerUpdatePolicy = {
-    policy: string;
-    window_start: number;
-    window_end: number;
-  };
-  type ApprovalUser = { id: string; username: string; enabled: boolean };
-  type SetupDraft = {
-    name: string;
-    container: string;
-    port: number | null;
-    username: string;
-    secret: string;
-    urlBase: string;
-  };
-  type InstallDraft = { hostPort: number | null };
-  type DefaultsDraft = ManagerDefaults & { loaded: boolean };
-  type UpdateDraft = {
-    targetId: string | null;
-    policy: string;
-    start: number;
-    end: number;
-  };
-
-  const definitions: Definition[] = [
-    {
-      kind: 'seerr',
-      label: 'Seerr',
-      role: 'support',
-      internalPort: 5055,
-      hostPort: 15055,
-      description: 'Discovery and requests',
-    },
-    {
-      kind: 'recyclarr',
-      label: 'Recyclarr',
-      role: 'job',
-      internalPort: null,
-      hostPort: null,
-      description: 'TRaSH Guides sync',
-    },
-    {
-      kind: 'radarr',
-      label: 'Radarr',
-      role: 'manager',
-      internalPort: 7878,
-      hostPort: 17878,
-      description: 'Movie manager',
-    },
-    {
-      kind: 'sonarr',
-      label: 'Sonarr',
-      role: 'manager',
-      internalPort: 8989,
-      hostPort: 18989,
-      description: 'Series manager',
-    },
-    {
-      kind: 'lidarr',
-      label: 'Lidarr',
-      role: 'manager',
-      internalPort: 8686,
-      hostPort: 18686,
-      description: 'Music manager',
-    },
-    {
-      kind: 'bazarr',
-      label: 'Bazarr',
-      role: 'support',
-      internalPort: 6767,
-      hostPort: 16767,
-      description: 'Subtitles',
-    },
-    {
-      kind: 'prowlarr',
-      label: 'Prowlarr',
-      role: 'support',
-      internalPort: 9696,
-      hostPort: 19696,
-      description: 'Indexers',
-    },
-    {
-      kind: 'nzbget',
-      label: 'NZBGet',
-      role: 'support',
-      internalPort: 6789,
-      hostPort: 16789,
-      description: 'Usenet downloads',
-    },
-  ];
-  const stages: Record<string, string> = {
-    queued: 'Waiting to check',
-    submitting: 'Starting check',
-    preparing: 'Preparing',
-    snapshotting: 'Saving appdata',
-    preflight: 'Checking compatibility',
-    ready: 'Compatible, ready to install',
-    'queued-activate': 'Waiting to install',
-    'recovery-snapshot': 'Saving recovery copy',
-    'isolated-live-validation': 'Validating before activation',
-    'rollback-copying': 'Restoring previous service',
-    'rollback-activating': 'Restarting previous service',
-    activating: 'Starting updated service',
-    committed: 'Update complete',
-    'rolled-back': 'Previous service restored',
-    blocked: 'Needs attention',
-    'recovery-required': 'Recovery required',
-    'runtime-failure': 'Updated service needs attention',
-    'queued-recover': 'Waiting to restore',
-  };
-  const loaderSubsystems = [
-    { key: 'managers', label: 'Acquisition managers' },
-    { key: 'support', label: 'Support services' },
-    { key: 'approval', label: 'Request approval settings' },
-    { key: 'updates', label: 'Service updates' },
-    { key: 'containers', label: 'Docker container discovery' },
-    { key: 'stack', label: 'Managed service runtime' },
-    { key: 'connections', label: 'Optional service connections' },
-  ] as const;
+  import {
+    definitions,
+    stages,
+    loaderSubsystems,
+    type ServiceKind,
+    type Definition,
+    type ManagerDefaults,
+    type ManagerService,
+    type SupportService,
+    type ManagerOptions,
+    type SupportSnapshot,
+    type StackService,
+    type Provision,
+    type TransferReview,
+    type UpdatePolicy,
+    type Update,
+    type UpdateTarget,
+    type ServerUpdatePolicy,
+    type ApprovalUser,
+    type SetupDraft,
+    type InstallDraft,
+    type DefaultsDraft,
+    type UpdateDraft,
+  } from './services/feature';
   const setup = $state(
     Object.fromEntries(
       definitions.map((definition) => [
@@ -439,6 +225,20 @@
     seerr: seerrIcon,
   };
   let selectedKind = $state<ServiceKind>('seerr');
+  $effect(() => {
+    const kind = selected;
+    if (kind && definitions.some((definition) => definition.kind === kind))
+      untrack(() => selectService(kind as ServiceKind));
+  });
+  $effect(() => {
+    const section = workflow;
+    if (section)
+      void tick().then(() =>
+        document
+          .querySelector(`[data-service-workflow="${section}"]`)
+          ?.scrollIntoView({ block: 'start' }),
+      );
+  });
   const busy = $derived(isBusy(selectedKind));
   const detailErrors = $state<Partial<Record<ServiceKind, string>>>({});
   const detailLoading = $state<Partial<Record<ServiceKind, boolean>>>({});
@@ -458,9 +258,7 @@
   const serviceUpdatesList = $derived(serviceUpdates(selectedKind).slice(0, 1));
 
   function setupActive(kind: ServiceKind) {
-    return ['queued', 'installing', 'connecting', 'retiring'].includes(
-      provision(kind)?.state ?? '',
-    );
+    return isSetupActive(provision(kind));
   }
   function activity(kind: ServiceKind) {
     const state = provision(kind)?.state;
@@ -483,24 +281,7 @@
     return pendingActions[kind] ? 'Working' : '';
   }
   function activeUpdate(kind: ServiceKind) {
-    return serviceUpdates(kind)
-      .slice(0, 1)
-      .find((entry) =>
-        [
-          'queued',
-          'submitting',
-          'preparing',
-          'snapshotting',
-          'preflight',
-          'queued-activate',
-          'recovery-snapshot',
-          'isolated-live-validation',
-          'rollback-copying',
-          'rollback-activating',
-          'activating',
-          'queued-recover',
-        ].includes(entry.state),
-      );
+    return activeServiceUpdate(serviceUpdates(kind));
   }
   function isBusy(kind: ServiceKind, retryRemoval = false) {
     return (
@@ -530,46 +311,17 @@
     );
   }
   function status(kind: ServiceKind) {
-    const item = provision(kind),
-      live = runtime(kind);
-    if (live?.registered === false)
-      return { label: 'Setup mismatch', tone: 'warn' };
-    const connected = integration(
-      definitions.find((entry) => entry.kind === kind)!,
-    );
-    if (setupActive(kind))
-      return {
-        label:
-          item?.state === 'connecting'
-            ? 'Connecting API'
-            : item?.state === 'retiring'
-              ? 'Retiring'
-              : 'Installing',
-        tone: 'busy',
-      };
-    if (item?.state === 'blocked')
-      return { label: 'Setup blocked', tone: 'bad' };
-    if (serviceUpdates(kind)[0]?.state === 'activating')
-      return { label: 'Connecting API', tone: 'busy' };
-    if (live?.status === 'unavailable')
-      return { label: 'Status unavailable', tone: 'warn' };
-    if (live?.status === 'missing')
-      return { label: 'Container missing', tone: 'bad' };
-    if (live?.status === 'ready') return { label: 'Ready', tone: 'ok' };
-    if (live?.running === false) return { label: 'Stopped', tone: 'muted' };
-    if (connected?.error) return { label: 'API unavailable', tone: 'warn' };
-    if (live?.running) return { label: 'Running', tone: 'ok' };
-    if (connected) return { label: 'Connected', tone: 'ok' };
-    if (
-      loadErrors[
-        definitions.find((entry) => entry.kind === kind)!.role === 'manager'
-          ? 'managers'
-          : 'support'
-      ] ||
-      loadErrors.stack
-    )
-      return { label: 'Status unavailable', tone: 'warn' };
-    return { label: 'Not connected', tone: 'muted' };
+    const definition = definitions.find((entry) => entry.kind === kind)!;
+    return serviceStatus({
+      item: provision(kind),
+      live: runtime(kind),
+      connected: integration(definition),
+      update: serviceUpdates(kind)[0],
+      unavailable: Boolean(
+        loadErrors[definition.role === 'manager' ? 'managers' : 'support'] ||
+        loadErrors.stack,
+      ),
+    });
   }
   function containerFor(definition: Definition) {
     const id =
@@ -1054,12 +806,18 @@
   >
     {#each definitions as service (service.kind)}
       {@const state = status(service.kind)}
-      <button
+      <a
+        href={`#admin/services/${service.kind}`}
         class="service-tab flex min-w-0 cursor-pointer flex-col items-center gap-1.5 border border-line bg-transparent px-1 py-3 text-center text-foreground hover:bg-surface-soft aria-[current=true]:border-accent aria-[current=true]:bg-accent-soft @min-[600px]/settings:flex-row @min-[600px]/settings:gap-2 @min-[600px]/settings:px-2.5 @min-[600px]/settings:text-left [&>img]:size-6.75 [&>img]:shrink-0 [&>img]:object-contain @max-[400px]/settings:[&>img]:size-5.75 [&_strong]:text-[11px] [&_strong]:font-[650]"
         aria-current={selectedKind === service.kind ? 'true' : undefined}
         aria-label={service.label}
         aria-describedby={`service-attention-${service.kind}`}
-        onclick={() => selectService(service.kind)}
+        onclick={(event) => {
+          if (!followLink(event)) return;
+          event.preventDefault();
+          if (onSelect) onSelect(service.kind);
+          else selectService(service.kind);
+        }}
       >
         <img src={icons[service.kind]} alt="" />
         <span class="min-w-0"
@@ -1082,7 +840,7 @@
             ),
           )}</span
         >
-      </button>
+      </a>
     {/each}
   </nav>
   {#each loaderSubsystems as subsystem (subsystem.key)}
@@ -1451,6 +1209,7 @@
         <section
           class="work-section settings-section"
           aria-label="Service setup"
+          data-service-workflow="setup"
         >
           <div class="setup-forms grid gap-5.5">
             {#if definition.role === 'job'}<RecyclarrSetup
@@ -1810,7 +1569,11 @@
       {#if selectedKind === 'recyclarr' && item?.state === 'complete'}<RecyclarrSettings
         />{/if}
       {#if (connected || (definition.role === 'job' && live)) && !setupActive(selectedKind)}
-        <section class="work-section settings-section" aria-label="Updates">
+        <section
+          class="work-section settings-section"
+          aria-label="Updates"
+          data-service-workflow="updates"
+        >
           <h3 class="mb-3.25 text-[12px] font-[650]">Updates</h3>
           {#if target}
             {#key target.id}<AutoSaveForm

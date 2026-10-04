@@ -72,10 +72,10 @@ try {
   ).toBe(true);
   const page = await context.newPage();
   await page.goto('https://localhost:24443');
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('link', { name: 'Settings', exact: true }).click();
   await page
     .getByRole('navigation', { name: 'Settings navigation' })
-    .getByRole('button', { name: 'Media services', exact: true })
+    .getByRole('link', { name: 'Media services', exact: true })
     .click();
   const panel = page.getByRole('article', { name: 'Radarr service' });
   await panel
