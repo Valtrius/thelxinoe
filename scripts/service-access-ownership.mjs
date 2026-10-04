@@ -209,7 +209,7 @@ export async function ownershipAccess({ f, page, scenario, output }) {
           .click();
         await page
           .getByRole('navigation', { name: 'Select service' })
-          .getByRole('button', { name: new RegExp(`^${kind}$`, 'i') })
+          .getByRole('link', { name: new RegExp(`^${kind}$`, 'i') })
           .click();
         await expect(
           page.getByText('Service access', { exact: true }),
