@@ -77,6 +77,12 @@ impl Docker {
     pub(crate) fn fault(&self, fault: Fault) {
         self.engine.lock().unwrap().fault = Some(fault);
     }
+    pub(crate) fn backup_deployment<D: DeserializeOwned>(&self) -> D {
+        let mut engine = self.engine.lock().unwrap();
+        let server = engine.containers.get_mut("original").unwrap();
+        server["Mounts"][0]["Destination"] = json!("/var/lib/thelxinoe");
+        serde_json::from_value(json!({"id":"deployment","generation":1,"version":"test","server":server,"controller":{"Image":"controller-image"},"network":"media","media_source":"/media","appdata_source":self.root.path()})).unwrap()
+    }
     pub(crate) fn root(&self) -> &std::path::Path {
         self.root.path()
     }

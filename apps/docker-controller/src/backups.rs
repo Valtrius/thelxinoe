@@ -74,6 +74,14 @@ fn validate_record(r: &Record) -> Result<()> {
 fn public(r: &Record) -> Value {
     json!({"id":r.id,"stage":r.stage,"created_at":r.created_at,"error":r.error,"archive":format!("{}.age",r.id)})
 }
+fn failure_stage(r: &Record) -> &'static str {
+    // The restore attempt is persisted before quiescence, even if its snapshot never completes.
+    if r.recovery.is_some() {
+        "restore-failed"
+    } else {
+        "failed"
+    }
+}
 fn private_dir(path: &FsPath) -> Result<()> {
     persisted(std::fs::create_dir_all(path).map_err(Into::into))?;
     persisted(
@@ -231,7 +239,7 @@ async fn rollback_original(d: &Deployment, r: &mut Record, copy: bool) -> Result
     r.stage = "rollback-activating".into();
     record(r)?;
     restart(&r.components).await?;
-    r.stage = "restore-failed".into();
+    r.stage = failure_stage(r).into();
     record(r)
 }
 async fn capture(d: &Deployment, r: &Record, leaf: &str) -> Result<()> {
@@ -588,10 +596,8 @@ pub(super) async fn recover_interrupted() -> Result<()> {
         }
         let terminal = if r.stage == "restore-activating" {
             "restored"
-        } else if r.stage.starts_with("restore") || r.recovery_ready {
-            "restore-failed"
         } else {
-            "failed"
+            failure_stage(&r)
         };
         if terminal == "restored" {
             restart(&r.components).await?;
