@@ -919,14 +919,14 @@ scenario: try {
       await expect
         .poll(
           async () =>
-            (await arr('seerr', `settings/${kind}`)).find(
-              (m) => m.name === `Thelxinoe ${kind}`,
+            (await arr('seerr', `settings/${kind}`)).find((m) =>
+              m.name.startsWith(`Thelxinoe ${kind} (`),
             )?.activeProfileId,
           { timeout: 45000 },
         )
         .toBe(changed.profile_id);
-      const configured = (await arr('seerr', `settings/${kind}`)).find(
-        (m) => m.name === `Thelxinoe ${kind}`,
+      const configured = (await arr('seerr', `settings/${kind}`)).find((m) =>
+        m.name.startsWith(`Thelxinoe ${kind} (`),
       );
       expect(configured.activeProfileName).toBe(changed.profile_name);
       expect(configured.is4k).toBe(true);

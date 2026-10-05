@@ -1,5 +1,4 @@
 import { expect } from '@playwright/test';
-import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -72,23 +71,7 @@ export async function existingStorageAccess(
     );
     expect(blocked.endsWith('\n409')).toBe(true);
     expect(blocked).toContain('Fresh installations require');
-    execFileSync(
-      'ffmpeg',
-      [
-        '-hide_banner',
-        '-loglevel',
-        'error',
-        '-y',
-        '-f',
-        'lavfi',
-        '-i',
-        'color=c=blue:s=160x90:d=1',
-        '-c:v',
-        'mpeg4',
-        `${f.root}/existing-movies/Mapping fixture (2000).mp4`,
-      ],
-      { stdio: 'pipe', windowsHide: true },
-    );
+    f.createMappingMovie();
     await f.peer({ existingLayout: true });
     await f.api('/catalog/roots', 'POST', {
       name: 'Existing movies',

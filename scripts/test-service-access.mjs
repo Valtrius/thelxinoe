@@ -580,23 +580,7 @@ try {
   await scenario(
     'existing /movies paths map to files under the server media mount',
     async () => {
-      execFileSync(
-        'ffmpeg',
-        [
-          '-hide_banner',
-          '-loglevel',
-          'error',
-          '-y',
-          '-f',
-          'lavfi',
-          '-i',
-          'color=c=blue:s=160x90:d=1',
-          '-c:v',
-          'mpeg4',
-          `${f.root}/media/movies/Mapping fixture (2000).mp4`,
-        ],
-        { stdio: 'pipe', windowsHide: true },
-      );
+      f.createMappingMovie();
       await f.peer({ existingLayout: true });
       await f.api('/catalog/roots', 'POST', {
         name: 'Existing movies',

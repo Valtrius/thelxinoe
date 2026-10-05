@@ -588,6 +588,42 @@ export async function fixture({
     if (!source) throw Error('Fixture media mount is missing');
     return source + (folder ? `/${folder}` : '');
   }
+  function createMappingMovie() {
+    const filename = 'Mapping fixture (2000).mp4';
+    const staging = resolve(root, 'fixtures');
+    mkdirSync(staging, { recursive: true });
+    const source = resolve(staging, filename);
+    execFileSync(
+      'ffmpeg',
+      [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        'color=c=blue:s=160x90:d=1',
+        '-c:v',
+        'mpeg4',
+        source,
+      ],
+      { stdio: 'pipe', windowsHide: true },
+    );
+    const destination = `/media/movies/${filename}`;
+    // Linux media binds belong to the service UID, not the host test runner.
+    compose('cp', source, `server:${destination}`);
+    compose(
+      'exec',
+      '-T',
+      '--user',
+      '0',
+      'server',
+      'chown',
+      '10001:10001',
+      destination,
+    );
+  }
   try {
     browser = await launchBrowser();
     context = await browser.newContext({ ignoreHTTPSErrors: true });
@@ -648,6 +684,7 @@ export async function fixture({
       close,
       attach,
       peer,
+      createMappingMovie,
     };
   } catch (error) {
     const output = 'test-results/service-access';
