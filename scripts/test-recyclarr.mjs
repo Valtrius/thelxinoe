@@ -1625,6 +1625,17 @@ scenario: try {
 } catch (error) {
   evidence.passed = false;
   evidence.error = String(error);
+  evidence.connections = await api('/admin/service-connections').catch(
+    () => null,
+  );
+  if (services.seerr) {
+    evidence.seerr_connections = {};
+    for (const kind of ['radarr', 'sonarr'])
+      evidence.seerr_connections[kind] = await arr(
+        'seerr',
+        `settings/${kind}`,
+      ).catch(() => null);
+  }
   throw error;
 } finally {
   evidence.product_passed = evidence.passed;

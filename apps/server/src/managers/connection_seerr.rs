@@ -137,6 +137,8 @@ pub(super) async fn apply(
     let mut wanted = previous
         .clone()
         .unwrap_or_else(|| json!({"name":name,"tags":[],"tagRequests":false,"overrideRule":[]}));
+    // Seerr returns this read-only field but rejects it in update bodies.
+    wanted.as_object_mut().unwrap().remove("id");
     let fields = json!({"hostname":address,"port":target.port,"useSsl":false,"baseUrl":manager.url_base,"activeProfileId":defaults.quality_profile,"activeProfileName":profile["name"],"activeDirectory":defaults.root_folder,"is4k":is4k,"isDefault":is_default,"syncEnabled":true,"preventSearch":!defaults.monitored,"minimumAvailability":"released","enableSeasonFolders":true});
     for (key, value) in fields.as_object().unwrap() {
         wanted[key] = value.clone();
