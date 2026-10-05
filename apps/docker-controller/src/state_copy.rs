@@ -8,202 +8,33 @@ use std::{
 const MAX_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 const MAX_FILES: u64 = 500_000;
 
-fn setting(text: &str, key: &str) -> anyhow::Result<Option<(std::ops::Range<usize>, String)>> {
-    let document = roxmltree::Document::parse(text)?;
-    let root = document.root_element();
-    anyhow::ensure!(root.has_tag_name("Config"), "Invalid service configuration");
-    let mut entries = root.children().filter(|node| node.has_tag_name(key));
-    let entry = entries.next();
-    anyhow::ensure!(entries.next().is_none(), "Duplicate {key} setting");
-    Ok(entry.map(|entry| (entry.range(), entry.text().unwrap_or("").to_owned())))
-}
-
-fn set_setting(text: &mut String, key: &str, value: &str) -> anyhow::Result<()> {
-    let range = if let Some((range, _)) = setting(text, key)? {
-        range
-    } else {
-        let document = roxmltree::Document::parse(text)?;
-        let end = text[..document.root_element().range().end]
-            .rfind("</Config>")
-            .ok_or_else(|| anyhow::anyhow!("Missing service configuration end"))?;
-        end..end
-    };
-    let value = value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;");
-    text.replace_range(range, &format!("<{key}>{value}</{key}>"));
-    Ok(())
-}
-
-pub fn adopt(kind: &str, name: &str) -> anyhow::Result<()> {
-    anyhow::ensure!(crate::templates::find(kind).is_some(), "Unknown service");
-    if thelxinoe_core::service_gateway_auth(kind) {
-        anyhow::ensure!(
-            !name.is_empty()
-                && name.len() <= 63
-                && name
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')),
-            "Invalid managed service hostname"
-        );
-    }
-    if kind == "recyclarr" {
-        use sha2::{Digest, Sha256};
-        let actual = format!("{:x}", Sha256::digest(fs::read("/source/recyclarr.yml")?));
-        anyhow::ensure!(
-            std::env::var("THELXINOE_RECYCLARR_IMPORT_HASH")? == actual,
-            "Recyclarr configuration changed after review"
-        );
-    }
-    run(false)?;
-    if kind == "nzbget" {
-        let settings: crate::stack::adoption::Nzbget =
-            crate::store::read(Path::new("/adoption.json"))?;
-        let path = Path::new("/destination/nzbget.conf");
-        let mut text = fs::read_to_string(path)?;
-        nzbget_setting(&mut text, "ControlUsername", "thelxinoe")?;
-        nzbget_setting(&mut text, "ControlPassword", &settings.secret)?;
-        if settings.fixes.rotate_logs {
-            nzbget_setting(&mut text, "WriteLog", "rotate")?;
-            nzbget_setting(&mut text, "RotateLog", "3")?;
-        }
-        if settings.fixes.cert_check {
-            nzbget_setting(
-                &mut text,
-                "CertStore",
-                settings
-                    .cert_store
-                    .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("Missing certificate store"))?,
-            )?;
-            nzbget_setting(&mut text, "CertCheck", "yes")?;
-        }
-        fs::write(path, text)?;
-        fs::File::open(path)?.sync_all()?;
-        return Ok(());
-    }
-    if kind == "recyclarr" {
-        // Ownership metadata belongs to this deployment, never to an imported
-        // scheduler. Rebuild it from the explicitly reviewed import selections.
-        let metadata = Path::new("/destination/.thelxinoe");
-        if metadata.exists() {
-            fs::remove_dir_all(metadata)?;
-        }
-        // Accepted imports retain state while plaintext API keys from the old
-        // scheduler are removed from the managed copy before it can run.
-        let path = Path::new("/destination/recyclarr.yml");
-        let mut config: serde_yaml_ng::Value = serde_yaml_ng::from_str(&fs::read_to_string(path)?)?;
-        for kind in ["radarr", "sonarr"] {
-            for (_, instance) in config
-                .get_mut(kind)
-                .and_then(|v| v.as_mapping_mut())
-                .into_iter()
-                .flatten()
-            {
-                if let Some(map) = instance.as_mapping_mut() {
-                    map.insert("api_key".into(), "REDACTED_REGENERATED_AT_SYNC".into());
-                }
-            }
-        }
-        fs::write(path, serde_yaml_ng::to_string(&config)?)?;
-        return Ok(());
-    }
-    let base = thelxinoe_core::service_url_base(kind);
-    if base.is_empty() {
-        return Ok(());
-    }
-    // The source mount is read-only. Only the stopped managed copy is changed.
-    let path = Path::new("/destination").join(if kind == "bazarr" {
-        "config/config.yaml"
-    } else {
-        "config.xml"
-    });
-    let mut text = fs::read_to_string(&path)?;
-    if kind == "bazarr" {
-        let mut config: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text)?;
-        let general = config
-            .get_mut("general")
-            .and_then(|v| v.as_mapping_mut())
-            .ok_or_else(|| anyhow::anyhow!("Missing Bazarr general settings"))?;
-        general.insert("base_url".into(), base.into());
-        text = serde_yaml_ng::to_string(&config)?;
-    } else {
-        set_setting(&mut text, "UrlBase", base)?;
-        if thelxinoe_core::service_gateway_auth(kind) {
-            set_setting(&mut text, "AuthenticationMethod", "External")?;
-            set_setting(&mut text, "AuthenticationRequired", "Enabled")?;
-            // Legacy Arr configurations can otherwise override External at startup.
-            set_setting(&mut text, "AuthenticationEnabled", "False")?;
-            if let Some((_, value)) = setting(&text, "AllowedHosts")? {
-                let mut hosts: Vec<String> = value
-                    .split([',', ';'])
-                    .map(str::trim)
-                    .filter(|host| !host.is_empty())
-                    .map(str::to_owned)
-                    .collect();
-                let mut required: Vec<String> =
-                    serde_json::from_str(&std::env::var("THELXINOE_ADOPTION_HOSTS")?)?;
-                required.extend([
-                    name.to_owned(),
-                    format!("thelxinoe-{kind}"),
-                    "localhost".into(),
-                    "127.0.0.1".into(),
-                ]);
-                for host in required {
-                    anyhow::ensure!(
-                        !host.is_empty()
-                            && host.len() <= 253
-                            && host
-                                .bytes()
-                                .all(|b| b.is_ascii_alphanumeric()
-                                    || matches!(b, b'-' | b'_' | b'.')),
-                        "Invalid managed service alias"
-                    );
-                    if !hosts
-                        .iter()
-                        .any(|existing| existing.eq_ignore_ascii_case(&host))
-                    {
-                        hosts.push(host);
-                    }
-                }
-                set_setting(&mut text, "AllowedHosts", &hosts.join(";"))?;
-            }
-        }
-    }
-    // Write in place to retain the copied file's owner and permissions. A failed
-    // worker leaves the transfer blocked and its original available for recovery.
-    fs::write(&path, text)?;
-    fs::File::open(path)?.sync_all()?;
-    Ok(())
-}
-
-fn nzbget_setting(text: &mut String, key: &str, value: &str) -> anyhow::Result<()> {
+pub fn import_recyclarr() -> anyhow::Result<()> {
+    use sha2::{Digest, Sha256};
+    let actual = format!("{:x}", Sha256::digest(fs::read("/source/recyclarr.yml")?));
     anyhow::ensure!(
-        !value.contains(['\n', '\r', '\0']),
-        "Invalid NZBGet setting"
+        std::env::var("THELXINOE_RECYCLARR_IMPORT_HASH")? == actual,
+        "Recyclarr configuration changed after review"
     );
-    let mut offset = 0;
-    let mut found = None;
-    for line in text.split_inclusive('\n') {
-        if line
-            .split_once('=')
-            .is_some_and(|(name, _)| name.trim().eq_ignore_ascii_case(key))
+    run(false)?;
+    let metadata = Path::new("/destination/.thelxinoe");
+    if metadata.exists() {
+        fs::remove_dir_all(metadata)?;
+    }
+    let path = Path::new("/destination/recyclarr.yml");
+    let mut config: serde_yaml_ng::Value = serde_yaml_ng::from_str(&fs::read_to_string(path)?)?;
+    for kind in ["radarr", "sonarr"] {
+        for (_, instance) in config
+            .get_mut(kind)
+            .and_then(|v| v.as_mapping_mut())
+            .into_iter()
+            .flatten()
         {
-            anyhow::ensure!(found.is_none(), "Duplicate NZBGet setting");
-            let end = offset + line.trim_end_matches(['\n', '\r']).len();
-            found = Some(offset..end);
+            if let Some(map) = instance.as_mapping_mut() {
+                map.insert("api_key".into(), "REDACTED_REGENERATED_AT_SYNC".into());
+            }
         }
-        offset += line.len();
     }
-    if let Some(range) = found {
-        text.replace_range(range, &format!("{key}={value}"));
-    } else {
-        if !text.is_empty() && !text.ends_with('\n') {
-            text.push('\n');
-        }
-        text.push_str(&format!("{key}={value}\n"));
-    }
+    fs::write(path, serde_yaml_ng::to_string(&config)?)?;
     Ok(())
 }
 

@@ -396,6 +396,7 @@ async function scenario(uid, gid, full) {
         port: 9696,
         credentials: { username: '', secret: key },
       });
+      const originalDeployment = inspect(original);
       const review = await api('admin/stack/adopt/preview', 'POST', {
         service_id: attached.id,
       });
@@ -404,6 +405,11 @@ async function scenario(uid, gid, full) {
         review_id: review.review_id,
       });
       const service = await readyService(adopted.id);
+      expect(service.container_id).toBe(original);
+      expect(inspect(original).Config).toEqual(originalDeployment.Config);
+      expect(inspect(original).State.StartedAt).toBe(
+        originalDeployment.State.StartedAt,
+      );
       docker(
         'exec',
         '--user',
@@ -413,20 +419,26 @@ async function scenario(uid, gid, full) {
         '600',
         '/config/config.xml',
       );
-      const updated = await update(service);
-      const env = inspect(updated.container_id).Config.Env;
+      const preflight = await client.post(
+        `admin/service-updates/preflight/${service.id}`,
+        { data: {} },
+      );
+      expect(preflight.status()).toBe(409);
+      const env = inspect(service.container_id).Config.Env;
       expect(env).toContain('PUID=34567');
       expect(env.some((entry) => entry.startsWith('PGID='))).toBe(false);
       docker(
         'exec',
         '--user',
         '34567:911',
-        updated.container_id,
+        service.container_id,
         'sh',
         '-c',
         'touch /config/adopted-write',
       );
-      checked('adopted service update preserves its UID and default GID');
+      checked(
+        'in-place adoption preserves UID and the default GID; unsupported recreation remains blocked',
+      );
 
       // Exercise product snapshot verification and server validation with these IDs.
       // The signed newer version deliberately disagrees with the old executable;

@@ -2,6 +2,17 @@
 use super::*;
 use thelxinoe_database::Database;
 
+pub(super) async fn imported(db: &Database, key: String) -> anyhow::Result<bool> {
+    db.read("managers.updates.imported", move |db| {
+        Ok(db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE id=?1 AND origin='adopted')",
+            [key],
+            |r| r.get(0),
+        )?)
+    })
+    .await
+}
+
 pub(super) async fn policy(
     db: &Database,
     key: String,

@@ -256,8 +256,13 @@ async fn register_with_actor(
         key: input.credentials.secret.clone(),
         kind: input.kind.clone(),
     };
-    let version = version(&c, &input.credentials).await?;
-    if !thelxinoe_core::service_url_base(&input.kind).is_empty() {
+    let observed = docker(&state, &format!("containers/{}", input.container_id)).await?;
+    let version = if observed["running"] == false {
+        "Unverified".into()
+    } else {
+        version(&c, &input.credentials).await?
+    };
+    if observed["running"] == true && !thelxinoe_core::service_url_base(&input.kind).is_empty() {
         access::check_connection(&c).await?;
     }
     let kind = input.kind.clone();

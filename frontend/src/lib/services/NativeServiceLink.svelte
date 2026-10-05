@@ -24,7 +24,7 @@
 <div class="min-w-0">
   <a
     class="service-link flex w-fit max-w-full items-center gap-1.25 text-[11px] text-accent"
-    href={`${serverUrl()}${path}`}
+    href={/^https?:\/\//.test(path) ? path : `${serverUrl()}${path}`}
     target="_blank"
     rel="noopener noreferrer"
     onclick={open}

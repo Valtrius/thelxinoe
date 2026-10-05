@@ -8,6 +8,7 @@ import {
   fixtureId,
   freePort,
   resourceScope,
+  resourceRecord,
 } from './ci-resources.mjs';
 import { fixtureImage } from './ci-images.mjs';
 import {
@@ -40,7 +41,10 @@ export async function waitForProxy(client, base) {
   );
 }
 
-export async function fixture({ scheme = 'https' } = {}) {
+export async function fixture({
+  scheme = 'https',
+  separateMovies = false,
+} = {}) {
   resourceScope();
   const project = fixtureId('access');
   const root = resolve(`.local/${project}`);
@@ -60,6 +64,7 @@ export async function fixture({ scheme = 'https' } = {}) {
     'media/tv',
     'media/music',
     'media/downloads',
+    'existing-movies',
   ])
     mkdirSync(`${root}/${directory}`, { recursive: true });
   let infrastructure;
@@ -67,6 +72,7 @@ export async function fixture({ scheme = 'https' } = {}) {
   let browser, context;
   const services = {};
   const attachedContainers = [];
+  const sourceProjects = [];
   const secrets = new Set(['test-only long passphrase']);
   let closed = false;
   let deployment;
@@ -174,14 +180,13 @@ export async function fixture({ scheme = 'https' } = {}) {
         nzbget: 'nzbget.conf',
         seerr: 'settings.json',
       }[kind] ?? 'config.xml';
-    const raw = compose(
+    const raw = docker(
       'exec',
-      '-T',
       '-u',
       '10001:10001',
-      'controller',
+      services[kind].container_id,
       'cat',
-      `/var/lib/thelxinoe/deployment/services/${services[kind].id}/appdata/${filename}`,
+      `/config/${filename}`,
     );
     for (const pattern of [
       /<ApiKey>(.*?)<\/ApiKey>/,
@@ -280,6 +285,7 @@ export async function fixture({ scheme = 'https' } = {}) {
     try {
       await browser?.close();
     } finally {
+      for (const source of sourceProjects) source.close();
       infrastructure?.close();
     }
     closed = true;
@@ -289,7 +295,12 @@ export async function fixture({ scheme = 'https' } = {}) {
     kind,
     urlBase,
     image,
-    { authentication = 'External', nzbgetWarnings = false } = {},
+    {
+      authentication = 'External',
+      nzbgetWarnings = false,
+      existingLayout = false,
+      composeOwnership = false,
+    } = {},
   ) {
     const name = `${project}-attached-${kind}-${attachedContainers.length}`;
     const directory = `${root}/attached-${kind}-${attachedContainers.length}`;
@@ -328,26 +339,75 @@ export async function fixture({ scheme = 'https' } = {}) {
       );
     attachedContainers.push(name);
     infrastructure.update({ containers: attachedContainers });
-    const container = docker(
-      'run',
-      '-d',
-      '--label',
-      `io.thelxinoe.ci-run=${env.THELXINOE_CI_RUN_ID ?? project}`,
-      '--name',
-      name,
-      '--network',
-      `${project}_test`,
-      '-e',
-      'PUID=10001',
-      '-e',
-      'PGID=10001',
-      '-v',
-      `${directory}:/config`,
-      ...(kind === 'prowlarr' ? [] : ['-v', `${mediaSource()}:/media`]),
-      '-p',
-      `127.0.0.1:${port}:${internalPort}`,
-      image,
-    );
+    let container;
+    if (composeOwnership) {
+      const sourceProject = fixtureId('source');
+      const file = `${directory}/compose.json`;
+      const record = resourceRecord({ project: sourceProject, closed: false });
+      sourceProjects.push(record);
+      writeFileSync(
+        file,
+        JSON.stringify({
+          services: {
+            [kind]: {
+              image,
+              container_name: name,
+              environment: { PUID: '10001', PGID: '10001' },
+              labels: {
+                'io.thelxinoe.ci-run': process.env.THELXINOE_CI_RUN_ID,
+              },
+              volumes: [
+                `${directory}:/config`,
+                ...(existingLayout
+                  ? [
+                      `${mediaSource('movies')}:/movies`,
+                      `${mediaSource('tv')}:/tv`,
+                      `${mediaSource('downloads')}:/downloads`,
+                    ]
+                  : [`${mediaSource()}:/media`]),
+              ],
+              ports: [`127.0.0.1:${port}:${internalPort}`],
+              networks: ['media'],
+              restart: 'unless-stopped',
+            },
+          },
+          networks: { media: { external: true, name: `${project}_test` } },
+        }),
+      );
+      docker('compose', '-p', sourceProject, '-f', file, 'up', '-d');
+      container = JSON.parse(docker('inspect', name))[0].Id;
+    } else
+      container = docker(
+        'run',
+        '-d',
+        '--label',
+        `io.thelxinoe.ci-run=${env.THELXINOE_CI_RUN_ID ?? project}`,
+        '--name',
+        name,
+        '--network',
+        `${project}_test`,
+        '-e',
+        'PUID=10001',
+        '-e',
+        'PGID=10001',
+        '-v',
+        `${directory}:/config`,
+        ...(kind === 'prowlarr'
+          ? []
+          : existingLayout
+            ? [
+                '-v',
+                `${mediaSource('movies')}:/movies`,
+                '-v',
+                `${mediaSource('tv')}:/tv`,
+                '-v',
+                `${mediaSource('downloads')}:/downloads`,
+              ]
+            : ['-v', `${mediaSource()}:/media`]),
+        '-p',
+        `127.0.0.1:${port}:${internalPort}`,
+        image,
+      );
     const direct = async (path, method = 'GET', data) => {
       if (kind === 'nzbget') {
         const response = await context.request.post(
@@ -466,7 +526,7 @@ export async function fixture({ scheme = 'https' } = {}) {
       },
     };
   }
-  async function peer() {
+  async function peer({ existingLayout = false } = {}) {
     const name = `${project}-peer`;
     attachedContainers.push(name);
     infrastructure.update({ containers: attachedContainers });
@@ -480,7 +540,9 @@ export async function fixture({ scheme = 'https' } = {}) {
       '--network',
       `${project}_test`,
       '-v',
-      `${mediaSource()}:/media`,
+      `${mediaSource('movies')}:${existingLayout ? '/movies' : '/media/movies'}`,
+      '-e',
+      `THELXINOE_TEST_MOVIE_PATH=${existingLayout ? '/movies/Mapping fixture (2000).mp4' : ''}`,
       '-v',
       `${resolve('tests/service-access-peer.mjs')}:/peer.mjs:ro`,
       fixtureImage('node:24-bookworm-slim'),
@@ -510,17 +572,21 @@ export async function fixture({ scheme = 'https' } = {}) {
       .toBe(true);
     return registered;
   }
-  function mediaSource() {
+  function mediaSource(folder = '') {
     // Docker Desktop may spell the same Windows bind differently for Compose
     // and `docker run`. Use the daemon's exact source, as real attachments must.
     const mounts = JSON.parse(
       docker('inspect', '--format', '{{json .Mounts}}', `${project}-server-1`),
     );
+    const child =
+      folder &&
+      mounts.find((mount) => mount.Destination === `/media/${folder}`);
+    if (child) return child.Source;
     const source = mounts.find(
       (mount) => mount.Destination === '/media',
     )?.Source;
     if (!source) throw Error('Fixture media mount is missing');
-    return source;
+    return source + (folder ? `/${folder}` : '');
   }
   try {
     browser = await launchBrowser();
@@ -531,6 +597,17 @@ export async function fixture({ scheme = 'https' } = {}) {
       root,
       env,
     });
+    if (separateMovies) {
+      infrastructure.config.services.server.volumes.push({
+        type: 'bind',
+        source: resolve(root, 'existing-movies'),
+        target: '/media/movies',
+      });
+      writeFileSync(
+        `${root}/compose.json`,
+        JSON.stringify(infrastructure.config),
+      );
+    }
     compose(
       'run',
       '--rm',

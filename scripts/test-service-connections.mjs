@@ -5,7 +5,12 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { composeFixture, fixtureId, freePort } from './ci-resources.mjs';
-import { randomUUID } from 'node:crypto';
+import {
+  randomUUID,
+  randomBytes,
+  createCipheriv,
+  createDecipheriv,
+} from 'node:crypto';
 import { waitForProxy } from './service-access-fixture.mjs';
 import { requestBudget, waitForProvision } from './ci-readiness.mjs';
 import { launchBrowser } from './ci-browser.mjs';
@@ -656,6 +661,15 @@ try {
     // A creating journal with a lost create response must accept exactly one
     // owned container. With no container it must recreate the same saved spec.
     const journalPath = `/var/lib/thelxinoe/deployment/services/${services.radarr.id}/service.json`;
+    const registryKey = execFileSync('docker', [
+      ...infrastructure.args,
+      'exec',
+      '-T',
+      'controller',
+      'cat',
+      '/var/lib/thelxinoe/deployment/registry-key/master.key',
+    ]);
+    const scope = Buffer.from(`service:${services.radarr.id}`);
     for (const removeContainer of [false, true]) {
       await refreshService('radarr');
       const previous = services.radarr.container_id;
@@ -664,21 +678,47 @@ try {
         await action('radarr', 'stop');
         docker('rm', previous);
       }
+      const encrypted = execFileSync('docker', [
+        ...infrastructure.args,
+        'exec',
+        '-T',
+        'controller',
+        'cat',
+        journalPath,
+      ]);
+      const decipher = createDecipheriv(
+        'aes-256-gcm',
+        registryKey,
+        encrypted.subarray(0, 12),
+      );
+      decipher.setAAD(scope);
+      decipher.setAuthTag(encrypted.subarray(-16));
       const journal = JSON.parse(
-        compose('exec', '-T', 'controller', 'cat', journalPath),
+        Buffer.concat([
+          decipher.update(encrypted.subarray(12, -16)),
+          decipher.final(),
+        ]).toString('utf8'),
       );
       journal.phase = 'creating';
       journal.container = '';
       journal.expected = null;
+      const nonce = randomBytes(12);
+      const cipher = createCipheriv('aes-256-gcm', registryKey, nonce);
+      cipher.setAAD(scope);
+      const changed = Buffer.concat([
+        cipher.update(JSON.stringify(journal)),
+        cipher.final(),
+      ]);
       writeFileSync(
         `${root}/interrupted-service.json`,
-        JSON.stringify(journal),
+        Buffer.concat([nonce, changed, cipher.getAuthTag()]),
       );
       docker(
         'cp',
         `${root}/interrupted-service.json`,
         `${compose('ps', '-q', 'controller')}:${journalPath}`,
       );
+      compose('exec', '-T', 'controller', 'chmod', '600', journalPath);
       await action('radarr', 'reconcile');
       await expect
         .poll(

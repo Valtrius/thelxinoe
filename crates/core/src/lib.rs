@@ -24,15 +24,6 @@ pub fn service_url_base(kind: &str) -> &'static str {
     }
 }
 
-#[derive(Clone, Copy, Default, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct NzbgetAdoptionFixes {
-    #[serde(default)]
-    pub rotate_logs: bool,
-    #[serde(default)]
-    pub cert_check: bool,
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {

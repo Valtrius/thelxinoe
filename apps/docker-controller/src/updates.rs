@@ -117,12 +117,7 @@ pub(super) async fn list(State(runtime): State<Runtime>) -> Result<Json<Value>> 
 }
 pub(super) async fn verified(s: &Managed, d: &Deployment) -> Result<Value> {
     let raw = engine(&format!("/containers/{}/json", s.container)).await?;
-    if policy::fingerprint(&raw) != s.expected
-        || raw["Config"]["Labels"]["app.thelxinoe.deployment"] != d.id
-        || raw["Config"]["Labels"]["app.thelxinoe.managed-id"] != s.id
-    {
-        return Err(conflict("Configuration drift blocks update work"));
-    }
+    verify_fingerprint(d, s, &raw).await?;
     Ok(raw)
 }
 
@@ -196,6 +191,15 @@ pub(super) async fn preflight(
     Json(input): Json<Preflight>,
 ) -> Result<Json<Value>> {
     id(&input.operation_id)?;
+    if load(&key)?
+        .imported
+        .as_ref()
+        .is_some_and(|v| !v.capabilities.update.available)
+    {
+        return Err(conflict(
+            "Faithful recreation and recovery are not available for this imported deployment",
+        ));
+    }
     if path(&input.operation_id).join("update.json").exists() {
         let existing = read(&input.operation_id)?;
         if existing.service != key {
@@ -339,7 +343,7 @@ pub(super) async fn copy_state(
     restore: bool,
     label: &str,
 ) -> Result<()> {
-    copy_state_inner(d, operation, source, destination, restore, label, None).await
+    copy_state_inner(d, operation, source, destination, restore, label).await
 }
 
 pub(super) async fn copy_adoption(
@@ -347,9 +351,8 @@ pub(super) async fn copy_adoption(
     operation: &str,
     source: &str,
     destination: &str,
-    nzbget: Option<&adoption::Nzbget>,
 ) -> Result<()> {
-    copy_state_inner(d, operation, source, destination, false, "takeover", nzbget).await
+    copy_state_inner(d, operation, source, destination, false, "takeover").await
 }
 
 async fn copy_state_inner(
@@ -359,12 +362,16 @@ async fn copy_state_inner(
     destination: &str,
     restore: bool,
     label: &str,
-    nzbget: Option<&adoption::Nzbget>,
 ) -> Result<()> {
     let name = format!("thelxinoe-state-{}-{label}", &operation[..8]);
     let command = if label == "takeover" {
         let service = load(operation)?;
-        vec!["adoption-copy".to_owned(), service.kind, service.name]
+        if service.kind != "recyclarr" {
+            return Err(conflict(
+                "Application adoption never copies or rewrites configuration",
+            ));
+        }
+        vec!["recyclarr-import".to_owned()]
     } else {
         vec![
             if restore {
@@ -376,14 +383,6 @@ async fn copy_state_inner(
         ]
     };
     let mut spec = json!({"Image":current_image().await?,"Cmd":command,"Healthcheck":{"Test":["NONE"]},"Labels":{"app.thelxinoe.update":operation,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":"none","ReadonlyRootfs":true,"CapDrop":["ALL"],"CapAdd":["CHOWN","FOWNER","DAC_OVERRIDE"],"SecurityOpt":["no-new-privileges:true"],"Memory":536870912,"NanoCpus":1000000000u64,"PidsLimit":32,"Mounts":[{"Type":"bind","Source":source,"Target":"/source","ReadOnly":true},{"Type":"bind","Source":destination,"Target":"/destination"}]}});
-    if label == "takeover" {
-        let service = load(operation)?;
-        if thelxinoe_core::service_gateway_auth(&service.kind) {
-            let aliases =
-                &service.spec["NetworkingConfig"]["EndpointsConfig"][&d.network]["Aliases"];
-            spec["Env"] = json!([format!("THELXINOE_ADOPTION_HOSTS={aliases}")]);
-        }
-    }
     if label == "takeover" && load(operation)?.kind == "recyclarr" {
         let hash = std::fs::read_to_string(
             store::root()
@@ -393,29 +392,12 @@ async fn copy_state_inner(
         .map_err(|_| unavailable())?;
         spec["Env"] = json!([format!("THELXINOE_RECYCLARR_IMPORT_HASH={hash}")]);
     }
-    let credentials_path = service_path(operation).with_file_name("nzbget-adoption.json");
-    if let Some(settings) = nzbget {
-        persisted(store::write_json(&credentials_path, settings))?;
-        spec["HostConfig"]["Mounts"].as_array_mut().ok_or_else(unavailable)?.push(json!({
-            "Type":"bind","Source":format!("{}/services/{operation}/nzbget-adoption.json",d.appdata_source),
-            "Target":"/adoption.json","ReadOnly":true,
-        }));
-    }
     let value = request(
         Method::POST,
         &format!("/containers/create?name={name}"),
         Some(spec),
     )
-    .await;
-    let value = match value {
-        Ok(value) => value,
-        Err(error) => {
-            if nzbget.is_some() {
-                let _ = std::fs::remove_file(&credentials_path);
-            }
-            return Err(error);
-        }
-    };
+    .await?;
     let container = value["Id"].as_str().ok_or_else(unavailable)?;
     let result = async {
         start(container).await?;
@@ -423,9 +405,6 @@ async fn copy_state_inner(
     }
     .await;
     let cleaned = remove(container).await;
-    if nzbget.is_some() {
-        persisted(std::fs::remove_file(credentials_path).map_err(Into::into))?;
-    }
     result?;
     cleaned
 }
@@ -548,13 +527,21 @@ async fn candidate(d: &Deployment, u: &mut Update, config: &str) -> Result<()> {
     }
     // Never inherit host ports, sockets, extra mounts, production networks or commands.
     spec["Healthcheck"] = json!({"Test":["NONE"]});
-    spec["HostConfig"]["ExtraHosts"] = json!([
-        "thelxinoe-radarr:127.0.0.1",
-        "thelxinoe-sonarr:127.0.0.1",
-        "thelxinoe-lidarr:127.0.0.1",
-        "thelxinoe-nzbget:127.0.0.1",
-        "thelxinoe-prowlarr:127.0.0.1"
-    ]);
+    let peers = ["radarr", "sonarr", "lidarr", "nzbget", "prowlarr"];
+    let mut hosts = peers
+        .iter()
+        .map(|kind| format!("thelxinoe-{kind}:127.0.0.1"))
+        .collect::<Vec<_>>();
+    // Connections may use the retained container name instead of a template alias.
+    // Resolve those names only to controlled fixtures inside the isolated namespace.
+    for peer in services()? {
+        if peer.phase == "active" && peers.contains(&peer.kind.as_str()) {
+            hosts.push(format!("{}:127.0.0.1", peer.name));
+        }
+    }
+    hosts.sort();
+    hosts.dedup();
+    spec["HostConfig"]["ExtraHosts"] = json!(hosts);
     let raw = request(
         Method::POST,
         &format!("/containers/create?name=thelxinoe-candidate-{}", &u.id[..8]),

@@ -97,6 +97,27 @@ pub(super) fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/admin/managers/reconcile", post(reconcile_api))
         .route("/api/v1/admin/managers/bindings", get(list))
+        .route(
+            "/api/v1/admin/managers/{id}/retention",
+            axum::routing::put(retention_permission),
+        )
+}
+#[derive(Deserialize)]
+struct RetentionPermission {
+    enabled: bool,
+}
+async fn retention_permission(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+    Json(input): Json<RetentionPermission>,
+) -> Result<Json<Value>> {
+    let actor = security::require(&state, &headers, Capability::ManageServer).await?;
+    let _lease = state.media_operations.write().await;
+    let service = service(&state, &key).await?;
+    let _guard = state.managers.guard.service(&service.kind).await;
+    storage::retention_permission(&state.db, key, input.enabled, actor.user.id).await?;
+    Ok(Json(json!({"saved":true})))
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(super) struct Claim {
@@ -177,12 +198,10 @@ pub(super) async fn inventory(state: &AppState, s: &Service) -> Result<Vec<Claim
         for file in files.as_array().ok_or_else(unavailable)? {
             let manager_file_id = positive(file, "id")?;
             let path = file["path"].as_str().ok_or_else(unavailable)?;
-            if !clean_path(path) || suffix(path, canonical_root(&s.kind)).is_none() {
-                return Err(ApiError::conflict(
-                    "Manager files must use the canonical /media library path; update existing paths in the service's bulk editor",
-                ));
-            }
-            let server_path = path.to_owned();
+            let Some(server_path) = storage_paths::resolve(state, &s.media_source, path).await?
+            else {
+                continue;
+            };
             let field = if s.kind == "sonarr" {
                 "episodeFileId"
             } else {

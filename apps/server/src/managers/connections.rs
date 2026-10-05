@@ -71,9 +71,9 @@ impl Link {
             source_kind: source.kind.clone(),
             target_kind: target.kind.clone(),
             kind: kind(&source.kind, &target.kind).unwrap().into(),
-            enabled: true,
+            enabled: false,
             cleanup: false,
-            state: "pending".into(),
+            state: "disconnected".into(),
             error: None,
             attempts: 0,
             next_attempt: 0,
@@ -324,8 +324,14 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
         let mut discovered = Vec::new();
         for source in &endpoints {
             for target in &endpoints {
-                if kind(&source.kind, &target.kind).is_some() {
-                    discovered.push(Link::new(source, target));
+                if kind(&source.kind, &target.kind).is_some()
+                    && storage::installed_pair(&state.db, source.id.clone(), target.id.clone())
+                        .await?
+                {
+                    let mut link = Link::new(source, target);
+                    link.enabled = true;
+                    link.state = "pending".into();
+                    discovered.push(link);
                 }
             }
         }

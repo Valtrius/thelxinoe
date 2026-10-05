@@ -258,6 +258,10 @@ pub(super) fn eligibility(
     if files.is_empty() || files.iter().any(|f| f.2 != "managed") {
         return Ok(None);
     };
+    let permitted = db.query_row("SELECT NOT EXISTS(SELECT 1 FROM manager_bindings b JOIN manager_services s ON s.id=b.service_id JOIN media_files f ON f.id=b.file_id WHERE s.enabled=1 AND b.service_generation=s.generation AND b.generation=f.generation AND b.checked_at>=?2 AND b.file_id IN (SELECT value FROM json_each(?1)) AND NOT COALESCE((SELECT value='true' FROM settings WHERE key='manager.retention.'||b.service_id),EXISTS(SELECT 1 FROM stack_provisions WHERE service_id=b.service_id AND origin='installed')))", params![json!(files.iter().map(|f| &f.0).collect::<Vec<_>>()).to_string(),now()-60], |r| r.get::<_,bool>(0))?;
+    if !permitted {
+        return Ok(None);
+    }
     let active=db.query_row("SELECT EXISTS(SELECT 1 FROM playback_sessions WHERE file_id IN (SELECT value FROM json_each(?1)) AND state IN ('ready','playing','paused') AND updated_at>?2)",params![json!(files.iter().map(|f|&f.0).collect::<Vec<_>>()).to_string(),now()-120],|r|r.get::<_,bool>(0))?;
     if active {
         return Ok(None);

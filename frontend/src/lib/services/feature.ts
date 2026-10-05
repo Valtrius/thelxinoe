@@ -31,8 +31,10 @@ export type ManagerService = {
   port: number;
   url_base: string;
   access_url: string | null;
+  native_url?: string | null;
   version: string;
   defaults: Partial<ManagerDefaults>;
+  retention_enabled?: boolean;
   checked_at: number;
   error: string | null;
 };
@@ -45,6 +47,7 @@ export type SupportService = {
   version: string;
   url_base: string;
   access_url: string | null;
+  native_url?: string | null;
   checked_at: number;
   error?: string | null;
 };
@@ -92,6 +95,9 @@ export type StackService = {
   can_remove: boolean;
   error: string | null;
   transfer_pending: boolean;
+  imported?: boolean;
+  can_release?: boolean;
+  capabilities?: OwnershipCapabilities;
 };
 export type Provision = {
   id: string;
@@ -103,23 +109,26 @@ export type Provision = {
   error: string | null;
   origin: string;
 };
+export type OwnershipCapability = { available: boolean; reason: string | null };
+export type OwnershipCapabilities = Record<
+  'lifecycle' | 'backup' | 'update' | 'recreate' | 'release',
+  OwnershipCapability
+>;
 export type TransferReview = {
   review_id: string;
   name: string;
   image: string;
-  source_config: string;
-  managed_config: string;
+  source_config: string | null;
   compose_project: string | null;
   compose_service: string | null;
-  authentication: 'external' | 'preserved' | 'generated';
-  publish_ports: boolean;
-  allowed_hosts: boolean;
-  nzbget?: {
-    append_log: boolean;
-    empty_password: boolean;
-    cert_check_disabled: boolean;
-    cert_store: string | null;
-  };
+  mode: 'in_place';
+  authentication: 'preserved';
+  restart_required: boolean;
+  changes: { setting: string; before: string; after: string; reason: string }[];
+  capabilities: OwnershipCapabilities;
+  integration_ready?: boolean;
+  integration_error?: string | null;
+  warnings?: string[];
 };
 export type UpdatePolicy = {
   service_id: string;

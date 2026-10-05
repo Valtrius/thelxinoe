@@ -19,8 +19,9 @@ export async function installUiFixture(
       can_recreate: boolean;
     };
     managedNzbget?: boolean;
-    nzbgetCertStore?: string | null;
+    importedBackupAvailable?: boolean;
     managerKind?: 'radarr' | 'sonarr' | 'lidarr';
+    managerDefaultsUnset?: boolean;
     serviceUpdateState?: string;
   } = {},
 ) {
@@ -253,8 +254,8 @@ export async function installUiFixture(
             access_url: `/services/${managerKind}`,
             version: '6.0.0',
             defaults: {
-              root_folder: '/media/movies',
-              quality_profile: 1,
+              root_folder: options.managerDefaultsUnset ? '' : '/media/movies',
+              quality_profile: options.managerDefaultsUnset ? 0 : 1,
               metadata_profile: null,
               monitored: true,
             },
@@ -294,6 +295,11 @@ export async function installUiFixture(
           },
         ],
       });
+    if (
+      path === `/admin/managers/manager-${managerKind}/defaults` &&
+      method === 'PUT'
+    )
+      return json({ saved: true });
     if (path === `/admin/managers/manager-${managerKind}/options`)
       return json({
         roots: [{ id: 1, path: '/media/movies' }],
@@ -366,21 +372,33 @@ export async function installUiFixture(
         name: 'nzbget',
         image: 'linuxserver/nzbget',
         source_config: '/external/nzbget',
-        managed_config: '/managed/nzbget',
         compose_project: null,
         compose_service: null,
-        authentication: 'generated',
-        publish_ports: true,
-        allowed_hosts: false,
-        nzbget: {
-          append_log: true,
-          empty_password: true,
-          cert_check_disabled: true,
-          cert_store:
-            options.nzbgetCertStore === undefined
-              ? '/etc/ssl/certs/ca-certificates.crt'
-              : options.nzbgetCertStore,
+        mode: 'in_place',
+        restart_required: false,
+        changes: [],
+        capabilities: {
+          lifecycle: { available: true, reason: null },
+          backup: {
+            available: options.importedBackupAvailable ?? true,
+            reason:
+              options.importedBackupAvailable === false
+                ? 'Recovery coverage is incomplete'
+                : null,
+          },
+          update: {
+            available: false,
+            reason: 'Faithful recreation is not available for this deployment',
+          },
+          release: { available: true, reason: null },
         },
+        authentication: 'preserved',
+        integration_ready: true,
+        warnings: [
+          'The log file may grow indefinitely.',
+          'The native password is empty.',
+          'Outgoing TLS certificate verification is disabled.',
+        ],
       });
     if (path === '/admin/stack/adopt/preview')
       return json({
@@ -388,12 +406,23 @@ export async function installUiFixture(
         name: 'prowlarr',
         image: 'linuxserver/prowlarr',
         source_config: '/external/prowlarr',
-        managed_config: '/managed/prowlarr',
         compose_project: 'media',
         compose_service: 'prowlarr',
-        authentication: 'external',
-        publish_ports: false,
-        allowed_hosts: true,
+        mode: 'in_place',
+        restart_required: false,
+        changes: [],
+        capabilities: {
+          lifecycle: { available: true, reason: null },
+          backup: { available: true, reason: null },
+          update: {
+            available: false,
+            reason: 'Faithful recreation is not available for this deployment',
+          },
+          release: { available: true, reason: null },
+        },
+        authentication: 'preserved',
+        integration_ready: true,
+        warnings: [],
       });
     if (
       path === '/admin/stack/adopt' ||

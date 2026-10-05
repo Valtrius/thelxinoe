@@ -1,6 +1,7 @@
 // Hostile-response fixture for the gateway boundary, never a normal UI substitute.
 import { createServer } from 'node:http';
 const activity = { streams: 0, pending: 0 };
+const moviePath = process.env.THELXINOE_TEST_MOVIE_PATH;
 createServer((request, response) => {
   const path = new URL(request.url, 'http://fixture').pathname;
   response.setHeader('Content-Type', 'application/json');
@@ -14,6 +15,20 @@ createServer((request, response) => {
     );
   } else if (path === '/services/radarr/api/v3/rootfolder') {
     response.end('[]');
+  } else if (path === '/services/radarr/api/v3/movie') {
+    response.end(
+      JSON.stringify(
+        moviePath
+          ? [{ id: 1, tmdbId: 603, title: 'Mapping fixture', hasFile: true }]
+          : [],
+      ),
+    );
+  } else if (path === '/services/radarr/api/v3/moviefile') {
+    response.end(
+      JSON.stringify(
+        moviePath ? [{ id: 11, movieId: 1, path: moviePath }] : [],
+      ),
+    );
   } else if (path === '/services/radarr/headers') {
     response.end(JSON.stringify(request.headers));
   } else if (path === '/services/radarr/activity') {

@@ -157,6 +157,26 @@ async fn partial_controller_result_remains_terminal_when_arr_cannot_be_read_afte
         ("stack/recyclarr/recyclarr/catalog".into(), json!({"image":"image","resources":"resources","items":[]})),
         (format!("stack/recyclarr/recyclarr/results/{}", job.payload["id"].as_str().unwrap()), json!({"state":"partial","output":"Applied one profile before failure","configuration_revision":"config-v1"})),
     ]);
+    let media_source = {
+        let inspections = state.managers.docker.lock().unwrap();
+        crate::managers::storage_paths::evidence(
+            &inspections["containers/self"],
+            &inspections["containers/aaaaaaaaaaaa"],
+            &state.config.media.to_string_lossy(),
+        )
+        .unwrap()
+    };
+    state
+        .db
+        .write("test.storage", move |db| {
+            db.execute(
+                "UPDATE manager_services SET media_source=?1",
+                [media_source],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
     assert!(run_job(&state, &job).await.is_err());
     let path = format!(
         "/api/v1/admin/recyclarr/runs/{}",

@@ -7,6 +7,7 @@ import { fixtureImages, resourceRecord } from './ci-resources.mjs';
 import { docker, fixture } from './service-access-fixture.mjs';
 import { additionalAccess } from './service-access-additional.mjs';
 import { nzbgetAccess } from './service-access-nzbget.mjs';
+import { existingStorageAccess } from './service-access-storage.mjs';
 
 if (!process.argv.includes('--built')) {
   const images = fixtureImages();
@@ -572,15 +573,75 @@ try {
       await client.close();
     },
   );
-  const { ownershipAccess, retireService, attachedConflicts } =
+  const { ownershipAccess, attachedConflicts } =
     await import('./service-access-ownership.mjs');
   await ownershipAccess({ f, page, scenario, output });
-  await retireService(f, 'radarr');
   await attachedConflicts({ f, page, scenario, output });
+  await scenario(
+    'existing /movies paths map to files under the server media mount',
+    async () => {
+      execFileSync(
+        'ffmpeg',
+        [
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-y',
+          '-f',
+          'lavfi',
+          '-i',
+          'color=c=blue:s=160x90:d=1',
+          '-c:v',
+          'mpeg4',
+          `${f.root}/media/movies/Mapping fixture (2000).mp4`,
+        ],
+        { stdio: 'pipe', windowsHide: true },
+      );
+      await f.peer({ existingLayout: true });
+      await f.api('/catalog/roots', 'POST', {
+        name: 'Existing movies',
+        kind: 'movies',
+        path: '/media/movies',
+      });
+      const root = (await f.api('/catalog/roots')).items.find(
+        (entry) => entry.path === '/media/movies',
+      );
+      const job = await f.api(`/catalog/roots/${root.id}/scan`, 'POST');
+      await expect
+        .poll(
+          async () =>
+            (await f.api('/admin/jobs')).items.find(
+              (entry) => entry.id === job.job_id,
+            )?.state,
+          { timeout: 90000 },
+        )
+        .toBe('complete');
+      await f.api('/admin/managers/reconcile', 'POST');
+      const mapped = (await f.api('/admin/managers/bindings')).items.find(
+        (entry) => entry.path === '/media/movies/Mapping fixture (2000).mp4',
+      );
+      expect(mapped.ownership).toBe('managed');
+      expect(mapped.bindings.some((binding) => binding.file_id === 11)).toBe(
+        true,
+      );
+      writeFileSync(
+        `${output}/storage-mapping.json`,
+        JSON.stringify(
+          {
+            source: '/movies/Mapping fixture (2000).mp4',
+            server: mapped.path,
+            ownership: mapped.ownership,
+            bindings: mapped.bindings,
+          },
+          null,
+          2,
+        ),
+      );
+    },
+  );
   await scenario(
     'native headers and cookies cannot escape their service scope',
     async () => {
-      await f.peer();
       const range = await f.context.request.get(
         `${f.base}/services/radarr/range`,
         { headers: { Range: 'bytes=0-4' } },
@@ -821,6 +882,10 @@ try {
         await local.close();
       }
     },
+  );
+  await scenario(
+    'separate server media mounts preserve adoption and map existing media',
+    () => existingStorageAccess(output),
   );
   result.passed = true;
 } finally {

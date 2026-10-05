@@ -208,44 +208,10 @@ fn suffix<'a>(path: &'a str, root: &str) -> Option<&'a str> {
         path.strip_prefix(root).filter(|v| v.starts_with('/'))
     }
 }
-fn media_source(container: &Value) -> Result<String> {
-    let mounts = container["mounts"].as_array().ok_or_else(unavailable)?;
-    if mounts.iter().any(|m| {
-        m["destination"]
-            .as_str()
-            .is_some_and(|p| suffix(p, "/media").is_some_and(|tail| !tail.is_empty()))
-    }) {
-        return Err(ApiError::conflict(
-            "Mount one shared host directory at /media; child mounts such as /media/movies are not supported",
-        ));
-    }
-    let roots = mounts
-        .iter()
-        .filter(|m| m["destination"] == "/media")
-        .collect::<Vec<_>>();
-    if roots.len() != 1 || roots[0]["kind"] != "bind" || roots[0]["writable"] != true {
-        return Err(ApiError::conflict(
-            "Every media service needs one writable bind mount at /media",
-        ));
-    }
-    roots[0]["source"]
-        .as_str()
-        .and_then(host_path)
-        .ok_or_else(unavailable)
-}
+#[path = "storage_paths.rs"]
+mod storage_paths;
 fn shared_media_source(server: &Value, manager: &Value, media: &str) -> Result<String> {
-    if media != "/media" {
-        return Err(ApiError::conflict(
-            "Docker integrations require the server media root /media",
-        ));
-    }
-    let source = media_source(server)?;
-    if source != media_source(manager)? {
-        return Err(ApiError::conflict(
-            "Mount the same host media directory at /media in Thelxinoe and this service",
-        ));
-    }
-    Ok(source)
+    storage_paths::evidence(server, manager, media)
 }
 async fn evidence(state: &AppState, container: &str, port: u16) -> Result<(String, String)> {
     evidence_for(state, container, port, true, true).await
@@ -280,34 +246,47 @@ async fn evidence_for(
     };
     let server = docker(state, &format!("containers/{own}")).await?;
     let manager = docker(state, &format!("containers/{container}")).await?;
-    if manager["running"] != true || manager["id"].as_str().is_none_or(|id| id != container) {
+    if manager["id"].as_str().is_none_or(|id| id != container) {
         return Err(unavailable());
     }
     let networks = server["networks"].as_array().ok_or_else(unavailable)?;
-    let address = manager["networks"]
+    let shared = manager["networks"]
         .as_array()
         .ok_or_else(unavailable)?
         .iter()
         .filter(|n| {
             networks
                 .iter()
-                .any(|s| s["id"].is_string() && s["id"] == n["id"])
+                .any(|s| s["id"].as_str().is_some_and(|id| !id.is_empty()) && s["id"] == n["id"])
         })
-        .find_map(|n| {
-            n["address"]
+        .collect::<Vec<_>>();
+    if shared.is_empty() {
+        return Err(ApiError::conflict(
+            "Manager must share a Docker network with this server",
+        ));
+    }
+    let address = shared.iter().find_map(|n| {
+        n["address"]
+            .as_str()
+            .and_then(|a| a.parse::<std::net::Ipv4Addr>().ok())
+            .filter(|ip| ip.is_private() || ip.is_loopback())
+            .map(|ip| ip.to_string())
+    });
+    let route = if named_host || manager["running"] == false {
+        format!("http://{}:{port}", support::docker_host(&manager)?)
+    } else if let Some(address) = address {
+        format!("http://{address}:{port}")
+    } else {
+        let address = shared.iter().find_map(|n| {
+            n["ipv6"]
                 .as_str()
-                .and_then(|a| a.parse::<std::net::Ipv4Addr>().ok())
-                .filter(|ip| ip.is_private() || ip.is_loopback())
-        })
-        .ok_or_else(|| {
-            ApiError::conflict("Manager must share a Docker network with this server")
-        })?;
+                .and_then(|a| a.parse::<std::net::Ipv6Addr>().ok())
+                .filter(|a| a.is_unique_local() || a.is_loopback())
+        });
+        format!("http://[{}]:{port}", address.ok_or_else(unavailable)?)
+    };
     Ok((
-        if named_host {
-            format!("http://{}:{port}", support::docker_host(&manager)?)
-        } else {
-            format!("http://{address}:{port}")
-        },
+        route,
         if needs_media {
             shared_media_source(&server, &manager, &state.config.media.to_string_lossy())?
         } else {
@@ -468,7 +447,12 @@ async fn register_with_actor(
         key: input.api_key.clone(),
         kind: input.kind.clone(),
     };
-    let status = connection.get("system/status").await?;
+    let observed = docker(&state, &format!("containers/{}", input.container_id)).await?;
+    let status = if observed["running"] == false {
+        json!({"appName":input.kind,"version":"Unverified", "urlBase":input.url_base})
+    } else {
+        connection.get("system/status").await?
+    };
     access::check_reported_base(&input.kind, &input.url_base, &status)?;
     if !status["appName"]
         .as_str()
@@ -478,7 +462,6 @@ async fn register_with_actor(
             "The selected container is not the requested manager",
         ));
     }
-    validate_roots(&input.kind, &connection.get("rootfolder").await?)?;
     let version = status["version"]
         .as_str()
         .filter(|v| v.len() < 100)
@@ -525,7 +508,6 @@ async fn options(
         quality::ensure_defaults(&state, &service(&state, &id).await?).await?;
     }
     let roots = c.get("rootfolder").await?;
-    validate_roots(&s.kind, &roots)?;
     let profiles = c.get("qualityprofile").await?;
     let guides = recyclarr::profiles(&state, &id).await?;
     let metadata = if s.kind == "lidarr" {
@@ -572,7 +554,6 @@ fn yes() -> bool {
 async fn prepare_library(state: &AppState, s: &Service) -> Result<()> {
     let c = Connection::open(state, s).await?;
     let roots = c.get("rootfolder").await?;
-    validate_roots(&s.kind, &roots)?;
     let root = canonical_root(&s.kind);
     if roots
         .as_array()
@@ -630,14 +611,14 @@ async fn defaults(
         .find(|p| p.profile_id == input.quality_profile)
         .map(|p| p.trash_id);
     let c = Connection::open(&state, &s).await?;
-    if input.root_folder != canonical_root(&s.kind)
+    if !clean_path(&input.root_folder)
         || !c.get("qualityprofile").await?.as_array().is_some_and(|a| {
             a.iter()
                 .any(|r| r["id"].as_i64() == Some(input.quality_profile))
         })
     {
         return Err(ApiError::bad(
-            "Choose the canonical library folder and a valid quality profile",
+            "Choose an existing library folder and a valid quality profile",
         ));
     }
     if s.kind == "lidarr"
@@ -657,7 +638,7 @@ async fn defaults(
         .flatten()
         .any(|r| r["path"] == input.root_folder)
     {
-        if !installed_here(&state, &s.id).await? {
+        if input.root_folder != canonical_root(&s.kind) || !installed_here(&state, &s.id).await? {
             return Err(ApiError::bad("Choose an existing manager root folder"));
         }
         prepare_library(&state, &s).await?;
@@ -690,20 +671,6 @@ async fn test(
     Ok(Json(json!({"healthy":true,"version":result?})))
 }
 
-fn validate_roots(kind: &str, roots: &Value) -> Result<()> {
-    if roots
-        .as_array()
-        .ok_or_else(unavailable)?
-        .iter()
-        .any(|r| r["path"] != canonical_root(kind))
-    {
-        return Err(ApiError::conflict(format!(
-            "Configure this service's library root as {} and update existing library paths in its bulk editor",
-            canonical_root(kind)
-        )));
-    }
-    Ok(())
-}
 fn canonical_root(kind: &str) -> &'static str {
     match kind {
         "radarr" => "/media/movies",

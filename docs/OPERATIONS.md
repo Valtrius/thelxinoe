@@ -6,7 +6,7 @@ Copy [`.env.example`](../.env.example) to `.env` and choose paths before startin
 
 The server and newly installed media services use these IDs. The controller runs as root with the configured group and sets access on its private socket directory. Existing services retain their saved identities through adoption, updates and recovery. Choose IDs before initializing the deployment; changing `.env` does not change existing file ownership or saved deployment/service identities.
 
-Every media service must bind the same absolute host directory, writable, at `/media`:
+Fresh installations share the configured media directory at `/media`:
 
 ```text
 <MEDIA_ROOT>/movies       Radarr: /media/movies
@@ -15,7 +15,7 @@ Every media service must bind the same absolute host directory, writable, at `/m
 <MEDIA_ROOT>/downloads    Download clients: /media/downloads
 ```
 
-Keep each service's separate `/config` mount. Prowlarr and Seerr need no media mount. Separate child mounts and path translations are unsupported. Update existing manager records and download locations when changing paths; changing mounts alone does not update them. Hardlinks require a common filesystem.
+Existing services retain their mounts and native paths. Keep the server's writable `/media` bind mount; additional bind mounts or shared named volumes beneath `/media` support existing storage layouts. Fresh media installations require a single shared mount without child mounts. Playback requires read access. Hardlinks require a common filesystem.
 
 Existing services must share a Docker network with the server. For an existing network, add this `compose.override.yaml`:
 
@@ -26,7 +26,7 @@ networks:
     name: media_network
 ```
 
-Connect services in Settings → Media services. Radarr and Sonarr automatically create and select a 1080p–2160p upgrade profile; profile and monitoring changes save immediately. Custom profiles can be created from the qualities offered by each service. Connecting their APIs leaves lifecycle ownership with the original Compose project. To transfer ownership, use **Review ownership transfer**: disable the service in its old Compose file and external updaters before confirming. Thelxinoe stops it and copies its appdata; never restart the retained original alongside its replacement. Avoid `--remove-orphans` while retaining the original for recovery. Interrupted transfers offer **Retry setup**, **Reconcile** or **Restore original service**. Implementation: [adoption](../apps/docker-controller/src/adoption.rs), [storage contract](../apps/docker-controller/src/contract.rs).
+Connect services in Settings → Media services. Fresh Radarr/Sonarr installs receive request defaults; existing services require an explicit choice of existing root and quality profile. API integration leaves container management with the current owner. Follow the [adoption steps](../README.md#adopt-existing-services) to transfer ownership. In-place adoption requires retiring the entire original Compose project and its updaters. Configuration stays where it is. Imported recreation and updates are currently blocked; **Release ownership** leaves the container and data intact.
 
 ## Discovery and requests
 
@@ -36,7 +36,7 @@ The server manages Seerr API credentials and maps each signed-in Thelxinoe user 
 
 Upstream Seerr requires an initial media-server administrator before it exposes local-user creation. Managed setup performs that handshake against a temporary empty endpoint, authenticated with a random token that expires after two minutes and is revoked as soon as setup finishes. It exposes no catalog or Thelxinoe login. Setup then clears the media-server type; subsequent availability scans come from Arr. The update preflight verifies the Seerr API and existing owner against copied state; first-run initialization also needs checking when qualifying new upstream releases. [Adapter](../apps/server/src/managers/seerr.rs).
 
-Arr profile, root, and address changes are synchronized immediately where possible and retried in the background. Requests synchronize the relevant manager before submission. **Refresh connections** also runs availability scans. Managed service lifecycle and API connections retain their existing ownership boundaries.
+Application connections are managed only after explicit permission, except between fresh Thelxinoe installations. Requests synchronize their selected manager before submission. **Refresh connections** also runs availability scans.
 
 Prowlarr's **Add indexer** form loads its supported definitions, fields, profiles, and address choices from the API. It supports connection testing and image challenges. Managed Prowlarr hosts are configured from the internal service address and configured public/native URLs. Indexer-to-manager connections still use the separate service connection controls.
 
@@ -58,17 +58,12 @@ The services need only a private Docker connection to Thelxinoe; expose the
 Thelxinoe origin through the reverse proxy. Keep service ports private when
 Thelxinoe supplies their authentication.
 
-Created and adopted Radarr, Sonarr, Lidarr, Prowlarr and Bazarr use fixed
-`/services/<kind>` URL Bases automatically. Adoption changes only the managed
-copy and preserves the original for recovery. Connections managed through
-Thelxinoe follow the new prefix; independently configured clients must be updated.
-There is no URL Base editor in Thelxinoe.
-
-Attached containers use their existing API prefix, entered during connection.
-Their configuration is preserved. Native access also works for attached services
+Imported and attached containers keep their authentication and API prefix,
+entered during connection. Their configuration is preserved. Proxy access works
 when that prefix is nonempty and does not overlap Thelxinoe or another service.
 Empty or conflicting prefixes remain usable for API integration.
-These trusted native interfaces share Thelxinoe's browser origin.
+Set a **Native web address** to open a service directly when proxy access is
+unavailable; its own authentication applies. Proxied interfaces share Thelxinoe's browser origin.
 
 Connected NZBGet opens at `/services/nzbget/` using the saved connection credentials.
 Its private API stays at the root, including `/jsonrpc`; no URL Base change is
@@ -91,7 +86,7 @@ TV clients use the server HTTP(S) address and a Thelxinoe account, or Quick Conn
 
 Use Settings → Backups with a passphrase of at least 16 bytes. Backups briefly stop the server and managed services and include their state, credentials and deployment descriptor; media/cache are excluded. Copy encrypted `.age` archives off-host and retain the passphrase separately. Preserve UUID filenames for import. External replication and backup retention are your responsibility.
 
-Keep the server database **and its encryption key**, controller deployment directory and retained images. Losing the key makes provider secrets unreadable. Cross-host restore also requires the original mount/network layout. Restore can reinstate deleted accounts; it cannot undo media changes or external service activity. [Backup implementation](../apps/docker-controller/src/backups.rs).
+Keep the server database **and its encryption key**, controller deployment directory (including its registry key) and retained images. Losing a key makes its encrypted credentials and registry unreadable. Cross-host restore requires the original mount/network layout. Imported ownership is tied to its Docker engine and full container identity; release and re-adopt on a new engine. Restore can reinstate deleted accounts; it cannot undo media changes or external service activity. [Backup implementation](../apps/docker-controller/src/backups.rs).
 
 If the HTTP server is unavailable, run these from the accepted controller container (replace `OPERATION_UUID` with the selected operation):
 

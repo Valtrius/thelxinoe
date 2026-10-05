@@ -6,6 +6,22 @@ use std::collections::BTreeMap;
 use thelxinoe_core::now;
 use thelxinoe_database::Database;
 
+pub(super) async fn retention_permission(
+    db: &Database,
+    key: String,
+    enabled: bool,
+    actor: String,
+) -> anyhow::Result<()> {
+    db.write("managers.bindings.retention_permission", move |db| {
+        let tx = db.transaction()?;
+        tx.execute("INSERT INTO settings(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![format!("manager.retention.{key}"), enabled.to_string()])?;
+        tx.execute("UPDATE manager_services SET generation=?1 WHERE id=?2",params![thelxinoe_core::id(),key])?;
+        tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'manager.retention.permission',?2,?3)",params![actor,key,now()])?;
+        tx.commit()?;
+        Ok(())
+    }).await
+}
+
 pub(super) async fn file_generations(
     db: &Database,
 ) -> anyhow::Result<BTreeMap<String, (String, String)>> {

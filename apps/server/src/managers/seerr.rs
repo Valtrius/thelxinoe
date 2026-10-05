@@ -732,6 +732,9 @@ async fn sync_connections_locked(
         }
         let result = async {
             if let Some(s) = services.iter().find(|s| s.kind == kind) {
+                if only.is_none() && !super::installed_here(state, &s.id).await? {
+                    return Ok(());
+                }
                 let defaults =
                     serde_json::from_value::<Defaults>(s.defaults.clone()).map_err(|_| {
                         ApiError::conflict(format!(
@@ -896,6 +899,15 @@ mod tests {
                 .lock()
                 .unwrap()
                 .insert("containers/self".into(), inspection);
+            let media_source = {
+                let inspections = state.managers.docker.lock().unwrap();
+                super::storage_paths::evidence(
+                    &inspections["containers/self"],
+                    &inspections[&format!("containers/{container}")],
+                    &state.config.media.to_string_lossy(),
+                )
+                .unwrap()
+            };
             let manager_key = state
                 .secrets
                 .encrypt("manager:radarr", b"fixture-key")
@@ -905,7 +917,7 @@ mod tests {
                 .encrypt("support:seerr", br#"{"secret":"fixture-key"}"#)
                 .unwrap();
             state.db.write("test.seerr", move |db| {
-                db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at,defaults) VALUES ('radarr','Radarr','radarr',?1,?2,'g',?3,'/media','1',1,'{\"quality_profile\":1}')",params![container,port,manager_key])?;
+                db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at,defaults) VALUES ('radarr','Radarr','radarr',?1,?2,'g',?3,?4,'1',1,'{\"quality_profile\":1}')",params![container,port,manager_key,media_source])?;
                 db.execute("INSERT INTO support_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('seerr','Seerr','seerr',?1,?2,'g',?3,'','1',1)",params![container,port,seerr_key])?;
                 db.execute("INSERT INTO seerr_users VALUES ('seerr','alice',2)",[])?;
                 Ok(())

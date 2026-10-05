@@ -53,6 +53,28 @@ pub fn write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
 pub fn read<T: DeserializeOwned>(path: &Path) -> anyhow::Result<T> {
     Ok(serde_json::from_slice(&std::fs::read(path)?)?)
 }
+
+fn secret_store() -> anyhow::Result<thelxinoe_auth::SecretStore> {
+    static KEY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = KEY
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Registry key lock failed"))?;
+    let directory = root().join("registry-key");
+    let store = thelxinoe_auth::SecretStore::open(&directory)?;
+    File::open(&directory)?.sync_all()?;
+    Ok(store)
+}
+pub fn write_secret<T: Serialize>(path: &Path, scope: &str, value: &T) -> anyhow::Result<()> {
+    let store = secret_store()?;
+    write(path, &store.encrypt(scope, &serde_json::to_vec(value)?)?)
+}
+
+pub fn read_secret<T: DeserializeOwned>(path: &Path, scope: &str) -> anyhow::Result<T> {
+    let store = secret_store()?;
+    Ok(serde_json::from_slice(
+        &store.decrypt(scope, &std::fs::read(path)?)?,
+    )?)
+}
 /// One atomic pointer commits both descriptor and Compose image pins.
 pub fn commit_generation(
     root: &Path,

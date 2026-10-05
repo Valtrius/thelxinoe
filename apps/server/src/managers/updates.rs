@@ -42,6 +42,9 @@ async fn policy(
     {
         return Err(ApiError::bad("Invalid update policy or maintenance window"));
     }
+    if input.policy != "notify" {
+        require_update_capability(&state, &key).await?;
+    }
     storage::policy(&state.db, key, input, p).await?;
     Ok(Json(json!({"saved":true})))
 }
@@ -78,10 +81,31 @@ async fn preflight(
     let key = enqueue(&state, &service, Some(p.user.id)).await?;
     Ok(Json(json!({"id":key,"state":"queued"})))
 }
+async fn require_update_capability(state: &AppState, service: &str) -> Result<()> {
+    if !storage::imported(&state.db, service.to_owned()).await? {
+        return Ok(());
+    }
+    let observed = controller(state, "", None).await?;
+    let live = observed["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|v| v["id"] == service)
+        .ok_or_else(unavailable)?;
+    if live["capabilities"]["update"]["available"] == false {
+        return Err(ApiError::conflict(
+            live["capabilities"]["update"]["reason"]
+                .as_str()
+                .unwrap_or("This deployment cannot be recreated faithfully"),
+        ));
+    }
+    Ok(())
+}
 async fn enqueue(state: &AppState, service: &str, actor: Option<String>) -> Result<String> {
     if uuid::Uuid::parse_str(service).is_err() {
         return Err(ApiError::bad("Invalid managed service"));
     }
+    require_update_capability(state, service).await?;
     let service = service.to_owned();
     let key = id();
     let returned = key.clone();

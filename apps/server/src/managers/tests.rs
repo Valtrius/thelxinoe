@@ -5,62 +5,13 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-#[test]
-fn integrations_require_the_same_single_writable_media_bind() {
-    let server = json!({"mounts":[{"kind":"bind","source":"/nas/media","destination":"/media","writable":true}]});
-    assert_eq!(
-        shared_media_source(&server, &server, "/media").unwrap(),
-        "/nas/media"
-    );
-    for (field, value) in [
-        ("source", json!("/nas/other")),
-        ("destination", json!("/movies")),
-        ("kind", json!("volume")),
-        ("writable", json!(false)),
-    ] {
-        let mut manager = server.clone();
-        manager["mounts"][0][field] = value;
-        assert!(shared_media_source(&server, &manager, "/media").is_err());
-        assert!(shared_media_source(&manager, &server, "/media").is_err());
-    }
-    let mut nested = server.clone();
-    nested["mounts"].as_array_mut().unwrap().push(
-        json!({"kind":"bind","source":"/nas/other","destination":"/media/movies","writable":true}),
-    );
-    assert!(shared_media_source(&server, &nested, "/media").is_err());
-    assert!(shared_media_source(&nested, &server, "/media").is_err());
-    assert!(shared_media_source(&server, &server, "/other").is_err());
-    let desktop = json!({"mounts":[{"kind":"bind","source":"C:\\Media","destination":"/media","writable":true}]});
-    assert_eq!(
-        shared_media_source(&desktop, &desktop, "/media").unwrap(),
-        "c:/media"
-    );
-    let mut forward_slash = desktop.clone();
-    forward_slash["mounts"][0]["source"] = json!("C:/Media");
-    assert_eq!(
-        shared_media_source(&desktop, &forward_slash, "/media").unwrap(),
-        "c:/media"
-    );
-    assert!(host_path("C:/Media/../private").is_none());
-}
-#[test]
-fn managers_must_use_the_canonical_root_for_their_media_kind() {
-    for (kind, expected) in [
-        ("radarr", "/media/movies"),
-        ("sonarr", "/media/tv"),
-        ("lidarr", "/media/music"),
-    ] {
-        assert!(validate_roots(kind, &json!([])).is_ok());
-        assert!(validate_roots(kind, &json!([{"path":expected}])).is_ok());
-        assert!(validate_roots(kind, &json!([{"path":"/movies"}])).is_err());
-        assert!(validate_roots(kind, &json!([{"path":expected},{"path":"/media/other"}])).is_err());
-    }
-}
-
 #[tokio::test]
 async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_adds() {
-    let (_temp, mut state, alice) = fixture().await;
-    Arc::get_mut(&mut state.config).unwrap().media = "/media".into();
+    let (temp, mut state, alice) = fixture().await;
+    let media = temp.path().join("media");
+    std::fs::create_dir_all(media.join("movies")).unwrap();
+    std::fs::write(media.join("movies/fixture.mkv"), b"fixture movie").unwrap();
+    Arc::get_mut(&mut state.config).unwrap().media = media.clone();
     state
         .db
         .write("test.fixture", |db| {
@@ -143,12 +94,14 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
     let server = tokio::spawn(async move { axum::serve(listener, stub).await.unwrap() });
     let container = "a".repeat(64);
     let inspection = json!({"id":container,"name":"localhost","running":true,"mounts":[{"kind":"bind","source":"/physical","destination":"/media","writable":true}],"networks":[{"id":"network","address":"127.0.0.1"}]});
+    let mut server_inspection = inspection.clone();
+    server_inspection["mounts"][0]["destination"] = json!(media.to_string_lossy());
     state
         .managers
         .docker
         .lock()
         .unwrap()
-        .insert("containers/self".into(), inspection.clone());
+        .insert("containers/self".into(), server_inspection);
     state
         .managers
         .docker
@@ -303,9 +256,9 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
     )
     .await;
     assert_eq!(rows.2["items"][0]["state"], "uncertain");
-    state.db.write("test.fixture", |db|{
-        db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('binding-root','Fixture','movies','/media/movies')",[])?;
-        db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES ('binding-file','binding-root','/media/movies/fixture.mkv','g',1,'1','hash','{}',1)",[])?;
+    state.db.write("test.fixture", move |db|{
+        db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('binding-root','Fixture','movies',?1)",[media.join("movies").to_string_lossy()])?;
+        db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES ('binding-file','binding-root',?1,'g',1,'1','hash','{}',1)",[media.join("movies/fixture.mkv").to_string_lossy()])?;
         Ok(())
     }).await.unwrap();
     bindings::reconcile(&state).await.unwrap();

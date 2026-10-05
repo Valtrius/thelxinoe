@@ -382,9 +382,20 @@ async fn connected_services_on(
                 .encrypt(&format!("manager:{kind}"), b"fixture-manager-key")
                 .unwrap()
         };
+        let media_source = if kind == "prowlarr" {
+            String::new()
+        } else {
+            let inspections = state.managers.docker.lock().unwrap();
+            crate::managers::storage_paths::evidence(
+                &inspections["containers/self"],
+                &inspections[&format!("containers/{container}")],
+                &state.config.media.to_string_lossy(),
+            )
+            .unwrap()
+        };
         state.db.write("test.endpoint",move|db| {
             let table=if kind=="prowlarr"{"support_services"}else{"manager_services"};
-            db.execute(&format!("INSERT INTO {table}(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES (?1,?1,?1,?2,?3,'generation',?4,?5,'1',1)"),params![kind,container,port,credential,if kind=="prowlarr"{""}else{"/media"}])?;
+            db.execute(&format!("INSERT INTO {table}(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES (?1,?1,?1,?2,?3,'generation',?4,?5,'1',1)"),params![kind,container,port,credential,media_source])?;
             db.execute(&format!("UPDATE {table} SET url_base=?1 WHERE id=?2"),params![url_base,kind])?;
             Ok(())
         }).await.unwrap();

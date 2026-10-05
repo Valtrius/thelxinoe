@@ -152,6 +152,15 @@ async fn inspect(d: &Deployment) -> Result<(Vec<Managed>, Vec<Component>)> {
     let mut managed = services()?;
     managed.sort_by(|a, b| a.id.cmp(&b.id));
     for service in &managed {
+        if service
+            .imported
+            .as_ref()
+            .is_some_and(|v| !v.capabilities.backup.available)
+        {
+            return Err(conflict(
+                "Recovery coverage is incomplete for an imported deployment; its storage requires a supported snapshot adapter",
+            ));
+        }
         if service.phase != "active" {
             return Err(conflict("Finish service recovery before backing up"));
         }

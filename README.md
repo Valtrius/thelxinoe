@@ -24,7 +24,7 @@ Self-hosted movies, shows, music, YouTube, Twitch and Kick. Rust server, Svelte 
    THELXINOE_LISTEN=0.0.0.0
    ```
 
-2. Create `server`, `cache` and `deployment` under the state root, the backup directory, and `movies`, `tv`, `music` and `downloads` under the media root. Grant the account read/write access; UID/GID settings do not change existing ownership. Keep state/backups outside media. **For adoption, prepare the paths and network below before starting Thelxinoe.**
+2. Create `server`, `cache` and `deployment` under the state root, the backup directory, and `movies`, `tv`, `music` and `downloads` under the media root. Grant the account read/write access; UID/GID settings do not change existing ownership. Keep state/backups outside media. For existing services, keep their paths and prepare shared network access below.
 3. Run `docker compose up --build -d` from the repository. Open `http://<server-IP>:8484` and create the first administrator. See [deployment and recovery](docs/OPERATIONS.md) for HTTPS and storage details.
 
 ### Create services that do not exist yet
@@ -36,62 +36,39 @@ Self-hosted movies, shows, music, YouTube, Twitch and Kick. Rust server, Svelte 
 
 ## Adopt existing services
 
-**Connect** integrates a service while its original owner controls the container. **Take ownership** gives Thelxinoe control of start/stop, updates and backups through a managed copy. Adopt one service at a time.
+**Connect** gives Thelxinoe access to an application's API. **Take ownership** adds container lifecycle management. Adoption keeps the existing container, image, mounts, ports, credentials, authentication, URL Base and application settings. It does not restart the service or move files.
 
-### 1. Check compatibility and back up
+### 1. Check compatibility
 
-- Radarr, Sonarr, Lidarr, Bazarr, Prowlarr and NZBGet must run on the **same Docker engine** as Thelxinoe, using stable **LinuxServer Linux x86-64 images**. Jellyfin/Jellyseerr cannot be adopted.
-- Keep the installed image during preparation; pin its digest if using `latest`. Adoption retains that image.
-- Keep image-default commands/users, non-root numeric `PUID`/`PGID`, and only `PUID`, `PGID`, `TZ`, `UMASK` environment overrides. Remove custom hostnames, health checks, DNS, security profiles, devices, extra mounts and privileged settings. Cluster-managed containers are unsupported.
-- Finish downloads/imports, stop services, and back up their configuration directories and Compose files before changing paths.
+- Use the same Docker engine as Thelxinoe and a supported stable LinuxServer Linux x86-64 image: Radarr, Sonarr, Lidarr, Bazarr, Prowlarr or NZBGet. Cluster-managed, privileged and host-system deployments are outside the supported scope. Jellyfin/Jellyseerr cannot be adopted.
+- Back up your configuration and deployment definition. Keep your existing `PUID`/`PGID`, storage, network connections and published ports.
+- The review reports available operations. Lifecycle management can work even when a storage layout cannot be backed up. Imported deployments currently use update checks only; recreation and automatic updates remain disabled until faithful recovery is supported.
 
-### 2. Use one shared media mount
+### 2. Give Thelxinoe access
 
-Keep each service's writable `/config` bind mount outside media and Thelxinoe's deployment directory. Replace separate `/movies`, `/tv` and `/downloads` mounts with **one writable bind mount of the entire media root**:
+1. Share a Docker network with the existing service. To reuse one, add `compose.override.yaml` beside Thelxinoe's `compose.yaml`:
 
-```yaml
-# In the existing service's Compose definition; Radarr example:
-volumes:
-  - /tank/appdata/radarr:/config:rw
-  - /tank/media:/media:rw
-```
+   ```yaml
+   networks:
+     default:
+       external: true
+       name: media_network
+   ```
 
-Prowlarr needs only `/config`. Adoption does not support named volumes or extra mounts.
+   Use its actual name from `docker network ls`. Preserve the service's other networks. Choose Thelxinoe's storage/network layout before first initialization.
 
-Recreate affected containers from their old Compose project using the same image, then update their native settings:
+2. For playback, mount the same media into Thelxinoe. Service paths can differ. For example, Radarr's `/tank/media/movies:/movies` and Thelxinoe's `/tank/media:/media` identify the same movies. Keep Thelxinoe's `/media` bind mount; you can add separate folders such as `/tank/shows:/media/tv` or shared named volumes beneath it. Thelxinoe must have permission to read the files. Creating fresh media services requires the single shared `/media` mount without child mounts.
+3. Keep native root folders and download paths. NZBGet can keep `MainDir=/downloads` and `${MainDir}/complete`; no conversion to `/media` is required.
 
-| Setting                                      | Required container path |
-| -------------------------------------------- | ----------------------- |
-| Radarr root folder and existing movie paths  | `/media/movies`         |
-| Sonarr root folder and existing series paths | `/media/tv`             |
-| Lidarr root folder and existing artist paths | `/media/music`          |
-| Bazarr's movie/show paths                    | Match Radarr/Sonarr     |
-| NZBGet `MainDir`                             | `/media/downloads`      |
+### 3. Transfer ownership
 
-Move existing media under the shared root while services are stopped: for example, `/tank/shows` becomes `/tank/media/tv`. Bulk-edit existing library paths, then remove unused old root folders. When files are already in place, choose **not to move files**. In NZBGet, replace `/downloads` prefixes with `/media/downloads` in destination/intermediate/category paths; preserve subfolder names and `${MainDir}` references. Remove obsolete remote path mappings and verify the library/download locations.
+1. Open **Settings -> Media services -> Connect an existing container**. Select its full container identity, internal HTTP port, existing URL Base and API key. For NZBGet, enter the current username/password. A stopped container may be connected, with API access unverified until you start it.
+2. Click **Review ownership transfer**. Check the retained image/configuration location, available operations and any warnings. Security hardening is a separate change in native settings.
+3. Retire external deployment automation and updaters. **If the container belongs to Compose, retire the entire old project.** Removing just its YAML service is insufficient: subsequent `down` or `--remove-orphans` operations can remove the adopted container or shared resources. If that project must continue running, keep API integration and defer ownership until a separately reviewed detachment is supported.
+4. Confirm the project is retired and click **Take ownership**. Wait for completion. The container's identity and running/stopped state stay the same; the existing integration remains connected.
+5. Test API access and playback. Under acquisition defaults, explicitly choose an existing root folder and quality profile; Lidarr also needs a metadata profile. Review each application connection before enabling Thelxinoe to manage it. Existing manual and disabled connections remain untouched. Auto-delete requires a separate opt-in. If proxy access is unavailable, set the service's **Native web address**; it keeps its own login.
 
-### 3. Share one Docker network
-
-Each adopted container must use **only Thelxinoe's server network**. To reuse an existing network, create `compose.override.yaml` beside Thelxinoe's `compose.yaml`:
-
-```yaml
-networks:
-  default:
-    external: true
-    name: media_network
-```
-
-Use the actual name from `docker network ls`, including any Compose project prefix. Choose the network and media root before first initialization; later `.env`/mount edits do not update the saved deployment layout.
-
-### 4. Connect, review and transfer
-
-1. Keep the original running. In **Settings → Media services → Connect an existing container**, select it and enter its standard internal HTTP port, API key and existing URL Base. For NZBGet, enter its current username/password; an empty password is accepted.
-2. Click **Review ownership transfer** and check the configuration paths and image. For NZBGet, select log rotation and outgoing TLS verification when offered. If TLS verification is unavailable, set `CertStore` to a readable certificate bundle, save/reload, and review again. These checks protect Usenet/HTTPS connections even through Thelxinoe.
-3. Disable the service in the **old Compose file** and any scripts/updaters that could recreate it. Leave the original running for Thelxinoe to stop. Confirm **The previous Compose definition is disabled**, then click **Take ownership**.
-4. Wait for completion. Thelxinoe disables the original's restart policy, stops it, copies its appdata and starts the replacement. Original configuration is retained; media stays in the shared directory.
-5. Open the replacement through Thelxinoe and test its library and service connections. Radarr/Sonarr/Lidarr/Prowlarr/Bazarr switch to Thelxinoe authentication and `/services/<kind>` URL Bases, with published ports removed. NZBGet retains published ports but receives login `thelxinoe` and a random password. Thelxinoe updates its managed connections; update other clients yourself and explicitly connect remaining service links.
-
-Never run the original alongside its replacement. Avoid `docker compose down`/`--remove-orphans` on the old project while retaining the original for recovery. For interrupted transfers, resolve the error and use **Retry setup** or **Restore original** when offered. Completed transfers use managed backups/recovery.
+Use **Release ownership** to stop Thelxinoe's container management while retaining the container, configuration, media and API integration. External Docker changes pause affected management operations until reviewed. For an interrupted registration, use **Retry setup**; registration retries keep the same operation and container.
 
 ## Development
 
