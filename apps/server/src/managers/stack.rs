@@ -132,11 +132,17 @@ async fn login(
     Path(key): Path<String>,
 ) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
-    let (kind, encrypted, origin) = storage::login(key.clone(), &state.db)
+    let (kind, encrypted, origin, integration) = storage::login(key.clone(), &state.db)
         .await?
         .ok_or_else(ApiError::not_found)?;
     if kind != "nzbget" {
         return Err(ApiError::not_found());
+    }
+    if let Some(integration) = integration {
+        let service = support::load(&state, &integration).await?;
+        return Ok(Json(
+            json!({"username":service.credentials.username,"password":service.credentials.secret}),
+        ));
     }
     let raw = String::from_utf8(
         state
@@ -263,10 +269,22 @@ async fn action(
     let kind = storage::kind(&state.db, key.clone())
         .await?
         .ok_or_else(|| ApiError::conflict("This saved installation has no matching server record. Restore the matching server profile before managing it."))?;
+    if kind != "recyclarr"
+        && matches!(input.action.as_str(), "remove" | "retire")
+        && storage::imported(&state.db, key.clone()).await?
+    {
+        return Err(ApiError::conflict(
+            "Use Release ownership to retain this imported deployment",
+        ));
+    }
     let _lease = state.managers.maintenance(&state).await;
     let _guard = state.managers.guard.service(&kind).await;
     if input.action == "release" {
-        if !storage::begin_retirement(&state.db, key.clone()).await? {
+        if storage::released(&state.db, key.clone()).await? {
+            return Ok(Json(json!({"accepted":true,"released":true})));
+        }
+
+        if !storage::begin_retirement(&state.db, key.clone(), input.action.clone()).await? {
             return Err(ApiError::conflict(
                 "Finish the current setup or update before releasing ownership",
             ));
@@ -296,7 +314,7 @@ async fn action(
                 "Stop the service before removing its configuration",
             ));
         }
-        if !storage::begin_retirement(&state.db, key.clone()).await? {
+        if !storage::begin_retirement(&state.db, key.clone(), input.action.clone()).await? {
             return Err(ApiError::conflict(
                 "Finish the current setup or update before removal",
             ));
@@ -327,7 +345,7 @@ async fn action(
                 "Only a confirmed missing container can be retired",
             ));
         }
-        if !storage::begin_retirement(&state.db, key.clone()).await? {
+        if !storage::begin_retirement(&state.db, key.clone(), input.action.clone()).await? {
             return Err(ApiError::conflict(
                 "Finish the current setup or update before retiring this installation",
             ));
@@ -527,7 +545,6 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
   }
   if row.0=="seerr" && row.7=="installed" {super::seerr::initialize(state).await?;}
   else if row.0=="prowlarr" {super::indexers::ensure_hosts(state,&integration).await?;}
-  else if matches!(row.0.as_str(),"radarr"|"sonarr") {super::seerr::sync_managers(state).await?;}
   Ok::<(),ApiError>(())
  }.await;
     if let Err(error) = result {
@@ -596,11 +613,16 @@ async fn adopt_preview(
     headers: HeaderMap,
     Json(input): Json<AdoptPreview>,
 ) -> Result<Json<Value>> {
-    security::require(&state, &headers, Capability::ManageServer).await?;
-    let key = input.service_id.clone();
-    let (kind, container, _) = storage::adopt_preview(&state.db, key)
+    let actor = security::require(&state, &headers, Capability::ManageServer).await?;
+    let initial = storage::adopt_read_manager_services(&state.db, input.service_id.clone())
         .await?
         .ok_or_else(ApiError::not_found)?;
+    let _guard = state.managers.guard.service(&initial.kind).await;
+    let integration = storage::adopt_read_manager_services(&state.db, input.service_id.clone())
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    let kind = integration.kind.clone();
+    let container = integration.container.clone();
     let mut review = controller(
         &state,
         "/adopt/preview",
@@ -633,6 +655,18 @@ async fn adopt_preview(
         }
         review["warnings"] = json!(warnings);
     }
+    let review_id = review["review_id"]
+        .as_str()
+        .ok_or_else(unavailable)?
+        .to_owned();
+    storage::save_review(
+        &state.db,
+        review_id,
+        input.service_id,
+        actor.user.id,
+        integration,
+    )
+    .await?;
     Ok(Json(review))
 }
 
@@ -649,6 +683,10 @@ async fn adoption_access(state: &AppState, key: &str, kind: &str) -> Result<()> 
             if !version.as_str().is_some_and(|v| !v.is_empty()) {
                 return Err(unavailable());
             }
+            Ok(())
+        } else if kind == "seerr" {
+            support::version(&c, &service.credentials).await?;
+            c.get("settings/main").await?;
             Ok(())
         } else {
             access::check_connection(&c).await
@@ -712,11 +750,14 @@ async fn adopt(
     Json(input): Json<Adopt>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
-    let service_id = input.service_id.clone();
-    let item = storage::adopt_read_manager_services(&state.db, service_id)
+    let initial = storage::adopt_read_manager_services(&state.db, input.service_id.clone())
         .await?
         .ok_or_else(ApiError::not_found)?;
-    let credentials = if matches!(item.0.as_str(), "radarr" | "sonarr" | "lidarr") {
+    let _guard = state.managers.guard.service(&initial.kind).await;
+    let item = storage::adopt_read_manager_services(&state.db, input.service_id.clone())
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    let credentials = if matches!(item.kind.as_str(), "radarr" | "sonarr" | "lidarr") {
         let service = service(&state, &input.service_id).await?;
         support::Credentials {
             username: String::new(),
@@ -736,11 +777,24 @@ async fn adopt(
         ));
     }
     let stored = ProvisionCredentials { credentials };
-    let request = json!({"operation_id":input.review_id,"kind":item.0,"container_id":item.1,"released_compose":input.released_compose});
+    let request = json!({"operation_id":input.review_id,"kind":item.kind,"container_id":item.container,"released_compose":input.released_compose});
     if storage::adoption_exists(&state.db, input.review_id.clone(), input.service_id.clone())
         .await?
     {
         return Ok(Json(json!({"id":input.review_id,"state":"queued"})));
+    }
+    if !storage::review_matches(
+        &state.db,
+        input.review_id.clone(),
+        input.service_id.clone(),
+        p.user.id.clone(),
+        item.clone(),
+    )
+    .await?
+    {
+        return Err(ApiError::conflict(
+            "The connection changed after review; review ownership again",
+        ));
     }
     controller(&state, "/adopt/check", Some(request)).await?;
     let key = input.review_id.clone();

@@ -22,10 +22,20 @@ export async function retireService(f, kind) {
   }
   const service = f.services[kind];
   await f.api(`/admin/stack/${service.id}/action`, 'POST', { action: 'stop' });
-  docker('rm', service.container_id);
-  await f.api(`/admin/stack/${service.id}/action`, 'POST', {
-    action: 'retire',
-  });
+  const provision = (await f.stack()).provisions.find(
+    (item) => item.id === service.id,
+  );
+  if (provision?.origin === 'adopted') {
+    await f.api(`/admin/stack/${service.id}/action`, 'POST', {
+      action: 'release',
+    });
+    docker('rm', service.container_id);
+  } else {
+    docker('rm', service.container_id);
+    await f.api(`/admin/stack/${service.id}/action`, 'POST', {
+      action: 'retire',
+    });
+  }
 }
 
 export async function ownershipAccess({ f, scenario, output }) {

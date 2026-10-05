@@ -19,6 +19,7 @@
   import { Copy, LoaderCircle } from '@lucide/svelte';
   import OwnershipReview from './services/OwnershipReview.svelte';
   import NativeAccessSettings from './services/NativeAccessSettings.svelte';
+  import ConnectionSettings from './services/ConnectionSettings.svelte';
   import RecyclarrSettings from './services/RecyclarrSettings.svelte';
   import RecyclarrSetup from './services/RecyclarrSetup.svelte';
   import DownloadsTable from './services/DownloadsTable.svelte';
@@ -309,6 +310,7 @@
     return (
       !serviceOperationActive(kind) &&
       !!item &&
+      (item.origin !== 'adopted' || kind === 'recyclarr') &&
       (live?.can_retire ||
         (!live && ['blocked', 'retiring'].includes(item.state)))
     );
@@ -990,6 +992,20 @@
                 onclick={() => (transferReviews[service.kind] = null)}
                 >Cancel</Button
               >
+            {:else if provisioned?.state === 'retiring' && provisioned.operation === 'release'}
+              <Button
+                size="form"
+                variant="secondary"
+                disabled={!!pendingActions[service.kind] ||
+                  !!activeUpdate(service.kind)}
+                onclick={() =>
+                  void work(
+                    () => stackAction(service.kind, 'release'),
+                    `${service.label} ownership released. Container and data retained.`,
+                    service.kind,
+                    true,
+                  )}>Retry release</Button
+              >
             {:else if provisioned?.state === 'blocked'}
               <Button
                 size="form"
@@ -1074,7 +1090,7 @@
                 >Retire and keep data</Button
               >
             {/if}
-            {#if provisioned && (runtimeService?.can_remove || provisioned.state === 'retiring')}
+            {#if provisioned && (provisioned.origin !== 'adopted' || service.kind === 'recyclarr') && (runtimeService?.can_remove || (provisioned.state === 'retiring' && provisioned.operation === 'remove'))}
               <Button
                 size="form"
                 variant="secondary"
@@ -1309,6 +1325,14 @@
         </section>
       {/if}
       {#if connected && !setupActive(selectedKind)}
+        {#key connected.id}
+          <ConnectionSettings
+            service={connected}
+            label={definition.label}
+            disabled={busy}
+            changed={refresh}
+          />
+        {/key}
         {#if hasNativeAccess(selectedKind) && (!connected.access_url || connected.native_url)}
           <NativeAccessSettings
             id={connected.id}

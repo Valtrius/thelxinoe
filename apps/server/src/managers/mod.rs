@@ -26,8 +26,11 @@ pub(crate) use retention::run as run_retention;
 pub(crate) use stack::controller as controller_request;
 pub(crate) use stack::provision;
 pub(crate) use updates::{run as run_updates, run_job as update_service};
+mod connection_settings;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod workflow_tests;
 use crate::{
     AppState,
     error::{ApiError, Result},
@@ -113,6 +116,7 @@ pub(crate) fn router() -> Router<AppState> {
         .merge(operations::router())
         .merge(support::router())
         .merge(connections::router())
+        .merge(connection_settings::router())
         .merge(stack::router())
         .merge(updates::router())
         .merge(retention::router())
@@ -499,14 +503,6 @@ async fn options(
     security::require(&state, &headers, Capability::ManageServer).await?;
     let s = service(&state, &id).await?;
     let c = Connection::open(&state, &s).await?;
-    if installed_here(&state, &s.id).await? {
-        let _guard = state.managers.guard.service(&s.kind).await;
-        prepare_library(&state, &s).await?;
-    }
-    {
-        let _guard = state.managers.guard.service(&s.kind).await;
-        quality::ensure_defaults(&state, &service(&state, &id).await?).await?;
-    }
     let roots = c.get("rootfolder").await?;
     let profiles = c.get("qualityprofile").await?;
     let guides = recyclarr::profiles(&state, &id).await?;
@@ -549,8 +545,6 @@ struct Defaults {
 fn yes() -> bool {
     true
 }
-// Called as part of provisioning, and repairs installations created before
-// library setup became automatic. User acquisition preferences remain explicit.
 async fn prepare_library(state: &AppState, s: &Service) -> Result<()> {
     let c = Connection::open(state, s).await?;
     let roots = c.get("rootfolder").await?;

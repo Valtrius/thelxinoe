@@ -484,10 +484,12 @@ try {
   );
 
   await install('seerr');
+  for (const kind of ['radarr', 'sonarr'])
+    await waitLink('seerr', kind, 'connected');
   await api('/admin/seerr/sync', 'POST');
   for (const kind of ['radarr', 'sonarr']) {
-    const service = (await upstream('seerr', `settings/${kind}`)).find(
-      (item) => item.name === `Thelxinoe ${kind}`,
+    const service = (await upstream('seerr', `settings/${kind}`)).find((item) =>
+      item.name.startsWith(`Thelxinoe ${kind} (`),
     );
     expect(service.baseUrl).toBe(`/services/${kind}`);
   }
@@ -636,8 +638,8 @@ try {
     );
     await api('/admin/seerr/sync', 'POST');
     expect(
-      (await upstream('seerr', 'settings/radarr')).find(
-        (item) => item.name === 'Thelxinoe radarr',
+      (await upstream('seerr', 'settings/radarr')).find((item) =>
+        item.name.startsWith('Thelxinoe radarr ('),
       ).baseUrl,
     ).toBe('/services/radarr');
     expect(

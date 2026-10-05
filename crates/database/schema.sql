@@ -662,6 +662,8 @@ CREATE TABLE stack_provisions (
     updated_at INTEGER NOT NULL,
     origin TEXT NOT NULL DEFAULT 'installed' CHECK(origin IN ('installed','adopted')),
     original_url_base TEXT NOT NULL DEFAULT '',
+    integration_revision TEXT,
+    operation TEXT CHECK(operation IN ('release','remove','retire')),
     native_url TEXT NOT NULL DEFAULT ''
 ) STRICT;
 

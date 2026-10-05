@@ -3,7 +3,7 @@ use super::*;
 use thelxinoe_database::Database;
 
 pub(super) async fn list(db: &Database) -> anyhow::Result<Value> {
-    db.read("managers.stack.list", |db|Ok(json!(db.prepare("SELECT id,kind,state,host_port,container_id,service_id,error,native_url,origin FROM stack_provisions ORDER BY created_at")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"kind":r.get::<_,String>(1)?,"state":r.get::<_,String>(2)?,"host_port":r.get::<_,Option<u16>>(3)?,"container_id":r.get::<_,Option<String>>(4)?,"service_id":r.get::<_,Option<String>>(5)?,"error":r.get::<_,Option<String>>(6)?,"native_url":r.get::<_,String>(7)?,"origin":r.get::<_,String>(8)?})))?.collect::<rusqlite::Result<Vec<_>>>()?))).await
+    db.read("managers.stack.list", |db|Ok(json!(db.prepare("SELECT id,kind,state,host_port,container_id,service_id,error,native_url,origin,operation FROM stack_provisions ORDER BY created_at")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"kind":r.get::<_,String>(1)?,"state":r.get::<_,String>(2)?,"host_port":r.get::<_,Option<u16>>(3)?,"container_id":r.get::<_,Option<String>>(4)?,"service_id":r.get::<_,Option<String>>(5)?,"error":r.get::<_,Option<String>>(6)?,"native_url":r.get::<_,String>(7)?,"origin":r.get::<_,String>(8)?,"operation":r.get::<_,Option<String>>(9)?})))?.collect::<rusqlite::Result<Vec<_>>>()?))).await
 }
 
 pub(super) async fn install(
@@ -55,12 +55,16 @@ pub(super) async fn action_write_stack_provisions(
         }tx.commit()?;Ok(())}).await
 }
 
-pub(super) async fn begin_retirement(db: &Database, key: String) -> anyhow::Result<bool> {
+pub(super) async fn begin_retirement(
+    db: &Database,
+    key: String,
+    operation: String,
+) -> anyhow::Result<bool> {
     db.write("managers.stack.begin_retirement", move |db| {
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let ready: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE id=?1 AND state IN ('complete','blocked','retiring')) AND NOT EXISTS(SELECT 1 FROM jobs WHERE kind='stack.install' AND json_extract(payload,'$.id')=?1 AND state IN ('queued','running')) AND NOT EXISTS(SELECT 1 FROM service_updates WHERE service_id=?1 AND state NOT IN ('committed','rolled-back','blocked'))", [&key], |r|r.get(0))?;
+        let ready: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE id=?1 AND state IN ('complete','blocked','retiring') AND (operation IS NULL OR operation=?2)) AND NOT EXISTS(SELECT 1 FROM jobs WHERE kind='stack.install' AND json_extract(payload,'$.id')=?1 AND state IN ('queued','running')) AND NOT EXISTS(SELECT 1 FROM service_updates WHERE service_id=?1 AND state NOT IN ('committed','rolled-back','blocked'))", params![key,operation], |r|r.get(0))?;
         if ready {
-            tx.execute("UPDATE stack_provisions SET state='retiring',updated_at=?1 WHERE id=?2",params![now(),key])?;
+            tx.execute("UPDATE stack_provisions SET state='retiring',updated_at=?1,operation=?3 WHERE id=?2",params![now(),key,operation])?;
         }
         tx.commit()?;
         Ok(ready)
@@ -158,13 +162,13 @@ pub(super) async fn provision_read_stack_provisions(
 pub(super) async fn login(
     key: String,
     db: &Database,
-) -> anyhow::Result<Option<(String, Vec<u8>, String)>> {
+) -> anyhow::Result<Option<(String, Vec<u8>, String, Option<String>)>> {
     db.read("managers.stack.login", move |db| {
         Ok(db
             .query_row(
-                "SELECT kind,credential,origin FROM stack_provisions WHERE id=?1",
+                "SELECT kind,credential,origin,service_id FROM stack_provisions WHERE id=?1",
                 [key],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()?)
     })
@@ -218,13 +222,6 @@ pub(super) async fn provision_write_stack_provisions(
     db.write("managers.stack.provision_write_stack_provisions", move|db|{db.execute("UPDATE stack_provisions SET service_id=?1,state='connecting',error=NULL,updated_at=?2 WHERE id=?3",params![registered["id"].as_str(),now(),key])?;Ok(())}).await
 }
 
-pub(super) async fn adopt_preview(
-    db: &Database,
-    key: String,
-) -> anyhow::Result<Option<(String, String, u16)>> {
-    db.read("managers.stack.adopt_preview", move|db|Ok(db.query_row("SELECT kind,container_id,port FROM manager_services WHERE id=?1 UNION ALL SELECT kind,container_id,port FROM support_services WHERE id=?1",[key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,u16>(2)?))).optional()?)).await
-}
-
 pub(super) async fn restore_original_read_stack_provisions(
     db: &Database,
     lookup: String,
@@ -252,22 +249,86 @@ pub(super) async fn restore_original_write_jobs(
     }).await
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+pub(super) struct AdoptionIntegration {
+    pub kind: String,
+    pub container: String,
+    pub native_url: String,
+    pub revision: String,
+}
 pub(super) async fn adopt_read_manager_services(
     db: &Database,
     service_id: String,
-) -> anyhow::Result<Option<(String, String, String)>> {
-    db.read("managers.stack.adopt_read_manager_services", move|db|Ok(db.query_row("SELECT kind,container_id,'' FROM manager_services WHERE id=?1 UNION ALL SELECT kind,container_id,native_url FROM support_services WHERE id=?1",[service_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional()?)).await
+) -> anyhow::Result<Option<AdoptionIntegration>> {
+    db.read("managers.stack.adopt_read_manager_services", move|db|Ok(db.query_row("SELECT kind,container_id,'',access_revision FROM manager_services WHERE id=?1 AND enabled=1 UNION ALL SELECT kind,container_id,native_url,access_revision FROM support_services WHERE id=?1",[service_id],|r|Ok(AdoptionIntegration{kind:r.get(0)?,container:r.get(1)?,native_url:r.get(2)?,revision:r.get(3)?})).optional()?)).await
+}
+
+#[derive(Serialize, Deserialize)]
+struct AdoptionReview {
+    service: String,
+    actor: String,
+    integration: AdoptionIntegration,
+    created_at: i64,
+}
+pub(super) async fn save_review(
+    db: &Database,
+    key: String,
+    service: String,
+    actor: String,
+    integration: AdoptionIntegration,
+) -> anyhow::Result<()> {
+    db.write("managers.stack.save_review",move |db| {
+        db.execute("DELETE FROM settings WHERE key LIKE 'adoption.review.%' AND json_extract(value,'$.created_at')<?1",[now()-3600])?;
+        db.execute("INSERT INTO settings(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![format!("adoption.review.{key}"),serde_json::to_string(&AdoptionReview{service,actor,integration,created_at:now()})?])?;
+        Ok(())
+    }).await
+}
+pub(super) async fn review_matches(
+    db: &Database,
+    key: String,
+    service: String,
+    actor: String,
+    integration: AdoptionIntegration,
+) -> anyhow::Result<bool> {
+    db.read("managers.stack.review_matches", move |db| {
+        let review: Option<String> = db
+            .query_row(
+                "SELECT value FROM settings WHERE key=?1",
+                [format!("adoption.review.{key}")],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(review) = review else {
+            return Ok(false);
+        };
+        let review: AdoptionReview = serde_json::from_str(&review)?;
+        Ok(review.service == service
+            && review.actor == actor
+            && review.integration.kind == integration.kind
+            && review.integration.container == integration.container
+            && review.integration.revision == integration.revision
+            && review.created_at >= now() - 3600)
+    })
+    .await
 }
 
 pub(super) async fn adopt_write_stack_provisions(
     db: &Database,
     input: Adopt,
     p: thelxinoe_core::Principal,
-    item: (String, String, String),
+    item: AdoptionIntegration,
     key: String,
     credential: Vec<u8>,
 ) -> anyhow::Result<bool> {
-    db.write("managers.stack.adopt_write_stack_provisions", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;if tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE kind=?1)",[&item.0],|r|r.get::<_,bool>(0))?{return Ok(false);}tx.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,container_id,service_id,origin,created_at,updated_at,native_url,original_url_base) VALUES (?1,?2,?3,0,?4,'queued',?5,?6,'adopted',?7,?7,?8,(SELECT url_base FROM manager_services WHERE id=?6 UNION ALL SELECT url_base FROM support_services WHERE id=?6))",params![key,item.0,p.user.id,credential,item.1,input.service_id,now(),item.2])?;tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'stack.install',?2,?3,'queued',?4,?4)",params![id(),json!({"id":key,"released_compose":input.released_compose}).to_string(),format!("stack:{key}"),now()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'stack.adopt',?2,?3)",params![p.user.id,key,now()])?;tx.commit()?;Ok(true)}).await
+    db.write("managers.stack.adopt_write_stack_provisions", move |db| {
+        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let current:Option<(String,String)>=tx.query_row("SELECT container_id,access_revision FROM manager_services WHERE id=?1 AND enabled=1 UNION ALL SELECT container_id,access_revision FROM support_services WHERE id=?1",[&input.service_id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+        if current.as_ref()!=Some(&(item.container.clone(),item.revision.clone())) || tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE kind=?1)",[&item.kind],|r|r.get::<_,bool>(0))? {return Ok(false);}
+        tx.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,container_id,service_id,origin,created_at,updated_at,native_url,original_url_base,integration_revision) VALUES (?1,?2,?3,0,?4,'queued',?5,?6,'adopted',?7,?7,?8,(SELECT url_base FROM manager_services WHERE id=?6 UNION ALL SELECT url_base FROM support_services WHERE id=?6),?9)",params![key,item.kind,p.user.id,credential,item.container,input.service_id,now(),item.native_url,item.revision])?;
+        tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'stack.install',?2,?3,'queued',?4,?4)",params![id(),json!({"id":key,"released_compose":input.released_compose}).to_string(),format!("stack:{key}"),now()])?;
+        tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'stack.adopt',?2,?3)",params![p.user.id,key,now()])?;
+        tx.commit()?;Ok(true)
+    }).await
 }
 
 pub(super) async fn retry(db: &Database, key: String) -> anyhow::Result<bool> {
@@ -307,7 +368,9 @@ pub(super) async fn complete_adoption(
 ) -> anyhow::Result<()> {
     db.write("managers.stack.complete_adoption", move |db| {
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let expected: String = tx.query_row("SELECT container_id FROM stack_provisions WHERE id=?1 AND origin='adopted'", [&key], |r| r.get(0))?;
+        let (expected,service,revision):(String,String,String)=tx.query_row("SELECT container_id,service_id,integration_revision FROM stack_provisions WHERE id=?1 AND origin='adopted'",[&key],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+        let current:Option<(String,String)>=tx.query_row("SELECT container_id,access_revision FROM manager_services WHERE id=?1 AND enabled=1 UNION ALL SELECT container_id,access_revision FROM support_services WHERE id=?1",[service],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+        anyhow::ensure!(current==Some((expected.clone(),revision)),"Integration changed during ownership registration");
         anyhow::ensure!(container == expected, "Ownership registration changed the integration container");
         tx.execute("UPDATE stack_provisions SET state='complete',error=NULL,updated_at=?1 WHERE id=?2", params![now(),key])?;
         tx.execute("INSERT INTO service_update_policy(service_id,policy) VALUES (?1,'notify') ON CONFLICT(service_id) DO NOTHING", [&key])?;
@@ -319,7 +382,7 @@ pub(super) async fn release(db: &Database, key: String, actor: String) -> anyhow
     db.write("managers.stack.release", move |db| {
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute("DELETE FROM service_update_policy WHERE service_id=?1", [&key])?;
-        tx.execute("DELETE FROM stack_provisions WHERE id=?1 AND origin='adopted' AND state='retiring'", [&key])?;
+        tx.execute("DELETE FROM stack_provisions WHERE id=?1 AND origin='adopted' AND state='retiring' AND operation='release'", [&key])?;
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'stack.release',?2,?3)", params![actor,key,now()])?;
         tx.commit()?;
         Ok(())

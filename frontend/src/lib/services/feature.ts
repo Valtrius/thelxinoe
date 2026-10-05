@@ -108,6 +108,7 @@ export type Provision = {
   service_id: string | null;
   error: string | null;
   origin: string;
+  operation?: 'release' | 'remove' | 'retire' | null;
 };
 export type OwnershipCapability = { available: boolean; reason: string | null };
 export type OwnershipCapabilities = Record<

@@ -51,6 +51,7 @@
   const titles: Record<string, string> = {
     prowlarr: 'Applications',
     bazarr: 'Media managers',
+    seerr: 'Media managers',
     radarr: 'Download clients',
     sonarr: 'Download clients',
     lidarr: 'Download clients',

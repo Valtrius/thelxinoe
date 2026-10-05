@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { docker, fixture, freePort } from './service-access-fixture.mjs';
 import { imageManifest } from './ci-images.mjs';
+import { waitForServerTools } from './ci-readiness.mjs';
 
 export async function existingStorageAccess(
   output = 'test-results/service-access',
@@ -97,6 +98,9 @@ export async function existingStorageAccess(
     const root = (await f.api('/catalog/roots')).items.find(
       (row) => row.path === '/media/movies',
     );
+    await waitForServerTools((timeout) =>
+      f.api('/admin/tools', 'GET', undefined, f.context.request, timeout),
+    );
     const scan = await f.api(`/catalog/roots/${root.id}/scan`, 'POST');
     await expect
       .poll(
@@ -121,6 +125,8 @@ export async function existingStorageAccess(
     result.fresh_installation = 'blocked before creating a container';
   } catch (error) {
     result.error = error.message;
+    result.jobs = await f.api('/admin/jobs').catch(() => null);
+    result.tools = await f.api('/admin/tools').catch(() => null);
     throw error;
   } finally {
     mkdirSync(output, { recursive: true });

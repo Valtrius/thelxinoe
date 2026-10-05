@@ -1,4 +1,6 @@
 use super::*;
+#[path = "connection_seerr.rs"]
+pub(super) mod requests;
 
 async fn open<'a>(state: &'a AppState, endpoint: &Endpoint) -> Attempt<Connection<'a>> {
     let observed = docker(state, &format!("containers/{}", endpoint.container)).await?;
@@ -102,6 +104,9 @@ pub(super) async fn apply(
     target: Option<&Endpoint>,
 ) -> Attempt<()> {
     let c = open(state, source).await?;
+    if link.kind == "requests" && !link.enabled {
+        return requests::disconnect(state, link, &c).await;
+    }
     if !link.enabled {
         if link.kind == "subtitles" {
             return bazarr(state, link, &c, None, None).await;
@@ -115,6 +120,18 @@ pub(super) async fn apply(
     tracing::debug!(network = %route.network, source = %source.id, target = %target.id, "Selected service peer route");
     let target_address = route.target;
     let target_names = route.target_names;
+    if link.kind == "requests" {
+        return requests::apply(
+            state,
+            link,
+            &c,
+            target,
+            &target_connection,
+            &target_address,
+            &target_names,
+        )
+        .await;
+    }
     if link.kind == "subtitles" {
         return bazarr(
             state,

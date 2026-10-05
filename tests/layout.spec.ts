@@ -2,6 +2,122 @@ import { test, expect, type Page } from '@playwright/test';
 import { installUiFixture } from './helpers/ui-fixture';
 import { waitForViewportFit } from '../scripts/ci-readiness.mjs';
 
+test('Connected services retain a connection editor with test and save', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+  });
+  const changes: { method: string; body: unknown }[] = [];
+  await page.route(
+    '**/api/v1/admin/services/manager-radarr/connection**',
+    async (route) => {
+      changes.push({
+        method: route.request().method(),
+        body: route.request().postDataJSON(),
+      });
+      await route.fulfill({ json: { healthy: true, id: 'manager-radarr' } });
+    },
+  );
+  await page.goto('/');
+  await page
+    .getByRole('navigation', { name: 'Select service' })
+    .getByRole('link', { name: 'Radarr', exact: true })
+    .click();
+  await page
+    .getByRole('button', { name: 'Edit connection', exact: true })
+    .click();
+  const editor = page.getByRole('form', { name: 'Radarr API connection' });
+  await expect(editor.getByLabel('Internal port')).toHaveValue('7878');
+  await expect(editor.getByLabel('URL Base')).toHaveValue('/services/radarr');
+  await editor.getByLabel('API key').fill('replacement-fixture-key');
+  await editor
+    .getByRole('button', { name: 'Test connection', exact: true })
+    .click();
+  await expect(
+    editor.getByRole('status', { name: 'Connection successful' }),
+  ).toBeVisible();
+  expect(changes.map((change) => change.method)).toEqual(['POST']);
+  for (const width of [1280, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    await waitForViewportFit(page);
+    await editor.scrollIntoViewIfNeeded();
+    await editor.screenshot({
+      path: testInfo.outputPath(`connection-${width}.png`),
+    });
+  }
+  await editor
+    .getByRole('button', { name: 'Save connection', exact: true })
+    .click();
+  await expect
+    .poll(() => changes.map((change) => change.method))
+    .toEqual(['POST', 'PUT']);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('Interrupted imported release can be retried after the controller entry disappears', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+  });
+  let released = false;
+  await page.route('**/api/v1/admin/stack', async (route) =>
+    route.fulfill({
+      json: {
+        items: [],
+        provisions: released
+          ? []
+          : [
+              {
+                id: 'imported-radarr',
+                kind: 'radarr',
+                origin: 'adopted',
+                state: 'retiring',
+                operation: 'release',
+                container_id: 'container-radarr',
+                service_id: 'manager-radarr',
+              },
+            ],
+      },
+    }),
+  );
+  await page.route(
+    '**/api/v1/admin/stack/imported-radarr/action',
+    async (route) => {
+      expect(route.request().postDataJSON()).toEqual({ action: 'release' });
+      released = true;
+      await route.fulfill({ json: { accepted: true, released: true } });
+    },
+  );
+  await page.goto('/');
+  await page
+    .getByRole('navigation', { name: 'Select service' })
+    .getByRole('link', { name: 'Radarr', exact: true })
+    .click();
+  await expect(
+    page.getByRole('button', { name: 'Remove service', exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Retry release', exact: true }),
+  ).toBeEnabled();
+  await page.screenshot({
+    path: testInfo.outputPath('release-retry.png'),
+    fullPage: true,
+  });
+  await page
+    .getByRole('button', { name: 'Retry release', exact: true })
+    .click();
+  await expect(
+    page.getByRole('button', { name: 'Review ownership transfer' }),
+  ).toBeVisible();
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 for (const width of [1280, 1760, 1920, 2560]) {
   test(`settings follow sidebar motion continuously at ${width}px`, async ({
     page,
