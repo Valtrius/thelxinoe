@@ -253,6 +253,12 @@ async function containers() {
     '.local/connections-result.json',
   );
   await evidence.group(
+    'service-safety',
+    () => node('scripts/test-service-safety.mjs'),
+    ['container-build', 'browser-runtime'],
+    'test-results/service-safety/result.json',
+  );
+  await evidence.group(
     'recyclarr',
     () => node('scripts/test-recyclarr.mjs'),
     ['container-build', 'browser-runtime'],

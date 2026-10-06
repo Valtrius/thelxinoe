@@ -2,6 +2,47 @@ use super::*;
 use crate::test_support::{Docker, Fault};
 
 #[tokio::test]
+async fn missing_component_does_not_prevent_server_restart_or_discard_recovery() {
+    let fixture = Docker::new();
+    fixture
+        .scope(async {
+            let d: Deployment = fixture.backup_deployment();
+            store::write_json(&store::root().join("desired-state.json"), &d).unwrap();
+            store::write_json(&store::root().join("generations/1/desired-state.json"), &d).unwrap();
+            let (_, mut components) = inspect(&d).await.unwrap();
+            components[0].running = true;
+            components.push(Component {
+                key: thelxinoe_core::id(),
+                container: "missing-import".into(),
+                source: "/srv/imported/config".into(),
+                running: true,
+            });
+            let r = Record {
+                id: thelxinoe_core::id(),
+                stage: "quiescing".into(),
+                created_at: 1,
+                error: None,
+                components,
+                recovery: None,
+                recovery_ready: false,
+                rollback_phase: None,
+                release_restore: None,
+            };
+            record(&r).unwrap();
+            recover_interrupted().await.unwrap();
+            assert!(engine("/containers/original/json").await.unwrap()["State"]["Running"] == true);
+            let interrupted: Record = store::read(&work(&r.id).join("operation.json")).unwrap();
+            assert_eq!(interrupted.stage, "rollback-activating");
+            assert_eq!(interrupted.rollback_phase, Some(RollbackPhase::Activating));
+            assert!(interrupted.error.is_some());
+            recover_interrupted().await.unwrap();
+            let retried: Record = store::read(&work(&r.id).join("operation.json")).unwrap();
+            assert_eq!(retried.stage, "rollback-activating");
+        })
+        .await;
+}
+
+#[tokio::test]
 async fn startup_recovers_early_restore_failure_and_accepts_the_same_archive() {
     for fault in [
         Fault::StartBefore("original"),

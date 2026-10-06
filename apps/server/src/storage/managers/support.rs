@@ -43,6 +43,7 @@ pub(super) async fn register_with_actor_write_stack_provisions(
         if provision.is_some_and(|(state,container,origin)| container.as_deref()!=Some(input.container_id.as_str()) || if origin=="adopted" {state!="complete"} else {state!="connecting" || input.url_base != thelxinoe_core::service_url_base(&input.kind)}) {return Ok(false);}
         tx.execute("INSERT INTO support_services(id,name,kind,container_id,port,generation,credential,media_source,native_url,version,checked_at,url_base,access_revision) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) ON CONFLICT(id) DO UPDATE SET name=excluded.name,container_id=excluded.container_id,port=excluded.port,generation=excluded.generation,credential=excluded.credential,media_source=excluded.media_source,native_url=excluded.native_url,url_base=excluded.url_base,access_revision=excluded.access_revision,version=excluded.version,checked_at=excluded.checked_at,error=NULL",params![key,input.name.trim(),input.kind,input.container_id,input.port,id(),secret,media_source,input.native_url,version,now(),input.url_base,id()])?;
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'support.register',?2,?3)",params![actor_id,key,now()])?;
+        tx.execute("DELETE FROM seerr_request_states WHERE service_id=?1", [&key])?;
         tx.commit()?;
         Ok(true)
     }).await

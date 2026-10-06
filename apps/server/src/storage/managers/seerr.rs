@@ -36,30 +36,6 @@ pub(super) async fn resolve_bootstrap(
 ) -> anyhow::Result<Option<String>> {
     db.read("seerr.resolve_bootstrap", move |db| Ok(db.query_row("SELECT service_id FROM seerr_bootstrap_tokens WHERE token_hash=?1 AND expires_at>?2", params![hash,thelxinoe_core::now()], |r| r.get(0)).optional()?)).await
 }
-pub(super) async fn mapped_user(
-    db: &Database,
-    service: String,
-    user: String,
-) -> anyhow::Result<Option<i64>> {
-    db.read("seerr.mapped_user", move |db| {
-        Ok(db
-            .query_row(
-                "SELECT remote_id FROM seerr_users WHERE service_id=?1 AND user_id=?2",
-                params![service, user],
-                |r| r.get(0),
-            )
-            .optional()?)
-    })
-    .await
-}
-pub(super) async fn save_user(
-    db: &Database,
-    service: String,
-    user: String,
-    remote: i64,
-) -> anyhow::Result<()> {
-    db.write("seerr.save_user", move |db| { db.execute("INSERT INTO seerr_users VALUES (?1,?2,?3) ON CONFLICT(service_id,user_id) DO UPDATE SET remote_id=excluded.remote_id", params![service,user,remote])?; Ok(()) }).await
-}
 pub(super) async fn auto_approve(db: &Database, user: String) -> anyhow::Result<bool> {
     db.read("seerr.auto_approve", move |db| {
         Ok(db
