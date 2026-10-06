@@ -44,6 +44,7 @@ export async function waitForProxy(client, base) {
 export async function fixture({
   scheme = 'https',
   separateMovies = false,
+  moviesDirectory = 'existing-movies',
 } = {}) {
   resourceScope();
   const project = fixtureId('access');
@@ -64,7 +65,7 @@ export async function fixture({
     'media/tv',
     'media/music',
     'media/downloads',
-    'existing-movies',
+    moviesDirectory,
   ])
     mkdirSync(`${root}/${directory}`, { recursive: true });
   let infrastructure;
@@ -647,7 +648,7 @@ export async function fixture({
     if (separateMovies) {
       infrastructure.config.services.server.volumes.push({
         type: 'bind',
-        source: resolve(root, 'existing-movies'),
+        source: resolve(root, moviesDirectory),
         target: '/media/movies',
       });
       writeFileSync(

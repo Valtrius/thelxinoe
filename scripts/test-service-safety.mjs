@@ -12,7 +12,10 @@ import { imageManifest } from './ci-images.mjs';
 const output = 'test-results/service-safety';
 mkdirSync(output, { recursive: true });
 const result = { passed: false, scenarios: [] };
-const f = await fixture({ separateMovies: true });
+const f = await fixture({
+  separateMovies: true,
+  moviesDirectory: 'shared/movies',
+});
 function controller(path, method = 'GET', body) {
   const response = f.compose(
     'exec',
@@ -68,6 +71,53 @@ async function adopt(attached) {
 async function release(id) {
   await f.api(`/admin/stack/${id}/action`, 'POST', { action: 'release' });
 }
+function updateJournal(id, change) {
+  const path = `/var/lib/thelxinoe/deployment/services/${id}/service.json`;
+  const key = Buffer.from(
+    f.compose(
+      'exec',
+      '-T',
+      'controller',
+      'base64',
+      '-w0',
+      '/var/lib/thelxinoe/deployment/registry-key/master.key',
+    ),
+    'base64',
+  );
+  const encrypted = Buffer.from(
+    f.compose('exec', '-T', 'controller', 'base64', '-w0', path),
+    'base64',
+  );
+  const scope = Buffer.from(`service:${id}`);
+  const decipher = createDecipheriv(
+    'aes-256-gcm',
+    key,
+    encrypted.subarray(0, 12),
+  );
+  decipher.setAAD(scope);
+  decipher.setAuthTag(encrypted.subarray(-16));
+  const journal = JSON.parse(
+    Buffer.concat([
+      decipher.update(encrypted.subarray(12, -16)),
+      decipher.final(),
+    ]),
+  );
+  change(journal);
+  const nonce = randomBytes(12),
+    cipher = createCipheriv('aes-256-gcm', key, nonce);
+  cipher.setAAD(scope);
+  const changed = Buffer.concat([
+    nonce,
+    cipher.update(JSON.stringify(journal)),
+    cipher.final(),
+    cipher.getAuthTag(),
+  ]);
+  const file = `${f.root}/changed-${id}.json`;
+  writeFileSync(file, changed);
+  docker('cp', file, `${f.compose('ps', '-q', 'controller')}:${path}`);
+  f.compose('exec', '-T', 'controller', 'chmod', '600', path);
+  return journal;
+}
 try {
   for (const layout of [
     'config-contains-media',
@@ -79,9 +129,7 @@ try {
       async () => {
         const directory = `${f.root}/${layout}`;
         const source =
-          layout === 'server-secondary-media'
-            ? `${f.root}/existing-movies`
-            : directory;
+          layout === 'server-secondary-media' ? `${f.root}/shared` : directory;
         const media =
           layout === 'config-contains-media'
             ? `${source}/movies`
@@ -102,6 +150,14 @@ try {
         );
         const accepted = await adopt(attached);
         expect(accepted.review.capabilities.backup.available).toBe(false);
+        // Old reviews can have a stale positive capability; live preflight must still reject the layout.
+        updateJournal(accepted.id, (journal) => {
+          journal.imported.capabilities.backup.available = true;
+        });
+        expect(
+          (await f.stack()).items.find((row) => row.id === accepted.id)
+            .capabilities.backup.available,
+        ).toBe(false);
         const before = JSON.parse(docker('inspect', attached.container))[0]
           .State.StartedAt;
         const rejected = controller('/backups', 'POST', {
@@ -223,54 +279,9 @@ try {
         JSON.parse(docker('inspect', attached.container))[0].State.Running,
       ).toBe(true);
       // Reproduce a journal left by an interrupted imported lifecycle, then let Docker --rm remove it.
-      const journalPath = `/var/lib/thelxinoe/deployment/services/${accepted.id}/service.json`;
-      const key = Buffer.from(
-        f.compose(
-          'exec',
-          '-T',
-          'controller',
-          'base64',
-          '-w0',
-          '/var/lib/thelxinoe/deployment/registry-key/master.key',
-        ),
-        'base64',
-      );
-      const encrypted = Buffer.from(
-        f.compose('exec', '-T', 'controller', 'base64', '-w0', journalPath),
-        'base64',
-      );
-      const scope = Buffer.from(`service:${accepted.id}`);
-      const decipher = createDecipheriv(
-        'aes-256-gcm',
-        key,
-        encrypted.subarray(0, 12),
-      );
-      decipher.setAAD(scope);
-      decipher.setAuthTag(encrypted.subarray(-16));
-      const journal = JSON.parse(
-        Buffer.concat([
-          decipher.update(encrypted.subarray(12, -16)),
-          decipher.final(),
-        ]),
-      );
-      journal.phase = 'changing';
-      const nonce = randomBytes(12),
-        cipher = createCipheriv('aes-256-gcm', key, nonce);
-      cipher.setAAD(scope);
-      const changed = Buffer.concat([
-        nonce,
-        cipher.update(JSON.stringify(journal)),
-        cipher.final(),
-        cipher.getAuthTag(),
-      ]);
-      const file = `${f.root}/interrupted-import.json`;
-      writeFileSync(file, changed);
-      docker(
-        'cp',
-        file,
-        `${f.compose('ps', '-q', 'controller')}:${journalPath}`,
-      );
-      f.compose('exec', '-T', 'controller', 'chmod', '600', journalPath);
+      const journal = updateJournal(accepted.id, (journal) => {
+        journal.phase = 'changing';
+      });
       docker('stop', attached.container);
       const serverId = f.compose('ps', '-q', 'server');
       const server = JSON.parse(docker('inspect', serverId))[0];
