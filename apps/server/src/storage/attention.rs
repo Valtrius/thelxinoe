@@ -173,8 +173,9 @@ pub(super) async fn cache_seerr(
         // Only a complete successful snapshot replaces saved request state.
         tx.execute("DELETE FROM seerr_request_states WHERE service_id=?1",[&service])?;
         for row in rows {
-            let Some(remote) = row["requestedBy"]["id"].as_i64() else {continue};
-            let Some(user) = tx.query_row("SELECT user_id FROM seerr_users WHERE service_id=?1 AND remote_id=?2",params![service,remote],|r|r.get::<_,String>(0)).optional()? else {continue};
+            if !row["requestedBy"]["id"].as_i64().is_some_and(|id| id > 1) {continue}
+            let Some(user) = row["requestedBy"]["email"].as_str().and_then(|email| email.strip_suffix("@thelxinoe.invalid")) else {continue};
+            if !tx.query_row("SELECT EXISTS(SELECT 1 FROM users WHERE id=?1)",[user],|r|r.get::<_,bool>(0))? {continue}
             let Some(id) = row["id"].as_i64().filter(|id|*id>0) else {continue};
             let Some(external) = row["media"]["tmdbId"].as_i64().filter(|id|*id>0) else {continue};
             let media_type = row["type"].as_str().or_else(||row["media"]["mediaType"].as_str()).unwrap_or("");

@@ -1554,6 +1554,38 @@ scenario: try {
     (await api('/admin/stack')).items.some((s) => s.kind === 'recyclarr'),
   ).toBe(false);
   record('Removal cleans up the owned job definition and state');
+  externalContainers.push(`${project}-external-auto-remove`);
+  infrastructure.update({ containers: externalContainers });
+  const autoRemove = docker(
+    'run',
+    '-d',
+    '--rm',
+    '--label',
+    `io.thelxinoe.ci-run=${process.env.THELXINOE_CI_RUN_ID ?? project}`,
+    '--name',
+    `${project}-external-auto-remove`,
+    '--network',
+    `${project}_test`,
+    '--user',
+    '10001:10001',
+    '-e',
+    'CRON_SCHEDULE=0 0 1 1 *',
+    '-v',
+    `${volume}:/config`,
+    evidence.image,
+  );
+  const autoRemoveReview = await request(
+    '/admin/recyclarr/adopt/preview',
+    'POST',
+    { container_id: autoRemove },
+  );
+  expect(autoRemoveReview.status()).toBe(409);
+  expect(await autoRemoveReview.text()).toContain('Auto-remove');
+  expect(JSON.parse(docker('inspect', autoRemove))[0].State.Running).toBe(true);
+  docker('stop', autoRemove);
+  record(
+    'Auto-remove ownership transfer is rejected before stopping its source',
+  );
   externalConfig(
     originalYaml,
     'resource_providers: [{name: custom, type: trash-guides, path: /custom}]',

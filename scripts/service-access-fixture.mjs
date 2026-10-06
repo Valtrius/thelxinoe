@@ -44,6 +44,7 @@ export async function waitForProxy(client, base) {
 export async function fixture({
   scheme = 'https',
   separateMovies = false,
+  moviesDirectory = 'existing-movies',
 } = {}) {
   resourceScope();
   const project = fixtureId('access');
@@ -64,7 +65,7 @@ export async function fixture({
     'media/tv',
     'media/music',
     'media/downloads',
-    'existing-movies',
+    moviesDirectory,
   ])
     mkdirSync(`${root}/${directory}`, { recursive: true });
   let infrastructure;
@@ -300,10 +301,15 @@ export async function fixture({
       nzbgetWarnings = false,
       existingLayout = false,
       composeOwnership = false,
+      configDirectory,
+      mediaMounts,
+      autoRemove = false,
     } = {},
   ) {
     const name = `${project}-attached-${kind}-${attachedContainers.length}`;
-    const directory = `${root}/attached-${kind}-${attachedContainers.length}`;
+    const directory =
+      configDirectory ??
+      `${root}/attached-${kind}-${attachedContainers.length}`;
     const internalPort = {
       radarr: 7878,
       sonarr: 8989,
@@ -380,6 +386,7 @@ export async function fixture({
       container = docker(
         'run',
         '-d',
+        ...(autoRemove ? ['--rm'] : []),
         '--label',
         `io.thelxinoe.ci-run=${env.THELXINOE_CI_RUN_ID ?? project}`,
         '--name',
@@ -392,18 +399,23 @@ export async function fixture({
         'PGID=10001',
         '-v',
         `${directory}:/config`,
-        ...(kind === 'prowlarr'
-          ? []
-          : existingLayout
-            ? [
-                '-v',
-                `${mediaSource('movies')}:/movies`,
-                '-v',
-                `${mediaSource('tv')}:/tv`,
-                '-v',
-                `${mediaSource('downloads')}:/downloads`,
-              ]
-            : ['-v', `${mediaSource()}:/media`]),
+        ...(mediaMounts
+          ? mediaMounts.flatMap(({ source, destination }) => [
+              '-v',
+              `${source}:${destination}`,
+            ])
+          : kind === 'prowlarr'
+            ? []
+            : existingLayout
+              ? [
+                  '-v',
+                  `${mediaSource('movies')}:/movies`,
+                  '-v',
+                  `${mediaSource('tv')}:/tv`,
+                  '-v',
+                  `${mediaSource('downloads')}:/downloads`,
+                ]
+              : ['-v', `${mediaSource()}:/media`]),
         '-p',
         `127.0.0.1:${port}:${internalPort}`,
         image,
@@ -636,7 +648,7 @@ export async function fixture({
     if (separateMovies) {
       infrastructure.config.services.server.volumes.push({
         type: 'bind',
-        source: resolve(root, 'existing-movies'),
+        source: resolve(root, moviesDirectory),
         target: '/media/movies',
       });
       writeFileSync(

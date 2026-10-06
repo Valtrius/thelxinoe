@@ -449,13 +449,16 @@ async fn list(State(runtime): State<Runtime>) -> Result<Json<Value>> {
         bootstrap().await?
     };
     let mut result = Vec::new();
-    for s in services()? {
+    for mut s in services()? {
         let identity = if s.container.is_empty() {
             &s.name
         } else {
             &s.container
         };
         let live = engine(&format!("/containers/{identity}/json")).await;
+        if let (Some(imported), Ok(raw)) = (&mut s.imported, &live) {
+            adoption::refresh_capabilities(raw, &d, &mut imported.capabilities);
+        }
         result.push(recovery::observation(&s, &live));
     }
     Ok(Json(
@@ -692,6 +695,13 @@ async fn action(
     }
     let raw = engine(&format!("/containers/{}/json", s.container)).await?;
     verify_fingerprint(&d, &s, &raw).await?;
+    if raw["HostConfig"]["AutoRemove"] == true
+        && matches!(input.action.as_str(), "stop" | "restart")
+    {
+        return Err(conflict(
+            "Docker auto-remove deployments cannot be stopped for lifecycle operations",
+        ));
+    }
     let endpoint = match input.action.as_str() {
         "start" => "start",
         "stop" => "stop?t=30",

@@ -119,50 +119,68 @@ fn public(mut value: Value) -> Value {
     value
 }
 
-async fn user(c: &Connection<'_>, service: &str, principal: &Principal) -> Result<i64> {
+async fn user(c: &Connection<'_>, principal: &Principal) -> Result<i64> {
     let _guard = c
         .state
         .managers
         .guard
         .service(&format!("seerr-user:{}", principal.user.id))
         .await;
-    user_locked(c, service, principal).await
+    user_locked(c, principal).await
 }
 
-async fn user_locked(c: &Connection<'_>, service: &str, principal: &Principal) -> Result<i64> {
-    let stored =
-        storage::mapped_user(&c.state.db, service.into(), principal.user.id.clone()).await?;
-    let remote = if let Some(id) = stored {
-        id
+async fn user_locked(c: &Connection<'_>, principal: &Principal) -> Result<i64> {
+    let email = format!("{}@thelxinoe.invalid", principal.user.id);
+    // Numeric IDs belong to the current upstream database, never to our integration record.
+    // Resolve the stable account identity even when the container and API key are unchanged.
+    let found = call(
+        c,
+        reqwest::Method::GET,
+        "user",
+        &[("take", "100".into()), ("q", email.clone())],
+        None,
+        None,
+    )
+    .await?;
+    let mut matches = found["results"]
+        .as_array()
+        .ok_or_else(unavailable)?
+        .iter()
+        .filter(|u| u["email"] == email);
+    let existing = matches.next();
+    if matches.next().is_some() {
+        return Err(ApiError::conflict(
+            "Seerr returned an ambiguous account identity",
+        ));
+    }
+    let resolved = if let Some(value) = existing {
+        value.clone()
     } else {
-        let email = format!("{}@thelxinoe.invalid", principal.user.id);
-        // Recover a completed create whose response or local write was interrupted.
-        let found = call(
-            c,
-            reqwest::Method::GET,
-            "user",
-            &[("take", "100".into()), ("q", email.clone())],
-            None,
-            None,
-        )
-        .await?;
-        let existing = found["results"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|u| u["email"] == email);
-        let created = if let Some(value) = existing {
-            value.clone()
-        } else {
-            call(c,reqwest::Method::POST,"user",&[],Some(json!({"email":email,"username":principal.user.username,"password":thelxinoe_auth::token()})),None).await?
-        };
-        let id = created["id"]
+        let created = call(c,reqwest::Method::POST,"user",&[],Some(json!({"email":email,"username":principal.user.username,"password":thelxinoe_auth::token()})),None).await?;
+        let remote = created["id"]
             .as_i64()
             .filter(|id| *id > 1)
             .ok_or_else(unavailable)?;
-        storage::save_user(&c.state.db, service.into(), principal.user.id.clone(), id).await?;
-        id
+        // Seerr omits email from create responses. Read back the persisted identity before granting permissions.
+        call(
+            c,
+            reqwest::Method::GET,
+            &format!("user/{remote}"),
+            &[],
+            None,
+            None,
+        )
+        .await?
     };
+    if resolved["email"] != email || resolved["userType"] != 2 {
+        return Err(ApiError::conflict(
+            "Seerr did not verify the expected local account",
+        ));
+    }
+    let remote = resolved["id"]
+        .as_i64()
+        .filter(|id| *id > 1)
+        .ok_or_else(unavailable)?;
     let admin = principal.user.role == Role::Admin;
     let automatic = admin || storage::auto_approve(&c.state.db, principal.user.id.clone()).await?;
     let permissions =
@@ -283,7 +301,7 @@ async fn requests(
 ) -> Result<Json<Value>> {
     let principal = security::principal(&state, &headers).await?;
     let (service, c) = connection(&state).await?;
-    let user = user(&c, &service, &principal).await?;
+    let user = user(&c, &principal).await?;
     let mut result = call(
         &c,
         reqwest::Method::GET,
@@ -551,7 +569,7 @@ async fn request(
     if input.media_type == "tv" {
         body["seasons"] = json!(input.seasons);
     }
-    let user = user_locked(&c, &service, &principal).await?;
+    let user = user_locked(&c, &principal).await?;
     let result = public(
         call(
             &c,
@@ -582,8 +600,8 @@ async fn decide(
     if action != "cancel" && principal.user.role != Role::Admin {
         return Err(ApiError::forbidden());
     }
-    let (service, c) = connection(&state).await?;
-    let user = user(&c, &service, &principal).await?;
+    let (_, c) = connection(&state).await?;
+    let user = user(&c, &principal).await?;
     let (method, path) = if action == "cancel" {
         (reqwest::Method::DELETE, format!("request/{id}"))
     } else {
@@ -733,7 +751,7 @@ mod tests {
             let release = Arc::new(tokio::sync::Notify::new());
             let reached_upstream = reached.clone();
             let release_upstream = release.clone();
-            let remote = json!({"id":7,"type":"movie","status":2,"updatedAt":"2026-10-02T10:00:00Z","requestedBy":{"id":2},"media":{"tmdbId":603,"status":3},"seasons":[]});
+            let remote = json!({"id":7,"type":"movie","status":2,"updatedAt":"2026-10-02T10:00:00Z","requestedBy":{"id":2,"email":"alice@thelxinoe.invalid","userType":2},"media":{"tmdbId":603,"status":3},"seasons":[]});
             let remote_upstream = remote.clone();
             let native_connections = Arc::new(tokio::sync::Mutex::new(Vec::<Value>::new()));
             let connections_upstream = native_connections.clone();
@@ -759,6 +777,7 @@ mod tests {
                     Json(match path.as_str() {
                         "/api/v3/qualityprofile" => json!([{"id":1,"name":"HD","items":[]}]),
                         "/api/v1/settings/public" => json!({"initialized":true}),
+                        "/api/v1/user" => json!({"results":[{"id":2,"email":"alice@thelxinoe.invalid","userType":2}]}),
                         "/api/v1/status" => json!({"version":"3"}),
                         "/api/v3/system/status" => json!({"appName":"Radarr","version":"6"}),
                         "/api/v1/settings/jobs/radarr-scan/run" => Value::Null,
@@ -820,7 +839,6 @@ mod tests {
             state.db.write("test.seerr", move |db| {
                 db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at,defaults) VALUES ('radarr','Radarr','radarr',?1,?2,'g',?3,?4,'1',1,'{\"quality_profile\":1,\"root_folder\":\"/media/movies\",\"monitored\":true}')",params![container,port,manager_key,media_source])?;
                 db.execute("INSERT INTO support_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('seerr','Seerr','seerr',?1,?2,'g',?3,'','1',1)",params![container,port,seerr_key])?;
-                db.execute("INSERT INTO seerr_users VALUES ('seerr','alice',2)",[])?;
                 db.execute("UPDATE users SET role='admin' WHERE id='alice'",[])?;
                 Ok(())
             }).await.unwrap();

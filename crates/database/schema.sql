@@ -640,14 +640,6 @@ CREATE TABLE seerr_bootstrap_tokens (
     token_hash TEXT NOT NULL UNIQUE,
     expires_at INTEGER NOT NULL
 ) STRICT;
-CREATE TABLE seerr_users (
-    service_id TEXT NOT NULL REFERENCES support_services(id) ON DELETE CASCADE,
-    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    remote_id INTEGER NOT NULL CHECK(remote_id > 1),
-    PRIMARY KEY(service_id,user_id),
-    UNIQUE(service_id,remote_id)
-) STRICT;
-
 CREATE TABLE stack_provisions (
     id TEXT NOT NULL PRIMARY KEY,
     kind TEXT NOT NULL UNIQUE,

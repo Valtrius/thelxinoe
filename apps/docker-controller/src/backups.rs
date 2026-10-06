@@ -130,6 +130,11 @@ async fn inspect(d: &Deployment) -> Result<(Vec<Managed>, Vec<Component>)> {
             "First-party deployment drift blocks backup and restore",
         ));
     }
+    if server["HostConfig"]["AutoRemove"] == true {
+        return Err(conflict(
+            "Docker auto-remove deployments cannot be stopped for backup",
+        ));
+    }
     let source = mount(&server, "/var/lib/thelxinoe")?["Source"]
         .as_str()
         .ok_or_else(unavailable)?
@@ -138,7 +143,7 @@ async fn inspect(d: &Deployment) -> Result<(Vec<Managed>, Vec<Component>)> {
         .ok_or_else(|| conflict("Unsupported server state source"))?
         .to_string_lossy()
         .into_owned();
-    if !policy::appdata_isolated(&source, &d.media_source)
+    if !adoption::state_isolated(&source, &server, d)
         || FsPath::new(&d.appdata_source).starts_with(&source)
     {
         return Err(conflict("Server state overlaps media or deployment state"));
@@ -151,35 +156,17 @@ async fn inspect(d: &Deployment) -> Result<(Vec<Managed>, Vec<Component>)> {
     }];
     let mut managed = services()?;
     managed.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut media_sources = Vec::new();
     for service in &managed {
-        if service
-            .imported
-            .as_ref()
-            .is_some_and(|v| !v.capabilities.backup.available)
-        {
-            return Err(conflict(
-                "Recovery coverage is incomplete for an imported deployment; its storage requires a supported snapshot adapter",
-            ));
-        }
         if service.phase != "active" {
             return Err(conflict("Finish service recovery before backing up"));
         }
         let raw = updates::verified(service, d).await?;
-        let source = mount(&raw, "/config")?["Source"]
-            .as_str()
-            .ok_or_else(unavailable)?
-            .to_owned();
-        let source = policy::host_path(&source)
-            .ok_or_else(|| conflict("Unsupported service appdata source"))?
-            .to_string_lossy()
-            .into_owned();
-        let owned = FsPath::new(&source)
-            == FsPath::new(&d.appdata_source)
-                .join("services")
-                .join(&service.id)
-                .join("appdata");
-        if !owned && !policy::appdata_isolated(&source, &d.media_source) {
-            return Err(conflict("Service appdata is not isolated"));
+        let source = adoption::backup_source(&raw, d)?;
+        for m in raw["Mounts"].as_array().ok_or_else(unavailable)? {
+            if m["Destination"] != "/config" && m["Type"] != "tmpfs" {
+                media_sources.push(m["Source"].as_str().ok_or_else(unavailable)?.to_owned());
+            }
         }
         components.push(Component {
             key: service.id.clone(),
@@ -187,6 +174,15 @@ async fn inspect(d: &Deployment) -> Result<(Vec<Managed>, Vec<Component>)> {
             source,
             running: raw["State"]["Running"] == true,
         });
+    }
+    if components.iter().any(|c| {
+        media_sources
+            .iter()
+            .any(|media| !policy::media_disjoint(&c.source, media))
+    }) {
+        return Err(conflict(
+            "Component state overlaps another service's media or download storage",
+        ));
     }
     Ok((managed, components))
 }
@@ -203,15 +199,41 @@ async fn stop_all(components: &[Component]) -> Result<()> {
     Ok(())
 }
 async fn restart(components: &[Component]) -> Result<()> {
+    let mut failure = None;
     for c in components.iter().rev() {
-        if c.running
-            && engine(&format!("/containers/{}/json", c.container)).await?["State"]["Running"]
-                != true
-        {
-            updates::start(&c.container).await?;
+        if !c.running {
+            continue;
+        }
+        let result = async {
+            // A registry-only release relinquishes this startup obligation as well.
+            if c.key != "server"
+                && service_path(&c.key).exists()
+                && load(&c.key)?.phase == "returned"
+            {
+                return Ok(());
+            }
+            let raw = engine(&format!("/containers/{}/json", c.container)).await?;
+            if !raw["Mounts"].as_array().is_some_and(|mounts| {
+                mounts.iter().any(|m| {
+                    m["Source"]
+                        .as_str()
+                        .and_then(policy::host_path)
+                        .is_some_and(|source| source == FsPath::new(&c.source))
+                })
+            }) {
+                return Err(conflict("Interrupted backup component storage changed"));
+            }
+            if raw["State"]["Running"] != true {
+                updates::start(&c.container).await?;
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(error) = result {
+            failure.get_or_insert(error);
         }
     }
-    Ok(())
+    failure.map_or(Ok(()), Err)
 }
 async fn rollback_original(d: &Deployment, r: &mut Record, copy: bool) -> Result<()> {
     let action = crate::recovery::plan(r.rollback_phase, copy && r.recovery_ready)?;
@@ -344,6 +366,8 @@ pub(super) async fn create(
                 r.stage = "failed".into();
                 r.error = Some(e.1.into());
                 if restart(&r.components).await.is_err() {
+                    r.rollback_phase = Some(RollbackPhase::Activating);
+                    r.stage = "rollback-activating".into();
                     r.error = Some("Backup failed; one or more components need restart".into());
                 }
             }
@@ -530,6 +554,17 @@ pub(super) async fn restore(
     });
     Ok(Json(response))
 }
+async fn remove_interrupted_workers(d: &Deployment, r: &Record) -> Result<()> {
+    let all = engine("/containers/json?all=true").await?;
+    for c in all.as_array().ok_or_else(unavailable)? {
+        if c["Labels"]["app.thelxinoe.update"] == r.id
+            && c["Labels"]["app.thelxinoe.deployment"] == d.id
+        {
+            updates::remove(c["Id"].as_str().ok_or_else(unavailable)?).await?;
+        }
+    }
+    Ok(())
+}
 pub(super) async fn recover_interrupted() -> Result<()> {
     if !root().exists() {
         return Ok(());
@@ -556,7 +591,11 @@ pub(super) async fn recover_interrupted() -> Result<()> {
                         .find(|c| c.key == "server")
                         .ok_or_else(unavailable)?;
                     server.container = d.server["Id"].as_str().ok_or_else(unavailable)?.into();
-                    restart(&r.components).await?;
+                    if let Err(error) = restart(&r.components).await {
+                        r.error = Some(error.1.into());
+                        record(&r)?;
+                        continue;
+                    }
                     r.stage = "restored".into();
                     r.error = None;
                     record(&r)?;
@@ -585,6 +624,40 @@ pub(super) async fn recover_interrupted() -> Result<()> {
             continue;
         }
         id(&r.id)?;
+        if r.recovery.is_none()
+            || matches!(
+                r.stage.as_str(),
+                "restore-activating" | "rollback-activating"
+            )
+        {
+            let terminal = if r.stage == "restore-activating" {
+                "restored"
+            } else {
+                failure_stage(&r)
+            };
+            if terminal != "restored" {
+                r.rollback_phase = Some(RollbackPhase::Activating);
+                r.stage = "rollback-activating".into();
+            }
+            record(&r)?;
+            let cleanup = async {
+                let d = bootstrap().await?;
+                remove_interrupted_workers(&d, &r).await
+            }
+            .await;
+            let restarting = restart(&r.components).await;
+            match cleanup.and(restarting) {
+                Ok(()) => {
+                    r.stage = terminal.into();
+                    r.error = Some(
+                        "Controller interrupted the operation; component startup recovered".into(),
+                    );
+                }
+                Err(error) => r.error = Some(error.1.into()),
+            }
+            record(&r)?;
+            continue;
+        }
         let d = bootstrap().await?;
         let (_, current) = inspect(&d).await?;
         if r.components.len() != current.len()
@@ -595,27 +668,19 @@ pub(super) async fn recover_interrupted() -> Result<()> {
         {
             return Err(conflict("Interrupted backup component layout changed"));
         }
-        let all = engine("/containers/json?all=true").await?;
-        for c in all.as_array().ok_or_else(unavailable)? {
-            if c["Labels"]["app.thelxinoe.update"] == r.id
-                && c["Labels"]["app.thelxinoe.deployment"] == d.id
-            {
-                updates::remove(c["Id"].as_str().ok_or_else(unavailable)?).await?;
+        remove_interrupted_workers(&d, &r).await?;
+        let terminal = failure_stage(&r);
+        let copy = matches!(
+            r.stage.as_str(),
+            "restoring" | "recovery-required" | "rollback-copying"
+        );
+        if let Err(error) = rollback_original(&d, &mut r, copy).await {
+            if r.rollback_phase != Some(RollbackPhase::Activating) {
+                return Err(error);
             }
-        }
-        let terminal = if r.stage == "restore-activating" {
-            "restored"
-        } else {
-            failure_stage(&r)
-        };
-        if terminal == "restored" {
-            restart(&r.components).await?;
-        } else {
-            let copy = matches!(
-                r.stage.as_str(),
-                "restoring" | "recovery-required" | "rollback-activating" | "rollback-copying"
-            );
-            rollback_original(&d, &mut r, copy).await?;
+            r.error = Some(error.1.into());
+            record(&r)?;
+            continue;
         }
         r.stage = terminal.into();
         r.error = Some("Controller interrupted the operation; component startup recovered".into());

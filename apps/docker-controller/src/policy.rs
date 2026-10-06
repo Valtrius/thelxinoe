@@ -148,6 +148,9 @@ pub fn validate_adoption(
     transfer_owner(container, released_compose)?;
     adoption_image(container, image, t)?;
     let host = &container["HostConfig"];
+    if host["AutoRemove"] == true {
+        return Err("Auto-remove containers cannot be retained for ownership transfer");
+    }
     if host["Privileged"] == true || host["ReadonlyRootfs"] == true {
         return Err("Unsupported privilege or filesystem configuration");
     }

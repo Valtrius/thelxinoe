@@ -45,7 +45,8 @@ pub(super) fn observation(s: &Managed, live: &Result<Value>) -> Value {
     if let Some(imported) = &s.imported {
         value["capabilities"] = serde_json::to_value(&imported.capabilities).unwrap_or(Value::Null);
         value["imported"] = json!(true);
-        value["can_release"] = json!(s.phase == "active" && s.active_update.is_none());
+        value["can_release"] =
+            json!(matches!(s.phase.as_str(), "active" | "changing") && s.active_update.is_none());
         value["storage"] = serde_json::to_value(&imported.storage).unwrap_or(Value::Null);
     }
     value

@@ -94,6 +94,67 @@ pub(super) async fn engine_identity() -> Result<String> {
         .map(str::to_owned)
         .ok_or_else(unavailable)
 }
+fn media_destination(destination: &str) -> bool {
+    ["/media", "/movies", "/tv", "/music", "/downloads"]
+        .iter()
+        .any(|root| destination == *root || destination.starts_with(&format!("{root}/")))
+}
+pub(super) fn state_isolated(source: &str, server: &Value, d: &Deployment) -> bool {
+    policy::media_disjoint(source, &d.media_source)
+        && server["Mounts"].as_array().is_some_and(|mounts| {
+            mounts.iter().all(|m| {
+                !m["Destination"].as_str().is_some_and(media_destination)
+                    || m["Source"]
+                        .as_str()
+                        .is_some_and(|media| policy::media_disjoint(source, media))
+            })
+        })
+}
+pub(super) fn backup_source(raw: &Value, d: &Deployment) -> Result<String> {
+    if raw["HostConfig"]["AutoRemove"] == true {
+        return Err(conflict(
+            "Docker auto-remove deployments cannot be stopped for backup or lifecycle operations",
+        ));
+    }
+    let mounts = raw["Mounts"].as_array().ok_or_else(unavailable)?;
+    let config = mount(raw, "/config")?;
+    let source = config["Source"].as_str().ok_or_else(unavailable)?;
+    if config["Type"] != "bind"
+        || config["RW"] != true
+        || !state_isolated(source, &d.server, d)
+        || !mounts
+            .iter()
+            .filter(|m| m["Destination"] != "/config")
+            .all(|m| {
+                (m["RW"] != true || m["Destination"].as_str().is_some_and(media_destination))
+                    && (m["Type"] == "tmpfs"
+                        || m["Source"]
+                            .as_str()
+                            .is_some_and(|other| policy::media_disjoint(source, other)))
+            })
+    {
+        return Err(conflict(
+            "Recovery coverage is incomplete: service state must be isolated from every media and download mount",
+        ));
+    }
+    Ok(policy::host_path(source)
+        .ok_or_else(|| conflict("Unsupported service appdata source"))?
+        .to_string_lossy()
+        .into_owned())
+}
+pub(super) fn refresh_capabilities(raw: &Value, d: &Deployment, capabilities: &mut Capabilities) {
+    capabilities.lifecycle = if raw["HostConfig"]["AutoRemove"] == true {
+        Capability::blocked(
+            "Docker auto-remove deployments cannot be stopped for lifecycle operations",
+        )
+    } else {
+        Capability::available()
+    };
+    capabilities.backup = match backup_source(raw, d) {
+        Ok(_) => Capability::available(),
+        Err(error) => Capability::blocked(error.1),
+    };
+}
 async fn inspect(input: &Preview, d: &Deployment) -> Result<(Value, Imported, String)> {
     let t = templates::find(&input.kind).ok_or_else(|| bad("Unknown supported service"))?;
     if input.container_id.len() != 64 || !input.container_id.bytes().all(|b| b.is_ascii_hexdigit())
@@ -162,27 +223,9 @@ async fn inspect(input: &Preview, d: &Deployment) -> Result<(Value, Imported, St
             borrowed: true,
         });
     }
-    let config = storage.iter().find(|m| m.destination == "/config");
-    let backup = if config.is_some_and(|m| {
-        m.kind == "bind" && m.writable && policy::appdata_isolated(&m.source, &d.media_source)
-    }) && storage.iter().all(|m| {
-        m.destination == "/config"
-            || !m.writable
-            || ["/media", "/movies", "/tv", "/music", "/downloads"]
-                .iter()
-                .any(|root| {
-                    m.destination == *root || m.destination.starts_with(&format!("{root}/"))
-                })
-    }) {
-        Capability::available()
-    } else {
-        Capability::blocked(
-            "Recovery coverage is incomplete: the existing persistent storage needs a supported snapshot adapter",
-        )
-    };
-    let capabilities = Capabilities {
+    let mut capabilities = Capabilities {
         lifecycle: Capability::available(),
-        backup,
+        backup: Capability::available(),
         update: Capability::blocked(
             "Faithful recreation and recovery must be verified before updating this imported deployment",
         ),
@@ -191,6 +234,7 @@ async fn inspect(input: &Preview, d: &Deployment) -> Result<(Value, Imported, St
         ),
         release: Capability::available(),
     };
+    refresh_capabilities(&raw, d, &mut capabilities);
     Ok((
         raw,
         Imported {
@@ -389,7 +433,7 @@ pub(super) async fn release(d: &Deployment, s: &mut Managed) -> Result<Json<Valu
     if s.phase == "returned" {
         return Ok(Json(json!({"accepted":true,"released":true})));
     }
-    if s.phase != "active" || s.active_update.is_some() {
+    if !matches!(s.phase.as_str(), "active" | "changing") || s.active_update.is_some() {
         return Err(conflict(
             "Finish the active operation before releasing ownership",
         ));
