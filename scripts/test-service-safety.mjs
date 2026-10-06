@@ -10,6 +10,7 @@ import { docker, fixture } from './service-access-fixture.mjs';
 import { imageManifest } from './ci-images.mjs';
 
 const output = 'test-results/service-safety';
+const seerrOnly = process.argv.includes('--seerr-only');
 mkdirSync(output, { recursive: true });
 const result = { passed: false, scenarios: [] };
 const f = await fixture({
@@ -41,6 +42,7 @@ function controller(path, method = 'GET', body) {
   };
 }
 async function scenario(name, run) {
+  if (seerrOnly && !name.startsWith('Seerr')) return;
   try {
     await run();
     result.scenarios.push({ name, passed: true });
@@ -380,7 +382,10 @@ try {
       const email = `${me.user.id}@thelxinoe.invalid`;
       await f.api('/seerr/requests');
       const original = (
-        await f.upstream('seerr', `user?q=${email}`)
+        await f.upstream(
+          'seerr',
+          `user?take=100&q=${encodeURIComponent(email)}`,
+        )
       ).results.find((row) => row.email === email);
       expect(original.id).toBeGreaterThan(1);
       const replace = (sql, params) =>
@@ -415,13 +420,19 @@ try {
         (await f.upstream('seerr', `user/${original.id}`)).permissions,
       ).toBe(32);
       const resolved = (
-        await f.upstream('seerr', `user?q=${email}`)
+        await f.upstream(
+          'seerr',
+          `user?take=100&q=${encodeURIComponent(email)}`,
+        )
       ).results.find((row) => row.email === email);
       expect(resolved.id).not.toBe(original.id);
       await f.upstream('seerr', `user/${resolved.id}`, 'DELETE');
       await f.api('/seerr/requests');
       const recovered = (
-        await f.upstream('seerr', `user?q=${email}`)
+        await f.upstream(
+          'seerr',
+          `user?take=100&q=${encodeURIComponent(email)}`,
+        )
       ).results.find((row) => row.email === email);
       expect(recovered.id).not.toBe(resolved.id);
       docker('restart', f.services.seerr.container_id);
@@ -439,14 +450,20 @@ try {
         )
         .toBe(true);
       expect(
-        (await f.upstream('seerr', `user?q=${email}`)).results.find(
-          (row) => row.email === email,
-        ).id,
+        (
+          await f.upstream(
+            'seerr',
+            `user?take=100&q=${encodeURIComponent(email)}`,
+          )
+        ).results.find((row) => row.email === email).id,
       ).toBe(recovered.id);
     },
   );
   result.passed = true;
 } finally {
-  writeFileSync(`${output}/result.json`, JSON.stringify(result, null, 2));
+  writeFileSync(
+    `${output}/${seerrOnly ? 'seerr-result' : 'result'}.json`,
+    JSON.stringify(result, null, 2),
+  );
   await f.close();
 }
