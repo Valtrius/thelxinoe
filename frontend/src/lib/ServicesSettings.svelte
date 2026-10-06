@@ -17,6 +17,9 @@
   import ConfirmDialog from './providers/components/ui/ConfirmDialog.svelte';
   import Switch from './ui/Switch.svelte';
   import { Copy, LoaderCircle } from '@lucide/svelte';
+  import OwnershipReview from './services/OwnershipReview.svelte';
+  import NativeAccessSettings from './services/NativeAccessSettings.svelte';
+  import ConnectionSettings from './services/ConnectionSettings.svelte';
   import RecyclarrSettings from './services/RecyclarrSettings.svelte';
   import RecyclarrSetup from './services/RecyclarrSetup.svelte';
   import DownloadsTable from './services/DownloadsTable.svelte';
@@ -307,6 +310,7 @@
     return (
       !serviceOperationActive(kind) &&
       !!item &&
+      (item.origin !== 'adopted' || kind === 'recyclarr') &&
       (live?.can_retire ||
         (!live && ['blocked', 'retiring'].includes(item.state)))
     );
@@ -623,14 +627,9 @@
     managerOptions[kind] = options;
     if (draft.loaded) return;
     service.defaults = options.defaults ?? service.defaults;
-    draft.root_folder =
-      service.defaults.root_folder ?? options.roots[0]?.path ?? '';
-    draft.quality_profile =
-      service.defaults.quality_profile ?? options.profiles[0]?.id ?? 0;
-    draft.metadata_profile =
-      service.defaults.metadata_profile ??
-      options.metadata_profiles[0]?.id ??
-      null;
+    draft.root_folder = service.defaults.root_folder ?? '';
+    draft.quality_profile = service.defaults.quality_profile ?? 0;
+    draft.metadata_profile = service.defaults.metadata_profile ?? null;
     draft.monitored = service.defaults.monitored ?? true;
     draft.loaded = true;
   }
@@ -743,12 +742,7 @@
     await api(`/admin/stack/${item.id}/retry`, 'POST', {});
     await refresh();
   }
-  async function restoreOriginal(kind: ServiceKind) {
-    const item = provision(kind);
-    if (!item) return;
-    await api(`/admin/stack/${item.id}/restore-original`, 'POST', {});
-    await refresh();
-  }
+
   async function preflight(kind: ServiceKind) {
     const target = updateTarget(kind);
     if (!target) return;
@@ -998,6 +992,20 @@
                 onclick={() => (transferReviews[service.kind] = null)}
                 >Cancel</Button
               >
+            {:else if provisioned?.state === 'retiring' && provisioned.operation === 'release'}
+              <Button
+                size="form"
+                variant="secondary"
+                disabled={!!pendingActions[service.kind] ||
+                  !!activeUpdate(service.kind)}
+                onclick={() =>
+                  void work(
+                    () => stackAction(service.kind, 'release'),
+                    `${service.label} ownership released. Container and data retained.`,
+                    service.kind,
+                    true,
+                  )}>Retry release</Button
+              >
             {:else if provisioned?.state === 'blocked'}
               <Button
                 size="form"
@@ -1007,16 +1015,29 @@
                     retryProvision(service.kind),
                   )}>Retry setup</Button
               >
-              {#if provisioned.origin === 'adopted' && !stackServices.some((entry) => entry.id === provisioned.id && !entry.transfer_pending)}<Button
+              {#if provisioned.origin === 'adopted' && (service.kind !== 'recyclarr' || !stackServices.some((entry) => entry.id === provisioned.id && !entry.transfer_pending))}<Button
                   size="form"
                   variant="secondary"
                   disabled={isBusy(service.kind)}
-                  onclick={() => void work(() => restoreOriginal(service.kind))}
-                  >Restore original</Button
+                  onclick={() =>
+                    void work(async () => {
+                      if (service.kind === 'recyclarr') {
+                        await api(
+                          `/admin/stack/${provisioned.id}/restore-original`,
+                          'POST',
+                        );
+                        await refresh();
+                      } else {
+                        await stackAction(service.kind, 'release');
+                      }
+                    })}
+                  >{service.kind === 'recyclarr'
+                    ? 'Restore original'
+                    : 'Cancel ownership transfer'}</Button
                 >{/if}
             {:else if runtimeService && runtimeService.registered !== false && !setupActive(service.kind)}
               {#if runtimeService.existence === 'present'}
-                {#each service.role === 'job' ? ['reconcile'] : runtimeService.running ? ['restart', 'stop', 'reconcile'] : ['start', 'reconcile'] as action (action)}
+                {#each service.role === 'job' ? ['reconcile'] : runtimeService.imported ? (runtimeService.running ? ['restart', 'stop', 'reconcile'] : ['start', 'reconcile']) : runtimeService.running ? ['restart', 'stop', 'reconcile'] : ['start', 'reconcile'] as action (action)}
                   <Button
                     size="form"
                     variant="secondary"
@@ -1024,11 +1045,24 @@
                     onclick={() =>
                       void work(() => stackAction(service.kind, action))}
                     >{action === 'reconcile'
-                      ? 'Repair configuration'
+                      ? runtimeService.imported
+                        ? 'Refresh Docker state'
+                        : 'Repair configuration'
                       : action[0].toUpperCase() + action.slice(1)}</Button
                   >
                 {/each}
               {/if}
+              {#if runtimeService.can_release}<Button
+                  size="form"
+                  variant="secondary"
+                  disabled={isBusy(service.kind)}
+                  onclick={() =>
+                    void operate(
+                      service.kind,
+                      () => stackAction(service.kind, 'release'),
+                      `${service.label} ownership released. Container and data retained.`,
+                    )}>Release ownership</Button
+                >{/if}
               {#if runtimeService.can_recreate}<Button
                   size="form"
                   disabled={isBusy(service.kind)}
@@ -1056,7 +1090,7 @@
                 >Retire and keep data</Button
               >
             {/if}
-            {#if provisioned && (runtimeService?.can_remove || provisioned.state === 'retiring')}
+            {#if provisioned && (provisioned.origin !== 'adopted' || service.kind === 'recyclarr') && (runtimeService?.can_remove || (provisioned.state === 'retiring' && provisioned.operation === 'remove'))}
               <Button
                 size="form"
                 variant="secondary"
@@ -1142,69 +1176,19 @@
           {#if live?.drift}<p
               class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
             >
-              Configuration changed outside Thelxinoe. Repair configuration to
-              restore managed settings.
+              Configuration changed outside Thelxinoe.
+              {#if live?.imported}Release ownership, then review and adopt again
+                to accept the changed deployment.{:else}Repair configuration to
+                restore managed settings.{/if}
             </p>{/if}
         </Notice>
       {/if}
       {#if transferReviews[selectedKind]}
         {@const review = transferReviews[selectedKind]!}
-        <section
-          class="work-section settings-section"
-          aria-label="Ownership review"
-        >
-          <h3 class="mb-3.25 text-[12px] font-[650]">Ownership review</h3>
-          <p class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted">
-            Thelxinoe stops the original container, disables its restart policy,
-            copies its configuration, and starts the managed copy.
-          </p>
-          {#if hasServiceUrlBase(selectedKind)}
-            <p class="my-2 text-[11px] leading-[1.6] text-muted">
-              The managed copy will use <code>/services/{selectedKind}</code> as its
-              URL Base. Thelxinoe updates connections it manages. Other API clients
-              must include this prefix after the service's address and port.
-            </p>
-          {/if}
-          <dl class="review-paths my-3.75 grid gap-3">
-            <div>
-              <dt class="text-[9px] tracking-[0.07em] text-muted uppercase">
-                Copy from
-              </dt>
-              <dd class="mt-0.75 wrap-anywhere text-[11px]">
-                {review.source_config}
-              </dd>
-            </div>
-            <div>
-              <dt class="text-[9px] tracking-[0.07em] text-muted uppercase">
-                Copy to
-              </dt>
-              <dd class="mt-0.75 wrap-anywhere text-[11px]">
-                {review.managed_config}
-              </dd>
-            </div>
-            <div>
-              <dt class="text-[9px] tracking-[0.07em] text-muted uppercase">
-                Retained image
-              </dt>
-              <dd class="mt-0.75 wrap-anywhere text-[11px]">{review.image}</dd>
-            </div>
-          </dl>
-          {#if review.compose_project}
-            <p class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted">
-              Remove or disable <strong>{review.compose_service}</strong> in
-              Compose project <strong>{review.compose_project}</strong> so it cannot
-              recreate the original container.
-            </p>
-            <Switch size="sm" bind:checked={releasedCompose[selectedKind]}
-              >The previous Compose definition is disabled</Switch
-            >
-          {:else}<p
-              class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
-            >
-              Disable any external script or updater that would recreate the
-              original container.
-            </p>{/if}
-        </section>
+        <OwnershipReview
+          {review}
+          bind:releasedCompose={releasedCompose[selectedKind]}
+        />
       {/if}
       {#if !connected && !item && !live}
         <section
@@ -1305,7 +1289,6 @@
                     >NZBGet username<input
                       class={formControlClass}
                       bind:value={setup.nzbget.username}
-                      required
                       autocomplete="off"
                     /></FormField
                   >
@@ -1317,7 +1300,7 @@
                     class={formControlClass}
                     type="password"
                     bind:value={setup[definition.kind].secret}
-                    required
+                    required={definition.kind !== 'nzbget'}
                     autocomplete="new-password"
                   /></FormField
                 >
@@ -1342,6 +1325,22 @@
         </section>
       {/if}
       {#if connected && !setupActive(selectedKind)}
+        {#key connected.id}
+          <ConnectionSettings
+            service={connected}
+            label={definition.label}
+            disabled={busy}
+            changed={refresh}
+          />
+        {/key}
+        {#if hasNativeAccess(selectedKind) && (!connected.access_url || connected.native_url)}
+          <NativeAccessSettings
+            id={connected.id}
+            url={connected.native_url ?? ''}
+            changed={refresh}
+          />
+        {/if}
+
         {#if definition.role === 'manager' || ['prowlarr', 'nzbget', 'bazarr'].includes(definition.kind)}
           <div
             class={[
@@ -1413,12 +1412,32 @@
                           disabled={busy}
                         >
                           <FormField
+                            >Root folder<select
+                              class={formControlClass}
+                              bind:value={draft.root_folder}
+                              required
+                            >
+                              <option value="" disabled
+                                >Choose an existing root folder</option
+                              >
+                              {#each options.roots as root (root.id)}<option
+                                  value={root.path}>{root.path}</option
+                                >{/each}
+                            </select></FormField
+                          >
+                          <FormField
                             >{definition.kind === 'lidarr'
                               ? 'Quality profile'
                               : 'Default request profile'}<select
                               class={formControlClass}
-                              bind:value={draft.quality_profile}
+                              value={draft.quality_profile || ''}
+                              onchange={(event) =>
+                                (draft.quality_profile = Number(
+                                  event.currentTarget.value,
+                                ))}
                               required
+                              ><option value="" disabled
+                                >Choose an existing profile</option
                               >{#each options.profiles as option (option.id)}<option
                                   value={option.id}>{option.name}</option
                                 >{/each}</select
@@ -1427,8 +1446,13 @@
                           {#if definition.kind === 'lidarr'}<FormField
                               >Metadata profile<select
                                 class={formControlClass}
-                                bind:value={draft.metadata_profile}
+                                value={draft.metadata_profile ?? ''}
+                                onchange={(event) =>
+                                  (draft.metadata_profile =
+                                    Number(event.currentTarget.value) || null)}
                                 required
+                                ><option value="" disabled
+                                  >Choose an existing metadata profile</option
                                 >{#each options.metadata_profiles as option (option.id)}<option
                                     value={option.id}>{option.name}</option
                                   >{/each}</select
@@ -1460,6 +1484,21 @@
                             >{/if}
                         </div>
                       {/if}
+                      <Switch
+                        size="sm"
+                        checked={manager(selectedKind)?.retention_enabled ??
+                          false}
+                        disabled={busy}
+                        onCheckedChange={(enabled) =>
+                          void work(async () => {
+                            await api(
+                              `/admin/managers/${connected.id}/retention`,
+                              'PUT',
+                              { enabled },
+                            );
+                            await loadManagers();
+                          })}>Allow auto-delete for this service</Switch
+                      >
                       {#if definition.kind === 'lidarr'}<div class="mt-4">
                           {#key connected.id}<QualityProfileEditor
                               serviceId={connected.id}
@@ -1575,37 +1614,42 @@
         >
           <h3 class="mb-3.25 text-[12px] font-[650]">Updates</h3>
           {#if target}
-            {#key target.id}<AutoSaveForm
-                class="grid gap-3 [&_label]:m-0"
-                label={`${definition.label} update settings`}
-                value={{
-                  policy: servicePolicy.policy,
-                  window_start: servicePolicy.start,
-                  window_end: servicePolicy.end,
-                }}
-                onRevert={(previous) => {
-                  servicePolicy.policy = previous.policy;
-                  servicePolicy.start = previous.window_start;
-                  servicePolicy.end = previous.window_end;
-                }}
-                onsave={(submitted) =>
-                  api(
-                    `/admin/service-updates/policy/${target.id}`,
-                    'POST',
-                    submitted,
-                  )}
+            {#if live?.capabilities?.update.available !== false}{#key target.id}<AutoSaveForm
+                  class="grid gap-3 [&_label]:m-0"
+                  label={`${definition.label} update settings`}
+                  value={{
+                    policy: servicePolicy.policy,
+                    window_start: servicePolicy.start,
+                    window_end: servicePolicy.end,
+                  }}
+                  onRevert={(previous) => {
+                    servicePolicy.policy = previous.policy;
+                    servicePolicy.start = previous.window_start;
+                    servicePolicy.end = previous.window_end;
+                  }}
+                  onsave={(submitted) =>
+                    api(
+                      `/admin/service-updates/policy/${target.id}`,
+                      'POST',
+                      submitted,
+                    )}
+                >
+                  {#snippet children(save)}
+                    <UpdatePolicyFields
+                      bind:policy={servicePolicy.policy}
+                      bind:start={servicePolicy.start}
+                      bind:end={servicePolicy.end}
+                      {timezone}
+                      inherited={serverPolicy}
+                      onChange={() => void save()}
+                    />
+                  {/snippet}
+                </AutoSaveForm>{/key}{/if}
+            {#if live?.capabilities?.update.available === false}<p
+                class="my-2 text-xs text-muted"
               >
-                {#snippet children(save)}
-                  <UpdatePolicyFields
-                    bind:policy={servicePolicy.policy}
-                    bind:start={servicePolicy.start}
-                    bind:end={servicePolicy.end}
-                    {timezone}
-                    inherited={serverPolicy}
-                    onChange={() => void save()}
-                  />
-                {/snippet}
-              </AutoSaveForm>{/key}
+                Check only. {live.capabilities.update.reason}
+              </p>{/if}
             {#if policy?.candidate && policy.candidate !== live?.image}
               <ServiceUpdateRelease
                 image={policy.candidate}
@@ -1633,7 +1677,7 @@
               >
                 {policy.error}
               </Notice>{/if}
-            {#if policy?.candidate && policy.candidate !== live?.image && !policy.error}
+            {#if policy?.candidate && policy.candidate !== live?.image && !policy.error && live?.capabilities?.update.available !== false}
               <div class="row-actions flex flex-wrap items-center gap-2">
                 <Button
                   variant="secondary"

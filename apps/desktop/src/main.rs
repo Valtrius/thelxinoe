@@ -162,6 +162,22 @@ async fn open_service(app: tauri::AppHandle, id: String) -> Result<(), String> {
             .unwrap_or("Service access is unavailable")
             .to_owned());
     }
+    if let Some(native) = response["body"]["native_url"].as_str() {
+        let url = url::Url::parse(native).map_err(|_| "Invalid native service address")?;
+        if !matches!(url.scheme(), "http" | "https")
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err("Invalid native service address".into());
+        }
+        return app
+            .opener()
+            .open_url(url.as_str(), None::<&str>)
+            .map_err(|_| "Could not open your browser".into());
+    }
     let path = response["body"]["path"]
         .as_str()
         .ok_or("Invalid service link")?;

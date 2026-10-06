@@ -81,6 +81,10 @@ fn mount<'a>(kind: &str, base: &'a str) -> &'a str {
 pub(super) fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/admin/managers/{id}/access-ticket", post(ticket))
+        .route(
+            "/api/v1/admin/managers/{id}/native-url",
+            axum::routing::put(native_url),
+        )
         .route("/service-access/bootstrap.js", get(bootstrap_script))
         .route("/service-access/{id}", get(bootstrap).post(exchange))
         .route("/services/{kind}", any(native))
@@ -92,6 +96,32 @@ pub(super) fn launch_urls(
     db: &rusqlite::Connection,
 ) -> anyhow::Result<std::collections::HashMap<String, String>> {
     storage::launch_urls(db)
+}
+pub(super) fn native_urls(
+    db: &rusqlite::Connection,
+) -> anyhow::Result<std::collections::HashMap<String, String>> {
+    storage::native_urls(db)
+}
+#[derive(Deserialize)]
+struct NativeUrl {
+    url: String,
+}
+async fn native_url(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+    Json(input): Json<NativeUrl>,
+) -> Result<Json<Value>> {
+    let actor = security::require(&state, &headers, Capability::ManageServer).await?;
+    if input.url.len() > 2000 || !support::native_url(&input.url) {
+        return Err(ApiError::bad(
+            "Enter an HTTP or HTTPS service address without credentials",
+        ));
+    }
+    if !storage::save_native_url(&state.db, key, input.url, actor.user.id).await? {
+        return Err(ApiError::not_found());
+    }
+    Ok(Json(json!({"saved":true})))
 }
 
 fn can_mount(kind: &str, base: &str) -> bool {
@@ -196,9 +226,9 @@ pub(super) fn check_reported_base(kind: &str, base: &str, status: &Value) -> Res
     if matches!(kind, "radarr" | "sonarr" | "lidarr" | "prowlarr")
         && status["urlBase"].as_str().unwrap_or("") != base
     {
-        return Err(ApiError::conflict(format!(
-            "The service's URL Base differs from its connection. Owned services must use /services/{kind}; reconnect external services using their existing prefix.",
-        )));
+        return Err(ApiError::conflict(
+            "The service's URL Base differs from its connection; reconnect using its current prefix.",
+        ));
     }
     Ok(())
 }
@@ -223,7 +253,7 @@ pub(super) async fn check_connection(c: &Connection<'_>) -> Result<()> {
         != Some(c.url_base.as_str())
     {
         return Err(ApiError::conflict(
-            "Bazarr's URL Base differs from its connection. Owned Bazarr must use /services/bazarr; reconnect external Bazarr using its existing prefix.",
+            "Bazarr's URL Base differs from its connection; reconnect using its current prefix.",
         ));
     }
     Ok(())
@@ -463,6 +493,9 @@ async fn ticket(
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
     if p.transport != "device" {
         return Err(ApiError::forbidden());
+    }
+    if let Some(url) = storage::external_fallback(&state, &id).await? {
+        return Ok(Json(json!({"native_url":url})));
     }
     let s = destination(&state, &id).await?;
     if !supported(&s.kind) {

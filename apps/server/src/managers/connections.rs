@@ -36,6 +36,8 @@ pub(super) struct Link {
     upstream_id: Option<i64>,
     applied_hash: Option<String>,
     pending_hash: Option<String>,
+    #[serde(default)]
+    credential_revision: Option<String>,
     prepared: bool,
     recreate_missing: bool,
     #[serde(default)]
@@ -57,6 +59,7 @@ fn kind(source: &str, target: &str) -> Option<&'static str> {
         ("prowlarr", "radarr" | "sonarr" | "lidarr") => Some("application"),
         ("radarr" | "sonarr" | "lidarr", "nzbget") => Some("download_client"),
         ("bazarr", "radarr" | "sonarr") => Some("subtitles"),
+        ("seerr", "radarr" | "sonarr") => Some("requests"),
         _ => None,
     }
 }
@@ -69,15 +72,16 @@ impl Link {
             source_kind: source.kind.clone(),
             target_kind: target.kind.clone(),
             kind: kind(&source.kind, &target.kind).unwrap().into(),
-            enabled: true,
+            enabled: false,
             cleanup: false,
-            state: "pending".into(),
+            state: "disconnected".into(),
             error: None,
             attempts: 0,
             next_attempt: 0,
             upstream_id: None,
             applied_hash: None,
             pending_hash: None,
+            credential_revision: None,
             prepared: false,
             recreate_missing: false,
             retain_missing: false,
@@ -267,6 +271,11 @@ async fn process(state: &AppState, key: &str) -> anyhow::Result<()> {
     if (!link.enabled && !link.cleanup) || link.state == "conflict" || link.next_attempt > now() {
         return Ok(());
     }
+    let _services = state
+        .managers
+        .guard
+        .services(&[&link.source_kind, &link.target_kind])
+        .await;
     let endpoints = storage::endpoints(&state.db).await?;
     let source = endpoints.iter().find(|s| s.id == link.source);
     let target = endpoints.iter().find(|s| s.id == link.target);
@@ -307,7 +316,7 @@ async fn process(state: &AppState, key: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn tick(state: &AppState) -> anyhow::Result<()> {
+pub(super) async fn tick(state: &AppState) -> anyhow::Result<()> {
     let _gate = state.release_gate.read().await;
     if state
         .release_quiescing
@@ -321,8 +330,14 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
         let mut discovered = Vec::new();
         for source in &endpoints {
             for target in &endpoints {
-                if kind(&source.kind, &target.kind).is_some() {
-                    discovered.push(Link::new(source, target));
+                if kind(&source.kind, &target.kind).is_some()
+                    && storage::installed_pair(&state.db, source.id.clone(), target.id.clone())
+                        .await?
+                {
+                    let mut link = Link::new(source, target);
+                    link.enabled = true;
+                    link.state = "pending".into();
+                    discovered.push(link);
                 }
             }
         }
@@ -345,24 +360,33 @@ async fn tick(state: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 pub(crate) async fn run(state: AppState) -> anyhow::Result<()> {
-    let mut seerr_sync = tokio::time::Instant::now();
     loop {
         if tick(&state).await.is_err() {
             tracing::warn!("Service connection state is temporarily unavailable");
         }
-        if tokio::time::Instant::now() >= seerr_sync {
-            let _gate = state.release_gate.read().await;
-            if !state
-                .release_quiescing
-                .load(std::sync::atomic::Ordering::SeqCst)
-            {
-                let _ = seerr::sync_managers(&state).await;
-            }
-            seerr_sync = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-        }
         tokio::select! {
-            _=state.managers.connection_wake.notified()=>{seerr_sync=tokio::time::Instant::now();},
+            _=state.managers.connection_wake.notified()=>{},
             _=tokio::time::sleep(std::time::Duration::from_secs(5))=>{},
         }
     }
+}
+
+pub(super) async fn request_target(
+    state: &AppState,
+    source: &str,
+    target: &str,
+    c: &Connection<'_>,
+    kind: &str,
+) -> Result<i64> {
+    let link = storage::load(&state.db, &link_id(source, target))
+        .await?
+        .filter(|l| l.enabled && l.state == "connected" && l.kind == "requests")
+        .ok_or_else(|| {
+            ApiError::conflict(
+                "Connect Seerr to this manager in Media services before requesting media",
+            )
+        })?;
+    adapters::requests::verified_record(&link, c, kind)
+        .await
+        .map_err(|e| ApiError::conflict(e.message))
 }

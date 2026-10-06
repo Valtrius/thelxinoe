@@ -1,4 +1,4 @@
-import { expect } from '@playwright/test';
+import { expect, request } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
@@ -8,6 +8,7 @@ import {
   fixtureId,
   freePort,
   resourceScope,
+  resourceRecord,
 } from './ci-resources.mjs';
 import { fixtureImage } from './ci-images.mjs';
 import {
@@ -40,7 +41,10 @@ export async function waitForProxy(client, base) {
   );
 }
 
-export async function fixture({ scheme = 'https' } = {}) {
+export async function fixture({
+  scheme = 'https',
+  separateMovies = false,
+} = {}) {
   resourceScope();
   const project = fixtureId('access');
   const root = resolve(`.local/${project}`);
@@ -60,6 +64,7 @@ export async function fixture({ scheme = 'https' } = {}) {
     'media/tv',
     'media/music',
     'media/downloads',
+    'existing-movies',
   ])
     mkdirSync(`${root}/${directory}`, { recursive: true });
   let infrastructure;
@@ -67,6 +72,7 @@ export async function fixture({ scheme = 'https' } = {}) {
   let browser, context;
   const services = {};
   const attachedContainers = [];
+  const sourceProjects = [];
   const secrets = new Set(['test-only long passphrase']);
   let closed = false;
   let deployment;
@@ -174,14 +180,13 @@ export async function fixture({ scheme = 'https' } = {}) {
         nzbget: 'nzbget.conf',
         seerr: 'settings.json',
       }[kind] ?? 'config.xml';
-    const raw = compose(
+    const raw = docker(
       'exec',
-      '-T',
       '-u',
       '10001:10001',
-      'controller',
+      services[kind].container_id,
       'cat',
-      `/var/lib/thelxinoe/deployment/services/${services[kind].id}/appdata/${filename}`,
+      `/config/${filename}`,
     );
     for (const pattern of [
       /<ApiKey>(.*?)<\/ApiKey>/,
@@ -199,20 +204,25 @@ export async function fixture({ scheme = 'https' } = {}) {
     if (kind === 'nzbget') {
       const username = raw.match(/^ControlUsername=(.*)$/m)[1].trim();
       const password = raw.match(/^ControlPassword=(.*)$/m)[1].trim();
-      const response = await context.request.post(
-        `http://localhost:${services[kind].host_port}/jsonrpc`,
-        {
-          headers: {
-            Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`,
+      const client = await request.newContext();
+      try {
+        const response = await client.post(
+          `http://localhost:${services[kind].host_port}/jsonrpc`,
+          {
+            headers: {
+              Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`,
+            },
+            data: { method: path, params: data ?? [], id: 1 },
           },
-          data: { method: path, params: data ?? [], id: 1 },
-        },
-      );
-      if (!response.ok())
-        throw Error(`NZBGet/${path}: HTTP ${response.status()}`);
-      const body = await response.json();
-      if (body.error) throw Error(`NZBGet/${path}: RPC rejected`);
-      return body.result;
+        );
+        if (!response.ok())
+          throw Error(`NZBGet/${path}: HTTP ${response.status()}`);
+        const body = await response.json();
+        if (body.error) throw Error(`NZBGet/${path}: RPC rejected`);
+        return body.result;
+      } finally {
+        await client.dispose();
+      }
     }
     const key =
       kind === 'bazarr'
@@ -232,9 +242,19 @@ export async function fixture({ scheme = 'https' } = {}) {
             .replace(/\/$/, '')
         : (raw.match(/<UrlBase>(.*?)<\/UrlBase>/)?.[1] ?? '');
     const version = ['lidarr', 'prowlarr', 'seerr'].includes(kind) ? 1 : 3;
+    const address = services[kind].host_port
+      ? `http://localhost:${services[kind].host_port}`
+      : base;
     const response = await context.request.fetch(
-      `http://localhost:${services[kind].host_port}${prefix}/api/${kind === 'bazarr' ? '' : `v${version}/`}${path}`,
-      { method, data, headers: { 'X-Api-Key': key } },
+      `${address}${prefix}/api/${kind === 'bazarr' ? '' : `v${version}/`}${path}`,
+      {
+        method,
+        data,
+        headers: {
+          'X-Api-Key': key,
+          ...(!services[kind].host_port ? { Origin: base } : {}),
+        },
+      },
     );
     if (!response.ok())
       throw Error(`${kind}/${path}: HTTP ${response.status()}`);
@@ -265,12 +285,23 @@ export async function fixture({ scheme = 'https' } = {}) {
     try {
       await browser?.close();
     } finally {
+      for (const source of sourceProjects) source.close();
       infrastructure?.close();
     }
     closed = true;
   }
 
-  async function attach(kind, urlBase, image) {
+  async function attach(
+    kind,
+    urlBase,
+    image,
+    {
+      authentication = 'External',
+      nzbgetWarnings = false,
+      existingLayout = false,
+      composeOwnership = false,
+    } = {},
+  ) {
     const name = `${project}-attached-${kind}-${attachedContainers.length}`;
     const directory = `${root}/attached-${kind}-${attachedContainers.length}`;
     const internalPort = {
@@ -282,8 +313,8 @@ export async function fixture({ scheme = 'https' } = {}) {
       nzbget: 6789,
     }[kind];
     const port = await freePort();
-    const key = randomBytes(16).toString('hex');
-    secrets.add(key);
+    const key = nzbgetWarnings ? '' : randomBytes(16).toString('hex');
+    if (key) secrets.add(key);
     mkdirSync(directory, { recursive: true });
     if (kind === 'bazarr') {
       mkdirSync(`${directory}/config`, { recursive: true });
@@ -292,37 +323,91 @@ export async function fixture({ scheme = 'https' } = {}) {
         `auth:\n  apikey: ${key}\ngeneral:\n  hostname: attached-bazarr\n  ip: 0.0.0.0\n  port: 6767\n  base_url: ${urlBase || '/'}\n  use_sonarr: false\n  use_radarr: false\n`,
       );
     } else if (kind === 'nzbget') {
+      writeFileSync(`${directory}/invalid-ca.pem`, 'not a certificate');
+      const categories = Array.from(
+        { length: 6 },
+        (_, index) => `Category${index + 1}.Name=existing-${index + 1}\n`,
+      ).join('');
       writeFileSync(
         `${directory}/nzbget.conf`,
-        `MainDir=/media/downloads\nDestDir=/media/downloads/completed\nInterDir=/media/downloads/intermediate\nNzbDir=/config/nzb\nQueueDir=/config/queue\nTempDir=/config/tmp\nWebDir=\${AppDir}/webui\nConfigTemplate=\${AppDir}/webui/nzbget.conf.template\nControlIP=0.0.0.0\nControlPort=6789\nControlUsername=fixture\nControlPassword=${key}\n`,
+        `MainDir=/media/downloads\nDestDir=\${MainDir}/completed\nInterDir=\${MainDir}/intermediate\nNzbDir=/config/nzb\nQueueDir=/config/queue\nTempDir=/config/tmp\nWebDir=\${AppDir}/webui\nConfigTemplate=\${AppDir}/webui/nzbget.conf.template\nControlIP=0.0.0.0\nControlPort=6789\nControlUsername=fixture\nControlPassword=${key}\nWriteLog=${nzbgetWarnings ? 'append' : 'rotate'}\nRotateLog=3\nCertCheck=no\nCertStore=\n${categories}Category7.Name=custom\nCategory7.DestDir=\${MainDir}/custom\n`,
       );
     } else
       writeFileSync(
         `${directory}/config.xml`,
-        `<Config><BindAddress>*</BindAddress><Port>${internalPort}</Port><UrlBase>${urlBase}</UrlBase>${kind === 'prowlarr' ? `<AllowedHosts>${name}</AllowedHosts>` : ''}<EnableSsl>False</EnableSsl><LaunchBrowser>False</LaunchBrowser><ApiKey>${key}</ApiKey><AuthenticationMethod>External</AuthenticationMethod><AuthenticationRequired>Enabled</AuthenticationRequired><UpdateAutomatically>False</UpdateAutomatically></Config>`,
+        `<Config><BindAddress>*</BindAddress><Port>${internalPort}</Port><UrlBase>${urlBase}</UrlBase><AllowedHosts>${name};custom.example</AllowedHosts><EnableSsl>False</EnableSsl><LaunchBrowser>False</LaunchBrowser><ApiKey>${key}</ApiKey><AuthenticationMethod>${authentication}</AuthenticationMethod><AuthenticationRequired>Enabled</AuthenticationRequired>${kind === 'radarr' && authentication === 'Forms' ? '<AuthenticationEnabled>True</AuthenticationEnabled>' : ''}<UpdateAutomatically>False</UpdateAutomatically></Config>`,
       );
     attachedContainers.push(name);
     infrastructure.update({ containers: attachedContainers });
-    const container = docker(
-      'run',
-      '-d',
-      '--label',
-      `io.thelxinoe.ci-run=${env.THELXINOE_CI_RUN_ID ?? project}`,
-      '--name',
-      name,
-      '--network',
-      `${project}_test`,
-      '-e',
-      'PUID=10001',
-      '-e',
-      'PGID=10001',
-      '-v',
-      `${directory}:/config`,
-      ...(kind === 'prowlarr' ? [] : ['-v', `${mediaSource()}:/media`]),
-      '-p',
-      `127.0.0.1:${port}:${internalPort}`,
-      image,
-    );
+    let container;
+    if (composeOwnership) {
+      const sourceProject = fixtureId('source');
+      const file = `${directory}/compose.json`;
+      const record = resourceRecord({ project: sourceProject, closed: false });
+      sourceProjects.push(record);
+      writeFileSync(
+        file,
+        JSON.stringify({
+          services: {
+            [kind]: {
+              image,
+              container_name: name,
+              environment: { PUID: '10001', PGID: '10001' },
+              labels: {
+                'io.thelxinoe.ci-run': process.env.THELXINOE_CI_RUN_ID,
+              },
+              volumes: [
+                `${directory}:/config`,
+                ...(existingLayout
+                  ? [
+                      `${mediaSource('movies')}:/movies`,
+                      `${mediaSource('tv')}:/tv`,
+                      `${mediaSource('downloads')}:/downloads`,
+                    ]
+                  : [`${mediaSource()}:/media`]),
+              ],
+              ports: [`127.0.0.1:${port}:${internalPort}`],
+              networks: ['media'],
+              restart: 'unless-stopped',
+            },
+          },
+          networks: { media: { external: true, name: `${project}_test` } },
+        }),
+      );
+      docker('compose', '-p', sourceProject, '-f', file, 'up', '-d');
+      container = JSON.parse(docker('inspect', name))[0].Id;
+    } else
+      container = docker(
+        'run',
+        '-d',
+        '--label',
+        `io.thelxinoe.ci-run=${env.THELXINOE_CI_RUN_ID ?? project}`,
+        '--name',
+        name,
+        '--network',
+        `${project}_test`,
+        '-e',
+        'PUID=10001',
+        '-e',
+        'PGID=10001',
+        '-v',
+        `${directory}:/config`,
+        ...(kind === 'prowlarr'
+          ? []
+          : existingLayout
+            ? [
+                '-v',
+                `${mediaSource('movies')}:/movies`,
+                '-v',
+                `${mediaSource('tv')}:/tv`,
+                '-v',
+                `${mediaSource('downloads')}:/downloads`,
+              ]
+            : ['-v', `${mediaSource()}:/media`]),
+        '-p',
+        `127.0.0.1:${port}:${internalPort}`,
+        image,
+      );
     const direct = async (path, method = 'GET', data) => {
       if (kind === 'nzbget') {
         const response = await context.request.post(
@@ -347,7 +432,7 @@ export async function fixture({ scheme = 'https' } = {}) {
           data,
           headers: {
             'X-Api-Key': key,
-            ...(kind === 'prowlarr' ? { Host: `${name}:${internalPort}` } : {}),
+            Host: `${name}:${internalPort}`,
           },
         },
       );
@@ -441,7 +526,7 @@ export async function fixture({ scheme = 'https' } = {}) {
       },
     };
   }
-  async function peer() {
+  async function peer({ existingLayout = false } = {}) {
     const name = `${project}-peer`;
     attachedContainers.push(name);
     infrastructure.update({ containers: attachedContainers });
@@ -455,7 +540,9 @@ export async function fixture({ scheme = 'https' } = {}) {
       '--network',
       `${project}_test`,
       '-v',
-      `${mediaSource()}:/media`,
+      `${mediaSource('movies')}:${existingLayout ? '/movies' : '/media/movies'}`,
+      '-e',
+      `THELXINOE_TEST_MOVIE_PATH=${existingLayout ? '/movies/Mapping fixture (2000).mp4' : ''}`,
       '-v',
       `${resolve('tests/service-access-peer.mjs')}:/peer.mjs:ro`,
       fixtureImage('node:24-bookworm-slim'),
@@ -485,17 +572,57 @@ export async function fixture({ scheme = 'https' } = {}) {
       .toBe(true);
     return registered;
   }
-  function mediaSource() {
+  function mediaSource(folder = '') {
     // Docker Desktop may spell the same Windows bind differently for Compose
     // and `docker run`. Use the daemon's exact source, as real attachments must.
     const mounts = JSON.parse(
       docker('inspect', '--format', '{{json .Mounts}}', `${project}-server-1`),
     );
+    const child =
+      folder &&
+      mounts.find((mount) => mount.Destination === `/media/${folder}`);
+    if (child) return child.Source;
     const source = mounts.find(
       (mount) => mount.Destination === '/media',
     )?.Source;
     if (!source) throw Error('Fixture media mount is missing');
-    return source;
+    return source + (folder ? `/${folder}` : '');
+  }
+  function createMappingMovie() {
+    const filename = 'Mapping fixture (2000).mp4';
+    const staging = resolve(root, 'fixtures');
+    mkdirSync(staging, { recursive: true });
+    const source = resolve(staging, filename);
+    execFileSync(
+      'ffmpeg',
+      [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        'color=c=blue:s=160x90:d=1',
+        '-c:v',
+        'mpeg4',
+        source,
+      ],
+      { stdio: 'pipe', windowsHide: true },
+    );
+    const destination = `/media/movies/${filename}`;
+    // Linux media binds belong to the service UID, not the host test runner.
+    compose('cp', source, `server:${destination}`);
+    compose(
+      'exec',
+      '-T',
+      '--user',
+      '0',
+      'server',
+      'chown',
+      '10001:10001',
+      destination,
+    );
   }
   try {
     browser = await launchBrowser();
@@ -506,6 +633,17 @@ export async function fixture({ scheme = 'https' } = {}) {
       root,
       env,
     });
+    if (separateMovies) {
+      infrastructure.config.services.server.volumes.push({
+        type: 'bind',
+        source: resolve(root, 'existing-movies'),
+        target: '/media/movies',
+      });
+      writeFileSync(
+        `${root}/compose.json`,
+        JSON.stringify(infrastructure.config),
+      );
+    }
     compose(
       'run',
       '--rm',
@@ -546,6 +684,7 @@ export async function fixture({ scheme = 'https' } = {}) {
       close,
       attach,
       peer,
+      createMappingMovie,
     };
   } catch (error) {
     const output = 'test-results/service-access';

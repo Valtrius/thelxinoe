@@ -13,7 +13,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 #[path = "adoption.rs"]
-mod adoption;
+pub(crate) mod adoption;
 #[path = "backups.rs"]
 mod backups;
 #[path = "creation.rs"]
@@ -24,6 +24,8 @@ pub(crate) mod product;
 mod recovery;
 #[path = "recyclarr.rs"]
 mod recyclarr;
+#[path = "recyclarr_import.rs"]
+mod recyclarr_import;
 #[path = "service_removal.rs"]
 mod removal;
 #[path = "updates.rs"]
@@ -53,6 +55,7 @@ struct Managed {
     active_update: Option<String>,
     spec: Value,
     expected: Value,
+    imported: Option<adoption::Imported>,
     #[serde(default)]
     error: Option<String>,
 }
@@ -107,10 +110,17 @@ fn choose_service_name(kind: &str, key: &str, containers: &Value) -> Result<Stri
 }
 fn load(key: &str) -> Result<Managed> {
     id(key)?;
-    persisted(store::read(&service_path(key)))
+    persisted(store::read_secret(
+        &service_path(key),
+        &format!("service:{key}"),
+    ))
 }
 fn save(value: &Managed) -> Result<()> {
-    persisted(store::write_json(&service_path(&value.id), value))
+    persisted(store::write_secret(
+        &service_path(&value.id),
+        &format!("service:{}", value.id),
+        value,
+    ))
 }
 fn services() -> Result<Vec<Managed>> {
     let path = store::root().join("services");
@@ -348,13 +358,24 @@ async fn bootstrap() -> Result<Deployment> {
         server: server.clone(),
         controller: controller.clone(),
         network: network.clone(),
-        media_source: policy::media_source(&server).map_err(conflict)?.into(),
+        media_source: policy::server_media_source(&server)
+            .map_err(conflict)?
+            .into(),
         appdata_source: mount(&controller, "/var/lib/thelxinoe/deployment")?["Source"]
             .as_str()
             .ok_or_else(unavailable)?
             .into(),
     };
-    if !policy::media_disjoint(&d.appdata_source, &d.media_source) {
+    if server["Mounts"].as_array().is_some_and(|mounts| {
+        mounts.iter().any(|mount| {
+            mount["Destination"].as_str().is_some_and(|path| {
+                (path == "/media" || path.starts_with("/media/"))
+                    && !mount["Source"]
+                        .as_str()
+                        .is_some_and(|source| policy::media_disjoint(&d.appdata_source, source))
+            })
+        })
+    }) {
         return Err(conflict(
             "Deployment state must be outside every media mount",
         ));
@@ -470,10 +491,10 @@ fn app_config(t: templates::Template, input: &Install, directory: &std::path::Pa
                 return Err(bad("Use the managed NZBGet account"));
             }
             // A preseeded config bypasses the image's defaults. Keep the
-            // download, logging, and unpack settings useful from first boot.
+            // download, logging, TLS, and unpack settings useful from first boot.
             // The paths also serve the web interface and settings editor.
             format!(
-                "MainDir=/media/downloads\nDestDir=/media/downloads/completed\nInterDir=/media/downloads/intermediate\nNzbDir=/config/nzb\nQueueDir=/config/queue\nTempDir=/config/tmp\nScriptDir=/config/scripts\nLogFile=/config/nzbget.log\nWriteLog=rotate\nRotateLog=3\nArticleCache=128\nDirectWrite=yes\nWriteBuffer=1024\nFileNaming=auto\nPostStrategy=balanced\nNzbCleanupDisk=yes\nParCheck=auto\nParRepair=yes\nUnpack=yes\nWebDir=${{AppDir}}/webui\nConfigTemplate=${{AppDir}}/webui/nzbget.conf.template\nControlIP=0.0.0.0\nControlPort=6789\nControlUsername=thelxinoe\nControlPassword={}\n",
+                "MainDir=/media/downloads\nDestDir=/media/downloads/completed\nInterDir=/media/downloads/intermediate\nNzbDir=/config/nzb\nQueueDir=/config/queue\nTempDir=/config/tmp\nScriptDir=/config/scripts\nLogFile=/config/nzbget.log\nWriteLog=rotate\nRotateLog=3\nArticleCache=128\nDirectWrite=yes\nWriteBuffer=1024\nFileNaming=auto\nPostStrategy=balanced\nNzbCleanupDisk=yes\nParCheck=auto\nParRepair=yes\nUnpack=yes\nCertCheck=yes\nCertStore=/app/nzbget/cacert.pem\nWebDir=${{AppDir}}/webui\nConfigTemplate=${{AppDir}}/webui/nzbget.conf.template\nControlIP=0.0.0.0\nControlPort=6789\nControlUsername=thelxinoe\nControlPassword={}\n",
                 input.secret
             )
         }
@@ -587,6 +608,7 @@ async fn install(
         active_update: None,
         spec: spec.clone(),
         expected: Value::Null,
+        imported: None,
         error: None,
     };
     s.spec["Labels"][creation::ATTEMPT_LABEL] = json!(thelxinoe_core::id());
@@ -630,7 +652,18 @@ async fn action(
     if input.action == "restore_original" && !service_path(&key).exists() {
         return adoption::cancel_unsubmitted(&d, &key).await;
     }
+    if input.action == "release" && !service_path(&key).exists() {
+        return Ok(Json(json!({"accepted":true,"released":true})));
+    }
     let mut s = load(&key)?;
+    if input.action == "release" {
+        return adoption::release(&d, &mut s).await;
+    }
+    if s.imported.is_some() && matches!(input.action.as_str(), "recreate" | "remove") {
+        return Err(conflict(
+            "Imported storage is retained; use Release ownership instead of removal or template recreation",
+        ));
+    }
     if input.action == "remove" {
         return removal::remove(&d, &mut s).await;
     }
@@ -644,11 +677,11 @@ async fn action(
         return adoption::complete(&d, &mut s).await;
     }
     if input.action == "restore_original" {
-        return adoption::restore(&d, &mut s).await;
+        return recyclarr_import::restore(&d, &mut s).await;
     }
     if input.action == "reconcile" {
         if adoption::pending(&s) {
-            return adoption::reconcile(&d, &mut s).await;
+            return recyclarr_import::reconcile(&d, &mut s).await;
         }
         return reconcile(&d, &mut s).await;
     }
@@ -658,12 +691,7 @@ async fn action(
         ));
     }
     let raw = engine(&format!("/containers/{}/json", s.container)).await?;
-    if raw["Config"]["Labels"]["app.thelxinoe.deployment"] != d.id
-        || raw["Config"]["Labels"]["app.thelxinoe.managed-id"] != s.id
-        || policy::fingerprint(&raw) != s.expected
-    {
-        return Err(conflict("Docker configuration drift blocks this action"));
-    }
+    verify_fingerprint(&d, &s, &raw).await?;
     let endpoint = match input.action.as_str() {
         "start" => "start",
         "stop" => "stop?t=30",
@@ -798,7 +826,18 @@ async fn reconcile(d: &Deployment, s: &mut Managed) -> Result<Json<Value>> {
     ))
 }
 
-fn verify_ownership(d: &Deployment, s: &Managed, raw: &Value) -> Result<()> {
+async fn verify_ownership(d: &Deployment, s: &Managed, raw: &Value) -> Result<()> {
+    if let Some(imported) = &s.imported {
+        if raw["Id"] != s.container
+            || imported.deployment != d.id
+            || imported.engine != adoption::engine_identity().await?
+        {
+            return Err(conflict(
+                "The registered container or Docker engine identity changed",
+            ));
+        }
+        return Ok(());
+    }
     if raw["Config"]["Labels"]["app.thelxinoe.deployment"] != d.id
         || raw["Config"]["Labels"]["app.thelxinoe.managed-id"] != s.id
     {
@@ -807,8 +846,8 @@ fn verify_ownership(d: &Deployment, s: &Managed, raw: &Value) -> Result<()> {
     Ok(())
 }
 
-fn verify_fingerprint(d: &Deployment, s: &Managed, raw: &Value) -> Result<()> {
-    verify_ownership(d, s, raw)?;
+async fn verify_fingerprint(d: &Deployment, s: &Managed, raw: &Value) -> Result<()> {
+    verify_ownership(d, s, raw).await?;
     let actual = policy::fingerprint(raw);
     if actual != s.expected
         && !(s.phase == "changing" && policy::first_start_matches(&s.expected, &actual))
@@ -819,9 +858,9 @@ fn verify_fingerprint(d: &Deployment, s: &Managed, raw: &Value) -> Result<()> {
 }
 
 async fn verify_recorded(d: &Deployment, s: &Managed, raw: &Value) -> Result<()> {
-    verify_ownership(d, s, raw)?;
+    verify_ownership(d, s, raw).await?;
     if !s.expected.is_null() {
-        verify_fingerprint(d, s, raw)?;
+        verify_fingerprint(d, s, raw).await?;
     } else {
         if raw["Config"]["Image"] != s.spec["Image"]
             || !subset(&s.spec["HostConfig"], &raw["HostConfig"])

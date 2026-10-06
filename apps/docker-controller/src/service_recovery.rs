@@ -23,8 +23,10 @@ pub(super) fn observation(s: &Managed, live: &Result<Value>) -> Value {
     }
     value["workload"] = json!(templates::find(&s.kind).map(|t| t.workload));
     let transfer = adoption::pending(s);
-    let can_recreate = recoverable(s) && !transfer && value["existence"] == "missing";
-    let can_remove = !transfer
+    let can_recreate =
+        s.imported.is_none() && recoverable(s) && !transfer && value["existence"] == "missing";
+    let can_remove = s.imported.is_none()
+        && !transfer
         && ((recoverable(s)
             && (value["existence"] == "missing"
                 || (value["running"] == false && value["drift"] == false)))
@@ -40,6 +42,12 @@ pub(super) fn observation(s: &Managed, live: &Result<Value>) -> Value {
         .unwrap()
         .clone(),
     );
+    if let Some(imported) = &s.imported {
+        value["capabilities"] = serde_json::to_value(&imported.capabilities).unwrap_or(Value::Null);
+        value["imported"] = json!(true);
+        value["can_release"] = json!(s.phase == "active" && s.active_update.is_none());
+        value["storage"] = serde_json::to_value(&imported.storage).unwrap_or(Value::Null);
+    }
     value
 }
 
@@ -85,6 +93,16 @@ fn candidate(
 }
 
 pub(super) async fn find_container(d: &Deployment, s: &Managed) -> Result<Option<String>> {
+    if s.imported.is_some() {
+        return match engine(&format!("/containers/{}/json", s.container)).await {
+            Ok(raw) => {
+                verify_ownership(d, s, &raw).await?;
+                Ok(Some(s.container.clone()))
+            }
+            Err((StatusCode::NOT_FOUND, _)) => Ok(None),
+            Err(error) => Err(error),
+        };
+    }
     // A successful complete listing also catches a renamed container, preventing
     // a second writer against the same appdata after a lost create response.
     let mut rows = engine("/containers/json?all=true").await?;
@@ -127,6 +145,9 @@ async fn validate_storage(d: &Deployment, s: &Managed) -> Result<()> {
 }
 
 pub(super) async fn resume_creation(d: &Deployment, s: &mut Managed) -> Result<Json<Value>> {
+    if s.imported.is_some() {
+        return Err(conflict("Imported deployment recreation is not supported"));
+    }
     if !matches!(s.phase.as_str(), "creating" | "recreating") || adoption::pending(s) {
         return Err(conflict("This operation cannot resume container creation"));
     }
@@ -172,6 +193,9 @@ pub(super) async fn resume_creation(d: &Deployment, s: &mut Managed) -> Result<J
 }
 
 pub(super) async fn recreate(d: &Deployment, s: &mut Managed) -> Result<Json<Value>> {
+    if s.imported.is_some() {
+        return Err(conflict("Imported deployment recreation is not supported"));
+    }
     if !recoverable(s) || adoption::pending(s) {
         return Err(conflict(
             "Finish the pending service operation before recreating",

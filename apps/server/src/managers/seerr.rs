@@ -410,7 +410,7 @@ async fn existing_series_profile(
         .find(|s| s["tvdbId"] == tvdb)
         .and_then(|s| s["qualityProfileId"].as_i64()))
 }
-fn is_uhd(items: &Value) -> bool {
+pub(super) fn is_uhd(items: &Value) -> bool {
     items.as_array().into_iter().flatten().any(|item| {
         item["allowed"] == true && (item["quality"]["resolution"] == 2160 || is_uhd(&item["items"]))
     })
@@ -546,16 +546,8 @@ async fn request(
             ApiError::conflict("The request profile was removed; select an existing profile")
         })?;
     let mut body = json!({"mediaType":input.media_type,"mediaId":input.media_id,"is4k":is_uhd(&profile["items"]),"profileId":selected});
-    sync_connections_locked(&state, Some(kind), false).await?;
-    let configured = c.get(&format!("settings/{kind}")).await?;
-    body["serverId"] = configured
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|entry| entry["name"] == format!("Thelxinoe {kind}"))
-        .and_then(|entry| entry["id"].as_i64())
-        .map(Value::from)
-        .ok_or_else(unavailable)?;
+    body["serverId"] =
+        json!(connections::request_target(&state, &service, &manager.id, &c, kind).await?);
     if input.media_type == "tv" {
         body["seasons"] = json!(input.seasons);
     }
@@ -697,139 +689,30 @@ pub(super) async fn initialize(state: &AppState) -> Result<()> {
     )
     .await?;
     drop(_guard);
-    sync_managers(state).await
+    state.managers.connection_wake.notify_one();
+    Ok(())
 }
 
-pub(super) async fn sync_managers(state: &AppState) -> Result<()> {
-    sync_connections(state, None, false).await
-}
-
-async fn sync_connections(state: &AppState, only: Option<&str>, refresh: bool) -> Result<()> {
-    let _guard = state.managers.guard.service("seerr").await;
-    sync_connections_locked(state, only, refresh).await
-}
-
-async fn sync_connections_locked(
-    state: &AppState,
-    only: Option<&str>,
-    refresh: bool,
-) -> Result<()> {
-    if storage::service(&state.db).await?.is_none() {
-        return Ok(());
-    }
-    let (_, c) = connection(state).await?;
-    if c.get("settings/public").await?["initialized"] != true {
-        return Ok(());
-    }
-    let mut services = Vec::new();
-    for key in storage::managers(&state.db).await? {
-        services.push(super::service(state, &key).await?);
-    }
-    let mut failure = None;
-    for kind in ["radarr", "sonarr"] {
-        if only.is_some_and(|selected| selected != kind) {
-            continue;
-        }
-        let result = async {
-            if let Some(s) = services.iter().find(|s| s.kind == kind) {
-                let defaults =
-                    serde_json::from_value::<Defaults>(s.defaults.clone()).map_err(|_| {
-                        ApiError::conflict(format!(
-                            "Configure {kind}'s quality profile in Media services"
-                        ))
-                    })?;
-                let changed = sync_manager(&c, s, &defaults).await?;
-                if changed || refresh {
-                    call(
-                        &c,
-                        reqwest::Method::POST,
-                        &format!("settings/jobs/{kind}-scan/run"),
-                        &[],
-                        None,
-                        None,
-                    )
-                    .await?;
-                }
-            } else {
-                // Retire only the connections this integration creates.
-                let existing = c.get(&format!("settings/{kind}")).await?;
-                for entry in existing
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter(|entry| entry["name"] == format!("Thelxinoe {kind}"))
-                {
-                    let id = entry["id"].as_i64().ok_or_else(unavailable)?;
-                    call(
-                        &c,
-                        reqwest::Method::DELETE,
-                        &format!("settings/{kind}/{id}"),
-                        &[],
-                        None,
-                        None,
-                    )
-                    .await?;
-                }
-                if only.is_some() {
-                    return Err(ApiError::conflict(format!(
-                        "Connect {kind} in Media services before requesting this media"
-                    )));
-                }
-            }
-            Ok::<_, ApiError>(())
-        }
-        .await;
-        if let Err(error) = result {
-            failure = Some(error);
-        }
-    }
-    match failure {
-        Some(error) => Err(error),
-        None => Ok(()),
-    }
-}
-
-async fn sync_manager(c: &Connection<'_>, s: &Service, defaults: &Defaults) -> Result<bool> {
-    let state = c.state;
-    let manager = Connection::open(state, s).await?;
-    let url = url::Url::parse(&manager.base).map_err(|_| unavailable())?;
-    let profiles = manager.get("qualityprofile").await?;
-    let profile = profiles
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|p| p["id"] == defaults.quality_profile)
-        .ok_or_else(unavailable)?;
-    let name = profile["name"].as_str().ok_or_else(unavailable)?;
-    let is4k = is_uhd(&profile["items"]);
-    let path = format!("settings/{}", s.kind);
-    let existing = c.get(&path).await?;
-    let owned_name = format!("Thelxinoe {}", s.kind);
-    let previous = existing
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|v| v["name"] == owned_name);
-    let body = json!({"name":owned_name,"hostname":url.host_str(),"port":s.port,"apiKey":manager.key,"useSsl":false,"baseUrl":manager.url_base,"activeProfileId":defaults.quality_profile,"activeProfileName":name,"activeDirectory":defaults.root_folder,"is4k":is4k,"isDefault":true,"syncEnabled":true,"preventSearch":!defaults.monitored,"minimumAvailability":"released","enableSeasonFolders":true});
-    if previous.is_some_and(|previous| {
-        body.as_object()
-            .unwrap()
-            .iter()
-            .all(|(key, value)| previous[key] == *value)
-    }) {
-        return Ok(false);
-    }
-    let (method, path) = if let Some(previous) = previous {
-        (reqwest::Method::PUT, format!("{path}/{}", previous["id"]))
-    } else {
-        (reqwest::Method::POST, path)
-    };
-    call(c, method, &path, &[], Some(body), None).await?;
-    Ok(true)
-}
 async fn sync(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
-    sync_connections(&state, None, true).await?;
+    let (service, c) = connection(&state).await?;
+    for kind in ["radarr", "sonarr"] {
+        if let Ok(manager) = request_manager(&state, kind).await
+            && connections::request_target(&state, &service, &manager.id, &c, kind)
+                .await
+                .is_ok()
+        {
+            call(
+                &c,
+                reqwest::Method::POST,
+                &format!("settings/jobs/{kind}-scan/run"),
+                &[],
+                None,
+                None,
+            )
+            .await?;
+        }
+    }
     Ok(Json(json!({"saved":true})))
 }
 
@@ -852,24 +735,45 @@ mod tests {
             let release_upstream = release.clone();
             let remote = json!({"id":7,"type":"movie","status":2,"updatedAt":"2026-10-02T10:00:00Z","requestedBy":{"id":2},"media":{"tmdbId":603,"status":3},"seasons":[]});
             let remote_upstream = remote.clone();
+            let native_connections = Arc::new(tokio::sync::Mutex::new(Vec::<Value>::new()));
+            let connections_upstream = native_connections.clone();
+            let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let armed_upstream = armed.clone();
             let stub = Router::new().fallback(move |request: Request| {
                 let reached = reached_upstream.clone();
                 let release = release_upstream.clone();
                 let remote = remote_upstream.clone();
+                let native_connections = connections_upstream.clone();
+                let armed = armed_upstream.clone();
                 async move {
-                    let path = request.uri().path();
-                    if (pause_at == "request"
-                        && path == "/api/v1/request"
-                        && request.method() == "POST")
-                        || (pause_at == "profiles" && path == "/api/v3/qualityprofile")
+                    let path = request.uri().path().to_owned();
+                    if armed.load(std::sync::atomic::Ordering::SeqCst)
+                        && ((pause_at == "request"
+                            && path == "/api/v1/request"
+                            && request.method() == "POST")
+                            || (pause_at == "profiles" && path == "/api/v3/qualityprofile"))
                     {
                         reached.notify_one();
                         release.notified().await;
                     }
-                    Json(match path {
+                    Json(match path.as_str() {
                         "/api/v3/qualityprofile" => json!([{"id":1,"name":"HD","items":[]}]),
-                        "/api/v1/settings/public" => json!({"initialized":false}),
-                        "/api/v1/settings/radarr" => json!([{"id":1,"name":"Thelxinoe radarr"}]),
+                        "/api/v1/settings/public" => json!({"initialized":true}),
+                        "/api/v1/status" => json!({"version":"3"}),
+                        "/api/v3/system/status" => json!({"appName":"Radarr","version":"6"}),
+                        "/api/v1/settings/jobs/radarr-scan/run" => Value::Null,
+                        "/api/v1/settings/radarr" if request.method() == "GET" => {
+                            json!(*native_connections.lock().await)
+                        }
+                        "/api/v1/settings/radarr" => {
+                            let bytes = axum::body::to_bytes(request.into_body(), 1024 * 1024)
+                                .await
+                                .unwrap();
+                            let mut row: Value = serde_json::from_slice(&bytes).unwrap();
+                            row["id"] = json!(1);
+                            native_connections.lock().await.push(row.clone());
+                            row
+                        }
                         "/api/v1/user/2/settings/permissions" => json!({}),
                         "/api/v1/request" if request.method() == "POST" => remote,
                         "/api/v1/request" => {
@@ -883,7 +787,7 @@ mod tests {
             let port = listener.local_addr().unwrap().port();
             let upstream = tokio::spawn(async move { axum::serve(listener, stub).await.unwrap() });
             let container = "a".repeat(64);
-            let inspection = json!({"id":container,"running":true,"mounts":[{"kind":"bind","source":"/media","destination":"/media","writable":true}],"networks":[{"id":"shared","address":"127.0.0.1"}]});
+            let inspection = json!({"id":container,"name":"localhost","running":true,"mounts":[{"kind":"bind","source":"/media","destination":"/media","writable":true}],"networks":[{"id":"shared","address":"127.0.0.1"}]});
             state
                 .managers
                 .docker
@@ -896,6 +800,15 @@ mod tests {
                 .lock()
                 .unwrap()
                 .insert("containers/self".into(), inspection);
+            let media_source = {
+                let inspections = state.managers.docker.lock().unwrap();
+                super::storage_paths::evidence(
+                    &inspections["containers/self"],
+                    &inspections[&format!("containers/{container}")],
+                    &state.config.media.to_string_lossy(),
+                )
+                .unwrap()
+            };
             let manager_key = state
                 .secrets
                 .encrypt("manager:radarr", b"fixture-key")
@@ -905,11 +818,26 @@ mod tests {
                 .encrypt("support:seerr", br#"{"secret":"fixture-key"}"#)
                 .unwrap();
             state.db.write("test.seerr", move |db| {
-                db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at,defaults) VALUES ('radarr','Radarr','radarr',?1,?2,'g',?3,'/media','1',1,'{\"quality_profile\":1}')",params![container,port,manager_key])?;
+                db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at,defaults) VALUES ('radarr','Radarr','radarr',?1,?2,'g',?3,?4,'1',1,'{\"quality_profile\":1,\"root_folder\":\"/media/movies\",\"monitored\":true}')",params![container,port,manager_key,media_source])?;
                 db.execute("INSERT INTO support_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('seerr','Seerr','seerr',?1,?2,'g',?3,'','1',1)",params![container,port,seerr_key])?;
                 db.execute("INSERT INTO seerr_users VALUES ('seerr','alice',2)",[])?;
+                db.execute("UPDATE users SET role='admin' WHERE id='alice'",[])?;
                 Ok(())
             }).await.unwrap();
+            assert_eq!(
+                api(
+                    &state,
+                    "/api/v1/admin/service-connections",
+                    "POST",
+                    json!({"source_id":"seerr","target_id":"radarr","action":"connect"}),
+                    &alice
+                )
+                .await
+                .0,
+                StatusCode::OK
+            );
+            connections::tick(&state).await.unwrap();
+            armed.store(true, std::sync::atomic::Ordering::SeqCst);
             let request_state = state.clone();
             let cookie = alice.clone();
             let mut request = tokio::spawn(async move {

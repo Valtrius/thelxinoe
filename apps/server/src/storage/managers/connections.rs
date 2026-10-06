@@ -85,3 +85,11 @@ pub(super) async fn configure(
         tx.commit()?;Ok(())
     }).await
 }
+
+pub(super) async fn installed_pair(
+    db: &Database,
+    source: String,
+    target: String,
+) -> anyhow::Result<bool> {
+    db.read("managers.connections.installed_pair", move |db| Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE service_id=?1 AND origin='installed' AND state='complete') AND EXISTS(SELECT 1 FROM stack_provisions WHERE service_id=?2 AND origin='installed' AND state='complete')", params![source,target], |r| r.get(0))?)).await
+}

@@ -117,12 +117,7 @@ pub(super) async fn list(State(runtime): State<Runtime>) -> Result<Json<Value>> 
 }
 pub(super) async fn verified(s: &Managed, d: &Deployment) -> Result<Value> {
     let raw = engine(&format!("/containers/{}/json", s.container)).await?;
-    if policy::fingerprint(&raw) != s.expected
-        || raw["Config"]["Labels"]["app.thelxinoe.deployment"] != d.id
-        || raw["Config"]["Labels"]["app.thelxinoe.managed-id"] != s.id
-    {
-        return Err(conflict("Configuration drift blocks update work"));
-    }
+    verify_fingerprint(d, s, &raw).await?;
     Ok(raw)
 }
 
@@ -196,6 +191,15 @@ pub(super) async fn preflight(
     Json(input): Json<Preflight>,
 ) -> Result<Json<Value>> {
     id(&input.operation_id)?;
+    if load(&key)?
+        .imported
+        .as_ref()
+        .is_some_and(|v| !v.capabilities.update.available)
+    {
+        return Err(conflict(
+            "Faithful recreation and recovery are not available for this imported deployment",
+        ));
+    }
     if path(&input.operation_id).join("update.json").exists() {
         let existing = read(&input.operation_id)?;
         if existing.service != key {
@@ -339,10 +343,35 @@ pub(super) async fn copy_state(
     restore: bool,
     label: &str,
 ) -> Result<()> {
+    copy_state_inner(d, operation, source, destination, restore, label).await
+}
+
+pub(super) async fn copy_adoption(
+    d: &Deployment,
+    operation: &str,
+    source: &str,
+    destination: &str,
+) -> Result<()> {
+    copy_state_inner(d, operation, source, destination, false, "takeover").await
+}
+
+async fn copy_state_inner(
+    d: &Deployment,
+    operation: &str,
+    source: &str,
+    destination: &str,
+    restore: bool,
+    label: &str,
+) -> Result<()> {
     let name = format!("thelxinoe-state-{}-{label}", &operation[..8]);
     let command = if label == "takeover" {
         let service = load(operation)?;
-        vec!["adoption-copy".to_owned(), service.kind, service.name]
+        if service.kind != "recyclarr" {
+            return Err(conflict(
+                "Application adoption never copies or rewrites configuration",
+            ));
+        }
+        vec!["recyclarr-import".to_owned()]
     } else {
         vec![
             if restore {
@@ -498,13 +527,21 @@ async fn candidate(d: &Deployment, u: &mut Update, config: &str) -> Result<()> {
     }
     // Never inherit host ports, sockets, extra mounts, production networks or commands.
     spec["Healthcheck"] = json!({"Test":["NONE"]});
-    spec["HostConfig"]["ExtraHosts"] = json!([
-        "thelxinoe-radarr:127.0.0.1",
-        "thelxinoe-sonarr:127.0.0.1",
-        "thelxinoe-lidarr:127.0.0.1",
-        "thelxinoe-nzbget:127.0.0.1",
-        "thelxinoe-prowlarr:127.0.0.1"
-    ]);
+    let peers = ["radarr", "sonarr", "lidarr", "nzbget", "prowlarr"];
+    let mut hosts = peers
+        .iter()
+        .map(|kind| format!("thelxinoe-{kind}:127.0.0.1"))
+        .collect::<Vec<_>>();
+    // Connections may use the retained container name instead of a template alias.
+    // Resolve those names only to controlled fixtures inside the isolated namespace.
+    for peer in services()? {
+        if peer.phase == "active" && peers.contains(&peer.kind.as_str()) {
+            hosts.push(format!("{}:127.0.0.1", peer.name));
+        }
+    }
+    hosts.sort();
+    hosts.dedup();
+    spec["HostConfig"]["ExtraHosts"] = json!(hosts);
     let raw = request(
         Method::POST,
         &format!("/containers/create?name=thelxinoe-candidate-{}", &u.id[..8]),

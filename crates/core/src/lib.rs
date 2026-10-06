@@ -7,6 +7,10 @@ pub mod service_release;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const API_VERSION: u32 = 1;
 
+pub fn service_gateway_auth(kind: &str) -> bool {
+    matches!(kind, "radarr" | "sonarr" | "lidarr" | "prowlarr")
+}
+
 /// Native UI mounts for newly provisioned services. Attached services retain
 /// their explicitly configured URL base.
 pub fn service_url_base(kind: &str) -> &'static str {

@@ -8,129 +8,33 @@ use std::{
 const MAX_BYTES: u64 = 20 * 1024 * 1024 * 1024;
 const MAX_FILES: u64 = 500_000;
 
-pub fn adopt(kind: &str, name: &str) -> anyhow::Result<()> {
-    anyhow::ensure!(crate::templates::find(kind).is_some(), "Unknown service");
-    if kind == "prowlarr" {
-        anyhow::ensure!(
-            !name.is_empty()
-                && name.len() <= 63
-                && name
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')),
-            "Invalid managed service hostname"
-        );
-    }
-    if kind == "recyclarr" {
-        use sha2::{Digest, Sha256};
-        let actual = format!("{:x}", Sha256::digest(fs::read("/source/recyclarr.yml")?));
-        anyhow::ensure!(
-            std::env::var("THELXINOE_RECYCLARR_IMPORT_HASH")? == actual,
-            "Recyclarr configuration changed after review"
-        );
-    }
+pub fn import_recyclarr() -> anyhow::Result<()> {
+    use sha2::{Digest, Sha256};
+    let actual = format!("{:x}", Sha256::digest(fs::read("/source/recyclarr.yml")?));
+    anyhow::ensure!(
+        std::env::var("THELXINOE_RECYCLARR_IMPORT_HASH")? == actual,
+        "Recyclarr configuration changed after review"
+    );
     run(false)?;
-    if kind == "recyclarr" {
-        // Ownership metadata belongs to this deployment, never to an imported
-        // scheduler. Rebuild it from the explicitly reviewed import selections.
-        let metadata = Path::new("/destination/.thelxinoe");
-        if metadata.exists() {
-            fs::remove_dir_all(metadata)?;
-        }
-        // Accepted imports retain state while plaintext API keys from the old
-        // scheduler are removed from the managed copy before it can run.
-        let path = Path::new("/destination/recyclarr.yml");
-        let mut config: serde_yaml_ng::Value = serde_yaml_ng::from_str(&fs::read_to_string(path)?)?;
-        for kind in ["radarr", "sonarr"] {
-            for (_, instance) in config
-                .get_mut(kind)
-                .and_then(|v| v.as_mapping_mut())
-                .into_iter()
-                .flatten()
-            {
-                if let Some(map) = instance.as_mapping_mut() {
-                    map.insert("api_key".into(), "REDACTED_REGENERATED_AT_SYNC".into());
-                }
-            }
-        }
-        fs::write(path, serde_yaml_ng::to_string(&config)?)?;
-        return Ok(());
+    let metadata = Path::new("/destination/.thelxinoe");
+    if metadata.exists() {
+        fs::remove_dir_all(metadata)?;
     }
-    let base = thelxinoe_core::service_url_base(kind);
-    if base.is_empty() {
-        return Ok(());
-    }
-    // The source mount is read-only. Only the stopped managed copy is changed.
-    let path = Path::new("/destination").join(if kind == "bazarr" {
-        "config/config.yaml"
-    } else {
-        "config.xml"
-    });
-    let mut text = fs::read_to_string(&path)?;
-    if kind == "bazarr" {
-        let mut config: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text)?;
-        let general = config
-            .get_mut("general")
+    let path = Path::new("/destination/recyclarr.yml");
+    let mut config: serde_yaml_ng::Value = serde_yaml_ng::from_str(&fs::read_to_string(path)?)?;
+    for kind in ["radarr", "sonarr"] {
+        for (_, instance) in config
+            .get_mut(kind)
             .and_then(|v| v.as_mapping_mut())
-            .ok_or_else(|| anyhow::anyhow!("Missing Bazarr general settings"))?;
-        general.insert("base_url".into(), base.into());
-        text = serde_yaml_ng::to_string(&config)?;
-    } else {
-        let document = roxmltree::Document::parse(&text)?;
-        let root = document.root_element();
-        anyhow::ensure!(root.has_tag_name("Config"), "Invalid service configuration");
-        let mut entries = root.children().filter(|node| node.has_tag_name("UrlBase"));
-        let entry = entries.next();
-        anyhow::ensure!(entries.next().is_none(), "Duplicate URL Base setting");
-        let range = if let Some(entry) = entry {
-            entry.range()
-        } else {
-            let end = text[..root.range().end]
-                .rfind("</Config>")
-                .ok_or_else(|| anyhow::anyhow!("Missing service configuration end"))?;
-            end..end
-        };
-        text.replace_range(range, &format!("<UrlBase>{base}</UrlBase>"));
-        if kind == "prowlarr" {
-            let document = roxmltree::Document::parse(&text)?;
-            let mut entries = document
-                .root_element()
-                .children()
-                .filter(|node| node.has_tag_name("AllowedHosts"));
-            let entry = entries.next();
-            anyhow::ensure!(entries.next().is_none(), "Duplicate allowed hosts setting");
-            if let Some(entry) = entry {
-                let hosts = entry.text().unwrap_or("").trim();
-                let additions = [name, "thelxinoe-prowlarr"]
-                    .into_iter()
-                    .filter(|name| {
-                        !hosts.split([',', ';']).any(|host| {
-                            host.trim() == "*" || host.trim().eq_ignore_ascii_case(name)
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                // Preserve existing restrictions while allowing the replacement's
-                // name and its stable network alias for API calls and service links.
-                if !hosts.is_empty() && !additions.is_empty() {
-                    let hosts = hosts
-                        .replace('&', "&amp;")
-                        .replace('<', "&lt;")
-                        .replace('>', "&gt;");
-                    let range = entry.range();
-                    text.replace_range(
-                        range,
-                        &format!(
-                            "<AllowedHosts>{hosts};{}</AllowedHosts>",
-                            additions.join(";")
-                        ),
-                    );
-                }
+            .into_iter()
+            .flatten()
+        {
+            if let Some(map) = instance.as_mapping_mut() {
+                map.insert("api_key".into(), "REDACTED_REGENERATED_AT_SYNC".into());
             }
         }
     }
-    // Write in place to retain the copied file's owner and permissions. A failed
-    // worker leaves the transfer blocked and its original available for recovery.
-    fs::write(&path, text)?;
-    fs::File::open(path)?.sync_all()?;
+    fs::write(path, serde_yaml_ng::to_string(&config)?)?;
     Ok(())
 }
 

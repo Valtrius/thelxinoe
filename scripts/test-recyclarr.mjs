@@ -919,14 +919,14 @@ scenario: try {
       await expect
         .poll(
           async () =>
-            (await arr('seerr', `settings/${kind}`)).find(
-              (m) => m.name === `Thelxinoe ${kind}`,
+            (await arr('seerr', `settings/${kind}`)).find((m) =>
+              m.name.startsWith(`Thelxinoe ${kind} (`),
             )?.activeProfileId,
           { timeout: 45000 },
         )
         .toBe(changed.profile_id);
-      const configured = (await arr('seerr', `settings/${kind}`)).find(
-        (m) => m.name === `Thelxinoe ${kind}`,
+      const configured = (await arr('seerr', `settings/${kind}`)).find((m) =>
+        m.name.startsWith(`Thelxinoe ${kind} (`),
       );
       expect(configured.activeProfileName).toBe(changed.profile_name);
       expect(configured.is4k).toBe(true);
@@ -1625,6 +1625,17 @@ scenario: try {
 } catch (error) {
   evidence.passed = false;
   evidence.error = String(error);
+  evidence.connections = await api('/admin/service-connections').catch(
+    () => null,
+  );
+  if (services.seerr) {
+    evidence.seerr_connections = {};
+    for (const kind of ['radarr', 'sonarr'])
+      evidence.seerr_connections[kind] = await arr(
+        'seerr',
+        `settings/${kind}`,
+      ).catch(() => null);
+  }
   throw error;
 } finally {
   evidence.product_passed = evidence.passed;

@@ -235,7 +235,7 @@ async fn inspect(Path(id): Path<String>) -> Result<Json<Value>> {
     )?))
 }
 fn redact(c: &Value) -> Result<Value> {
-    let mounts=c["Mounts"].as_array().ok_or_else(unavailable)?.iter().map(|m|json!({"kind":m["Type"],"source":m["Source"],"destination":m["Destination"],"writable":m["RW"]})).collect::<Vec<_>>();
+    let mounts=c["Mounts"].as_array().ok_or_else(unavailable)?.iter().map(|m|json!({"kind":m["Type"],"name":m["Name"],"subpath":c["HostConfig"]["Mounts"].as_array().into_iter().flatten().find(|v| v["Target"]==m["Destination"]).map(|v|v["VolumeOptions"]["Subpath"].clone()).unwrap_or(Value::Null),"source":m["Source"],"destination":m["Destination"],"writable":m["RW"]})).collect::<Vec<_>>();
     let networks=c["NetworkSettings"]["Networks"].as_object().ok_or_else(unavailable)?.iter().map(|(name,n)|json!({"name":name,"id":n["NetworkID"],"address":n["IPAddress"],"ipv6":n["GlobalIPv6Address"],"aliases":n["Aliases"]})).collect::<Vec<_>>();
     Ok(
         json!({"id":c["Id"],"name":c["Name"],"image":c["Config"]["Image"],"image_id":c["Image"],"running":c["State"]["Running"],"mounts":mounts,"networks":networks,"compose_project":c["Config"]["Labels"]["com.docker.compose.project"]}),

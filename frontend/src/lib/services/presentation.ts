@@ -48,7 +48,9 @@ export function serviceStatus({
         item?.state === 'connecting'
           ? 'Connecting API'
           : item?.state === 'retiring'
-            ? 'Retiring'
+            ? item.operation === 'release'
+              ? 'Release pending'
+              : 'Retiring'
             : 'Installing',
       tone: 'busy',
     };

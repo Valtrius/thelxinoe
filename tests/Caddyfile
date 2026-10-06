@@ -1,7 +1,7 @@
 {
     admin off
 }
-https://localhost:9443 {
+https://localhost:9443, https://proxy:9443 {
     tls internal
     @fixture_client header X-Thelxinoe-Fixture-Address *
     handle @fixture_client {

@@ -5,7 +5,12 @@ use crate::test_support::fixture;
 async fn batch_inventory_is_shared_and_does_not_exclude_unrelated_playback() {
     for change in ["none", "service", "candidate-write"] {
         let (temp, mut state, cookie) = fixture().await;
-        Arc::get_mut(&mut state.config).unwrap().media = "/media".into();
+        let media = temp.path().join("media");
+        std::fs::create_dir_all(media.join("movies")).unwrap();
+        for i in 1..=5 {
+            std::fs::write(media.join(format!("movies/{i}.mp4")), b"fixture media").unwrap();
+        }
+        Arc::get_mut(&mut state.config).unwrap().media = media.clone();
         let control = Arc::new(crate::test_support::FaultControl::default());
         let (entered, ready) = tokio::sync::oneshot::channel();
         let (release, resume) = tokio::sync::oneshot::channel();
@@ -33,9 +38,17 @@ async fn batch_inventory_is_shared_and_does_not_exclude_unrelated_playback() {
         let port = listener.local_addr().unwrap().port();
         let server = tokio::spawn(async move { axum::serve(listener, stub).await.unwrap() });
         let container = "a".repeat(64);
-        let evidence = json!({"id":container,"running":true,"mounts":[{"kind":"bind","source":"/physical","destination":"/media","writable":true}],"networks":[{"id":"network","address":"127.0.0.1"}]});
+        let evidence = json!({"id":container,"name":"localhost","running":true,"mounts":[{"kind":"bind","source":"/physical","destination":"/media","writable":true}],"networks":[{"id":"network","address":"127.0.0.1"}]});
+        let mut server_evidence = evidence.clone();
+        server_evidence["mounts"][0]["destination"] = json!(media.to_string_lossy());
+        let media_source = crate::managers::storage_paths::evidence(
+            &server_evidence,
+            &evidence,
+            &media.to_string_lossy(),
+        )
+        .unwrap();
         state.managers.docker.lock().unwrap().extend([
-            ("containers/self".into(), evidence.clone()),
+            ("containers/self".into(), server_evidence),
             (format!("containers/{container}"), evidence),
         ]);
         let credential = state
@@ -55,19 +68,20 @@ async fn batch_inventory_is_shared_and_does_not_exclude_unrelated_playback() {
             .to_string();
         state.db.write("test.batch", move |db| {
             db.execute("UPDATE users SET role='admin' WHERE id='alice'", [])?;
-            db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('batch','Batch','movies','/media/movies')", [])?;
+            db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('batch','Batch','movies',?1)", [media.join("movies").to_string_lossy()])?;
             db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('other-root','Other','movies',?1)",[other.parent().unwrap().to_string_lossy()])?;
-            db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,defaults,version,enabled,checked_at) VALUES ('radarr','Fixture','radarr',?1,?2,'g',?3,'/physical','{}','1',1,1)",params![container,port,credential])?;
+            db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,defaults,version,enabled,checked_at) VALUES ('radarr','Fixture','radarr',?1,?2,'g',?3,?4,'{}','1',1,1)",params![container,port,credential,media_source])?;
             for i in 1..=5 {
                 let key = format!("batch-{i}");
                 db.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES (?1,'batch','movie',?1,?1,1)",[&key])?;
-                db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,ownership,scanned_at) VALUES (?1,'batch',?2,'first',1,'1','1','{}','unmanaged',1)",params![key,format!("/media/movies/{i}.mp4")])?;
+                db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,ownership,scanned_at) VALUES (?1,'batch',?2,'first',1,'1','1','{}','unmanaged',1)",params![key,media.join(format!("movies/{i}.mp4")).to_string_lossy()])?;
                 db.execute("INSERT INTO media_sources VALUES (?1,?1)",[&key])?;
                 db.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES ('alice',?1,1,1)",[&key])?;
             }
             db.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES ('other','other-root','movie','other','Other',1)", [])?;
             db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,ownership,scanned_at) VALUES ('other','other-root',?1,'first',?2,?3,'1',?4,'unmanaged',1)",params![other.to_string_lossy(),meta.len() as i64,modified,json!({"format":{"duration":"120"},"streams":[{"index":0,"codec_type":"video","codec_name":"h264"}]}).to_string()])?;
             db.execute("INSERT INTO media_sources VALUES ('other','other')", [])?;
+            db.execute("INSERT INTO settings(key,value) VALUES ('manager.retention.radarr','true')", [])?;
             db.execute("UPDATE retention_policies SET enabled=1,trigger_users='[\"alice\"]',grace_seconds=3600 WHERE domain='movies'", [])?;
             Ok(())
         }).await.unwrap();

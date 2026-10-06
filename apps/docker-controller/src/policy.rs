@@ -31,6 +31,12 @@ pub fn fingerprint(container: &Value) -> Value {
         "Entrypoint",
         "User",
         "WorkingDir",
+        "Hostname",
+        "Domainname",
+        "StopSignal",
+        "StopTimeout",
+        "Tty",
+        "OpenStdin",
         "Labels",
         "ExposedPorts",
         "Healthcheck",
@@ -79,18 +85,10 @@ fn empty(value: &Value) -> bool {
 pub fn same_default(expected: &Value, actual: &Value) -> bool {
     expected == actual || (empty(expected) && empty(actual))
 }
-/// Docker paths are identical in every media service; no nested overrides.
-pub fn media_source(container: &Value) -> Result<&str, &'static str> {
+pub fn server_media_source(container: &Value) -> Result<&str, &'static str> {
     let mounts = container["Mounts"]
         .as_array()
         .ok_or("Missing media mount evidence")?;
-    if mounts.iter().any(|m| {
-        m["Destination"]
-            .as_str()
-            .is_some_and(|p| p.starts_with("/media/"))
-    }) {
-        return Err("Mount one shared directory at /media; child media mounts are not supported");
-    }
     let roots = mounts
         .iter()
         .filter(|m| m["Destination"] == "/media")
@@ -102,6 +100,22 @@ pub fn media_source(container: &Value) -> Result<&str, &'static str> {
         .as_str()
         .filter(|s| host_path(s).is_some())
         .ok_or("Invalid media mount source")
+}
+/// Fresh templates share one media root with no nested overrides.
+pub fn media_source(container: &Value) -> Result<&str, &'static str> {
+    let source = server_media_source(container)?;
+    if container["Mounts"].as_array().is_some_and(|mounts| {
+        mounts.iter().any(|m| {
+            m["Destination"]
+                .as_str()
+                .is_some_and(|p| p.starts_with("/media/"))
+        })
+    }) {
+        return Err(
+            "Fresh installations require one shared writable mount at /media; additional media mounts can be used with connected or adopted services",
+        );
+    }
+    Ok(source)
 }
 /// Trusted deployment volumes may live under Docker's state directory.
 /// This check only excludes media overlap; adoption uses the stricter policy.

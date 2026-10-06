@@ -205,11 +205,13 @@ async fn adopt_preview(
         let raw = docker(&state, &format!("containers/{}", s.container)).await?;
         let alias = supplied.host_str().is_some_and(|host| {
             raw["networks"].as_array().into_iter().flatten().any(|n| {
-                n["aliases"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .any(|a| a == host)
+                n["address"] == host
+                    || n["ipv6"] == host.trim_matches(['[', ']'])
+                    || n["aliases"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .any(|a| a == host)
             }) || raw["name"]
                 .as_str()
                 .is_some_and(|name| name.trim_start_matches('/') == host)
