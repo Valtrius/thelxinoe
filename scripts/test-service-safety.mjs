@@ -92,9 +92,9 @@ try {
           layout === 'media-contains-config' ? `${source}/config` : source;
         mkdirSync(media, { recursive: true });
         const attached = await f.attach(
-          'prowlarr',
-          '/existing-prowlarr',
-          imageManifest.services.prowlarr,
+          'radarr',
+          '/existing-radarr',
+          imageManifest.services.radarr,
           {
             configDirectory: config,
             mediaMounts: [{ source: media, destination: '/movies' }],

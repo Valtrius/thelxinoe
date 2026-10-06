@@ -156,7 +156,21 @@ async fn user_locked(c: &Connection<'_>, principal: &Principal) -> Result<i64> {
     let resolved = if let Some(value) = existing {
         value.clone()
     } else {
-        call(c,reqwest::Method::POST,"user",&[],Some(json!({"email":email,"username":principal.user.username,"password":thelxinoe_auth::token()})),None).await?
+        let created = call(c,reqwest::Method::POST,"user",&[],Some(json!({"email":email,"username":principal.user.username,"password":thelxinoe_auth::token()})),None).await?;
+        let remote = created["id"]
+            .as_i64()
+            .filter(|id| *id > 1)
+            .ok_or_else(unavailable)?;
+        // Seerr omits email from create responses. Read back the persisted identity before granting permissions.
+        call(
+            c,
+            reqwest::Method::GET,
+            &format!("user/{remote}"),
+            &[],
+            None,
+            None,
+        )
+        .await?
     };
     if resolved["email"] != email || resolved["userType"] != 2 {
         return Err(ApiError::conflict(
