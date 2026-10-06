@@ -459,6 +459,30 @@ try {
       ).toBe(recovered.id);
     },
   );
+  await scenario(
+    'Seerr managed state in Docker storage supports backups',
+    async () => {
+      const created = controller('/backups', 'POST', {
+        passphrase: 'managed service safety fixture passphrase',
+      });
+      expect(created.status).toBe(200);
+      const id = JSON.parse(created.body).id;
+      await expect
+        .poll(
+          () => {
+            try {
+              return JSON.parse(controller('/backups').body).items.find(
+                (row) => row.id === id,
+              )?.stage;
+            } catch {
+              return 'restarting';
+            }
+          },
+          { timeout: 180000 },
+        )
+        .toBe('complete');
+    },
+  );
   result.passed = true;
 } finally {
   writeFileSync(

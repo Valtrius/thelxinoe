@@ -178,7 +178,7 @@ async fn inspect(d: &Deployment) -> Result<(Vec<Managed>, Vec<Component>)> {
     if components.iter().any(|c| {
         media_sources
             .iter()
-            .any(|media| !policy::appdata_isolated(&c.source, media))
+            .any(|media| !policy::media_disjoint(&c.source, media))
     }) {
         return Err(conflict(
             "Component state overlaps another service's media or download storage",

@@ -100,13 +100,13 @@ fn media_destination(destination: &str) -> bool {
         .any(|root| destination == *root || destination.starts_with(&format!("{root}/")))
 }
 pub(super) fn state_isolated(source: &str, server: &Value, d: &Deployment) -> bool {
-    policy::appdata_isolated(source, &d.media_source)
+    policy::media_disjoint(source, &d.media_source)
         && server["Mounts"].as_array().is_some_and(|mounts| {
             mounts.iter().all(|m| {
                 !m["Destination"].as_str().is_some_and(media_destination)
                     || m["Source"]
                         .as_str()
-                        .is_some_and(|media| policy::appdata_isolated(source, media))
+                        .is_some_and(|media| policy::media_disjoint(source, media))
             })
         })
 }
@@ -130,7 +130,7 @@ pub(super) fn backup_source(raw: &Value, d: &Deployment) -> Result<String> {
                     && (m["Type"] == "tmpfs"
                         || m["Source"]
                             .as_str()
-                            .is_some_and(|other| policy::appdata_isolated(source, other)))
+                            .is_some_and(|other| policy::media_disjoint(source, other)))
             })
     {
         return Err(conflict(
