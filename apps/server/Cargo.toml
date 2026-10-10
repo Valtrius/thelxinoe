@@ -31,6 +31,7 @@ chrono.workspace = true
 futures-util = "0.3"
 tokio-tungstenite = "0.29"
 url = "2"
+percent-encoding = "2"
 fs2 = "0.4"
 same-file = "1"
 tower = { version = "0.5", features = ["util"] }
