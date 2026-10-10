@@ -111,13 +111,15 @@ test('administrators filter the persisted audit trail by actor and action', asyn
   await page
     .getByLabel('Audit action', { exact: true })
     .selectOption('user.create');
-  await expect(page.locator('.settings-content .row')).toHaveCount(1);
-  await expect(page.locator('.settings-content .row')).toContainText(
-    'user.create',
-  );
+  // Day header rows only hold a th, so entries are the rows with cells.
+  const entries = page
+    .getByRole('table', { name: 'Administrative activity' })
+    .locator('tbody tr:has(td)');
+  await expect(entries).toHaveCount(1);
+  await expect(entries).toContainText('Created a user');
   await page.getByLabel('Audit action', { exact: true }).selectOption('setup');
-  await expect(page.locator('.settings-content .row')).toHaveCount(1);
-  await expect(page.locator('.settings-content .row')).toContainText('setup');
+  await expect(entries).toHaveCount(1);
+  await expect(entries).toContainText('Completed first-run setup');
   await page.screenshot({
     path: testInfo.outputPath('persisted-audit-filter.png'),
     fullPage: true,

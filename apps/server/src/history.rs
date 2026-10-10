@@ -175,4 +175,68 @@ mod tests {
         assert_eq!(second.2["items"][0]["media_id"], "youtube:shared-video");
         assert!(second.2["next_before"].is_null());
     }
+    #[tokio::test]
+    async fn audit_separates_system_and_deleted_actors_and_filters_action_sets() {
+        let (_temp, state, _alice) = fixture().await;
+        state
+            .db
+            .write("test.fixture", |db| {
+                db.execute("DELETE FROM audit", [])?;
+                for (actor, action) in [
+                    (Some("alice"), "user.create"),
+                    (None, "tools.activated"),
+                    (Some("removed-user"), "session.revoke"),
+                    (Some("bob"), "auth.passkey.added"),
+                ] {
+                    db.execute(
+                        "INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,?2,'target',1)",
+                        rusqlite::params![actor, action],
+                    )?;
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let audit = |user: Option<&str>, action: Option<&str>| {
+            super::storage::audit(
+                &state.db,
+                super::AuditFilter {
+                    before: None,
+                    user: user.map(Into::into),
+                    action: action.map(Into::into),
+                },
+            )
+        };
+        let all = audit(None, None).await.unwrap();
+        assert_eq!(
+            all["actors"],
+            serde_json::json!([
+                {"id": "alice", "username": "alice"},
+                {"id": "bob", "username": "bob"},
+                {"id": "system", "username": "System"},
+                {"id": "deleted", "username": "Deleted user"},
+            ])
+        );
+        let actions = |result: &Value| {
+            result["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["action"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        let system = audit(Some("system"), None).await.unwrap();
+        assert_eq!(actions(&system), ["tools.activated"]);
+        assert!(system["items"][0]["actor_id"].is_null());
+        let deleted = audit(Some("deleted"), None).await.unwrap();
+        assert_eq!(actions(&deleted), ["session.revoke"]);
+        assert_eq!(deleted["items"][0]["actor_id"], "removed-user");
+        assert!(deleted["items"][0]["actor"].is_null());
+        let security = audit(None, Some("auth.passkey.added,session.revoke"))
+            .await
+            .unwrap();
+        assert_eq!(actions(&security), ["auth.passkey.added", "session.revoke"]);
+        let single = audit(Some("alice"), Some("user.create")).await.unwrap();
+        assert_eq!(actions(&single), ["user.create"]);
+    }
 }

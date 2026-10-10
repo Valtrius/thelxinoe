@@ -20,28 +20,38 @@ pub(super) async fn history(
 }
 
 pub(super) async fn audit(db: &Database, filter: AuditFilter) -> anyhow::Result<Value> {
+    // `action` accepts a comma-separated set so a whole category can be filtered.
+    let actions = filter
+        .action
+        .map(|action| serde_json::to_string(&action.split(',').collect::<Vec<_>>()))
+        .transpose()?;
     db.read("history.audit", move |db| {
+        // A missing actor_id is a system event; an actor_id without a user row is a deleted user.
         let items = db
             .prepare(
-                "SELECT a.id,a.action,a.target,a.created_at,u.username FROM audit a
+                "SELECT a.id,a.action,a.target,a.created_at,a.actor_id,u.username FROM audit a
              LEFT JOIN users u ON u.id=a.actor_id
              WHERE (?1 IS NULL OR a.id<?1)
-               AND (?2 IS NULL OR a.actor_id=?2 OR (?2='deleted' AND a.actor_id IS NULL))
-               AND (?3 IS NULL OR a.action=?3)
+               AND (?2 IS NULL OR CASE ?2 WHEN 'system' THEN a.actor_id IS NULL
+                    WHEN 'deleted' THEN a.actor_id IS NOT NULL AND u.id IS NULL
+                    ELSE a.actor_id=?2 END)
+               AND (?3 IS NULL OR a.action IN (SELECT value FROM json_each(?3)))
              ORDER BY a.id DESC LIMIT 100",
             )?
-            .query_map(params![filter.before, filter.user, filter.action], |r| {
+            .query_map(params![filter.before, filter.user, actions], |r| {
                 Ok(json!({
                     "id":r.get::<_,i64>(0)?, "action":r.get::<_,String>(1)?,
                     "target":r.get::<_,String>(2)?, "created_at":r.get::<_,i64>(3)?,
-                    "actor":r.get::<_,Option<String>>(4)?
+                    "actor_id":r.get::<_,Option<String>>(4)?, "actor":r.get::<_,Option<String>>(5)?
                 }))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let actors = db
             .prepare(
-                "SELECT DISTINCT COALESCE(a.actor_id,'deleted'),COALESCE(u.username,'Deleted user')
-             FROM audit a LEFT JOIN users u ON u.id=a.actor_id ORDER BY 2,1",
+                "SELECT DISTINCT CASE WHEN a.actor_id IS NULL THEN 'system' WHEN u.id IS NULL THEN 'deleted' ELSE a.actor_id END,
+                    CASE WHEN a.actor_id IS NULL THEN 'System' WHEN u.id IS NULL THEN 'Deleted user' ELSE u.username END,
+                    CASE WHEN a.actor_id IS NULL THEN 1 WHEN u.id IS NULL THEN 2 ELSE 0 END
+             FROM audit a LEFT JOIN users u ON u.id=a.actor_id ORDER BY 3,2,1",
             )?
             .query_map([], |r| {
                 Ok(json!({"id":r.get::<_,String>(0)?,"username":r.get::<_,String>(1)?}))

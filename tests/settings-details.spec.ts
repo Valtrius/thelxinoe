@@ -599,25 +599,55 @@ test('activity and audit filters preserve real actions and older-page queries', 
   await page.route('**/api/v1/admin/audit?*', (route) => {
     const url = new URL(route.request().url());
     queries.push(url);
+    const older = url.searchParams.has('before');
     return route.fulfill({
       json: {
-        actors: [{ id: 'layout-fixture', username: 'Layout viewer' }],
-        actions: ['settings.update', 'user.create'],
+        actors: [
+          { id: 'layout-fixture', username: 'Layout viewer' },
+          { id: 'system', username: 'System' },
+          { id: 'deleted', username: 'Deleted user' },
+        ],
+        actions: [
+          'auth.passkey.added',
+          'session.revoke',
+          'settings.update',
+          'tools.activated',
+          'user.create',
+        ],
         items:
           url.searchParams.get('action') === 'user.create'
             ? []
             : [
                 {
-                  id: url.searchParams.has('before') ? 1 : 2,
+                  id: older ? 1 : 4,
                   action: 'settings.update',
+                  actor_id: 'layout-fixture',
                   actor: 'Layout viewer',
-                  target: url.searchParams.has('before')
-                    ? 'Older server change'
-                    : 'Server',
+                  target: older ? 'Older server change' : 'Server',
                   created_at: 1789984800,
                 },
+                ...(older
+                  ? []
+                  : [
+                      {
+                        id: 3,
+                        action: 'tools.activated',
+                        actor_id: null,
+                        actor: null,
+                        target: 'generation-1',
+                        created_at: 1789984700,
+                      },
+                      {
+                        id: 2,
+                        action: 'session.revoke',
+                        actor_id: 'removed-user',
+                        actor: null,
+                        target: 'session-1',
+                        created_at: 1789898400,
+                      },
+                    ]),
               ],
-        next_before: url.searchParams.has('before') ? null : 2,
+        next_before: older ? null : 2,
       },
     });
   });
@@ -659,6 +689,58 @@ test('activity and audit filters preserve real actions and older-page queries', 
     .getByRole('navigation', { name: 'Settings navigation' })
     .getByRole('link', { name: 'Audit', exact: true })
     .click();
+  const activity = page.getByRole('table', {
+    name: 'Administrative activity',
+  });
+  // Entries are grouped under one header row per day in the viewer timezone.
+  await expect(
+    activity.getByRole('columnheader', { name: /^\w+day, September \d+/ }),
+  ).toHaveCount(2);
+  await expect(
+    activity.getByRole('row').filter({ hasText: 'Updated server settings' }),
+  ).toContainText('Layout viewer');
+  await expect(
+    activity.getByRole('row').filter({ hasText: 'Activated tools' }),
+  ).toContainText('System');
+  await expect(
+    activity.getByRole('row').filter({ hasText: 'Revoked a session' }),
+  ).toContainText('Deleted user');
+  // Phones stack each entry instead of scrolling the table sideways.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(
+    activity.getByRole('row').filter({ hasText: 'Revoked a session' }),
+  ).toBeVisible();
+  expect(
+    await activity.evaluate(
+      (table) =>
+        table.scrollWidth <= table.clientWidth &&
+        document.documentElement.scrollWidth <=
+          document.documentElement.clientWidth,
+    ),
+  ).toBe(true);
+  await activity.scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: testInfo.outputPath('audit-activity-phone.png'),
+  });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const categories = page.getByRole('group', { name: 'Audit category' });
+  await categories.getByRole('button', { name: 'Security' }).click();
+  await expect
+    .poll(() => queries.at(-1)?.searchParams.get('action'))
+    .toBe('auth.passkey.added,session.revoke');
+  await expect(
+    page
+      .getByLabel('Audit action', { exact: true })
+      .getByRole('option', { name: 'Updated server settings' }),
+  ).toHaveCount(0);
+  await page.screenshot({
+    path: testInfo.outputPath('audit-activity-table.png'),
+    fullPage: true,
+  });
+  await categories.getByRole('button', { name: 'All' }).click();
+  await expect
+    .poll(() => queries.at(-1)?.searchParams.has('action'))
+    .toBe(false);
   await page
     .getByLabel('Audit user', { exact: true })
     .selectOption('layout-fixture');
