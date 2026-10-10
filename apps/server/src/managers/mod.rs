@@ -698,6 +698,7 @@ async fn test(
     .await;
     let error = result.as_ref().err().map(|e| e.2.clone());
     storage::test(&state.db, id, error).await?;
+    state.notify_attention();
     Ok(Json(json!({"healthy":true,"version":result?})))
 }
 

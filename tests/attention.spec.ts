@@ -347,7 +347,7 @@ test('menu dots track live severity while pages are closed and survive sidebar c
       media_ids: [],
     },
   ];
-  sendEvent!('tools.changed');
+  sendEvent!('attention.changed');
   await expect(dot).toHaveAttribute('data-attention-severity', 'info');
   await settings.click();
   const server = nav.getByRole('link', { name: 'Server', exact: true });
@@ -364,7 +364,7 @@ test('menu dots track live severity while pages are closed and survive sidebar c
     path: testInfo.outputPath('server-tool-update-dot.png'),
   });
   items = [];
-  sendEvent!('tools.changed');
+  sendEvent!('attention.changed');
   await expect(dot).toHaveCount(0);
   await expect(server.locator('[data-attention-severity]')).toHaveCount(0);
   await page.screenshot({
