@@ -12,18 +12,28 @@
   import ProviderIntegrationSwitch from './providers/ProviderIntegrationSwitch.svelte';
   import { providers } from './providers/availability';
   let { onConfigured }: { onConfigured?: () => void } = $props();
+  type Family = 'ipv4' | 'ipv6';
+  type Network = 'auto' | Family;
   type Configuration = {
     google_configured: boolean;
     redirect_uri: string | null;
     youtube_downloads: boolean;
     youtube_daily_quota: number;
+    youtube_network: Network;
+    youtube_network_status: {
+      ipv4: boolean;
+      ipv6: boolean;
+      current: Family | null;
+    };
     quota: { used: number; blocked: boolean };
   };
+  const familyLabels: Record<Family, string> = { ipv4: 'IPv4', ipv6: 'IPv6' };
   let config = $state<Configuration | null>(null),
     clientId = $state(''),
     clientSecret = $state(''),
     downloads = $state(false),
     budget = $state(10000),
+    network = $state<Network>('auto'),
     busy = $state(false),
     savingPreferences = $state(false),
     message = $state('');
@@ -31,6 +41,20 @@
     config = await api<Configuration>('/admin/online');
     downloads = config.youtube_downloads;
     budget = config.youtube_daily_quota;
+    network = config.youtube_network;
+  }
+  // The server reports no current family only when a fixed family has no route.
+  function networkSummary(config: Configuration) {
+    const { current, ipv6 } = config.youtube_network_status;
+    if (config.youtube_network !== 'auto')
+      return current
+        ? `Public videos use ${familyLabels[current]}.`
+        : `${familyLabels[config.youtube_network]} is not available to this server.`;
+    return `Public videos currently use ${familyLabels[current ?? 'ipv4']}.${
+      ipv6
+        ? ''
+        : ' IPv6 is not available to this server, so it cannot replace a blocked IPv4 address.'
+    }`;
   }
   onMount(() => {
     void load().catch((e) => (message = String(e)));
@@ -50,6 +74,7 @@
           : {}),
         youtube_downloads: downloads,
         youtube_daily_quota: budget,
+        youtube_network: network,
       });
       clientId = '';
       clientSecret = '';
@@ -131,12 +156,20 @@
         class={inlineFormClass}
         bind:busy={savingPreferences}
         disabled={busy || !config}
-        value={{ youtube_downloads: downloads, youtube_daily_quota: budget }}
+        value={{
+          youtube_downloads: downloads,
+          youtube_daily_quota: budget,
+          youtube_network: network,
+        }}
         onRevert={(previous) => {
           downloads = previous.youtube_downloads;
           budget = previous.youtube_daily_quota;
+          network = previous.youtube_network;
         }}
-        onsave={(submitted) => api('/admin/online', 'PUT', submitted)}
+        onsave={async (submitted) => {
+          await api('/admin/online', 'PUT', submitted);
+          config = await api<Configuration>('/admin/online');
+        }}
       >
         <FormField
           >Daily API budget<input
@@ -148,6 +181,16 @@
             required
           /></FormField
         >
+        <FormField
+          >Public video network<select
+            class={formControlClass}
+            bind:value={network}
+          >
+            <option value="auto">Automatic</option>
+            <option value="ipv4">IPv4 only</option>
+            <option value="ipv6">IPv6 only</option>
+          </select></FormField
+        >
         <Switch bind:checked={downloads}>Allow YouTube downloads</Switch>
       </AutoSaveForm>{/if}
     {#if config}<p class="text-muted">
@@ -155,6 +198,12 @@
         resets at midnight Pacific time.{config.quota.blocked
           ? ' YouTube has paused requests for today.'
           : ''}
+      </p>
+      <p class="text-muted">
+        YouTube can block a server's address with a bot check. Automatic starts
+        with IPv4 and switches to IPv6 when IPv4 is blocked. {networkSummary(
+          config,
+        )}
       </p>{/if}
     {#if message}<p role="status">{message}</p>{/if}
   {/if}

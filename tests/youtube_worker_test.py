@@ -17,6 +17,7 @@ class YoutubeDL:
         assert not options['cachedir'] and not options['remote_components']
         assert not options.get('cookiefile') and not options.get('cookiesfrombrowser')
         assert options['js_runtimes'] == {'deno': {'path': 'managed-deno'}}
+        self.source = options.get('source_address')
         self.calls = 0
     def __enter__(self): return self
     def __exit__(self, *args): pass
@@ -25,10 +26,11 @@ class YoutubeDL:
         self.calls += 1
         video = address.split('=')[-1]
         if video == 'private0000': raise RuntimeError('Sign in secret-token')
+        if video == 'botcheck000': raise RuntimeError('Sign in to confirm you\\u2019re not a bot secret-ip')
         if video == 'removed0000': raise RuntimeError('Video unavailable secret-url')
         if video == 'failure0000': raise RuntimeError('Internal error secret-cookie')
         if video == 'bigdata0000': return {'id': video, 'large': 'x' * (8 * 1024 * 1024)}
-        return {'id': video, 'calls': self.calls}
+        return {'id': video, 'calls': self.calls, **({'source': self.source} if self.source else {})}
     def sanitize_info(self, value): return value
 '''
 
@@ -59,12 +61,23 @@ class WorkerProtocol(unittest.TestCase):
             {"error": "extractor_authentication_required"},
             {"metadata": {"id": "sOnfbsuwPGo", "calls": 3}}])
 
+    def test_each_family_keeps_its_own_extractor(self):
+        result, frames = self.run_worker([{"id": "9pkqztOC1WM", "family": "ipv6"}, {"id": "9pkqztOC1WM", "family": "ipv4"},
+                                          {"id": "sOnfbsuwPGo", "family": "ipv6"}, {"id": "sOnfbsuwPGo"},
+                                          {"id": "sOnfbsuwPGo", "family": "ipv5"}, {"id": "sOnfbsuwPGo", "family": ["ipv6"]}])
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(frames[1:], [{"metadata": {"id": "9pkqztOC1WM", "calls": 1, "source": "::"}},
+            {"metadata": {"id": "9pkqztOC1WM", "calls": 1, "source": "0.0.0.0"}},
+            {"metadata": {"id": "sOnfbsuwPGo", "calls": 2, "source": "::"}},
+            {"metadata": {"id": "sOnfbsuwPGo", "calls": 1}},
+            {"error": "extraction_failed"}, {"error": "extraction_failed"}])
+
     def test_errors_and_oversized_metadata_are_redacted(self):
-        result, frames = self.run_worker([{"id": video} for video in ["removed0000", "failure0000", "bigdata0000", "invalid&url"]])
+        result, frames = self.run_worker([{"id": video} for video in ["botcheck000", "removed0000", "failure0000", "bigdata0000", "invalid&url"]])
         self.assertEqual(result.returncode, 0)
         self.assertNotIn("secret", result.stdout + result.stderr)
         self.assertEqual([frame["error"] for frame in frames[1:]],
-                         ["unavailable", "extraction_failed", "extraction_failed", "extraction_failed"])
+                         ["network_blocked", "unavailable", "extraction_failed", "extraction_failed", "extraction_failed"])
 
     def test_version_mismatch_never_reports_ready(self):
         result, frames = self.run_worker([], version="new")

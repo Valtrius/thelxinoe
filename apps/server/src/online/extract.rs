@@ -3,7 +3,10 @@
 #[path = "../storage/online/extract.rs"]
 mod storage;
 
-use super::{process, sync, tools};
+use super::{
+    network::{self, Family},
+    process, sync, tools,
+};
 use crate::{
     AppState,
     error::{ApiError, Result},
@@ -32,9 +35,10 @@ pub async fn inspect(
         return Err(ApiError::not_found());
     }
     let metadata = match metadata(&state, &id).await {
-        Ok(value) => value,
+        Ok((value, _)) => value,
         Err(error)
             if error.1 == "extractor_authentication_required"
+                || error.1 == "network_blocked"
                 || error.1 == "extraction_failed"
                 || error.1 == "unavailable" =>
         {
@@ -46,7 +50,8 @@ pub async fn inspect(
         json!({"state":"available","duration":metadata["duration"],"live":metadata["is_live"].as_bool().unwrap_or(false),"format_count":metadata["formats"].as_array().map_or(0,Vec::len)}),
     ))
 }
-pub(super) async fn metadata(state: &AppState, id: &str) -> Result<Value> {
+/// Signed media addresses only work from the returned address family.
+pub(super) async fn metadata(state: &AppState, id: &str) -> Result<(Value, Family)> {
     if !sync::identifier(id, 11) {
         return Err(ApiError::bad("Invalid YouTube video"));
     }
@@ -56,10 +61,18 @@ pub(super) async fn metadata(state: &AppState, id: &str) -> Result<Value> {
         .try_acquire()
         .map_err(|_| ApiError::conflict("Both extraction slots are busy; try again shortly"))?;
     let bundle = tools::ready(state).await?;
+    network::attempt(state, |family| extract(state, &bundle, id, family)).await
+}
+async fn extract(
+    state: &AppState,
+    bundle: &tools::OnlineSnapshot,
+    id: &str,
+    family: Family,
+) -> Result<Value> {
     if let Some(response) = state
         .online
         .youtube_worker
-        .resolve(&bundle, id)
+        .resolve(bundle, id, family)
         .await
         .map_err(|_| ApiError::conflict("Public extraction failed or timed out; try again later"))?
     {
@@ -67,6 +80,7 @@ pub(super) async fn metadata(state: &AppState, id: &str) -> Result<Value> {
             Some(metadata) => Ok(metadata.clone()),
             None => Err(extraction_error(match response["error"].as_str() {
                 Some("extractor_authentication_required") => "extractor_authentication_required",
+                Some("network_blocked") => "network_blocked",
                 Some("unavailable") => "unavailable",
                 _ => "extraction_failed",
             })),
@@ -74,7 +88,7 @@ pub(super) async fn metadata(state: &AppState, id: &str) -> Result<Value> {
     }
     tools::verify(&bundle.yt_dlp).await?;
     tools::verify(&bundle.deno).await?;
-    let args = arguments(&bundle, id);
+    let args = arguments(bundle, id, family);
     let output = process::run(
         state.tools.temporary()?,
         &bundle.yt_dlp.path,
@@ -105,13 +119,16 @@ fn extraction_error(code: &'static str) -> ApiError {
             "extractor_authentication_required" => {
                 "Extractor authentication required; this video cannot be played with public access"
             }
+            "network_blocked" => {
+                "YouTube is blocking public access from this server's network; try again later"
+            }
             "unavailable" => "This video is unavailable with public access",
             _ => "Public extraction failed; try again later",
         }
         .into(),
     )
 }
-pub(super) fn arguments(bundle: &tools::OnlineSnapshot, id: &str) -> Vec<OsString> {
+pub(super) fn arguments(bundle: &tools::OnlineSnapshot, id: &str, family: Family) -> Vec<OsString> {
     let mut args: Vec<OsString> = [
         "--ignore-config",
         "--no-plugin-dirs",
@@ -131,6 +148,7 @@ pub(super) fn arguments(bundle: &tools::OnlineSnapshot, id: &str) -> Vec<OsStrin
     args.push(runtime);
     args.extend(
         [
+            family.flag(),
             "--socket-timeout",
             "15",
             "--retries",
@@ -149,7 +167,10 @@ pub(super) fn arguments(bundle: &tools::OnlineSnapshot, id: &str) -> Vec<OsStrin
 }
 pub(super) fn failure(stderr: &[u8]) -> &'static str {
     let text = String::from_utf8_lossy(stderr).to_ascii_lowercase();
-    if [
+    // YouTube's bot check also asks to sign in, but it rejects the network.
+    if text.contains("not a bot") {
+        "network_blocked"
+    } else if [
         "sign in",
         "login required",
         "log in",
@@ -184,6 +205,13 @@ mod tests {
         assert_eq!(
             failure(b"ERROR: Sign in to confirm your age. secret=private"),
             "extractor_authentication_required"
+        );
+        assert_eq!(
+            failure(
+                "ERROR: [youtube] abc: Sign in to confirm you\u{2019}re not a bot. Use --cookies"
+                    .as_bytes()
+            ),
+            "network_blocked"
         );
         assert_eq!(failure(b"ERROR: Video unavailable"), "unavailable");
         assert_eq!(

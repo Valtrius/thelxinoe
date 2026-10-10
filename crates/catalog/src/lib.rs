@@ -57,7 +57,7 @@ where
     F: FnMut(usize, usize) -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
-    tools.ffprobe.verify().await?;
+    tools.ffprobe.verify_unchanged().await?;
     let base = PathBuf::from(&root.path)
         .canonicalize()
         .context("Library is unavailable")?;

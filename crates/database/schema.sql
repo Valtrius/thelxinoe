@@ -408,7 +408,7 @@ CREATE TABLE youtube_state (
 CREATE TABLE youtube_downloads (
     video_id TEXT NOT NULL PRIMARY KEY,
     generation TEXT NOT NULL,
-    state TEXT NOT NULL CHECK(state IN ('queued','waiting_for_space','downloading','ready','extractor_authentication_required','unavailable','failed','deleting')),
+    state TEXT NOT NULL CHECK(state IN ('queued','waiting_for_space','downloading','ready','extractor_authentication_required','network_blocked','unavailable','failed','deleting')),
     tools TEXT NOT NULL,
     path TEXT,
     size INTEGER,

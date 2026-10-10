@@ -12,7 +12,7 @@ use crate::{
 };
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 use thelxinoe_core::{Principal, now};
 use thelxinoe_playback::{Options, RemoteSource};
 use tokio::sync::Mutex;
@@ -53,8 +53,15 @@ async fn prepare(state: &AppState, video: &str) -> Result<Prepared> {
             quality: None,
         }
     } else {
-        let metadata = extract::metadata(state, video).await?;
-        select(&metadata)?
+        let (metadata, family) = extract::metadata(state, video).await?;
+        let proxy = state
+            .online
+            .network
+            .egress
+            .proxy(family)
+            .await
+            .map_err(|_| ApiError::conflict("Could not prepare the public video connection"))?;
+        select(&metadata, Some(proxy))?
     };
     let mut cached = state.online.streams.prepared.lock().await;
     if cached.len() >= 64 {
@@ -63,13 +70,13 @@ async fn prepare(state: &AppState, video: &str) -> Result<Prepared> {
     cached.insert(video.into(), prepared.clone());
     Ok(prepared)
 }
-fn select(metadata: &Value) -> Result<Prepared> {
+fn select(metadata: &Value, proxy: Option<String>) -> Result<Prepared> {
     let live = metadata["is_live"].as_bool().unwrap_or(false);
     let duration = metadata["duration"].as_f64().unwrap_or(0.0);
     if !live && (!duration.is_finite() || duration <= 0.0) {
         return Err(ApiError::conflict("This video is not ready for playback"));
     }
-    let formats = formats::extract(metadata)?;
+    let formats = formats::extract(metadata, proxy)?;
     let best = formats.last().unwrap();
     Ok(Prepared {
         source: best.source.clone(),
@@ -173,14 +180,11 @@ pub(crate) async fn create_with_delivery(
         },
     )
     .await?;
-    // At the beginning, YouTube's segmented input can fill the browser's remux
-    // buffer faster than an open-ended file request. Resumes retain the file
-    // source and its index for keyframe seeking.
-    if start == 0.0 && !native && prepared.remux {
+    if !native && prepared.remux {
         let selected = formats::choose(&prepared.formats, &options.quality, &options.capabilities)?;
-        if let Some(segmented) = formats::segmented(&prepared.formats, selected) {
-            prepared.source = segmented.source.clone();
-            prepared.native = segmented.native;
+        if let Some(source) = segmented(state, &prepared.formats, selected, start).await {
+            prepared.source = source;
+            prepared.native = false;
         }
     }
     state
@@ -234,6 +238,48 @@ pub(crate) async fn create_with_delivery(
         json!({"id":sid,"url":url,"external_audio":external_audio,"grant":grant,"mode":mode,"position":start,"duration":prepared.duration,"timeline_start":offset,"video":true,"live":live,"tracks":[],"subtitles":[],"selected_subtitle":null,"options":options,"qualities":qualities,"quality":prepared.quality,"probe":{},"replay_gain":"off"}),
     )
 }
+/// YouTube's segmented formats fill a browser's remux buffer much faster than
+/// an open-ended file request. Each segment opens with a keyframe, so its
+/// playlist provides seek points; without them, the file and its index remain.
+async fn segmented(
+    state: &AppState,
+    formats: &[formats::Format],
+    selected: &formats::Format,
+    position: f64,
+) -> Option<RemoteSource> {
+    let mut source = formats::segmented(formats, selected)?.source.clone();
+    if position > 0.0 {
+        source.segments = segments(state, &source).await?;
+    }
+    Some(source)
+}
+async fn segments(state: &AppState, source: &RemoteSource) -> Option<Vec<f64>> {
+    source.validate().ok()?;
+    let client = state
+        .online
+        .streams
+        .relay
+        .client(source.proxy.as_ref())
+        .ok()?;
+    let playlist = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut response = client.get(&source.video).send().await.ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.ok()? {
+            // Signed segment addresses make long playlists several megabytes.
+            if bytes.len() + chunk.len() > 16 * 1024 * 1024 {
+                return None;
+            }
+            bytes.extend(chunk);
+        }
+        String::from_utf8(bytes).ok()
+    })
+    .await
+    .ok()??;
+    formats::segment_starts(&playlist)
+}
 pub(crate) async fn validate(state: &AppState, id: &str) -> Result<()> {
     if !state.online.streams.sessions.lock().await.contains_key(id) {
         return Err(ApiError::conflict("Stream expired; start playback again"));
@@ -271,15 +317,19 @@ pub(crate) async fn seek(
         return Err(ApiError::bad("Seeking is not available for live streams"));
     }
     let input = if source.remux && !source.formats.is_empty() {
-        &formats::choose(&source.formats, &options.quality, &options.capabilities)?.source
+        let selected = formats::choose(&source.formats, &options.quality, &options.capabilities)?;
+        match segmented(state, &source.formats, selected, position).await {
+            Some(segmented) => segmented,
+            None => selected.source.clone(),
+        }
     } else {
-        &source.source
+        source.source.clone()
     };
     state
         .playback
         .start_remote(
             id,
-            input,
+            &input,
             options,
             if source.remux { "remux" } else { "transcode" },
             position,
@@ -327,25 +377,25 @@ mod tests {
     }
     #[test]
     fn selection_handles_separate_streams_and_live_without_exposing_urls() {
-        let vod = select(&metadata(false)).unwrap();
+        let vod = select(&metadata(false), None).unwrap();
         assert_eq!(vod.duration, 100.0);
         assert!(vod.source.audio.is_some());
         assert!(vod.native);
-        assert!(!select(&metadata(true)).unwrap().native);
-        assert_eq!(select(&metadata(true)).unwrap().duration, 0.0);
+        assert!(!select(&metadata(true), None).unwrap().native);
+        assert_eq!(select(&metadata(true), None).unwrap().duration, 0.0);
         let mut live = metadata(true);
         live["formats"][1]["acodec"] = Value::Null;
         live["formats"][1]["protocol"] = json!("m3u8_native");
-        assert!(select(&live).unwrap().source.audio.is_some());
+        assert!(select(&live, None).unwrap().source.audio.is_some());
         let mut manifest = metadata(false);
         manifest["formats"][0]["protocol"] = json!("m3u8_native");
-        assert!(!select(&manifest).unwrap().native);
+        assert!(!select(&manifest, None).unwrap().native);
         let mut audio_manifest = metadata(false);
         audio_manifest["formats"][1]["protocol"] = json!("m3u8_native");
-        assert!(!select(&audio_manifest).unwrap().native);
+        assert!(!select(&audio_manifest, None).unwrap().native);
         let mut malformed = metadata(false);
         malformed["formats"][0]["url"] = json!("https://localhost/private");
-        assert!(select(&malformed).is_err());
+        assert!(select(&malformed, None).is_err());
     }
     #[tokio::test]
     async fn native_files_keep_sources_private_and_enforce_playback_grants() {
@@ -357,7 +407,7 @@ mod tests {
             .prepared
             .lock()
             .await
-            .insert(video.into(), select(&metadata(false)).unwrap());
+            .insert(video.into(), select(&metadata(false), None).unwrap());
         let input = json!({"media_id":"youtube:abcdefghijk","position":20,"options":{"quality":"auto","audio":null,"subtitle":null,"capabilities":{"video":["h264"],"audio":["aac"],"containers":[],"hls":true,"native_remote":true}}});
         assert_eq!(
             call(&state, "/api/v1/playback", "POST", input.clone(), &cookie)
@@ -504,7 +554,7 @@ mod tests {
             .prepared
             .lock()
             .await
-            .insert(video.into(), select(&metadata(true)).unwrap());
+            .insert(video.into(), select(&metadata(true), None).unwrap());
         assert_eq!(
             call(
                 &state,

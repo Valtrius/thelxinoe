@@ -25,6 +25,10 @@ services:
       THELXINOE_ONLINE_LAN_IP: "${THELXINOE_ONLINE_LAN_IP}"
     volumes:
       - ./scripts/Caddyfile.online:/etc/caddy/Caddyfile:ro
+networks:
+  proxy:
+    # YouTube may block one address family; IPv6 lets public videos switch.
+    enable_ipv6: true
 volumes:
   controller-state:
     name: "${THELXINOE_ONLINE_VOLUME_PREFIX:-thelxinoe-online}_controller-state"

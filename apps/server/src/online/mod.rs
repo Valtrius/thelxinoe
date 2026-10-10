@@ -4,10 +4,12 @@ mod storage;
 pub(crate) mod availability;
 mod browse;
 pub(crate) mod downloads;
+mod egress;
 mod extract;
 pub(crate) mod feed;
 pub(crate) mod kick;
 pub(crate) mod live;
+pub(crate) mod network;
 pub(crate) mod oauth;
 mod presentation;
 mod process;
@@ -153,6 +155,7 @@ pub struct Runtime {
     pub(crate) extraction: tokio::sync::Semaphore,
     streamlink: streamlink_worker::Pool,
     youtube_worker: youtube_worker::Pool,
+    pub(crate) network: network::Runtime,
     pub(crate) streams: streams::Runtime,
     twitch: twitch::Runtime,
     kick: kick::Runtime,
@@ -173,6 +176,7 @@ impl Runtime {
             extraction: tokio::sync::Semaphore::new(2),
             streamlink: streamlink_worker::Pool::default(),
             youtube_worker: youtube_worker::Pool::default(),
+            network: network::Runtime::default(),
             streams: streams::Runtime::default(),
             twitch: twitch::Runtime::default(),
             kick: kick::Runtime::default(),
@@ -320,7 +324,7 @@ async fn configuration(State(state): State<AppState>, headers: HeaderMap) -> Res
     security::require(&state, &headers, Capability::ManageServer).await?;
     let settings = storage::configuration(&state.db).await?;
     Ok(Json(
-        json!({"google_configured":google(&state).await.is_ok(),"redirect_uri":redirect_uri(&state).ok(),"youtube_downloads":settings.0,"youtube_daily_quota":settings.1,"quota":quota::status(&state).await?}),
+        json!({"google_configured":google(&state).await.is_ok(),"redirect_uri":redirect_uri(&state).ok(),"youtube_downloads":settings.0,"youtube_daily_quota":settings.1,"youtube_network":settings.2,"youtube_network_status":network::status(&state,settings.2),"quota":quota::status(&state).await?}),
     ))
 }
 #[derive(Deserialize)]
@@ -328,6 +332,7 @@ struct Settings {
     google: Option<Google>,
     youtube_downloads: bool,
     youtube_daily_quota: u32,
+    youtube_network: network::Mode,
 }
 async fn configure(
     State(state): State<AppState>,

@@ -81,6 +81,8 @@ pub(crate) async fn extract(state: &AppState, media: &str) -> Result<RemoteSourc
         video: address.trim().to_owned(),
         audio: None,
         live: true,
+        proxy: None,
+        segments: Vec::new(),
     };
     source
         .validate()

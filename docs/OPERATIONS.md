@@ -40,6 +40,12 @@ Application connections are managed only after explicit permission, except betwe
 
 Prowlarr's **Add indexer** form loads its supported definitions, fields, profiles, and address choices from the API. It supports connection testing and image challenges. Managed Prowlarr hosts are configured from the internal service address and configured public/native URLs. Indexer-to-manager connections still use the separate service connection controls.
 
+## Public YouTube network
+
+Trailers and other public YouTube videos are extracted without accounts. YouTube can block a server's address with a "Sign in to confirm you're not a bot" check, often for one address family only. Settings → Provider applications → **Public video network** selects IPv4, IPv6, or **Automatic**, which starts with IPv4, switches to IPv6 when IPv4 is blocked, and keeps the family that last worked. YouTube signs media addresses for the extracting IP address, so extraction, downloads, the relay, and ffmpeg all use the chosen family; ffmpeg reaches YouTube's media CDN through a loopback proxy pinned to that family. [Selection](../apps/server/src/online/network.rs) and [proxy](../apps/server/src/online/egress.rs).
+
+Compose enables IPv6 on the server's network. Docker Desktop 4.42 or later and Docker Engine 27 or later assign it a private IPv6 subnet automatically; the host still needs IPv6 internet access. An external network keeps its own settings, so create it with `docker network create --ipv6`. Where the host kernel disables IPv6, set `enable_ipv6: false` for `default` in `compose.override.yaml`.
+
 ## Update selection and policies
 
 New managed services resolve the curated repository's `latest` tag and install that immutable digest. Update discovery uses the same channel, so a new installation is current unless the upstream image changes afterward. The allowed repositories and API ports are defined in the controller's [service templates](../apps/docker-controller/src/templates.rs). The code calls that channel stable; it does not rank version numbers or certify a newly discovered image. Preparation resolves the tag again, pins that digest, and checks compatibility against a copy of the service's appdata before installation. See [discovery](../apps/docker-controller/src/stack.rs) and [preflight](../apps/docker-controller/src/updates.rs).

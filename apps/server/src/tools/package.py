@@ -449,14 +449,25 @@ def probe(root, value):
                 return root / "packages" / generation["id"] / generation["executables"][name]
             if provider == "youtube":
                 video = identifier
-                cli = json.loads(run([executable("yt-dlp", "yt_dlp"), "--ignore-config", "--no-plugin-dirs",
-                    "--no-cache-dir", "--no-cookies", "--no-cookies-from-browser", "--no-playlist", "--no-remote-components",
-                    "--no-js-runtimes", "--js-runtimes", "deno:" + str(executable("deno", "deno")),
-                    "--socket-timeout", "15", "--retries", "0", "--extractor-retries", "0", "--no-warnings", "--quiet",
-                    "--dump-single-json", "--skip-download", "--", "https://www.youtube.com/watch?v=" + video], timeout=90))
+                # The server's address family order; only YouTube's network block moves on.
+                families = value.get("youtube_families") or [None]
+                for index, family in enumerate(families):
+                    try:
+                        cli = json.loads(run([executable("yt-dlp", "yt_dlp"), "--ignore-config", "--no-plugin-dirs",
+                            "--no-cache-dir", "--no-cookies", "--no-cookies-from-browser", "--no-playlist", "--no-remote-components",
+                            "--no-js-runtimes", "--js-runtimes", "deno:" + str(executable("deno", "deno")),
+                            *([f"--force-{family}"] if family else []),
+                            "--socket-timeout", "15", "--retries", "0", "--extractor-retries", "0", "--no-warnings", "--quiet",
+                            "--dump-single-json", "--skip-download", "--", "https://www.youtube.com/watch?v=" + video], timeout=90))
+                        break
+                    except Exception as error:
+                        if index + 1 == len(families) or "not a bot" not in str(error).lower():
+                            raise
+                else:
+                    raise RuntimeError("No address family was attempted")
                 output = run([sys.executable, "-I", "-B", "-u", "-c", value["youtube_script"],
                     executable("yt-dlp", "module"), executable("deno", "deno"), packages["yt-dlp"]["candidate"]["version"]],
-                    timeout=120, request=canonical({"id": video}) + b"\n")
+                    timeout=120, request=canonical({"id": video, **({"family": family} if family else {})}) + b"\n")
                 worker = json.loads(output.splitlines()[-1]).get("metadata", {})
                 require(bool(cli.get("formats")) and bool(worker.get("formats")) and cli.get("id") == worker.get("id") == video,
                         "Public extraction did not return matching formats")
@@ -473,7 +484,8 @@ def probe(root, value):
         except Exception as error:
             message = str(error).lower()
             reason = "provider_unavailable"
-            for code, markers in (("authentication_required", ("sign in", "login required", "cookies", "403")),
+            for code, markers in (("network_blocked", ("not a bot",)),
+                                  ("authentication_required", ("sign in", "login required", "cookies", "403")),
                                   ("offline_or_removed", ("unavailable", "no playable streams", "offline", "404")),
                                   ("network", ("timed out", "network", "resolve", "connection", "429")),
                                   ("tool_invocation_failed", ("no such option", "no module named"))):

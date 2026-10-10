@@ -47,7 +47,7 @@ async fn extract(
     tools: &thelxinoe_tools::MediaTools,
 ) -> anyhow::Result<Vec<u32>> {
     src.validate().await?;
-    tools.ffmpeg.verify().await?;
+    tools.ffmpeg.verify_unchanged().await?;
     #[cfg(unix)]
     let mut command = {
         let mut c = tokio::process::Command::new("nice");

@@ -55,6 +55,8 @@ async function providerFixture(page: Page, platform: string, admin = true) {
           : null,
         youtube_downloads: false,
         youtube_daily_quota: 10000,
+        youtube_network: 'auto',
+        youtube_network_status: { ipv4: true, ipv6: true, current: 'ipv4' },
         quota: { used: 0, blocked: false },
       });
     }
@@ -154,6 +156,29 @@ test('YouTube setup saves on the page and becomes a connection action', async ({
       google: { client_id: 'fixture-client', client_secret: 'fixture-secret' },
     },
   });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('YouTube public video network saves with the other preferences', async ({
+  page,
+}) => {
+  const fixture = await providerFixture(page, 'YouTube');
+  await page.goto('/');
+  await expect(
+    page.getByText('Public videos currently use IPv4.', { exact: false }),
+  ).toBeVisible();
+  await page.getByLabel('Public video network').selectOption('ipv6');
+  await expect
+    .poll(() => fixture.state.writes.at(-1))
+    .toMatchObject({
+      path: '/admin/online',
+      body: {
+        youtube_downloads: false,
+        youtube_daily_quota: 10000,
+        youtube_network: 'ipv6',
+      },
+    });
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });

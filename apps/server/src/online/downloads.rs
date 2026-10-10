@@ -1,7 +1,7 @@
 #[path = "../storage/online/downloads.rs"]
 mod storage;
 
-use super::{extract, process, sync, tools};
+use super::{extract, network, process, sync, tools};
 use crate::{
     AppState,
     error::{ApiError, Result},
@@ -264,67 +264,84 @@ async fn download(
         return Ok("waiting_for_space");
     }
     let target = directory.join("media.mp4");
-    let mut args = extract::arguments(&bundle, video);
-    args.truncate(args.len() - 4); // replace metadata output flags and canonical URL
-    args.extend(
-        [
-            "--progress",
-            "--newline",
-            "--progress-delta",
-            "1",
-            "--progress-template",
-            "download:THELXINOE_PROGRESS:%(progress.downloaded_bytes)s\t%(progress.total_bytes)s\t%(progress.total_bytes_estimate)s\t%(progress.eta)s\t%(info.vcodec)s\t%(info.acodec)s",
-            "--no-warnings",
-            "--no-simulate",
-            "--match-filter",
-            "!is_live & duration <= 21600",
-            "-f",
-            "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[ext=mp4]",
-            "--merge-output-format",
-            "mp4",
-            "--ffmpeg-location",
-        ]
-        .map(Into::into),
-    );
-    args.push(bundle.ffmpeg.path.clone().into_os_string());
-    args.extend(["--max-filesize".into(), budget.to_string().into()]);
-    args.push("-o".into());
-    args.push(target.clone().into_os_string());
-    args.extend([
-        "--".into(),
-        format!("https://www.youtube.com/watch?v={video}").into(),
-    ]);
-    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(16);
-    let execution = process::run_progress(
-        state.tools.temporary()?,
-        &bundle.yt_dlp.path,
-        &args,
-        Duration::from_secs(1800),
-        1024 * 1024,
-        Some(progress_tx),
-    );
-    tokio::pin!(execution);
-    let mut interval = tokio::time::interval(Duration::from_secs(2));
+    let families = network::families(state)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.2))?;
+    let mut attempts = families.into_iter().peekable();
     let output = loop {
-        tokio::select! {
-            result=&mut execution => break result?,
-            Some(line)=progress_rx.recv()=> {
-                if let Some(progress) = parse_progress(&line) {
-                    let id=video.to_owned(); let version=generation.to_owned();
-                    let changed=storage::save_progress(&state.db, id, version, progress).await?;
-                    if changed==1 {publish_progress(state, video).await?;}
+        let family = attempts.next().expect("at least one family is attempted");
+        let mut args = extract::arguments(&bundle, video, family);
+        args.truncate(args.len() - 4); // replace metadata output flags and canonical URL
+        args.extend(
+            [
+                "--progress",
+                "--newline",
+                "--progress-delta",
+                "1",
+                "--progress-template",
+                "download:THELXINOE_PROGRESS:%(progress.downloaded_bytes)s\t%(progress.total_bytes)s\t%(progress.total_bytes_estimate)s\t%(progress.eta)s\t%(info.vcodec)s\t%(info.acodec)s",
+                "--no-warnings",
+                "--no-simulate",
+                "--match-filter",
+                "!is_live & duration <= 21600",
+                "-f",
+                "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[ext=mp4]",
+                "--merge-output-format",
+                "mp4",
+                "--ffmpeg-location",
+            ]
+            .map(Into::into),
+        );
+        args.push(bundle.ffmpeg.path.clone().into_os_string());
+        args.extend(["--max-filesize".into(), budget.to_string().into()]);
+        args.push("-o".into());
+        args.push(target.clone().into_os_string());
+        args.extend([
+            "--".into(),
+            format!("https://www.youtube.com/watch?v={video}").into(),
+        ]);
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(16);
+        let execution = process::run_progress(
+            state.tools.temporary()?,
+            &bundle.yt_dlp.path,
+            &args,
+            Duration::from_secs(1800),
+            1024 * 1024,
+            Some(progress_tx),
+        );
+        tokio::pin!(execution);
+        let mut interval = tokio::time::interval(Duration::from_secs(2));
+        let output = loop {
+            tokio::select! {
+                result=&mut execution => break result?,
+                Some(line)=progress_rx.recv()=> {
+                    if let Some(progress) = parse_progress(&line) {
+                        let id=video.to_owned(); let version=generation.to_owned();
+                        let changed=storage::save_progress(&state.db, id, version, progress).await?;
+                        if changed==1 {publish_progress(state, video).await?;}
+                    }
+                }
+                _=interval.tick()=> {
+                    let video=video.to_owned();
+                    let generation=generation.to_owned();
+                    let interested=storage::has_interest(&state.db, video, generation).await?;
+                    ensure!(interested&&enabled(state).await?,"Download cancelled after its interest or permission changed");
+                    if fs2::available_space(&directory)?<=1024*1024*1024 {return Ok("waiting_for_space");}
+                    let mut entries=tokio::fs::read_dir(&directory).await?;let mut bytes=0u64;
+                    while let Some(entry)=entries.next_entry().await? {let meta=entry.metadata().await?;ensure!(meta.is_file(),"Unexpected download output");bytes=bytes.saturating_add(meta.len());}
+                    ensure!(bytes<=6*1024*1024*1024,"Download temporary files exceed limit");
                 }
             }
-            _=interval.tick()=> {
-                let video=video.to_owned();
-                let generation=generation.to_owned();
-                let interested=storage::has_interest(&state.db, video, generation).await?;
-                ensure!(interested&&enabled(state).await?,"Download cancelled after its interest or permission changed");
-                if fs2::available_space(&directory)?<=1024*1024*1024 {return Ok("waiting_for_space");}
-                let mut entries=tokio::fs::read_dir(&directory).await?;let mut bytes=0u64;
-                while let Some(entry)=entries.next_entry().await? {let meta=entry.metadata().await?;ensure!(meta.is_file(),"Unexpected download output");bytes=bytes.saturating_add(meta.len());}
-                ensure!(bytes<=6*1024*1024*1024,"Download temporary files exceed limit");
+        };
+        // Only YouTube's network block is retried, over the next family.
+        if output.success
+            || attempts.peek().is_none()
+            || extract::failure(&output.stderr) != "network_blocked"
+        {
+            if output.success {
+                network::worked(state, family);
             }
+            break output;
         }
     };
     if !output.success {

@@ -112,7 +112,10 @@ impl Pipelines {
             bail!("Invalid stream position");
         }
         let timeline_start = if mode == "remux" && start > 0.0 {
-            remote_keyframe_start(source, start, &tools).await?
+            match source.segment_start(start) {
+                Some(segment) => segment,
+                None => remote_keyframe_start(source, start, &tools).await?,
+            }
         } else {
             start
         };
@@ -162,7 +165,7 @@ impl Pipelines {
         // Publish online streams sooner, retaining the two-minute live window.
         let online = matches!(input, Input::Remote { .. });
         let segment_seconds = if online { "2" } else { "6" };
-        tools.ffmpeg.verify().await?;
+        tools.ffmpeg.verify_unchanged().await?;
         let mut command = Command::new(&tools.ffmpeg.path);
         if let Input::Remote { source, position } = &input {
             // FFREPORT may otherwise write signed upstream addresses to disk.
@@ -172,31 +175,16 @@ impl Pipelines {
                 .chain(source.audio.iter())
                 .enumerate()
             {
-                command.args([
-                    "-protocol_whitelist",
-                    "https,tls,tcp,crypto",
-                    "-rw_timeout",
-                    "15000000",
-                ]);
+                command
+                    .args(source.network_args())
+                    .args(["-rw_timeout", "15000000"]);
                 if !source.live {
-                    // Repeat the probe's original video seek. Seeking to its returned
-                    // keyframe PTS can select the previous GOP in MP4 inputs. Keep
-                    // both tracks relative to that keyframe, including separate audio.
-                    let seek = if index == 0 {
-                        *position
-                    } else {
-                        timeline_start
-                    };
-                    command.args([
-                        "-readrate",
-                        "1",
-                        "-readrate_initial_burst",
-                        "30",
-                        "-ss",
-                        &seek.to_string(),
-                        "-itsoffset",
-                        &(seek - timeline_start).to_string(),
-                    ]);
+                    command.args(["-readrate", "1", "-readrate_initial_burst", "30"]);
+                    // Keep both tracks relative to the keyframe, including separate audio.
+                    if let Some((seek, offset)) = source.seek(index == 0, *position, timeline_start)
+                    {
+                        command.args(["-ss", &seek.to_string(), "-itsoffset", &offset.to_string()]);
+                    }
                 }
                 command.args(["-i", address]);
             }
@@ -210,6 +198,9 @@ impl Pipelines {
                     "0:a:0?"
                 },
             ]);
+            if source.drops_prior_packets() {
+                command.args(["-copypriorss", "0"]);
+            }
         } else if let Input::Local(source) = &input {
             command
                 .args([
@@ -253,6 +244,10 @@ impl Pipelines {
                 "fmp4",
                 "-hls_fmp4_init_filename",
                 "init.mp4",
+                // Browsers ignore edit lists in fragmented MP4, so a track that
+                // starts later must carry its start in its fragment decode times.
+                "-hls_segment_options",
+                "movflags=+frag_discont",
             ]);
         }
         command
@@ -482,7 +477,7 @@ impl Pipelines {
 }
 
 async fn keyframe_start(source: &Source, position: f64, tools: &MediaTools) -> Result<f64> {
-    probe_keyframe(&source.path.to_string_lossy(), position, false, tools).await
+    probe_keyframe(&source.path.to_string_lossy(), position, None, tools).await
 }
 async fn remote_keyframe_start(
     source: &RemoteSource,
@@ -490,23 +485,22 @@ async fn remote_keyframe_start(
     tools: &MediaTools,
 ) -> Result<f64> {
     source.validate()?;
-    probe_keyframe(&source.video, position, true, tools).await
+    probe_keyframe(&source.video, position, Some(source), tools).await
 }
 async fn probe_keyframe(
     input: &str,
     position: f64,
-    remote: bool,
+    source: Option<&RemoteSource>,
     tools: &MediaTools,
 ) -> Result<f64> {
-    tools.ffprobe.verify().await?;
+    tools.ffprobe.verify_unchanged().await?;
+    let remote = source.is_some();
     let mut command = Command::new(&tools.ffprobe.path);
-    if remote {
-        command.env_remove("FFREPORT").args([
-            "-protocol_whitelist",
-            "https,tls,tcp,crypto",
-            "-rw_timeout",
-            "10000000",
-        ]);
+    if let Some(source) = source {
+        command
+            .env_remove("FFREPORT")
+            .args(source.network_args())
+            .args(["-rw_timeout", "10000000"]);
     }
     if remote {
         // The demuxer seeks to the preceding keyframe using the file index.
