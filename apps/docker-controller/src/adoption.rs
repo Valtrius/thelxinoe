@@ -59,6 +59,7 @@ struct Plan {
     compose_project: Option<String>,
     compose_service: Option<String>,
     running: bool,
+    automation: Vec<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Review {
@@ -95,9 +96,16 @@ pub(super) async fn engine_identity() -> Result<String> {
         .ok_or_else(unavailable)
 }
 fn media_destination(destination: &str) -> bool {
-    ["/media", "/movies", "/tv", "/music", "/downloads"]
+    ["/media", "/movies", "/tv", "/music", "/downloads", "/data"]
         .iter()
         .any(|root| destination == *root || destination.starts_with(&format!("{root}/")))
+}
+/// Media and download storage is shared with Thelxinoe rather than backed up per service.
+fn media_mount(m: &Value, d: &Deployment) -> bool {
+    m["Destination"].as_str().is_some_and(media_destination)
+        || m["Source"]
+            .as_str()
+            .is_some_and(|source| policy::overlapping(source, &d.media_source))
 }
 pub(super) fn state_isolated(source: &str, server: &Value, d: &Deployment) -> bool {
     policy::media_disjoint(source, &d.media_source)
@@ -113,47 +121,228 @@ pub(super) fn state_isolated(source: &str, server: &Value, d: &Deployment) -> bo
 pub(super) fn backup_source(raw: &Value, d: &Deployment) -> Result<String> {
     if raw["HostConfig"]["AutoRemove"] == true {
         return Err(conflict(
-            "Docker auto-remove deployments cannot be stopped for backup or lifecycle operations",
+            "Docker auto-remove is enabled for this container, so it can't be stopped for a consistent backup",
         ));
     }
     let mounts = raw["Mounts"].as_array().ok_or_else(unavailable)?;
-    let config = mount(raw, "/config")?;
+    let config = mounts
+        .iter()
+        .find(|m| m["Destination"] == "/config")
+        .ok_or_else(|| conflict("Backups need the service configuration mounted at /config"))?;
+    if config["Type"] == "volume" {
+        return Err(conflict(format!(
+            "Backups need /config to be a host folder; it currently uses the Docker volume {}",
+            config["Name"].as_str().unwrap_or_default()
+        )));
+    }
+    if config["Type"] != "bind" {
+        return Err(conflict("Backups need /config to be a host folder"));
+    }
     let source = config["Source"].as_str().ok_or_else(unavailable)?;
-    if config["Type"] != "bind"
-        || config["RW"] != true
-        || !state_isolated(source, &d.server, d)
-        || !mounts
-            .iter()
-            .filter(|m| m["Destination"] != "/config")
-            .all(|m| {
-                (m["RW"] != true || m["Destination"].as_str().is_some_and(media_destination))
-                    && (m["Type"] == "tmpfs"
-                        || m["Source"]
-                            .as_str()
-                            .is_some_and(|other| policy::media_disjoint(source, other)))
-            })
-    {
+    if config["RW"] != true {
         return Err(conflict(
-            "Recovery coverage is incomplete: service state must be isolated from every media and download mount",
+            "Backups need /config to be writable so a restore can put it back",
         ));
     }
+    if !state_isolated(source, &d.server, d) {
+        return Err(conflict(format!(
+            "/config ({source}) overlaps media storage; keep the service configuration outside media folders so backups never copy media"
+        )));
+    }
+    for m in mounts
+        .iter()
+        .filter(|m| m["Destination"] != "/config" && m["Type"] != "tmpfs")
+    {
+        let destination = m["Destination"].as_str().ok_or_else(unavailable)?;
+        if !m["Source"]
+            .as_str()
+            .is_some_and(|other| policy::media_disjoint(source, other))
+        {
+            return Err(conflict(format!(
+                "The {destination} mount overlaps /config ({source}); keep configuration and other storage in separate folders"
+            )));
+        }
+        if m["RW"] == true && !media_mount(m, d) {
+            return Err(conflict(format!(
+                "{destination} is writable and isn't a media or download folder, so backing up /config alone could miss service data stored there"
+            )));
+        }
+    }
     Ok(policy::host_path(source)
-        .ok_or_else(|| conflict("Unsupported service appdata source"))?
+        .ok_or_else(|| conflict(format!("/config uses an unsupported host path ({source})")))?
         .to_string_lossy()
         .into_owned())
 }
 pub(super) fn refresh_capabilities(raw: &Value, d: &Deployment, capabilities: &mut Capabilities) {
     capabilities.lifecycle = if raw["HostConfig"]["AutoRemove"] == true {
         Capability::blocked(
-            "Docker auto-remove deployments cannot be stopped for lifecycle operations",
+            "Docker auto-remove is enabled for this container, so stopping it would delete it",
         )
     } else {
         Capability::available()
     };
     capabilities.backup = match backup_source(raw, d) {
         Ok(_) => Capability::available(),
-        Err(error) => Capability::blocked(error.1),
+        Err(error) => Capability::blocked(&error.1),
     };
+}
+/// The first host-level privilege that keeps this container outside controller ownership.
+fn boundary(host: &Value, network_peer: Option<&str>) -> Option<String> {
+    if host["Privileged"] == true {
+        return Some("Privileged containers can't be adopted".into());
+    }
+    if host["NetworkMode"] == "host" {
+        return Some("Containers using host networking can't be adopted".into());
+    }
+    for (key, label) in [
+        ("PidMode", "process namespace (pid: host)"),
+        ("IpcMode", "IPC namespace (ipc: host)"),
+        ("UsernsMode", "user namespace (userns_mode: host)"),
+    ] {
+        if host[key] == "host" {
+            return Some(format!(
+                "Containers sharing the host's {label} can't be adopted"
+            ));
+        }
+    }
+    if let Some(cap) = host["CapAdd"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .find(|cap| matches!(*cap, "SYS_ADMIN" | "CAP_SYS_ADMIN" | "ALL"))
+    {
+        return Some(format!(
+            "Containers with the {cap} capability can't be adopted"
+        ));
+    }
+    if let Some(device) = host["Devices"]
+        .as_array()
+        .and_then(|devices| devices.first())
+    {
+        return Some(format!(
+            "Containers with host devices ({}) can't be adopted",
+            device["PathOnHost"].as_str().unwrap_or("device")
+        ));
+    }
+    network_peer.map(|peer| {
+        format!(
+            "This container uses the network of {peer} (as VPN setups do), which isn't supported for adoption yet"
+        )
+    })
+}
+/// Name the container whose network namespace this one joins, as `docker ps` would.
+async fn network_peer(host: &Value) -> Option<String> {
+    let peer = host["NetworkMode"].as_str()?.strip_prefix("container:")?;
+    let name = if !peer.is_empty()
+        && peer
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    {
+        engine(&format!("/containers/{peer}/json"))
+            .await
+            .ok()
+            .and_then(|raw| {
+                raw["Name"]
+                    .as_str()
+                    .map(|n| n.trim_start_matches('/').to_owned())
+            })
+    } else {
+        None
+    };
+    Some(name.unwrap_or_else(|| peer.chars().take(12).collect()))
+}
+/// Why one existing mount keeps this deployment outside controller ownership, if it does.
+fn mount_problem(
+    kind: &str,
+    source: &str,
+    destination: &str,
+    writable: bool,
+    d: &Deployment,
+) -> Option<String> {
+    if ["/var/run/docker.sock", "/run/docker.sock"].contains(&destination)
+        || source.ends_with("/docker.sock")
+    {
+        return Some(format!(
+            "The Docker socket is mounted at {destination}; containers with Docker access can't be adopted"
+        ));
+    }
+    if kind != "bind" || (!writable && policy::host_time_zone(source)) {
+        return None;
+    }
+    if destination == "/config" {
+        return (!policy::appdata_isolated(source, &d.appdata_source)).then(|| {
+            format!(
+                "/config uses {source}; service configuration needs its own folder, not a host system folder, a top-level folder or Thelxinoe's own storage"
+            )
+        });
+    }
+    policy::foreign_source_problem(source, &d.appdata_source)
+        .map(|problem| format!("The {destination} mount {problem} ({source}) and can't be adopted"))
+}
+/// Updaters that recreate containers would silently replace the adopted identity.
+async fn automation(raw: &Value) -> Result<Vec<String>> {
+    const UPDATERS: [&str; 4] = [
+        "containrrr/watchtower",
+        "nickfedor/watchtower",
+        "beatkind/watchtower",
+        "pyouroboros/ouroboros",
+    ];
+    let labels = &raw["Config"]["Labels"];
+    if labels["com.centurylinklabs.watchtower.enable"] == "false" {
+        return Ok(vec![]);
+    }
+    let mut warnings = Vec::new();
+    for row in engine("/containers/json")
+        .await?
+        .as_array()
+        .ok_or_else(unavailable)?
+    {
+        let image = row["Image"].as_str().unwrap_or_default();
+        let repository = image.split('@').next().unwrap_or(image);
+        let repository = repository
+            .rsplit_once(':')
+            .filter(|(_, tag)| !tag.contains('/'))
+            .map_or(repository, |(repository, _)| repository);
+        let Some(updater) = UPDATERS
+            .iter()
+            .find(|u| repository == **u || repository.ends_with(&format!("/{u}")))
+        else {
+            continue;
+        };
+        let watchtower = updater.ends_with("/watchtower");
+        if watchtower && labels["com.centurylinklabs.watchtower.enable"] != "true" {
+            // Label-enable mode only updates containers that opted in.
+            let id = row["Id"].as_str().ok_or_else(unavailable)?;
+            let updater = engine(&format!("/containers/{id}/json")).await?;
+            if updater["Config"]["Env"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|entry| {
+                    matches!(
+                        entry.as_str(),
+                        Some("WATCHTOWER_LABEL_ENABLE=true" | "WATCHTOWER_LABEL_ENABLE=1")
+                    )
+                })
+            {
+                continue;
+            }
+        }
+        let name = row["Names"][0]
+            .as_str()
+            .unwrap_or("An updater")
+            .trim_start_matches('/');
+        warnings.push(format!(
+            "{name} updates containers automatically and could replace this one, after which Thelxinoe would lose track of it. Exclude this container from {name} before taking ownership{}.",
+            if watchtower {
+                " (label com.centurylinklabs.watchtower.enable=false)"
+            } else {
+                ""
+            }
+        ));
+    }
+    Ok(warnings)
 }
 async fn inspect(input: &Preview, d: &Deployment) -> Result<(Value, Imported, String)> {
     let t = templates::find(&input.kind).ok_or_else(|| bad("Unknown supported service"))?;
@@ -169,31 +358,16 @@ async fn inspect(input: &Preview, d: &Deployment) -> Result<(Value, Imported, St
     .await?;
     let pinned = policy::adoption_image(&raw, &image, t).map_err(conflict)?;
     if image["Os"] != "linux" || image["Architecture"] != "amd64" {
-        return Err(conflict(
-            "Ownership requires a supported Linux x86-64 service",
-        ));
+        return Err(conflict(format!(
+            "Ownership requires a Linux x86-64 image; this container runs {}/{}",
+            image["Os"].as_str().unwrap_or("unknown"),
+            image["Architecture"].as_str().unwrap_or("unknown")
+        )));
     }
     policy::transfer_owner(&raw, true).map_err(conflict)?;
     let host = &raw["HostConfig"];
-    if host["Privileged"] == true
-        || ["PidMode", "IpcMode", "NetworkMode", "UsernsMode"]
-            .iter()
-            .any(|key| host[key] == "host")
-        || host["CapAdd"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|cap| cap == "SYS_ADMIN" || cap == "ALL")
-        || host["Devices"]
-            .as_array()
-            .is_some_and(|devices| !devices.is_empty())
-        || host["NetworkMode"]
-            .as_str()
-            .is_some_and(|mode| mode.starts_with("container:"))
-    {
-        return Err(conflict(
-            "This deployment exceeds the supported controller security boundary",
-        ));
+    if let Some(reason) = boundary(host, network_peer(host).await.as_deref()) {
+        return Err(conflict(reason));
     }
     let mut storage = Vec::new();
     for m in raw["Mounts"].as_array().ok_or_else(unavailable)? {
@@ -206,14 +380,8 @@ async fn inspect(input: &Preview, d: &Deployment) -> Result<(Value, Imported, St
         .as_str()
         .ok_or_else(unavailable)?;
         let destination = m["Destination"].as_str().ok_or_else(unavailable)?;
-        if kind == "bind"
-            && (!policy::appdata_isolated(source, &d.appdata_source)
-                || destination == "/var/run/docker.sock"
-                || destination == "/run/docker.sock")
-        {
-            return Err(conflict(
-                "Host system and controller storage mounts cannot be adopted",
-            ));
+        if let Some(reason) = mount_problem(kind, source, destination, m["RW"] == true, d) {
+            return Err(conflict(reason));
         }
         storage.push(StorageReference {
             kind: kind.into(),
@@ -266,6 +434,7 @@ pub(super) async fn preview(
     let d = bootstrap().await?;
     ensure_kind_available(&d, &input.kind).await?;
     let (raw, imported, image) = inspect(&input, &d).await?;
+    let automation = automation(&raw).await?;
     let plan = Plan {
         review_id: thelxinoe_core::id(),
         kind: input.kind,
@@ -293,6 +462,7 @@ pub(super) async fn preview(
             .as_str()
             .map(str::to_owned),
         running: raw["State"]["Running"] == true,
+        automation,
     };
     let review = Review {
         plan,
@@ -471,4 +641,120 @@ pub(super) async fn complete(d: &Deployment, s: &mut Managed) -> Result<Json<Val
 
 pub(super) async fn cancel_unsubmitted(d: &Deployment, key: &str) -> Result<Json<Value>> {
     recyclarr_import::cancel_unsubmitted(d, key).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn deployment() -> Deployment {
+        serde_json::from_value(json!({"id":"deployment","generation":1,"version":"test",
+            "server":{"Mounts":[{"Type":"bind","Source":"/data/media","Destination":"/media","RW":true}]},
+            "controller":{},"network":"media","media_source":"/data/media",
+            "appdata_source":"/var/lib/docker/volumes/thelxinoe_deployment/_data"}))
+        .unwrap()
+    }
+    fn bind(source: &str, destination: &str, writable: bool) -> Value {
+        json!({"Type":"bind","Source":source,"Destination":destination,"RW":writable})
+    }
+
+    #[test]
+    fn trash_guides_layout_is_adoptable_and_backed_up() {
+        let d = deployment();
+        let mounts = [
+            bind("/etc/localtime", "/etc/localtime", false),
+            bind("/docker/appdata/radarr", "/config", true),
+            bind("/data", "/data", true),
+        ];
+        for m in &mounts {
+            let source = m["Source"].as_str().unwrap();
+            let destination = m["Destination"].as_str().unwrap();
+            assert_eq!(
+                mount_problem("bind", source, destination, m["RW"] == true, &d),
+                None,
+                "{destination}"
+            );
+        }
+        let raw = json!({"HostConfig":{},"Mounts":mounts});
+        assert_eq!(backup_source(&raw, &d).unwrap(), "/docker/appdata/radarr");
+    }
+
+    #[test]
+    fn rejected_mounts_and_privileges_name_their_reason() {
+        let d = deployment();
+        let problem = |source: &str, destination: &str, writable: bool| {
+            mount_problem("bind", source, destination, writable, &d).unwrap()
+        };
+        assert!(problem("/etc/localtime", "/etc/localtime", true).contains("host system folder"));
+        assert!(problem("/etc", "/host-etc", false).contains("The /host-etc mount"));
+        assert!(
+            problem("/var/run/docker.sock", "/var/run/docker.sock", true).contains("Docker socket")
+        );
+        assert!(problem("/radarr", "/config", true).starts_with("/config uses /radarr"));
+        assert!(
+            problem(&format!("{}/x", d.appdata_source), "/backups", true)
+                .contains("Thelxinoe's own deployment storage")
+        );
+        assert_eq!(
+            boundary(&json!({"CapAdd":["NET_ADMIN","SYS_ADMIN"]}), None).unwrap(),
+            "Containers with the SYS_ADMIN capability can't be adopted"
+        );
+        assert!(
+            boundary(&json!({"Devices":[{"PathOnHost":"/dev/dri"}]}), None)
+                .unwrap()
+                .contains("/dev/dri")
+        );
+        assert!(
+            boundary(&json!({"NetworkMode":"container:abc"}), Some("gluetun"))
+                .unwrap()
+                .contains("network of gluetun")
+        );
+        assert!(
+            boundary(&json!({"PidMode":"host"}), None)
+                .unwrap()
+                .contains("pid: host")
+        );
+        assert_eq!(boundary(&json!({"NetworkMode":"media"}), None), None);
+    }
+
+    #[test]
+    fn backup_coverage_reports_the_mount_that_blocks_it() {
+        let d = deployment();
+        let reason = |mounts: Value| {
+            backup_source(&json!({"HostConfig":{},"Mounts":mounts}), &d)
+                .unwrap_err()
+                .1
+        };
+        assert!(
+            reason(json!([{"Type":"volume","Name":"radarr_config","Source":"/var/lib/docker/volumes/radarr_config/_data","Destination":"/config","RW":true}]))
+                .contains("Docker volume radarr_config")
+        );
+        assert!(reason(json!([])).contains("mounted at /config"));
+        assert!(
+            reason(json!([
+                bind("/srv/radarr", "/config", true),
+                bind("/srv/backups", "/backups", true)
+            ]))
+            .starts_with("/backups is writable")
+        );
+        assert!(
+            reason(json!([
+                bind("/srv/radarr", "/config", true),
+                bind("/srv", "/srv", false)
+            ]))
+            .contains("overlaps /config")
+        );
+        assert!(
+            reason(json!([bind("/data/media/radarr", "/config", true)]))
+                .contains("overlaps media storage")
+        );
+        // Shared Thelxinoe media is recognized by its source, whatever its destination.
+        assert!(
+            backup_source(
+                &json!({"HostConfig":{},"Mounts":[bind("/srv/radarr", "/config", true), bind("/data/media/films", "/films", true)]}),
+                &d
+            )
+            .is_ok()
+        );
+    }
 }

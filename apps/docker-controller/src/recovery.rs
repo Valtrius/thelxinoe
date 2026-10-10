@@ -27,7 +27,7 @@ pub(crate) fn validate(phase: Option<RollbackPhase>, stage: &str) -> Result<()> 
     if !valid {
         return Err((
             axum::http::StatusCode::CONFLICT,
-            "Recovery journal phase and payload disagree; explicit recovery is required",
+            "Recovery journal phase and payload disagree; explicit recovery is required".into(),
         ));
     }
     Ok(())
@@ -41,7 +41,7 @@ pub(crate) fn plan(phase: Option<RollbackPhase>, recovery_ready: bool) -> Result
         (Some(RollbackPhase::Copying), true) => Ok(RollbackAction::CopyRecovery),
         (None, true) => Err((
             axum::http::StatusCode::CONFLICT,
-            "Recovery journal cannot prove whether original services resumed; explicit recovery is required",
+            "Recovery journal cannot prove whether original services resumed; explicit recovery is required".into(),
         )),
     }
 }

@@ -819,7 +819,7 @@ pub(crate) fn for_run(
     if revision.is_some_and(|revision| revision != configuration.revision) {
         return Err((
             StatusCode::PRECONDITION_FAILED,
-            "Configuration revision changed; reload or preview the current files",
+            "Configuration revision changed; reload or preview the current files".into(),
         ));
     }
     if let Some(files) = files {
@@ -968,7 +968,7 @@ pub(crate) async fn change(
     if input.revision.as_deref() != Some(&configuration.revision) {
         return Err((
             StatusCode::PRECONDITION_FAILED,
-            "Configuration revision changed; reload the latest files before saving",
+            "Configuration revision changed; reload the latest files before saving".into(),
         ));
     }
     let candidate = if input.operation == "candidate" {
@@ -977,7 +977,7 @@ pub(crate) async fn change(
         if input.candidate_revision.as_deref() != Some(candidate_revision(&candidate).as_str()) {
             return Err((
                 StatusCode::PRECONDITION_FAILED,
-                "Candidate revision changed; reload the latest candidate before saving",
+                "Candidate revision changed; reload the latest candidate before saving".into(),
             ));
         }
         Some(candidate)

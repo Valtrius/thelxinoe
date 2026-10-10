@@ -8,10 +8,12 @@ mod bindings;
 mod connections;
 mod controls;
 mod domain;
+mod failures;
 mod indexers;
 mod metadata;
 mod operations;
 mod quality;
+mod recreation;
 pub(crate) mod recyclarr;
 mod requests;
 mod retention;
@@ -139,6 +141,10 @@ fn unavailable() -> ApiError {
 async fn docker(state: &AppState, path: &str) -> Result<Value> {
     #[cfg(test)]
     if let Some(v) = state.managers.docker.lock().unwrap().get(path) {
+        // Tests record a removed container as null evidence.
+        if v.is_null() {
+            return Err(failures::container_missing());
+        }
         return Ok(v.clone());
     }
     #[cfg(unix)]
@@ -153,9 +159,19 @@ async fn docker(state: &AppState, path: &str) -> Result<Value> {
             .get(format!("http://controller/docker/{path}"))
             .send()
             .await
-            .map_err(|_| unavailable())?;
-        if !response.status().is_success() {
-            return Err(unavailable());
+            .map_err(|_| failures::controller_unreachable())?;
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(failures::container_missing());
+        }
+        if !status.is_success() {
+            let message = response.text().await.unwrap_or_default();
+            let message = message.trim();
+            return Err(if status.is_client_error() && !message.is_empty() {
+                ApiError::conflict(message.chars().take(300).collect::<String>())
+            } else {
+                unavailable()
+            });
         }
         read(response).await
     }
@@ -248,11 +264,21 @@ async fn evidence_for(
     } else {
         own
     };
+    // Docker names a container's hostname after its ID unless Compose overrides it.
+    #[cfg(not(test))]
+    if !(12..=64).contains(&own.len()) || !own.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(ApiError::conflict(
+            "Thelxinoe can't identify its own container because the server's hostname was customized; remove the hostname setting from the server container",
+        ));
+    }
     let server = docker(state, &format!("containers/{own}")).await?;
     let manager = docker(state, &format!("containers/{container}")).await?;
     if manager["id"].as_str().is_none_or(|id| id != container) {
         return Err(unavailable());
     }
+    let name = manager["name"]
+        .as_str()
+        .map_or(container, |name| name.trim_start_matches('/'));
     let networks = server["networks"].as_array().ok_or_else(unavailable)?;
     let shared = manager["networks"]
         .as_array()
@@ -265,9 +291,10 @@ async fn evidence_for(
         })
         .collect::<Vec<_>>();
     if shared.is_empty() {
-        return Err(ApiError::conflict(
-            "Manager must share a Docker network with this server",
-        ));
+        return Err(failures::isolated(state, &server, &manager, name).await);
+    }
+    if (named_host || manager["running"] == false) && shared.iter().all(|n| n["name"] == "bridge") {
+        return Err(failures::default_bridge(&server, name));
     }
     let address = shared.iter().find_map(|n| {
         n["address"]
@@ -327,11 +354,18 @@ struct Connection<'a> {
 }
 impl Connection<'_> {
     async fn open<'a>(state: &'a AppState, s: &Service) -> Result<Connection<'a>> {
-        let (base, source) = evidence(state, &s.container, s.port).await?;
+        let (base, source) = match evidence(state, &s.container, s.port).await {
+            Err(error) if error.1 == "container_missing" => {
+                let container = recreation::follow(state, &s.id, &s.container).await?;
+                evidence(state, &container, s.port).await?
+            }
+            evidence => evidence?,
+        };
         if source != s.media_source {
-            return Err(ApiError::conflict(
-                "Manager media mount changed; reconnect the service before continuing",
-            ));
+            return Err(ApiError::conflict(format!(
+                "{}'s storage mounts changed since it was connected. Save it again in Edit connection to accept the new layout",
+                failures::label(&s.kind)
+            )));
         }
         let key = String::from_utf8(
             state
@@ -361,34 +395,27 @@ impl Connection<'_> {
         query: &[(&str, String)],
         body: Option<Value>,
     ) -> Result<Value> {
+        let endpoint = if self.kind == "bazarr" {
+            format!("{}/api/{path}", self.url_base)
+        } else {
+            format!("{}/api/v{}/{path}", self.url_base, self.version())
+        };
         let mut request = self
             .state
             .managers
             .http
-            .request(
-                method,
-                if self.kind == "bazarr" {
-                    format!("{}{}/api/{path}", self.base, self.url_base)
-                } else {
-                    format!(
-                        "{}{}/api/v{}/{path}",
-                        self.base,
-                        self.url_base,
-                        self.version()
-                    )
-                },
-            )
+            .request(method, format!("{}{endpoint}", self.base))
             .header("X-Api-Key", &self.key)
             .query(query);
         if let Some(body) = body {
             request = request.json(&body)
         }
-        let response = request.send().await.map_err(|_| unavailable())?;
+        let response = request
+            .send()
+            .await
+            .map_err(|error| failures::unreachable(&self.kind, &self.base, &error))?;
         if !response.status().is_success() {
-            return Err(ApiError::conflict(format!(
-                "Manager rejected the request (HTTP {})",
-                response.status().as_u16()
-            )));
+            return Err(failures::rejected(&self.kind, &endpoint, response.status()));
         }
         if response.status() == reqwest::StatusCode::NO_CONTENT
             || response.content_length() == Some(0)
@@ -419,6 +446,11 @@ struct Register {
     api_key: String,
     #[serde(default)]
     url_base: String,
+    /// A stopped container can only be registered after the administrator accepts that.
+    #[serde(default)]
+    allow_unverified: bool,
+    #[serde(skip)]
+    container_name: String,
 }
 async fn register(
     State(state): State<AppState>,
@@ -430,16 +462,20 @@ async fn register(
 }
 async fn register_with_actor(
     state: AppState,
-    input: Register,
+    mut input: Register,
     actor_id: String,
 ) -> Result<Json<Value>> {
-    if !matches!(input.kind.as_str(), "radarr" | "sonarr" | "lidarr")
-        || input.name.trim().is_empty()
-        || input.name.len() > 100
-        || !(16..=256).contains(&input.api_key.len())
-        || input.api_key.chars().any(char::is_control)
-    {
-        return Err(ApiError::bad("Enter a manager type, name and API key"));
+    if !matches!(input.kind.as_str(), "radarr" | "sonarr" | "lidarr") {
+        return Err(ApiError::bad("Choose Radarr, Sonarr or Lidarr"));
+    }
+    let service = failures::label(&input.kind);
+    if input.name.trim().is_empty() || input.name.len() > 100 {
+        return Err(ApiError::bad("Enter a name of up to 100 characters"));
+    }
+    if !(16..=256).contains(&input.api_key.len()) || input.api_key.chars().any(char::is_control) {
+        return Err(ApiError::bad(format!(
+            "Enter the API key from {service}'s Settings → General"
+        )));
     }
     let _guard = state.managers.guard.service(&input.kind).await;
     access::validate_base(&input.kind, &input.url_base)?;
@@ -452,24 +488,24 @@ async fn register_with_actor(
         kind: input.kind.clone(),
     };
     let observed = docker(&state, &format!("containers/{}", input.container_id)).await?;
+    input.container_name = observed["name"]
+        .as_str()
+        .unwrap_or_default()
+        .trim_start_matches('/')
+        .to_owned();
     let status = if observed["running"] == false {
+        if !input.allow_unverified {
+            return Err(failures::stopped(&input.container_name));
+        }
         json!({"appName":input.kind,"version":"Unverified", "urlBase":input.url_base})
     } else {
         connection.get("system/status").await?
     };
     access::check_reported_base(&input.kind, &input.url_base, &status)?;
-    if !status["appName"]
-        .as_str()
-        .is_some_and(|name| name.eq_ignore_ascii_case(&input.kind))
-    {
-        return Err(ApiError::bad(
-            "The selected container is not the requested manager",
-        ));
-    }
     let version = status["version"]
         .as_str()
         .filter(|v| v.len() < 100)
-        .ok_or_else(unavailable)?
+        .ok_or_else(|| failures::identity(&input.kind, &status["appName"]))?
         .to_owned();
     let kind = input.kind.clone();
     let existing = storage::register_with_actor_read_manager_services(kind, &state.db).await?;
@@ -489,9 +525,9 @@ async fn register_with_actor(
     )
     .await?;
     if !allowed {
-        return Err(ApiError::conflict(
-            "A managed service operation already owns this integration type",
-        ));
+        return Err(ApiError::conflict(format!(
+            "Thelxinoe is installing or managing another {service} container; finish or remove that installation first"
+        )));
     }
     Ok(Json(json!({"id":returned})))
 }
@@ -655,7 +691,7 @@ async fn test(
             .as_str()
             .is_some_and(|n| n.eq_ignore_ascii_case(&s.kind))
         {
-            return Err(unavailable());
+            return Err(failures::identity(&s.kind, &v["appName"]));
         }
         Ok::<_, ApiError>(v["version"].clone())
     }

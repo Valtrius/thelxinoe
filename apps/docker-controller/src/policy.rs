@@ -1,6 +1,7 @@
 //! Validate service ownership transfers and compare stable Docker configuration.
 use crate::templates::Template;
 use serde_json::{Value, json};
+use std::borrow::Cow;
 pub fn orchestrated(container: &Value) -> bool {
     container["Config"]["Labels"]
         .as_object()
@@ -117,22 +118,82 @@ pub fn media_source(container: &Value) -> Result<&str, &'static str> {
     }
     Ok(source)
 }
+/// Docker Desktop reports Windows sources case-insensitively.
+fn normalized(path: &str) -> Option<std::path::PathBuf> {
+    host_path(path).map(|p| {
+        if p.starts_with("/run/desktop/mnt/host") {
+            std::path::PathBuf::from(p.to_string_lossy().to_ascii_lowercase())
+        } else {
+            p
+        }
+    })
+}
 /// Trusted deployment volumes may live under Docker's state directory.
 /// This check only excludes media overlap; adoption uses the stricter policy.
 pub fn media_disjoint(state: &str, media: &str) -> bool {
-    let normalized = |path: &str| {
-        host_path(path).map(|p| {
-            if p.starts_with("/run/desktop/mnt/host") {
-                std::path::PathBuf::from(p.to_string_lossy().to_ascii_lowercase())
-            } else {
-                p
-            }
-        })
-    };
     match (normalized(state), normalized(media)) {
         (Some(state), Some(media)) => !state.starts_with(&media) && !media.starts_with(&state),
         _ => false,
     }
+}
+/// Both paths are valid host paths and one contains the other.
+pub fn overlapping(first: &str, second: &str) -> bool {
+    normalized(first)
+        .zip(normalized(second))
+        .is_some_and(|(first, second)| first.starts_with(&second) || second.starts_with(&first))
+}
+/// Read-only host time zone data is common in existing deployments and grants no write access.
+pub fn host_time_zone(source: &str) -> bool {
+    matches!(source, "/etc/localtime" | "/etc/timezone")
+        || std::path::Path::new(source).starts_with("/usr/share/zoneinfo")
+}
+/// Why a host folder other than `/config` can't stay mounted in an adopted service.
+pub fn foreign_source_problem(source: &str, deployment: &str) -> Option<&'static str> {
+    let Some(path) = normalized(source) else {
+        return Some("uses an unsupported host path");
+    };
+    if path.parent().is_none() {
+        return Some("uses a host system folder");
+    }
+    // Deployment volumes usually live under Docker's own state directory.
+    if overlapping(source, deployment) {
+        return Some("overlaps Thelxinoe's own deployment storage");
+    }
+    system_path(&path).then_some("uses a host system folder")
+}
+/// Too broad to belong to one service: the filesystem root or a top-level folder.
+fn shallow(path: &std::path::Path) -> bool {
+    match path.strip_prefix("/run/desktop/mnt/host") {
+        Ok(tail) => tail.components().count() < 3,
+        Err(_) => path.components().count() <= 2,
+    }
+}
+/// Host operating system, Docker engine and Windows program folders.
+fn system_path(path: &std::path::Path) -> bool {
+    if let Ok(tail) = path.strip_prefix("/run/desktop/mnt/host") {
+        return matches!(
+            tail.components()
+                .nth(1)
+                .and_then(|v| v.as_os_str().to_str()),
+            Some("windows" | "program files" | "program files (x86)" | "programdata")
+        );
+    }
+    [
+        "/etc",
+        "/proc",
+        "/sys",
+        "/dev",
+        "/boot",
+        "/bin",
+        "/sbin",
+        "/usr",
+        "/run/docker",
+        "/run/containerd",
+        "/var/run",
+        "/var/lib/docker",
+    ]
+    .iter()
+    .any(|root| path.starts_with(root))
 }
 pub fn validate_adoption(
     container: &Value,
@@ -146,7 +207,9 @@ pub fn validate_adoption(
         return Err("Adoption requires the supported Linux x86-64 image");
     }
     transfer_owner(container, released_compose)?;
-    adoption_image(container, image, t)?;
+    // Callers report `adoption_image` first, with the offending image named.
+    adoption_image(container, image, t)
+        .map_err(|_| "Transfer requires the service's official image on a stable tag")?;
     let host = &container["HostConfig"];
     if host["AutoRemove"] == true {
         return Err("Auto-remove containers cannot be retained for ownership transfer");
@@ -279,32 +342,37 @@ pub fn adoption_image(
     container: &Value,
     image: &Value,
     t: Template,
-) -> Result<String, &'static str> {
-    let short = t
-        .repository
-        .strip_prefix("lscr.io/")
-        .unwrap_or(t.repository);
-    let allowed = [
-        t.repository.to_owned(),
-        short.to_owned(),
-        format!("docker.io/{short}"),
-        format!("ghcr.io/{short}"),
-    ];
+) -> Result<String, Cow<'static, str>> {
+    let allowed = crate::templates::sources(t);
     let reference = container["Config"]["Image"].as_str().unwrap_or("");
     let (repository, version) = reference
         .split_once('@')
-        .or_else(|| reference.rsplit_once(':'))
+        .or_else(|| {
+            reference
+                .rsplit_once(':')
+                .filter(|(_, tag)| !tag.contains('/'))
+        })
         .unwrap_or((reference, "latest"));
+    // Versions may be written 3.5.0 or v3.5.0; branch and commit builds never qualify.
+    let number = version.strip_prefix('v').unwrap_or(version);
     let stable = version == "latest"
         || version.starts_with("sha256:")
-        || (version.as_bytes().first().is_some_and(u8::is_ascii_digit)
+        || (number.as_bytes().first().is_some_and(u8::is_ascii_digit)
             && !["develop", "nightly", "beta", "alpha", "preview", "rc"]
                 .iter()
                 .any(|label| version.to_ascii_lowercase().contains(label)));
-    if !allowed.iter().any(|item| item == repository) || !stable {
-        return Err(
-            "Transfer requires a stable LinuxServer image (latest, stable version or immutable digest)",
-        );
+    if !allowed.iter().any(|item| item == repository) {
+        return Err(format!(
+            "Ownership requires the official image from {}; this container uses {repository}",
+            allowed.join(", ")
+        )
+        .into());
+    }
+    if !stable {
+        return Err(format!(
+            "Ownership requires a stable image tag (latest, a version such as 3.5.0 or v3.5.0, or a digest); this container uses {version}"
+        )
+        .into());
     }
     image["RepoDigests"]
         .as_array()
@@ -322,59 +390,19 @@ pub fn adoption_image(
                 })
         })
         .map(str::to_owned)
-        .ok_or("The installed service image must have a verified upstream repository digest")
+        .ok_or_else(|| {
+            "The installed service image must have a verified upstream repository digest".into()
+        })
 }
+/// Service state needs its own folder: never the host system, a top-level folder or `media`.
 pub fn appdata_isolated(source: &str, media: &str) -> bool {
-    let (Some(source), Some(media)) = (host_path(source), host_path(media)) else {
+    let (Some(source), Some(media)) = (normalized(source), normalized(media)) else {
         return false;
     };
-    let desktop =
-        source.starts_with("/run/desktop/mnt/host") || media.starts_with("/run/desktop/mnt/host");
-    let source = if desktop {
-        std::path::PathBuf::from(source.to_string_lossy().to_ascii_lowercase())
-    } else {
-        source
-    };
-    let media = if desktop {
-        std::path::PathBuf::from(media.to_string_lossy().to_ascii_lowercase())
-    } else {
-        media
-    };
-    if source.starts_with("/run/desktop/mnt/host") {
-        let tail = source
-            .strip_prefix("/run/desktop/mnt/host")
-            .unwrap()
-            .components()
-            .collect::<Vec<_>>();
-        if tail.len() < 3
-            || matches!(
-                tail.get(1).and_then(|v| v.as_os_str().to_str()),
-                Some("windows" | "program files" | "program files (x86)" | "programdata")
-            )
-        {
-            return false;
-        }
-    }
-    source.is_absolute()
-        && source.components().count() > 2
+    !shallow(&source)
+        && !system_path(&source)
         && !source.starts_with(&media)
         && !media.starts_with(&source)
-        && ![
-            "/etc",
-            "/proc",
-            "/sys",
-            "/dev",
-            "/boot",
-            "/bin",
-            "/sbin",
-            "/usr",
-            "/run/docker",
-            "/run/containerd",
-            "/var/run",
-            "/var/lib/docker",
-        ]
-        .iter()
-        .any(|root| source.starts_with(root))
 }
 /// Docker Desktop may report a Windows bind source in either host or VM notation.
 pub fn host_path(value: &str) -> Option<std::path::PathBuf> {
@@ -451,6 +479,36 @@ mod tests {
         assert!(!appdata_isolated("/srv/state/../../etc/service", "/media"));
     }
     #[test]
+    fn existing_media_and_time_zone_mounts_stay_adoptable_without_host_system_access() {
+        let deployment = "/var/lib/docker/volumes/thelxinoe_deployment/_data";
+        for source in ["/data", "/media", "/mnt/user/data", r"C:\Media"] {
+            assert_eq!(foreign_source_problem(source, deployment), None, "{source}");
+        }
+        for source in [
+            "/",
+            "/etc",
+            "/etc/ssl",
+            "/var/run/docker.sock",
+            r"C:\Windows\Fonts",
+        ] {
+            assert_eq!(
+                foreign_source_problem(source, deployment),
+                Some("uses a host system folder"),
+                "{source}"
+            );
+        }
+        assert_eq!(
+            foreign_source_problem(&format!("{deployment}/services"), deployment),
+            Some("overlaps Thelxinoe's own deployment storage")
+        );
+        assert!(host_time_zone("/etc/localtime"));
+        assert!(host_time_zone("/usr/share/zoneinfo/Europe/Paris"));
+        assert!(!host_time_zone("/etc/passwd"));
+        assert!(overlapping("/data", "/data/media"));
+        assert!(!overlapping("/data", "/srv/media"));
+        assert!(!overlapping("relative", "/data"));
+    }
+    #[test]
     fn foreign_orchestrator_ownership_is_always_rejected() {
         for prefix in [
             "com.docker.compose.project",
@@ -515,6 +573,50 @@ mod tests {
             )
             .is_err()
         );
+    }
+    #[test]
+    fn seerr_ownership_accepts_its_official_registries_and_release_tags() {
+        let template = crate::templates::find("seerr").unwrap();
+        let digest = format!("sha256:{}", "b".repeat(64));
+        for (reference, published) in [
+            (
+                "ghcr.io/seerr-team/seerr:v3.5.0",
+                "ghcr.io/seerr-team/seerr",
+            ),
+            ("ghcr.io/seerr-team/seerr:v3", "ghcr.io/seerr-team/seerr"),
+            ("seerr/seerr:latest", "seerr/seerr"),
+            ("docker.io/seerr/seerr:3.5.0", "seerr/seerr"),
+        ] {
+            let pinned = format!("{published}@{digest}");
+            assert_eq!(
+                adoption_image(
+                    &json!({"Config":{"Image":reference}}),
+                    &json!({"RepoDigests":[pinned]}),
+                    template
+                )
+                .unwrap(),
+                pinned,
+                "{reference}"
+            );
+        }
+        let image = json!({"RepoDigests":[format!("ghcr.io/seerr-team/seerr@{digest}")]});
+        for reference in [
+            "ghcr.io/seerr-team/seerr:develop",
+            "ghcr.io/seerr-team/seerr:sha-939000f",
+            "ghcr.io/seerr-team/seerr:preview-music-support",
+        ] {
+            let error = adoption_image(&json!({"Config":{"Image":reference}}), &image, template)
+                .unwrap_err();
+            assert!(error.contains("stable image tag"), "{reference}: {error}");
+        }
+        let error = adoption_image(
+            &json!({"Config":{"Image":"fallenbagel/jellyseerr:latest"}}),
+            &image,
+            template,
+        )
+        .unwrap_err();
+        assert!(error.contains("this container uses fallenbagel/jellyseerr"));
+        assert!(error.contains("seerr/seerr"));
     }
     #[test]
     fn drift_includes_dangerous_configuration_but_ignores_runtime_addresses() {

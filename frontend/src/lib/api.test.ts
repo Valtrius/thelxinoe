@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Events } from './api';
+import { ApiError, Events } from './api';
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
@@ -55,5 +55,10 @@ describe('server transport', () => {
     events.close();
     await vi.advanceTimersByTimeAsync(30000);
     expect(Socket.all).toHaveLength(2);
+  });
+  it('shows server explanations without an error-type prefix', () => {
+    const error = new ApiError(409, 'conflict', 'Radarr rejected the API key');
+    expect(String(error)).toBe('Radarr rejected the API key');
+    expect(error.code).toBe('conflict');
   });
 });

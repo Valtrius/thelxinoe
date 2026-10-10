@@ -63,7 +63,27 @@ async fn existing() -> (
         ("containers/self".into(), inspection.clone()),
         (format!("containers/{container}"), inspection),
     ]);
-    let registered = call(&state,"/api/v1/admin/managers","POST",json!({"name":"Existing Radarr","kind":"radarr","container_id":container,"port":port,"api_key":"incorrect-fixture-key"}),&cookie).await;
+    let request = json!({"name":"Existing Radarr","kind":"radarr","container_id":container,"port":port,"api_key":"incorrect-fixture-key"});
+    // A stopped container is only connected unverified after explicit confirmation.
+    let stopped = call(
+        &state,
+        "/api/v1/admin/managers",
+        "POST",
+        request.clone(),
+        &cookie,
+    )
+    .await;
+    assert_eq!(stopped.0, StatusCode::CONFLICT, "{}", stopped.2);
+    assert_eq!(stopped.2["error"]["code"], "service_stopped");
+    assert!(
+        stopped.2["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("The localhost container is stopped")
+    );
+    let mut request = request;
+    request["allow_unverified"] = json!(true);
+    let registered = call(&state, "/api/v1/admin/managers", "POST", request, &cookie).await;
     assert_eq!(registered.0, StatusCode::OK, "{}", registered.2);
     let key = registered.2["id"].as_str().unwrap().to_owned();
     (temp, state, cookie, key, port, mutations, upstream)
@@ -281,7 +301,7 @@ async fn adoption_rejects_a_review_after_connection_revision_changes() {
             &state,
             &format!("/api/v1/admin/services/{key}/connection"),
             "PUT",
-            json!({"port":port,"url_base":"","secret":"correct-fixture-api-key"}),
+            json!({"port":port,"url_base":"","secret":"correct-fixture-api-key","allow_unverified":true}),
             &cookie
         )
         .await
@@ -308,7 +328,7 @@ async fn seerr_requires_a_managed_link_and_preserves_conflicting_native_connecti
         &state,
         &format!("/api/v1/admin/services/{manager_id}/connection"),
         "PUT",
-        json!({"port":manager_port,"url_base":"","secret":"correct-fixture-api-key"}),
+        json!({"port":manager_port,"url_base":"","secret":"correct-fixture-api-key","allow_unverified":true}),
         &cookie,
     )
     .await;
@@ -444,5 +464,100 @@ async fn seerr_requires_a_managed_link_and_preserves_conflicting_native_connecti
     connections::tick(&state).await.unwrap();
     assert_eq!(*native.lock().await, manual);
     manager_upstream.abort();
+    upstream.abort();
+}
+
+fn recreate(state: &AppState, from: &str, to: &str, mounts: Value) {
+    let mut docker = state.managers.docker.lock().unwrap();
+    docker.insert(format!("containers/{from}"), Value::Null);
+    docker.insert(
+        format!("containers/{to}"),
+        json!({"id":to,"name":"localhost","running":true,"mounts":mounts,"networks":[{"id":"shared","address":"127.0.0.1"}]}),
+    );
+    docker.insert(
+        "containers".into(),
+        json!({"items":[{"id":to,"names":["/localhost"]}]}),
+    );
+}
+
+#[tokio::test]
+async fn recreated_container_is_followed_only_with_the_same_name_mounts_and_api_identity() {
+    let (_temp, state, cookie, key, port, _writes, upstream) = existing().await;
+    let original = "a".repeat(64);
+    state
+        .managers
+        .docker
+        .lock()
+        .unwrap()
+        .get_mut(&format!("containers/{original}"))
+        .unwrap()["running"] = json!(true);
+    let route = format!("/api/v1/admin/services/{key}/connection");
+    let saved = call(
+        &state,
+        &route,
+        "PUT",
+        json!({"port":port,"url_base":"","secret":"correct-fixture-api-key"}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(saved.0, StatusCode::OK, "{}", saved.2);
+    let probe = format!("/api/v1/admin/managers/{key}/test");
+    let media = json!([{"kind":"bind","source":"/tank","destination":"/media","writable":true}]);
+
+    // Compose or Watchtower replaced the container under the same name and mounts.
+    let followed = "c".repeat(64);
+    recreate(&state, &original, &followed, media);
+    let test = call(&state, &probe, "POST", Value::Null, &cookie).await;
+    assert_eq!(test.0, StatusCode::OK, "{}", test.2);
+    assert_eq!(service(&state, &key).await.unwrap().container, followed);
+
+    // Different storage must be reviewed before Thelxinoe uses the replacement.
+    let changed = "d".repeat(64);
+    recreate(
+        &state,
+        &followed,
+        &changed,
+        json!([{"kind":"bind","source":"/other","destination":"/media","writable":true}]),
+    );
+    let test = call(&state, &probe, "POST", Value::Null, &cookie).await;
+    assert_eq!(test.0, StatusCode::CONFLICT, "{}", test.2);
+    assert!(
+        test.2["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("different storage mounts"),
+        "{}",
+        test.2
+    );
+    assert_eq!(service(&state, &key).await.unwrap().container, followed);
+    let chosen = call(
+        &state,
+        &route,
+        "PUT",
+        json!({"port":port,"url_base":"","container_id":changed}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(chosen.0, StatusCode::OK, "{}", chosen.2);
+    assert_eq!(service(&state, &key).await.unwrap().container, changed);
+
+    // Installed and adopted identities belong to the controller, never to name matching.
+    let stored = key.clone();
+    state.db.write("test.owned", move |db| {
+        db.execute("INSERT INTO stack_provisions(id,kind,actor_id,state,service_id,created_at,updated_at) VALUES ('adopted-radarr','radarr','alice','complete',?1,1,1)",[stored])?;
+        Ok(())
+    }).await.unwrap();
+    recreate(&state, &changed, &"e".repeat(64), json!([]));
+    let test = call(&state, &probe, "POST", Value::Null, &cookie).await;
+    assert_eq!(test.0, StatusCode::CONFLICT, "{}", test.2);
+    assert!(
+        test.2["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Review it in Media services"),
+        "{}",
+        test.2
+    );
+    assert_eq!(service(&state, &key).await.unwrap().container, changed);
     upstream.abort();
 }

@@ -383,7 +383,7 @@ export async function installUiFixture(
             available: options.importedBackupAvailable ?? true,
             reason:
               options.importedBackupAvailable === false
-                ? 'Recovery coverage is incomplete'
+                ? 'Backups need /config to be a host folder; it currently uses the Docker volume nzbget_config'
                 : null,
           },
           update: {
@@ -398,6 +398,9 @@ export async function installUiFixture(
           'The log file may grow indefinitely.',
           'The native password is empty.',
           'Outgoing TLS certificate verification is disabled.',
+        ],
+        automation: [
+          'watchtower updates containers automatically and could replace this one, after which Thelxinoe would lose track of it. Exclude this container from watchtower before taking ownership (label com.centurylinklabs.watchtower.enable=false).',
         ],
       });
     if (path === '/admin/stack/adopt/preview')

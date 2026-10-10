@@ -225,7 +225,7 @@ impl DockerContext {
             return Ok(Value::Null);
         }
         if !e.containers.contains_key(id) {
-            return Err((StatusCode::NOT_FOUND, "missing"));
+            return Err((StatusCode::NOT_FOUND, "missing".into()));
         }
         if action == "json" {
             return Ok(e.containers[id].clone());

@@ -17,6 +17,11 @@ struct Edit {
     url_base: String,
     secret: Option<String>,
     username: Option<String>,
+    /// Point the connection at another container, such as a renamed replacement.
+    #[serde(default)]
+    container_id: Option<String>,
+    #[serde(default)]
+    allow_unverified: bool,
 }
 struct Record {
     kind: String,
@@ -100,6 +105,7 @@ async fn edit(
         }
         credentials.username = username;
     }
+    let service = failures::label(&record.kind);
     if credentials.secret.len() > 1024
         || credentials.username.len() > 100
         || credentials.secret.chars().any(char::is_control)
@@ -107,10 +113,29 @@ async fn edit(
         || (record.kind != "nzbget" && credentials.secret.is_empty())
         || (manager && !(16..=256).contains(&credentials.secret.len()))
     {
-        return Err(ApiError::bad("Enter valid API credentials"));
+        return Err(ApiError::bad(if record.kind == "nzbget" {
+            "Enter NZBGet's control username and password".to_owned()
+        } else {
+            format!("Enter the API key from {service}'s Settings → General")
+        }));
+    }
+    let container = input
+        .container_id
+        .clone()
+        .filter(|container| !container.is_empty())
+        .unwrap_or_else(|| record.container.clone());
+    if container != record.container {
+        let attached = super::storage::attached(key.clone(), &state.db)
+            .await?
+            .ok_or_else(ApiError::not_found)?;
+        if attached.owned {
+            return Err(ApiError::conflict(format!(
+                "Thelxinoe manages this {service} container; review it in Media services instead of choosing another one"
+            )));
+        }
     }
     let (base, media_source) =
-        support::api_evidence(&state, &record.container, input.port, &record.kind).await?;
+        support::api_evidence(&state, &container, input.port, &record.kind).await?;
     let c = Connection {
         state: &state,
         base,
@@ -118,12 +143,20 @@ async fn edit(
         key: credentials.secret.clone(),
         kind: record.kind.clone(),
     };
-    let observed = docker(&state, &format!("containers/{}", record.container)).await?;
+    let observed = docker(&state, &format!("containers/{container}")).await?;
+    let container_name = observed["name"]
+        .as_str()
+        .unwrap_or_default()
+        .trim_start_matches('/')
+        .to_owned();
     let version = if observed["running"] == false {
         if test {
-            return Err(ApiError::conflict(
-                "Start the service before testing its API connection",
-            ));
+            return Err(ApiError::conflict(format!(
+                "The {container_name} container is stopped; start it before testing the connection"
+            )));
+        }
+        if !input.allow_unverified {
+            return Err(failures::stopped(&container_name));
         }
         "Unverified".to_owned()
     } else {
@@ -133,14 +166,12 @@ async fn edit(
                 .as_str()
                 .is_some_and(|name| name.eq_ignore_ascii_case(&record.kind))
             {
-                return Err(ApiError::conflict(
-                    "The API identity does not match this manager",
-                ));
+                return Err(failures::identity(&record.kind, &status["appName"]));
             }
             status["version"]
                 .as_str()
                 .filter(|v| !v.is_empty() && v.len() < 100)
-                .ok_or_else(unavailable)?
+                .ok_or_else(|| failures::identity(&record.kind, &Value::Null))?
                 .to_owned()
         } else {
             support::version(&c, &credentials).await?
@@ -165,6 +196,7 @@ async fn edit(
         &state.db,
         key.clone(),
         record,
+        (container, container_name),
         input.port,
         input.url_base,
         media_source,
@@ -175,7 +207,7 @@ async fn edit(
     .await?
     {
         return Err(ApiError::conflict(
-            "Finish the current ownership or update operation before editing this connection",
+            "Finish the current ownership or update operation before editing this connection, and choose a container no other service uses",
         ));
     }
     state.managers.connection_wake.notify_one();

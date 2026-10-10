@@ -1,6 +1,6 @@
 //! Constrained managed-service lifecycle over the private controller socket.
 use crate::{
-    docker::{Result, engine, request, unavailable},
+    docker::{Failure, Result, engine, request, unavailable},
     identity::Identity,
     policy, store, templates,
 };
@@ -12,6 +12,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::borrow::Cow;
 #[path = "adoption.rs"]
 pub(crate) mod adoption;
 #[path = "backups.rs"]
@@ -70,11 +71,11 @@ struct Deployment {
     media_source: String,
     appdata_source: String,
 }
-fn conflict(message: &'static str) -> (StatusCode, &'static str) {
-    (StatusCode::CONFLICT, message)
+fn conflict(message: impl Into<Cow<'static, str>>) -> Failure {
+    (StatusCode::CONFLICT, message.into())
 }
-fn bad(message: &'static str) -> (StatusCode, &'static str) {
-    (StatusCode::BAD_REQUEST, message)
+fn bad(message: impl Into<Cow<'static, str>>) -> Failure {
+    (StatusCode::BAD_REQUEST, message.into())
 }
 fn persisted<T>(result: anyhow::Result<T>) -> Result<T> {
     result.map_err(|_| unavailable())
@@ -107,6 +108,21 @@ fn choose_service_name(kind: &str, key: &str, containers: &Value) -> Result<Stri
         return Err(conflict("Managed container name is already in use"));
     }
     Ok(name)
+}
+fn port_owner(containers: &Value, port: u16) -> Option<String> {
+    containers.as_array()?.iter().find_map(|row| {
+        row["Ports"]
+            .as_array()?
+            .iter()
+            .any(|binding| binding["PublicPort"] == port)
+            .then(|| {
+                row["Names"][0]
+                    .as_str()
+                    .unwrap_or("another container")
+                    .trim_start_matches('/')
+                    .to_owned()
+            })
+    })
 }
 fn load(key: &str) -> Result<Managed> {
     id(key)?;
@@ -549,6 +565,14 @@ async fn install(
     let d = bootstrap().await?;
     let identity = Identity::from_user(&d.server["Config"])?;
     let containers = ensure_kind_available(&d, &input.kind).await?;
+    if let Some(port) = input.host_port
+        && let Some(owner) = port_owner(&containers, port)
+    {
+        // Docker would accept the creation and only fail when starting it.
+        return Err(conflict(format!(
+            "Local port {port} is already published by the container {owner}; choose a different port"
+        )));
+    }
     if t.media {
         // Compose edits must not silently provision with a stale stored layout.
         let server = engine(&format!(
@@ -766,7 +790,7 @@ async fn pull_image(image: &str) -> Result<()> {
             Err(_) => {
                 return Err((
                     axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                    "Image download retry budget expired",
+                    "Image download retry budget expired".into(),
                 ));
             }
         }
@@ -944,5 +968,14 @@ mod naming_tests {
             &server(true, "other-runtime"),
             &runtime
         ));
+    }
+    #[test]
+    fn installation_names_the_container_already_publishing_its_port() {
+        let rows = json!([
+            {"Names":["/jellyfin"],"Ports":[{"PrivatePort":8096,"PublicPort":8096,"Type":"tcp"}]},
+            {"Names":["/radarr"],"Ports":[{"PrivatePort":7878,"Type":"tcp"}]}
+        ]);
+        assert_eq!(port_owner(&rows, 8096).as_deref(), Some("jellyfin"));
+        assert_eq!(port_owner(&rows, 7878), None);
     }
 }

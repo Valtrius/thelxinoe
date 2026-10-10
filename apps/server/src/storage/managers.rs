@@ -42,7 +42,7 @@ pub(super) async fn register_with_actor_write_stack_provisions(
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let provision:Option<(String,Option<String>,String)>=tx.query_row("SELECT state,container_id,origin FROM stack_provisions WHERE kind=?1",[&input.kind],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
         if provision.is_some_and(|(state,container,origin)| container.as_deref()!=Some(input.container_id.as_str()) || if origin=="adopted" {state!="complete"} else {state!="connecting" || input.url_base != thelxinoe_core::service_url_base(&input.kind)}) {return Ok(false);}
-        tx.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at,url_base,access_revision) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12) ON CONFLICT(id) DO UPDATE SET enabled=1,defaults=CASE WHEN manager_services.enabled=0 THEN '{}' ELSE manager_services.defaults END,name=excluded.name,container_id=excluded.container_id,port=excluded.port,url_base=excluded.url_base,access_revision=excluded.access_revision,generation=excluded.generation,credential=excluded.credential,media_source=excluded.media_source,version=excluded.version,checked_at=excluded.checked_at,error=NULL",params![key,input.name.trim(),input.kind,input.container_id,input.port,id(),credential,media_source,version,now(),input.url_base,id()])?;
+        tx.execute("INSERT INTO manager_services(id,name,kind,container_id,container_name,port,generation,credential,media_source,version,checked_at,url_base,access_revision) VALUES (?1,?2,?3,?4,?13,?5,?6,?7,?8,?9,?10,?11,?12) ON CONFLICT(id) DO UPDATE SET enabled=1,defaults=CASE WHEN manager_services.enabled=0 THEN '{}' ELSE manager_services.defaults END,name=excluded.name,container_id=excluded.container_id,container_name=excluded.container_name,port=excluded.port,url_base=excluded.url_base,access_revision=excluded.access_revision,generation=excluded.generation,credential=excluded.credential,media_source=excluded.media_source,version=excluded.version,checked_at=excluded.checked_at,error=NULL",params![key,input.name.trim(),input.kind,input.container_id,input.port,id(),credential,media_source,version,now(),input.url_base,id(),input.container_name])?;
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'manager.register',?2,?3)",params![actor_id,key,now()])?;
         tx.commit()?;
         Ok(true)
@@ -80,6 +80,40 @@ pub(super) async fn test(db: &Database, id: String, error: Option<String>) -> an
             params![now(), error, id],
         )?;
         Ok(())
+    })
+    .await
+}
+
+pub(super) async fn attached(
+    key: String,
+    db: &Database,
+) -> anyhow::Result<Option<recreation::Attached>> {
+    db.read("managers.attached", move |db| {
+        Ok(db.query_row("SELECT s.kind,s.container_id,s.container_name,s.port,s.url_base,s.media_source,s.credential,EXISTS(SELECT 1 FROM stack_provisions p WHERE p.service_id=s.id OR p.kind=s.kind) FROM (SELECT id,kind,container_id,container_name,port,url_base,media_source,credential FROM manager_services WHERE enabled=1 UNION ALL SELECT id,kind,container_id,container_name,port,url_base,media_source,credential FROM support_services) s WHERE s.id=?1",[key],|r|Ok(recreation::Attached{kind:r.get(0)?,container:r.get(1)?,container_name:r.get(2)?,port:r.get(3)?,url_base:r.get(4)?,media_source:r.get(5)?,credential:r.get(6)?,owned:r.get(7)?})).optional()?)
+    })
+    .await
+}
+
+/// Point an unowned attached service at its verified replacement container.
+pub(super) async fn follow(
+    db: &Database,
+    key: String,
+    previous: String,
+    container: String,
+) -> anyhow::Result<bool> {
+    db.write("managers.follow", move |db| {
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut changed = 0;
+        for table in ["manager_services", "support_services"] {
+            // Generations stay unchanged: the replacement keeps the same configuration
+            // and storage, so in-flight work against this service remains valid.
+            changed += tx.execute(&format!("UPDATE {table} SET container_id=?1 WHERE id=?2 AND container_id=?3 AND NOT EXISTS(SELECT 1 FROM stack_provisions WHERE service_id=?2 OR kind={table}.kind) AND NOT EXISTS(SELECT 1 FROM manager_services WHERE container_id=?1 UNION ALL SELECT 1 FROM support_services WHERE container_id=?1)"), params![container, key, previous])?;
+        }
+        if changed == 1 {
+            tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (NULL,'service.container.follow',?1,?2)", params![key, now()])?;
+        }
+        tx.commit()?;
+        Ok(changed == 1)
     })
     .await
 }

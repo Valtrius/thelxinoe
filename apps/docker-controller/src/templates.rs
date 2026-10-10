@@ -88,14 +88,32 @@ pub fn find(kind: &str) -> Option<Template> {
     TEMPLATES.iter().find(|t| t.kind == kind).copied()
 }
 
+/// Repository references whose images are byte-identical to the curated repository.
+pub fn sources(t: Template) -> Vec<String> {
+    let mut sources = vec![t.repository.to_owned()];
+    if let Some(short) = t.repository.strip_prefix("lscr.io/") {
+        // LinuxServer publishes the same images to Docker Hub and GHCR.
+        sources.extend([
+            short.to_owned(),
+            format!("docker.io/{short}"),
+            format!("ghcr.io/{short}"),
+        ]);
+    }
+    if t.kind == "seerr" {
+        // Seerr mirrors its GHCR images to Docker Hub with identical digests.
+        sources.extend(["seerr/seerr".to_owned(), "docker.io/seerr/seerr".to_owned()]);
+    }
+    sources
+}
+
 pub(crate) fn pinned_image(template: Template) -> crate::docker::Result<Option<String>> {
     let Ok(raw) = std::env::var("THELXINOE_CURATED_IMAGES") else {
         return Ok(None);
     };
-    let invalid = || {
+    let invalid = || -> crate::docker::Failure {
         (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            "Invalid curated image manifest",
+            "Invalid curated image manifest".into(),
         )
     };
     let manifest: serde_json::Value = serde_json::from_str(&raw).map_err(|_| invalid())?;

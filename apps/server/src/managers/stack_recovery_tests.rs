@@ -295,6 +295,8 @@ async fn retirement_preserves_history_and_releases_the_kind_for_a_new_installati
                 port: 7878,
                 api_key: "unused".into(),
                 url_base: "/services/radarr".into(),
+                allow_unverified: false,
+                container_name: "replacement".into(),
             },
             "alice".into()
         )

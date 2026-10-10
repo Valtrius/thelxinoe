@@ -114,7 +114,7 @@ pub(super) async fn restore_archive(
     write(&u)?;
     if let Err(e) = handoff(&mut u).await {
         u.stage = "recovery-required".into();
-        u.error = Some(e.1.into());
+        u.error = Some(e.1.to_string());
         write(&u)?;
         return Err(e);
     }
@@ -257,7 +257,7 @@ pub(super) async fn preflight(
         tokio::time::sleep(Duration::from_secs(2)).await;
         if let Err(e) = prepare(&mut u).await {
             u.stage = "blocked".into();
-            u.error = Some(e.1.into());
+            u.error = Some(e.1.to_string());
             let _ = write(&u);
             let _ = updates::start(u.old.server["Id"].as_str().unwrap_or("")).await;
         }
@@ -626,7 +626,7 @@ pub(super) async fn activate(
         let _guard = guard;
         tokio::time::sleep(Duration::from_secs(2)).await;
         if let Err(e) = replace(&mut u).await {
-            u.error = Some(e.1.into());
+            u.error = Some(e.1.to_string());
             if recover_old(&mut u).await.is_err() {
                 u.stage = "recovery-required".into();
             }
@@ -903,7 +903,7 @@ pub(super) async fn recover(
         tokio::time::sleep(Duration::from_secs(2)).await;
         if let Err(e) = restore_release(&mut u).await {
             u.stage = "recovery-required".into();
-            u.error = Some(e.1.into());
+            u.error = Some(e.1.to_string());
             let _ = write(&u);
         }
     });

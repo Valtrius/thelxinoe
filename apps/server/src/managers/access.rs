@@ -219,18 +219,29 @@ pub(super) fn check_reported_base(kind: &str, base: &str, status: &Value) -> Res
             .as_str()
             .is_some_and(|name| name.eq_ignore_ascii_case(kind))
     {
-        return Err(ApiError::conflict(
-            "The service API identity does not match this connection",
-        ));
+        return Err(failures::identity(kind, &status["appName"]));
     }
-    if matches!(kind, "radarr" | "sonarr" | "lidarr" | "prowlarr")
-        && status["urlBase"].as_str().unwrap_or("") != base
-    {
-        return Err(ApiError::conflict(
-            "The service's URL Base differs from its connection; reconnect using its current prefix.",
-        ));
+    let reported = status["urlBase"].as_str().unwrap_or("");
+    if matches!(kind, "radarr" | "sonarr" | "lidarr" | "prowlarr") && reported != base {
+        return Err(url_base_mismatch(kind, reported, base));
     }
     Ok(())
+}
+
+fn url_base_mismatch(kind: &str, reported: &str, base: &str) -> ApiError {
+    let shown = |value: &str| {
+        if value.is_empty() {
+            "no URL Base".to_owned()
+        } else {
+            value.to_owned()
+        }
+    };
+    let service = failures::label(kind);
+    ApiError::conflict(format!(
+        "{service} uses {} but this connection uses {}; enter the URL Base from {service}'s Settings → General",
+        shown(reported),
+        shown(base)
+    ))
 }
 
 pub(super) async fn check_connection(c: &Connection<'_>) -> Result<()> {
@@ -242,18 +253,17 @@ pub(super) async fn check_connection(c: &Connection<'_>) -> Result<()> {
         .as_str()
         .is_some_and(|v| !v.is_empty())
     {
-        return Err(ApiError::conflict(
-            "The service API identity does not match this connection",
-        ));
+        return Err(failures::identity("bazarr", &Value::Null));
     }
     let settings = c.get("system/settings").await?;
-    if settings["general"]["base_url"]
+    let reported = settings["general"]["base_url"]
         .as_str()
-        .map(|v| v.trim_end_matches('/'))
-        != Some(c.url_base.as_str())
-    {
-        return Err(ApiError::conflict(
-            "Bazarr's URL Base differs from its connection; reconnect using its current prefix.",
+        .map(|v| v.trim_end_matches('/'));
+    if reported != Some(c.url_base.as_str()) {
+        return Err(url_base_mismatch(
+            "bazarr",
+            reported.unwrap_or_default(),
+            &c.url_base,
         ));
     }
     Ok(())

@@ -1,16 +1,18 @@
 //! Read-only Docker evidence. Never forwards arbitrary engine paths or configuration.
 use axum::{Json, Router, extract::Path, http::StatusCode, routing::get};
 use serde_json::{Value, json};
-pub(crate) type Result<T> = std::result::Result<T, (StatusCode, &'static str)>;
+use std::borrow::Cow;
+pub(crate) type Failure = (StatusCode, Cow<'static, str>);
+pub(crate) type Result<T> = std::result::Result<T, Failure>;
 pub fn router() -> Router {
     Router::new()
         .route("/docker/containers", get(list))
         .route("/docker/containers/{id}", get(inspect))
 }
-pub(crate) fn unavailable() -> (StatusCode, &'static str) {
+pub(crate) fn unavailable() -> Failure {
     (
         StatusCode::SERVICE_UNAVAILABLE,
-        "Docker inspection unavailable",
+        "Docker inspection unavailable".into(),
     )
 }
 pub(crate) async fn engine(path: &str) -> Result<Value> {
@@ -47,7 +49,7 @@ async fn pull_image_stream(
     if !crate::lease::active() {
         return Err((
             StatusCode::CONFLICT,
-            "Controller does not hold the Docker mutation lease",
+            "Controller does not hold the Docker mutation lease".into(),
         ));
     }
     let client = reqwest::Client::builder()
@@ -112,9 +114,9 @@ async fn pull_image_stream(
     }
     pull_event(&pending, image, &mut progress)
 }
-fn pull_failure(image: &str, stage: &str, reason: &'static str) -> (StatusCode, &'static str) {
+fn pull_failure(image: &str, stage: &str, reason: &'static str) -> Failure {
     eprintln!("Docker image pull: image={image} stage={stage} category={reason}");
-    (StatusCode::SERVICE_UNAVAILABLE, reason)
+    (StatusCode::SERVICE_UNAVAILABLE, reason.into())
 }
 fn pull_category(message: &str) -> &'static str {
     let message = message.to_ascii_lowercase();
@@ -171,7 +173,7 @@ pub(crate) async fn request(
     if method != reqwest::Method::GET && !crate::lease::active() {
         return Err((
             StatusCode::CONFLICT,
-            "Controller does not hold the Docker mutation lease",
+            "Controller does not hold the Docker mutation lease".into(),
         ));
     }
     let client = reqwest::Client::builder()
@@ -189,22 +191,24 @@ pub(crate) async fn request(
         eprintln!("Docker request {path} failed: {error}");
         unavailable()
     })?;
-    if response.status() == StatusCode::NOT_FOUND {
-        return Err((StatusCode::NOT_FOUND, "Container no longer exists"));
-    }
-    if response.status() == StatusCode::NOT_MODIFIED {
-        return Ok(Value::Null);
-    }
-    if !response.status().is_success() {
-        eprintln!("Docker request {path} returned HTTP {}", response.status());
-        return Err(unavailable());
-    }
+    let status = response.status();
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| unavailable())? {
         if bytes.len() + chunk.len() > 8 * 1024 * 1024 {
             return Err(unavailable());
         }
         bytes.extend(chunk);
+    }
+    if status == StatusCode::NOT_MODIFIED {
+        return Ok(Value::Null);
+    }
+    if !status.is_success() {
+        let message = serde_json::from_slice::<Value>(&bytes)
+            .ok()
+            .and_then(|body| body["message"].as_str().map(str::to_owned))
+            .unwrap_or_default();
+        eprintln!("Docker request {path} returned HTTP {status}: {message}");
+        return Err(engine_failure(path, status, &message));
     }
     if bytes.is_empty() {
         return Ok(Value::Null);
@@ -221,6 +225,64 @@ pub(crate) async fn request(
         })
         .map_err(|_| unavailable())
 }
+/// Translate Docker's own error into a stable explanation an administrator can act on.
+fn engine_failure(path: &str, status: StatusCode, message: &str) -> Failure {
+    let lower = message.to_ascii_lowercase();
+    let conflict = |text: String| (StatusCode::CONFLICT, Cow::Owned(text));
+    if [
+        "port is already allocated",
+        "address already in use",
+        "only one usage of each socket address",
+        "ports are not available",
+    ]
+    .iter()
+    .any(|value| lower.contains(value))
+    {
+        return conflict(match published_port(message) {
+            Some(port) => format!(
+                "Local port {port} is already in use by another container or program; choose a different port"
+            ),
+            None => "The chosen local port is already in use by another container or program; choose a different port".into(),
+        });
+    }
+    if let Some((_, source)) = message.split_once("bind source path does not exist: ") {
+        return conflict(format!(
+            "The host folder {} mounted by this container no longer exists",
+            source.trim()
+        ));
+    }
+    if lower.contains("no space left on device") {
+        return conflict("Docker storage is full; free disk space and retry".into());
+    }
+    if lower.contains("is already in use by container") {
+        return conflict("Another container already uses this container name".into());
+    }
+    if lower.contains("marked for removal") || lower.contains("removal of container") {
+        return conflict("Docker is already removing this container".into());
+    }
+    if status == StatusCode::NOT_FOUND {
+        let missing = if lower.contains("no such image")
+            || path.starts_with("/images/")
+            || path.starts_with("/distribution/")
+        {
+            "The service image is not available in Docker"
+        } else if lower.contains("network") {
+            "The Docker network used by this container no longer exists"
+        } else {
+            "Container no longer exists"
+        };
+        return (StatusCode::NOT_FOUND, missing.into());
+    }
+    unavailable()
+}
+/// Docker names the conflicting binding as `127.0.0.1:7878` or `[::]:7878` in free text.
+fn published_port(message: &str) -> Option<u16> {
+    message.match_indices(':').find_map(|(index, _)| {
+        let tail = &message[index + 1..];
+        let digits = tail.bytes().take_while(u8::is_ascii_digit).count();
+        tail[..digits].parse::<u16>().ok().filter(|port| *port > 0)
+    })
+}
 async fn list() -> Result<Json<Value>> {
     let data = engine("/containers/json?all=true").await?;
     let items=data.as_array().ok_or_else(unavailable)?.iter().take(1000).map(|c|json!({"id":c["Id"],"names":c["Names"],"image":c["Image"],"image_id":c["ImageID"],"state":c["State"],"ports":c["Ports"],"compose_project":c["Labels"]["com.docker.compose.project"]})).collect::<Vec<_>>();
@@ -228,7 +290,7 @@ async fn list() -> Result<Json<Value>> {
 }
 async fn inspect(Path(id): Path<String>) -> Result<Json<Value>> {
     if !(12..=64).contains(&id.len()) || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err((StatusCode::BAD_REQUEST, "Use a Docker container ID"));
+        return Err((StatusCode::BAD_REQUEST, "Use a Docker container ID".into()));
     }
     Ok(Json(redact(
         &engine(&format!("/containers/{id}/json")).await?,
@@ -238,7 +300,7 @@ fn redact(c: &Value) -> Result<Value> {
     let mounts=c["Mounts"].as_array().ok_or_else(unavailable)?.iter().map(|m|json!({"kind":m["Type"],"name":m["Name"],"subpath":c["HostConfig"]["Mounts"].as_array().into_iter().flatten().find(|v| v["Target"]==m["Destination"]).map(|v|v["VolumeOptions"]["Subpath"].clone()).unwrap_or(Value::Null),"source":m["Source"],"destination":m["Destination"],"writable":m["RW"]})).collect::<Vec<_>>();
     let networks=c["NetworkSettings"]["Networks"].as_object().ok_or_else(unavailable)?.iter().map(|(name,n)|json!({"name":name,"id":n["NetworkID"],"address":n["IPAddress"],"ipv6":n["GlobalIPv6Address"],"aliases":n["Aliases"]})).collect::<Vec<_>>();
     Ok(
-        json!({"id":c["Id"],"name":c["Name"],"image":c["Config"]["Image"],"image_id":c["Image"],"running":c["State"]["Running"],"mounts":mounts,"networks":networks,"compose_project":c["Config"]["Labels"]["com.docker.compose.project"]}),
+        json!({"id":c["Id"],"name":c["Name"],"image":c["Config"]["Image"],"image_id":c["Image"],"running":c["State"]["Running"],"mounts":mounts,"networks":networks,"network_mode":c["HostConfig"]["NetworkMode"],"compose_project":c["Config"]["Labels"]["com.docker.compose.project"]}),
     )
 }
 #[cfg(test)]
@@ -251,5 +313,53 @@ mod tests {
         assert!(!result.to_string().contains("private"));
         assert_eq!(result["mounts"][0]["destination"], "/media");
         assert_eq!(result["networks"][0]["address"], "172.18.0.2");
+    }
+    #[test]
+    fn engine_failures_name_the_conflicting_resource() {
+        let (status, message) = engine_failure(
+            "/containers/abc/start",
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "driver failed programming external connectivity on endpoint radarr (f00): Bind for 127.0.0.1:7878 failed: port is already allocated",
+        );
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(message.contains("Local port 7878 is already in use"));
+        let (_, message) = engine_failure(
+            "/containers/abc/start",
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "listen tcp6 [::]:8989: bind: address already in use",
+        );
+        assert!(message.contains("Local port 8989"));
+        let (status, message) = engine_failure(
+            "/containers/create",
+            StatusCode::BAD_REQUEST,
+            "invalid mount config for type \"bind\": bind source path does not exist: /srv/radarr",
+        );
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(message.contains("/srv/radarr"));
+        assert_eq!(
+            engine_failure(
+                "/containers/abc/json",
+                StatusCode::NOT_FOUND,
+                "No such container: abc"
+            ),
+            (StatusCode::NOT_FOUND, "Container no longer exists".into())
+        );
+        assert_eq!(
+            engine_failure(
+                "/containers/create",
+                StatusCode::NOT_FOUND,
+                "No such image: radarr"
+            )
+            .1,
+            "The service image is not available in Docker"
+        );
+        assert_eq!(
+            engine_failure(
+                "/containers/abc/start",
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "unexpected"
+            ),
+            unavailable()
+        );
     }
 }

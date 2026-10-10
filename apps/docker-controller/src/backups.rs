@@ -357,14 +357,14 @@ pub(super) async fn create(
             .map_err(|_| conflict("Backup encryption failed"))?;
             // Plaintext snapshots remain private until encryption has completed successfully.
             persisted(std::fs::remove_dir_all(work(&r.id).join("snapshot")).map_err(Into::into))?;
-            Ok::<_, (StatusCode, &'static str)>(())
+            Ok::<_, crate::docker::Failure>(())
         }
         .await;
         match result {
             Ok(()) => r.stage = "complete".into(),
             Err(e) => {
                 r.stage = "failed".into();
-                r.error = Some(e.1.into());
+                r.error = Some(e.1.to_string());
                 if restart(&r.components).await.is_err() {
                     r.rollback_phase = Some(RollbackPhase::Activating);
                     r.stage = "rollback-activating".into();
@@ -516,7 +516,7 @@ pub(super) async fn restore(
             }
             r.stage = "restore-activating".into();
             record(&r)?;
-            Ok::<_, (StatusCode, &'static str)>(())
+            Ok::<_, crate::docker::Failure>(())
         }
         .await;
         match result {
@@ -539,9 +539,9 @@ pub(super) async fn restore(
                     let _ = record(&r);
                     return;
                 }
-                r.error = Some(e.1.into());
+                r.error = Some(e.1.to_string());
                 if let Err(error) = rollback_original(&d, &mut r, crossed && captured).await {
-                    r.error = Some(error.1.into());
+                    r.error = Some(error.1.to_string());
                     if r.rollback_phase != Some(RollbackPhase::Activating) {
                         r.stage = "recovery-required".into();
                     }
@@ -592,7 +592,7 @@ pub(super) async fn recover_interrupted() -> Result<()> {
                         .ok_or_else(unavailable)?;
                     server.container = d.server["Id"].as_str().ok_or_else(unavailable)?.into();
                     if let Err(error) = restart(&r.components).await {
-                        r.error = Some(error.1.into());
+                        r.error = Some(error.1.to_string());
                         record(&r)?;
                         continue;
                     }
@@ -653,7 +653,7 @@ pub(super) async fn recover_interrupted() -> Result<()> {
                         "Controller interrupted the operation; component startup recovered".into(),
                     );
                 }
-                Err(error) => r.error = Some(error.1.into()),
+                Err(error) => r.error = Some(error.1.to_string()),
             }
             record(&r)?;
             continue;
@@ -678,7 +678,7 @@ pub(super) async fn recover_interrupted() -> Result<()> {
             if r.rollback_phase != Some(RollbackPhase::Activating) {
                 return Err(error);
             }
-            r.error = Some(error.1.into());
+            r.error = Some(error.1.to_string());
             record(&r)?;
             continue;
         }

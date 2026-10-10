@@ -9,7 +9,7 @@
   import { onMount, tick, untrack } from 'svelte';
   import AttentionDot from './ui/AttentionDot.svelte';
   import { attention, attentionDescription } from './attention';
-  import { api, desktop } from './api';
+  import { api, ApiError, desktop } from './api';
   import { followLink } from './navigation';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
@@ -148,6 +148,10 @@
   );
   const snapshots = $state<Partial<Record<ServiceKind, SupportSnapshot>>>({});
   const managerOptions = $state<Partial<Record<ServiceKind, ManagerOptions>>>(
+    {},
+  );
+  // A stopped container can be connected only after explicitly skipping verification.
+  const unverifiedConnections = $state<Partial<Record<ServiceKind, string>>>(
     {},
   );
 
@@ -563,32 +567,46 @@
       pendingActions[kind] = false;
     }
   }
-  async function connectExternal(definition: Definition) {
+  async function connectExternal(definition: Definition, unverified = false) {
     const draft = setup[definition.kind];
-    if (definition.role === 'manager') {
-      await api('/admin/managers', 'POST', {
-        name: draft.name,
-        kind: definition.kind,
-        container_id: draft.container,
-        port: draft.port,
-        api_key: draft.secret,
-        url_base: draft.urlBase,
-      });
-    } else {
-      await api('/admin/support', 'POST', {
-        name: draft.name,
-        kind: definition.kind,
-        container_id: draft.container,
-        port: draft.port,
-        credentials: {
-          username: definition.kind === 'nzbget' ? draft.username : '',
-          secret: draft.secret,
-        },
-        url_base: draft.urlBase,
-      });
+    unverifiedConnections[definition.kind] = '';
+    try {
+      if (definition.role === 'manager') {
+        await api('/admin/managers', 'POST', {
+          name: draft.name,
+          kind: definition.kind,
+          container_id: draft.container,
+          port: draft.port,
+          api_key: draft.secret,
+          url_base: draft.urlBase,
+          allow_unverified: unverified,
+        });
+      } else {
+        await api('/admin/support', 'POST', {
+          name: draft.name,
+          kind: definition.kind,
+          container_id: draft.container,
+          port: draft.port,
+          credentials: {
+            username: definition.kind === 'nzbget' ? draft.username : '',
+            secret: draft.secret,
+          },
+          url_base: draft.urlBase,
+          allow_unverified: unverified,
+        });
+      }
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'service_stopped') {
+        unverifiedConnections[definition.kind] = error.message;
+        return;
+      }
+      throw error;
     }
     draft.secret = '';
     await refresh();
+    feedback[definition.kind] = unverified
+      ? `${definition.label} connected without verification. Start its container, then test it from Edit connection.`
+      : `${definition.label} connected.`;
   }
   async function operate(
     kind: ServiceKind,
@@ -1242,10 +1260,7 @@
                 aria-label={`Connect existing ${definition.label}`}
                 onsubmit={(event) => {
                   event.preventDefault();
-                  void work(
-                    () => connectExternal(definition),
-                    `${definition.label} connected.`,
-                  );
+                  void work(() => connectExternal(definition));
                 }}
               >
                 <strong class="text-xs">Connect an existing container</strong>
@@ -1320,6 +1335,23 @@
                   disabled={busy || !containers.length}
                   >Connect {definition.label}</Button
                 >
+                {#if unverifiedConnections[definition.kind]}
+                  <Notice
+                    tone="warning"
+                    role="status"
+                    aria-label={`${definition.label} container stopped`}
+                  >
+                    <p>{unverifiedConnections[definition.kind]}</p>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={busy}
+                      onclick={() =>
+                        void work(() => connectExternal(definition, true))}
+                      >Continue without checking</Button
+                    >
+                  </Notice>
+                {/if}
               </form>{/if}
           </div>
         </section>
@@ -1330,6 +1362,7 @@
             service={connected}
             label={definition.label}
             disabled={busy}
+            containers={provision(definition.kind) ? undefined : containers}
             changed={refresh}
           />
         {/key}

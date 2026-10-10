@@ -40,7 +40,8 @@ Self-hosted movies, shows, music, YouTube, Twitch and Kick. Rust server, Svelte 
 
 ### 1. Check compatibility
 
-- Use the same Docker engine as Thelxinoe and a supported stable LinuxServer Linux x86-64 image: Radarr, Sonarr, Lidarr, Bazarr, Prowlarr or NZBGet. Cluster-managed, privileged and host-system deployments are outside the supported scope. Jellyfin/Jellyseerr cannot be adopted.
+- Use the same Docker engine as Thelxinoe and a supported stable Linux x86-64 image: the LinuxServer image for Radarr, Sonarr, Lidarr, Bazarr, Prowlarr or NZBGet, or the official Seerr image (`ghcr.io/seerr-team/seerr` or `seerr/seerr`). Stable tags are `latest`, a version such as `3.5.0` or `v3.5.0`, or a digest. Cluster-managed, privileged and host-system deployments are outside the supported scope, as are services that share another container's network (such as a VPN container). Jellyfin/Jellyseerr cannot be adopted.
+- `/config` needs its own folder. Other mounts may use any host folder except system folders, Docker's state and Thelxinoe's deployment storage; read-only time zone files such as `/etc/localtime` are allowed. The review names the mount when one is not supported.
 - Back up your configuration and deployment definition. Keep your existing `PUID`/`PGID`, storage, network connections and published ports.
 - The review reports available operations. Lifecycle management can work even when a storage layout cannot be backed up. Imported deployments currently use update checks only; recreation and automatic updates remain disabled until faithful recovery is supported.
 
@@ -62,11 +63,13 @@ Self-hosted movies, shows, music, YouTube, Twitch and Kick. Rust server, Svelte 
 
 ### 3. Transfer ownership
 
-1. Open **Settings -> Media services -> Connect an existing container**. Select its full container identity, internal HTTP port, existing URL Base and API key. For NZBGet, enter the current username/password. A stopped container may be connected, with API access unverified until you start it.
-2. Click **Review ownership transfer**. Check the retained image/configuration location, available operations and any warnings. Security hardening is a separate change in native settings.
+1. Open **Settings -> Media services -> Connect an existing container**. Select its full container identity, internal HTTP port, existing URL Base and API key. For NZBGet, enter the current username/password. A stopped container can only be connected with **Continue without checking**; API access stays unverified until you start it.
+2. Click **Review ownership transfer**. Check the retained image/configuration location, available operations and any warnings, including updaters such as Watchtower that could replace the container. Security hardening is a separate change in native settings.
 3. Retire external deployment automation and updaters. **If the container belongs to Compose, retire the entire old project.** Removing just its YAML service is insufficient: subsequent `down` or `--remove-orphans` operations can remove the adopted container or shared resources. If that project must continue running, keep API integration and defer ownership until a separately reviewed detachment is supported.
 4. Confirm the project is retired and click **Take ownership**. Wait for completion. The container's identity and running/stopped state stay the same; the existing integration remains connected.
 5. Test API access and playback. Use **Edit connection → Test connection → Save connection** to correct credentials, the internal port or URL Base. Under acquisition defaults, explicitly choose an existing root folder and quality profile; Lidarr also needs a metadata profile. Review each application connection, including Seerr's **Media managers**, before enabling Thelxinoe to manage it. Existing manual and disabled connections remain untouched. Auto-delete requires a separate opt-in. If proxy access is unavailable, set the service's **Native web address**; it keeps its own login.
+
+A connected (not adopted) container may be recreated by Compose or an updater. Thelxinoe follows the replacement when it keeps the same container name, mounts, API identity and credentials. Otherwise choose its new container in **Edit connection**.
 
 Use **Release ownership** to stop Thelxinoe's container management while retaining the container, configuration, media and API integration. If release is interrupted, use **Retry release**. External Docker changes pause affected management operations until reviewed. For an interrupted registration, use **Retry setup**; registration retries keep the same operation and container.
 
