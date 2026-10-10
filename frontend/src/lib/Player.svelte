@@ -91,6 +91,10 @@
     muted = $state(false),
     speed = $state(1);
   let hideTimer: ReturnType<typeof setTimeout> | undefined;
+  // Touch cannot hover: a tap over hidden controls only reveals them, and the
+  // :hover it leaves on a tapped control must not keep them shown.
+  let touch = false,
+    tapRevealsControls = false;
   let audibleVolume = 1;
   let lastSubtitle: string | null = null;
   $effect.pre(() => {
@@ -131,6 +135,7 @@
     clearTimeout(hideTimer);
     hideTimer = setTimeout(() => {
       if (
+        touch ||
         !container?.querySelector(
           '.player-header:hover, .player-controls:hover',
         )
@@ -638,8 +643,13 @@
   ]}
   aria-label="Media player"
   tabindex="-1"
-  onpointermove={revealControls}
+  onpointermove={(event) => {
+    touch = event.pointerType !== 'mouse';
+    revealControls();
+  }}
   onpointerdown={(event) => {
+    touch = event.pointerType !== 'mouse';
+    tapRevealsControls = touch && !controlsShown;
     controlFocused = false;
     if (event.button === 0 && !isInteractiveTarget(event.target))
       container.focus({ preventScroll: true });
@@ -668,7 +678,8 @@
     bind:this={player}
     playsinline
     onclick={() => {
-      void toggle();
+      if (!tapRevealsControls) void toggle();
+      tapRevealsControls = false;
       revealControls();
     }}
     ontimeupdate={update}
