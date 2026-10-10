@@ -198,7 +198,7 @@ async fn both_admin_configuration_routes_control_the_same_download_policy() {
             &state,
             "/api/v1/admin/online",
             "PUT",
-            json!({"youtube_downloads":false,"youtube_daily_quota":10000}),
+            json!({"youtube_downloads":false,"youtube_daily_quota":10000,"youtube_network":"ipv6"}),
             &cookie
         )
         .await
@@ -216,6 +216,24 @@ async fn both_admin_configuration_routes_control_the_same_download_policy() {
         .await
         .2["enabled"],
         false
+    );
+    let online = call(&state, "/api/v1/admin/online", "GET", json!({}), &cookie)
+        .await
+        .2;
+    assert_eq!(online["youtube_network"], "ipv6");
+    assert!(online["youtube_network_status"]["ipv6"].is_boolean());
+    // An unknown family is rejected instead of silently selecting one.
+    assert!(
+        call(
+            &state,
+            "/api/v1/admin/online",
+            "PUT",
+            json!({"youtube_downloads":false,"youtube_daily_quota":10000,"youtube_network":"ipv5"}),
+            &cookie
+        )
+        .await
+        .0
+        .is_client_error()
     );
 }
 

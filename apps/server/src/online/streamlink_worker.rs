@@ -101,7 +101,7 @@ struct Worker {
 impl Worker {
     async fn start(package: Package) -> Result<Self> {
         let python = package.executable("python")?;
-        python.verify().await?;
+        python.verify_unchanged().await?;
         let home = tempfile::tempdir()?;
         let mut command = CommandWrap::with_new(&python.path, |cmd| {
             cmd.args(["-I", "-B", "-u", "-c", SCRIPT])

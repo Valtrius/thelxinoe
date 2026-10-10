@@ -68,6 +68,7 @@ async fn oauth_is_browser_bound_single_use_and_keeps_tokens_encrypted() {
         extraction: tokio::sync::Semaphore::new(2),
         streamlink: super::super::streamlink_worker::Pool::default(),
         youtube_worker: super::super::youtube_worker::Pool::default(),
+        network: crate::online::network::Runtime::default(),
         streams: crate::online::streams::Runtime::default(),
         twitch: crate::online::twitch::Runtime::default(),
         kick: crate::online::kick::Runtime::default(),
@@ -315,7 +316,7 @@ async fn replacement_expiry_and_application_changes_cancel_authorization_attempt
         })
         .await
         .unwrap();
-    let configured=call(&state,"/api/v1/admin/online","PUT",json!({"google":{"client_id":"replacement.apps.googleusercontent.com","client_secret":"replacement-fixture"},"youtube_downloads":true,"youtube_daily_quota":10000}),&session).await;
+    let configured=call(&state,"/api/v1/admin/online","PUT",json!({"google":{"client_id":"replacement.apps.googleusercontent.com","client_secret":"replacement-fixture"},"youtube_downloads":true,"youtube_daily_quota":10000,"youtube_network":"auto"}),&session).await;
     assert_eq!(configured.0, StatusCode::OK);
     let changed = call(
         &state,

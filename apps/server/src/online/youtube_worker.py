@@ -1,4 +1,5 @@
 """Resident public extraction. Only framed JSON reaches stdout; errors are codes."""
+import contextlib
 import json
 import logging
 import re
@@ -24,6 +25,9 @@ class QuietLogger:
 
 def failure(error):
     text = str(error).lower()
+    # YouTube's bot check also asks to sign in, but it rejects the network.
+    if "not a bot" in text:
+        return "network_blocked"
     if any(word in text for word in ["sign in", "login required", "log in", "use --cookies",
                                     "members-only", "private video", "confirm your age"]):
         return "extractor_authentication_required"
@@ -39,14 +43,24 @@ options = {
     "js_runtimes": {"deno": {"path": sys.argv[2]}},
     "remote_components": set(), "plugin_dirs": [],
 }
-with yt_dlp.YoutubeDL(options) as extractor:
+# Signed media addresses belong to the extracting family, so each requested
+# family keeps its own extractor and connections.
+SOURCES = {None: None, "ipv4": "0.0.0.0", "ipv6": "::"}
+with contextlib.ExitStack() as extractors:
+    instances = {}
     print(json.dumps({"ready": True, "version": __version__}), flush=True)
     for line in sys.stdin:
         try:
             request = json.loads(line)
-            video = request["id"]
+            video, family = request["id"], request.get("family")
             if not isinstance(video, str) or not re.fullmatch(r"[A-Za-z0-9_-]{11}", video):
                 raise ValueError("Invalid video")
+            if not isinstance(family, (str, type(None))) or family not in SOURCES:
+                raise ValueError("Invalid family")
+            if family not in instances:
+                source = {"source_address": SOURCES[family]} if family else {}
+                instances[family] = extractors.enter_context(yt_dlp.YoutubeDL({**options, **source}))
+            extractor = instances[family]
             info = extractor.extract_info("https://www.youtube.com/watch?v=" + video, download=False)
             result = {"metadata": extractor.sanitize_info(info)}
         except Exception as error:

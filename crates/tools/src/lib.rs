@@ -56,6 +56,48 @@ impl Executable {
         );
         Ok(())
     }
+    /// `verify`, without rehashing a file that is provably unchanged since it
+    /// last matched: any write updates its inode change time, which callers
+    /// cannot set. Hashing large tools on slow mounts takes seconds per use.
+    pub async fn verify_unchanged(&self) -> Result<()> {
+        let key = (self.path.clone(), self.digest.clone());
+        let before = fingerprint(&self.path).await?;
+        if before.is_some() && VERIFIED.lock().unwrap().get(&key) == before.as_ref() {
+            return Ok(());
+        }
+        self.verify().await?;
+        // Only a file left unchanged while hashing proves what was hashed.
+        if let Some(before) = before
+            && fingerprint(&self.path).await? == Some(before)
+        {
+            VERIFIED.lock().unwrap().insert(key, before);
+        }
+        Ok(())
+    }
+}
+
+type Fingerprint = [i64; 7];
+static VERIFIED: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<(PathBuf, String), Fingerprint>>,
+> = std::sync::LazyLock::new(Default::default);
+
+#[cfg(unix)]
+async fn fingerprint(path: &Path) -> Result<Option<Fingerprint>> {
+    use std::os::unix::fs::MetadataExt;
+    let m = tokio::fs::metadata(path).await?;
+    Ok(Some([
+        m.dev() as i64,
+        m.ino() as i64,
+        m.len() as i64,
+        m.mtime(),
+        m.mtime_nsec(),
+        m.ctime(),
+        m.ctime_nsec(),
+    ]))
+}
+#[cfg(not(unix))]
+async fn fingerprint(_: &Path) -> Result<Option<Fingerprint>> {
+    Ok(None)
 }
 
 #[derive(Clone, Debug)]
@@ -256,5 +298,40 @@ impl Runtime {
         }
         inventory.packages.remove(id);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn unchanged_verification_still_detects_modified_tools() {
+        let path = std::env::temp_dir().join(format!("thelxinoe-tool-{}", std::process::id()));
+        std::fs::write(&path, b"original tool").unwrap();
+        let digest = Sha256::digest(b"original tool")
+            .iter()
+            .map(|v| format!("{v:02x}"))
+            .collect();
+        let tool = Executable {
+            version: "1".into(),
+            path: path.clone(),
+            digest,
+        };
+        tool.verify_unchanged().await.unwrap();
+        tool.verify_unchanged().await.unwrap();
+        // Same length and restored modification time: only the content differs.
+        // Inode times can be as coarse as a scheduler tick.
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        std::fs::write(&path, b"replaced tool").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        assert!(tool.verify_unchanged().await.is_err());
+        std::fs::remove_file(path).unwrap();
     }
 }

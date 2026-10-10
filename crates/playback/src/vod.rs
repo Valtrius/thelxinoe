@@ -109,8 +109,8 @@ impl VodCache {
             source.validate().await?;
         }
         let tools = self.tools.media()?;
-        tools.ffmpeg.verify().await?;
-        tools.ffprobe.verify().await?;
+        tools.ffmpeg.verify_unchanged().await?;
+        tools.ffprobe.verify_unchanged().await?;
         let duration = source.duration();
         if !duration.is_finite() || !(0.0..=86400.0).contains(&duration) || duration == 0.0 {
             bail!("Seekable conversion requires a duration of at most 24 hours");
@@ -458,12 +458,9 @@ impl VodCache {
             }
             command.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y"]);
             for address in std::iter::once(&remote.video).chain(remote.audio.iter()) {
-                command.args([
-                    "-protocol_whitelist",
-                    "https,tls,tcp,crypto",
-                    "-rw_timeout",
-                    "15000000",
-                ]);
+                command
+                    .args(remote.network_args())
+                    .args(["-rw_timeout", "15000000"]);
                 if start > 0.0 {
                     command.args(["-ss", &start.to_string()]);
                 }

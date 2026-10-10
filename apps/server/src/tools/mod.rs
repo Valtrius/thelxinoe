@@ -330,8 +330,9 @@ pub(crate) async fn ready(state: &AppState) -> Result<OnlineSnapshot> {
 pub(crate) async fn selection(state: &AppState) -> anyhow::Result<Option<OnlineSnapshot>> {
     Ok(state.tools.runtime.online().ok())
 }
+/// Checks a tool before use, rehashing only after its file changes.
 pub(crate) async fn verify(executable: &Executable) -> anyhow::Result<()> {
-    executable.verify().await
+    executable.verify_unchanged().await
 }
 
 async fn invoke(
@@ -689,6 +690,19 @@ async fn publish(state: &AppState) -> anyhow::Result<()> {
         .runtime
         .publish(storage::generations(&state.db).await?, selected);
     crate::online::refresh_tools(state).await;
+    // Playback and extraction verify their tools before each use; verifying
+    // them now keeps those full-file hashes off the first stream's startup.
+    let media = state.tools.runtime.media().ok();
+    let online = state.tools.runtime.online().ok();
+    tokio::spawn(async move {
+        for executable in media
+            .iter()
+            .flat_map(|m| [&m.ffmpeg, &m.ffprobe])
+            .chain(online.iter().flat_map(|o| [&o.yt_dlp, &o.module, &o.deno]))
+        {
+            let _ = executable.verify_unchanged().await;
+        }
+    });
     Ok(())
 }
 pub(crate) async fn validate_installed(state: &AppState) -> anyhow::Result<()> {
@@ -1109,7 +1123,12 @@ async fn qualify(state: &AppState, job: &Job, proposed: &[Generation]) -> anyhow
     } else {
         "youtube"
     };
-    let input = json!({"kind":kind,"candidate":{"yt-dlp":package("yt-dlp"),"deno":package("deno"),"streamlink":package("streamlink")},"current":{"yt-dlp":current("yt-dlp"),"deno":current("deno"),"streamlink":current("streamlink")},"youtube_script":include_str!("../online/youtube_worker.py"),"streamlink_script":include_str!("../online/streamlink_worker.py")});
+    // Probe over the same address families as playback; YouTube may block one.
+    let families: Vec<&str> = crate::online::network::families(state)
+        .await
+        .map(|families| families.into_iter().map(|f| f.as_str()).collect())
+        .unwrap_or_default();
+    let input = json!({"kind":kind,"candidate":{"yt-dlp":package("yt-dlp"),"deno":package("deno"),"streamlink":package("streamlink")},"current":{"yt-dlp":current("yt-dlp"),"deno":current("deno"),"streamlink":current("streamlink")},"youtube_families":families,"youtube_script":include_str!("../online/youtube_worker.py"),"streamlink_script":include_str!("../online/streamlink_worker.py")});
     storage::progress(
         &state.db,
         job.id.clone(),

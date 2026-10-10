@@ -1,5 +1,8 @@
 //! Two resident yt-dlp instances share the existing public extraction limit.
-use super::tools::{self, Executable, OnlineSnapshot};
+use super::{
+    network::Family,
+    tools::{self, Executable, OnlineSnapshot},
+};
 use crate::AppState;
 use anyhow::{Context, Result, ensure};
 use process_wrap::tokio::*;
@@ -69,7 +72,12 @@ impl Pool {
     }
     /// None selects the existing CLI while matching resident workers warm up.
     /// A worker's provider errors are responses, not reasons to retry via CLI.
-    pub async fn resolve(&self, bundle: &OnlineSnapshot, id: &str) -> Result<Option<Value>> {
+    pub async fn resolve(
+        &self,
+        bundle: &OnlineSnapshot,
+        id: &str,
+        family: Family,
+    ) -> Result<Option<Value>> {
         let Some(snapshot) = self
             .snapshot
             .read()
@@ -100,12 +108,12 @@ impl Pool {
         // The request owns the process until its response has been consumed.
         // Cancellation drops and kills it, including any Deno descendants.
         let response = tokio::time::timeout(Duration::from_secs(120), async {
-            match worker.resolve(id).await {
+            match worker.resolve(id, family).await {
                 Ok(response) => Ok(response),
                 Err(_) => {
                     worker.stop().await;
                     worker = Worker::start(Path::new(PYTHON), snapshot.clone()).await?;
-                    worker.resolve(id).await
+                    worker.resolve(id, family).await
                 }
             }
         })
@@ -196,9 +204,10 @@ impl Worker {
         );
         Ok(worker)
     }
-    async fn resolve(&mut self, id: &str) -> Result<Value> {
+    async fn resolve(&mut self, id: &str, family: Family) -> Result<Value> {
+        let request = json!({"id":id,"family":family.as_str()});
         self.input
-            .write_all(format!("{}\n", json!({"id":id})).as_bytes())
+            .write_all(format!("{request}\n").as_bytes())
             .await?;
         self.input.flush().await?;
         let value = response(&mut self.output).await?;
@@ -208,7 +217,12 @@ impl Worker {
             ensure!(
                 matches!(
                     value["error"].as_str(),
-                    Some("extractor_authentication_required" | "unavailable" | "extraction_failed")
+                    Some(
+                        "extractor_authentication_required"
+                            | "network_blocked"
+                            | "unavailable"
+                            | "extraction_failed"
+                    )
                 ),
                 "Invalid extractor response"
             );
@@ -291,7 +305,7 @@ mod tests {
         };
         let pool = Pool::default();
         assert!(
-            pool.resolve(&bundle, "9pkqztOC1WM")
+            pool.resolve(&bundle, "9pkqztOC1WM", Family::Ipv4)
                 .await
                 .unwrap()
                 .is_none()
@@ -301,10 +315,14 @@ mod tests {
             module: executable,
         }));
         // Matching snapshots still fail closed when their verified files vanish.
-        assert!(pool.resolve(&bundle, "9pkqztOC1WM").await.is_err());
+        assert!(
+            pool.resolve(&bundle, "9pkqztOC1WM", Family::Ipv4)
+                .await
+                .is_err()
+        );
         bundle.yt_dlp.version = "new".into();
         assert!(
-            pool.resolve(&bundle, "9pkqztOC1WM")
+            pool.resolve(&bundle, "9pkqztOC1WM", Family::Ipv4)
                 .await
                 .unwrap()
                 .is_none()
@@ -312,7 +330,7 @@ mod tests {
         bundle.yt_dlp.version = "old".into();
         bundle.deno.path = "replacement".into();
         assert!(
-            pool.resolve(&bundle, "9pkqztOC1WM")
+            pool.resolve(&bundle, "9pkqztOC1WM", Family::Ipv4)
                 .await
                 .unwrap()
                 .is_none()

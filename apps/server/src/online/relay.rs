@@ -9,19 +9,47 @@ use axum::{
     response::Response,
 };
 use futures_util::StreamExt;
-use std::{sync::Arc, time::Duration};
-use tokio::sync::{OnceCell, Semaphore};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use tokio::sync::Semaphore;
 
 pub(super) struct Relay {
-    client: OnceCell<reqwest::Client>,
+    /// One client per egress proxy, which pins the source's address family.
+    clients: Mutex<HashMap<Option<String>, reqwest::Client>>,
     slots: Arc<Semaphore>,
 }
 impl Default for Relay {
     fn default() -> Self {
         Self {
-            client: OnceCell::new(),
+            clients: Mutex::default(),
             slots: Arc::new(Semaphore::new(16)),
         }
+    }
+}
+impl Relay {
+    pub(super) fn client(&self, proxy: Option<&String>) -> Result<reqwest::Client> {
+        let mut clients = self.clients.lock().unwrap();
+        if let Some(client) = clients.get(&proxy.cloned()) {
+            return Ok(client.clone());
+        }
+        let mut builder = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(10))
+            .read_timeout(Duration::from_secs(30));
+        if let Some(proxy) = proxy {
+            builder = builder.proxy(
+                reqwest::Proxy::all(proxy)
+                    .map_err(|_| ApiError::conflict("Could not initialize online playback"))?,
+            );
+        }
+        let client = builder
+            .build()
+            .map_err(|_| ApiError::conflict("Could not initialize online playback"))?;
+        clients.insert(proxy.cloned(), client.clone());
+        Ok(client)
     }
 }
 
@@ -65,17 +93,7 @@ pub(crate) async fn stream(
     let permit = relay.slots.clone().try_acquire_owned().map_err(|_| {
         ApiError::conflict("All online file connections are busy; try again shortly")
     })?;
-    let client = relay
-        .client
-        .get_or_try_init(|| async {
-            reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(Duration::from_secs(10))
-                .read_timeout(Duration::from_secs(30))
-                .build()
-                .map_err(|_| ApiError::conflict("Could not initialize online playback"))
-        })
-        .await?;
+    let client = relay.client(source.proxy.as_ref())?;
     // Never forward viewer credentials, cookies or arbitrary headers. Redirects
     // cannot escape the CDN allowlist or expose the signed address to a client.
     let mut upstream = client

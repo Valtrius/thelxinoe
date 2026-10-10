@@ -54,7 +54,7 @@ fn transport(format: &Value) -> bool {
             Some("https" | "m3u8_native" | "m3u8")
         )
 }
-pub(super) fn extract(metadata: &Value) -> Result<Vec<Format>> {
+pub(super) fn extract(metadata: &Value, proxy: Option<String>) -> Result<Vec<Format>> {
     let formats = metadata["formats"]
         .as_array()
         .ok_or_else(|| ApiError::conflict("No public media formats are available"))?;
@@ -90,6 +90,8 @@ pub(super) fn extract(metadata: &Value) -> Result<Vec<Format>> {
             video: video["url"].as_str().unwrap().into(),
             audio: audio.map(|f| f["url"].as_str().unwrap().into()),
             live,
+            proxy: proxy.clone(),
+            segments: Vec::new(),
         };
         source.validate().map_err(|_| {
             ApiError::conflict("The extractor returned an unsupported media address")
@@ -160,6 +162,26 @@ pub(super) fn choose<'a>(
     selected.ok_or_else(|| ApiError::conflict("This resolution is not available for this player"))
 }
 
+/// Segment start times of an HLS media playlist.
+pub(super) fn segment_starts(playlist: &str) -> Option<Vec<f64>> {
+    if !playlist.starts_with("#EXTM3U") {
+        return None;
+    }
+    let mut starts = vec![0.0];
+    for line in playlist.lines() {
+        if let Some(value) = line.strip_prefix("#EXTINF:") {
+            let duration = value.split(',').next()?.trim().parse::<f64>().ok()?;
+            if !duration.is_finite() || duration <= 0.0 || starts.len() > 100_000 {
+                return None;
+            }
+            starts.push(starts.last()? + duration);
+        }
+    }
+    // The final value is the playlist's end, not a segment start.
+    starts.pop();
+    (!starts.is_empty()).then_some(starts)
+}
+
 pub(super) fn segmented<'a>(formats: &'a [Format], selected: &Format) -> Option<&'a Format> {
     formats.iter().rev().find(|f| {
         f.hls
@@ -187,7 +209,16 @@ mod tests {
         ] {
             formats.push(json!({"vcodec":codec,"acodec":"none","protocol":"https","url":"https://r1.googlevideo.com/video?private=1","ext":"mp4","height":height,"fps":fps}));
         }
-        let formats = extract(&json!({"formats":formats})).unwrap();
+        let formats = extract(
+            &json!({"formats":formats}),
+            Some("http://127.0.0.1:41000".into()),
+        )
+        .unwrap();
+        assert!(
+            formats
+                .iter()
+                .all(|f| f.source.proxy.as_deref() == Some("http://127.0.0.1:41000"))
+        );
         let mut caps = Capabilities {
             video: vec!["h264".into()],
             audio: vec!["aac".into()],
@@ -209,5 +240,19 @@ mod tests {
         assert_eq!(choices(&formats, &caps)[0]["value"], "2160p60");
         assert_eq!(choose(&formats, "2160p60", &caps).unwrap().height, 2160);
         assert_eq!(choose(&formats, "auto", &caps).unwrap().height, 1080);
+    }
+    #[test]
+    fn hls_playlists_provide_segment_starts() {
+        let playlist = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:3.125,\nhttps://r1.googlevideo.com/a\n#EXTINF:6.375,\nhttps://r1.googlevideo.com/b\n#EXTINF:2.5,\nhttps://r1.googlevideo.com/c\n#EXT-X-ENDLIST\n";
+        assert_eq!(segment_starts(playlist), Some(vec![0.0, 3.125, 9.5]));
+        for invalid in [
+            "",
+            "#EXTM3U\n#EXT-X-ENDLIST\n",
+            "#EXTM3U\n#EXTINF:abc,\nsegment\n",
+            "#EXTM3U\n#EXTINF:-1,\nsegment\n",
+            "<html>#EXTINF:2,</html>",
+        ] {
+            assert_eq!(segment_starts(invalid), None, "{invalid}");
+        }
     }
 }

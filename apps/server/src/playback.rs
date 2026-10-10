@@ -571,7 +571,7 @@ pub async fn subtitle(
         .await
         .map_err(anyhow::Error::from)?;
     let tools = state.tools.runtime.media()?;
-    tools.ffmpeg.verify().await?;
+    tools.ffmpeg.verify_unchanged().await?;
     let mut command = tokio::process::Command::new(&tools.ffmpeg.path);
     command
         .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-i"])

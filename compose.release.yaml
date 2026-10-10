@@ -51,5 +51,9 @@ services:
     cap_drop: [ALL]
     labels:
       app.thelxinoe.component: server
+networks:
+  default:
+    # YouTube may block one address family; IPv6 lets public videos switch.
+    enable_ipv6: true
 volumes:
   controller-runtime:

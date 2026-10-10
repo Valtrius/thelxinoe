@@ -831,6 +831,12 @@ for (const admin of [false, true]) {
             google_configured: false,
             youtube_downloads: false,
             youtube_daily_quota: 10000,
+            youtube_network: 'auto',
+            youtube_network_status: {
+              ipv4: true,
+              ipv6: true,
+              current: 'ipv4',
+            },
             quota: { used: 0, blocked: false },
           },
         });

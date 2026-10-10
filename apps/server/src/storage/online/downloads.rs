@@ -95,7 +95,7 @@ pub(super) async fn request_for(
         tx.execute("INSERT INTO youtube_download_requests(user_id,video_id,requested_at) VALUES (?1,?2,?3) ON CONFLICT(user_id,video_id) DO UPDATE SET requested_at=excluded.requested_at",params![p.user.id,video,now()])?;
         tx.execute("INSERT INTO youtube_media(video_id) VALUES (?1) ON CONFLICT DO NOTHING",[&video])?;
         tx.execute("DELETE FROM youtube_download_suppressed WHERE video_id=?1",[&video])?;
-        tx.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) VALUES (?1,?2,'queued',?3,?4,?4) ON CONFLICT(video_id) DO UPDATE SET generation=excluded.generation,state='queued',tools=excluded.tools,error=NULL,path=NULL,size=NULL,modified=NULL,probe=NULL,completed_at=NULL,downloaded_bytes=0,total_bytes=NULL,eta_seconds=NULL,media_kind=NULL,updated_at=excluded.updated_at WHERE youtube_downloads.state IN ('failed','unavailable','extractor_authentication_required')",params![video,thelxinoe_core::id(),serde_json::to_string(&bundle)?,now()])?;
+        tx.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) VALUES (?1,?2,'queued',?3,?4,?4) ON CONFLICT(video_id) DO UPDATE SET generation=excluded.generation,state='queued',tools=excluded.tools,error=NULL,path=NULL,size=NULL,modified=NULL,probe=NULL,completed_at=NULL,downloaded_bytes=0,total_bytes=NULL,eta_seconds=NULL,media_kind=NULL,updated_at=excluded.updated_at WHERE youtube_downloads.state IN ('failed','unavailable','extractor_authentication_required','network_blocked')",params![video,thelxinoe_core::id(),serde_json::to_string(&bundle)?,now()])?;
         tx.commit()?;Ok(true)
     }).await
 }
