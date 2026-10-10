@@ -10,7 +10,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_notification::NotificationExt;
 use tokio::{
     net::windows::named_pipe::ClientOptions,
     process::Command,
@@ -519,7 +518,6 @@ async fn run(
                                 segments["timeline"] = entry.data["timeline_start"].clone();
                                 let _ = ipc.call(json!(["script-message", "thelxinoe-segments", segments.to_string()])).await;
                             }
-                            let _ = app.notification().builder().title("Now playing").body(&choices[current].title).show();
                             if music && next < choices.len() && next <= current + 1 {
                                 let mut entry = prepare(&backend, &choices[next], false).await?;
                                 load(&mut ipc, &mut entry, &choices[next].title, "append-play").await?;
