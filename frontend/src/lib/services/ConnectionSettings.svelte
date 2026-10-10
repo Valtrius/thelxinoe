@@ -1,38 +1,49 @@
 <script lang="ts">
-  import { api } from '../api';
+  import { api, ApiError } from '../api';
   import Button from '../ui/Button.svelte';
   import FormField from '../ui/FormField.svelte';
+  import Notice from '../ui/Notice.svelte';
   import ConnectionTestButton from '../ui/ConnectionTestButton.svelte';
   import { formControlClass } from '../ui/styles';
-  import { hasServiceUrlBase } from './presentation';
+  import { hasServiceUrlBase, type Container } from './presentation';
   import type { ManagerService, SupportService } from './feature';
 
   let {
     service,
     label,
     disabled = false,
+    containers,
     changed,
   }: {
     service: ManagerService | SupportService;
     label: string;
     disabled?: boolean;
+    /** Containers an unowned connection may move to, such as a renamed replacement. */
+    containers?: Container[];
     changed: () => Promise<void>;
   } = $props();
   let editing = $state(false);
   let busy = $state(false);
+  let container = $state('');
   let port = $state(0);
   let urlBase = $state('');
   let username = $state('');
   let secret = $state('');
   let error = $state('');
+  let stopped = $state('');
   let saved = $state('');
+  const missing = $derived(
+    !containers?.some((item) => item.id === service.container_id),
+  );
   const path = $derived(`/admin/services/${service.id}/connection`);
   const manager = $derived(
     ['radarr', 'sonarr', 'lidarr'].includes(service.kind),
   );
   async function open() {
     error = '';
+    stopped = '';
     saved = '';
+    container = service.container_id;
     port = service.port;
     urlBase = service.url_base;
     secret = '';
@@ -53,20 +64,28 @@
       url_base: urlBase,
       ...(secret ? { secret } : {}),
       ...(service.kind === 'nzbget' ? { username } : {}),
+      ...(container !== service.container_id
+        ? { container_id: container }
+        : {}),
     };
   }
-  async function save() {
+  async function save(unverified = false) {
     busy = true;
     error = '';
+    stopped = '';
     saved = '';
     try {
-      await api(path, 'PUT', input());
+      await api(path, 'PUT', { ...input(), allow_unverified: unverified });
       secret = '';
       await changed();
       editing = false;
-      saved = 'Connection saved.';
+      saved = unverified
+        ? 'Connection saved without verification. Test it once the container is running.'
+        : 'Connection saved.';
     } catch (failure) {
-      error = String(failure);
+      if (failure instanceof ApiError && failure.code === 'service_stopped')
+        stopped = failure.message;
+      else error = String(failure);
     } finally {
       busy = false;
     }
@@ -95,6 +114,27 @@
       }}
     >
       <h3 class="m-0 text-xs font-semibold">API connection</h3>
+      {#if containers}
+        <FormField
+          >Container<select
+            class={formControlClass}
+            bind:value={container}
+            disabled={disabled || busy}
+          >
+            {#if missing}<option value={service.container_id}
+                >Previous container (no longer exists)</option
+              >{/if}
+            {#each containers as item (item.id)}
+              <option value={item.id}
+                >{item.names[0]?.replace(/^\//, '') ??
+                  item.id.slice(0, 12)}{item.state
+                  ? ` (${item.state})`
+                  : ''}</option
+              >
+            {/each}
+          </select></FormField
+        >
+      {/if}
       <div class="grid grid-cols-2 gap-3 compact:grid-cols-1">
         <FormField
           >Internal port<input
@@ -170,9 +210,25 @@
             editing = false;
             secret = '';
             error = '';
+            stopped = '';
           }}>Cancel</Button
         >
       </div>
+      {#if stopped}
+        <Notice
+          tone="warning"
+          role="status"
+          aria-label={`${label} container stopped`}
+        >
+          <p>{stopped}</p>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={disabled || busy}
+            onclick={() => void save(true)}>Save without checking</Button
+          >
+        </Notice>
+      {/if}
     </form>
   {/if}
   {#if error}<p class="my-2 wrap-anywhere text-xs text-danger" role="alert">

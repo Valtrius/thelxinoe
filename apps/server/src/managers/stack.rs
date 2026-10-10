@@ -63,7 +63,10 @@ pub(crate) async fn controller(state: &AppState, path: &str, body: Option<Value>
         if let Some(body) = body {
             request = request.json(&body);
         }
-        let response = request.send().await.map_err(|_| unavailable())?;
+        let response = request
+            .send()
+            .await
+            .map_err(|_| failures::controller_unreachable())?;
         if !response.status().is_success() {
             let status = response.status();
             tracing::warn!(
@@ -72,6 +75,7 @@ pub(crate) async fn controller(state: &AppState, path: &str, body: Option<Value>
                 "Docker controller request failed"
             );
             let message = response.text().await.unwrap_or_default();
+            let message = message.trim();
             let code = if status.is_server_error() {
                 "dependency_unavailable"
             } else if matches!(
@@ -84,10 +88,12 @@ pub(crate) async fn controller(state: &AppState, path: &str, body: Option<Value>
             } else {
                 "conflict"
             };
-            let message = if status.is_client_error() {
-                message.chars().take(300).collect()
+            // The controller only returns curated explanations, including for Docker
+            // and registry failures; its generic outage text points to its log instead.
+            let message = if message.is_empty() || message == "Docker inspection unavailable" {
+                "The Docker controller couldn't complete the request; check that Docker is running and see the controller log".into()
             } else {
-                "Docker controller operation unavailable".into()
+                message.chars().take(300).collect()
             };
             return Err(ApiError(axum::http::StatusCode::CONFLICT, code, message));
         }
@@ -518,8 +524,9 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
   let mut last=None;let mut registered=None;
    let service_name=if let Some(integration)=row.6.clone() {storage::provision_read_manager_services(integration, &state.db).await?}else{format!("Managed {}",row.0)};
   for _ in 0..60 {
-   let registration=if matches!(row.0.as_str(),"radarr"|"sonarr"|"lidarr") {super::register_with_actor(state.clone(),super::Register{name:service_name.clone(),kind:row.0.clone(),container_id:container.clone(),port:template["port"].as_u64().ok_or_else(unavailable)? as u16,api_key:secret.clone(),url_base:thelxinoe_core::service_url_base(&row.0).into()},row.1.clone()).await}
-   else {support::provision(state.clone(),row.1.clone(),json!({"name":service_name,"kind":row.0,"container_id":container,"port":template["port"],"credentials":{"username":credentials.username,"secret":secret},"native_url":row.8,"url_base":thelxinoe_core::service_url_base(&row.0)})).await};
+   // Thelxinoe generated these credentials and starts the container itself.
+   let registration=if matches!(row.0.as_str(),"radarr"|"sonarr"|"lidarr") {super::register_with_actor(state.clone(),super::Register{name:service_name.clone(),kind:row.0.clone(),container_id:container.clone(),port:template["port"].as_u64().ok_or_else(unavailable)? as u16,api_key:secret.clone(),url_base:thelxinoe_core::service_url_base(&row.0).into(),allow_unverified:true,container_name:String::new()},row.1.clone()).await}
+   else {support::provision(state.clone(),row.1.clone(),json!({"name":service_name,"kind":row.0,"container_id":container,"port":template["port"],"credentials":{"username":credentials.username,"secret":secret},"native_url":row.8,"url_base":thelxinoe_core::service_url_base(&row.0),"allow_unverified":true})).await};
    match registration {Ok(Json(value))=>{registered=Some(value);break;},Err(error)=>last=Some(error)};
    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
   }
@@ -536,7 +543,7 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
         }.await;
         match setup {
             Ok(())=>break,
-            Err(error) if error.2==unavailable().2 && tokio::time::Instant::now()<deadline=> {
+            Err(error) if error.1=="dependency_unavailable" && tokio::time::Instant::now()<deadline=> {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
             Err(error)=>return Err(error),
@@ -618,6 +625,11 @@ async fn adopt_preview(
         .await?
         .ok_or_else(ApiError::not_found)?;
     let _guard = state.managers.guard.service(&initial.kind).await;
+    if let Err(error) = docker(&state, &format!("containers/{}", initial.container)).await
+        && error.1 == "container_missing"
+    {
+        super::recreation::follow(&state, &input.service_id, &initial.container).await?;
+    }
     let integration = storage::adopt_read_manager_services(&state.db, input.service_id.clone())
         .await?
         .ok_or_else(ApiError::not_found)?;

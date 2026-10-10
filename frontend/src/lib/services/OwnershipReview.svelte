@@ -19,13 +19,19 @@
       <dd class="min-w-0 wrap-anywhere">{value}</dd>
     {/each}
   </dl>
-  {#each ['backup', 'update'] as capability (capability)}
-    {@const status = review.capabilities[capability as 'backup' | 'update']}
+  {#each ['lifecycle', 'backup', 'update'] as capability (capability)}
+    {@const status =
+      review.capabilities[capability as 'lifecycle' | 'backup' | 'update']}
     {#if !status.available && status.reason}
       <Notice tone="warning" class="mt-3 text-[11px]" role="status"
         >{status.reason}</Notice
       >
     {/if}
+  {/each}
+  {#each review.automation ?? [] as warning (warning)}
+    <Notice tone="warning" class="mt-3 text-[11px]" role="status"
+      >{warning}</Notice
+    >
   {/each}
   {#if review.integration_ready === false}
     <p class="mt-3 text-[11px] text-muted">

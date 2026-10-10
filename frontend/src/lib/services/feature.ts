@@ -130,6 +130,7 @@ export type TransferReview = {
   integration_ready?: boolean;
   integration_error?: string | null;
   warnings?: string[];
+  automation?: string[];
 };
 export type UpdatePolicy = {
   service_id: string;

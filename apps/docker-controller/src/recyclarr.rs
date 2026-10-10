@@ -263,7 +263,7 @@ pub(super) async fn catalog(
     if !success {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
-            "Guide catalog refresh failed; check registry and GitHub access",
+            "Guide catalog refresh failed; check registry and GitHub access".into(),
         ));
     }
     let mut items = Vec::new();
@@ -595,7 +595,7 @@ async fn execute(key: String, input: Run) -> Result<Json<Value>> {
     {
         return Err((
             StatusCode::PRECONDITION_FAILED,
-            "Image or guide revision changed; refresh before applying",
+            "Image or guide revision changed; refresh before applying".into(),
         ));
     }
     updates::verified(&s, &d).await?;

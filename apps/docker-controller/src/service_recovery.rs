@@ -251,7 +251,7 @@ mod tests {
         let mut running = raw;
         running["State"]["Running"] = json!(true);
         assert_eq!(runtime_state(&expected, &Ok(running))["status"], "running");
-        let missing = runtime_state(&expected, &Err((StatusCode::NOT_FOUND, "missing")));
+        let missing = runtime_state(&expected, &Err((StatusCode::NOT_FOUND, "missing".into())));
         assert_eq!(missing["existence"], "missing");
         assert!(missing["drift"].is_null());
         let offline = runtime_state(&expected, &Err(unavailable()));

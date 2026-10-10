@@ -248,7 +248,7 @@ pub(super) async fn preflight(
         if let Err(error) = check(&d, &mut u).await {
             u.stage = "blocked".into();
             u.classification = "unable-to-verify".into();
-            u.error = Some(error.1.into());
+            u.error = Some(error.1.to_string());
             let _ = write(&u);
             // The old container has not changed its spec or appdata during preflight.
             if cleanup_candidate(&u).await.is_ok()
@@ -484,7 +484,7 @@ async fn check(d: &Deployment, u: &mut Update) -> Result<()> {
         Err(error) => {
             u.classification = "incompatible".into();
             u.stage = "blocked".into();
-            u.error = Some(error.1.into());
+            u.error = Some(error.1.to_string());
         }
     }
     cleanup_candidate(u).await?;
@@ -632,7 +632,7 @@ pub(super) async fn activate(
     crate::recovery::spawn(async move {
         let _guard = guard;
         if let Err(error) = replace(&d, &mut u).await {
-            u.error = Some(error.1.into());
+            u.error = Some(error.1.to_string());
             if u.activation_crossed {
                 u.stage = "runtime-failure".into();
             } else if rollback(&d, &mut u).await.is_ok() {

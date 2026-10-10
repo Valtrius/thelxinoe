@@ -102,11 +102,18 @@ pub(super) async fn ensure_idle(state: &AppState, key: &str) -> Result<()> {
     Ok(())
 }
 pub(super) async fn connect<'a>(state: &'a AppState, s: &Support) -> Result<Connection<'a>> {
-    let (base, media_source) = api_evidence(state, &s.container, s.port, &s.kind).await?;
+    let (base, media_source) = match api_evidence(state, &s.container, s.port, &s.kind).await {
+        Err(error) if error.1 == "container_missing" => {
+            let container = recreation::follow(state, &s.id, &s.container).await?;
+            api_evidence(state, &container, s.port, &s.kind).await?
+        }
+        evidence => evidence?,
+    };
     if media_source != s.media_source {
-        return Err(ApiError::conflict(
-            "Service mounts changed; reconnect the service",
-        ));
+        return Err(ApiError::conflict(format!(
+            "{}'s storage mounts changed since it was connected. Save it again in Edit connection to accept the new layout",
+            failures::label(&s.kind)
+        )));
     }
     Ok(Connection {
         state,
@@ -160,15 +167,15 @@ pub(super) async fn rpc(
         .json(&json!({"method":method,"params":params,"id":1}))
         .send()
         .await
-        .map_err(|_| unavailable())?;
+        .map_err(|error| failures::unreachable("nzbget", &c.base, &error))?;
     if !response.status().is_success() {
-        return Err(ApiError::conflict(
-            "Download service rejected the API credentials or request",
-        ));
+        return Err(failures::rejected("nzbget", "/jsonrpc", response.status()));
     }
     let result = read(response).await?;
     if !result["error"].is_null() {
-        return Err(ApiError::conflict("Download service rejected the command"));
+        return Err(ApiError::conflict(format!(
+            "NZBGet rejected the {method} command"
+        )));
     }
     result.get("result").cloned().ok_or_else(unavailable)
 }
@@ -180,7 +187,7 @@ pub(super) async fn version(c: &Connection<'_>, credentials: &Credentials) -> Re
         _ => {
             let value = c.get("system/status").await?;
             if value["appName"] != "Prowlarr" {
-                return Err(unavailable());
+                return Err(failures::identity(&c.kind, &value["appName"]));
             }
             value["version"].clone()
         }
@@ -189,7 +196,7 @@ pub(super) async fn version(c: &Connection<'_>, credentials: &Credentials) -> Re
         .as_str()
         .filter(|v| !v.is_empty() && v.len() < 100)
         .map(str::to_owned)
-        .ok_or_else(unavailable)
+        .ok_or_else(|| failures::identity(&c.kind, &Value::Null))
 }
 pub(super) fn native_url(value: &str) -> bool {
     value.is_empty()
@@ -213,6 +220,11 @@ struct Register {
     native_url: String,
     #[serde(default)]
     url_base: String,
+    /// A stopped container can only be registered after the administrator accepts that.
+    #[serde(default)]
+    allow_unverified: bool,
+    #[serde(skip)]
+    container_name: String,
 }
 async fn register(
     State(state): State<AppState>,
@@ -224,22 +236,32 @@ async fn register(
 }
 async fn register_with_actor(
     state: AppState,
-    input: Register,
+    mut input: Register,
     actor_id: String,
 ) -> Result<Json<Value>> {
     if !matches!(
         input.kind.as_str(),
         "bazarr" | "prowlarr" | "nzbget" | "seerr"
-    ) || input.name.trim().is_empty()
-        || input.name.len() > 100
-        || (input.kind != "nzbget" && input.credentials.secret.is_empty())
-        || input.credentials.secret.len() > 1024
-        || input.credentials.username.len() > 100
-        || input.native_url.len() > 2000
-        || !native_url(&input.native_url)
-    {
+    ) {
+        return Err(ApiError::bad("Choose Bazarr, Prowlarr, NZBGet or Seerr"));
+    }
+    let service = failures::label(&input.kind);
+    if input.name.trim().is_empty() || input.name.len() > 100 {
+        return Err(ApiError::bad("Enter a name of up to 100 characters"));
+    }
+    if input.kind != "nzbget" && input.credentials.secret.is_empty() {
+        return Err(ApiError::bad(format!(
+            "Enter the API key from {service}'s Settings → General"
+        )));
+    }
+    if input.credentials.secret.len() > 1024 || input.credentials.username.len() > 100 {
         return Err(ApiError::bad(
-            "Choose a supported service, credentials and an HTTP(S) UI address without credentials or query parameters",
+            "Credentials are limited to a 100-character username and a 1024-character secret",
+        ));
+    }
+    if input.native_url.len() > 2000 || !native_url(&input.native_url) {
+        return Err(ApiError::bad(
+            "Enter the UI address as an http(s) URL without a username, password, query or fragment",
         ));
     }
     let _guard = state.managers.guard.service(&input.kind).await;
@@ -257,7 +279,15 @@ async fn register_with_actor(
         kind: input.kind.clone(),
     };
     let observed = docker(&state, &format!("containers/{}", input.container_id)).await?;
+    input.container_name = observed["name"]
+        .as_str()
+        .unwrap_or_default()
+        .trim_start_matches('/')
+        .to_owned();
     let version = if observed["running"] == false {
+        if !input.allow_unverified {
+            return Err(failures::stopped(&input.container_name));
+        }
         "Unverified".into()
     } else {
         version(&c, &input.credentials).await?
@@ -285,9 +315,9 @@ async fn register_with_actor(
     )
     .await?;
     if !allowed {
-        return Err(ApiError::conflict(
-            "A managed service operation already owns this integration type",
-        ));
+        return Err(ApiError::conflict(format!(
+            "Thelxinoe is installing or managing another {service} container; finish or remove that installation first"
+        )));
     }
     Ok(Json(json!({"id":returned})))
 }

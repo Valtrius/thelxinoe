@@ -36,6 +36,10 @@ export class ApiError extends Error {
       );
     }
   }
+  // Server messages are written for people; never prefix them with "Error:".
+  override toString() {
+    return this.message;
+  }
 }
 export function serverUrl(): string {
   return desktop ? desktopServer : '';

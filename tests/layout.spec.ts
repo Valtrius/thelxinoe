@@ -57,6 +57,58 @@ test('Connected services retain a connection editor with test and save', async (
   expect(fixture.unexpected).toEqual([]);
 });
 
+test('A stopped existing container connects only after skipping verification', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+  });
+  const attempts: { allow_unverified?: boolean }[] = [];
+  await page.route('**/api/v1/admin/managers', async (route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    const body = route.request().postDataJSON();
+    attempts.push(body);
+    if (!body.allow_unverified)
+      return route.fulfill({
+        status: 409,
+        json: {
+          error: {
+            code: 'service_stopped',
+            message:
+              "The sonarr container is stopped, so Thelxinoe can't verify the connection. Start it and try again, or continue without checking.",
+          },
+        },
+      });
+    return route.fulfill({ json: { id: 'manager-sonarr' } });
+  });
+  await page.goto('/');
+  await page
+    .getByRole('navigation', { name: 'Select service' })
+    .getByRole('link', { name: 'Sonarr', exact: true })
+    .click();
+  const form = page.getByRole('form', { name: 'Connect existing Sonarr' });
+  await form.getByLabel('Container').selectOption('container-radarr');
+  await form.getByLabel('API key').fill('stopped-fixture-api-key');
+  await form
+    .getByRole('button', { name: 'Connect Sonarr', exact: true })
+    .click();
+  const stopped = form.getByRole('status', {
+    name: 'Sonarr container stopped',
+  });
+  await expect(stopped).toContainText('The sonarr container is stopped');
+  await expect(stopped).not.toContainText('Error:');
+  await stopped
+    .getByRole('button', { name: 'Continue without checking', exact: true })
+    .click();
+  await expect
+    .poll(() => attempts.map((attempt) => attempt.allow_unverified))
+    .toEqual([false, true]);
+  await expect(stopped).toHaveCount(0);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 test('Interrupted imported release can be retried after the controller entry disappears', async ({
   page,
 }, testInfo) => {
@@ -1420,6 +1472,9 @@ test('NZBGet ownership preserves authentication and keeps hardening separate', a
   await expect(review).toContainText(
     'Outgoing TLS certificate verification is disabled.',
   );
+  await expect(review).toContainText(
+    'Exclude this container from watchtower before taking ownership',
+  );
   await expect(
     review.getByRole('switch', { name: 'Rotate logs; keep 3 days' }),
   ).toHaveCount(0);
@@ -1470,7 +1525,9 @@ test('Ownership review explains unavailable recovery without blocking lifecycle 
     .click();
   await page.getByRole('button', { name: 'Review ownership transfer' }).click();
   const review = page.getByRole('region', { name: 'Ownership review' });
-  await expect(review).toContainText('Recovery coverage is incomplete');
+  await expect(review).toContainText(
+    'Backups need /config to be a host folder; it currently uses the Docker volume nzbget_config',
+  );
   await expect(
     page.getByRole('button', { name: 'Take ownership', exact: true }),
   ).toBeEnabled();

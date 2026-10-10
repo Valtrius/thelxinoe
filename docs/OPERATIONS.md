@@ -17,7 +17,7 @@ Fresh installations share the configured media directory at `/media`:
 
 Existing services retain their mounts and native paths. Keep the server's writable `/media` bind mount; additional bind mounts or shared named volumes beneath `/media` support existing storage layouts. Fresh media installations require a single shared mount without child mounts. Playback requires read access. Hardlinks require a common filesystem.
 
-Existing services must share a Docker network with the server. For an existing network, add this `compose.override.yaml`:
+Existing services must share a user-defined Docker network with the server; Docker's default `bridge` network cannot resolve container names, and services using another container's network (such as a VPN container) are not supported yet. Connection errors name both sides' networks and the `docker network connect` command to run. For an existing network, add this `compose.override.yaml`:
 
 ```yaml
 networks:
@@ -26,7 +26,7 @@ networks:
     name: media_network
 ```
 
-Connect services in Settings → Media services. Fresh Radarr/Sonarr installs receive request defaults; existing services require an explicit choice of existing root and quality profile. API integration leaves container management with the current owner. Follow the [adoption steps](../README.md#adopt-existing-services) to transfer ownership. In-place adoption requires retiring the entire original Compose project and its updaters. Configuration stays where it is. Imported recreation and updates are currently blocked; **Release ownership** leaves the container and data intact.
+Connect services in Settings → Media services. Fresh Radarr/Sonarr installs receive request defaults; existing services require an explicit choice of existing root and quality profile. API integration leaves container management with the current owner. When that owner recreates the container, Thelxinoe follows the replacement only if its name, mounts, API identity and stored credentials all match; [recreation](../apps/server/src/managers/recreation.rs). Otherwise, choose the container in **Edit connection**. Follow the [adoption steps](../README.md#adopt-existing-services) to transfer ownership. In-place adoption requires retiring the entire original Compose project and its updaters. Configuration stays where it is. Imported recreation and updates are currently blocked; **Release ownership** leaves the container and data intact.
 
 ## Discovery and requests
 

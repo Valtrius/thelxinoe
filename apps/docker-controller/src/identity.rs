@@ -15,7 +15,7 @@ fn numeric(value: &str) -> Result<u32> {
         .filter(|id| *id > 0 && *id < i32::MAX as u32)
         .ok_or((
             axum::http::StatusCode::CONFLICT,
-            "Container file access requires non-root numeric UID and GID values",
+            "Container file access requires non-root numeric UID and GID values".into(),
         ))
 }
 
@@ -24,9 +24,9 @@ impl Identity {
         let (uid, gid) = config["User"]
             .as_str()
             .and_then(|user| user.split_once(':'))
-            .ok_or((
+            .ok_or::<crate::docker::Failure>((
                 axum::http::StatusCode::CONFLICT,
-                "Configure the server user as a numeric UID:GID pair",
+                "Configure the server user as a numeric UID:GID pair".into(),
             ))?;
         Ok(Self {
             uid: numeric(uid)?,

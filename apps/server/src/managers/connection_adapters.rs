@@ -2,8 +2,25 @@ use super::*;
 #[path = "connection_seerr.rs"]
 pub(super) mod requests;
 
-async fn open<'a>(state: &'a AppState, endpoint: &Endpoint) -> Attempt<Connection<'a>> {
-    let observed = docker(state, &format!("containers/{}", endpoint.container)).await?;
+/// Inspect an endpoint, following its container if Docker recreated it.
+async fn located(state: &AppState, endpoint: &Endpoint) -> Attempt<(Endpoint, Value)> {
+    match docker(state, &format!("containers/{}", endpoint.container)).await {
+        Err(error) if error.1 == "container_missing" => {
+            let container = recreation::follow(state, &endpoint.id, &endpoint.container).await?;
+            let observed = docker(state, &format!("containers/{container}")).await?;
+            Ok((
+                Endpoint {
+                    container,
+                    ..endpoint.clone()
+                },
+                observed,
+            ))
+        }
+        observed => Ok((endpoint.clone(), observed?)),
+    }
+}
+async fn open<'a>(state: &'a AppState, endpoint: &Endpoint) -> Attempt<(Endpoint, Connection<'a>)> {
+    let (endpoint, observed) = located(state, endpoint).await?;
     if observed["running"] == false {
         return Err(Failure::unavailable(format!(
             "{} is stopped",
@@ -16,7 +33,7 @@ async fn open<'a>(state: &'a AppState, endpoint: &Endpoint) -> Attempt<Connectio
             endpoint.name
         )));
     }
-    if matches!(endpoint.kind.as_str(), "radarr" | "sonarr" | "lidarr") {
+    let c = if matches!(endpoint.kind.as_str(), "radarr" | "sonarr" | "lidarr") {
         let manager = service(state, &endpoint.id).await?;
         let c = Connection::open(state, &manager).await?;
         let status = c.get("system/status").await?;
@@ -25,16 +42,17 @@ async fn open<'a>(state: &'a AppState, endpoint: &Endpoint) -> Attempt<Connectio
             .is_some_and(|name| name.eq_ignore_ascii_case(&endpoint.kind))
         {
             return Err(Failure::conflict(
-                "The service API identity does not match its connection",
+                failures::identity(&endpoint.kind, &status["appName"]).2,
             ));
         }
-        Ok(c)
+        c
     } else {
         let support = support::load(state, &endpoint.id).await?;
         let c = support::connect(state, &support).await?;
         support::version(&c, &support.credentials).await?;
-        Ok(c)
-    }
+        c
+    };
+    Ok((endpoint, c))
 }
 
 struct PeerRoute {
@@ -103,7 +121,8 @@ pub(super) async fn apply(
     source: &Endpoint,
     target: Option<&Endpoint>,
 ) -> Attempt<()> {
-    let c = open(state, source).await?;
+    let (source, c) = open(state, source).await?;
+    let source = &source;
     if link.kind == "requests" && !link.enabled {
         return requests::disconnect(state, link, &c).await;
     }
@@ -115,7 +134,8 @@ pub(super) async fn apply(
     }
     let target =
         target.ok_or_else(|| Failure::unavailable("Target service is no longer connected"))?;
-    let target_connection = open(state, target).await?;
+    let (target, target_connection) = open(state, target).await?;
+    let target = &target;
     let route = addresses(state, source, target).await?;
     tracing::debug!(network = %route.network, source = %source.id, target = %target.id, "Selected service peer route");
     let target_address = route.target;

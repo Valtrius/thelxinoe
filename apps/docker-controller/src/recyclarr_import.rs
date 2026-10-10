@@ -63,6 +63,7 @@ async fn inspect(d: &Deployment, input: &Preview) -> Result<(Value, String)> {
         raw["Image"].as_str().ok_or_else(unavailable)?
     ))
     .await?;
+    let pinned = policy::adoption_image(&raw, &image, t).map_err(conflict)?;
     // Preview can describe a Compose transfer. Execution requires its explicit release acknowledgement.
     policy::validate_adoption(&raw, &image, t, &d.network, &d.media_source, true)
         .map_err(conflict)?;
@@ -86,7 +87,6 @@ async fn inspect(d: &Deployment, input: &Preview) -> Result<(Value, String)> {
             "Transfer supports only the service's standard HTTP port",
         ));
     }
-    let pinned = policy::adoption_image(&raw, &image, t).map_err(conflict)?;
     Ok((raw, pinned))
 }
 pub(super) async fn preview(
@@ -297,7 +297,7 @@ pub(super) async fn adopt(
             policy::fingerprint(&engine(&format!("/containers/{}/json", s.container)).await?);
         s.phase = "connecting".into();
         save(&s)?;
-        Ok::<(), (StatusCode, &'static str)>(())
+        Ok::<(), crate::docker::Failure>(())
     }
     .await;
     if let Err(error) = outcome {
