@@ -23,8 +23,14 @@
   import History from '../History.svelte';
   import { providers, providerEnabled } from '../providers/availability';
 
-  let { user, filters, filtersChanged } = $props<{
+  let {
+    user,
+    filters,
+    filtersChanged,
+    timeFormat = '24h',
+  } = $props<{
     user: User;
+    timeFormat?: '12h' | '24h';
     filters: { range?: string; platform?: string; scope?: string };
     filtersChanged: (filters: {
       range: string;
@@ -594,5 +600,5 @@
       </section>
     {/if}
   {/if}
-  <History {user} {scope} {range} {platform} />
+  <History {user} {scope} {range} {platform} {timeFormat} />
 </div>
