@@ -289,7 +289,6 @@
         ) {
           void loadProviders().catch((e) => (error = String(e)));
           accountRevision++;
-          void refreshAttention();
         }
         if (event.kind === 'online.download.progress')
           window.dispatchEvent(
@@ -301,21 +300,8 @@
           acceptAppearance(
             (event.payload as { appearance: Appearance }).appearance,
           );
-        if (
-          [
-            'attention.changed',
-            'product.changed',
-            'catalog.changed',
-            'online.account.changed',
-            'acquisition.changed',
-            'jobs.changed',
-            'managers.changed',
-            'support.changed',
-            'service-updates.changed',
-            'tools.changed',
-          ].includes(event.kind)
-        )
-          void refreshAttention();
+        // The server recomputes attention after every change and notifies affected users.
+        if (event.kind === 'attention.changed') void refreshAttention();
         if (event.kind === 'server.reconnected') {
           void refreshAttention();
           mediaRevision++;

@@ -81,7 +81,6 @@ export function connectAttention(userId: string) {
   const refresh = () => {
     if (!document.hidden) void refreshAttention();
   };
-  const timer = setInterval(refresh, 30000);
   window.addEventListener('focus', refresh);
   window.addEventListener('thelxinoe-attention-refresh', refresh);
   document.addEventListener('visibilitychange', refresh);
@@ -93,7 +92,6 @@ export function connectAttention(userId: string) {
     attention.set([]);
     attentionErrors.set({});
     pending.clear();
-    clearInterval(timer);
     window.removeEventListener('focus', refresh);
     window.removeEventListener('thelxinoe-attention-refresh', refresh);
     document.removeEventListener('visibilitychange', refresh);

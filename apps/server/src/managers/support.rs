@@ -445,6 +445,7 @@ async fn inspect(
     .await;
     let error = result.as_ref().err().map(|e| e.2.clone());
     storage::inspect(&state.db, key, error).await?;
+    state.notify_attention();
     Ok(Json(result?))
 }
 #[derive(Deserialize)]

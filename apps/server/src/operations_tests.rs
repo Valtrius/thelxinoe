@@ -308,3 +308,53 @@ async fn request_attention_maps_album_ancestors_and_rejects_foreign_or_stale_ack
         json!([])
     );
 }
+
+// Clients no longer poll attention. A committed domain change must push
+// attention.changed to exactly the users whose summary changed.
+#[tokio::test]
+async fn domain_events_push_attention_to_affected_users() {
+    let (_temp, state, _alice) = fixture().await;
+    super::operations::observe(&state).await.unwrap();
+    let cursor = state
+        .db
+        .read("test.cursor", |db| {
+            Ok(
+                db.query_row("SELECT COALESCE(MAX(id),0) FROM events", [], |r| {
+                    r.get::<_, i64>(0)
+                })?,
+            )
+        })
+        .await
+        .unwrap();
+    let watcher = tokio::spawn(super::operations::watch(state.clone()));
+    state.db.write("test.fixture", |db| {
+        db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('lidarr','Lidarr','lidarr','container',8686,'g',X'00','/music','1',1)", [])?;
+        db.execute("INSERT INTO acquisition_requests(id,user_id,service_id,generation,external_id,title,state,created_at,updated_at) VALUES ('request','alice','lidarr','g','album-id','Album','denied',1,1)", [])?;
+        Ok(())
+    }).await.unwrap();
+    state.emit(None, "jobs.changed", json!({})).await.unwrap();
+    let pushed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let users = state
+                .db
+                .read("test.events", move |db| {
+                    Ok(db
+                        .prepare(
+                            "SELECT user_id FROM events WHERE id>?1 AND kind='attention.changed'",
+                        )?
+                        .query_map([cursor], |r| r.get::<_, Option<String>>(0))?
+                        .collect::<rusqlite::Result<Vec<_>>>()?)
+                })
+                .await
+                .unwrap();
+            if !users.is_empty() {
+                return users;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    watcher.abort();
+    assert_eq!(pushed, vec![Some("alice".to_owned())]);
+}

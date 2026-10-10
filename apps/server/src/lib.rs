@@ -69,6 +69,7 @@ pub struct AppState {
     pub secrets: SecretStore,
     pub config: Arc<Config>,
     pub events: tokio::sync::broadcast::Sender<()>,
+    pub(crate) attention: Arc<tokio::sync::Notify>,
     pub password_slots: Arc<tokio::sync::Semaphore>,
     pub dummy_hash: Arc<String>,
     pub playback: Arc<thelxinoe_playback::Pipelines>,
@@ -114,6 +115,7 @@ impl AppState {
             secrets,
             config: Arc::new(config),
             events: tokio::sync::broadcast::channel(128).0,
+            attention: Arc::new(tokio::sync::Notify::new()),
             password_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             compatibility_audio: Arc::new(tokio::sync::Mutex::new(())),
             online: Arc::new(online::Runtime::new()?),
@@ -134,15 +136,25 @@ impl AppState {
         kind: &str,
         payload: serde_json::Value,
     ) -> anyhow::Result<()> {
+        // Any domain change may resolve or raise an attention item; progress ticks cannot.
+        let observe = kind != "attention.changed" && !kind.ends_with(".progress");
         let kind = kind.to_owned();
         storage::emit(&self.db, kind, user_id, payload).await?;
         self.notify_events();
+        if observe {
+            self.notify_attention();
+        }
         Ok(())
     }
 
     /// Wake subscribers after a storage operation has committed its event rows.
     pub(crate) fn notify_events(&self) {
         let _ = self.events.send(());
+    }
+
+    /// Recompute attention after a committed change that emits no event of its own.
+    pub(crate) fn notify_attention(&self) {
+        self.attention.notify_one();
     }
 }
 pub fn router(state: AppState) -> Router {

@@ -259,7 +259,8 @@ test('integration switches recover from failed saves and fit mobile settings', a
   const toggle = page.getByRole('switch', {
     name: 'Enable YouTube integration',
   });
-  await toggle.uncheck();
+  // A failed save restores the switch, so uncheck() could observe no change.
+  await toggle.click();
   await expect(
     page.getByRole('alert').filter({ hasText: 'Settings unavailable' }),
   ).toBeVisible();

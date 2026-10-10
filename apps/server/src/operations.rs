@@ -178,6 +178,7 @@ async fn change_user(
         ));
     }
     let status = storage::change_user(&state.db, key, input, p, None).await?;
+    state.notify_attention();
     match status {
         404 => Err(ApiError::not_found()),
         409 => Err(ApiError::conflict("Keep at least one administrator")),
@@ -239,6 +240,16 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
         let _ = crate::managers::observe_requests(&state).await;
         observe(&state).await?;
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+    }
+}
+/// Push attention changes as soon as a domain change commits. Bursts collapse
+/// into one pending recomputation; the periodic check above covers expiry.
+pub async fn watch(state: AppState) -> anyhow::Result<()> {
+    loop {
+        state.attention.notified().await;
+        if observe(&state).await.is_err() {
+            tracing::warn!("Attention could not be refreshed; the next change or check retries");
+        }
     }
 }
 pub(crate) async fn observe(state: &AppState) -> anyhow::Result<()> {

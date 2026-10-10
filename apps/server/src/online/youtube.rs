@@ -42,6 +42,7 @@ async fn invalidate(state: &AppState, user: &str, generation: &str) -> Result<()
     let user = user.to_owned();
     let generation = generation.to_owned();
     storage::invalidate(user, generation, &state.db).await?;
+    state.notify_attention();
     Ok(())
 }
 pub(super) async fn access(state: &AppState, user: &str) -> Result<Access> {

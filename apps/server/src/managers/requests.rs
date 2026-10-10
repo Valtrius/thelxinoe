@@ -155,6 +155,7 @@ async fn request(
         },
     )
     .await?;
+    state.notify_attention();
     Ok(Json(json!({"id":result.id,"state":result.state})))
 }
 #[derive(Deserialize)]
@@ -189,6 +190,7 @@ async fn decide(
             "This request cannot be changed in its current state",
         ));
     }
+    state.notify_attention();
     Ok(Json(json!({"saved":true})))
 }
 #[derive(Deserialize)]
