@@ -4,15 +4,18 @@
   import {
     type AuthMethods,
     type AuthOptions,
+    type TotpSetup,
     registerPasskey,
     passkeySignIn,
     oidcSignIn,
     canonicalAccount,
     withVerification,
     authNotice,
+    errorMessage,
   } from './authentication';
   import { captureSession } from './session';
   import PasswordSettings from './PasswordSettings.svelte';
+  import TotpEnrollment from './TotpEnrollment.svelte';
   import Panel from './ui/Panel.svelte';
   import Button from './ui/Button.svelte';
   import FormField from './ui/FormField.svelte';
@@ -23,11 +26,10 @@
   let busy = $state(false),
     error = $state(''),
     notice = $state('');
-  let enrollment = $state<{ secret: string; uri: string } | null>(null),
-    code = $state(''),
+  let enrollment = $state<TotpSetup | null>(null),
     passkeyName = $state('');
   onMount(() => {
-    void load().catch((e) => (error = String(e)));
+    void load().catch((e) => (error = errorMessage(e)));
     if (authNotice === 'oidc-linked') notice = 'OIDC account linked';
     else if (authNotice === 'verified') notice = 'Identity verified';
   });
@@ -55,7 +57,7 @@
       else await action();
       if (owns()) await load();
     } catch (caught) {
-      if (owns()) error = String(caught);
+      if (owns()) error = errorMessage(caught);
     } finally {
       if (owns()) busy = false;
     }
@@ -87,6 +89,10 @@
         <strong>Authenticator app</strong><span class="ml-3 text-muted"
           >{methods.totp ? 'Enabled for password sign-in' : 'Not enabled'}</span
         >
+        {#if !methods.totp && !methods.password}<small class="block text-muted"
+            >Set a password first. The authenticator app protects password
+            sign-in.</small
+          >{/if}
       </div>
       {#if methods.totp}<Button
           variant="secondary"
@@ -99,56 +105,10 @@
           disabled={busy || !methods.password}
           onclick={() =>
             act(async () => {
-              enrollment = await api('/me/auth/totp/start', 'POST');
+              enrollment = await api<TotpSetup>('/me/auth/totp/start', 'POST');
             })}>Set up authenticator</Button
         >{/if}
     </div>
-    {#if enrollment}
-      <form
-        class="max-w-120 border-b border-line py-4"
-        onsubmit={(e) => {
-          e.preventDefault();
-          void act(async () => {
-            await api('/me/auth/totp/confirm', 'POST', { code });
-            enrollment = null;
-            code = '';
-            notice = 'Authenticator enabled';
-          });
-        }}
-      >
-        <FormField
-          >Setup key<input
-            class={formControlClass}
-            readonly
-            value={enrollment.secret}
-          /></FormField
-        >
-        <a class="text-accent" href={enrollment.uri}>Open authenticator app</a>
-        <FormField
-          >Authentication code<input
-            class={formControlClass}
-            bind:value={code}
-            inputmode="numeric"
-            autocomplete="one-time-code"
-            pattern={'[0-9]{6}'}
-            maxlength="6"
-            required
-            disabled={busy}
-          /></FormField
-        >
-        <div class="flex gap-2">
-          <Button type="submit" disabled={busy}>Enable authenticator</Button
-          ><Button
-            variant="secondary"
-            disabled={busy}
-            onclick={() => {
-              enrollment = null;
-              code = '';
-            }}>Cancel</Button
-          >
-        </div>
-      </form>
-    {/if}
     {#each methods.passkeys as passkey (passkey.id)}
       <div class={rowClass}>
         <strong class="min-w-0 flex-1 truncate">{passkey.name}</strong><Button
@@ -194,11 +154,16 @@
             disabled={busy}
             onclick={() =>
               act(async () => {
-                await passkeySignIn('', true);
+                await passkeySignIn(true);
                 notice = 'Identity verified';
               }, false)}>Verify with passkey</Button
           >{/if}
       </div>
+    {:else if options}
+      <p class="text-xs text-muted">
+        Passkeys aren't available at this address. Browsers only allow them over
+        HTTPS with a hostname, or on localhost.
+      </p>
     {/if}
     {#if options?.oidc}
       <div class={rowClass}>
@@ -206,6 +171,10 @@
           <strong>{options.oidc.label}</strong><span class="ml-3 text-muted"
             >{methods.oidc ? 'Linked' : 'Not linked'}</span
           >
+          {#if !options.oidc.available}<small class="block text-muted"
+              >Identity-provider sign-in needs this server to be reached over
+              HTTPS.</small
+            >{/if}
         </div>
         {#if methods.oidc}<Button
             variant="secondary"
@@ -215,7 +184,7 @@
           >
         {:else}<Button
             variant="secondary"
-            disabled={busy}
+            disabled={busy || !options.oidc.available}
             onclick={() =>
               !atCanonical ? canonicalAccount() : act(() => oidcSignIn('link'))}
             >Link identity provider</Button
@@ -226,6 +195,18 @@
   {#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
   {#if notice}<p role="status">{notice}</p>{/if}
 </Panel>
+{#if enrollment}<TotpEnrollment
+    setup={enrollment}
+    onClose={() => {
+      enrollment = null;
+      void load().catch((e) => (error = errorMessage(e)));
+    }}
+    onEnabled={() => {
+      enrollment = null;
+      notice = 'Authenticator app enabled';
+      void load().catch((e) => (error = errorMessage(e)));
+    }}
+  />{/if}
 {#if methods}<PasswordSettings
     changed={() => void load()}
     hasPassword={methods.password}

@@ -41,6 +41,10 @@ fn endpoint(value: &str) -> Result<url::Url> {
     }
     Ok(u)
 }
+/// Whether identity-provider redirects can return to `origin` (HTTPS, or loopback HTTP).
+pub(super) fn available(origin: &str) -> bool {
+    endpoint(&format!("{origin}/api/v1/auth/oidc/callback")).is_ok()
+}
 async fn metadata(discovery: &str, expected: Option<&str>) -> Result<CoreProviderMetadata> {
     endpoint(discovery)?;
     let client = http()?;
@@ -194,7 +198,7 @@ async fn start(
     Json(input): Json<Start>,
 ) -> Result<Response> {
     let context = security::request_context(&state.config, &headers, peer)?;
-    accounts::allow_password_attempt(&state, format!("oidc:{}", context.address)).await?;
+    accounts::allow_password_attempt(&state, format!("oidc:{}", context.bucket())).await?;
     let purpose = if input.purpose.is_empty() {
         "login"
     } else {

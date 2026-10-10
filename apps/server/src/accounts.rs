@@ -111,7 +111,7 @@ pub async fn setup(
         return Err(ApiError::bad("Unsupported transport"));
     }
     validate_credentials(&c.username, &c.password).map_err(|e| ApiError::bad(e.to_string()))?;
-    allow_password_attempt(&state, format!("setup:{}", context.address)).await?;
+    allow_password_attempt(&state, format!("setup:{}", context.bucket())).await?;
     let slot = state
         .password_slots
         .clone()
@@ -158,10 +158,13 @@ pub(crate) async fn check_credentials(
     username: &str,
     password: &str,
 ) -> Result<SessionAuthorization> {
-    allow_password_attempt(state, address.to_string()).await?;
+    allow_password_attempt(state, security::client_bucket(address)).await?;
     if password.len() > 256 || username.len() > 64 {
         return Err(ApiError::unauthorized());
     }
+    // Keyed by name whether or not the account exists, so throttling reveals nothing.
+    let throttle = format!("password-account:{}", username.to_ascii_lowercase());
+    allow_account_attempt(state, &throttle).await?;
     let slot = state
         .password_slots
         .clone()
@@ -176,6 +179,7 @@ pub(crate) async fn check_credentials(
         .unwrap_or_else(|| state.dummy_hash.as_ref().clone());
     let valid = verify_password_with_permit(password.to_owned(), hash, slot).await?;
     if !valid || record.is_none() {
+        record_account_failure(state, throttle).await?;
         return Err(ApiError::unauthorized());
     }
     let (user_id, expected_hash) = record.unwrap();
@@ -195,6 +199,22 @@ pub(crate) async fn allow_password_attempt(state: &AppState, address: String) ->
     }
     Ok(())
 }
+/// Failed proofs allowed per account in the 15-minute window, whatever addresses they come from.
+const ACCOUNT_FAILURE_LIMIT: i64 = 10;
+pub(crate) async fn allow_account_attempt(state: &AppState, key: &str) -> Result<()> {
+    if storage::account_failures(&state.db, key.to_owned()).await? >= ACCOUNT_FAILURE_LIMIT {
+        return Err(ApiError(
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "Too many failed attempts for this account. Try again in 15 minutes.".into(),
+        ));
+    }
+    Ok(())
+}
+pub(crate) async fn record_account_failure(state: &AppState, key: String) -> Result<()> {
+    storage::record_account_failure(&state.db, key).await?;
+    Ok(())
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -202,6 +222,9 @@ pub struct PasswordChange {
     #[serde(default)]
     current_password: String,
     new_password: String,
+    /// Media apps keep working through client passwords unless these are revoked too.
+    #[serde(default)]
+    revoke_client_passwords: bool,
 }
 
 pub async fn change_password(
@@ -221,7 +244,13 @@ pub async fn change_password(
         .await
         .map_err(anyhow::Error::from)?;
     let hash = password_hash_with_permit(input.new_password, slot).await?;
-    crate::authentication::set_password(&state, principal.clone(), hash).await?;
+    crate::authentication::set_password(
+        &state,
+        principal.clone(),
+        hash,
+        input.revoke_client_passwords,
+    )
+    .await?;
     state
         .emit(
             Some(principal.user.id),

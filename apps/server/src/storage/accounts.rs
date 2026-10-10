@@ -74,6 +74,34 @@ pub(super) async fn allow_password_attempt(db: &Database, address: String) -> an
     }).await
 }
 
+pub(super) async fn account_failures(db: &Database, key: String) -> anyhow::Result<i64> {
+    db.read("accounts.account_failures", move |db| {
+        Ok(db
+            .query_row(
+                "SELECT count FROM login_attempts WHERE address=?1 AND window_start>=?2",
+                params![key, now() - 900],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(0))
+    })
+    .await
+}
+
+pub(super) async fn record_account_failure(db: &Database, key: String) -> anyhow::Result<()> {
+    db.write("accounts.record_account_failure", move |db| {
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute("DELETE FROM login_attempts WHERE window_start<?1", [now() - 900])?;
+        tx.execute(
+            "INSERT INTO login_attempts VALUES (?1,1,?2) ON CONFLICT(address) DO UPDATE SET count=count+1",
+            params![key, now()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    })
+    .await
+}
+
 pub(super) async fn logout(db: &Database, p: thelxinoe_core::Principal) -> anyhow::Result<()> {
     db.write("accounts.logout", move |db| {
         db.execute("DELETE FROM sessions WHERE id=?1", [p.session_id])?;
