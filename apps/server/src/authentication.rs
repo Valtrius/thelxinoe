@@ -73,6 +73,12 @@ fn failure(error: anyhow::Error) -> ApiError {
         Some(storage::Fault::SelfRecovery) => ApiError::conflict(
             "An administrator cannot create a recovery link for their own account",
         ),
+        Some(storage::Fault::Invalid(code, message)) => {
+            ApiError(StatusCode::BAD_REQUEST, code, (*message).into())
+        }
+        Some(storage::Fault::State(code, message)) => {
+            ApiError(StatusCode::CONFLICT, code, (*message).into())
+        }
         None => error.into(),
     }
 }
@@ -128,7 +134,7 @@ async fn options(
     let context = security::request_context(&state.config, &headers, peer)?;
     let provider = storage::provider(&state.db).await?;
     Ok(Json(
-        json!({"canonical_url":context.origin,"passkeys":passkeys::webauthn(&state,&context.origin).is_ok(),"oidc":provider.as_ref().map(|p|json!({"label":p.label})),"server_id":state.server_id.as_str()}),
+        json!({"canonical_url":context.origin,"passkeys":passkeys::webauthn(&state,&context.origin).is_ok(),"oidc":provider.as_ref().map(|p|json!({"label":p.label,"available":oidc::available(&context.origin)})),"server_id":state.server_id.as_str()}),
     ))
 }
 async fn methods(
@@ -271,12 +277,36 @@ fn totp(state: &AppState, account: &storage::Account) -> Result<totp_rs::Totp> {
         .map_err(|_| ApiError::bad("Authenticator is unavailable"))
 }
 fn totp_step(state: &AppState, account: &storage::Account, code: &str) -> Result<u64> {
+    const FORMAT: &str = "Enter the 6-digit code from your authenticator app";
+    const INCORRECT: &str =
+        "That code is incorrect or expired. Enter the current code from your authenticator app.";
     if code.len() != 6 || !code.bytes().all(|c| c.is_ascii_digit()) {
-        return Err(ApiError::bad("Enter the six-digit authentication code"));
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "totp_format",
+            FORMAT.into(),
+        ));
     }
     totp(state, account)?
         .check(code, now() as u64)
-        .ok_or_else(|| ApiError::bad("Authentication code is incorrect or expired"))
+        .ok_or_else(|| ApiError(StatusCode::BAD_REQUEST, "totp_incorrect", INCORRECT.into()))
+}
+/// Checks a sign-in or re-verification code, counting failures against the account.
+async fn checked_totp_step(
+    state: &AppState,
+    account: &storage::Account,
+    code: &str,
+) -> Result<u64> {
+    let throttle = format!("totp-account:{}", account.id);
+    accounts::allow_account_attempt(state, &throttle).await?;
+    let step = totp_step(state, account, code);
+    if step.is_err() {
+        accounts::record_account_failure(state, throttle).await?;
+    }
+    step
+}
+fn sign_in_expired(message: &str) -> ApiError {
+    ApiError(StatusCode::UNAUTHORIZED, "sign_in_expired", message.into())
 }
 #[derive(Deserialize)]
 struct TotpLogin {
@@ -291,23 +321,30 @@ async fn totp_login(
     headers: HeaderMap,
     Json(input): Json<TotpLogin>,
 ) -> Result<Response> {
+    const EXPIRED: &str =
+        "This sign-in attempt expired or was replaced. Sign in again with your password.";
     let context = security::request_context(&state.config, &headers, peer)?;
-    accounts::allow_password_attempt(&state, format!("totp:{}", context.address)).await?;
+    accounts::allow_password_attempt(&state, format!("totp:{}", context.bucket())).await?;
     let hash = digest(&input.attempt);
     let a = storage::attempt(&state.db, hash.clone(), "totp".into(), false)
         .await
-        .map_err(failure)?;
+        .map_err(|_| sign_in_expired(EXPIRED))?;
     let account = storage::account(
         &state.db,
-        a.user.clone().ok_or_else(ApiError::unauthorized)?,
+        a.user.clone().ok_or_else(|| sign_in_expired(EXPIRED))?,
         false,
     )
     .await?
-    .ok_or_else(ApiError::unauthorized)?;
-    let step = match totp_step(&state, &account, &input.code) {
+    .ok_or_else(|| sign_in_expired(EXPIRED))?;
+    let step = match checked_totp_step(&state, &account, &input.code).await {
         Ok(step) => step,
+        Err(e) if e.0 == StatusCode::TOO_MANY_REQUESTS => return Err(e),
         Err(e) => {
-            storage::failed_attempt(&state.db, hash).await?;
+            if storage::failed_attempt(&state.db, hash).await? >= 5 {
+                return Err(sign_in_expired(
+                    "Too many incorrect codes. Sign in again with your password.",
+                ));
+            }
             return Err(e);
         }
     };
@@ -334,7 +371,10 @@ async fn totp_login(
         remembered,
     )
     .await
-    .map_err(failure)?;
+    .map_err(|error| match failure(error) {
+        ApiError(StatusCode::UNAUTHORIZED, ..) => sign_in_expired(EXPIRED),
+        other => other,
+    })?;
     let mut response = accounts::respond_session(
         &state,
         authorization,
@@ -383,7 +423,7 @@ async fn verify(
         .await?
         .ok_or_else(ApiError::unauthorized)?;
     let step = if account.totp.as_ref().is_some_and(|(_, enabled)| *enabled) {
-        Some(totp_step(&state, &account, &input.code)?)
+        Some(checked_totp_step(&state, &account, &input.code).await?)
     } else {
         let hash = account
             .password
@@ -407,12 +447,26 @@ async fn verify(
         .map_err(failure)?;
     Ok(Json(json!({"verified":true})))
 }
-async fn totp_start(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
+async fn totp_start(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<Json<Value>> {
+    let context = security::request_context(&state.config, &headers, peer)?;
     let p = security::principal(&state, &headers).await?;
+    // Name the server too, so entries from several servers stay distinguishable in the app.
+    let account_name = url::Url::parse(&context.origin)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_owned))
+        .filter(|host| !host.contains(':'))
+        .map_or_else(
+            || p.user.username.clone(),
+            |host| format!("{}@{host}", p.user.username),
+        );
     let secret = Secret::generate();
     let otp = Builder::new()
         .with_secret(secret.clone())
-        .with_account_name(p.user.username.clone())
+        .with_account_name(account_name.clone())
         .with_issuer(Some("Thelxinoe"))
         .build()
         .map_err(anyhow::Error::from)?;
@@ -422,9 +476,15 @@ async fn totp_start(State(state): State<AppState>, headers: HeaderMap) -> Result
     storage::totp_start(&state.db, p, encrypted)
         .await
         .map_err(failure)?;
-    Ok(Json(
-        json!({"secret":secret.to_base32(),"uri":otp.to_url().map_err(anyhow::Error::from)?}),
-    ))
+    Ok(Json(json!({
+        "secret": secret.to_base32(),
+        "uri": otp.to_url().map_err(anyhow::Error::from)?,
+        "issuer": "Thelxinoe",
+        "account": account_name,
+        "digits": 6,
+        "period": 30,
+        "algorithm": "SHA1",
+    })))
 }
 #[derive(Deserialize)]
 struct Code {
@@ -440,8 +500,19 @@ async fn totp_confirm(
     let account = storage::account(&state.db, p.user.id.clone(), false)
         .await?
         .ok_or_else(ApiError::unauthorized)?;
+    let secret = match &account.totp {
+        Some((secret, false)) => secret.clone(),
+        Some((_, true)) => {
+            return Err(ApiError(
+                StatusCode::CONFLICT,
+                "totp_enabled",
+                "An authenticator app is already enabled for this account.".into(),
+            ));
+        }
+        None => return Err(failure(storage::totp_setup_missing().into())),
+    };
     let step = totp_step(&state, &account, &input.code)?;
-    storage::totp_confirm(&state.db, p, account.totp.unwrap().0, step)
+    storage::totp_confirm(&state.db, p, secret, step)
         .await
         .map_err(failure)?;
     state.notify_events();
@@ -605,7 +676,14 @@ pub async fn recover_from_host(
         .public_url
         .as_ref()
         .map(|u| u.origin().ascii_serialization())
-        .unwrap_or_else(|| format!("http://{}", config.bind));
+        .unwrap_or_else(|| {
+            // A wildcard bind address is not browsable, and localhost keeps passkey enrollment available.
+            if config.bind.ip().is_unspecified() || config.bind.ip().is_loopback() {
+                format!("http://localhost:{}", config.bind.port())
+            } else {
+                format!("http://{}", config.bind)
+            }
+        });
     let db = thelxinoe_database::Database::open(config.state.join("thelxinoe.sqlite3"))?;
     let raw = token();
     storage::recovery(&db, None, username, true, digest(&raw)).await?;
@@ -619,38 +697,86 @@ async fn desktop_start(
     Json(input): Json<Value>,
 ) -> Result<Json<Value>> {
     let context = security::request_context(&state.config, &headers, peer)?;
-    accounts::allow_password_attempt(&state, format!("desktop:{}", context.address)).await?;
+    accounts::allow_password_attempt(&state, format!("desktop:{}", context.bucket())).await?;
     let key = token();
     let raw = token();
+    let code = pairing_code();
     let name = label(input["device_name"].as_str().unwrap_or("Desktop"))?;
     let target = if input["purpose"].as_str() == Some("verify") {
         Some(security::principal(&state, &headers).await?)
     } else {
         None
     };
-    storage::desktop_start(&state.db, key.clone(), digest(&raw), name, target)
-        .await
-        .map_err(failure)?;
+    storage::desktop_start(
+        &state.db,
+        storage::DesktopRequest {
+            key: key.clone(),
+            secret: digest(&raw),
+            code: digest(&normalized_code(&code)),
+            name,
+            address: context.address.to_canonical().to_string(),
+        },
+        target,
+    )
+    .await
+    .map_err(failure)?;
     Ok(Json(
-        json!({"request":key,"secret":raw,"url":format!("{}/?desktop={key}",context.origin),"server_id":state.server_id.as_str(),"expires_in":300}),
+        json!({"request":key,"secret":raw,"code":code,"url":format!("{}/?desktop={key}",context.origin),"server_id":state.server_id.as_str(),"expires_in":300}),
     ))
+}
+/// A short code the desktop shows and the approving browser must type, so a forwarded
+/// approval link alone cannot sign in someone else's desktop.
+fn pairing_code() -> String {
+    const ALPHABET: &[u8; 32] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let raw = token();
+    let code: String = raw
+        .as_bytes()
+        .chunks(2)
+        .take(8)
+        .map(|pair| {
+            let byte = u8::from_str_radix(std::str::from_utf8(pair).unwrap_or("00"), 16)
+                .unwrap_or_default();
+            char::from(ALPHABET[usize::from(byte % 32)])
+        })
+        .collect();
+    format!("{}-{}", &code[..4], &code[4..])
+}
+fn normalized_code(code: &str) -> String {
+    code.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
 }
 #[derive(Deserialize)]
 struct DesktopRequest {
     request: String,
     #[serde(default)]
     secret: String,
+    #[serde(default)]
+    code: String,
 }
 async fn desktop_info(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Query(input): Query<DesktopRequest>,
 ) -> Result<Json<Value>> {
+    let context = security::request_context(&state.config, &headers, peer)?;
     let info = storage::desktop_info(&state.db, input.request)
         .await
         .map_err(failure)?;
-    Ok(Json(
-        json!({"name":info.name,"verifying":info.verifying,"server_id":state.server_id.as_str()}),
-    ))
+    let same_network = info
+        .address
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|address| security::client_bucket(address) == context.bucket());
+    Ok(Json(json!({
+        "name": info.name,
+        "verifying": info.verifying,
+        "requested_from": info.address,
+        "requested_at": info.created_at,
+        "same_network": same_network,
+        "server_id": state.server_id.as_str(),
+    })))
 }
 async fn desktop_approve(
     State(state): State<AppState>,
@@ -658,7 +784,15 @@ async fn desktop_approve(
     Json(input): Json<DesktopRequest>,
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
-    storage::desktop_approve(&state.db, p, input.request)
+    let code = normalized_code(&input.code);
+    if code.len() != 8 {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "desktop_code_format",
+            "Enter the 8-character code shown in the desktop app".into(),
+        ));
+    }
+    storage::desktop_approve(&state.db, p, input.request, digest(&code))
         .await
         .map_err(failure)?;
     Ok(Json(json!({"approved":true})))
@@ -714,8 +848,15 @@ pub(crate) async fn revoke_session(state: &AppState, p: Principal, key: String) 
         .await
         .map_err(failure)
 }
-pub(crate) async fn set_password(state: &AppState, p: Principal, hash: String) -> Result<()> {
-    storage::password(&state.db, p, hash).await.map_err(failure)
+pub(crate) async fn set_password(
+    state: &AppState,
+    p: Principal,
+    hash: String,
+    revoke_client_passwords: bool,
+) -> Result<()> {
+    storage::password(&state.db, p, hash, revoke_client_passwords)
+        .await
+        .map_err(failure)
 }
 pub(crate) async fn password_change_proof(
     state: &AppState,
@@ -758,4 +899,25 @@ pub(crate) async fn password_change_proof(
 }
 pub(crate) fn authorize_admin(c: &rusqlite::Connection, p: &Principal) -> anyhow::Result<()> {
     storage::authorize_admin(c, p)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalized_code, pairing_code};
+
+    #[test]
+    fn pairing_codes_are_unambiguous_and_typing_is_forgiving() {
+        for _ in 0..200 {
+            let code = pairing_code();
+            assert_eq!(code.len(), 9);
+            assert_eq!(&code[4..5], "-");
+            assert!(
+                code.chars()
+                    .filter(|c| *c != '-')
+                    .all(|c| "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".contains(c))
+            );
+            assert_eq!(normalized_code(&code.to_lowercase()), code.replace('-', ""));
+        }
+        assert_eq!(normalized_code(" abcd efgh "), "ABCDEFGH");
+    }
 }

@@ -18,7 +18,7 @@ pub async fn initiate(
     device: Device,
     address: std::net::IpAddr,
 ) -> Result<Value> {
-    let scope = format!("quick-connect:{address}");
+    let scope = format!("quick-connect:{}", crate::security::client_bucket(address));
     let device2 = device.clone();
     let (secret, code, date) = storage::initiate(scope, device2, &state.db)
         .await?

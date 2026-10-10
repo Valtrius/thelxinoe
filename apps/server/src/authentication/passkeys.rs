@@ -66,14 +66,20 @@ async fn credentials(state: &AppState, user: &str) -> Result<Vec<(String, String
 #[derive(Deserialize)]
 struct Start {
     #[serde(default)]
-    username: String,
-    #[serde(default)]
     purpose: String,
 }
 #[derive(Serialize, Deserialize)]
-struct Authentication {
-    state: PasskeyAuthentication,
-    purpose: String,
+enum Authentication {
+    /// Usernameless sign-in: the authenticator chooses the account, so no username is
+    /// sent and the response reveals nothing about which accounts exist.
+    Login(DiscoverableAuthentication),
+    /// Re-verification of the signed-in account.
+    Verify(PasskeyAuthentication),
+}
+fn unknown_passkey() -> ApiError {
+    ApiError::bad(
+        "This passkey isn't registered with this server. It may have been removed; sign in another way.",
+    )
 }
 async fn start(
     State(state): State<AppState>,
@@ -83,35 +89,42 @@ async fn start(
 ) -> Result<Json<Value>> {
     let context = security::request_context(&state.config, &headers, peer)?;
     let webauthn = check_origin(&state, &headers, &context.origin)?;
-    accounts::allow_password_attempt(&state, format!("passkey:{}", context.address)).await?;
-    let p = if input.purpose == "verify" {
-        Some(security::principal(&state, &headers).await?)
-    } else {
-        None
-    };
-    let account = storage::account(
-        &state.db,
-        p.as_ref()
-            .map(|p| p.user.id.clone())
-            .unwrap_or(input.username),
-        p.is_none(),
-    )
-    .await?
-    .ok_or_else(ApiError::unauthorized)?;
-    let passkeys = credentials(&state, &account.id).await?;
-    let (options, authentication) = webauthn
-        .start_passkey_authentication(&passkeys.into_iter().map(|(_, _, p)| p).collect::<Vec<_>>())
-        .map_err(|_| ApiError::bad("No passkey is available for this account"))?;
+    accounts::allow_password_attempt(&state, format!("passkey:{}", context.bucket())).await?;
+    if input.purpose == "verify" {
+        let p = security::principal(&state, &headers).await?;
+        let account = storage::account(&state.db, p.user.id.clone(), false)
+            .await?
+            .ok_or_else(ApiError::unauthorized)?;
+        let passkeys = credentials(&state, &account.id).await?;
+        let (options, authentication) = webauthn
+            .start_passkey_authentication(
+                &passkeys.into_iter().map(|(_, _, p)| p).collect::<Vec<_>>(),
+            )
+            .map_err(|_| ApiError::bad("No passkey is available for this account"))?;
+        let attempt = save_attempt(
+            &state,
+            "passkey",
+            Some(&account),
+            Some(&p),
+            None,
+            &Authentication::Verify(authentication),
+            false,
+        )
+        .await?;
+        return Ok(Json(json!({"attempt":attempt,"options":options})));
+    }
+    let (mut options, authentication) = webauthn
+        .start_discoverable_authentication()
+        .map_err(|_| ApiError::bad("Passkeys are unavailable at this address"))?;
+    // Sign-in starts from a button rather than username autofill.
+    options.mediation = None;
     let attempt = save_attempt(
         &state,
         "passkey",
-        Some(&account),
-        p.as_ref(),
         None,
-        &Authentication {
-            state: authentication,
-            purpose: if p.is_some() { "verify" } else { "login" }.into(),
-        },
+        None,
+        None,
+        &Authentication::Login(authentication),
         false,
     )
     .await?;
@@ -132,26 +145,52 @@ async fn finish(
     let webauthn = check_origin(&state, &headers, &context.origin)?;
     let a = storage::attempt(&state.db, digest(&input.attempt), "passkey".into(), true)
         .await
-        .map_err(failure)?;
+        .map_err(|_| sign_in_expired("The passkey request timed out. Try again."))?;
     let data: Authentication = attempt_payload(&state, &input.attempt, &a)?;
-    let authentication = webauthn
-        .finish_passkey_authentication(&input.credential, &data.state)
-        .map_err(|_| ApiError::bad("Passkey verification failed"))?;
+    let verify = matches!(data, Authentication::Verify(_));
+    let (user, authentication) = match data {
+        Authentication::Login(pending) => {
+            let (user, credential) = webauthn
+                .identify_discoverable_authentication(&input.credential)
+                .map_err(|_| unknown_passkey())?;
+            let user = user.to_string();
+            let keys = credentials(&state, &user).await?;
+            if !keys.iter().any(|(_, _, p)| p.cred_id()[..] == *credential) {
+                return Err(unknown_passkey());
+            }
+            let keys: Vec<DiscoverableKey> = keys
+                .iter()
+                .map(|(_, _, p)| DiscoverableKey::from(p))
+                .collect();
+            let authentication = webauthn
+                .finish_discoverable_authentication(&input.credential, pending, &keys)
+                .map_err(|_| ApiError::bad("Passkey verification failed"))?;
+            (user, authentication)
+        }
+        Authentication::Verify(pending) => {
+            let authentication = webauthn
+                .finish_passkey_authentication(&input.credential, &pending)
+                .map_err(|_| ApiError::bad("Passkey verification failed"))?;
+            (
+                a.user.clone().ok_or_else(ApiError::unauthorized)?,
+                authentication,
+            )
+        }
+    };
     if !authentication.user_verified() {
         return Err(ApiError::unauthorized());
     }
-    let user = a.user.ok_or_else(ApiError::unauthorized)?;
     let account = storage::account(&state.db, user.clone(), false)
         .await?
-        .ok_or_else(ApiError::unauthorized)?;
-    if a.version != Some(account.version) {
+        .ok_or_else(unknown_passkey)?;
+    if verify && a.version != Some(account.version) {
         return Err(ApiError::unauthorized());
     }
     let (key, previous, mut passkey) = credentials(&state, &user)
         .await?
         .into_iter()
         .find(|(_, _, p)| p.cred_id() == authentication.cred_id())
-        .ok_or_else(ApiError::unauthorized)?;
+        .ok_or_else(unknown_passkey)?;
     passkey.update_credential(&authentication);
     storage::passkey_used(
         &state.db,
@@ -163,7 +202,7 @@ async fn finish(
     )
     .await
     .map_err(failure)?;
-    if data.purpose == "verify" {
+    if verify {
         let p = security::principal(&state, &headers).await?;
         if a.session.as_deref() != Some(&p.session_id) || p.user.id != account.id {
             return Err(ApiError::unauthorized());
@@ -238,6 +277,16 @@ async fn register_start(
             ),
         )
         .map_err(|_| ApiError::bad("Cannot create a passkey"))?;
+    // Usernameless sign-in needs the authenticator to store the account (a discoverable
+    // credential); the library only asks for that as a preference.
+    let mut options = serde_json::to_value(options).map_err(anyhow::Error::from)?;
+    if let Some(selection) = options
+        .pointer_mut("/publicKey/authenticatorSelection")
+        .and_then(Value::as_object_mut)
+    {
+        selection.insert("residentKey".into(), json!("required"));
+        selection.insert("requireResidentKey".into(), json!(true));
+    }
     let name = if input.name.trim().is_empty() {
         "Passkey".into()
     } else {
@@ -281,6 +330,18 @@ async fn register_finish(
     .await
     .map_err(failure)?;
     let data: Registration = attempt_payload(&state, &input.attempt, &a)?;
+    if input
+        .credential
+        .extensions
+        .cred_props
+        .as_ref()
+        .and_then(|props| props.rk)
+        == Some(false)
+    {
+        return Err(ApiError::bad(
+            "This authenticator can't store a passkey for sign-in without a username. Use your device's passkey manager or a newer security key.",
+        ));
+    }
     let passkey = webauthn
         .finish_passkey_registration(&input.credential, &data.state)
         .map_err(|_| ApiError::bad("Passkey registration failed"))?;

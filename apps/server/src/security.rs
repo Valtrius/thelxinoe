@@ -18,7 +18,20 @@ pub struct RequestContext {
     pub origin: String,
     pub address: IpAddr,
 }
+/// Rate-limit bucket for a client address. An IPv6 client usually controls its whole /64,
+/// so per-address limits would let it rotate addresses indefinitely.
+pub fn client_bucket(address: IpAddr) -> String {
+    match address.to_canonical() {
+        IpAddr::V6(ip) => ipnet::Ipv6Net::new(ip, 64)
+            .map(|net| net.trunc().to_string())
+            .unwrap_or_else(|_| ip.to_string()),
+        ip => ip.to_string(),
+    }
+}
 impl RequestContext {
+    pub fn bucket(&self) -> String {
+        client_bucket(self.address)
+    }
     pub fn remote(&self) -> bool {
         match self.address {
             IpAddr::V4(ip) => !(ip.is_private() || ip.is_loopback() || ip.is_link_local()),
@@ -338,4 +351,19 @@ pub fn cookie(raw: &str, secure: bool) -> String {
         "thelxinoe_session={raw}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000{}",
         if secure { "; Secure" } else { "" }
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::client_bucket;
+
+    #[test]
+    fn ipv6_clients_share_a_bucket_per_64_and_mapped_ipv4_is_plain_ipv4() {
+        let bucket = |s: &str| client_bucket(s.parse().unwrap());
+        assert_eq!(bucket("2001:db8:1:2:aaaa::1"), "2001:db8:1:2::/64");
+        assert_eq!(bucket("2001:db8:1:2:ffff::9"), bucket("2001:db8:1:2::1"));
+        assert_ne!(bucket("2001:db8:1:3::1"), bucket("2001:db8:1:2::1"));
+        assert_eq!(bucket("::ffff:192.0.2.7"), "192.0.2.7");
+        assert_eq!(bucket("192.0.2.7"), "192.0.2.7");
+    }
 }
