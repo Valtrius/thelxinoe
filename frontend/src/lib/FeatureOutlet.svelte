@@ -179,6 +179,7 @@
     {#await pages.statistics()}{@render loading()}{:then { default: StatisticsView }}
       <StatisticsView
         {user}
+        {timeFormat}
         filters={route}
         filtersChanged={(filters) =>
           updateFilters({ ...route, ...filters }, false)}
