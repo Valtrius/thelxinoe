@@ -836,7 +836,14 @@ test('web player supports YouTube playback shortcuts and left/right-click pause'
   const player = page.getByRole('region', { name: 'Media player' });
   const video = page.locator('video');
 
-  await video.click({ position: { x: 100, y: 100 } });
+  // A mouse reveals the controls by hovering, so its click still pauses after
+  // they hide instead of only revealing them like a tap.
+  await video.hover({ position: { x: 100, y: 100 } });
+  await expect(page.locator('.player-controls')).toHaveCSS('opacity', '0', {
+    timeout: 5000,
+  });
+  await page.mouse.down();
+  await page.mouse.up();
   await expect(player).toBeFocused();
   await expect
     .poll(() => video.evaluate((element) => element.paused))
@@ -940,19 +947,24 @@ test('web player supports YouTube playback shortcuts and left/right-click pause'
 test.describe('touch video playback', () => {
   test.use({ hasTouch: true, viewport: { width: 390, height: 844 } });
 
-  test('tapping the video toggles playback independently of its controls', async ({
+  test('tapping the video reveals hidden controls before toggling playback', async ({
     page,
   }, testInfo) => {
     const state = await fixture(page);
     await decoded(page);
     const video = page.locator('video');
+    const controls = page.locator('.player-controls');
 
+    await expect(controls).toHaveCSS('opacity', '0', { timeout: 5000 });
+    await video.tap({ position: { x: 100, y: 100 } });
+    await expect(controls).toHaveCSS('opacity', '1');
+    await expect(video).toHaveJSProperty('paused', false);
     await video.tap({ position: { x: 100, y: 100 } });
     await expect(video).toHaveJSProperty('paused', true);
     await expect(
       page.getByRole('button', { name: 'Play', exact: true }),
     ).toBeVisible();
-    await expect(page.locator('.player-controls')).toHaveCSS('opacity', '1');
+    await expect(controls).toHaveCSS('opacity', '1');
     await testInfo.attach('Paused touch video', {
       body: await page.screenshot({
         path: testInfo.outputPath('tap-paused.png'),
@@ -968,6 +980,24 @@ test.describe('touch video playback', () => {
     await expect(video).toHaveJSProperty('paused', false);
     await page.getByRole('button', { name: 'Mute', exact: true }).tap();
     await expect(video).toHaveJSProperty('muted', true);
+    await expect(video).toHaveJSProperty('paused', false);
+    // Mobile browsers leave :hover on the controls after tapping one.
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send('DOM.enable');
+    await cdp.send('CSS.enable');
+    const { root } = await cdp.send('DOM.getDocument');
+    const { nodeId } = await cdp.send('DOM.querySelector', {
+      nodeId: root.nodeId,
+      selector: '.player-controls',
+    });
+    await cdp.send('CSS.forcePseudoState', {
+      nodeId,
+      forcedPseudoClasses: ['hover'],
+    });
+    await expect(page.locator('.player-controls:hover')).toHaveCount(1);
+    await expect(controls).toHaveCSS('opacity', '0', { timeout: 5000 });
+    await video.tap({ position: { x: 100, y: 100 } });
+    await expect(controls).toHaveCSS('opacity', '1');
     await expect(video).toHaveJSProperty('paused', false);
     expect(state.errors).toEqual([]);
   });
