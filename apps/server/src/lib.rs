@@ -10,6 +10,7 @@ mod appearance;
 pub mod authentication;
 mod auto_delete;
 mod avatars;
+pub mod backups;
 pub mod config;
 pub mod error;
 mod grants;
@@ -167,6 +168,7 @@ pub fn router(state: AppState) -> Router {
         .merge(managers::router())
         .merge(segments::router())
         .merge(operations::router())
+        .merge(backups::router())
         .route("/api/v1/{*path}", axum::routing::any(not_found))
         .route("/api/v1/health", get(health))
         .route(

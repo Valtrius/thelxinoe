@@ -19,7 +19,9 @@ fn collect(
           UNION ALL SELECT 'health:'||json_extract(j.value,'$.id'),'warning','An indexer or download service needs attention.','services',json_extract(j.value,'$.kind'),'health',0 FROM settings s,json_each(s.value,'$.items') j WHERE s.key='operations.support' AND json_extract(j.value,'$.problem')=1
           UNION ALL SELECT 'product-release','info','Server '||json_extract(value,'$.version')||' is available.','server',NULL,json_extract(value,'$.version'),0 FROM settings WHERE key='product.release' AND json_extract(value,'$.version') IS NOT NULL
           UNION ALL SELECT 'tools-release:'||t.id,'info',t.id||' '||json_extract(t.candidate,'$.version')||' is available.','server',t.id,json_extract(t.candidate,'$.id'),0 FROM server_tools t LEFT JOIN tool_generations g ON g.id=t.installed WHERE t.candidate IS NOT NULL AND t.check_error IS NULL AND (g.id IS NULL OR json_extract(t.candidate,'$.id')!=json_extract(g.manifest,'$.candidate.id')) AND CASE WHEN t.policy='inherit' THEN COALESCE((SELECT json_extract(value,'$.policy') FROM settings WHERE key='product.policy'),'automatic') ELSE t.policy END='notify'
-          UNION ALL SELECT 'product-update:'||json_extract(j.value,'$.id'),CASE WHEN json_extract(j.value,'$.stage')='blocked' THEN 'warning' ELSE 'error' END,'A server update needs attention.','server',NULL,json_extract(j.value,'$.stage'),0 FROM settings s,json_each(s.value,'$.items') j WHERE s.key='product.controller' AND j.key=0 AND json_extract(j.value,'$.stage') IN ('blocked','recovery-required','runtime-failure')";
+          UNION ALL SELECT 'product-update:'||json_extract(j.value,'$.id'),CASE WHEN json_extract(j.value,'$.stage')='blocked' THEN 'warning' ELSE 'error' END,'A server update needs attention.','server',NULL,json_extract(j.value,'$.stage'),0 FROM settings s,json_each(s.value,'$.items') j WHERE s.key='product.controller' AND j.key=0 AND json_extract(j.value,'$.stage') IN ('blocked','recovery-required','runtime-failure')
+          UNION ALL SELECT 'backup-passphrase','warning','Automatic backups need a saved passphrase.','backups',NULL,'missing',0 WHERE (SELECT json_extract(value,'$.policy') FROM settings WHERE key='backups.policy')='automatic' AND NOT EXISTS(SELECT 1 FROM secrets WHERE scope='backups.passphrase')
+          UNION ALL SELECT 'backup-automatic',CASE WHEN json_extract(value,'$.state')='failed' THEN 'error' ELSE 'warning' END,CASE WHEN json_extract(value,'$.state')='failed' THEN 'The automatic backup failed.' ELSE 'The automatic backup was skipped.' END,'backups',NULL,json_extract(value,'$.window')||':'||json_extract(value,'$.state'),1 FROM settings WHERE key='backups.automatic' AND json_extract(value,'$.state') IN ('failed','missed')";
         for row in db.prepare(sql)?.query_map([now() - 7 * 86400], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -42,6 +44,7 @@ fn collect(
                 message,
                 target: match target.as_str() {
                     "services" => AttentionTarget::Services,
+                    "backups" => AttentionTarget::Backups,
                     "jobs" => AttentionTarget::Jobs,
                     _ => AttentionTarget::Server,
                 },

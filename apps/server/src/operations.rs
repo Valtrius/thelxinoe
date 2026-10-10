@@ -17,6 +17,7 @@ pub(crate) enum Severity {
 pub(crate) enum AttentionTarget {
     Services,
     Server,
+    Backups,
     Jobs,
     Online,
     Requests,
@@ -93,71 +94,7 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/api/v1/admin/operations", get(dashboard))
         .route("/api/v1/admin/diagnostics", get(diagnostics))
         .route("/api/v1/admin/devices", get(devices))
-        .route("/api/v1/admin/backups", get(backups).post(backup))
-        .route(
-            "/api/v1/admin/backups/{id}/restore",
-            axum::routing::post(restore),
-        )
         .route("/api/v1/users/{id}", put(change_user).delete(delete_user))
-}
-async fn backups(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
-    security::require(&state, &headers, Capability::ManageServer).await?;
-    Ok(Json(
-        crate::managers::controller_request(&state, "/backups", None).await?,
-    ))
-}
-#[derive(serde::Deserialize)]
-struct BackupInput {
-    passphrase: String,
-    #[serde(default)]
-    confirm: bool,
-}
-async fn backup(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(input): Json<BackupInput>,
-) -> Result<Json<Value>> {
-    backup_command(state, headers, input, None).await
-}
-async fn restore(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(key): Path<String>,
-    Json(input): Json<BackupInput>,
-) -> Result<Json<Value>> {
-    if uuid::Uuid::parse_str(&key).is_err() {
-        return Err(ApiError::bad("Invalid backup ID"));
-    }
-    backup_command(state, headers, input, Some(key)).await
-}
-async fn backup_command(
-    state: AppState,
-    headers: HeaderMap,
-    input: BackupInput,
-    restore: Option<String>,
-) -> Result<Json<Value>> {
-    let p = security::require(&state, &headers, Capability::ManageServer).await?;
-    if !input.confirm {
-        return Err(ApiError::bad("Confirm the temporary service interruption"));
-    }
-    let busy = storage::backup_command_read_playback_sessions(&state.db).await?;
-    if busy {
-        return Err(ApiError::conflict(
-            "Wait for active playback and background work to finish",
-        ));
-    }
-    let path = restore
-        .as_ref()
-        .map_or("/backups".into(), |key| format!("/backups/{key}/restore"));
-    storage::backup_command_write_audit(p, &state.db, restore).await?;
-    Ok(Json(
-        crate::managers::controller_request(
-            &state,
-            &path,
-            Some(json!({"passphrase":input.passphrase})),
-        )
-        .await?,
-    ))
 }
 #[derive(serde::Deserialize)]
 struct UserChange {
