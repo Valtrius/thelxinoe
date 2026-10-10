@@ -6619,6 +6619,7 @@ dependencies = [
  "oauth2",
  "openidconnect",
  "openssl",
+ "percent-encoding",
  "process-wrap",
  "reqwest 0.13.5",
  "rusqlite",

@@ -7,6 +7,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use thelxinoe_core::{Principal, Role};
 
 pub(super) fn router() -> Router<AppState> {
@@ -47,13 +48,17 @@ async fn call(
     body: Option<Value>,
     user: Option<i64>,
 ) -> Result<Value> {
+    let mut url = format!("{}/api/v1/{path}", c.base);
+    if !query.is_empty() {
+        url.push('?');
+        url.push_str(&query_string(query));
+    }
     let mut request = c
         .state
         .managers
         .http
-        .request(method, format!("{}/api/v1/{path}", c.base))
-        .header("X-Api-Key", &c.key)
-        .query(query);
+        .request(method, url)
+        .header("X-Api-Key", &c.key);
     if let Some(user) = user {
         request = request.header("X-Api-User", user.to_string());
     }
@@ -80,6 +85,22 @@ async fn call(
         return Ok(Value::Null);
     }
     read(response).await
+}
+
+/// Seerr's OpenAPI validator rejects reserved characters in raw query values, including the `+`
+/// that form encoding uses for spaces. Percent-encode everything but alphanumerics instead.
+fn query_string(query: &[(&str, String)]) -> String {
+    query
+        .iter()
+        .map(|(key, value)| {
+            format!(
+                "{}={}",
+                utf8_percent_encode(key, NON_ALPHANUMERIC),
+                utf8_percent_encode(value, NON_ALPHANUMERIC)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("&")
 }
 
 fn public(mut value: Value) -> Value {
@@ -924,6 +945,17 @@ mod tests {
             )
             .is_err()
         );
+    }
+    #[test]
+    fn search_terms_reach_seerr_without_reserved_characters() {
+        assert_eq!(
+            query_string(&[
+                ("query", "M*A*S*H: Star Wars & Amélie's (1+1)".into()),
+                ("page", "1".into())
+            ]),
+            "query=M%2AA%2AS%2AH%3A%20Star%20Wars%20%26%20Am%C3%A9lie%27s%20%281%2B1%29&page=1"
+        );
+        assert_eq!(query_string(&[]), "");
     }
     #[test]
     fn removes_nested_user_secrets() {
