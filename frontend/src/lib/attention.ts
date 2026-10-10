@@ -4,6 +4,7 @@ import { api } from './api';
 export type AttentionTarget =
   | 'services'
   | 'server'
+  | 'backups'
   | 'jobs'
   | 'online'
   | 'requests'

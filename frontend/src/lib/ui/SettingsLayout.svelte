@@ -85,7 +85,7 @@
       label: 'Server',
       icon: Server,
       keywords:
-        'health storage cache docker tools updates timezone time format diagnostics',
+        'health storage cache docker tools updates maintenance window timezone time format diagnostics',
     },
     {
       id: 'analysis',
@@ -117,7 +117,8 @@
       id: 'backups',
       label: 'Backups',
       icon: ArchiveRestore,
-      keywords: 'restore encryption archives passphrase',
+      keywords:
+        'restore encryption archives passphrase automatic schedule retention maintenance window',
     },
     {
       id: 'people',

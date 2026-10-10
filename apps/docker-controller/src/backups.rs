@@ -39,11 +39,26 @@ struct Record {
     rollback_phase: Option<RollbackPhase>,
     #[serde(default)]
     release_restore: Option<String>,
+    #[serde(default)]
+    automatic: bool,
 }
 #[derive(Deserialize)]
 pub(super) struct Input {
     passphrase: String,
 }
+#[derive(Deserialize)]
+pub(super) struct Creation {
+    passphrase: String,
+    #[serde(default)]
+    automatic: Option<Automatic>,
+}
+/// The server chooses the identity, so a lost response cannot start a second backup.
+#[derive(Deserialize)]
+struct Automatic {
+    id: String,
+    retain: usize,
+}
+const MAX_RETAINED: usize = 365;
 fn root() -> PathBuf {
     store::root().join("backups")
 }
@@ -72,7 +87,7 @@ fn validate_record(r: &Record) -> Result<()> {
     Ok(())
 }
 fn public(r: &Record) -> Value {
-    json!({"id":r.id,"stage":r.stage,"created_at":r.created_at,"error":r.error,"archive":format!("{}.age",r.id)})
+    json!({"id":r.id,"stage":r.stage,"created_at":r.created_at,"error":r.error,"archive":format!("{}.age",r.id),"automatic":r.automatic})
 }
 fn failure_stage(r: &Record) -> &'static str {
     // The restore attempt is persisted before quiescence, even if its snapshot never completes.
@@ -113,7 +128,7 @@ pub(super) async fn list() -> Result<Json<Value>> {
                 && !items.iter().any(|r| r["id"] == key)
             {
                 items.push(
-                    json!({"id":key,"stage":"imported","created_at":0,"archive":name,"error":null}),
+                    json!({"id":key,"stage":"imported","created_at":0,"archive":name,"error":null,"automatic":false}),
                 );
             }
         }
@@ -288,24 +303,81 @@ async fn capture(d: &Deployment, r: &Record, leaf: &str) -> Result<()> {
     }
     Ok(())
 }
-fn check_input(input: &Input) -> Result<()> {
-    if !(16..=1024).contains(&input.passphrase.len()) {
+fn check_passphrase(passphrase: &str) -> Result<()> {
+    if !(16..=1024).contains(&passphrase.len()) {
         return Err(bad("Use a backup passphrase of 16 to 1024 bytes"));
+    }
+    Ok(())
+}
+fn archived(stage: &str) -> bool {
+    matches!(stage, "complete" | "restored" | "restore-failed")
+}
+/// Removes automatic archives beyond the newest `retain`, and failed automatic attempts
+/// older than `current`. Manual, imported and unfinished operations are never touched.
+fn prune(current: &Record, retain: usize) -> Result<()> {
+    let mut automatic = vec![];
+    for entry in std::fs::read_dir(root()).map_err(|_| unavailable())? {
+        let path = entry
+            .map_err(|_| unavailable())?
+            .path()
+            .join("operation.json");
+        if path.is_file() {
+            let r: Record = persisted(store::read(&path))?;
+            if r.automatic && r.id != current.id {
+                automatic.push(r);
+            }
+        }
+    }
+    automatic.sort_by_key(|r| std::cmp::Reverse(r.created_at));
+    let mut expired: Vec<&Record> = automatic.iter().filter(|r| r.stage == "failed").collect();
+    // A failed attempt never costs an existing archive; a new archive counts toward the limit.
+    if archived(&current.stage) {
+        expired.extend(
+            automatic
+                .iter()
+                .filter(|r| archived(&r.stage))
+                .skip(retain.saturating_sub(1)),
+        );
+    }
+    for r in expired {
+        id(&r.id)?;
+        // Remove the archive first: an interrupted prune leaves a record to retry, never an orphan.
+        match std::fs::remove_file(archive_root().join(format!("{}.age", r.id))) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(unavailable()),
+            _ => (),
+        }
+        persisted(std::fs::remove_dir_all(work(&r.id)).map_err(Into::into))?;
     }
     Ok(())
 }
 pub(super) async fn create(
     State(runtime): State<Runtime>,
-    Json(input): Json<Input>,
+    Json(input): Json<Creation>,
 ) -> Result<Json<Value>> {
-    check_input(&input)?;
+    check_passphrase(&input.passphrase)?;
+    let key = match &input.automatic {
+        Some(automatic) => {
+            id(&automatic.id)?;
+            if !(1..=MAX_RETAINED).contains(&automatic.retain) {
+                return Err(bad("Keep 1 to 365 automatic backups"));
+            }
+            let path = work(&automatic.id).join("operation.json");
+            if path.is_file() {
+                // A retried request observes the original operation, even while it holds the lock.
+                let r: Record = persisted(store::read(&path))?;
+                validate_record(&r)?;
+                return Ok(Json(public(&r)));
+            }
+            automatic.id.clone()
+        }
+        None => thelxinoe_core::id(),
+    };
     let guard = runtime
         .0
         .try_lock_owned()
         .map_err(|_| conflict("Another Docker operation is active"))?;
     let d = bootstrap().await?;
     let (services, components) = inspect(&d).await?;
-    let key = thelxinoe_core::id();
     private_dir(&root())?;
     private_dir(&archive_root())?;
     private_dir(&work(&key))?;
@@ -319,9 +391,11 @@ pub(super) async fn create(
         recovery_ready: false,
         rollback_phase: None,
         release_restore: None,
+        automatic: input.automatic.is_some(),
     };
     record(&r)?;
     let response = public(&r);
+    let retain = input.automatic.map(|automatic| automatic.retain);
     tokio::spawn(async move {
         let _guard = guard;
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -372,7 +446,12 @@ pub(super) async fn create(
                 }
             }
         }
-        let _ = record(&r);
+        if record(&r).is_ok()
+            && let Some(retain) = retain
+            && let Err(error) = prune(&r, retain)
+        {
+            eprintln!("Automatic backup rotation failed: {}", error.1);
+        }
     });
     Ok(Json(response))
 }
@@ -382,7 +461,7 @@ pub(super) async fn restore(
     Json(input): Json<Input>,
 ) -> Result<Json<Value>> {
     id(&key)?;
-    check_input(&input)?;
+    check_passphrase(&input.passphrase)?;
     let guard = runtime
         .0
         .try_lock_owned()
@@ -403,6 +482,7 @@ pub(super) async fn restore(
             recovery_ready: false,
             rollback_phase: None,
             release_restore: None,
+            automatic: false,
         }
     };
     if !matches!(

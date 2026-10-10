@@ -55,7 +55,7 @@
   ] as const;
   const settingsAttention = $derived(
     $attention.filter((item) =>
-      ['services', 'server', 'jobs', 'online'].includes(item.target),
+      ['services', 'server', 'backups', 'jobs', 'online'].includes(item.target),
     ),
   );
   function menuAttention(name: string) {

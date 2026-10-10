@@ -2,33 +2,6 @@
 use super::*;
 use thelxinoe_database::Database;
 
-pub(super) async fn backup_command_read_playback_sessions(db: &Database) -> anyhow::Result<bool> {
-    db.read("operations.backup_command_read_playback_sessions", |db|Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM playback_sessions WHERE state IN ('ready','playing','paused') AND updated_at>?1-120) OR EXISTS(SELECT 1 FROM jobs WHERE state='running')",[now()],|r|r.get::<_,bool>(0))?)).await
-}
-
-pub(super) async fn backup_command_write_audit(
-    p: thelxinoe_core::Principal,
-    db: &Database,
-    restore: Option<String>,
-) -> anyhow::Result<()> {
-    db.write("operations.backup_command_write_audit", move |db| {
-        db.execute(
-            "INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,?2,'server',?3)",
-            params![
-                p.user.id,
-                if restore.is_some() {
-                    "backup.restore"
-                } else {
-                    "backup.create"
-                },
-                now()
-            ],
-        )?;
-        Ok(())
-    })
-    .await
-}
-
 pub(super) async fn change_user(
     db: &Database,
     key: String,

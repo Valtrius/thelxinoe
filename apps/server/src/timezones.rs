@@ -7,7 +7,7 @@ use crate::{
     security,
 };
 use axum::{Json, extract::State, http::HeaderMap};
-use chrono::{DateTime, Timelike, Utc};
+use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use chrono_tz::Tz;
 use rusqlite::{OptionalExtension, params};
 use serde::Deserialize;
@@ -25,6 +25,14 @@ pub(crate) async fn in_server_window(
     // Resolve the saved zone at the point of use: changing the server setting
     // also changes already queued maintenance, without restarting a scheduler.
     storage::in_server_window(&state.db, start, end).await
+}
+
+pub(crate) async fn opened_server_window(
+    state: &AppState,
+    start: u32,
+    end: u32,
+) -> anyhow::Result<Option<NaiveDate>> {
+    storage::opened_server_window(&state.db, start, end).await
 }
 
 pub async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
@@ -152,5 +160,37 @@ mod tests {
         assert!(!maintenance_window(&db, at("2026-07-10T07:00:00Z"), 3, 5).unwrap());
         db.execute("DELETE FROM settings", []).unwrap();
         assert!(maintenance_window(&db, at("2026-07-10T03:00:00Z"), 3, 5).unwrap());
+    }
+
+    #[test]
+    fn window_occurrences_are_named_by_their_local_opening_date() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT); INSERT INTO settings VALUES ('timezone','Asia/Tokyo')").unwrap();
+        let at = |value: &str| value.parse::<DateTime<Utc>>().unwrap();
+        let day = |value: &str| Some(value.parse::<NaiveDate>().unwrap());
+        // 03:00 in Tokyo is still the previous day in UTC.
+        assert_eq!(
+            storage::window_opened(&db, at("2026-07-09T18:30:00Z"), 3, 5).unwrap(),
+            day("2026-07-10")
+        );
+        assert_eq!(
+            storage::window_opened(&db, at("2026-07-09T21:00:00Z"), 3, 5).unwrap(),
+            None
+        );
+        // Both sides of midnight belong to the occurrence that opened at 22:00.
+        for instant in ["2026-07-10T13:30:00Z", "2026-07-10T17:30:00Z"] {
+            assert_eq!(
+                storage::window_opened(&db, at(instant), 22, 3).unwrap(),
+                day("2026-07-10")
+            );
+        }
+        assert_eq!(
+            storage::window_opened(&db, at("2026-07-10T14:59:00Z"), 0, 0).unwrap(),
+            day("2026-07-10")
+        );
+        assert_eq!(
+            storage::window_opened(&db, at("2026-07-10T15:00:00Z"), 0, 0).unwrap(),
+            day("2026-07-11")
+        );
     }
 }
