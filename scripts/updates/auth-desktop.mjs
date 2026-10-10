@@ -80,7 +80,10 @@ export async function authenticationScenario({
           await fetch(`${lab.baseUrl}/api/v1/auth/desktop/approve`, {
             method: 'POST',
             headers: authHeaders,
-            body: JSON.stringify({ request: started.request }),
+            body: JSON.stringify({
+              request: started.request,
+              code: started.code,
+            }),
           })
         ).ok,
       ).toBe(true);
@@ -91,6 +94,7 @@ export async function authenticationScenario({
       expect(completed.status).toBe(200);
       expect(completed.body.token).toBeUndefined();
       expect(completed.body.user.username).toBe(credentials.username);
+      expect((await invoke('/me/auth')).body.fresh).toBe(false);
       expect(
         (
           await invoke('/auth/desktop/exchange', 'POST', {
@@ -172,7 +176,10 @@ export async function authenticationScenario({
           await fetch(`${lab.baseUrl}/api/v1/auth/desktop/approve`, {
             method: 'POST',
             headers: authHeaders,
-            body: JSON.stringify({ request: proofRequest.request }),
+            body: JSON.stringify({
+              request: proofRequest.request,
+              code: proofRequest.code,
+            }),
           })
         ).status,
       ).toBe(200);

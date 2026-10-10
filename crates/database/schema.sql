@@ -97,8 +97,12 @@ CREATE TABLE auth_recovery (
 CREATE TABLE auth_desktop_requests (
     id TEXT NOT NULL PRIMARY KEY,
     secret_hash TEXT NOT NULL,
+    code_hash TEXT NOT NULL,
     name TEXT NOT NULL,
+    address TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL,
+    failures INTEGER NOT NULL DEFAULT 0,
     user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
     authorizer_session_id TEXT,
     verified_at INTEGER,

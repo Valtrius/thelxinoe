@@ -27,6 +27,7 @@ pub(super) async fn issue_session(
     db.write("auth.issue_session", move |c| {
         let (user_id, expected_hash, authorizer, version, verified_at, remembered, client_password, provider_version, issuer, subject) = match authorization {
             SessionAuthorization::Password { user_id, expected_hash } => (user_id, Some(expected_hash), None, None, now(), None, None, None, None, None),
+            // Approval links can be forwarded, so an approved session never inherits the approver's freshness.
             SessionAuthorization::ApprovedSession { user_id, session_id } => (user_id, None, Some(session_id), None, 0, None, None, None, None, None),
             SessionAuthorization::Verified { user_id, auth_version, verified_at, remembered_device_id } => (user_id, None, None, Some(auth_version), verified_at, remembered_device_id, None, None, None, None),
             SessionAuthorization::Oidc { user_id, auth_version, verified_at, provider_version, issuer, subject } => (user_id, None, None, Some(auth_version), verified_at, None, None, Some(provider_version), Some(issuer), Some(subject)),
@@ -34,7 +35,7 @@ pub(super) async fn issue_session(
         };
         let inserted = c.execute(
             "INSERT INTO sessions(id,user_id,token_hash,transport,name,created_at,expires_at,last_seen,verified_at,remembered_device_id,client_password_id)
-             SELECT ?1,id,?3,?4,?5,?6,?7,?6,CASE WHEN ?9 IS NOT NULL THEN (SELECT verified_at FROM sessions WHERE id=?9) ELSE ?11 END,?12,?13 FROM users
+             SELECT ?1,id,?3,?4,?5,?6,?7,?6,?11,?12,?13 FROM users
              WHERE id=?2 AND NOT EXISTS(SELECT 1 FROM auth_recovery WHERE user_id=?2)
              AND (?14 IS NULL OR EXISTS(SELECT 1 FROM auth_oidc_provider p JOIN auth_oidc_identities o ON o.issuer=p.issuer
                  WHERE p.id=1 AND p.version=?14 AND o.issuer=?15 AND o.subject=?16 AND o.user_id=?2)) AND (

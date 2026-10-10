@@ -1,13 +1,15 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
-  import { api, desktop, type User } from './api';
+  import { api, ApiError, desktop, type User } from './api';
   import {
     type AuthOptions,
     type LoginResponse,
     passkeySignIn,
+    passkeysHere,
     oidcSignIn,
     nativeBrowserSignIn,
     openAuthenticationBrowser,
+    errorMessage,
   } from './authentication';
   import FormField from './ui/FormField.svelte';
   import Button from './ui/Button.svelte';
@@ -37,6 +39,7 @@
     busy = $state(false),
     error = $state(untrack(() => initialError));
   let browser = $state<AbortController | null>(null),
+    pairingCode = $state(''),
     cancelBrowser: (() => void) | undefined;
   onDestroy(() => {
     browser?.abort();
@@ -48,9 +51,28 @@
     try {
       await action();
     } catch (caught) {
-      error = caught instanceof Error ? caught.message : String(caught);
+      error = errorMessage(caught);
     } finally {
       busy = false;
+    }
+  }
+  async function verifyCode() {
+    try {
+      await accept(
+        await api<LoginResponse>('/auth/totp', 'POST', {
+          attempt,
+          code: code.replace(/\s/g, ''),
+          remember_device: remember,
+        }),
+      );
+    } catch (caught) {
+      if (caught instanceof ApiError && caught.code === 'sign_in_expired') {
+        // The attempt is gone; only a new password sign-in can continue.
+        attempt = '';
+        password = '';
+      }
+      code = '';
+      throw caught;
     }
   }
   async function accept(response: LoginResponse) {
@@ -84,13 +106,14 @@
       browser = new AbortController();
       try {
         await accept(
-          await nativeBrowserSignIn(
-            browser.signal,
-            (cancel) => (cancelBrowser = cancel),
-          ),
+          await nativeBrowserSignIn(browser.signal, (cancel, pairing) => {
+            cancelBrowser = cancel;
+            pairingCode = pairing;
+          }),
         );
       } finally {
         browser = null;
+        pairingCode = '';
         cancelBrowser = undefined;
       }
     });
@@ -115,18 +138,11 @@
     Create the administrator account for your media server.
   </p>{/if}
 {#if attempt}
+  <p class="text-muted">Enter the 6-digit code from your authenticator app.</p>
   <form
     onsubmit={(e) => {
       e.preventDefault();
-      void act(async () =>
-        accept(
-          await api<LoginResponse>('/auth/totp', 'POST', {
-            attempt,
-            code,
-            remember_device: remember,
-          }),
-        ),
-      );
+      void act(verifyCode);
     }}
   >
     <FormField
@@ -136,8 +152,8 @@
         bind:value={code}
         inputmode="numeric"
         autocomplete="one-time-code"
-        pattern={'[0-9]{6}'}
-        maxlength="6"
+        pattern={'[0-9 ]{6,7}'}
+        maxlength="7"
         required
         disabled={busy}
       /></FormField
@@ -225,15 +241,14 @@
           onclick={() => void browserSignIn()}>Sign in with browser</Button
         >
       {:else}
-        {#if options?.passkeys && options.canonical_url === location.origin}<Button
+        {#if passkeysHere(options)}<Button
             variant="secondary"
             size="form"
-            disabled={busy || !username.trim()}
-            onclick={() =>
-              act(async () => accept(await passkeySignIn(username)))}
+            disabled={busy}
+            onclick={() => act(async () => accept(await passkeySignIn()))}
             >Sign in with passkey</Button
           >{/if}
-        {#if options?.oidc}<Button
+        {#if options?.oidc?.available}<Button
             variant="secondary"
             size="form"
             disabled={busy}
@@ -260,7 +275,21 @@
     </div>
   {/if}
 {/if}
-{#if browser}<p role="status">Approve this desktop in your browser.</p>
+{#if browser}<div role="status" class="mt-4">
+    <p class="mb-2">
+      Your browser opened the server's sign-in page. Approve this desktop there
+      and enter this code when asked:
+    </p>
+    {#if pairingCode}<p
+        class="my-3 font-mono text-2xl font-semibold tracking-[0.2em]"
+        aria-label={`Pairing code ${pairingCode.split('').join(' ')}`}
+      >
+        {pairingCode}
+      </p>{/if}
+    <p class="mt-0 text-xs text-muted">
+      Never type this code on a page you reached from a link someone sent you.
+    </p>
+  </div>
   <Button
     variant="secondary"
     onclick={() => {

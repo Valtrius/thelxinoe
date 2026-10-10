@@ -156,7 +156,11 @@ pub async fn login(
     body: Value,
 ) -> Result<Value> {
     let device = device(headers)?;
-    accounts::allow_password_attempt(state, format!("jellyfin:{address}")).await?;
+    accounts::allow_password_attempt(
+        state,
+        format!("jellyfin:{}", crate::security::client_bucket(address)),
+    )
+    .await?;
     if let Some(user) = crate::authentication::client_credential(
         state,
         body["Username"].as_str().unwrap_or_default(),

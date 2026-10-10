@@ -12,6 +12,10 @@ pub(super) enum Fault {
     LastMethod,
     Conflict,
     SelfRecovery,
+    /// Rejected input, with a stable code and a user-facing explanation.
+    Invalid(&'static str, &'static str),
+    /// Conflicts with the account's current state, with a stable code and explanation.
+    State(&'static str, &'static str),
 }
 impl std::fmt::Display for Fault {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -142,24 +146,39 @@ pub(super) async fn attempt(
         .await
     }
 }
-pub(super) async fn failed_attempt(db: &Database, hash: String) -> Result<()> {
+/// Records a failed proof and returns the attempt's failure count.
+pub(super) async fn failed_attempt(db: &Database, hash: String) -> Result<i64> {
     db.write("authentication.attempt.failed", move |c| {
-        c.execute(
-            "UPDATE auth_attempts SET failures=failures+1 WHERE token_hash=?1",
+        Ok(c.query_row(
+            "UPDATE auth_attempts SET failures=failures+1 WHERE token_hash=?1 RETURNING failures",
             [hash],
-        )?;
-        Ok(())
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(5))
     })
     .await
 }
 fn consume_step(c: &Connection, user: &str, step: u64, enabled: bool) -> Result<()> {
-    if c.execute(
-        "UPDATE auth_totp SET last_step=?1 WHERE user_id=?2 AND enabled=?3 AND last_step<?1",
-        params![step as i64, user, enabled],
-    )? != 1
-    {
-        return Err(Fault::Unauthorized.into());
+    let last: i64 = c
+        .query_row(
+            "SELECT last_step FROM auth_totp WHERE user_id=?1 AND enabled=?2",
+            params![user, enabled],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or(Fault::Unauthorized)?;
+    if last >= step as i64 {
+        return Err(Fault::Invalid(
+            "totp_reused",
+            "This code was already used. Wait for the next code from your authenticator app.",
+        )
+        .into());
     }
+    c.execute(
+        "UPDATE auth_totp SET last_step=?1 WHERE user_id=?2",
+        params![step as i64, user],
+    )?;
     Ok(())
 }
 pub(super) async fn verify(
@@ -268,11 +287,17 @@ fn audit(c: &Connection, p: &Principal, action: &str, target: &str) -> Result<()
     )?;
     Ok(())
 }
+pub(super) fn totp_setup_missing() -> Fault {
+    Fault::State(
+        "totp_setup_missing",
+        "Authenticator setup was restarted or canceled. Start setup again and scan the new QR code.",
+    )
+}
 pub(super) async fn totp_start(db: &Database, p: Principal, secret: Vec<u8>) -> Result<()> {
     db.write("authentication.totp.begin",move |c|{
         let tx=c.transaction()?;authorized(&tx,&p,true)?;
-        if !tx.query_row("SELECT password_hash IS NOT NULL FROM users WHERE id=?1",[&p.user.id],|r|r.get::<_,bool>(0))? {return Err(Fault::Conflict.into());}
-        if tx.query_row("SELECT EXISTS(SELECT 1 FROM auth_totp WHERE user_id=?1 AND enabled=1)",[&p.user.id],|r|r.get::<_,bool>(0))?{return Err(Fault::Conflict.into());}
+        if !tx.query_row("SELECT password_hash IS NOT NULL FROM users WHERE id=?1",[&p.user.id],|r|r.get::<_,bool>(0))? {return Err(Fault::State("password_required","Set a password first. The authenticator app protects password sign-in.").into());}
+        if tx.query_row("SELECT EXISTS(SELECT 1 FROM auth_totp WHERE user_id=?1 AND enabled=1)",[&p.user.id],|r|r.get::<_,bool>(0))?{return Err(Fault::State("totp_enabled","An authenticator app is already enabled. Remove it before setting up a new one.").into());}
         tx.execute("INSERT INTO auth_totp(user_id,secret) VALUES(?1,?2) ON CONFLICT(user_id) DO UPDATE SET secret=excluded.secret,last_step=-1",params![p.user.id,secret])?;tx.commit()?;Ok(())
     }).await
 }
@@ -285,12 +310,23 @@ pub(super) async fn totp_confirm(
     db.write("authentication.totp.confirm", move |c| {
         let tx = c.transaction()?;
         authorized(&tx, &p, true)?;
-        if !tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM auth_totp WHERE user_id=?1 AND secret=?2 AND enabled=0)",
-            params![p.user.id, secret],
-            |r| r.get::<_, bool>(0),
-        )? {
-            return Err(Fault::Unauthorized.into());
+        match tx
+            .query_row(
+                "SELECT secret=?2,enabled FROM auth_totp WHERE user_id=?1",
+                params![p.user.id, secret],
+                |r| Ok((r.get::<_, bool>(0)?, r.get::<_, bool>(1)?)),
+            )
+            .optional()?
+        {
+            Some((_, true)) => {
+                return Err(Fault::State(
+                    "totp_enabled",
+                    "An authenticator app is already enabled for this account.",
+                )
+                .into());
+            }
+            Some((true, false)) => {}
+            _ => return Err(totp_setup_missing().into()),
         }
         consume_step(&tx, &p.user.id, step, false)?;
         tx.execute(
@@ -325,7 +361,12 @@ pub(super) async fn remove_method(
         revoke_other(&tx,&p)?;audit(&tx,&p,"auth.method.removed",&kind)?;tx.commit()?;Ok(())
     }).await
 }
-pub(super) async fn password(db: &Database, p: Principal, hash: String) -> Result<()> {
+pub(super) async fn password(
+    db: &Database,
+    p: Principal,
+    hash: String,
+    revoke_client_passwords: bool,
+) -> Result<()> {
     db.write("authentication.password", move |c| {
         let tx = c.transaction()?;
         authorized(&tx, &p, true)?;
@@ -335,6 +376,14 @@ pub(super) async fn password(db: &Database, p: Principal, hash: String) -> Resul
         )?;
         revoke_other(&tx, &p)?;
         audit(&tx, &p, "user.password", &p.user.id)?;
+        if revoke_client_passwords
+            && tx.execute(
+                "DELETE FROM auth_client_passwords WHERE user_id=?1",
+                [&p.user.id],
+            )? > 0
+        {
+            audit(&tx, &p, "auth.client-password.revoked-all", &p.user.id)?;
+        }
         tx.commit()?;
         Ok(())
     })
@@ -644,11 +693,16 @@ pub(super) async fn recovery_enroll(
     })
     .await
 }
+pub(super) struct DesktopRequest {
+    pub key: String,
+    pub secret: String,
+    pub code: String,
+    pub name: String,
+    pub address: String,
+}
 pub(super) async fn desktop_start(
     db: &Database,
-    key: String,
-    secret: String,
-    name: String,
+    request: DesktopRequest,
     target: Option<Principal>,
 ) -> Result<()> {
     db.write("authentication.desktop.begin", move |c| {
@@ -656,21 +710,43 @@ pub(super) async fn desktop_start(
         if let Some(p)=&target {authorized(&tx,p,false)?;}
         tx.execute("DELETE FROM auth_desktop_requests WHERE expires_at<=?1",[now()])?;
         if tx.query_row("SELECT COUNT(*) FROM auth_desktop_requests",[],|r|r.get::<_,i64>(0))?>10000 {return Err(Fault::Conflict.into());}
-        tx.execute("INSERT INTO auth_desktop_requests(id,secret_hash,name,expires_at,target_user_id,target_session_id) VALUES(?1,?2,?3,?4,?5,?6)",params![key,secret,name,now()+300,target.as_ref().map(|p|&p.user.id),target.as_ref().map(|p|&p.session_id)])?;
+        tx.execute("INSERT INTO auth_desktop_requests(id,secret_hash,code_hash,name,address,created_at,expires_at,target_user_id,target_session_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![request.key,request.secret,request.code,request.name,request.address,now(),now()+300,target.as_ref().map(|p|&p.user.id),target.as_ref().map(|p|&p.session_id)])?;
         tx.commit()?; Ok(())
     }).await
 }
-#[derive(Serialize)]
 pub(super) struct DesktopInfo {
     pub name: String,
     pub verifying: Option<String>,
+    pub address: String,
+    pub created_at: i64,
+}
+fn desktop_ended() -> Fault {
+    Fault::State(
+        "desktop_request_ended",
+        "This desktop request expired, was canceled or was already used. Start again from the desktop app.",
+    )
 }
 pub(super) async fn desktop_info(db: &Database, key: String) -> Result<DesktopInfo> {
-    db.read("authentication.desktop.info",move|c|Ok(c.query_row("SELECT d.name,u.username FROM auth_desktop_requests d LEFT JOIN users u ON u.id=d.target_user_id WHERE d.id=?1 AND d.expires_at>?2 AND d.user_id IS NULL",params![key,now()],|r|Ok(DesktopInfo{name:r.get(0)?,verifying:r.get(1)?})).optional()?.ok_or(Fault::Unauthorized)?)).await
+    db.read("authentication.desktop.info",move|c|Ok(c.query_row("SELECT d.name,u.username,d.address,d.created_at FROM auth_desktop_requests d LEFT JOIN users u ON u.id=d.target_user_id WHERE d.id=?1 AND d.expires_at>?2 AND d.user_id IS NULL AND d.failures<5",params![key,now()],|r|Ok(DesktopInfo{name:r.get(0)?,verifying:r.get(1)?,address:r.get(2)?,created_at:r.get(3)?})).optional()?.ok_or_else(desktop_ended)?)).await
 }
-pub(super) async fn desktop_approve(db: &Database, p: Principal, key: String) -> Result<()> {
+pub(super) async fn desktop_approve(
+    db: &Database,
+    p: Principal,
+    key: String,
+    code: String,
+) -> Result<()> {
     db.write("authentication.desktop.approve",move|c|{
         let tx=c.transaction()?;authorized(&tx,&p,true)?;
+        let matches:bool=tx.query_row("SELECT code_hash=?2 FROM auth_desktop_requests WHERE id=?1 AND expires_at>?3 AND user_id IS NULL AND failures<5",params![key,code,now()],|r|r.get(0)).optional()?.ok_or_else(desktop_ended)?;
+        if !matches {
+            let failures:i64=tx.query_row("UPDATE auth_desktop_requests SET failures=failures+1 WHERE id=?1 RETURNING failures",[&key],|r|r.get(0))?;
+            tx.commit()?;
+            return Err(if failures>=5 {
+                Fault::State("desktop_request_ended","Too many incorrect codes. Start again from the desktop app.")
+            } else {
+                Fault::Invalid("desktop_code_mismatch","That code doesn't match the one shown in the desktop app. Check it and try again.")
+            }.into());
+        }
         if tx.execute("UPDATE auth_desktop_requests SET user_id=?1,authorizer_session_id=?2,verified_at=(SELECT verified_at FROM sessions WHERE id=?2) WHERE id=?4 AND expires_at>?3 AND user_id IS NULL AND (target_user_id IS NULL OR target_user_id=?1) AND (target_session_id IS NULL OR EXISTS(SELECT 1 FROM sessions WHERE id=target_session_id AND user_id=?1 AND expires_at>?3))",params![p.user.id,p.session_id,now(),key])?!=1 {return Err(Fault::Unauthorized.into());}
         audit(&tx,&p,"auth.desktop.approved",&key)?;tx.commit()?;Ok(())
     }).await
@@ -701,7 +777,7 @@ pub(super) async fn desktop_exchange(
             tx.execute("DELETE FROM auth_desktop_requests WHERE id=?1",[&key])?;
             Some(value)
         } else {
-            if !tx.query_row("SELECT EXISTS(SELECT 1 FROM auth_desktop_requests WHERE id=?1 AND secret_hash=?2 AND expires_at>?3 AND user_id IS NULL)",params![key,secret,now()],|r|r.get::<_,bool>(0))? {return Err(Fault::Unauthorized.into());}
+            if !tx.query_row("SELECT EXISTS(SELECT 1 FROM auth_desktop_requests WHERE id=?1 AND secret_hash=?2 AND expires_at>?3 AND user_id IS NULL AND failures<5)",params![key,secret,now()],|r|r.get::<_,bool>(0))? {return Err(Fault::Unauthorized.into());}
             None
         };
         tx.commit()?;Ok(result)

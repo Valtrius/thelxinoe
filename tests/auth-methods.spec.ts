@@ -157,12 +157,29 @@ test('real password, TOTP, passkey, remembered device, client access and adminis
   await page.goto('/#settings/account');
   await page.getByRole('button', { name: 'Add passkey', exact: true }).click();
   await expect(page.getByText('Passkey added', { exact: true })).toBeVisible();
-  const start = await post(page, '/me/auth/totp/start');
-  expect(start.ok()).toBeTruthy();
-  const { secret } = await start.json();
-  expect(
-    (await post(page, '/me/auth/totp/confirm', { code: otp(secret) })).ok(),
-  ).toBeTruthy();
+  await page
+    .getByRole('button', { name: 'Set up authenticator', exact: true })
+    .click();
+  const enrollment = page.getByRole('dialog', {
+    name: 'Set up authenticator app',
+  });
+  await expect(
+    enrollment.getByRole('img', { name: /^Authenticator QR code for / }),
+  ).toBeVisible();
+  const secret = (
+    await enrollment.getByLabel('Setup key', { exact: true }).inputValue()
+  ).replace(/\s/g, '');
+  await enrollment
+    .getByLabel('Authentication code', { exact: true })
+    .fill(otp(secret));
+  await enrollment
+    .getByRole('button', { name: 'Enable authenticator', exact: true })
+    .click();
+  await expect(
+    enrollment.getByText('Authenticator app enabled', { exact: true }),
+  ).toBeVisible();
+  await enrollment.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(enrollment).not.toBeVisible();
   await post(page, '/auth/logout');
   await login(page, username);
   await expect(
@@ -295,7 +312,8 @@ test('real password, TOTP, passkey, remembered device, client access and adminis
   await page
     .getByRole('button', { name: 'Back to sign in', exact: true })
     .click();
-  await page.getByLabel('Username', { exact: true }).fill(username);
+  // Usernameless: the authenticator chooses the account.
+  await page.getByLabel('Username', { exact: true }).fill('');
   await page
     .getByRole('button', { name: 'Sign in with passkey', exact: true })
     .click();
@@ -458,12 +476,19 @@ test('generic OIDC explicitly links accounts, verifies identities and binds nati
   await expect(
     page.getByRole('heading', { name: 'Connect desktop', exact: true }),
   ).toBeVisible();
+  const pairing = page.getByLabel('Code shown in the desktop app', {
+    exact: true,
+  });
+  await pairing.fill('AAAA-AAAA');
   await page
     .getByRole('button', { name: 'Approve desktop', exact: true })
     .click();
-  await expect(
-    page.getByText('Desktop approved', { exact: true }),
-  ).toBeVisible();
+  await expect(page.getByRole('alert')).toContainText("doesn't match");
+  await pairing.fill(started.code.toLowerCase());
+  await page
+    .getByRole('button', { name: 'Approve desktop', exact: true })
+    .click();
+  await expect(page.getByText(/^Desktop approved/)).toBeVisible();
   expect(
     (
       await post(page, '/auth/desktop/exchange', {
@@ -485,6 +510,16 @@ test('generic OIDC explicitly links accounts, verifies identities and binds nati
       })
     ).ok(),
   ).toBeTruthy();
+  // A forwarded approval must not hand over the approver's recent verification.
+  expect(
+    (
+      await (
+        await page.request.get('/api/v1/me/auth', {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+      ).json()
+    ).fresh,
+  ).toBe(false);
   expect(
     (
       await post(page, '/auth/desktop/exchange', {
@@ -505,11 +540,12 @@ test('generic OIDC explicitly links accounts, verifies identities and binds nati
   const verificationRequest = await verifiedDesktop.json();
   await page.goto(verificationRequest.url);
   await page
+    .getByLabel('Code shown in the desktop app', { exact: true })
+    .fill(verificationRequest.code);
+  await page
     .getByRole('button', { name: 'Approve desktop', exact: true })
     .click();
-  await expect(
-    page.getByText('Desktop approved', { exact: true }),
-  ).toBeVisible();
+  await expect(page.getByText(/^Desktop approved/)).toBeVisible();
   const verifiedExchange = await post(
     page,
     '/auth/desktop/exchange',

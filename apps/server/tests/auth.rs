@@ -887,3 +887,338 @@ async fn desktop_event_tickets_connect_from_dev_origins_without_relaxing_cookie_
     );
     server.abort();
 }
+fn client(address: &str) -> [(&str, &str); 2] {
+    [("x-forwarded-proto", "https"), ("x-forwarded-for", address)]
+}
+async fn post(
+    state: &AppState,
+    path: &str,
+    body: Value,
+    cookie: Option<&str>,
+) -> (StatusCode, Value) {
+    let (status, _, body) =
+        request(state, path, "POST", body, cookie, &client("198.51.100.7")).await;
+    (status, body)
+}
+fn error_code(body: &Value) -> &str {
+    body["error"]["code"].as_str().unwrap_or_default()
+}
+#[tokio::test]
+async fn desktop_approval_requires_the_desktop_code_and_never_transfers_freshness() {
+    let (_temp, state) = fixture().await;
+    let cookie = setup(&state).await;
+    let (status, started) = post(
+        &state,
+        "/api/v1/auth/desktop/start",
+        json!({"device_name":"Test desktop"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let code = started["code"].as_str().unwrap();
+    let id = started["request"].as_str().unwrap();
+    let (status, _, info) = request(
+        &state,
+        &format!("/api/v1/auth/desktop/info?request={id}"),
+        "GET",
+        Value::Null,
+        Some(&cookie),
+        &client("203.0.113.5"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(info["requested_from"], "198.51.100.7");
+    assert_eq!(info["same_network"], false);
+    let approve = async |code: &str| {
+        let (status, _, body) = request(
+            &state,
+            "/api/v1/auth/desktop/approve",
+            "POST",
+            json!({"request":id,"code":code}),
+            Some(&cookie),
+            &client("203.0.113.5"),
+        )
+        .await;
+        (status, error_code(&body).to_owned())
+    };
+    let wrong = if code.starts_with('A') {
+        "BBBB-BBBB"
+    } else {
+        "AAAA-AAAA"
+    };
+    assert_eq!(
+        approve("").await,
+        (StatusCode::BAD_REQUEST, "desktop_code_format".into())
+    );
+    assert_eq!(
+        approve(wrong).await,
+        (StatusCode::BAD_REQUEST, "desktop_code_mismatch".into())
+    );
+    assert_eq!(
+        approve(&code.replace('-', " ").to_lowercase()).await.0,
+        StatusCode::OK
+    );
+    let (status, exchanged) = post(
+        &state,
+        "/api/v1/auth/desktop/exchange",
+        json!({"request":id,"secret":started["secret"]}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let bearer = format!("Bearer {}", exchanged["token"].as_str().unwrap());
+    let (status, _, methods) = request(
+        &state,
+        "/api/v1/me/auth",
+        "GET",
+        Value::Null,
+        None,
+        &[("authorization", &bearer)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(methods["fresh"], false);
+
+    let (_, guessed) = post(
+        &state,
+        "/api/v1/auth/desktop/start",
+        json!({"device_name":"Guessed desktop"}),
+        None,
+    )
+    .await;
+    let id = guessed["request"].as_str().unwrap();
+    let code = guessed["code"].as_str().unwrap();
+    let wrong = if code.starts_with('A') {
+        "BBBB-BBBB"
+    } else {
+        "AAAA-AAAA"
+    };
+    let approve = async |code: &str| {
+        let (status, _, body) = request(
+            &state,
+            "/api/v1/auth/desktop/approve",
+            "POST",
+            json!({"request":id,"code":code}),
+            Some(&cookie),
+            &client("203.0.113.5"),
+        )
+        .await;
+        (status, error_code(&body).to_owned())
+    };
+    for _ in 1..5 {
+        assert_eq!(
+            approve(wrong).await,
+            (StatusCode::BAD_REQUEST, "desktop_code_mismatch".into())
+        );
+    }
+    assert_eq!(
+        approve(wrong).await,
+        (StatusCode::CONFLICT, "desktop_request_ended".into())
+    );
+    assert_eq!(
+        approve(code).await,
+        (StatusCode::CONFLICT, "desktop_request_ended".into())
+    );
+}
+fn totp_code(secret: &str, offset: i64) -> String {
+    let totp = totp_rs::Builder::new()
+        .with_secret(totp_rs::Secret::try_from_base32(secret).unwrap())
+        .build()
+        .unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    totp.generate((now + offset * 30) as u64).to_string()
+}
+fn wrong_code(secret: &str) -> String {
+    let valid: Vec<String> = (-2..=2).map(|offset| totp_code(secret, offset)).collect();
+    (100_000..)
+        .map(|n| n.to_string())
+        .find(|code| !valid.contains(code))
+        .unwrap()
+}
+#[tokio::test]
+async fn totp_errors_are_specific_and_failed_codes_are_throttled_per_account() {
+    let (_temp, state) = fixture().await;
+    let cookie = setup(&state).await;
+    let (status, enrollment) = post(
+        &state,
+        "/api/v1/me/auth/totp/start",
+        json!({}),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(enrollment["account"], "admin@media.test");
+    assert!(
+        enrollment["uri"]
+            .as_str()
+            .unwrap()
+            .starts_with("otpauth://totp/Thelxinoe:admin%40media.test?")
+    );
+    let secret = enrollment["secret"].as_str().unwrap().to_owned();
+    let confirm = async |code: &str| {
+        let (status, body) = post(
+            &state,
+            "/api/v1/me/auth/totp/confirm",
+            json!({"code":code}),
+            Some(&cookie),
+        )
+        .await;
+        (status, error_code(&body).to_owned())
+    };
+    assert_eq!(
+        confirm("12").await,
+        (StatusCode::BAD_REQUEST, "totp_format".into())
+    );
+    assert_eq!(
+        confirm(&wrong_code(&secret)).await,
+        (StatusCode::BAD_REQUEST, "totp_incorrect".into())
+    );
+    let enrolled = totp_code(&secret, 0);
+    assert_eq!(confirm(&enrolled).await.0, StatusCode::OK);
+    assert_eq!(
+        confirm(&totp_code(&secret, 0)).await,
+        (StatusCode::CONFLICT, "totp_enabled".into())
+    );
+
+    let login = async || {
+        let (_, challenge) = post(
+            &state,
+            "/api/v1/auth/login",
+            json!({"username":"admin","password":"a good long password"}),
+            None,
+        )
+        .await;
+        assert_eq!(challenge["totp_required"], true);
+        challenge["attempt"].clone()
+    };
+    let totp = async |attempt: &Value, code: &str| {
+        let (status, body) = post(
+            &state,
+            "/api/v1/auth/totp",
+            json!({"attempt":attempt,"code":code}),
+            None,
+        )
+        .await;
+        (status, error_code(&body).to_owned())
+    };
+    let attempt = login().await;
+    assert_eq!(
+        totp(&attempt, &enrolled).await,
+        (StatusCode::BAD_REQUEST, "totp_reused".into())
+    );
+    for _ in 1..5 {
+        assert_eq!(
+            totp(&attempt, &wrong_code(&secret)).await,
+            (StatusCode::BAD_REQUEST, "totp_incorrect".into())
+        );
+    }
+    assert_eq!(
+        totp(&attempt, &wrong_code(&secret)).await,
+        (StatusCode::UNAUTHORIZED, "sign_in_expired".into())
+    );
+    assert_eq!(
+        totp(&attempt, &totp_code(&secret, 1)).await,
+        (StatusCode::UNAUTHORIZED, "sign_in_expired".into())
+    );
+    let attempt = login().await;
+    for _ in 0..5 {
+        totp(&attempt, &wrong_code(&secret)).await;
+    }
+    // Ten failed codes for the account: a new attempt is refused even with a valid code.
+    let attempt = login().await;
+    assert_eq!(
+        totp(&attempt, &totp_code(&secret, 1)).await,
+        (StatusCode::TOO_MANY_REQUESTS, "rate_limited".into())
+    );
+}
+#[tokio::test]
+async fn failed_passwords_are_throttled_per_account_across_addresses() {
+    let (_temp, state) = fixture().await;
+    setup(&state).await;
+    let login = async |username: &str, password: &str, address: &str| {
+        request(
+            &state,
+            "/api/v1/auth/login",
+            "POST",
+            json!({"username":username,"password":password}),
+            None,
+            &client(address),
+        )
+        .await
+        .0
+    };
+    for n in 0..10 {
+        assert_eq!(
+            login("ADMIN", "not the password", &format!("198.51.100.{n}")).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    assert_eq!(
+        login("admin", "a good long password", "198.51.100.200").await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        login("nobody", "not the password", "198.51.100.201").await,
+        StatusCode::UNAUTHORIZED
+    );
+}
+#[tokio::test]
+async fn password_changes_revoke_client_passwords_only_when_asked() {
+    let (_temp, state) = fixture().await;
+    let cookie = setup(&state).await;
+    let (status, created) = post(
+        &state,
+        "/api/v1/me/auth/client-passwords",
+        json!({"name":"Living room TV"}),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let client_password = created["password"].as_str().unwrap().to_owned();
+    let jellyfin = async || {
+        request(
+            &state,
+            "/Users/AuthenticateByName",
+            "POST",
+            json!({"Username":"admin","Pw":client_password}),
+            None,
+            &[(
+                "x-emby-authorization",
+                r#"MediaBrowser Client="Test", Device="TV", DeviceId="tv-1", Version="1""#,
+            )],
+        )
+        .await
+        .0
+    };
+    let change = async |password: &str, revoke: bool| {
+        let (status, _, body) = request(
+            &state,
+            "/api/v1/me/password",
+            "PUT",
+            json!({"new_password":password,"revoke_client_passwords":revoke}),
+            Some(&cookie),
+            &client("198.51.100.7"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    };
+    assert_eq!(jellyfin().await, StatusCode::OK);
+    change("a second long password", false).await;
+    assert_eq!(jellyfin().await, StatusCode::OK);
+    change("a third long password", true).await;
+    assert_eq!(jellyfin().await, StatusCode::UNAUTHORIZED);
+    let (status, _, remaining) = request(
+        &state,
+        "/api/v1/me/auth/client-passwords",
+        "GET",
+        Value::Null,
+        Some(&cookie),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(remaining["items"], json!([]));
+}
