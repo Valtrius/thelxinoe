@@ -27,6 +27,7 @@ async fn startup_recovers_early_restore_failure_and_accepts_the_same_archive() {
                     recovery_ready: false,
                     rollback_phase: Some(RollbackPhase::Copying),
                     release_restore: None,
+                    automatic: false,
                 };
                 let snapshot = work(&key).join("archive-source");
                 std::fs::create_dir_all(snapshot.join("server")).unwrap();
@@ -141,4 +142,72 @@ async fn partial_backup_restart_recovery_preserves_new_writes() {
             assert!(fixture.running("original") && fixture.running("second"));
         }).await;
     }
+}
+
+#[tokio::test]
+async fn automatic_rotation_spares_manual_imported_and_unfinished_backups() {
+    let fixture = Docker::new();
+    fixture
+        .scope(async {
+            let operation = |n: u8, stage: &str, automatic: bool| {
+                let r: Record = serde_json::from_value(json!({"id":format!("00000000-0000-0000-0000-{n:012}"),"stage":stage,"created_at":n,"error":null,"components":[],"automatic":automatic})).unwrap();
+                private_dir(&work(&r.id)).unwrap();
+                record(&r).unwrap();
+                if archived(stage) {
+                    std::fs::write(archive_root().join(format!("{}.age", r.id)), "archive").unwrap();
+                }
+                r
+            };
+            let manual = operation(1, "complete", false);
+            let oldest = operation(2, "complete", true);
+            let older = operation(3, "complete", true);
+            let restored = operation(4, "restored", true);
+            let failed = operation(5, "failed", true);
+            let unfinished = operation(6, "recovery-required", true);
+            let imported = "00000000-0000-0000-0000-000000000099";
+            std::fs::write(archive_root().join(format!("{imported}.age")), "archive").unwrap();
+            let exists = |id: &str| work(id).join("operation.json").is_file() || archive_root().join(format!("{id}.age")).is_file();
+            // A failed attempt only supersedes older failures; every archive survives it.
+            let attempt = operation(7, "failed", true);
+            prune(&attempt, 1).unwrap();
+            assert!(!exists(&failed.id));
+            assert!([&oldest, &older, &restored, &attempt].iter().all(|r| exists(&r.id)));
+            let current = operation(8, "complete", true);
+            prune(&current, 2).unwrap();
+            for removed in [&oldest, &older, &attempt] {
+                assert!(!exists(&removed.id), "{}", removed.id);
+            }
+            for kept in [&manual, &restored, &unfinished, &current] {
+                assert!(exists(&kept.id), "{}", kept.id);
+            }
+            assert!(exists(imported));
+            assert_eq!(list().await.unwrap().0["items"].as_array().unwrap().len(), 5);
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn retried_automatic_backup_returns_the_original_operation() {
+    let fixture = Docker::new();
+    fixture
+        .scope(async {
+            let key = thelxinoe_core::id();
+            let r: Record = serde_json::from_value(json!({"id":key,"stage":"snapshotting","created_at":1,"error":null,"components":[],"automatic":true})).unwrap();
+            private_dir(&work(&key)).unwrap();
+            record(&r).unwrap();
+            let runtime = Runtime(Default::default());
+            // The original backup still owns the operation lock.
+            let _held = runtime.0.try_lock_owned().unwrap();
+            let request = |retain: usize| {
+                Json(serde_json::from_value::<Creation>(json!({"passphrase":"retried automatic passphrase","automatic":{"id":key,"retain":retain}})).unwrap())
+            };
+            let response = create(State(runtime.clone()), request(7)).await.unwrap();
+            assert_eq!(response.0["id"], key);
+            assert_eq!(response.0["stage"], "snapshotting");
+            assert_eq!(response.0["automatic"], true);
+            assert!(create(State(runtime.clone()), request(0)).await.is_err());
+            let manual = Json(serde_json::from_value::<Creation>(json!({"passphrase":"retried automatic passphrase"})).unwrap());
+            assert!(create(State(runtime), manual).await.is_err());
+        })
+        .await;
 }

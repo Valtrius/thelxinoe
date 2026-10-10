@@ -230,7 +230,11 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
         && ["queued", "queued-activate"].contains(&automatic.5.as_str())
         && action != "recover"
     {
-        let wait = mode != "automatic"
+        let backup = crate::backups::holds_updates(state)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e.2))?;
+        let wait = backup
+            || mode != "automatic"
             || !crate::timezones::in_server_window(state, start, end).await?
             || idle(state, &automatic.1).await.is_err();
         if wait {
@@ -245,7 +249,14 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
                     "queued"
                 },
                 None,
-                Some("Waiting for Automatic policy, maintenance window and an idle service".into()),
+                Some(
+                    if backup {
+                        "Waiting for the automatic backup to finish"
+                    } else {
+                        "Waiting for Automatic policy, maintenance window and an idle service"
+                    }
+                    .into(),
+                ),
             )
             .await
             .map_err(|e| anyhow::anyhow!("{}", e.2))?;
@@ -479,7 +490,7 @@ async fn schedule_updates(state: &AppState) -> Result<()> {
             due.push(candidate);
         }
     }
-    if due.is_empty() {
+    if due.is_empty() || crate::backups::holds_updates(state).await? {
         return Ok(());
     }
     let stack = controller(state, "", None).await?;
@@ -508,6 +519,7 @@ pub(crate) async fn run(state: AppState) -> anyhow::Result<()> {
             .await
             .map_err(|e| anyhow::anyhow!("{}", e.2))?;
         let raw = storage::run(&state.db).await?;
+        let backup = crate::backups::holds_updates(&state).await.unwrap_or(true);
         for (key, policy, start, end) in raw {
             let inherited = policy.as_deref().is_none_or(|value| value == "inherit");
             let mode = if inherited {
@@ -515,7 +527,7 @@ pub(crate) async fn run(state: AppState) -> anyhow::Result<()> {
             } else {
                 policy.as_deref().unwrap_or(server_policy.policy.as_str())
             };
-            if mode != "automatic" {
+            if backup || mode != "automatic" {
                 continue;
             }
             let start = if inherited {

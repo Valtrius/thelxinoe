@@ -520,6 +520,7 @@ async fn tick(state: &AppState) -> Result<()> {
     if p.policy != "automatic"
         || !crate::timezones::in_server_window(state, p.window_start.into(), p.window_end.into())
             .await?
+        || crate::backups::holds_updates(state).await?
     {
         return Ok(());
     }

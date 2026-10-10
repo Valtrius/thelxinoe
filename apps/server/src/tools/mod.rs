@@ -908,6 +908,12 @@ async fn wait_reason(state: &AppState, job: &Job, t: &Tool) -> anyhow::Result<Op
         .await?
     {
         Some("Waiting for maintenance window")
+    } else if !job.manual
+        && crate::backups::holds_updates(state)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.2))?
+    {
+        Some("Waiting for the automatic backup to finish")
     } else if storage::busy(&state.db, t.id.clone()).await?
         || t.id == "ffmpeg"
             && t.installed
