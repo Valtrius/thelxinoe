@@ -1,7 +1,5 @@
 services:
   controller:
-    environment:
-      THELXINOE_DEV_COMPOSE_REBUILD: "1"
     labels:
       app.thelxinoe.component: controller
   server:

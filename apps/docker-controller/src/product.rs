@@ -932,8 +932,8 @@ fn snapshot_matches(u: &Update, current: &Deployment) -> bool {
         && current.version == accepted.version
         && current.server["Config"]["Labels"]["app.thelxinoe.product-update"] == u.id
         && current.controller["Config"]["Labels"]["app.thelxinoe.product-update"] == u.id
-        && equivalent(&accepted.server, &current.server, false)
-        && equivalent(&accepted.controller, &current.controller, false)
+        && equivalent(&accepted.server, &current.server)
+        && equivalent(&accepted.controller, &current.controller)
 }
 async fn restore_release(u: &mut Update) -> Result<()> {
     // All inputs are retained controller state; the migrated SQLite database is never opened.
@@ -1005,16 +1005,14 @@ pub(crate) async fn accepted_writer() -> anyhow::Result<bool> {
     let controller = engine(&format!("/containers/{own}/json"))
         .await
         .map_err(|(_, e)| anyhow::anyhow!(e))?;
-    let allow_rebuilt_image =
-        std::env::var("THELXINOE_DEV_COMPOSE_REBUILD").is_ok_and(|value| value == "1");
-    if !equivalent(&d.controller, &controller, allow_rebuilt_image) {
+    if !equivalent(&d.controller, &controller) {
         return Ok(false);
     }
     let server_name = name(&d.server).map_err(|(_, e)| anyhow::anyhow!(e))?;
     let mut server = engine(&format!("/containers/{server_name}/json"))
         .await
         .map_err(|(_, e)| anyhow::anyhow!(e))?;
-    if !equivalent(&d.server, &server, allow_rebuilt_image) {
+    if !equivalent(&d.server, &server) {
         return Ok(false);
     }
     normalize_stopped_server(&mut server)
@@ -1025,6 +1023,243 @@ pub(crate) async fn accepted_writer() -> anyhow::Result<bool> {
     d.generation = next_generation().map_err(|(_, e)| anyhow::anyhow!(e))?;
     commit(&d).map_err(|(_, e)| anyhow::anyhow!(e))?;
     Ok(true)
+}
+/// Accept rebuilt images or changed Compose configuration after the first start:
+/// `docker compose run --rm controller accept-local [--yes]`. Running it needs the host
+/// Docker access that changing the deployment already implies. It records the project's
+/// current server and controller as the next generation of the same deployment, so
+/// installed and adopted services stay registered.
+pub(crate) async fn accept_local(confirmed: bool) -> anyhow::Result<()> {
+    let own = std::env::var("HOSTNAME")?;
+    let runtime =
+        PathBuf::from(std::env::var("THELXINOE_RUNTIME").unwrap_or("/run/thelxinoe".into()));
+    let outcome = accept_containers(&own, &runtime, |changes| {
+        println!("Accept these containers for this Thelxinoe deployment?");
+        for line in changes {
+            println!("  {line}");
+        }
+        if confirmed {
+            return Ok(());
+        }
+        use std::io::Write;
+        print!("Type ACCEPT to continue: ");
+        std::io::stdout().flush()?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        anyhow::ensure!(answer.trim() == "ACCEPT", "Nothing was changed");
+        Ok(())
+    })
+    .await?;
+    println!("{outcome}");
+    Ok(())
+}
+async fn accept_containers(
+    own: &str,
+    runtime: &std::path::Path,
+    confirm: impl FnOnce(&[String]) -> anyhow::Result<()>,
+) -> anyhow::Result<String> {
+    let fail = |(_, message): crate::docker::Failure| anyhow::anyhow!(message);
+    let file = store::root().join("desired-state.json");
+    if !file.exists() {
+        return Ok(
+            "Nothing to accept: a new deployment accepts its first containers on its own.".into(),
+        );
+    }
+    let mut d: Deployment = store::read(&file)?;
+    let me = engine(&format!("/containers/{own}/json"))
+        .await
+        .map_err(fail)?;
+    let project = me["Config"]["Labels"]["com.docker.compose.project"]
+        .as_str()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Run this from the Thelxinoe directory: docker compose run --rm controller accept-local"
+            )
+        })?
+        .to_owned();
+    let rows = engine("/containers/json?all=true").await.map_err(fail)?;
+    let mut found = Vec::new();
+    for component in ["controller", "server"] {
+        // The project's service containers, never one-off runs such as this one.
+        let ids: Vec<&str> = rows
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|c| {
+                c["Labels"]["com.docker.compose.project"] == project.as_str()
+                    && c["Labels"]["app.thelxinoe.component"] == component
+                    && c["Labels"]["com.docker.compose.oneoff"] != "True"
+            })
+            .filter_map(|c| c["Id"].as_str())
+            .collect();
+        anyhow::ensure!(
+            ids.len() == 1,
+            "Expected one {component} container in the {project} project, found {}; run docker compose up -d first",
+            ids.len()
+        );
+        found.push(
+            engine(&format!("/containers/{}/json", ids[0]))
+                .await
+                .map_err(fail)?,
+        );
+    }
+    let (controller, mut server) = (found.remove(0), found.remove(0));
+    let source = |c: &Value, destination: &str| {
+        mount(c, destination)
+            .ok()
+            .and_then(|m| m["Source"].as_str())
+            .map(str::to_owned)
+    };
+    let storage = source(&controller, "/var/lib/thelxinoe/deployment");
+    anyhow::ensure!(
+        storage.as_deref() == Some(d.appdata_source.as_str())
+            && source(&me, "/var/lib/thelxinoe/deployment") == storage,
+        "The controller now uses different deployment storage; a different state folder is a different deployment"
+    );
+    anyhow::ensure!(
+        source(&controller, "/var/run/docker.sock").is_some(),
+        "The controller must mount the Docker socket"
+    );
+    let shared = source(&controller, "/run/thelxinoe");
+    anyhow::ensure!(
+        shared.is_some() && source(&server, "/run/thelxinoe") == shared,
+        "The server must share the controller's runtime volume"
+    );
+    Identity::from_user(&server["Config"]).map_err(fail)?;
+    let networks: Vec<String> = server["NetworkSettings"]["Networks"]
+        .as_object()
+        .map(|n| n.keys().cloned().collect())
+        .unwrap_or_default();
+    anyhow::ensure!(
+        networks.len() == 1,
+        "The server must be on exactly one Docker network"
+    );
+    let media = policy::server_media_source(&server)
+        .map_err(|e| anyhow::anyhow!(e))?
+        .to_owned();
+    anyhow::ensure!(
+        !server["Mounts"].as_array().into_iter().flatten().any(|m| {
+            m["Destination"]
+                .as_str()
+                .is_some_and(|p| p == "/media" || p.starts_with("/media/"))
+                && !m["Source"]
+                    .as_str()
+                    .is_some_and(|s| policy::media_disjoint(&d.appdata_source, s))
+        }),
+        "Deployment state must be outside every media mount"
+    );
+    // Installed services keep the network and media folder they were created with.
+    let installed: Vec<Managed> = services()
+        .map_err(fail)?
+        .into_iter()
+        .filter(|s| s.imported.is_none())
+        .collect();
+    anyhow::ensure!(
+        networks[0] == d.network || installed.is_empty(),
+        "Thelxinoe-installed services use the network {}; keep the server on it",
+        d.network
+    );
+    anyhow::ensure!(
+        media == d.media_source
+            || !installed
+                .iter()
+                .any(|s| templates::find(&s.kind).is_some_and(|t| t.media)),
+        "Thelxinoe-installed media services use {}; keep it mounted as the server's /media",
+        d.media_source
+    );
+    // Interrupted work recovers against the containers it started with.
+    anyhow::ensure!(
+        all().map_err(fail)?.iter().all(|u| matches!(
+            u.stage.as_str(),
+            "ready"
+                | "blocked"
+                | "recovered"
+                | "committed"
+                | "restored"
+                | "runtime-failure"
+                | "recovery-required"
+                | "superseded"
+        )),
+        "Finish or recover the product update first"
+    );
+    anyhow::ensure!(
+        !super::backups::interrupted().map_err(fail)?,
+        "Finish the interrupted backup or restore with the previous containers first"
+    );
+    normalize_stopped_server(&mut server).await.map_err(fail)?;
+    let mut changes = Vec::new();
+    for (component, before, after) in [
+        ("server", &d.server, &server),
+        ("controller", &d.controller, &controller),
+    ] {
+        let mut found = Vec::new();
+        // Docker reports the default OOM setting as false or unset.
+        let (mut before, mut after) = (before.clone(), after.clone());
+        normalize_stopped_server_defaults(&mut before);
+        normalize_stopped_server_defaults(&mut after);
+        let (before, after) = (policy::fingerprint(&before), policy::fingerprint(&after));
+        policy::changes(&before, &after, "", &mut found);
+        // Recreation always gives a new hostname and new Compose bookkeeping labels.
+        let noise = |path: &str| {
+            path == "Config.Hostname" || path.starts_with("Config.Labels.com.docker.compose.")
+        };
+        changes.extend(
+            found
+                .iter()
+                .filter(|c| !c["path"].as_str().is_some_and(noise))
+                .map(|c| {
+                    let values = match (c["before"].as_str(), c["after"].as_str()) {
+                        (None, None) => String::new(),
+                        (old, new) => {
+                            format!(": {} -> {}", old.unwrap_or("unset"), new.unwrap_or("unset"))
+                        }
+                    };
+                    format!(
+                        "{component} {} {}{values}",
+                        c["path"].as_str().unwrap_or_default(),
+                        c["change"].as_str().unwrap_or_default()
+                    )
+                }),
+        );
+    }
+    if changes.is_empty()
+        && d.server["Id"] == server["Id"]
+        && d.controller["Id"] == controller["Id"]
+    {
+        return Ok(
+            "Nothing to accept: these containers are already the accepted deployment.".into(),
+        );
+    }
+    if changes.is_empty() {
+        changes.push("Recreated containers with the accepted configuration".into());
+    }
+    confirm(&changes)?;
+    // The accepted controller keeps the lease while it runs, as it does when only the
+    // server changed; one refusing new containers holds it only briefly while it checks.
+    let serving = controller["State"]["Running"] == true && controller["Id"] == d.controller["Id"];
+    let mut attempts = 0;
+    let _lease = loop {
+        match crate::lease::Lease::acquire(runtime) {
+            Ok(lease) => break lease,
+            Err(_) if !serving && attempts < 30 => {
+                attempts += 1;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            Err(_) => anyhow::bail!(
+                "The running controller holds the deployment; stop it with docker compose stop controller, then run this again"
+            ),
+        }
+    };
+    d.network = networks[0].clone();
+    d.media_source = media;
+    d.server = server;
+    d.controller = controller;
+    d.generation = next_generation().map_err(fail)?;
+    commit(&d).map_err(fail)?;
+    Ok(format!(
+        "Accepted as generation {}. Start Thelxinoe with: docker compose up -d",
+        d.generation
+    ))
 }
 async fn normalize_stopped_server(server: &mut Value) -> Result<()> {
     if server["State"]["Running"] == true {
@@ -1063,22 +1298,15 @@ fn same_image_identity(expected: &Value, actual: &Value) -> bool {
         }
     }
 }
-fn equivalent(expected: &Value, actual: &Value, allow_rebuilt_image: bool) -> bool {
-    let same_image = same_image_identity(expected, actual);
-    let same_configured_image = expected["Config"]["Image"].is_string()
-        && expected["Config"]["Image"] == actual["Config"]["Image"];
-    if (!same_image && !(allow_rebuilt_image && same_configured_image))
-        || expected["Name"] != actual["Name"]
-    {
+/// A rebuilt image or changed configuration is accepted explicitly with `accept-local`.
+fn equivalent(expected: &Value, actual: &Value) -> bool {
+    if !same_image_identity(expected, actual) || expected["Name"] != actual["Name"] {
         return false;
     }
     let env = |c: &Value| -> Option<std::collections::BTreeMap<String, String>> {
         let mut result = std::collections::BTreeMap::new();
         for item in c["Config"]["Env"].as_array()? {
             let (key, value) = item.as_str()?.split_once('=')?;
-            if allow_rebuilt_image && key == "THELXINOE_DEV_COMPOSE_REBUILD" {
-                continue;
-            }
             if result.insert(key.into(), value.into()).is_some() {
                 return None;
             }
@@ -1318,48 +1546,140 @@ mod tests {
     #[test]
     fn recreated_generation_requires_exact_image_and_host_access() {
         let expected = json!({"Image":"sha256:accepted","ImageManifestDescriptor":{"digest":"sha256:manifest"},"Name":"/controller","Config":{"Image":"thelxinoe-controller:dev","Env":["SAFE=1"],"User":"0:10001"},"HostConfig":{"Privileged":false,"ReadonlyRootfs":true,"CapDrop":["ALL"]},"Mounts":[{"Destination":"/state","Source":"/srv/thelxinoe","RW":true}],"NetworkSettings":{"Networks":{"none":{}}}});
-        assert!(equivalent(&expected, &expected, false));
+        assert!(equivalent(&expected, &expected));
         let mut platform_alias = expected.clone();
         platform_alias["Image"] = json!("sha256:platform-image");
-        assert!(equivalent(&expected, &platform_alias, false));
+        assert!(equivalent(&expected, &platform_alias));
         let mut no_manifest = expected.clone();
         no_manifest
             .as_object_mut()
             .unwrap()
             .remove("ImageManifestDescriptor");
-        assert!(equivalent(&expected, &no_manifest, false));
+        assert!(equivalent(&expected, &no_manifest));
         let mut different_image_without_manifest = no_manifest.clone();
         different_image_without_manifest["Image"] = json!("sha256:different-image");
-        assert!(!equivalent(
-            &expected,
-            &different_image_without_manifest,
-            false
-        ));
+        assert!(!equivalent(&expected, &different_image_without_manifest));
         let mut renamed = expected.clone();
         renamed["Name"] = json!("/retired");
-        assert!(!equivalent(&expected, &renamed, false));
+        assert!(!equivalent(&expected, &renamed));
         let mut changed = expected.clone();
         changed["ImageManifestDescriptor"]["digest"] = json!("sha256:new-manifest");
         changed["Image"] = json!("sha256:new-image");
-        assert!(!equivalent(&expected, &changed, false));
-        assert!(equivalent(&expected, &changed, true));
-        changed["Config"]["Image"] = json!("other-controller:dev");
-        assert!(!equivalent(&expected, &changed, true));
+        assert!(!equivalent(&expected, &changed));
         let mut changed = expected.clone();
         changed["HostConfig"]["Privileged"] = json!(true);
-        assert!(!equivalent(&expected, &changed, false));
+        assert!(!equivalent(&expected, &changed));
         let mut changed = expected.clone();
         changed["Mounts"][0]["Source"] = json!("/etc");
-        assert!(!equivalent(&expected, &changed, false));
+        assert!(!equivalent(&expected, &changed));
         let mut changed = expected.clone();
         changed["Config"]["Env"] = json!(["SAFE=0"]);
-        assert!(!equivalent(&expected, &changed, false));
+        assert!(!equivalent(&expected, &changed));
         let mut ordered = expected.clone();
         ordered["Config"]["Env"] = json!(["A=1", "B=2"]);
         let mut reordered = ordered.clone();
         reordered["Config"]["Env"] = json!(["B=2", "A=1"]);
-        assert!(equivalent(&ordered, &reordered, false));
+        assert!(equivalent(&ordered, &reordered));
         reordered["Config"]["Env"] = json!(["A=1", "B=2", "A=3"]);
-        assert!(!equivalent(&ordered, &reordered, false));
+        assert!(!equivalent(&ordered, &reordered));
+    }
+
+    #[tokio::test]
+    async fn local_acceptance_records_changed_containers_of_the_same_deployment() {
+        let fixture = crate::test_support::Docker::new();
+        fixture
+            .scope(async {
+                let root = store::root();
+                let storage = root.to_string_lossy().into_owned();
+                let runtime = tempfile::tempdir().unwrap();
+                let labels = |component: &str| {
+                    json!({"com.docker.compose.project":"thelxinoe","app.thelxinoe.component":component})
+                };
+                let bind = |source: &str, destination: &str| {
+                    json!({"Type":"bind","Source":source,"Destination":destination,"RW":true})
+                };
+                let controller = |id: &str, image: &str| {
+                    json!({"Id":id,"Name":"/thelxinoe-controller","Image":image,
+                        "Config":{"Image":"thelxinoe-controller:0.1.0","User":"0:1000","Labels":labels("controller")},
+                        "HostConfig":{"NetworkMode":"none"},"State":{"Running":true},
+                        "Mounts":[bind(&storage,"/var/lib/thelxinoe/deployment"),
+                            bind("/var/run/docker.sock","/var/run/docker.sock"),
+                            bind("runtime","/run/thelxinoe")],
+                        "NetworkSettings":{"Networks":{"none":{"NetworkID":"none"}}}})
+                };
+                let server = |id: &str, image: &str, env: &[&str]| {
+                    json!({"Id":id,"Name":"/thelxinoe-server","Image":image,
+                        "Config":{"Image":"thelxinoe-server:0.1.0","User":"1000:1000","Env":env,"Labels":labels("server")},
+                        "HostConfig":{"RestartPolicy":{"Name":"unless-stopped"}},"State":{"Running":true},
+                        "Mounts":[bind("/srv/media","/media"),bind("/srv/state","/var/lib/thelxinoe"),
+                            bind("runtime","/run/thelxinoe")],
+                        "NetworkSettings":{"Networks":{"media":{"NetworkID":"network"}}}})
+                };
+                let accepted: Deployment = serde_json::from_value(json!({"id":"deployment","generation":1,
+                    "version":"test","server":server("old-server",&format!("sha256:{}", "1".repeat(64)),&[]),
+                    "controller":controller("old-controller",&format!("sha256:{}", "1".repeat(64))),"network":"media",
+                    "media_source":"/srv/media","appdata_source":storage})).unwrap();
+                store::commit_generation(&root, 1, &serde_json::to_value(&accepted).unwrap(), &json!({}))
+                    .unwrap();
+                // Compose recreated both from a rebuild and an edited .env.
+                fixture.insert("controller", controller("controller", &format!("sha256:{}", "2".repeat(64))));
+                fixture.insert(
+                    "server",
+                    server("server", &format!("sha256:{}", "2".repeat(64)), &["THELXINOE_PUBLIC_URL=https://media.example"]),
+                );
+                let mut oneoff = controller("oneoff", &format!("sha256:{}", "2".repeat(64)));
+                oneoff["Config"]["Labels"]["com.docker.compose.oneoff"] = json!("True");
+                fixture.insert("oneoff", oneoff);
+                let reviewed = std::cell::RefCell::new(Vec::new());
+                let declined = accept_containers("oneoff", runtime.path(), |_| {
+                    anyhow::bail!("Nothing was changed")
+                })
+                .await;
+                assert!(declined.is_err());
+                let current: Deployment = store::read(&root.join("desired-state.json")).unwrap();
+                assert_eq!(current.generation, 1);
+                let outcome = accept_containers("oneoff", runtime.path(), |changes| {
+                    reviewed.borrow_mut().extend_from_slice(changes);
+                    Ok(())
+                })
+                .await
+                .unwrap();
+                assert!(outcome.starts_with("Accepted as generation 2"), "{outcome}");
+                let reviewed = reviewed.into_inner();
+                for expected in ["server Image changed", "controller Image changed",
+                    "server Config.Env.THELXINOE_PUBLIC_URL added"] {
+                    assert!(reviewed.iter().any(|line| line.starts_with(expected)), "{expected} in {reviewed:?}");
+                }
+                let current: Deployment = store::read(&root.join("desired-state.json")).unwrap();
+                assert_eq!((current.id.as_str(), current.generation), ("deployment", 2));
+                assert_eq!((current.server["Id"].clone(), current.controller["Id"].clone()), (json!("server"), json!("controller")));
+                let again = accept_containers("oneoff", runtime.path(), |_| unreachable!()).await.unwrap();
+                assert!(again.starts_with("Nothing to accept"), "{again}");
+                // A different deployment folder, a second network or a moved media folder that
+                // installed services rely on is never accepted.
+                let mut elsewhere = controller("controller", &format!("sha256:{}", "2".repeat(64)));
+                elsewhere["Mounts"][0]["Source"] = json!("/srv/other");
+                fixture.insert("controller", elsewhere);
+                let error = accept_containers("oneoff", runtime.path(), |_| Ok(())).await.unwrap_err();
+                assert!(error.to_string().contains("different deployment storage"), "{error}");
+                fixture.insert("controller", controller("controller", &format!("sha256:{}", "2".repeat(64))));
+                let mut joined = server("server", &format!("sha256:{}", "3".repeat(64)), &[]);
+                joined["NetworkSettings"]["Networks"]["proxy"] = json!({"NetworkID":"proxy"});
+                fixture.insert("server", joined);
+                let error = accept_containers("oneoff", runtime.path(), |_| Ok(())).await.unwrap_err();
+                assert!(error.to_string().contains("exactly one Docker network"), "{error}");
+                let installed: Managed = serde_json::from_value(json!({"id":"88888888-8888-8888-8888-888888888888",
+                    "kind":"radarr","container":"radarr","name":"radarr","image":"image","phase":"active",
+                    "spec":{},"expected":null,"imported":null})).unwrap();
+                save(&installed).unwrap();
+                let mut moved = server("server", &format!("sha256:{}", "3".repeat(64)), &[]);
+                moved["Mounts"][0]["Source"] = json!("/srv/other-media");
+                fixture.insert("server", moved);
+                let error = accept_containers("oneoff", runtime.path(), |_| Ok(())).await.unwrap_err();
+                assert!(error.to_string().contains("keep it mounted as the server's /media"), "{error}");
+                let current: Deployment = store::read(&root.join("desired-state.json")).unwrap();
+                assert_eq!(current.generation, 2);
+            })
+            .await;
     }
 }

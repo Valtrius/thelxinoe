@@ -55,6 +55,10 @@ async fn main() -> anyhow::Result<()> {
                     &serde_json::json!({"schema":schema,"verified":true}),
                 )
             }
+            "accept-local" => {
+                stack::product::accept_local(std::env::args().nth(2).as_deref() == Some("--yes"))
+                    .await
+            }
             "controller-probe" => store::write_json(
                 std::path::Path::new("/probe/controller.json"),
                 &serde_json::json!({"version":thelxinoe_core::VERSION,"recovery_protocol":1}),
@@ -81,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
                     drop(writer);
                     anyhow::ensure!(
                         handoff,
-                        "This controller is not the accepted deployment generation"
+                        "These containers differ from the accepted deployment. After a rebuild or a Compose configuration change, review and accept them with: docker compose run --rm controller accept-local"
                     );
                 }
                 Err(e) if !handoff => return Err(e),

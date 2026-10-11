@@ -639,98 +639,6 @@ pub(super) async fn complete(d: &Deployment, s: &mut Managed) -> Result<Json<Val
     Ok(Json(json!({"accepted":true})))
 }
 
-/// Identifies one reviewed configuration, so acceptance can't apply a later change.
-fn configuration_revision(fingerprint: &Value) -> String {
-    use sha2::{Digest, Sha256};
-    format!("{:x}", Sha256::digest(fingerprint.to_string()))
-}
-/// Fields of the configuration as `docker inspect` names them, for review.
-fn inspect_path(path: &str) -> String {
-    let (head, tail) = path.split_once('.').unwrap_or((path, ""));
-    let head = match head {
-        "config" => "Config",
-        "host" => "HostConfig",
-        "networks" => "NetworkSettings.Networks",
-        "image_id" => "Image",
-        other => other,
-    };
-    if tail.is_empty() {
-        head.into()
-    } else {
-        format!("{head}.{tail}")
-    }
-}
-/// Differences from the accepted configuration. Environment and label values can hold
-/// secrets, so reviews name those entries without showing their values.
-fn changes(before: &Value, after: &Value, path: &str, out: &mut Vec<Value>) {
-    if before == after || out.len() >= 100 {
-        return;
-    }
-    if path == "config.Env" {
-        let entries = |value: &Value| {
-            value
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .map(|entry| {
-                    let (key, value) = entry.split_once('=').unwrap_or((entry, ""));
-                    (key.to_owned(), value.to_owned())
-                })
-                .collect::<std::collections::BTreeMap<_, _>>()
-        };
-        let (before, after) = (entries(before), entries(after));
-        let keys: std::collections::BTreeSet<_> = before.keys().chain(after.keys()).collect();
-        for key in keys {
-            let change = match (before.get(key), after.get(key)) {
-                (Some(old), Some(new)) if old == new => continue,
-                (Some(_), Some(_)) => "changed",
-                (Some(_), None) => "removed",
-                _ => "added",
-            };
-            out.push(json!({"path":inspect_path(&format!("{path}.{key}")),"change":change}));
-        }
-        return;
-    }
-    if let (Some(before), Some(after)) = (before.as_object(), after.as_object()) {
-        let keys: std::collections::BTreeSet<_> = before.keys().chain(after.keys()).collect();
-        for key in keys {
-            let child = if path.is_empty() {
-                key.clone()
-            } else {
-                format!("{path}.{key}")
-            };
-            let missing = Value::Null;
-            changes(
-                before.get(key).unwrap_or(&missing),
-                after.get(key).unwrap_or(&missing),
-                &child,
-                out,
-            );
-        }
-        return;
-    }
-    let hidden = path.starts_with("config.Labels.");
-    let shown = |value: &Value| {
-        (!hidden && !value.is_null()).then(|| {
-            let text = value.to_string();
-            if text.chars().count() > 200 {
-                format!("{}…", text.chars().take(200).collect::<String>())
-            } else {
-                text
-            }
-        })
-    };
-    let change = if before.is_null() {
-        "added"
-    } else if after.is_null() {
-        "removed"
-    } else {
-        "changed"
-    };
-    out.push(json!({"path":inspect_path(path),"change":change,
-        "before":shown(before),"after":shown(after)}));
-}
 /// The live container of an imported deployment, still the registered identity.
 async fn registered(d: &Deployment, s: &Managed) -> Result<Value> {
     if s.imported.is_none() {
@@ -756,15 +664,17 @@ pub(super) async fn drift(
     let raw = registered(&d, &s).await?;
     let actual = policy::fingerprint(&raw);
     let mut found = Vec::new();
-    changes(&s.expected, &actual, "", &mut found);
+    policy::changes(&s.expected, &actual, "", &mut found);
     // The same checks as adoption decide whether the new configuration can be owned.
     let input = Preview {
         kind: s.kind.clone(),
         container_id: s.container.clone(),
     };
     let blocked = inspect(&input, &d).await.err().map(|error| error.1);
-    Ok(Json(json!({"revision":configuration_revision(&actual),
-        "changes":found,"blocked":blocked})))
+    Ok(Json(
+        json!({"revision":policy::configuration_revision(&actual),
+        "changes":found,"blocked":blocked}),
+    ))
 }
 /// Accept a reviewed configuration of the same container, as adoption would.
 pub(super) async fn accept_configuration(
@@ -781,7 +691,7 @@ pub(super) async fn accept_configuration(
         ));
     }
     let actual = policy::fingerprint(&registered(d, s).await?);
-    if revision != Some(configuration_revision(&actual).as_str()) {
+    if revision != Some(policy::configuration_revision(&actual).as_str()) {
         return Err(conflict(
             "The configuration changed after review; review it again",
         ));

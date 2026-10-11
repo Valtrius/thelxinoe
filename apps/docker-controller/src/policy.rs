@@ -430,8 +430,131 @@ pub fn host_path(value: &str) -> Option<std::path::PathBuf> {
         }))
     .then_some(path)
 }
+/// Identifies one reviewed configuration, so acceptance can't apply a later change.
+pub fn configuration_revision(fingerprint: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(fingerprint.to_string()))
+}
+/// Fields of the configuration as `docker inspect` names them, for review.
+fn inspect_path(path: &str) -> String {
+    let (head, tail) = path.split_once('.').unwrap_or((path, ""));
+    let head = match head {
+        "config" => "Config",
+        "host" => "HostConfig",
+        "networks" => "NetworkSettings.Networks",
+        "image_id" => "Image",
+        other => other,
+    };
+    if tail.is_empty() {
+        head.into()
+    } else {
+        format!("{head}.{tail}")
+    }
+}
+/// Differences from the accepted configuration. Environment and label values can hold
+/// secrets, so reviews name those entries without showing their values.
+pub fn changes(before: &Value, after: &Value, path: &str, out: &mut Vec<Value>) {
+    if before == after || out.len() >= 100 {
+        return;
+    }
+    if path == "config.Env" {
+        let entries = |value: &Value| {
+            value
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(|entry| {
+                    let (key, value) = entry.split_once('=').unwrap_or((entry, ""));
+                    (key.to_owned(), value.to_owned())
+                })
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        let (before, after) = (entries(before), entries(after));
+        let keys: std::collections::BTreeSet<_> = before.keys().chain(after.keys()).collect();
+        for key in keys {
+            let change = match (before.get(key), after.get(key)) {
+                (Some(old), Some(new)) if old == new => continue,
+                (Some(_), Some(_)) => "changed",
+                (Some(_), None) => "removed",
+                _ => "added",
+            };
+            out.push(json!({"path":inspect_path(&format!("{path}.{key}")),"change":change}));
+        }
+        return;
+    }
+    if let (Some(before), Some(after)) = (before.as_object(), after.as_object()) {
+        let keys: std::collections::BTreeSet<_> = before.keys().chain(after.keys()).collect();
+        for key in keys {
+            let child = if path.is_empty() {
+                key.clone()
+            } else {
+                format!("{path}.{key}")
+            };
+            let missing = Value::Null;
+            changes(
+                before.get(key).unwrap_or(&missing),
+                after.get(key).unwrap_or(&missing),
+                &child,
+                out,
+            );
+        }
+        return;
+    }
+    // Docker can list the same mounts or options in a different order.
+    fn sorted(value: &Value) -> Option<Vec<&str>> {
+        let mut texts = value
+            .as_array()?
+            .iter()
+            .map(Value::as_str)
+            .collect::<Option<Vec<_>>>()?;
+        texts.sort_unstable();
+        Some(texts)
+    }
+    if sorted(before).is_some() && sorted(before) == sorted(after) {
+        return;
+    }
+    let hidden = path.starts_with("config.Labels.");
+    let shown = |value: &Value| {
+        (!hidden && !value.is_null()).then(|| {
+            let text = value.to_string();
+            if text.chars().count() > 200 {
+                format!("{}…", text.chars().take(200).collect::<String>())
+            } else {
+                text
+            }
+        })
+    };
+    let change = if before.is_null() {
+        "added"
+    } else if after.is_null() {
+        "removed"
+    } else {
+        "changed"
+    };
+    out.push(json!({"path":inspect_path(path),"change":change,
+        "before":shown(before),"after":shown(after)}));
+}
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn configuration_reviews_ignore_reordered_lists() {
+        let mut found = Vec::new();
+        super::changes(
+            &serde_json::json!({"host":{"Binds":["/a:/a","/b:/b"]}}),
+            &serde_json::json!({"host":{"Binds":["/b:/b","/a:/a"]}}),
+            "",
+            &mut found,
+        );
+        assert!(found.is_empty());
+        super::changes(
+            &serde_json::json!({"host":{"Binds":["/a:/a"]}}),
+            &serde_json::json!({"host":{"Binds":["/c:/c"]}}),
+            "",
+            &mut found,
+        );
+        assert_eq!(found[0]["path"], "HostConfig.Binds");
+    }
     #[test]
     fn shared_media_mount_rejects_overrides_and_preserves_state_isolation() {
         let container = serde_json::json!({"Mounts":[{"Type":"bind","Source":"/nas/media","Destination":"/media","RW":true}]});

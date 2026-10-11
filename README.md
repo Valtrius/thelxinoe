@@ -26,6 +26,7 @@ Self-hosted movies, shows, music, YouTube, Twitch and Kick. Rust server, Svelte 
 
 2. Create `server`, `cache` and `deployment` under the state root, the backup directory, and `movies`, `tv`, `music` and `downloads` under the media root. Grant the account read/write access; UID/GID settings do not change existing ownership. Keep state/backups outside media. For existing services, keep their paths and prepare shared network access below.
 3. Run `docker compose up --build -d` from the repository. Open `http://<server-IP>:8484` and create the first administrator. See [deployment and recovery](docs/OPERATIONS.md) for HTTPS and storage details.
+4. Later, after rebuilding or changing `.env` or `compose.override.yaml`, run `docker compose up --build -d`; the controller waits for the new containers to be accepted. Run `docker compose run --rm controller accept-local`, review the listed changes, type `ACCEPT`, then run `docker compose up -d` again. Pointing Thelxinoe at a different state folder starts a different deployment.
 
 ### Create services that do not exist yet
 

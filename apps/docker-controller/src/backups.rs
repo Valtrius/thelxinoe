@@ -843,6 +843,28 @@ async fn remove_interrupted_workers(d: &Deployment, r: &Record) -> Result<()> {
     }
     Ok(())
 }
+/// Whether a backup or restore still has recovery work that refers to its containers.
+pub(super) fn interrupted() -> Result<bool> {
+    if !root().exists() {
+        return Ok(false);
+    }
+    for entry in std::fs::read_dir(root()).map_err(|_| unavailable())? {
+        let journal = entry
+            .map_err(|_| unavailable())?
+            .path()
+            .join("operation.json");
+        if journal.is_file() {
+            let r: Record = persisted(store::read(&journal))?;
+            if !matches!(
+                r.stage.as_str(),
+                "complete" | "failed" | "restored" | "restore-failed" | "imported"
+            ) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
 pub(super) async fn recover_interrupted() -> Result<()> {
     if !root().exists() {
         return Ok(());

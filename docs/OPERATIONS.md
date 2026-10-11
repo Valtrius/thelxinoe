@@ -6,6 +6,8 @@ Copy [`.env.example`](../.env.example) to `.env` and choose paths before startin
 
 The server and newly installed media services use these IDs. The controller runs as root with the configured group and sets access on its private socket directory. Existing services retain their saved identities through adoption, updates and recovery. Choose IDs before initializing the deployment; changing `.env` does not change existing file ownership or saved deployment/service identities.
 
+After the first start, the controller only runs with the server and controller containers it accepted. A rebuilt image or a changed `.env`/override creates new containers that wait for acceptance: run `docker compose run --rm controller accept-local` to review and accept them (`--yes` skips the prompt), then `docker compose up -d`. When only the server changed, the accepted controller keeps running; stop it first with `docker compose stop controller`. Acceptance keeps the deployment, so installed and adopted services stay registered. It refuses a different deployment folder, a server on more than one network, and a changed network or media folder that Thelxinoe-installed services still use, and waits until an interrupted update, backup or restore has finished. [Acceptance](../apps/docker-controller/src/product.rs).
+
 Fresh installations share the configured media directory at `/media`:
 
 ```text
