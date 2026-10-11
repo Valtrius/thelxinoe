@@ -109,7 +109,7 @@ const deployment = () =>
   ).deployment_id;
 const start = () =>
   fixture.compose('up', '-d', '--wait', '--wait-timeout', '180');
-let images;
+let images, cleanup;
 try {
   start();
   const id = deployment();
@@ -194,12 +194,12 @@ try {
   result.passed = true;
 } finally {
   writeFileSync(output, JSON.stringify(result, null, 2));
-  const errors = [];
   for (const record of [fixture, images])
     try {
       record?.close();
     } catch (error) {
-      errors.push(error);
+      cleanup ??= error;
     }
-  if (errors.length && result.passed) throw errors[0];
 }
+// A failed scenario is reported first; cleanup failures fail an otherwise passing run.
+if (cleanup) throw cleanup;
