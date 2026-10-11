@@ -6,6 +6,11 @@ use std::{
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 pub static HANDOFF: tokio::sync::Notify = tokio::sync::Notify::const_new();
 pub fn active() -> bool {
+    // The test engine stands in for the Docker socket and its writer lease.
+    #[cfg(test)]
+    if crate::test_support::DOCKER.try_with(|_| ()).is_ok() {
+        return true;
+    }
     ACTIVE.load(Ordering::SeqCst)
 }
 pub struct Lease {

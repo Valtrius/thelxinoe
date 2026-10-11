@@ -22,7 +22,27 @@ pub(super) fn router() -> Router<AppState> {
         )
         .route("/api/v1/admin/stack/wire", post(wire))
         .route("/api/v1/admin/stack/{id}/action", post(action))
+        .route("/api/v1/admin/stack/{id}/drift", get(drift))
         .route("/api/v1/admin/stack/{id}/retry", post(retry))
+}
+/// What changed in an adopted container since ownership was taken, for review.
+async fn drift(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+) -> Result<Json<Value>> {
+    security::require(&state, &headers, Capability::ManageServer).await?;
+    if uuid::Uuid::parse_str(&key).is_err() {
+        return Err(ApiError::bad("Invalid managed service ID"));
+    }
+    if !storage::imported(&state.db, key.clone()).await? {
+        return Err(ApiError::conflict(
+            "Only adopted services accept a changed configuration",
+        ));
+    }
+    Ok(Json(
+        controller(&state, &format!("/{key}/drift"), None).await?,
+    ))
 }
 pub(crate) async fn controller(state: &AppState, path: &str, body: Option<Value>) -> Result<Value> {
     #[cfg(test)]
@@ -224,6 +244,9 @@ async fn install(
 #[derive(Deserialize)]
 struct Action {
     action: String,
+    /// The reviewed configuration an `accept_configuration` applies to.
+    #[serde(default)]
+    revision: Option<String>,
 }
 
 pub(super) fn confirmed_stopped(observed: &Value) -> Result<bool> {
@@ -258,9 +281,24 @@ async fn action(
                 | "retire"
                 | "remove"
                 | "release"
+                | "accept_configuration"
         )
     {
         return Err(ApiError::bad("Invalid managed service action"));
+    }
+    if input.action == "accept_configuration" {
+        if !input
+            .revision
+            .as_deref()
+            .is_some_and(|r| r.len() == 64 && r.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            return Err(ApiError::bad("Review the changed configuration first"));
+        }
+        if !storage::imported(&state.db, key.clone()).await? {
+            return Err(ApiError::conflict(
+                "Only adopted services accept a changed configuration",
+            ));
+        }
     }
     if input.action == "release" {
         if storage::released(&state.db, key.clone()).await? {
@@ -401,7 +439,7 @@ async fn action(
     let result = controller(
         &state,
         &format!("/{key}/action"),
-        Some(json!({"action":input.action})),
+        Some(json!({"action":input.action,"revision":input.revision})),
     )
     .await?;
     if matches!(input.action.as_str(), "reconcile" | "recreate") {

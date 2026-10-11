@@ -639,6 +639,172 @@ pub(super) async fn complete(d: &Deployment, s: &mut Managed) -> Result<Json<Val
     Ok(Json(json!({"accepted":true})))
 }
 
+/// Identifies one reviewed configuration, so acceptance can't apply a later change.
+fn configuration_revision(fingerprint: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(fingerprint.to_string()))
+}
+/// Fields of the configuration as `docker inspect` names them, for review.
+fn inspect_path(path: &str) -> String {
+    let (head, tail) = path.split_once('.').unwrap_or((path, ""));
+    let head = match head {
+        "config" => "Config",
+        "host" => "HostConfig",
+        "networks" => "NetworkSettings.Networks",
+        "image_id" => "Image",
+        other => other,
+    };
+    if tail.is_empty() {
+        head.into()
+    } else {
+        format!("{head}.{tail}")
+    }
+}
+/// Differences from the accepted configuration. Environment and label values can hold
+/// secrets, so reviews name those entries without showing their values.
+fn changes(before: &Value, after: &Value, path: &str, out: &mut Vec<Value>) {
+    if before == after || out.len() >= 100 {
+        return;
+    }
+    if path == "config.Env" {
+        let entries = |value: &Value| {
+            value
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(|entry| {
+                    let (key, value) = entry.split_once('=').unwrap_or((entry, ""));
+                    (key.to_owned(), value.to_owned())
+                })
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        let (before, after) = (entries(before), entries(after));
+        let keys: std::collections::BTreeSet<_> = before.keys().chain(after.keys()).collect();
+        for key in keys {
+            let change = match (before.get(key), after.get(key)) {
+                (Some(old), Some(new)) if old == new => continue,
+                (Some(_), Some(_)) => "changed",
+                (Some(_), None) => "removed",
+                _ => "added",
+            };
+            out.push(json!({"path":inspect_path(&format!("{path}.{key}")),"change":change}));
+        }
+        return;
+    }
+    if let (Some(before), Some(after)) = (before.as_object(), after.as_object()) {
+        let keys: std::collections::BTreeSet<_> = before.keys().chain(after.keys()).collect();
+        for key in keys {
+            let child = if path.is_empty() {
+                key.clone()
+            } else {
+                format!("{path}.{key}")
+            };
+            let missing = Value::Null;
+            changes(
+                before.get(key).unwrap_or(&missing),
+                after.get(key).unwrap_or(&missing),
+                &child,
+                out,
+            );
+        }
+        return;
+    }
+    let hidden = path.starts_with("config.Labels.");
+    let shown = |value: &Value| {
+        (!hidden && !value.is_null()).then(|| {
+            let text = value.to_string();
+            if text.chars().count() > 200 {
+                format!("{}…", text.chars().take(200).collect::<String>())
+            } else {
+                text
+            }
+        })
+    };
+    let change = if before.is_null() {
+        "added"
+    } else if after.is_null() {
+        "removed"
+    } else {
+        "changed"
+    };
+    out.push(json!({"path":inspect_path(path),"change":change,
+        "before":shown(before),"after":shown(after)}));
+}
+/// The live container of an imported deployment, still the registered identity.
+async fn registered(d: &Deployment, s: &Managed) -> Result<Value> {
+    if s.imported.is_none() {
+        return Err(conflict(
+            "Only adopted services accept a changed configuration",
+        ));
+    }
+    let raw = engine(&format!("/containers/{}/json", s.container)).await?;
+    verify_ownership(d, s, &raw).await.map_err(|_| {
+        conflict(
+            "The adopted container was replaced; release ownership and adopt the new container",
+        )
+    })?;
+    Ok(raw)
+}
+pub(super) async fn drift(
+    State(runtime): State<Runtime>,
+    Path(key): Path<String>,
+) -> Result<Json<Value>> {
+    let s = load(&key)?;
+    let _guard = runtime.0.service(&s.kind).await;
+    let d = bootstrap().await?;
+    let raw = registered(&d, &s).await?;
+    let actual = policy::fingerprint(&raw);
+    let mut found = Vec::new();
+    changes(&s.expected, &actual, "", &mut found);
+    // The same checks as adoption decide whether the new configuration can be owned.
+    let input = Preview {
+        kind: s.kind.clone(),
+        container_id: s.container.clone(),
+    };
+    let blocked = inspect(&input, &d).await.err().map(|error| error.1);
+    Ok(Json(json!({"revision":configuration_revision(&actual),
+        "changes":found,"blocked":blocked})))
+}
+/// Accept a reviewed configuration of the same container, as adoption would.
+pub(super) async fn accept_configuration(
+    d: &Deployment,
+    s: &mut Managed,
+    revision: Option<&str>,
+) -> Result<Json<Value>> {
+    if !crate::lease::active() {
+        return Err(conflict("The controller writer lease is unavailable"));
+    }
+    if !matches!(s.phase.as_str(), "active" | "changing") || s.active_update.is_some() {
+        return Err(conflict(
+            "Finish the active operation before accepting a changed configuration",
+        ));
+    }
+    let actual = policy::fingerprint(&registered(d, s).await?);
+    if revision != Some(configuration_revision(&actual).as_str()) {
+        return Err(conflict(
+            "The configuration changed after review; review it again",
+        ));
+    }
+    let input = Preview {
+        kind: s.kind.clone(),
+        container_id: s.container.clone(),
+    };
+    let (raw, imported, image) = inspect(&input, d).await?;
+    if policy::fingerprint(&raw) != actual {
+        return Err(conflict(
+            "The configuration changed after review; review it again",
+        ));
+    }
+    s.image = image;
+    s.spec = json!({"Image":raw["Image"],"Env":raw["Config"]["Env"],"HostConfig":raw["HostConfig"],"Config":raw["Config"],"Networks":raw["NetworkSettings"]["Networks"]});
+    s.expected = actual;
+    s.imported = Some(imported);
+    s.phase = "active".into();
+    s.error = None;
+    save(s)?;
+    Ok(Json(json!({"accepted":true})))
+}
 pub(super) async fn cancel_unsubmitted(d: &Deployment, key: &str) -> Result<Json<Value>> {
     recyclarr_import::cancel_unsubmitted(d, key).await
 }
@@ -756,5 +922,78 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn adopted_configuration_changes_are_accepted_only_as_reviewed() {
+        const KEY: &str = "77777777-7777-7777-7777-777777777777";
+        let fixture = crate::test_support::Docker::new();
+        fixture
+            .scope(async {
+                let d: Deployment = fixture.backup_deployment();
+                store::write_json(&store::root().join("desired-state.json"), &d).unwrap();
+                let container = "c".repeat(64);
+                let raw = json!({"Id":container,"Name":"/radarr","Image":"sha256:image",
+                    "Config":{"Image":"lscr.io/linuxserver/radarr:latest","Hostname":&container[..12],
+                        "Env":["PUID=1000","API=private-before"],"Labels":{"auth":"private-label"}},
+                    "HostConfig":{"RestartPolicy":{"Name":"unless-stopped"}},
+                    "Mounts":[{"Type":"bind","Source":"/srv/radarr","Destination":"/config","RW":true}],
+                    "State":{"Running":true},"NetworkSettings":{"Networks":{"media":{"NetworkID":"n"}}}});
+                fixture.insert(&container, raw.clone());
+                let capability = json!({"available":true,"reason":null});
+                let mut s: Managed = serde_json::from_value(json!({"id":KEY,"kind":"radarr",
+                    "container":container,"name":"radarr","image":"image","phase":"active","spec":{},
+                    "expected":policy::fingerprint(&raw),"imported":{"engine":"engine",
+                        "deployment":"deployment","storage":[],"capabilities":{"lifecycle":capability,
+                        "backup":capability,"update":capability,"recreate":capability,"release":capability}}}))
+                .unwrap();
+                save(&s).unwrap();
+                // The host changes the restart policy, an environment value and a label.
+                let mut changed = raw.clone();
+                changed["HostConfig"]["RestartPolicy"]["Name"] = json!("always");
+                changed["Config"]["Env"][1] = json!("API=private-after");
+                changed["Config"]["Labels"]["auth"] = json!("private-rotated");
+                fixture.insert(&container, changed.clone());
+                let review = drift(State(Runtime(Default::default())), Path(KEY.into()))
+                    .await
+                    .unwrap()
+                    .0;
+                assert!(!review.to_string().contains("private"), "{review}");
+                assert!(review["blocked"].is_null(), "{review}");
+                let found = review["changes"].as_array().unwrap();
+                for expected in [
+                    json!({"path":"HostConfig.RestartPolicy.Name","change":"changed",
+                        "before":"\"unless-stopped\"","after":"\"always\""}),
+                    json!({"path":"Config.Env.API","change":"changed"}),
+                    json!({"path":"Config.Labels.auth","change":"changed","before":null,"after":null}),
+                ] {
+                    assert!(found.contains(&expected), "{expected} in {review}");
+                }
+                let stale = accept_configuration(&d, &mut s, Some("stale")).await;
+                assert!(stale.unwrap_err().1.contains("review it again"));
+                let accepted = accept_configuration(&d, &mut s, review["revision"].as_str()).await;
+                assert_eq!(accepted.unwrap().0["accepted"], true);
+                assert_eq!(load(KEY).unwrap().expected, policy::fingerprint(&changed));
+                // A change adoption would refuse can't be accepted either.
+                let mut privileged = changed;
+                privileged["HostConfig"]["Privileged"] = json!(true);
+                fixture.insert(&container, privileged);
+                let review = drift(State(Runtime(Default::default())), Path(KEY.into()))
+                    .await
+                    .unwrap()
+                    .0;
+                assert!(review["blocked"].as_str().unwrap().contains("Privileged"));
+                let refused = accept_configuration(&d, &mut s, review["revision"].as_str()).await;
+                assert_eq!(refused.unwrap_err().0, StatusCode::CONFLICT);
+                // A replaced container is a different deployment.
+                let mut replaced = raw;
+                replaced["Id"] = json!("d".repeat(64));
+                fixture.insert(&container, replaced);
+                let error = drift(State(Runtime(Default::default())), Path(KEY.into()))
+                    .await
+                    .unwrap_err();
+                assert!(error.1.contains("release ownership"), "{}", error.1);
+            })
+            .await;
     }
 }

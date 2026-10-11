@@ -23,6 +23,7 @@ export async function installUiFixture(
     managerKind?: 'radarr' | 'sonarr' | 'lidarr';
     managerDefaultsUnset?: boolean;
     serviceUpdateState?: string;
+    adoptedDrift?: boolean;
   } = {},
 ) {
   const managerKind = options.managerKind ?? 'radarr';
@@ -483,6 +484,9 @@ export async function installUiFixture(
             error: null,
             transfer_pending: false,
             ...options.stackCapabilities,
+            ...(options.adoptedDrift
+              ? { drift: true, status: 'drifted', imported: true }
+              : {}),
           },
           {
             id: 'controller-bazarr',

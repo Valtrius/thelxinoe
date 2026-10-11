@@ -288,7 +288,62 @@ try {
       expect(
         docker('exec', attached.container, 'ls', '-A', '/config'),
       ).not.toContain('.thelxinoe-restore');
+      // Decrypted archives and recovery captures are plaintext; only the journal stays.
+      expect(
+        f.compose(
+          'exec',
+          '-T',
+          'controller',
+          'ls',
+          '-A',
+          `/var/lib/thelxinoe/deployment/backups/${id}`,
+        ),
+      ).toBe('operation.json');
       await healthy();
+      await release(accepted.id);
+    },
+  );
+  await scenario(
+    'a reviewed configuration change resumes lifecycle actions on an adopted service',
+    async () => {
+      const attached = await f.attach(
+        'radarr',
+        '/existing-radarr',
+        imageManifest.services.radarr,
+        { existingLayout: true },
+      );
+      const accepted = await adopt(attached);
+      // The host changes the container outside Thelxinoe, as a NAS UI would.
+      docker('update', '--restart', 'always', attached.container);
+      await expect
+        .poll(
+          async () =>
+            (await f.stack()).items.find((row) => row.id === accepted.id)
+              ?.drift,
+        )
+        .toBe(true);
+      expect(
+        controller(`/${accepted.id}/action`, 'POST', { action: 'stop' }).status,
+      ).toBe(409);
+      const review = await f.api(`/admin/stack/${accepted.id}/drift`);
+      expect(review.blocked).toBeNull();
+      expect(review.changes).toContainEqual(
+        expect.objectContaining({
+          path: 'HostConfig.RestartPolicy.Name',
+          after: '"always"',
+        }),
+      );
+      await f.api(`/admin/stack/${accepted.id}/action`, 'POST', {
+        action: 'accept_configuration',
+        revision: review.revision,
+      });
+      expect(
+        (await f.stack()).items.find((row) => row.id === accepted.id).drift,
+      ).toBe(false);
+      for (const action of ['stop', 'start'])
+        expect(
+          controller(`/${accepted.id}/action`, 'POST', { action }).status,
+        ).toBe(200);
       await release(accepted.id);
     },
   );
