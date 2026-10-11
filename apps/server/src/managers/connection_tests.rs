@@ -684,3 +684,47 @@ async fn manual_connection_changes_are_reported_without_overwriting_or_deleting_
         "http://different-manager:7878"
     );
 }
+
+#[tokio::test]
+async fn existing_connection_through_a_published_port_is_not_duplicated() {
+    let (_temp, state, cookie, mock) = connected_services().await;
+    let port: u16 = state
+        .db
+        .read("test.port", |db| {
+            Ok(db.query_row(
+                "SELECT port FROM manager_services WHERE id='radarr'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    state
+        .managers
+        .docker
+        .lock()
+        .unwrap()
+        .get_mut(&format!("containers/{}", "a".repeat(64)))
+        .unwrap()["ports"] = json!([{"private":port,"public":17878}]);
+    // Written against the NAS address and published port, not a container name.
+    mock.rows
+        .lock()
+        .await
+        .push(json!({"id":41,"name":"Radarr","implementation":"Radarr",
+        "fields":[{"name":"baseUrl","value":"http://192.168.1.50:17878"}]}));
+    action(&state, &cookie, "radarr", "connect").await;
+    tick(&state).await.unwrap();
+    let link = storage::load(&state.db, &link_id("prowlarr", "radarr"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(link.state, "conflict");
+    let error = link.error.unwrap_or_default();
+    assert!(error.contains("\"Radarr\" (192.168.1.50:17878)"), "{error}");
+    assert_eq!(mock.posts.load(Ordering::SeqCst), 0);
+    // Another instance elsewhere on the same port is a different target.
+    mock.rows.lock().await[0]["fields"][0]["value"] = json!("http://radarr.example.com:17878");
+    action(&state, &cookie, "radarr", "retry").await;
+    tick(&state).await.unwrap();
+    assert_eq!(mock.posts.load(Ordering::SeqCst), 1);
+}
