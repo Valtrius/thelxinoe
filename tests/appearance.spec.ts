@@ -134,7 +134,7 @@ test('appearance persists, native menus stay hidden on web, and cards animate du
   // Normalize density through the supported account preference, then reload.
   await page.request.patch('/api/v1/me/appearance', {
     headers: { 'X-Thelxinoe-Client': '1' },
-    data: { card_columns: 6, sidebar_collapsed: false },
+    data: { poster_columns: 6, sidebar_collapsed: false },
   });
   await page.reload();
   await page.getByRole('link', { name: 'Movies', exact: true }).first().click();
@@ -182,7 +182,7 @@ test('appearance persists, native menus stay hidden on web, and cards animate du
     .poll(
       async () =>
         (await (await page.request.get('/api/v1/me/appearance')).json())
-          .card_columns,
+          .poster_columns,
     )
     .toBe(5);
   await expect
@@ -351,7 +351,7 @@ test('provider Ctrl+wheel zoom has one owner and sidebar motion keeps cards visi
   );
   await page.request.patch('/api/v1/me/appearance', {
     headers: { 'X-Thelxinoe-Client': '1' },
-    data: { card_columns: 6, sidebar_collapsed: false },
+    data: { video_columns: 6, sidebar_collapsed: false },
   });
   await page.reload();
   await page.getByRole('link', { name: 'Twitch', exact: true }).click();
@@ -366,7 +366,7 @@ test('provider Ctrl+wheel zoom has one owner and sidebar motion keeps cards visi
     .poll(
       async () =>
         (await (await page.request.get('/api/v1/me/appearance')).json())
-          .card_columns,
+          .video_columns,
     )
     .toBe(5);
   await expect

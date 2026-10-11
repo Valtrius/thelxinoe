@@ -13,7 +13,7 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct Appearance {
     provider_preferences: std::collections::BTreeMap<String, String>,
     audio_volume: f64,
@@ -21,7 +21,8 @@ pub struct Appearance {
     youtube_card_shortcuts: Vec<String>,
     theme: String,
     sidebar_collapsed: bool,
-    card_columns: u8,
+    poster_columns: u8,
+    video_columns: u8,
     fade_watched: bool,
     thumbnail_fit: String,
 }
@@ -34,7 +35,8 @@ impl Default for Appearance {
             youtube_card_shortcuts: vec![],
             theme: "system".into(),
             sidebar_collapsed: false,
-            card_columns: 6,
+            poster_columns: 6,
+            video_columns: 6,
             fade_watched: true,
             thumbnail_fit: "contain".into(),
         }
@@ -50,7 +52,8 @@ pub struct Change {
     youtube_card_shortcuts: Option<Vec<String>>,
     theme: Option<String>,
     sidebar_collapsed: Option<bool>,
-    card_columns: Option<u8>,
+    poster_columns: Option<u8>,
+    video_columns: Option<u8>,
     fade_watched: Option<bool>,
     thumbnail_fit: Option<String>,
 }
@@ -117,7 +120,10 @@ pub async fn update(
         .theme
         .as_deref()
         .is_some_and(|v| !["light", "system", "dark"].contains(&v))
-        || change.card_columns.is_some_and(|v| !(3..=12).contains(&v))
+        || change
+            .poster_columns
+            .is_some_and(|v| !(3..=12).contains(&v))
+        || change.video_columns.is_some_and(|v| !(3..=12).contains(&v))
         || change
             .thumbnail_fit
             .as_deref()
@@ -243,12 +249,39 @@ mod tests {
             &state,
             "/api/v1/me/appearance",
             "PATCH",
-            json!({"card_columns":9}),
+            json!({"poster_columns":9}),
             &alice,
         )
         .await;
         assert_eq!(saved.2["theme"], "dark");
-        assert_eq!(saved.2["card_columns"], 9);
+        assert_eq!(saved.2["poster_columns"], 9);
+        assert_eq!(saved.2["video_columns"], 6);
+        let saved = call(
+            &state,
+            "/api/v1/me/appearance",
+            "PATCH",
+            json!({"video_columns":4}),
+            &alice,
+        )
+        .await;
+        assert_eq!(saved.2["poster_columns"], 9);
+        assert_eq!(saved.2["video_columns"], 4);
+        for field in ["poster_columns", "video_columns"] {
+            for columns in [2, 13] {
+                assert_eq!(
+                    call(
+                        &state,
+                        "/api/v1/me/appearance",
+                        "PATCH",
+                        json!({field:columns}),
+                        &alice,
+                    )
+                    .await
+                    .0,
+                    axum::http::StatusCode::BAD_REQUEST
+                );
+            }
+        }
         assert_eq!(
             call(
                 &state,

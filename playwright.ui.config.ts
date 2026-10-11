@@ -13,6 +13,7 @@ export default defineConfig({
       name: 'layout',
       testMatch: [
         'layout.spec.ts',
+        'density.spec.ts',
         'home.spec.ts',
         'statistics.spec.ts',
         'provider-setup.spec.ts',

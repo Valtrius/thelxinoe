@@ -19,7 +19,7 @@
   const columns = $derived(
     width < 640
       ? Math.max(1, Math.min(3, Math.floor(width / 150)))
-      : $appearance.card_columns,
+      : $appearance.poster_columns,
   );
   const motion = createLayoutMotion();
   $effect.pre(() => {

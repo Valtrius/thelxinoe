@@ -43,7 +43,7 @@
       label: 'Account',
       icon: UserRound,
       keywords:
-        'profile picture avatar password display timezone time format workspace density watched',
+        'profile picture avatar password display timezone time format workspace poster video density watched',
     },
     {
       id: 'playback',

@@ -49,8 +49,8 @@
     const wheel = createCardGridWheelHandler({
       anchorAttribute: 'data-layout-key',
       motion: mediaMotion,
-      getColumns: () => get(appearance).card_columns,
-      setColumns: (card_columns) => updateAppearance({ card_columns }),
+      getColumns: () => get(appearance).poster_columns,
+      setColumns: (poster_columns) => updateAppearance({ poster_columns }),
     });
     const handle = (event: WheelEvent) => {
       if (!providerPage) wheel(event);

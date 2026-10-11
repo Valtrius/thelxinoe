@@ -190,6 +190,9 @@ async function web() {
       pnpm('exec', 'playwright', 'test', '--config', 'playwright.ui.config.ts'),
     ['web-validation'],
   );
+  await evidence.group('mock-preview', () => pnpm('run', 'test:ui:mock'), [
+    'web-validation',
+  ]);
 }
 
 async function containers() {
