@@ -14,6 +14,21 @@ struct Component {
     container: String,
     source: String,
     running: bool,
+    // Presentation only; restores match key, container and source.
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    imported: bool,
+}
+/// An imported deployment left running and out of the archive.
+#[derive(Clone, Serialize, Deserialize)]
+struct Exclusion {
+    key: String,
+    kind: String,
+    name: String,
+    reason: String,
 }
 #[derive(Serialize, Deserialize)]
 struct Manifest {
@@ -22,6 +37,8 @@ struct Manifest {
     deployment: Deployment,
     services: Vec<Managed>,
     components: Vec<Component>,
+    #[serde(default)]
+    excluded: Vec<Exclusion>,
     compose: Value,
 }
 #[derive(Serialize, Deserialize)]
@@ -30,6 +47,7 @@ struct Record {
     stage: String,
     created_at: i64,
     error: Option<String>,
+    /// The working set of the latest backup or restore, used for recovery.
     components: Vec<Component>,
     #[serde(default)]
     recovery: Option<String>,
@@ -41,10 +59,11 @@ struct Record {
     release_restore: Option<String>,
     #[serde(default)]
     automatic: bool,
-}
-#[derive(Deserialize)]
-pub(super) struct Input {
-    passphrase: String,
+    /// What the archive holds; a partial restore does not change it.
+    #[serde(default)]
+    contents: Vec<Component>,
+    #[serde(default)]
+    excluded: Vec<Exclusion>,
 }
 #[derive(Deserialize)]
 pub(super) struct Creation {
@@ -59,6 +78,13 @@ struct Automatic {
     retain: usize,
 }
 const MAX_RETAINED: usize = 365;
+#[derive(Deserialize)]
+pub(super) struct RestoreInput {
+    passphrase: String,
+    /// Component keys to restore. Omitted: the server and Thelxinoe-installed services.
+    #[serde(default)]
+    components: Option<Vec<String>>,
+}
 fn root() -> PathBuf {
     store::root().join("backups")
 }
@@ -87,7 +113,14 @@ fn validate_record(r: &Record) -> Result<()> {
     Ok(())
 }
 fn public(r: &Record) -> Value {
-    json!({"id":r.id,"stage":r.stage,"created_at":r.created_at,"error":r.error,"archive":format!("{}.age",r.id),"automatic":r.automatic})
+    let components = r
+        .contents
+        .iter()
+        .map(|c| json!({"key":c.key,"kind":c.kind,"name":c.name,"imported":c.imported}))
+        .collect::<Vec<_>>();
+    json!({"id":r.id,"stage":r.stage,"created_at":r.created_at,"error":r.error,
+        "archive":format!("{}.age",r.id),"automatic":r.automatic,
+        "components":components,"excluded":r.excluded})
 }
 fn failure_stage(r: &Record) -> &'static str {
     // The restore attempt is persisted before quiescence, even if its snapshot never completes.
@@ -128,7 +161,8 @@ pub(super) async fn list() -> Result<Json<Value>> {
                 && !items.iter().any(|r| r["id"] == key)
             {
                 items.push(
-                    json!({"id":key,"stage":"imported","created_at":0,"archive":name,"error":null,"automatic":false}),
+                    json!({"id":key,"stage":"imported","created_at":0,"archive":name,"error":null,
+                        "automatic":false,"components":[],"excluded":[]}),
                 );
             }
         }
@@ -137,7 +171,7 @@ pub(super) async fn list() -> Result<Json<Value>> {
         json!({"items":items,"destination":archive_root().display().to_string()}),
     ))
 }
-async fn inspect(d: &Deployment) -> Result<(Vec<Managed>, Vec<Component>)> {
+async fn inspect(d: &Deployment) -> Result<(Vec<Managed>, Vec<Component>, Vec<Exclusion>)> {
     let server_id = d.server["Id"].as_str().ok_or_else(unavailable)?;
     let server = engine(&format!("/containers/{server_id}/json")).await?;
     if !product::deployment_matches(&d.server, &server) {
@@ -168,16 +202,61 @@ async fn inspect(d: &Deployment) -> Result<(Vec<Managed>, Vec<Component>)> {
         container: server_id.into(),
         source,
         running: server["State"]["Running"] == true,
+        kind: "server".into(),
+        name: server["Name"]
+            .as_str()
+            .unwrap_or_default()
+            .trim_start_matches('/')
+            .into(),
+        imported: false,
     }];
     let mut managed = services()?;
     managed.sort_by(|a, b| a.id.cmp(&b.id));
     let mut media_sources = Vec::new();
+    let mut excluded = Vec::new();
     for service in &managed {
-        if service.phase != "active" {
-            return Err(conflict("Finish service recovery before backing up"));
+        let checked = async {
+            if service.phase != "active" {
+                return Err(conflict("Finish service recovery before backing up"));
+            }
+            let raw = updates::verified(service, d).await?;
+            let source = adoption::backup_source(&raw, d)?;
+            Ok((raw, source))
         }
-        let raw = updates::verified(service, d).await?;
-        let source = adoption::backup_source(&raw, d)?;
+        .await;
+        let (raw, source) = match checked {
+            Ok(checked) => checked,
+            // Imported deployments keep their own storage. An unsupported layout or a
+            // changed or missing container leaves only that service out of the archive.
+            Err((status, reason))
+                if service.imported.is_some()
+                    && matches!(status, StatusCode::CONFLICT | StatusCode::NOT_FOUND) =>
+            {
+                // It keeps running during the snapshot, so it must not write into captured state.
+                if let Ok(raw) = engine(&format!("/containers/{}/json", service.container)).await {
+                    for m in raw["Mounts"].as_array().into_iter().flatten() {
+                        if let Some(source) = m["Source"].as_str().filter(|source| {
+                            m["Type"] != "tmpfs" && policy::host_path(source).is_some()
+                        }) {
+                            media_sources.push(source.to_owned());
+                        }
+                    }
+                }
+                excluded.push(Exclusion {
+                    key: service.id.clone(),
+                    kind: service.kind.clone(),
+                    name: service.name.clone(),
+                    reason: match reason.as_ref() {
+                        "Docker configuration drift blocks reconciliation" => {
+                            "Its Docker configuration changed after adoption; release and adopt it again to include it".into()
+                        }
+                        _ => reason.into_owned(),
+                    },
+                });
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         for m in raw["Mounts"].as_array().ok_or_else(unavailable)? {
             if m["Destination"] != "/config" && m["Type"] != "tmpfs" {
                 media_sources.push(m["Source"].as_str().ok_or_else(unavailable)?.to_owned());
@@ -188,6 +267,9 @@ async fn inspect(d: &Deployment) -> Result<(Vec<Managed>, Vec<Component>)> {
             container: service.container.clone(),
             source,
             running: raw["State"]["Running"] == true,
+            kind: service.kind.clone(),
+            name: service.name.clone(),
+            imported: service.imported.is_some(),
         });
     }
     if components.iter().any(|c| {
@@ -199,7 +281,7 @@ async fn inspect(d: &Deployment) -> Result<(Vec<Managed>, Vec<Component>)> {
             "Component state overlaps another service's media or download storage",
         ));
     }
-    Ok((managed, components))
+    Ok((managed, components, excluded))
 }
 async fn stop_all(components: &[Component]) -> Result<()> {
     for c in components {
@@ -291,15 +373,13 @@ async fn rollback_original(d: &Deployment, r: &mut Record, copy: bool) -> Result
 async fn capture(d: &Deployment, r: &Record, leaf: &str) -> Result<()> {
     for (i, c) in r.components.iter().enumerate() {
         private_dir(&work(&r.id).join(leaf).join(&c.key))?;
-        updates::copy_state(
-            d,
-            &r.id,
-            &c.source,
-            &host(d, &r.id, &format!("{leaf}/{}", c.key)),
-            false,
-            &format!("b{i}"),
-        )
-        .await?;
+        let destination = host(d, &r.id, &format!("{leaf}/{}", c.key));
+        let label = format!("b{i}");
+        if c.key == "server" {
+            updates::copy_server_state(d, &r.id, &c.source, &destination, &label).await?;
+        } else {
+            updates::copy_state(d, &r.id, &c.source, &destination, false, &label).await?;
+        }
     }
     Ok(())
 }
@@ -377,7 +457,7 @@ pub(super) async fn create(
         .try_lock_owned()
         .map_err(|_| conflict("Another Docker operation is active"))?;
     let d = bootstrap().await?;
-    let (services, components) = inspect(&d).await?;
+    let (services, components, excluded) = inspect(&d).await?;
     private_dir(&root())?;
     private_dir(&archive_root())?;
     private_dir(&work(&key))?;
@@ -386,17 +466,19 @@ pub(super) async fn create(
         stage: "queued".into(),
         created_at: thelxinoe_core::now(),
         error: None,
-        components,
+        components: components.clone(),
         recovery: None,
         recovery_ready: false,
         rollback_phase: None,
         release_restore: None,
         automatic: input.automatic.is_some(),
+        contents: components,
+        excluded,
     };
     record(&r)?;
     let response = public(&r);
     let retain = input.automatic.map(|automatic| automatic.retain);
-    tokio::spawn(async move {
+    crate::recovery::spawn(async move {
         let _guard = guard;
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let result = async {
@@ -413,6 +495,7 @@ pub(super) async fn create(
                 deployment: d,
                 services,
                 components: r.components.clone(),
+                excluded: r.excluded.clone(),
             };
             persisted(store::write_json(
                 &work(&r.id).join("snapshot/manifest.json"),
@@ -455,19 +538,47 @@ pub(super) async fn create(
     });
     Ok(Json(response))
 }
+/// Without an explicit choice, imported deployments keep their live configuration.
+fn selection(manifest: &Manifest, services: &[Managed], chosen: Option<&[String]>) -> Vec<String> {
+    if let Some(chosen) = chosen {
+        return chosen.to_vec();
+    }
+    manifest
+        .components
+        .iter()
+        .filter(|c| {
+            c.key == "server"
+                || services
+                    .iter()
+                    .any(|s| s.id == c.key && s.imported.is_none())
+        })
+        .map(|c| c.key.clone())
+        .collect()
+}
 pub(super) async fn restore(
     State(runtime): State<Runtime>,
     Path(key): Path<String>,
-    Json(input): Json<Input>,
+    Json(input): Json<RestoreInput>,
 ) -> Result<Json<Value>> {
     id(&key)?;
     check_passphrase(&input.passphrase)?;
+    if let Some(chosen) = &input.components {
+        let mut unique = chosen.clone();
+        unique.sort();
+        unique.dedup();
+        if chosen.is_empty()
+            || unique.len() != chosen.len()
+            || chosen.iter().any(|key| key != "server" && id(key).is_err())
+        {
+            return Err(bad("Choose at least one component to restore"));
+        }
+    }
     let guard = runtime
         .0
         .try_lock_owned()
         .map_err(|_| conflict("Another Docker operation is active"))?;
     let d = bootstrap().await?;
-    let (current_services, components) = inspect(&d).await?;
+    let (current_services, current, _) = inspect(&d).await?;
     private_dir(&work(&key))?;
     let mut r: Record = if work(&key).join("operation.json").exists() {
         persisted(store::read(&work(&key).join("operation.json")))?
@@ -483,6 +594,8 @@ pub(super) async fn restore(
             rollback_phase: None,
             release_restore: None,
             automatic: false,
+            contents: vec![],
+            excluded: vec![],
         }
     };
     if !matches!(
@@ -517,25 +630,63 @@ pub(super) async fn restore(
             != serde_json::to_value(&accepted).map_err(|_| unavailable())?
         || serde_json::to_value(&manifest.services).map_err(|_| unavailable())?
             != serde_json::to_value(&current_services).map_err(|_| unavailable())?
-        || manifest.components.len() != components.len()
-        || manifest.components.iter().zip(&components).any(|(a, b)| {
-            a.key != b.key
-                || (a.key != "server" && a.container != b.container)
-                || a.source != b.source
-        })
     {
         return Err(conflict(
             "Restore requires a previously accepted deployment and the same managed-service layout",
         ));
     }
-    r.components = components;
+    let selected = selection(&manifest, &current_services, input.components.as_deref());
+    for key in &selected {
+        let archived = manifest
+            .components
+            .iter()
+            .find(|c| &c.key == key)
+            .ok_or_else(|| conflict("This backup does not contain the selected component"))?;
+        let live = current.iter().find(|c| &c.key == key).ok_or_else(|| {
+            conflict(
+                "A selected service can't be backed up or restored now; check it in Media services",
+            )
+        })?;
+        if (key != "server" && archived.container != live.container)
+            || archived.source != live.source
+        {
+            return Err(conflict(
+                "Restore requires a previously accepted deployment and the same managed-service layout",
+            ));
+        }
+    }
+    // Keep the live order: the server first, so it restarts after its services.
+    r.components = current
+        .into_iter()
+        .filter(|c| selected.contains(&c.key))
+        .collect();
+    if r.contents.is_empty() {
+        // An archive without a local record takes its labels from the live registry.
+        r.contents = manifest
+            .components
+            .iter()
+            .map(|c| {
+                let mut c = c.clone();
+                if let Some(s) = current_services.iter().find(|s| s.id == c.key) {
+                    (c.kind, c.name, c.imported) =
+                        (s.kind.clone(), s.name.clone(), s.imported.is_some());
+                } else if c.key == "server" {
+                    c.kind = "server".into();
+                }
+                c
+            })
+            .collect();
+        r.excluded = manifest.excluded.clone();
+    }
     r.stage = "restore-queued".into();
     r.error = None;
     r.recovery = Some(format!("recovery-{restore_id}"));
     r.recovery_ready = false;
     r.rollback_phase = Some(RollbackPhase::Copying);
-    let change_release = manifest.deployment.server["Image"] != d.server["Image"]
-        || manifest.deployment.controller["Image"] != d.controller["Image"];
+    // Only server state is tied to its release; services restore under the current one.
+    let change_release = selected.iter().any(|key| key == "server")
+        && (manifest.deployment.server["Image"] != d.server["Image"]
+            || manifest.deployment.controller["Image"] != d.controller["Image"]);
     if change_release {
         // Fail before stopping anything when a retained old image was removed.
         for raw in [&manifest.deployment.server, &manifest.deployment.controller] {
@@ -571,7 +722,11 @@ pub(super) async fn restore(
                 .await?;
             }
             // The compatible descriptor is authenticated in the archive and remains the accepted generation.
-            for s in &manifest.services {
+            for s in manifest
+                .services
+                .iter()
+                .filter(|s| r.components.iter().any(|c| c.key == s.id))
+            {
                 save(s)?;
             }
             if change_release {
@@ -739,13 +894,13 @@ pub(super) async fn recover_interrupted() -> Result<()> {
             continue;
         }
         let d = bootstrap().await?;
-        let (_, current) = inspect(&d).await?;
-        if r.components.len() != current.len()
-            || r.components
+        let (_, current, _) = inspect(&d).await?;
+        // A restore may cover only some components; each one must still be the same.
+        if r.components.iter().any(|a| {
+            !current
                 .iter()
-                .zip(&current)
-                .any(|(a, b)| a.key != b.key || a.container != b.container || a.source != b.source)
-        {
+                .any(|b| a.key == b.key && a.container == b.container && a.source == b.source)
+        }) {
             return Err(conflict("Interrupted backup component layout changed"));
         }
         remove_interrupted_workers(&d, &r).await?;

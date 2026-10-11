@@ -117,6 +117,16 @@ impl Docker {
     pub(crate) fn running(&self, id: &str) -> bool {
         self.engine.lock().unwrap().containers[id]["State"]["Running"] == true
     }
+    pub(crate) fn started_at(&self, id: &str) -> Value {
+        self.engine.lock().unwrap().containers[id]["State"]["StartedAt"].clone()
+    }
+    pub(crate) fn insert(&self, id: &str, container: Value) {
+        self.engine
+            .lock()
+            .unwrap()
+            .containers
+            .insert(id.into(), container);
+    }
     pub(crate) fn creates(&self) -> usize {
         self.engine.lock().unwrap().creates
     }
@@ -176,6 +186,9 @@ impl DockerContext {
         }
         if path.starts_with("/images/") {
             return Ok(json!({"Config":{}}));
+        }
+        if path == "/info" {
+            return Ok(json!({"ID":"engine"}));
         }
         if path == "/containers/controller-fixture/json" {
             return Ok(json!({"Image":format!("sha256:{}", "a".repeat(64))}));

@@ -39,8 +39,8 @@ async fn main() -> anyhow::Result<()> {
             "adapter-health" => {
                 contract::run(&std::env::args().nth(2).unwrap_or_default(), false).await
             }
-            "snapshot-copy" => state_copy::run(false),
-            "snapshot-restore" => state_copy::run(true),
+            "snapshot-copy" => state_copy::snapshot(false),
+            "snapshot-restore" => state_copy::snapshot(true),
             "recyclarr-import" => state_copy::import_recyclarr(),
             "appdata-remove" => state_copy::remove(),
             "verify-state" => {

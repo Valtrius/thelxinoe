@@ -455,7 +455,12 @@ async fn server_check(
 }
 async fn copy(u: &Update, source: &str, leaf: &str, restore: bool) -> Result<()> {
     private(&dir(&u.id).join(leaf))?;
-    updates::copy_state(&u.old, &u.id, source, &host(u, leaf), restore, leaf).await
+    // Every product copy holds server state; only snapshots leave out its disposables.
+    if restore {
+        updates::copy_state(&u.old, &u.id, source, &host(u, leaf), true, leaf).await
+    } else {
+        updates::copy_server_state(&u.old, &u.id, source, &host(u, leaf), leaf).await
+    }
 }
 async fn prepare(u: &mut Update) -> Result<()> {
     let manifest = u.manifest.clone().ok_or_else(unavailable)?;

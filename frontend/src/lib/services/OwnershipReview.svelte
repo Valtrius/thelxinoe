@@ -24,7 +24,9 @@
       review.capabilities[capability as 'lifecycle' | 'backup' | 'update']}
     {#if !status.available && status.reason}
       <Notice tone="warning" class="mt-3 text-[11px]" role="status"
-        >{status.reason}</Notice
+        >{status.reason}{capability === 'backup'
+          ? '. Thelxinoe backups will leave this service running and out of the archive.'
+          : ''}</Notice
       >
     {/if}
   {/each}

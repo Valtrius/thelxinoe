@@ -43,7 +43,7 @@ Self-hosted movies, shows, music, YouTube, Twitch and Kick. Rust server, Svelte 
 - Use the same Docker engine as Thelxinoe and a supported stable Linux x86-64 image: the LinuxServer image for Radarr, Sonarr, Lidarr, Bazarr, Prowlarr or NZBGet, or the official Seerr image (`ghcr.io/seerr-team/seerr` or `seerr/seerr`). Stable tags are `latest`, a version such as `3.5.0` or `v3.5.0`, or a digest. Cluster-managed, privileged and host-system deployments are outside the supported scope, as are services that share another container's network (such as a VPN container). Jellyfin/Jellyseerr cannot be adopted.
 - `/config` needs its own folder. Other mounts may use any host folder except system folders, Docker's state and Thelxinoe's deployment storage; read-only time zone files such as `/etc/localtime` are allowed. The review names the mount when one is not supported.
 - Back up your configuration and deployment definition. Keep your existing `PUID`/`PGID`, storage, network connections and published ports.
-- The review reports available operations. Lifecycle management can work even when a storage layout cannot be backed up. Imported deployments currently use update checks only; recreation and automatic updates remain disabled until faithful recovery is supported.
+- The review reports available operations. Lifecycle management can work even when a storage layout cannot be backed up; Thelxinoe backups then leave that service running and out of the archive. Restores leave adopted services unchanged unless you choose them. Imported deployments currently use update checks only; recreation and automatic updates remain disabled until faithful recovery is supported.
 
 ### 2. Give Thelxinoe access
 

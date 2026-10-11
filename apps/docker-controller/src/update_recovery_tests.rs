@@ -177,3 +177,31 @@ async fn replacement_recovery_refuses_foreign_names_and_changed_attempts() {
             .await;
     }
 }
+
+#[tokio::test]
+async fn copy_workers_report_their_own_failure() {
+    let fixture = Docker::new();
+    fixture
+        .scope(async {
+            fixture.insert(
+                "worker",
+                json!({"Id":"worker","Name":"/worker","State":{"Running":false,"ExitCode":1}}),
+            );
+            let report = store::root().join("progress.json");
+            std::fs::write(
+                &report,
+                r#"{"phase":"failed","error":"Restoring needs 10 MiB free"}"#,
+            )
+            .unwrap();
+            assert_eq!(
+                wait_copy("worker", &report).await.unwrap_err().1,
+                "Restoring needs 10 MiB free"
+            );
+            std::fs::remove_file(&report).unwrap();
+            assert_eq!(
+                wait_copy("worker", &report).await.unwrap_err().1,
+                "Isolated worker failed its contract"
+            );
+        })
+        .await;
+}
