@@ -529,11 +529,15 @@ pub(super) async fn create(
                 }
             }
         }
-        if record(&r).is_ok()
-            && let Some(retain) = retain
-            && let Err(error) = prune(&r, retain)
-        {
-            eprintln!("Automatic backup rotation failed: {}", error.1);
+        if record(&r).is_ok() {
+            if let Err(error) = discard_plaintext(&r) {
+                eprintln!("Backup plaintext cleanup failed: {}", error.1);
+            }
+            if let Some(retain) = retain
+                && let Err(error) = prune(&r, retain)
+            {
+                eprintln!("Automatic backup rotation failed: {}", error.1);
+            }
         }
     });
     Ok(Json(response))
@@ -608,93 +612,106 @@ pub(super) async fn restore(
     let restore_id = thelxinoe_core::id();
     let stage = work(&key).join(&restore_id);
     private_dir(&stage)?;
-    let output = stage.clone();
-    tokio::task::spawn_blocking(move || {
-        thelxinoe_backup::decrypt(&archive, &output, input.passphrase)
-    })
-    .await
-    .map_err(|_| unavailable())?
-    .map_err(|_| conflict("Passphrase or archive verification failed"))?;
-    let manifest: Manifest = persisted(store::read(&stage.join("manifest.json")))?;
-    // An archive cannot introduce a new Docker spec: match its authenticated
-    // descriptor against one previously accepted by this controller.
-    let accepted: Deployment = persisted(store::read(
-        &store::root()
-            .join("generations")
-            .join(manifest.deployment.generation.to_string())
-            .join("desired-state.json"),
-    ))?;
-    if manifest.format != 1
-        || manifest.deployment.id != d.id
-        || serde_json::to_value(&manifest.deployment).map_err(|_| unavailable())?
-            != serde_json::to_value(&accepted).map_err(|_| unavailable())?
-        || serde_json::to_value(&manifest.services).map_err(|_| unavailable())?
-            != serde_json::to_value(&current_services).map_err(|_| unavailable())?
-    {
-        return Err(conflict(
-            "Restore requires a previously accepted deployment and the same managed-service layout",
-        ));
-    }
-    let selected = selection(&manifest, &current_services, input.components.as_deref());
-    for key in &selected {
-        let archived = manifest
-            .components
-            .iter()
-            .find(|c| &c.key == key)
-            .ok_or_else(|| conflict("This backup does not contain the selected component"))?;
-        let live = current.iter().find(|c| &c.key == key).ok_or_else(|| {
-            conflict(
-                "A selected service can't be backed up or restored now; check it in Media services",
-            )
-        })?;
-        if (key != "server" && archived.container != live.container)
-            || archived.source != live.source
+    let (passphrase, chosen) = (input.passphrase, input.components);
+    // Whatever is decrypted for a restore that never starts is discarded at once.
+    let prepared = async {
+        let output = stage.clone();
+        tokio::task::spawn_blocking(move || {
+            thelxinoe_backup::decrypt(&archive, &output, passphrase)
+        })
+        .await
+        .map_err(|_| unavailable())?
+        .map_err(|_| conflict("Passphrase or archive verification failed"))?;
+        let manifest: Manifest = persisted(store::read(&stage.join("manifest.json")))?;
+        // An archive cannot introduce a new Docker spec: match its authenticated
+        // descriptor against one previously accepted by this controller.
+        let accepted: Deployment = persisted(store::read(
+            &store::root()
+                .join("generations")
+                .join(manifest.deployment.generation.to_string())
+                .join("desired-state.json"),
+        ))?;
+        if manifest.format != 1
+            || manifest.deployment.id != d.id
+            || serde_json::to_value(&manifest.deployment).map_err(|_| unavailable())?
+                != serde_json::to_value(&accepted).map_err(|_| unavailable())?
+            || serde_json::to_value(&manifest.services).map_err(|_| unavailable())?
+                != serde_json::to_value(&current_services).map_err(|_| unavailable())?
         {
             return Err(conflict(
                 "Restore requires a previously accepted deployment and the same managed-service layout",
             ));
         }
-    }
-    // Keep the live order: the server first, so it restarts after its services.
-    r.components = current
-        .into_iter()
-        .filter(|c| selected.contains(&c.key))
-        .collect();
-    if r.contents.is_empty() {
-        // An archive without a local record takes its labels from the live registry.
-        r.contents = manifest
-            .components
-            .iter()
-            .map(|c| {
-                let mut c = c.clone();
-                if let Some(s) = current_services.iter().find(|s| s.id == c.key) {
-                    (c.kind, c.name, c.imported) =
-                        (s.kind.clone(), s.name.clone(), s.imported.is_some());
-                } else if c.key == "server" {
-                    c.kind = "server".into();
-                }
-                c
-            })
-            .collect();
-        r.excluded = manifest.excluded.clone();
-    }
-    r.stage = "restore-queued".into();
-    r.error = None;
-    r.recovery = Some(format!("recovery-{restore_id}"));
-    r.recovery_ready = false;
-    r.rollback_phase = Some(RollbackPhase::Copying);
-    // Only server state is tied to its release; services restore under the current one.
-    let change_release = selected.iter().any(|key| key == "server")
-        && (manifest.deployment.server["Image"] != d.server["Image"]
-            || manifest.deployment.controller["Image"] != d.controller["Image"]);
-    if change_release {
-        // Fail before stopping anything when a retained old image was removed.
-        for raw in [&manifest.deployment.server, &manifest.deployment.controller] {
-            engine(&format!("/images/{}/json", immutable(raw)?)).await?;
+        let selected = selection(&manifest, &current_services, chosen.as_deref());
+        for key in &selected {
+            let archived = manifest
+                .components
+                .iter()
+                .find(|c| &c.key == key)
+                .ok_or_else(|| conflict("This backup does not contain the selected component"))?;
+            let live = current.iter().find(|c| &c.key == key).ok_or_else(|| {
+                conflict(
+                    "A selected service can't be backed up or restored now; check it in Media services",
+                )
+            })?;
+            if (key != "server" && archived.container != live.container)
+                || archived.source != live.source
+            {
+                return Err(conflict(
+                    "Restore requires a previously accepted deployment and the same managed-service layout",
+                ));
+            }
         }
+        // Keep the live order: the server first, so it restarts after its services.
+        r.components = current
+            .into_iter()
+            .filter(|c| selected.contains(&c.key))
+            .collect();
+        if r.contents.is_empty() {
+            // An archive without a local record takes its labels from the live registry.
+            r.contents = manifest
+                .components
+                .iter()
+                .map(|c| {
+                    let mut c = c.clone();
+                    if let Some(s) = current_services.iter().find(|s| s.id == c.key) {
+                        (c.kind, c.name, c.imported) =
+                            (s.kind.clone(), s.name.clone(), s.imported.is_some());
+                    } else if c.key == "server" {
+                        c.kind = "server".into();
+                    }
+                    c
+                })
+                .collect();
+            r.excluded = manifest.excluded.clone();
+        }
+        r.stage = "restore-queued".into();
+        r.error = None;
+        r.recovery = Some(format!("recovery-{restore_id}"));
+        r.recovery_ready = false;
+        r.rollback_phase = Some(RollbackPhase::Copying);
+        // Only server state is tied to its release; services restore under the current one.
+        let change_release = selected.iter().any(|key| key == "server")
+            && (manifest.deployment.server["Image"] != d.server["Image"]
+                || manifest.deployment.controller["Image"] != d.controller["Image"]);
+        if change_release {
+            // Fail before stopping anything when a retained old image was removed.
+            for raw in [&manifest.deployment.server, &manifest.deployment.controller] {
+                engine(&format!("/images/{}/json", immutable(raw)?)).await?;
+            }
+        }
+        r.release_restore = change_release.then(|| restore_id.clone());
+        record(&r)?;
+        Ok::<_, crate::docker::Failure>((manifest, change_release))
     }
-    r.release_restore = change_release.then(|| restore_id.clone());
-    record(&r)?;
+    .await;
+    let (manifest, change_release) = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&stage);
+            return Err(error);
+        }
+    };
     let response = public(&r);
     crate::recovery::spawn(async move {
         let _guard = guard;
@@ -785,9 +802,35 @@ pub(super) async fn restore(
         }
         if let Err(error) = record(&r) {
             eprintln!("Backup recovery journal failed: {}", error.1);
+        } else if let Err(error) = discard_plaintext(&r) {
+            eprintln!("Backup plaintext cleanup failed: {}", error.1);
         }
     });
     Ok(Json(response))
+}
+/// Snapshots, decrypted archives and recovery captures hold service databases and
+/// credentials in plaintext. Once an operation is final, only its journal and the
+/// encrypted archive remain; interrupted and recovery-required work keeps them.
+fn discard_plaintext(r: &Record) -> Result<()> {
+    if !matches!(
+        r.stage.as_str(),
+        "complete" | "failed" | "restored" | "restore-failed"
+    ) {
+        return Ok(());
+    }
+    id(&r.id)?;
+    let entries = match std::fs::read_dir(work(&r.id)) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err(unavailable()),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|_| unavailable())?;
+        if entry.file_type().map_err(|_| unavailable())?.is_dir() {
+            persisted(std::fs::remove_dir_all(entry.path()).map_err(Into::into))?;
+        }
+    }
+    Ok(())
 }
 async fn remove_interrupted_workers(d: &Deployment, r: &Record) -> Result<()> {
     let all = engine("/containers/json?all=true").await?;
@@ -920,6 +963,16 @@ pub(super) async fn recover_interrupted() -> Result<()> {
         r.stage = terminal.into();
         r.error = Some("Controller interrupted the operation; component startup recovered".into());
         record(&r)?;
+    }
+    // Includes operations that finished before a crash interrupted their cleanup.
+    for entry in std::fs::read_dir(root()).map_err(|_| unavailable())? {
+        let journal = entry
+            .map_err(|_| unavailable())?
+            .path()
+            .join("operation.json");
+        if journal.is_file() {
+            discard_plaintext(&persisted(store::read::<Record>(&journal))?)?;
+        }
     }
     Ok(())
 }

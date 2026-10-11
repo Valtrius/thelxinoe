@@ -1,6 +1,21 @@
 use super::*;
 use crate::test_support::{Docker, Fault};
 
+/// Plaintext directories still held for an operation.
+fn plaintext(key: &str) -> Vec<String> {
+    let mut found: Vec<String> = std::fs::read_dir(work(key))
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.path().is_dir())
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    found.sort();
+    found
+}
+
 #[tokio::test]
 async fn startup_recovers_early_restore_failure_and_accepts_the_same_archive() {
     for fault in [
@@ -334,6 +349,7 @@ async fn backups_leave_unsupported_imported_services_running_and_restore_them_on
             finished("restored").await;
             assert_eq!(fixture.copies(), 3 + 4);
             assert_eq!(fixture.started_at("kept"), kept_started);
+            assert_eq!(plaintext(&key), Vec::<String>::new());
             for (rejected, status) in [
                 (vec![], StatusCode::BAD_REQUEST),
                 (vec![KEPT.to_owned(), KEPT.to_owned()], StatusCode::BAD_REQUEST),
@@ -341,6 +357,8 @@ async fn backups_leave_unsupported_imported_services_running_and_restore_them_on
             ] {
                 assert_eq!(restore_with(Some(rejected)).await.unwrap_err().0, status);
             }
+            // The rejected selection was checked against the decrypted manifest.
+            assert_eq!(plaintext(&key), Vec::<String>::new());
             // An explicit choice restores only that service; the server keeps running.
             let server_started = fixture.started_at("original");
             assert_eq!(
@@ -354,6 +372,45 @@ async fn backups_leave_unsupported_imported_services_running_and_restore_them_on
             assert_eq!(contents(&public(&r)).len(), 3);
             assert!(fixture.running("skipped"));
             assert_eq!(fixture.started_at("skipped"), skipped_started);
+            assert_eq!(plaintext(&key), Vec::<String>::new());
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn final_operations_keep_no_plaintext_but_recovery_keeps_its_capture() {
+    let fixture = Docker::new();
+    fixture
+        .scope(async {
+            let operation = |n: u8, stage: &str, leftovers: &[&str]| {
+                let key = format!("00000000-0000-0000-0000-{n:012}");
+                let r: Record = serde_json::from_value(json!({"id":key,"stage":stage,
+                    "created_at":n,"error":null,"components":[]}))
+                .unwrap();
+                private_dir(&work(&key)).unwrap();
+                record(&r).unwrap();
+                for leftover in leftovers {
+                    std::fs::create_dir_all(work(&key).join(leftover)).unwrap();
+                    std::fs::write(work(&key).join(leftover).join("master.key"), "secret").unwrap();
+                }
+                r
+            };
+            // Leftovers from a crash or an older build are swept at startup.
+            let failed = operation(1, "failed", &["snapshot"]);
+            let restored = operation(
+                2,
+                "restored",
+                &["11111111-1111-1111-1111-111111111111", "recovery-x"],
+            );
+            recover_interrupted().await.unwrap();
+            for r in [&failed, &restored] {
+                assert_eq!(plaintext(&r.id), Vec::<String>::new(), "{}", r.stage);
+                assert!(work(&r.id).join("operation.json").is_file());
+            }
+            // Manual recovery still needs the captured state.
+            let required = operation(3, "recovery-required", &["recovery-x"]);
+            discard_plaintext(&required).unwrap();
+            assert_eq!(plaintext(&required.id), ["recovery-x"]);
         })
         .await;
 }
