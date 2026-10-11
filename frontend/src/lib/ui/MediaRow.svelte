@@ -36,7 +36,11 @@
   }
 </script>
 
-<section class="min-w-0" aria-label={label}>
+<section
+  class="media-row min-w-0"
+  aria-label={label}
+  data-sidebar-resize="xy-pos"
+>
   <div class="mb-4 flex min-h-8 items-center justify-between gap-3">
     <h2 class="text-base font-semibold tracking-tight">{label}</h2>
     {#if overflow}<div class="flex gap-1">
@@ -58,8 +62,11 @@
   </div>
   <div
     bind:this={rail}
+    data-sidebar-resize="width"
+    data-sidebar-group
+    data-sidebar-resize-origin
     onscroll={measure}
-    class="grid auto-cols-[clamp(14rem,23vw,20rem)] grid-flow-col items-start gap-4 overflow-x-auto overscroll-x-contain pt-1 pb-4 compact:auto-cols-[min(78vw,18rem)] compact:gap-3"
+    class="media-row-rail grid auto-cols-[clamp(14rem,23vw,20rem)] grid-flow-col items-start gap-4 overflow-x-auto overscroll-x-contain pt-1 pb-4 compact:auto-cols-[min(78vw,18rem)] compact:gap-3"
   >
     {@render children()}
   </div>

@@ -132,11 +132,17 @@
     </div>
   </header>
 
-  <div class="mt-4 overflow-x-auto pb-2">
+  <div
+    class="mt-4 overflow-x-auto pb-2"
+    data-sidebar-resize="xy"
+    data-sidebar-group
+  >
     <div
       bind:this={gridElement}
       class="grid min-w-232 grid-cols-[2rem_repeat(24,minmax(1.25rem,1fr))] items-center gap-1.5"
       role="grid"
+      data-sidebar-resize="xy"
+      data-sidebar-group
       aria-label="Watch time by weekday and hour"
     >
       <div class="contents" role="row">

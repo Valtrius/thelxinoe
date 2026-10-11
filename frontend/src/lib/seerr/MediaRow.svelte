@@ -19,7 +19,11 @@
   }
 </script>
 
-<section class="min-w-0" aria-label={label}>
+<section
+  class="media-row min-w-0"
+  aria-label={label}
+  data-sidebar-resize="xy-pos"
+>
   <div class="mb-4 flex items-center justify-between gap-3">
     <h2 class="text-base font-semibold tracking-tight">{label}</h2>
     <div class="flex gap-1">
@@ -38,7 +42,9 @@
   </div>
   <div
     bind:this={rail}
-    class="grid auto-cols-[clamp(8.5rem,13vw,11.5rem)] grid-flow-col gap-4 overflow-x-auto overscroll-x-contain pt-1 pb-4 compact:auto-cols-[8.5rem] compact:gap-3"
+    data-sidebar-resize="width"
+    data-sidebar-group
+    class="media-row-rail grid auto-cols-[clamp(8.5rem,13vw,11.5rem)] grid-flow-col gap-4 overflow-x-auto overscroll-x-contain pt-1 pb-4 compact:auto-cols-[8.5rem] compact:gap-3"
   >
     {#each items as item (`${item.mediaType}:${item.id}`)}<PosterCard
         {item}

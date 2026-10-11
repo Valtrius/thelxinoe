@@ -168,53 +168,6 @@
       ),
     })),
   );
-  function panelMotion(node: HTMLElement) {
-    let owned: { element: Element; hadOrigin: boolean }[] = [];
-    function release(element: Element, hadOrigin: boolean) {
-      element.removeAttribute('data-sidebar-resize');
-      if (!hadOrigin) element.removeAttribute('data-sidebar-resize-origin');
-    }
-    function register() {
-      owned = owned.filter(({ element, hadOrigin }) => {
-        if (node.contains(element)) return true;
-        release(element, hadOrigin);
-        return false;
-      });
-      for (const panel of node.querySelectorAll('.settings-grid > .panel')) {
-        for (const element of [
-          panel,
-          ...panel.children,
-          ...panel.querySelectorAll(
-            'h2, h3, h4, p, strong, small, label, button, input, select, textarea, table, th, td, [role="group"]',
-          ),
-        ]) {
-          if (element.hasAttribute('data-sidebar-resize')) continue;
-          owned.push({
-            element,
-            hadOrigin: element.hasAttribute('data-sidebar-resize-origin'),
-          });
-          element.setAttribute(
-            'data-sidebar-resize',
-            element === panel
-              ? 'xy'
-              : element.matches('input, select, textarea')
-                ? 'xy-width'
-                : 'xy-pos',
-          );
-          element.setAttribute('data-sidebar-resize-origin', '');
-        }
-      }
-    }
-    register();
-    const observer = new MutationObserver(register);
-    observer.observe(node, { childList: true, subtree: true });
-    return {
-      destroy() {
-        observer.disconnect();
-        for (const { element, hadOrigin } of owned) release(element, hadOrigin);
-      },
-    };
-  }
 </script>
 
 <div
@@ -302,7 +255,7 @@
     >
       {title}
     </h1>
-    <div class="settings-panels settings-grid" use:panelMotion>
+    <div class="settings-panels settings-grid">
       {@render children()}
     </div>
   </div>

@@ -873,7 +873,10 @@
   }
 </script>
 
-<div class="flex flex-col">
+<div
+  data-sidebar-resize="x"
+  class="flex h-full min-h-0 flex-col overflow-hidden"
+>
   {#if account}
     <YoutubeFeedToolbar
       bind:filters
@@ -907,7 +910,9 @@
       use:connectLayoutMotion
       onwheel={handleCardGridWheel}
       data-sidebar-resize="x"
-      class="relative min-w-0 flex-1"
+      data-sidebar-resize-origin
+      data-feed-scroll
+      class="relative min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto [overflow-anchor:none] [scrollbar-gutter:stable]"
       class:pr-3={!account}
       data-feed-content
     >
@@ -1052,7 +1057,7 @@
     {#if account}
       <div
         data-youtube-watchlist-frame
-        class={`sticky top-0 z-20 shrink-0 self-start overflow-visible ${watchlistSidebarOpen ? '' : 'pointer-events-none'}`}
+        class={`relative z-20 shrink-0 self-start overflow-visible ${watchlistSidebarOpen ? '' : 'pointer-events-none'}`}
         aria-hidden={!watchlistSidebarOpen}
       >
         <div

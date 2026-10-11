@@ -84,6 +84,7 @@
     <div class="flex h-16 shrink-0 items-center">
       <a
         href="#home"
+        data-sidebar-resize="viewport"
         class="flex h-16 min-w-0 flex-1 items-center overflow-hidden whitespace-nowrap"
         onclick={(e) => {
           if (!followLink(e)) return;
@@ -98,7 +99,7 @@
           width="30"
           height="30"
         /><span
-          class="brand-label text-[11px] font-semibold tracking-[0.12em] uppercase transition-opacity duration-150 group-[.collapsed]/sidebar:w-0 group-[.collapsed]/sidebar:basis-0 group-[.collapsed]/sidebar:opacity-0"
+          class="brand-label text-[11px] font-semibold tracking-[0.12em] uppercase transition-opacity duration-150 group-[.collapsed]/sidebar:opacity-0"
           >Thelxinoe</span
         ></a
       >

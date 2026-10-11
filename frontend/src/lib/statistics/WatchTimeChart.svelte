@@ -96,7 +96,11 @@
     </div>
   </header>
 
-  <div class="mt-4 overflow-x-auto pb-1">
+  <div
+    class="mt-4 overflow-x-auto pb-1"
+    data-sidebar-resize="xy"
+    data-sidebar-group
+  >
     <div
       class="relative h-76"
       style={`min-width: ${chartMinimumWidth}px`}

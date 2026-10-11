@@ -103,15 +103,18 @@
   }
 </script>
 
-<div class="relative z-30 mr-3 flex shrink-0 items-center gap-1.5 pb-2">
+<div
+  class="relative z-30 mr-3 grid shrink-0 auto-cols-max grid-flow-col grid-cols-[minmax(0,1fr)] items-center gap-1.5 pb-2"
+>
   <span
     data-sidebar-resize="x"
     aria-hidden="true"
     class="pointer-events-none absolute right-0 bottom-0 left-0 h-px bg-line"
   ></span>
   <form
-    data-sidebar-resize="x"
-    class={`relative flex h-9 min-w-0 flex-1 items-center border bg-surface focus-within:border-line-strong ${directVideoId ? 'border-line-strong' : 'border-line'}`}
+    data-sidebar-resize="xy-width"
+    data-sidebar-group
+    class={`relative flex h-9 min-w-0 items-center border bg-surface focus-within:border-line-strong ${directVideoId ? 'border-line-strong' : 'border-line'}`}
     onsubmit={submitSearch}
   >
     {#if directLaunchState === 'launching'}

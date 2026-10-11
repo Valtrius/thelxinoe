@@ -30,6 +30,8 @@ export interface AnimationPlan {
   options?: KeyframeAnimationOptions;
 }
 
+const layoutAnimations = new WeakSet<Animation>();
+
 export function prefersReducedMotion(): boolean {
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
@@ -91,7 +93,9 @@ export function mediaZoom(element: Element): number {
 
 export function cancelLayoutAnimations(elements: Iterable<HTMLElement>) {
   for (const element of elements) {
-    for (const animation of element.getAnimations()) animation.cancel();
+    for (const animation of element.getAnimations()) {
+      if (layoutAnimations.has(animation)) animation.cancel();
+    }
     if (element.hasAttribute('data-feed-scroll')) {
       cancelLayoutAnimations(
         element.querySelectorAll<HTMLElement>('.feed-group-label'),
@@ -138,7 +142,16 @@ export function playAnimations(
   timing: KeyframeAnimationOptions = layoutAnimationTiming,
 ): Animation[] {
   if (prefersReducedMotion()) return [];
-  return plans.map(({ element, keyframes, options }) =>
-    element.animate(keyframes, { ...timing, ...options }),
-  );
+  const animations = plans.map(({ element, keyframes, options }) => {
+    const animation = element.animate(keyframes, { ...timing, ...options });
+    layoutAnimations.add(animation);
+    return animation;
+  });
+  // Every group uses the same timeline origin, including long settings pages.
+  const start = document.timeline.currentTime;
+  if (start !== null)
+    for (const animation of animations) {
+      if (animation.playState !== 'paused') animation.startTime = start;
+    }
+  return animations;
 }

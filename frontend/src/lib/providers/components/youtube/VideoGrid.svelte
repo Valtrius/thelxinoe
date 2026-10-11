@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
+  import { SvelteMap } from 'svelte/reactivity';
   import type { YoutubeVideoActions } from '../../youtube-video-actions';
 
   import type {
@@ -73,41 +74,68 @@
     closeCardActions();
   });
 
+  const stickyHeaders = new SvelteMap<HTMLElement, HTMLElement>();
+  let stickyRoot: HTMLElement | null = null;
+  let stickyShell: HTMLElement | null = null;
+  let stickyResize: ResizeObserver | null = null;
+  let stickyFrame: number | null = null;
+
+  function updateStickyHeaders() {
+    stickyFrame = null;
+    if (!stickyRoot) return;
+    const rootTop =
+      stickyRoot.getBoundingClientRect().top +
+      (Number.parseFloat(getComputedStyle(stickyRoot).paddingTop) || 0);
+    const states = [...stickyHeaders].map(([header, section]) => ({
+      header,
+      stuck:
+        section.getBoundingClientRect().top < rootTop &&
+        Math.abs(header.getBoundingClientRect().top - rootTop) <= 1,
+    }));
+    for (const { header, stuck } of states)
+      header.toggleAttribute('data-stuck', stuck);
+  }
+
+  function scheduleStickyHeaders() {
+    if (stickyFrame === null)
+      stickyFrame = requestAnimationFrame(updateStickyHeaders);
+  }
+
   function trackStickyGroupHeader(node: HTMLElement) {
     const root = node.closest<HTMLElement>('[data-feed-scroll]');
     const section = node.closest<HTMLElement>('section');
     if (!root || !section) return;
-    const scrollRoot: HTMLElement = root;
-    const groupSection: HTMLElement = section;
-
-    let frame: number | null = null;
-
-    function update() {
-      frame = null;
-      const rootTop =
-        scrollRoot.getBoundingClientRect().top +
-        (Number.parseFloat(getComputedStyle(scrollRoot).paddingTop) || 0);
-      const headerTop = node.getBoundingClientRect().top;
-      const sectionTop = groupSection.getBoundingClientRect().top;
-      node.toggleAttribute(
-        'data-stuck',
-        sectionTop < rootTop && Math.abs(headerTop - rootTop) <= 1,
+    if (!stickyRoot) {
+      stickyRoot = root;
+      stickyShell = root.closest('[data-sidebar-shell]');
+      stickyResize = new ResizeObserver(scheduleStickyHeaders);
+      stickyResize.observe(root);
+      root.addEventListener('scroll', scheduleStickyHeaders, { passive: true });
+      stickyShell?.addEventListener(
+        'sidebar-motion-end',
+        scheduleStickyHeaders,
       );
     }
-
-    function scheduleUpdate() {
-      if (frame === null) frame = requestAnimationFrame(update);
-    }
-
-    scrollRoot.addEventListener('scroll', scheduleUpdate, { passive: true });
-    window.addEventListener('resize', scheduleUpdate);
-    update();
+    stickyHeaders.set(node, section);
+    stickyResize?.observe(section);
+    scheduleStickyHeaders();
     return {
       destroy() {
-        scrollRoot.removeEventListener('scroll', scheduleUpdate);
-        window.removeEventListener('resize', scheduleUpdate);
-        if (frame !== null) cancelAnimationFrame(frame);
+        stickyHeaders.delete(node);
+        stickyResize?.unobserve(section);
         node.removeAttribute('data-stuck');
+        if (stickyHeaders.size > 0) return;
+        stickyRoot?.removeEventListener('scroll', scheduleStickyHeaders);
+        stickyShell?.removeEventListener(
+          'sidebar-motion-end',
+          scheduleStickyHeaders,
+        );
+        stickyResize?.disconnect();
+        if (stickyFrame !== null) cancelAnimationFrame(stickyFrame);
+        stickyFrame = null;
+        stickyRoot = null;
+        stickyShell = null;
+        stickyResize = null;
       },
     };
   }
@@ -144,15 +172,22 @@
       <h2
         use:trackStickyGroupHeader
         data-card-group-header
-        data-sidebar-resize="y-pos"
+        data-sidebar-resize="xy"
         data-layout-key={`youtube-group:${group.key}`}
         class="sticky top-0 z-10 border-b border-line bg-transparent py-2 text-xs font-semibold tracking-[0.08em] text-foreground uppercase data-stuck:bg-background/95 data-stuck:backdrop-blur"
       >
-        <span class="feed-group-label">{group.label}</span>
+        <span data-sidebar-resize="xy-pos" class="feed-group-label"
+          >{group.label}</span
+        >
       </h2>
     {/if}
-    <div class="pt-3" data-sidebar-resize="y">
-      <div data-card-grid class="grid items-stretch [contain:layout_style]">
+    <div class="pt-3" data-sidebar-resize="y-pos">
+      <div
+        data-card-grid
+        data-sidebar-resize="media"
+        data-sidebar-group
+        class="grid items-stretch [contain:layout_style]"
+      >
         {#each group.videos as video (video.videoId)}
           <div
             data-layout-key={`youtube-video:${video.videoId}`}

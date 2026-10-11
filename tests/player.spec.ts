@@ -1076,7 +1076,7 @@ test('the player and its controls follow sidebar resizing without clipping or st
       const videoStyle = getComputedStyle(video);
       return {
         player: bounds,
-        feed: box(document.querySelector('.provider-surface')!),
+        feed: box(document.querySelector('[data-feed-content]')!),
         card: box(
           document.querySelector(
             '[data-feed-content] [data-card-grid] [data-layout-key]',
@@ -1390,7 +1390,7 @@ test('the online player shares the page scrollbar and closes by sliding the feed
   expect(state.errors).toEqual([]);
 });
 
-test('YouTube and Kick use page scrolling while the watchlist stays within the viewport', async ({
+test('YouTube scrolls beneath its toolbar and Kick uses page scrolling', async ({
   page,
 }) => {
   const state = await fixture(page, { app: true });
@@ -1405,15 +1405,16 @@ test('YouTube and Kick use page scrolling while the watchlist stays within the v
   const sidebar = page.locator('[data-youtube-watchlist-frame]');
   await expect(sidebar).toHaveAttribute('aria-hidden', 'false');
   const viewport = (await workspace.boundingBox())!;
-  const inset = await workspace.evaluate((element) =>
-    Number.parseFloat(getComputedStyle(element).paddingTop),
-  );
+  const youtubeFeed = page.locator('[data-feed-content]');
+  const feedViewport = (await youtubeFeed.boundingBox())!;
+  const toolbar = page.getByRole('button', { name: 'Sort feed', exact: true });
+  const toolbarTop = (await toolbar.boundingBox())!.y;
   expect((await sidebar.boundingBox())!.height).toBeLessThanOrEqual(
     viewport.height,
   );
   const card = page.locator('[data-feed-content] [data-video-id]').first();
   const before = (await card.boundingBox())!.y;
-  await workspace.evaluate((element) => {
+  await youtubeFeed.evaluate((element) => {
     element.scrollTop = 350;
   });
   await expect
@@ -1421,7 +1422,9 @@ test('YouTube and Kick use page scrolling while the watchlist stays within the v
     .toBeCloseTo(before - 350, 0);
   await expect
     .poll(async () => (await sidebar.boundingBox())!.y)
-    .toBeCloseTo(viewport.y + inset, 0);
+    .toBeCloseTo(feedViewport.y, 0);
+  expect(await workspace.evaluate((element) => element.scrollTop)).toBe(0);
+  expect((await toolbar.boundingBox())!.y).toBeCloseTo(toolbarTop, 0);
   await expect(
     page.locator('[data-card-group-header][data-stuck]'),
   ).toHaveCount(1);

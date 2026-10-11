@@ -299,12 +299,12 @@
     class="relative mr-3 flex shrink-0 flex-wrap items-center gap-2 border-b border-transparent pb-2"
   >
     <span
-      data-sidebar-resize="xy"
+      data-sidebar-resize="x"
       aria-hidden="true"
       class="pointer-events-none absolute right-0 -bottom-px left-0 h-px bg-line"
     ></span>
     <Button
-      data-sidebar-resize="xy"
+      data-sidebar-resize="xy-pos"
       size="sm"
       variant="ghost"
       aria-expanded={managerOpen}
@@ -312,17 +312,20 @@
     >
       <Settings2 class="size-3.5" />Manage channels
     </Button>
-    <span data-sidebar-resize="xy" class="text-[0.65rem] text-muted">
+    <span data-sidebar-resize="xy-pos" class="text-[0.65rem] text-muted">
       {channels.length} tracked
     </span>
-    <span data-sidebar-resize="xy" class="ml-auto text-[0.65rem] text-muted">
+    <span
+      data-sidebar-resize="xy-pos"
+      class="ml-auto text-[0.65rem] text-muted"
+    >
       {#if syncStatus.isRefreshing}{syncStatus.phase} · {syncStatus.completed}/{syncStatus.total ??
           '—'}{:else if metadataConfigured}Metadata updated {relativeTime(
           syncStatus.lastSuccessAt,
         )}{:else}Live metadata is optional{/if}
     </span>
     <Button
-      data-sidebar-resize="xy"
+      data-sidebar-resize="xy-pos"
       size="sm"
       variant="secondary"
       disabled={!metadataConfigured ||
@@ -428,7 +431,7 @@
     use:connectLayoutMotion
     use:scaleCardScope={cardColumns}
     onwheel={handleCardGridWheel}
-    data-sidebar-resize="x"
+    data-sidebar-resize="xy"
     class="relative pt-3 pr-3"
     data-feed-content
   >
@@ -477,9 +480,11 @@
           />
         </div>
       {/if}
-      <div class="pb-4" data-sidebar-resize="y">
+      <div class="pb-4" data-sidebar-resize="y-pos">
         <section
           data-card-grid
+          data-sidebar-resize="media"
+          data-sidebar-group
           class="grid items-stretch [contain:layout_style]"
           aria-label="Tracked Kick channels"
         >

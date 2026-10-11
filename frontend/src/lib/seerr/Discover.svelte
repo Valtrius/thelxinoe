@@ -358,6 +358,8 @@
   <div class="w-full min-w-0">
     <form
       class="mb-6 flex items-center gap-3 border border-line bg-surface px-4 focus-within:border-accent"
+      data-sidebar-resize="xy-width"
+      data-sidebar-group
       onsubmit={(event) => {
         event.preventDefault();
         clearTimeout(searchTimer);
@@ -388,6 +390,8 @@
     </form>
     <nav
       class="mb-7 flex gap-1 overflow-x-auto border-b border-line"
+      data-sidebar-resize="xy-width"
+      data-sidebar-group
       aria-label="Discover navigation"
     >
       {#each [{ id: 'discover', label: 'Discover' }, { id: 'movies', label: 'Movies' }, { id: 'tv', label: 'Series' }, { id: 'requests', label: user.role === 'admin' ? 'Requests' : 'My requests' }] as item (item.id)}<button
@@ -583,6 +587,7 @@
     {:else}
       {#if featured}<button
           class="relative mb-9 flex min-h-75 w-full items-end overflow-hidden border border-line bg-surface p-7 text-left compact:min-h-60 compact:p-5"
+          data-sidebar-panel
           onclick={() => open(featured)}
           ><img
             class="absolute inset-0 size-full object-cover object-center opacity-45"
