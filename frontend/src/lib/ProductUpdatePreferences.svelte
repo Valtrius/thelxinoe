@@ -46,33 +46,32 @@
           void save();
         }}
       />
-      {#if policy === 'automatic'}
-        <div class="flex items-center gap-2 text-xs text-muted">
-          <label class="flex items-center gap-2"
-            >From<input
-              aria-label="Maintenance starts"
-              class={[formControlClass, 'h-8! w-14! px-2! py-1!']}
-              type="number"
-              min="0"
-              max="23"
-              required
-              bind:value={start}
-            /></label
-          >
-          <label class="flex items-center gap-2"
-            >to<input
-              aria-label="Maintenance ends"
-              class={[formControlClass, 'h-8! w-14! px-2! py-1!']}
-              type="number"
-              min="0"
-              max="23"
-              required
-              bind:value={end}
-            /></label
-          >
-          <span>{$serverUpdates.status?.timezone ?? 'UTC'}</span>
-        </div>
-      {/if}
+      <!-- Automatic backups use this window even when updates only notify. -->
+      <div class="flex items-center gap-2 text-xs text-muted">
+        <label class="flex items-center gap-2"
+          >Maintenance from<input
+            aria-label="Maintenance starts"
+            class={[formControlClass, 'h-8! w-14! px-2! py-1!']}
+            type="number"
+            min="0"
+            max="23"
+            required
+            bind:value={start}
+          /></label
+        >
+        <label class="flex items-center gap-2"
+          >to<input
+            aria-label="Maintenance ends"
+            class={[formControlClass, 'h-8! w-14! px-2! py-1!']}
+            type="number"
+            min="0"
+            max="23"
+            required
+            bind:value={end}
+          /></label
+        >
+        <span>{$serverUpdates.status?.timezone ?? 'UTC'}</span>
+      </div>
     {/snippet}
   </AutoSaveForm>
 {/if}

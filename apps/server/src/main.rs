@@ -54,6 +54,7 @@ async fn main() -> Result<()> {
     workers.spawn(thelxinoe_server::segments::run(state.clone()));
     workers.spawn(thelxinoe_server::operations::run(state.clone()));
     workers.spawn(thelxinoe_server::operations::watch(state.clone()));
+    workers.spawn(thelxinoe_server::backups::run(state.clone()));
     workers.spawn(thelxinoe_server::product::run(state.clone()));
     let server = axum::serve(
         listener,

@@ -693,7 +693,14 @@ test('settings sections adapt without hiding controls or stretching fields', asy
   const fixture = await installUiFixture(page, { role: 'admin' });
   const responses: Record<string, unknown> = {
     '/admin/segments': { config: { local: true, external: false }, items: [] },
-    '/admin/backups': { items: [], destination: '/backups' },
+    '/admin/backups': {
+      items: [],
+      destination: '/backups',
+      policy: { policy: 'manual', retain: 7 },
+      passphrase_saved: false,
+      automatic: null,
+      window: { start: 3, end: 5 },
+    },
     '/admin/retention': {
       policies: ['movies', 'shows'].map((domain) => ({
         domain,
