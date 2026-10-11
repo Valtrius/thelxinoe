@@ -353,6 +353,46 @@ async fn notify_and_inherited_notify_discover_without_installing_and_observe_che
 }
 
 #[tokio::test]
+async fn automatic_updates_wait_for_the_server_window_backup_attempt() {
+    let (_temp, state, _cookie) = fixture().await;
+    managed(&state, "automatic").await;
+    allow_maintenance_now(&state).await;
+    check_releases(&state, false).await.unwrap();
+    let queue = thelxinoe_jobs::Queue(state.db.clone());
+    state.db.write("test.automatic_backups", |db| {
+        db.execute("INSERT INTO settings VALUES ('backups.policy','{\"policy\":\"automatic\",\"retain\":7}')",[])?;
+        Ok(())
+    }).await.unwrap();
+    state
+        .secrets
+        .put(
+            &state.db,
+            "backups.passphrase".into(),
+            b"automatic backup fixture",
+        )
+        .await
+        .unwrap();
+    schedule_updates(&state).await.unwrap();
+    assert!(queue.claim_services().await.unwrap().is_none());
+    let policy = crate::product::configured_policy(&state).await.unwrap();
+    let window = crate::timezones::opened_server_window(
+        &state,
+        policy.window_start.into(),
+        policy.window_end.into(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    state.db.write("test.backup_attempted", move |db| {
+        db.execute("INSERT INTO settings VALUES ('backups.automatic',?1)",[json!({"window":window.to_string(),"id":id(),"state":"failed","since":now(),"updated_at":now(),"error":"fixture"}).to_string()])?;
+        Ok(())
+    }).await.unwrap();
+    // A failed backup still releases the window's updates.
+    schedule_updates(&state).await.unwrap();
+    assert!(queue.claim_services().await.unwrap().is_some());
+}
+
+#[tokio::test]
 async fn automatic_scheduling_uses_cached_discovery_at_window_open_and_worker_rechecks_policy() {
     let (_temp, state, _cookie) = fixture().await;
     let service = managed(&state, "automatic").await;

@@ -9,6 +9,17 @@ pub(super) async fn in_server_window(db: &Database, start: u32, end: u32) -> any
     .await
 }
 
+pub(super) async fn opened_server_window(
+    db: &Database,
+    start: u32,
+    end: u32,
+) -> anyhow::Result<Option<NaiveDate>> {
+    db.read("timezones.opened_server_window", move |db| {
+        window_opened(db, Utc::now(), start, end)
+    })
+    .await
+}
+
 pub(super) async fn get(db: &Database, p: thelxinoe_core::Principal) -> anyhow::Result<Value> {
     db.read("timezones.get", move |db| read(db, &p.user.id))
         .await
@@ -65,6 +76,26 @@ pub(crate) fn maintenance_window(
         } else {
             hour >= start || hour < end
         })
+}
+
+/// Identifies one daily occurrence of an open window by the local date it opened.
+pub(crate) fn window_opened(
+    db: &rusqlite::Connection,
+    instant: DateTime<Utc>,
+    start: u32,
+    end: u32,
+) -> anyhow::Result<Option<NaiveDate>> {
+    if !maintenance_window(db, instant, start, end)? {
+        return Ok(None);
+    }
+    let local = instant.with_timezone(&server_zone(db)?);
+    let date = local.date_naive();
+    Ok(Some(if start > end && local.hour() < end {
+        date.pred_opt()
+            .ok_or_else(|| anyhow::anyhow!("Invalid maintenance date"))?
+    } else {
+        date
+    }))
 }
 
 pub(super) fn read(db: &rusqlite::Connection, user: &str) -> anyhow::Result<Value> {
