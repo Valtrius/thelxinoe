@@ -9,7 +9,6 @@
     "dev:web": "pnpm --dir frontend run dev",
     "dev:mock": "node scripts/dev-mock.mjs",
     "test:ui:mock": "playwright test --config playwright.mock.config.ts",
-    "dev:sidebar": "node scripts/sidebar-preview.mjs",
     "dev:desktop": "node scripts/desktop.mjs --dev",
     "dev:fresh": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev-fresh.ps1",
     "dev:online": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev-online.ps1",
