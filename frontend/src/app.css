@@ -48,7 +48,12 @@
 /* Preserve the existing application breakpoints without changing provider sm/md/lg. */
 @custom-variant service-narrow (@media (max-width: 1050px));
 @custom-variant narrow (@media (max-width: 1000px));
-@custom-variant compact (@media (max-width: 720px));
+@custom-variant compact {
+  @media (max-width: 720px),
+    (max-height: 720px) and (pointer: coarse) and (hover: none) {
+    @slot;
+  }
+}
 @custom-variant tight (@media (max-width: 440px));
 @custom-variant player-small (@container player (max-width: 380px));
 @custom-variant desktop-shell (&:where(.desktop-app *));
@@ -71,6 +76,12 @@
   syntax: '<number>';
   inherits: false;
   initial-value: 1;
+}
+
+@property --mobile-player-height {
+  syntax: '<length>';
+  inherits: true;
+  initial-value: 0px;
 }
 
 @layer base {

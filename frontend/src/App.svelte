@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { compactMediaQuery } from './lib/responsive';
   import { hasNativeAccess } from './lib/services/presentation';
   import Notice from './lib/ui/Notice.svelte';
   import FormField from './lib/ui/FormField.svelte';
@@ -62,6 +63,7 @@
   let main = $state<HTMLElement | null>(null);
   let workspace = $state<HTMLElement | null>(null);
   let workspaceHeight = $state(0);
+  let videoPlayerHeight = $state(0);
   let compact = $state(false),
     mobileNavOpen = $state(false);
   let route = $state<AppRoute>({ ...homeRoute });
@@ -574,7 +576,7 @@
     const toolsConnection = desktop
       ? connectTools()
       : Promise.resolve(() => {});
-    const media = window.matchMedia('(max-width: 720px)');
+    const media = window.matchMedia(compactMediaQuery);
     const resize = () => {
       compact = media.matches;
       mobileNavOpen = false;
@@ -756,8 +758,9 @@
       {@render navigation(user)}
     {/if}
     <main
-      class="content flex min-w-0 flex-1 flex-col overflow-hidden"
+      class="content flex min-w-0 flex-1 flex-col overflow-hidden compact:pt-(--mobile-player-height) compact:transition-[--mobile-player-height] compact:duration-[240ms] compact:ease-[cubic-bezier(0.333333,1,0.666667,1)] motion-reduce:transition-none"
       bind:this={main}
+      style:--mobile-player-height={`${compact && playing && !desktop && playing.kind !== 'track' ? videoPlayerHeight : 0}px`}
     >
       <header
         class="page-header flex shrink-0 items-center gap-5 border-b border-line bg-background/88 px-6 py-2 narrow:px-4 compact:gap-2.5 compact:px-3 compact:py-1.5"
@@ -841,8 +844,9 @@
             />{:catch error}<Notice role="alert" variant="error"
               >{String(error)}</Notice
             >{/await}{:else if playing}<div
+            bind:clientHeight={videoPlayerHeight}
             class={[
-              'player-frame',
+              'player-frame compact:fixed compact:inset-x-0 compact:top-0 compact:z-70 compact:m-0',
               providerPage
                 ? '-mt-3 -ml-3'
                 : section === 'Settings'

@@ -57,6 +57,8 @@
   import YoutubeFeedToolbar from './YoutubeFeedToolbar.svelte';
   import VideoGrid from './VideoGrid.svelte';
   import WatchlistSidebar from './WatchlistSidebar.svelte';
+  import WatchlistDrawer from './WatchlistDrawer.svelte';
+  import { compactViewport } from '../../../responsive';
 
   let {
     admin,
@@ -143,11 +145,22 @@
 
   let error = $state<AppError | null>(null);
   let refreshing = $state(false);
-  let watchlistSidebarOpen = $state(
+  let desktopWatchlistSidebarOpen = $state(
     preferences.getItem(watchlistSidebarKey) === 'true',
   );
+  let mobileWatchlistOpen = $state(false);
+  const watchlistSidebarOpen = $derived(
+    compactViewport.current ? mobileWatchlistOpen : desktopWatchlistSidebarOpen,
+  );
+  function setWatchlistOpen(open: boolean) {
+    if (compactViewport.current) mobileWatchlistOpen = open;
+    else desktopWatchlistSidebarOpen = open;
+  }
   $effect(() => {
-    if (showWatchlist) watchlistSidebarOpen = true;
+    if (showWatchlist) setWatchlistOpen(true);
+  });
+  $effect(() => {
+    if (!compactViewport.current) mobileWatchlistOpen = false;
   });
 
   let actionBusy = $state(false);
@@ -319,7 +332,7 @@
   });
   $effect(() => {
     const saved = $preferences[watchlistSidebarKey];
-    if (saved !== undefined) watchlistSidebarOpen = saved === 'true';
+    if (saved !== undefined) desktopWatchlistSidebarOpen = saved === 'true';
   });
 
   $effect(() => {
@@ -353,7 +366,10 @@
   });
 
   $effect(() => {
-    preferences.setItem(watchlistSidebarKey, String(watchlistSidebarOpen));
+    preferences.setItem(
+      watchlistSidebarKey,
+      String(desktopWatchlistSidebarOpen),
+    );
   });
 
   const handleCardGridWheel = createCardGridWheelHandler({
@@ -873,6 +889,38 @@
   }
 </script>
 
+{#snippet watchlist(onClose?: () => void)}
+  <WatchlistSidebar
+    actions={videoActions}
+    watchlists={watchlistController.watchlists}
+    selectedWatchlistId={watchlistController.selectedWatchlistId}
+    {downloadProgress}
+    downloadBusyIds={watchlistController.downloadBusyIds}
+    {activeVideoIds}
+    {launchingVideoIds}
+    mpvReady={playback.mpv.detected}
+    ytdlpReady={playback.ytdlp.detected}
+    ffmpegReady={playback.ffmpeg.detected}
+    {onClose}
+    onSelect={(watchlistId) => {
+      watchlistController.selectedWatchlistId = watchlistId;
+      onWatchlistSelected?.(watchlistId);
+    }}
+    onCreate={watchlistController.createWatchlist}
+    onUpdate={watchlistController.updateWatchlist}
+    onDelete={watchlistController.deleteWatchlist}
+    onReorder={watchlistController.reorderWatchlist}
+    onRemove={(watchlistId, video) =>
+      void watchlistController.removeFromWatchlist(watchlistId, video)}
+  />
+{/snippet}
+
+{#if account && compactViewport.current && mobileWatchlistOpen}
+  <WatchlistDrawer onClose={() => (mobileWatchlistOpen = false)}>
+    {@render watchlist(() => (mobileWatchlistOpen = false))}
+  </WatchlistDrawer>
+{/if}
+
 <div
   data-sidebar-resize="x"
   class="flex h-full min-h-0 flex-col overflow-hidden"
@@ -880,7 +928,7 @@
   {#if account}
     <YoutubeFeedToolbar
       bind:filters
-      bind:watchlistSidebarOpen
+      bind:watchlistSidebarOpen={() => watchlistSidebarOpen, setWatchlistOpen}
       {refreshing}
       channels={feed.channels}
       counts={feed.counts}
@@ -902,7 +950,7 @@
   <div
     use:scaleYoutubeMediaScope={{
       columns: cardColumns,
-      sidebarOpen: watchlistSidebarOpen,
+      sidebarOpen: !compactViewport.current && desktopWatchlistSidebarOpen,
     }}
     class="flex min-h-0 min-w-0 flex-1"
   >
@@ -1054,7 +1102,7 @@
         />
       {/if}
     </div>
-    {#if account}
+    {#if account && !compactViewport.current}
       <div
         data-youtube-watchlist-frame
         class={`relative z-20 shrink-0 self-start overflow-visible ${watchlistSidebarOpen ? '' : 'pointer-events-none'}`}
@@ -1066,28 +1114,7 @@
           data-sidebar-resize-zoom
           class="absolute top-0 right-0"
         >
-          <WatchlistSidebar
-            actions={videoActions}
-            watchlists={watchlistController.watchlists}
-            selectedWatchlistId={watchlistController.selectedWatchlistId}
-            {downloadProgress}
-            downloadBusyIds={watchlistController.downloadBusyIds}
-            {activeVideoIds}
-            {launchingVideoIds}
-            mpvReady={playback.mpv.detected}
-            ytdlpReady={playback.ytdlp.detected}
-            ffmpegReady={playback.ffmpeg.detected}
-            onSelect={(watchlistId) => {
-              watchlistController.selectedWatchlistId = watchlistId;
-              onWatchlistSelected?.(watchlistId);
-            }}
-            onCreate={watchlistController.createWatchlist}
-            onUpdate={watchlistController.updateWatchlist}
-            onDelete={watchlistController.deleteWatchlist}
-            onReorder={watchlistController.reorderWatchlist}
-            onRemove={(watchlistId, video) =>
-              void watchlistController.removeFromWatchlist(watchlistId, video)}
-          />
+          {@render watchlist()}
         </div>
       </div>
     {/if}

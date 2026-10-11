@@ -5,7 +5,11 @@ import { freePort } from './scripts/ci-resources.mjs';
 const port = (process.env.THELXINOE_MOCK_PORT ??= String(await freePort()));
 export default defineConfig({
   testDir: 'tests',
-  testMatch: 'mock-preview.spec.ts',
+  testMatch: [
+    'mock-preview.spec.ts',
+    'mobile-media.spec.ts',
+    'mobile-player.spec.ts',
+  ],
   timeout: 120000,
   expect: { timeout: 15000 },
   workers: 1,

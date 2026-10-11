@@ -6,6 +6,7 @@
   import { captureSession } from '../session';
   import { LatestRequest } from '../latest-request';
   import { appearance, updateAppearance } from '../appearance';
+  import { compactViewport } from '../responsive';
   import type { MediaChoice } from '../playback';
   import {
     connectPresentation,
@@ -54,6 +55,9 @@
     watchlistId?: number;
     watchlistChanged: (id: number) => void;
   }>();
+  const cardColumns = $derived(
+    compactViewport.current ? 2 : $appearance.video_columns,
+  );
   const disconnect = untrack(() => connectPresentation(userId, play));
   const ownsSession = captureSession();
   const watchlistController = createYoutubeWatchlists(
@@ -341,7 +345,7 @@
         {syncStatus}
         {playback}
         {activeSessions}
-        cardColumns={$appearance.video_columns}
+        {cardColumns}
         fadeWatchedCards={$appearance.fade_watched}
         youtubeCardShortcuts={$appearance.youtube_card_shortcuts}
         signedInPlaybackAvailable={false}
@@ -372,7 +376,7 @@
         {syncStatus}
         {playback}
         {activeSessions}
-        cardColumns={$appearance.video_columns}
+        {cardColumns}
         {authState}
         clientConfigured={!!rawAccount?.configured}
         {dataRevision}
@@ -395,7 +399,7 @@
         {syncStatus}
         {playback}
         {activeSessions}
-        cardColumns={$appearance.video_columns}
+        {cardColumns}
         metadataConfigured={!!kick?.configured}
         {dataRevision}
         onNavigateSettings={navigateSettings}

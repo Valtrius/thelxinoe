@@ -2,6 +2,7 @@
   import type { YoutubeVideoActions } from '../../youtube-video-actions';
 
   import { tick } from 'svelte';
+  import { compactViewport } from '../../../responsive';
   import {
     Copy,
     Check,
@@ -109,7 +110,7 @@
   const menuViewportMargin = 8;
 
   const menuItemClass =
-    'flex h-8 w-full items-center gap-[0.55rem] whitespace-nowrap border-0 bg-transparent px-[0.55rem] py-[0.4rem] text-left text-[0.68rem] text-muted enabled:hover:bg-accent-soft enabled:hover:text-foreground [&_svg]:size-[0.85rem] [&_svg]:shrink-0';
+    'flex h-8 w-full items-center gap-[0.55rem] whitespace-nowrap border-0 bg-transparent px-[0.55rem] py-[0.4rem] text-left text-[0.68rem] text-muted enabled:hover:bg-accent-soft enabled:hover:text-foreground [&_svg]:size-[0.85rem] [&_svg]:shrink-0 compact:h-11 compact:text-[13px]';
 
   function run(action: (video: YoutubeVideo) => void) {
     onMenuToggle();
@@ -309,7 +310,15 @@
 
     const triggerBounds = menuButton.getBoundingClientRect();
     const menuBounds = menuElement.getBoundingClientRect();
-    const spaceAbove = triggerBounds.top - menuViewportMargin;
+    const minimumTop = compactViewport.current
+      ? menuViewportMargin +
+        (Number.parseFloat(
+          getComputedStyle(menuButton).getPropertyValue(
+            '--mobile-player-height',
+          ),
+        ) || 0)
+      : menuViewportMargin;
+    const spaceAbove = triggerBounds.top - minimumTop;
     const spaceBelow =
       window.innerHeight - triggerBounds.bottom - menuViewportMargin;
     const opensUp = menuBounds.height > spaceBelow && spaceAbove > spaceBelow;
@@ -317,7 +326,7 @@
       ? triggerBounds.top - menuBounds.height - menuGap
       : triggerBounds.bottom + menuGap;
     const maximumTop = Math.max(
-      menuViewportMargin,
+      minimumTop,
       window.innerHeight - menuBounds.height - menuViewportMargin,
     );
     const maximumLeft = Math.max(
@@ -326,7 +335,7 @@
     );
 
     menuTop = Math.round(
-      Math.min(Math.max(menuViewportMargin, preferredTop), maximumTop),
+      Math.min(Math.max(minimumTop, preferredTop), maximumTop),
     );
     menuLeft = Math.round(
       Math.min(
@@ -448,9 +457,10 @@
 {/if}
 
 <div
+  data-long-press-ignore
   class={`absolute top-2 right-2 z-50 flex items-center gap-1 transition-opacity ${menuOpen || shortcutDeleteConfirming ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0 group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100'}`}
 >
-  {#each youtubeCardShortcuts as shortcut (shortcut)}
+  {#each compactViewport.current ? [] : youtubeCardShortcuts as shortcut (shortcut)}
     {#if shortcutAvailable(shortcut)}
       {#if shortcut === 'delete_download' && shortcutDeleteConfirming}
         <button
@@ -500,10 +510,10 @@
       bind:this={menuElement}
       id={`video-actions-${video.videoId}`}
       popover="manual"
-      class="media-card-popover fixed right-auto bottom-auto m-0 grid max-h-[calc(100vh-1rem)] w-max max-w-[calc(100vw-1rem)] overflow-auto border border-line-strong bg-surface-strong p-1.5 shadow-2xl"
+      class="media-card-popover fixed right-auto bottom-auto m-0 grid max-h-[calc(100vh-1rem)] w-max max-w-[calc(100vw-1rem)] overflow-auto border border-line-strong bg-surface-strong p-1.5 shadow-2xl compact:max-h-[calc(100dvh-var(--mobile-player-height,0px)-1rem)]"
       style={`top:${menuTop}px;left:${menuLeft}px;visibility:${menuPlaced ? 'visible' : 'hidden'}`}
     >
-      {#if choosingShortcuts}
+      {#if choosingShortcuts && !compactViewport.current}
         <div class="px-[0.55rem] pt-1 pb-2">
           <p class="text-xs font-semibold text-foreground">Choose shortcuts</p>
           <p class="mt-1 text-[0.65rem] text-muted">
@@ -673,17 +683,19 @@
           onclick={() => run(actions.onOpen)}
           ><ExternalLink />Open in browser</button
         >
-        <span class="my-1 h-px bg-line"></span>
-        <button
-          class={menuItemClass}
-          type="button"
-          onclick={beginChoosingShortcuts}
-        >
-          <Settings2 />Choose shortcuts…
-          <span class="ml-auto text-[0.6rem] text-muted"
-            >{youtubeCardShortcuts.length}/{MAX_YOUTUBE_CARD_SHORTCUTS}</span
+        {#if !compactViewport.current}
+          <span class="my-1 h-px bg-line"></span>
+          <button
+            class={menuItemClass}
+            type="button"
+            onclick={beginChoosingShortcuts}
           >
-        </button>
+            <Settings2 />Choose shortcuts…
+            <span class="ml-auto text-[0.6rem] text-muted"
+              >{youtubeCardShortcuts.length}/{MAX_YOUTUBE_CARD_SHORTCUTS}</span
+            >
+          </button>
+        {/if}
       {/if}
     </div>
   {/if}

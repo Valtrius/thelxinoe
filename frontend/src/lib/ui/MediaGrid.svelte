@@ -3,23 +3,28 @@
   import { appearance } from '../appearance';
   import { scaleCardScope } from '../card-grid-zoom';
   import { createLayoutMotion } from '../layout-motion';
+  import { compactViewport } from '../responsive';
   let {
     children,
     revision = '',
     label = 'Media collection',
+    mobileColumns = 3,
     class: className = '',
   } = $props<{
     children: Snippet;
     revision?: string;
     label?: string;
+    mobileColumns?: number;
     class?: string;
   }>();
   let root: HTMLDivElement;
   let width = $state(1200);
   const columns = $derived(
-    width < 640
-      ? Math.max(1, Math.min(3, Math.floor(width / 150)))
-      : $appearance.poster_columns,
+    compactViewport.current
+      ? mobileColumns
+      : width < 640
+        ? Math.max(1, Math.min(3, Math.floor(width / 150)))
+        : $appearance.poster_columns,
   );
   const motion = createLayoutMotion();
   $effect.pre(() => {
