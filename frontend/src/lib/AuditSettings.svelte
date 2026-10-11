@@ -116,7 +116,7 @@
   </select>
 </FormField>
 {#if view === 'activity'}
-  <History {user} audit />
+  <History {user} {timeFormat} audit />
 {:else}
   {#if error}<p class="settings-wide text-danger" role="alert">{error}</p>{/if}
   <Panel
