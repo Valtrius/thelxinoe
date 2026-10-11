@@ -1,6 +1,5 @@
 use super::*;
-use sha2::{Digest, Sha256};
-use std::{fs::File, io::Read, path::Path, time::SystemTime};
+use std::{fs::File, path::Path, time::SystemTime};
 
 #[derive(PartialEq, Eq)]
 struct Stamp {
@@ -74,20 +73,8 @@ impl ValidatedFile {
                     == target.modified,
             "File generation changed"
         );
-        let mut hash = Sha256::new();
-        let mut buffer = [0u8; 128 * 1024];
-        loop {
-            let n = file.read(&mut buffer)?;
-            if n == 0 {
-                break;
-            }
-            hash.update(&buffer[..n]);
-        }
-        let fingerprint = hash
-            .finalize()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
+        // The same sampled identity the scan recorded; the stamps detect any replacement.
+        let fingerprint = thelxinoe_catalog::fingerprint(&mut file)?;
         anyhow::ensure!(
             fingerprint == target.fingerprint && before == stamp(&file)?,
             "File changed during validation"

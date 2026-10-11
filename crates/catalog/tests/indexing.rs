@@ -81,8 +81,23 @@ async fn scan_replacement_move_removal_and_failed_scan_preserve_logical_state() 
     );
     std::fs::remove_file(media.join("Distinct copy.wav"))?;
     scan(&db, root.clone(), tools.media()?).await?;
+    // One unreadable file is reported and retried without blocking the rest of the library.
     std::fs::write(media.join("Broken.wav"), b"incomplete download")?;
-    assert!(scan(&db, root.clone(), tools.media()?).await.is_err());
+    assert_eq!(scan(&db, root.clone(), tools.media()?).await?, 1);
+    let warning = db
+        .write("test.fixture", |c| {
+            Ok(
+                c.query_row("SELECT scan_error FROM library_roots", [], |r| {
+                    r.get::<_, Option<String>>(0)
+                })?,
+            )
+        })
+        .await?
+        .unwrap_or_default();
+    assert!(
+        warning.starts_with("1 file couldn't be read") && warning.contains("Broken.wav"),
+        "{warning}"
+    );
     assert_eq!(
         db.write("test.fixture", |c| Ok(c.query_row(
             "SELECT count(*) FROM media_files WHERE present=1",
@@ -92,6 +107,44 @@ async fn scan_replacement_move_removal_and_failed_scan_preserve_logical_state() 
         .await?,
         1
     );
+    // A known file that becomes unreadable keeps its entry and identity until it recovers.
+    let known = db
+        .write("test.fixture", |c| {
+            Ok(c.query_row(
+                "SELECT generation FROM media_files WHERE path LIKE '%Renamed.wav' AND present=1",
+                [],
+                |r| r.get::<_, String>(0),
+            )?)
+        })
+        .await?;
+    let original = std::fs::read(media.join("Renamed.wav"))?;
+    std::fs::write(
+        media.join("Renamed.wav"),
+        b"truncated while a copy is in progress",
+    )?;
+    scan(&db, root.clone(), tools.media()?).await?;
+    assert_eq!(
+        db.write("test.fixture", |c| Ok(c.query_row(
+            "SELECT generation FROM media_files WHERE path LIKE '%Renamed.wav' AND present=1",
+            [],
+            |r| r.get::<_, String>(0)
+        )?))
+        .await?,
+        known
+    );
+    std::fs::write(media.join("Renamed.wav"), original)?;
+    std::fs::remove_file(media.join("Broken.wav"))?;
+    scan(&db, root.clone(), tools.media()?).await?;
+    assert_eq!(
+        db.write("test.fixture", |c| Ok(c.query_row(
+            "SELECT scan_error FROM library_roots",
+            [],
+            |r| r.get::<_, Option<String>>(0)
+        )?))
+        .await?,
+        None
+    );
+    std::fs::write(media.join("Broken.wav"), b"incomplete download")?;
     std::fs::remove_file(media.join("Broken.wav"))?;
     std::fs::remove_file(media.join("Renamed.wav"))?;
     scan(&db, root, tools.media()?).await?;
@@ -114,5 +167,37 @@ async fn scan_replacement_move_removal_and_failed_scan_preserve_logical_state() 
         2
     );
     assert!(approved_path(temp.path(), &media).is_err());
+    Ok(())
+}
+
+#[test]
+fn fingerprints_cover_small_files_and_sample_large_ones() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let fingerprint = |bytes: &[u8]| -> Result<String> {
+        let path = temp.path().join("file");
+        std::fs::write(&path, bytes)?;
+        Ok(thelxinoe_catalog::fingerprint(&mut std::fs::File::open(
+            &path,
+        )?)?)
+    };
+    let small = vec![1u8; 1000];
+    let mut edited = small.clone();
+    edited[500] = 2;
+    assert_ne!(fingerprint(&small)?, fingerprint(&edited)?);
+    let large = vec![7u8; 8 << 20];
+    let base = fingerprint(&large)?;
+    // The start, middle and end samples and the size identify large files.
+    for offset in [0, 4 << 20, (8 << 20) - 1] {
+        let mut edited = large.clone();
+        edited[offset] ^= 1;
+        assert_ne!(fingerprint(&edited)?, base, "{offset}");
+    }
+    let mut longer = large.clone();
+    longer.push(7);
+    assert_ne!(fingerprint(&longer)?, base);
+    // Between samples, replacement is detected by size, modification time and handle.
+    let mut between = large;
+    between[2 << 20] ^= 1;
+    assert_eq!(fingerprint(&between)?, base);
     Ok(())
 }

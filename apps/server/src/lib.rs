@@ -86,6 +86,8 @@ pub struct AppState {
     pub(crate) release_quiescing: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) release_check: Arc<tokio::sync::Mutex<()>>,
     pub(crate) release_install: Arc<tokio::sync::Mutex<()>>,
+    /// Library roots by ID, and whether filesystem changes reach them live.
+    pub(crate) library_watch: Arc<std::sync::Mutex<std::collections::HashMap<String, bool>>>,
 }
 impl AppState {
     pub async fn open(config: Config) -> anyhow::Result<Self> {
@@ -128,6 +130,7 @@ impl AppState {
             release_quiescing: Arc::new(std::sync::atomic::AtomicBool::new(release_pending)),
             release_check: Arc::new(tokio::sync::Mutex::new(())),
             release_install: Arc::new(tokio::sync::Mutex::new(())),
+            library_watch: Arc::new(Default::default()),
             dummy_hash: Arc::new(thelxinoe_auth::password_hash(thelxinoe_auth::token()).await?),
         })
     }

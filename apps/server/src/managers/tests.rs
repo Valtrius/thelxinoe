@@ -366,7 +366,6 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
 
 #[tokio::test]
 async fn deletion_rechecks_keep_and_file_replacement_and_never_retries_completed_work() {
-    use sha2::{Digest, Sha256};
     let (temp, state, alice) = fixture().await;
     state
         .db
@@ -395,10 +394,7 @@ async fn deletion_rechecks_keep_and_file_replacement_and_never_retries_completed
         .unwrap()
         .as_nanos()
         .to_string();
-    let hash = Sha256::digest(b"original media bytes")
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
+    let hash = thelxinoe_catalog::fingerprint(&mut std::fs::File::open(&path).unwrap()).unwrap();
     let stored = path.to_string_lossy().to_string();
     state.db.write("test.fixture", move|db|{
         db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Fixture','movies',?1)",[root.to_string_lossy().as_ref()])?;
