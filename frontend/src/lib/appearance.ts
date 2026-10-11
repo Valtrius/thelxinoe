@@ -10,7 +10,8 @@ export type Appearance = {
   youtube_card_shortcuts: YoutubeCardShortcut[];
   theme: Theme;
   sidebar_collapsed: boolean;
-  card_columns: number;
+  poster_columns: number;
+  video_columns: number;
   fade_watched: boolean;
   thumbnail_fit: 'contain' | 'cover';
 };
@@ -21,7 +22,8 @@ const defaults: Appearance = {
   youtube_card_shortcuts: [],
   theme: 'system',
   sidebar_collapsed: false,
-  card_columns: 6,
+  poster_columns: 6,
+  video_columns: 6,
   fade_watched: true,
   thumbnail_fit: 'contain',
 };

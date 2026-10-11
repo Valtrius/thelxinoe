@@ -381,7 +381,7 @@ test('display preferences group account controls and clear cancelled avatar edit
     preferences.getByRole('group', { name: 'Theme', exact: true }),
   ).toBeVisible();
   await expect(
-    preferences.getByRole('button', { name: 'Larger media cards' }),
+    preferences.getByRole('button', { name: 'Larger poster cards' }),
   ).toBeVisible();
   await expect(
     preferences.getByRole('switch', { name: 'Fade watched videos' }),

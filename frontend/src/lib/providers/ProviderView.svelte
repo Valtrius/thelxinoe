@@ -342,7 +342,7 @@
         {syncStatus}
         {playback}
         {activeSessions}
-        cardColumns={$appearance.card_columns}
+        cardColumns={$appearance.video_columns}
         fadeWatchedCards={$appearance.fade_watched}
         youtubeCardShortcuts={$appearance.youtube_card_shortcuts}
         signedInPlaybackAvailable={false}
@@ -358,8 +358,8 @@
         onAccountChanged={() => void load()}
         onYoutubeCardShortcutsChanged={(youtube_card_shortcuts) =>
           updateAppearance({ youtube_card_shortcuts })}
-        onCardColumnsChange={(card_columns) =>
-          updateAppearance({ card_columns })}
+        onCardColumnsChange={(video_columns) =>
+          updateAppearance({ video_columns })}
       />{:catch error}<Notice role="alert" variant="error"
         >{String(error)}</Notice
       >{/await}
@@ -373,15 +373,15 @@
         {syncStatus}
         {playback}
         {activeSessions}
-        cardColumns={$appearance.card_columns}
+        cardColumns={$appearance.video_columns}
         {authState}
         clientConfigured={!!rawAccount?.configured}
         {dataRevision}
         onAuthStarted={authStarted}
         onNavigateSettings={navigateSettings}
         onAccountChanged={() => void load()}
-        onCardColumnsChange={(card_columns) =>
-          updateAppearance({ card_columns })}
+        onCardColumnsChange={(video_columns) =>
+          updateAppearance({ video_columns })}
       />{:catch error}<Notice role="alert" variant="error"
         >{String(error)}</Notice
       >{/await}
@@ -396,12 +396,12 @@
         {syncStatus}
         {playback}
         {activeSessions}
-        cardColumns={$appearance.card_columns}
+        cardColumns={$appearance.video_columns}
         metadataConfigured={!!kick?.configured}
         {dataRevision}
         onNavigateSettings={navigateSettings}
-        onCardColumnsChange={(card_columns) =>
-          updateAppearance({ card_columns })}
+        onCardColumnsChange={(video_columns) =>
+          updateAppearance({ video_columns })}
       />{:catch error}<Notice role="alert" variant="error"
         >{String(error)}</Notice
       >{/await}

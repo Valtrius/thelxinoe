@@ -1922,7 +1922,7 @@ test('display, playback and skipping preferences save automatically', async ({
       method: 'PUT',
       body: { timezone: 'Europe/Paris', time_format: '12h' },
     });
-  await page.getByRole('button', { name: 'Smaller media cards' }).click();
+  await page.getByRole('button', { name: 'Smaller poster cards' }).click();
   await expect(page.getByText('7 columns', { exact: true })).toBeVisible();
   await page.getByText('Fade watched videos', { exact: true }).click();
   await expect(
@@ -2035,7 +2035,7 @@ test('library cards retain their aspect ratio, hover actions and Ctrl-wheel zoom
       fixture.writes.some(
         (write) =>
           write.path === '/me/appearance' &&
-          JSON.stringify(write.body) === '{"card_columns":5}',
+          JSON.stringify(write.body) === '{"poster_columns":5}',
       ),
     )
     .toBe(true);
