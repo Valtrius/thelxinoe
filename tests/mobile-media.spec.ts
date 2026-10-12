@@ -7,6 +7,258 @@ test.beforeEach(async ({ request }) => {
   });
 });
 
+test('mobile drawers slide from their own edge on opening, closing and reversal', async ({
+  page,
+}, info) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/#online/youtube');
+  await expect(
+    page.getByRole('button', { name: 'Open watchlists', exact: true }),
+  ).toBeVisible();
+  await page.evaluate(() => {
+    const animate = Element.prototype.animate;
+    Element.prototype.animate = function (frames, options) {
+      const animation = animate.call(this, frames, options);
+      if (
+        this instanceof HTMLDialogElement &&
+        Number(animation.effect?.getTiming().duration) > 0
+      ) {
+        animation.pause();
+        animation.currentTime = 0;
+      }
+      return animation;
+    };
+  });
+  const evidence = [];
+  for (const { name, openName, closeName, direction } of [
+    {
+      name: 'Navigation menu',
+      openName: 'Open navigation',
+      closeName: 'Close navigation',
+      direction: -1,
+    },
+    {
+      name: 'YouTube watchlists',
+      openName: 'Open watchlists',
+      closeName: 'Close watchlists',
+      direction: 1,
+    },
+  ]) {
+    const drawer = page.getByRole('dialog', { name, exact: true });
+    const open = page.getByRole('button', { name: openName, exact: true });
+    const mainBounds = await page.locator('main').boundingBox();
+    const moving = () =>
+      drawer.evaluate((node) =>
+        node
+          .getAnimations()
+          .some(
+            (animation) =>
+              Number(animation.effect?.getTiming().duration) > 0 &&
+              animation.effect instanceof KeyframeEffect &&
+              !animation.effect.pseudoElement,
+          ),
+      );
+    const sample = async (fraction: number) =>
+      drawer.evaluate((node, fraction) => {
+        for (const motion of document
+          .getAnimations()
+          .filter(
+            (animation) =>
+              animation.effect instanceof KeyframeEffect &&
+              animation.effect.target === node,
+          ))
+          motion.currentTime =
+            Number(motion.effect!.getTiming().duration) * fraction;
+        const { x, y, width, height } = node.getBoundingClientRect();
+        return {
+          x,
+          y,
+          width,
+          height,
+          backdrop: Number(getComputedStyle(node, '::backdrop').opacity),
+        };
+      }, fraction);
+    const finish = () =>
+      drawer.evaluate((node) =>
+        document
+          .getAnimations()
+          .filter(
+            (animation) =>
+              animation.effect instanceof KeyframeEffect &&
+              animation.effect.target === node,
+          )
+          .forEach((animation) => animation.finish()),
+      );
+    await open.click();
+    await expect.poll(moving).toBe(true);
+    const opening = [];
+    for (const fraction of [0, 0.2, 0.4, 0.6, 0.8, 0.98])
+      opening.push(await sample(fraction));
+    expect(opening[0].x * direction).toBeCloseTo(opening[0].width, 0);
+    expect(Math.abs(opening.at(-1)!.x)).toBeLessThan(1);
+    if (direction === -1) {
+      expect(opening[0].backdrop).toBe(0);
+      expect(opening.at(-1)!.backdrop).toBeCloseTo(1, 3);
+    }
+    for (let i = 1; i < opening.length; i++) {
+      expect(opening[i].x * direction).toBeLessThan(
+        opening[i - 1].x * direction,
+      );
+      expect(opening[i].width).toBeCloseTo(opening[0].width, 3);
+      expect(opening[i].y).toBeCloseTo(opening[0].y, 3);
+      expect(opening[i].height).toBeCloseTo(opening[0].height, 3);
+      if (direction === -1)
+        expect(opening[i].backdrop).toBeGreaterThan(opening[i - 1].backdrop);
+    }
+    await sample(0.2);
+    await page.screenshot({ path: info.outputPath(`${name}-opening.png`) });
+    await finish();
+    await expect.poll(moving).toBe(false);
+    await drawer.getByRole('button', { name: closeName, exact: true }).click();
+    await expect.poll(moving).toBe(true);
+    const closing = [];
+    for (const fraction of [0, 0.2, 0.4, 0.6, 0.8, 0.98])
+      closing.push(await sample(fraction));
+    expect(closing[0].x).toBeCloseTo(0, 0);
+    expect(closing.at(-1)!.x * direction).toBeCloseTo(closing[0].width, 0);
+    if (direction === -1) {
+      expect(closing[0].backdrop).toBe(1);
+      expect(closing.at(-1)!.backdrop).toBeCloseTo(0, 3);
+    }
+    for (let i = 1; i < closing.length; i++) {
+      expect(closing[i].x * direction).toBeGreaterThan(
+        closing[i - 1].x * direction,
+      );
+      expect(closing[i].width).toBeCloseTo(closing[0].width, 3);
+      if (direction === -1)
+        expect(closing[i].backdrop).toBeLessThan(closing[i - 1].backdrop);
+    }
+    await sample(0.2);
+    await page.screenshot({ path: info.outputPath(`${name}-closing.png`) });
+    const beforeReversal = await sample(0.4);
+    // The modal keeps the page inert during its exit; request reopening without
+    // waiting for that exit to finish, as a rapid toggle does.
+    await open.evaluate((button: HTMLButtonElement) => button.click());
+    await expect(drawer).not.toHaveAttribute('inert', '');
+    await expect.poll(moving).toBe(true);
+    const afterReversal = await sample(0);
+    expect(Math.abs(afterReversal.x - beforeReversal.x)).toBeLessThan(1);
+    if (direction === -1)
+      expect(afterReversal.backdrop).toBeCloseTo(beforeReversal.backdrop, 3);
+    await finish();
+    await expect.poll(moving).toBe(false);
+    expect(await page.locator('main').boundingBox()).toEqual(mainBounds);
+    await drawer.getByRole('button', { name: closeName, exact: true }).click();
+    await expect.poll(moving).toBe(true);
+    await finish();
+    await expect(drawer).toBeHidden();
+    await expect(open).toBeFocused();
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await open.click();
+    await expect(drawer).toBeVisible();
+    expect((await drawer.boundingBox())!.x).toBeCloseTo(0, 0);
+    expect(await moving()).toBe(false);
+    await page.keyboard.press('Escape');
+    await expect(drawer).toBeHidden();
+    await expect(open).toBeFocused();
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    evidence.push({ name, opening, closing, beforeReversal, afterReversal });
+  }
+  await info.attach('mobile-drawer-motion', {
+    body: JSON.stringify(evidence, null, 2),
+    contentType: 'application/json',
+  });
+});
+
+test('drawer slides start by the first frame after each click', async ({
+  page,
+}, info) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/#online/youtube');
+  await expect(
+    page.getByRole('button', { name: 'Open watchlists', exact: true }),
+  ).toBeVisible();
+  const evidence = [];
+  for (const { name, openName, closeName, direction } of [
+    {
+      name: 'Navigation menu',
+      openName: 'Open navigation',
+      closeName: 'Close navigation',
+      direction: -1,
+    },
+    {
+      name: 'YouTube watchlists',
+      openName: 'Open watchlists',
+      closeName: 'Close watchlists',
+      direction: 1,
+    },
+  ]) {
+    const drawer = page.getByRole('dialog', { name, exact: true });
+    for (const opening of [true, false, true, false]) {
+      const button = opening
+        ? page.getByRole('button', { name: openName, exact: true })
+        : drawer.getByRole('button', { name: closeName, exact: true });
+      await button.evaluate(
+        (button, { name, opening, direction }) => {
+          button.addEventListener(
+            'click',
+            () => {
+              const clickedAt = performance.now();
+              requestAnimationFrame(() => {
+                const dialog = [...document.querySelectorAll('dialog')].find(
+                  (node) => node.getAttribute('aria-label') === name,
+                )!;
+                const bounds = dialog.getBoundingClientRect();
+                const started = dialog
+                  .getAnimations()
+                  .some(
+                    (animation) =>
+                      animation.effect instanceof KeyframeEffect &&
+                      !animation.effect.pseudoElement &&
+                      Number(animation.effect.getTiming().duration) > 0,
+                  );
+                document.documentElement.dataset.drawerFirstFrame =
+                  JSON.stringify({
+                    name,
+                    opening,
+                    delayMs: performance.now() - clickedAt,
+                    started,
+                    distance: bounds.x * direction,
+                    width: bounds.width,
+                  });
+              });
+            },
+            { once: true },
+          );
+          delete document.documentElement.dataset.drawerFirstFrame;
+        },
+        { name, opening, direction },
+      );
+      await button.click();
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () => document.documentElement.dataset.drawerFirstFrame,
+          ),
+        )
+        .toBeTruthy();
+      const frame = await page.evaluate(() =>
+        JSON.parse(document.documentElement.dataset.drawerFirstFrame!),
+      );
+      expect(frame.started).toBe(true);
+      if (opening) expect(frame.distance).toBeLessThan(frame.width);
+      else expect(frame.distance).toBeGreaterThan(0);
+      evidence.push(frame);
+      if (opening) await expect(drawer).toHaveCSS('transform', 'none');
+      else await expect(drawer).toBeHidden();
+    }
+  }
+  await info.attach('drawer-first-frames', {
+    body: JSON.stringify(evidence, null, 2),
+    contentType: 'application/json',
+  });
+});
+
 test('mobile media grids use three posters or two videos and retain desktop preferences', async ({
   page,
 }, info) => {

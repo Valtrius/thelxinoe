@@ -568,6 +568,7 @@ test.describe('mobile player gestures', () => {
     const first = rows.first();
     const handle = first.getByRole('button', { name: /^Reorder / });
     await expect(handle).toBeVisible();
+    await expect(drawer).toHaveCSS('transform', 'none');
     const cdp = await page.context().newCDPSession(page);
     const start = async (x: number, y: number) =>
       cdp.send('Input.dispatchTouchEvent', {
