@@ -41,11 +41,14 @@
     closed,
     ended,
     resizable = false,
+    music = false,
   } = $props<{
     choice: MediaChoice;
     closed: () => void;
     ended?: () => void;
     resizable?: boolean;
+    /** Streamed music keeps the music volume and ignores device rotation. */
+    music?: boolean;
   }>();
   const playerId = $props.id();
   const canResize = $derived(resizable && !compactViewport.current);
@@ -93,10 +96,16 @@
     nativeFullscreen = $state(false),
     viewportFullscreen = $state(false),
     speed = $state(1);
-  const muted = $derived(!compactViewport.current && $videoMuted);
-  const volume = $derived(
-    compactViewport.current ? 1 : $appearance.audio_volume,
-  );
+  // Phones and tablets play video at the device volume. Streamed music keeps
+  // its own mute instead of changing the remembered video mute.
+  const deviceVolume = $derived(touchDevice.current && !music);
+  let musicMuted = $state(false);
+  const muted = $derived(!deviceVolume && (music ? musicMuted : $videoMuted));
+  function setMuted(value: boolean) {
+    if (music) musicMuted = value;
+    else videoMuted.set(value);
+  }
+  const volume = $derived(deviceVolume ? 1 : $appearance.audio_volume);
   let hideTimer: ReturnType<typeof setTimeout> | undefined;
   const fullscreen = $derived(nativeFullscreen || viewportFullscreen);
   let rotationFullscreen = false;
@@ -158,16 +167,16 @@
     }, 2500);
   }
   function changeVolume(value: number) {
-    if (compactViewport.current) return;
+    if (deviceVolume) return;
     value = Math.max(0, Math.min(1, value));
-    videoMuted.set(false);
+    setMuted(false);
     player.volume = value;
     updateAppearance({ audio_volume: value });
   }
   function toggleMute() {
-    if (compactViewport.current) return;
+    if (deviceVolume) return;
     if ($appearance.audio_volume === 0) changeVolume(audibleVolume);
-    else videoMuted.set(!muted);
+    else setMuted(!muted);
   }
   async function enterFullscreen(rotated = false) {
     const revision = ++fullscreenRevision;
@@ -228,7 +237,7 @@
       const next = landscape();
       const changed = next !== previousLandscape;
       previousLandscape = next;
-      if (!touchDevice.current || !changed) return;
+      if (!touchDevice.current || music || !changed) return;
       if (next && !fullscreen) void enterFullscreen(true);
       else if (!next && rotationFullscreen) void exitFullscreen(true);
     };
@@ -252,6 +261,14 @@
     clearTimeout(tapTimer);
     tapTimer = undefined;
     sideTap = undefined;
+  }
+  // The previous shape is kept while the next item loads; audio-only streams
+  // have no dimensions and use the default video shape.
+  function updateAspectRatio() {
+    videoAspectRatio =
+      player.videoWidth > 0 && player.videoHeight > 0
+        ? player.videoWidth / player.videoHeight
+        : 16 / 9;
   }
   function tapVideo(event: MouseEvent) {
     const revealOnly = tapRevealsControls;
@@ -400,12 +417,15 @@
         seekBy(10);
         break;
       case 'ArrowUp':
+        if (deviceVolume) return;
         changeVolume($appearance.audio_volume + 0.05);
         break;
       case 'ArrowDown':
+        if (deviceVolume) return;
         changeVolume($appearance.audio_volume - 0.05);
         break;
       case 'm':
+        if (deviceVolume) return;
         toggleMute();
         break;
       case 'f':
@@ -767,8 +787,8 @@
 <section
   id={playerId}
   popover={viewportFullscreen ? 'manual' : undefined}
-  data-sidebar-resize={resizable ? 'xy' : undefined}
-  data-sidebar-resize-origin={resizable ? '' : undefined}
+  data-sidebar-resize={canResize ? 'xy' : undefined}
+  data-sidebar-resize-origin={canResize ? '' : undefined}
   bind:this={container}
   bind:clientHeight={playerHeight}
   style:--player-height={`${playerHeight}px`}
@@ -779,6 +799,9 @@
     : `${boundedHeight}px`}
   style:aspect-ratio={compactViewport.current && !fullscreen
     ? videoAspectRatio
+    : undefined}
+  style:max-height={compactViewport.current && !fullscreen
+    ? '60dvh'
     : undefined}
   transition:playerReveal|global
   onoutrostart={() => {
@@ -830,7 +853,7 @@
   }}
 >
   <video
-    class="block h-full w-full object-contain compact:touch-manipulation"
+    class="block h-full w-full touch-manipulation object-contain"
     data-sidebar-resize="video"
     bind:this={player}
     playsinline
@@ -841,10 +864,8 @@
     onseeking={waiting}
     onseeked={ready}
     onloadeddata={ready}
-    onresize={() => {
-      if (player.videoWidth > 0 && player.videoHeight > 0)
-        videoAspectRatio = player.videoWidth / player.videoHeight;
-    }}
+    onloadedmetadata={updateAspectRatio}
+    onresize={updateAspectRatio}
     oncanplay={ready}
     onplaying={ready}
     onplay={() => {
@@ -1003,7 +1024,7 @@
             fill="currentColor"
           />{/if}
       </Button>
-      {#if !compactViewport.current}<div
+      {#if !deviceVolume}<div
           class="volume-controls flex items-center gap-2 max-[600px]:gap-0.5"
           data-sidebar-resize="xy-pos"
         >

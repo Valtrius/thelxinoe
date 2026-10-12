@@ -30,7 +30,7 @@
   import Switch from '../../../ui/Switch.svelte';
   import { eyebrowTextClass as eyebrowClass } from '../../../ui/styles';
   import WatchlistItem from './WatchlistItem.svelte';
-  import { compactViewport } from '../../../responsive';
+  import { touchDevice } from '../../../responsive';
 
   let {
     actions,
@@ -210,7 +210,7 @@
     if (
       !selected ||
       !canReorder ||
-      (compactViewport.current && !heldHandle) ||
+      (touchDevice.current && !heldHandle) ||
       event.button !== 0 ||
       (!heldHandle &&
         (event.target as HTMLElement).closest(

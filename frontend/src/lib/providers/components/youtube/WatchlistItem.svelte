@@ -1,7 +1,7 @@
 <script lang="ts">
   import ProgressBar from '../../../ui/ProgressBar.svelte';
   import { longPress } from '../../../long-press';
-  import { compactViewport } from '../../../responsive';
+  import { touchDevice } from '../../../responsive';
   import type { YoutubeVideoActions } from '../../youtube-video-actions';
 
   import { youtubeVideoPresentation } from '../../youtube-video-presentation';
@@ -82,13 +82,13 @@
   let actionsOpen = $state(false);
   let actionMenu = $state<HTMLDivElement | null>(null);
   const actionClass = $derived(
-    compactViewport.current
+    touchDevice.current
       ? 'flex h-11 w-full items-center gap-3 px-4 text-left text-sm text-muted hover:bg-surface-strong hover:text-foreground'
       : 'grid size-7 place-items-center text-muted hover:bg-surface-strong hover:text-foreground',
   );
   $effect(() => {
     if (!actionMenu) return;
-    if (compactViewport.current && actionsOpen) actionMenu.showPopover();
+    if (touchDevice.current && actionsOpen) actionMenu.showPopover();
     else if (actionMenu.matches(':popover-open')) actionMenu.hidePopover();
   });
   function run(action: (video: YoutubeVideo) => void) {
@@ -150,7 +150,7 @@
 <div
   use:longPress={() => (actionsOpen = true)}
   data-playing={isPlaying}
-  class={`group/watchlist-item relative flex cursor-default items-stretch border-b border-line transition-[opacity,background-color] duration-150 hover:z-20 compact:select-none compact:[-webkit-touch-callout:none] ${sortable ? (dragging ? 'bg-accent-soft opacity-35 select-none' : 'select-none hover:bg-surface-soft') : canPlay ? 'hover:bg-surface-soft' : ''}`}
+  class={`group/watchlist-item relative flex cursor-default items-stretch border-b border-line transition-[opacity,background-color] duration-150 hover:z-20 touch:select-none touch:[-webkit-touch-callout:none] ${sortable ? (dragging ? 'bg-accent-soft opacity-35 select-none' : 'select-none hover:bg-surface-soft') : canPlay ? 'hover:bg-surface-soft' : ''}`}
 >
   <div
     role="button"
@@ -253,7 +253,7 @@
       </span>
     </div>
   </div>
-  {#if compactViewport.current && sortable}
+  {#if touchDevice.current && sortable}
     <button
       type="button"
       data-long-press-ignore
@@ -265,7 +265,7 @@
       ><GripVertical class="size-5" /></button
     >
   {/if}
-  {#if compactViewport.current && actionsOpen}
+  {#if touchDevice.current && actionsOpen}
     <button
       type="button"
       data-long-press-ignore
@@ -277,16 +277,14 @@
   <div
     bind:this={actionMenu}
     data-long-press-ignore
-    popover={compactViewport.current ? 'manual' : undefined}
-    role={compactViewport.current ? 'dialog' : undefined}
-    aria-label={compactViewport.current
-      ? `Actions for ${video.title}`
-      : undefined}
-    class={compactViewport.current
+    popover={touchDevice.current ? 'manual' : undefined}
+    role={touchDevice.current ? 'dialog' : undefined}
+    aria-label={touchDevice.current ? `Actions for ${video.title}` : undefined}
+    class={touchDevice.current
       ? 'fixed inset-x-0 top-auto bottom-0 z-50 m-0 w-full max-w-none border border-line-strong bg-surface-strong p-2 shadow-2xl'
       : 'invisible absolute right-1 bottom-1 flex gap-0.5 group-hover/watchlist-item:visible group-focus-visible/watchlist-item:visible group-has-focus-visible/watchlist-item:visible'}
     onkeydown={(event) => {
-      if (compactViewport.current && event.key === 'Escape') {
+      if (touchDevice.current && event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();
         actionsOpen = false;
@@ -302,7 +300,7 @@
         run(video.isWatched ? actions.onMarkUnwatched : actions.onMarkWatched)}
       >{#if video.isWatched}<EyeOff class="size-3.5" />{:else}<Eye
           class="size-3.5"
-        />{/if}{#if compactViewport.current}<span
+        />{/if}{#if touchDevice.current}<span
           >{video.isWatched ? 'Mark unwatched' : 'Mark watched'}</span
         >{/if}</button
     >
@@ -313,7 +311,7 @@
         title="Cancel download"
         disabled={downloadBusy}
         onclick={() => run(actions.onCancelDownload)}
-        ><X class="size-3.5" />{#if compactViewport.current}<span
+        ><X class="size-3.5" />{#if touchDevice.current}<span
             >Cancel download</span
           >{/if}</button
       >
@@ -324,7 +322,7 @@
         title="Delete download"
         disabled={downloadBusy || isPlaying}
         onclick={() => run(actions.onDeleteDownload)}
-        ><Trash2 class="size-3.5" />{#if compactViewport.current}<span
+        ><Trash2 class="size-3.5" />{#if touchDevice.current}<span
             >Delete download</span
           >{/if}</button
       >
@@ -335,7 +333,7 @@
         title="Download"
         disabled={!canDownload}
         onclick={() => run(actions.onDownload)}
-        ><Download class="size-3.5" />{#if compactViewport.current}<span
+        ><Download class="size-3.5" />{#if touchDevice.current}<span
             >Download</span
           >{/if}</button
       >
@@ -345,7 +343,7 @@
       class={`${actionClass} hover:text-danger`}
       title="Remove from watchlist"
       onclick={() => run(onRemove)}
-      ><X class="size-3.5" />{#if compactViewport.current}<span
+      ><X class="size-3.5" />{#if touchDevice.current}<span
           >Remove from watchlist</span
         >{/if}</button
     >

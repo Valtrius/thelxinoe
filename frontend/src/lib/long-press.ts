@@ -1,4 +1,4 @@
-import { compactViewport } from './responsive';
+import { touchDevice } from './responsive';
 
 export function longPress(node: HTMLElement, onPress: () => void) {
   let callback = onPress;
@@ -35,7 +35,7 @@ export function longPress(node: HTMLElement, onPress: () => void) {
 
   function down(event: PointerEvent) {
     if (
-      !compactViewport.current ||
+      !touchDevice.current ||
       event.pointerType === 'mouse' ||
       !event.isPrimary ||
       event.button !== 0 ||
@@ -75,7 +75,7 @@ export function longPress(node: HTMLElement, onPress: () => void) {
   }
 
   function context(event: MouseEvent) {
-    if (!compactViewport.current) return;
+    if (!touchDevice.current) return;
     event.preventDefault();
     trigger();
   }

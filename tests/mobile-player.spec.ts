@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { freezeClock } from './helpers/clock';
 
 test.beforeEach(async ({ request }) => {
   await request.post('/__mock/reset');
@@ -144,6 +145,95 @@ test('desktop watchlists retain hover actions and immediate row dragging', async
   });
 });
 
+test('touch devices play at device volume and leave the desktop volume and mute intact', async ({
+  browser,
+}, info) => {
+  // Device volume follows touch input rather than width, so each device gets
+  // its own context; storage state carries the remembered mute between them.
+  const desktop = await browser.newContext({
+    hasTouch: false,
+    isMobile: false,
+    viewport: { width: 1440, height: 1000 },
+  });
+  let page = await desktop.newPage();
+  let video = await openVideo(page);
+  await page.getByRole('slider', { name: 'Playback volume' }).fill('0.23');
+  await page.getByRole('button', { name: 'Mute', exact: true }).click();
+  await expect(video).toHaveJSProperty('muted', true);
+  const desktopState = await desktop.storageState();
+  await desktop.close();
+
+  const touch = await browser.newContext({
+    storageState: desktopState,
+    hasTouch: true,
+    isMobile: true,
+    viewport: { width: 390, height: 844 },
+  });
+  page = await touch.newPage();
+  video = await openVideo(page);
+  await expect(page.locator('.volume-controls')).toHaveCount(0);
+  await expect(video).toHaveJSProperty('volume', 1);
+  await expect(video).toHaveJSProperty('muted', false);
+  await page.getByRole('button', { name: 'Close player', exact: true }).tap();
+  await page
+    .getByRole('button', {
+      name: 'Play: After the Rain · Episode 6',
+      exact: true,
+    })
+    .tap();
+  await expect(video).toHaveJSProperty('volume', 1);
+  await expect(video).toHaveJSProperty('muted', false);
+  await page.screenshot({
+    path: info.outputPath('device-volume-mobile.png'),
+  });
+  const touchState = await touch.storageState();
+  await touch.close();
+
+  const restored = await browser.newContext({
+    storageState: touchState,
+    hasTouch: false,
+    isMobile: false,
+    viewport: { width: 1440, height: 1000 },
+  });
+  page = await restored.newPage();
+  video = await openVideo(page);
+  await expect(video).toHaveJSProperty('volume', 0.23);
+  await expect(video).toHaveJSProperty('muted', true);
+  await expect(
+    page.getByRole('button', { name: 'Unmute', exact: true }),
+  ).toBeVisible();
+  expect(
+    (await (await page.request.get('/api/v1/me/appearance')).json())
+      .audio_volume,
+  ).toBe(0.23);
+  await page.screenshot({
+    path: info.outputPath('device-volume-desktop-preserved.png'),
+  });
+  await restored.close();
+});
+
+test('pinned playback on library pages fills the screen width from the top edge', async ({
+  page,
+}, info) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/#library/movies/movie-0');
+  await page
+    .getByRole('button', { name: 'Play Theatrical', exact: true })
+    .click();
+  const player = page.getByRole('region', { name: 'Media player' });
+  await expect(player).toHaveCSS('transform', 'none');
+  await expect.poll(async () => (await player.boundingBox())!.x).toBe(0);
+  await expect.poll(async () => (await player.boundingBox())!.y).toBe(0);
+  await expect.poll(async () => (await player.boundingBox())!.width).toBe(390);
+  await expect
+    .poll(async () => (await player.boundingBox())!.height)
+    .toBeCloseTo((390 * 9) / 16, 0);
+  await expect
+    .poll(async () => (await page.locator('.page-header').boundingBox())!.y)
+    .toBeCloseTo((390 * 9) / 16, 0);
+  await page.screenshot({ path: info.outputPath('library-pinned.png') });
+});
+
 test.describe('mobile player gestures', () => {
   test.use({
     hasTouch: true,
@@ -151,65 +241,10 @@ test.describe('mobile player gestures', () => {
     viewport: { width: 390, height: 844 },
   });
 
-  test('mobile playback uses device volume and leaves desktop volume and mute preferences intact', async ({
+  test('pinned playback moves the page and open watchlist with the player while opening and closing', async ({
     page,
   }, info) => {
-    await page.setViewportSize({ width: 1440, height: 1000 });
-    const video = await openVideo(page);
-    await page.getByRole('slider', { name: 'Playback volume' }).fill('0.23');
-    await page.getByRole('button', { name: 'Mute', exact: true }).click();
-    await expect(video).toHaveJSProperty('muted', true);
-    await page.setViewportSize({ width: 390, height: 844 });
-    await expect(page.locator('.volume-controls')).toHaveCount(0);
-    await expect(video).toHaveJSProperty('volume', 1);
-    await expect(video).toHaveJSProperty('muted', false);
-    await page.getByRole('button', { name: 'Close player', exact: true }).tap();
-    await page
-      .getByRole('button', {
-        name: 'Play: After the Rain · Episode 6',
-        exact: true,
-      })
-      .tap();
-    await expect(video).toHaveJSProperty('volume', 1);
-    await expect(video).toHaveJSProperty('muted', false);
-    await page.reload();
-    await page
-      .getByRole('button', {
-        name: 'Play: A Quiet Journey · Episode 5',
-        exact: true,
-      })
-      .tap();
-    await expect(video).toHaveJSProperty('volume', 1);
-    await expect(video).toHaveJSProperty('muted', false);
-    await expect(page.locator('.volume-controls')).toHaveCount(0);
-    await page.screenshot({
-      path: info.outputPath('device-volume-mobile.png'),
-    });
-    await page.setViewportSize({ width: 1440, height: 1000 });
-    await expect(video).toHaveJSProperty('volume', 0.23);
-    await expect(video).toHaveJSProperty('muted', true);
-    await expect(
-      page.getByRole('button', { name: 'Unmute', exact: true }),
-    ).toBeVisible();
-    expect(
-      (await (await page.request.get('/api/v1/me/appearance')).json())
-        .audio_volume,
-    ).toBe(0.23);
-    await page.screenshot({
-      path: info.outputPath('device-volume-desktop-preserved.png'),
-    });
-  });
-
-  test('closing pinned playback moves the page and open watchlist with the player', async ({
-    page,
-  }, info) => {
-    await openVideo(page);
-    const player = page.getByRole('region', { name: 'Media player' });
-    await expect(player).toHaveCSS('transform', 'none');
-    const header = page.locator('.page-header');
-    await expect
-      .poll(async () => (await header.boundingBox())!.y)
-      .toBeCloseTo((390 * 9) / 16, 0);
+    await page.goto('/#online/youtube');
     await page
       .getByRole('button', { name: 'Open watchlists', exact: true })
       .tap();
@@ -218,6 +253,9 @@ test.describe('mobile player gestures', () => {
       exact: true,
     });
     await expect(drawer).toBeVisible();
+    const player = page.getByRole('region', { name: 'Media player' });
+    const header = page.locator('.page-header');
+    // Hold the player's reveal transitions so their midpoints can be measured.
     await page.evaluate(() => {
       const animate = Element.prototype.animate;
       Element.prototype.animate = function (keyframes, options) {
@@ -229,61 +267,85 @@ test.describe('mobile player gestures', () => {
           animation.pause();
         return animation;
       };
-      const main = document.querySelector('main.content')!;
-      main.addEventListener('transitionrun', () => {
-        for (const animation of main.getAnimations()) animation.pause();
-      });
     });
-    const openHeight = (await player.boundingBox())!.height;
-    await page.getByRole('button', { name: 'Close player', exact: true }).tap();
-    await expect
-      .poll(() =>
-        player.evaluate((element) =>
-          element
-            .getAnimations()
-            .some(
-              (animation) => Number(animation.effect?.getTiming().duration) > 0,
-            ),
-        ),
-      )
-      .toBe(true);
-    await page.evaluate(() => {
-      for (const element of document.querySelectorAll(
-        '.player, main.content',
-      )) {
-        for (const animation of element.getAnimations()) {
-          animation.pause();
+    const revealMidpoint = async () => {
+      await expect
+        .poll(() =>
+          player.evaluate((element) =>
+            element
+              .getAnimations()
+              .some(
+                (animation) =>
+                  Number(animation.effect?.getTiming().duration) > 0,
+              ),
+          ),
+        )
+        .toBe(true);
+      await player.evaluate(async (element) => {
+        for (const animation of element.getAnimations())
           animation.currentTime =
             Number(animation.effect!.getTiming().duration) / 2;
-        }
-      }
+        // Let the frame's resize observer carry its height into the page.
+        await new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        );
+      });
+    };
+    const finishReveal = () =>
+      player.evaluate((element) => {
+        for (const animation of element.getAnimations()) animation.finish();
+      });
+    const geometry = async () => {
+      const bounds = (await player.boundingBox())!;
+      return {
+        playerBottom: bounds.y + bounds.height,
+        headerTop: (await header.boundingBox())!.y,
+        drawerTop: (await drawer.boundingBox())!.y,
+      };
+    };
+    const openHeight = (390 * 9) / 16;
+    const expectFollowing = ({
+      playerBottom,
+      headerTop,
+      drawerTop,
+    }: Awaited<ReturnType<typeof geometry>>) => {
+      expect(playerBottom).toBeGreaterThan(0);
+      expect(playerBottom).toBeLessThan(openHeight - 1);
+      expect(Math.abs(headerTop - playerBottom)).toBeLessThan(2);
+      expect(Math.abs(drawerTop - playerBottom)).toBeLessThan(2);
+    };
+
+    await drawer
+      .locator('[data-watchlist-video-id] [role="button"]')
+      .first()
+      .tap();
+    await revealMidpoint();
+    const opening = await geometry();
+    expectFollowing(opening);
+    await page.screenshot({
+      path: info.outputPath('mobile-open-midpoint.png'),
     });
-    const bounds = (await player.boundingBox())!;
-    const edge = bounds.y + bounds.height;
-    const headerTop = (await header.boundingBox())!.y;
-    const drawerTop = (await drawer.boundingBox())!.y;
-    expect(edge).toBeGreaterThan(0);
-    expect(edge).toBeLessThan(openHeight);
-    expect(Math.abs(headerTop - edge)).toBeLessThan(2);
-    expect(Math.abs(drawerTop - edge)).toBeLessThan(2);
-    await info.attach('closing-geometry', {
-      body: JSON.stringify(
-        { openHeight, playerBottom: edge, headerTop, drawerTop },
-        null,
-        2,
-      ),
+    await finishReveal();
+    await expect(player).toHaveCSS('transform', 'none');
+    await expect
+      .poll(async () => (await header.boundingBox())!.y)
+      .toBeCloseTo(openHeight, 0);
+    await expect
+      .poll(async () => (await drawer.boundingBox())!.y)
+      .toBeCloseTo(openHeight, 0);
+
+    await page.getByRole('button', { name: 'Close player', exact: true }).tap();
+    await revealMidpoint();
+    const closing = await geometry();
+    expectFollowing(closing);
+    await info.attach('reveal-geometry', {
+      body: JSON.stringify({ openHeight, opening, closing }, null, 2),
       contentType: 'application/json',
     });
     await page.screenshot({
       path: info.outputPath('mobile-close-midpoint.png'),
     });
-    await page.evaluate(() => {
-      for (const element of document.querySelectorAll(
-        '.player, main.content',
-      )) {
-        for (const animation of element.getAnimations()) animation.finish();
-      }
-    });
+    await finishReveal();
     await expect(player).toHaveCount(0);
     await expect.poll(async () => (await header.boundingBox())!.y).toBe(0);
     await expect.poll(async () => (await drawer.boundingBox())!.y).toBe(0);
@@ -295,54 +357,49 @@ test.describe('mobile player gestures', () => {
   test('side taps reveal controls, defer pause, and seek ten seconds for every additional tap', async ({
     page,
   }, info) => {
+    await page.clock.install();
     const video = await openVideo(page);
     const controls = page.locator('.player-controls');
-    await page.getByRole('slider', { name: 'Playback position' }).fill('30');
+    const currentTime = () =>
+      video.evaluate((element: HTMLVideoElement) => element.currentTime);
     const side = (right: boolean) =>
       video.tap({ position: { x: right ? 340 : 50, y: 95 } });
+    await page.getByRole('slider', { name: 'Playback position' }).fill('30');
+    await freezeClock(page);
     await side(true);
     await expect(video).toHaveJSProperty('paused', false);
     await side(true);
-    await expect
-      .poll(() =>
-        video.evaluate((element: HTMLVideoElement) => element.currentTime),
-      )
-      .toBeGreaterThan(39);
+    await expect.poll(currentTime).toBeGreaterThan(39);
     await side(true);
-    await expect
-      .poll(() =>
-        video.evaluate((element: HTMLVideoElement) => element.currentTime),
-      )
-      .toBeGreaterThan(49);
-    await page.waitForTimeout(450);
+    await expect.poll(currentTime).toBeGreaterThan(49);
+    await page.clock.runFor(450);
     await expect(video).toHaveJSProperty('paused', false);
-    await expect(controls).toHaveCSS('opacity', '0', { timeout: 5000 });
-    const beforeReveal = await video.evaluate(
-      (element: HTMLVideoElement) => element.currentTime,
-    );
+    // Seeking reveals the controls again; advance until the idle delay hides them.
+    await expect
+      .poll(async () => {
+        await page.clock.runFor(500);
+        return controls.evaluate(
+          (element) => getComputedStyle(element).opacity,
+        );
+      })
+      .toBe('0');
+    const beforeReveal = await currentTime();
     await side(false);
     await expect(controls).toHaveCSS('opacity', '1');
-    await page.waitForTimeout(450);
+    await page.clock.runFor(450);
     await expect(video).toHaveJSProperty('paused', false);
-    expect(
-      await video.evaluate((element: HTMLVideoElement) => element.currentTime),
-    ).toBeLessThan(beforeReveal + 3);
+    expect(await currentTime()).toBeLessThan(beforeReveal + 3);
     await side(false);
-    await page.waitForTimeout(100);
+    await page.clock.runFor(100);
     await expect(video).toHaveJSProperty('paused', false);
+    await page.clock.runFor(250);
     await expect(video).toHaveJSProperty('paused', true);
-    const beforeSeek = await video.evaluate(
-      (element: HTMLVideoElement) => element.currentTime,
-    );
+    const beforeSeek = await currentTime();
     await side(false);
     await side(false);
     await side(false);
-    await expect
-      .poll(() =>
-        video.evaluate((element: HTMLVideoElement) => element.currentTime),
-      )
-      .toBeCloseTo(beforeSeek - 20, 0);
-    await page.waitForTimeout(450);
+    await expect.poll(currentTime).toBeCloseTo(beforeSeek - 20, 0);
+    await page.clock.runFor(450);
     await expect(video).toHaveJSProperty('paused', true);
     await video.tap({ position: { x: 195, y: 95 } });
     await expect(video).toHaveJSProperty('paused', false);
@@ -441,6 +498,13 @@ test.describe('mobile player gestures', () => {
     await expect(
       page.getByRole('button', { name: 'Fullscreen', exact: true }),
     ).toBeVisible();
+    // A pinned player in landscape keeps its controls on screen.
+    await expect
+      .poll(async () => (await player.boundingBox())!.height)
+      .toBeCloseTo(390 * 0.6, 0);
+    await expect(
+      page.getByRole('button', { name: 'Fullscreen', exact: true }),
+    ).toBeInViewport({ ratio: 1 });
     // Resizing or switching videos in the same orientation must not reopen fullscreen after an explicit exit.
     await page.waitForTimeout(450);
     await expect(

@@ -9,6 +9,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { freezeClock } from './helpers/clock';
 
 // Exercise the real player with decoded media and a controlled server boundary.
 // This suite starts its own Vite server and never touches an account or deployment.
@@ -817,7 +818,8 @@ test('controls hide, recover with keyboard, retain volume, seek, and stay inside
   await expect(page.locator('.player-volume-range')).toBeHidden();
   await expect(page.locator('.playback-mode')).toBeHidden();
   await page.setViewportSize({ width: outsidePlayer + 381, height: 844 });
-  await expect(page.locator('.volume-controls')).toHaveCount(0);
+  // Narrow windows with a mouse keep the player volume; only touch devices hide it.
+  await expect(page.locator('.player-volume-range')).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
   await insidePlayer(page);
   // Changing quality preserves the pause established before seeking.
@@ -950,6 +952,7 @@ test.describe('touch video playback', () => {
   test('repeated side taps accumulate during a slow transcoded seek and keep paused playback paused', async ({
     page,
   }, testInfo) => {
+    await page.clock.install();
     const state = await fixture(page, { mode: 'remux' });
     await decoded(page);
     const video = page.locator('video');
@@ -968,9 +971,11 @@ test.describe('touch video playback', () => {
       await new Promise((resolve) => setTimeout(resolve, 500));
       await route.fallback();
     });
+    await freezeClock(page);
     for (let tap = 0; tap < 3; tap++) {
       await video.tap({ position: { x: 340, y: 95 } });
     }
+    await page.clock.resume();
     await expect
       .poll(async () => Number(await position.inputValue()))
       .toBeCloseTo(40, 0);

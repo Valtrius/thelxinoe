@@ -135,6 +135,15 @@ test('mobile watchlists stay below pinned playback and preserve the desktop side
   }
   await page.setViewportSize({ width: 390, height: 700 });
   await open.click();
+  // Narrow windows with a mouse keep hover actions instead of touch sheets and grips.
+  const firstRow = drawer.locator('[data-watchlist-video-id]').first();
+  await expect(drawer.getByRole('button', { name: /^Reorder / })).toHaveCount(
+    0,
+  );
+  await firstRow.hover();
+  await expect(
+    firstRow.getByRole('button', { name: 'Mark watched', exact: true }),
+  ).toBeVisible();
   const video = drawer
     .locator('[data-watchlist-video-id] [role="button"]')
     .first();

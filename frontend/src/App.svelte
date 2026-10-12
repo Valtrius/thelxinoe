@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { compactMediaQuery } from './lib/responsive';
+  import { compactViewport } from './lib/responsive';
   import { hasNativeAccess } from './lib/services/presentation';
   import Notice from './lib/ui/Notice.svelte';
   import FormField from './lib/ui/FormField.svelte';
@@ -26,7 +26,7 @@
   } from './lib/navigation';
   import { captureSession, invalidateSession } from './lib/session';
   import Sidebar from './lib/ui/Sidebar.svelte';
-  import NavigationDrawer from './lib/ui/NavigationDrawer.svelte';
+  import Drawer from './lib/ui/Drawer.svelte';
   import { connectAttention, refreshAttention } from './lib/attention';
   import WindowTitlebar from './lib/ui/WindowTitlebar.svelte';
   import {
@@ -63,9 +63,27 @@
   let main = $state<HTMLElement | null>(null);
   let workspace = $state<HTMLElement | null>(null);
   let workspaceHeight = $state(0);
-  let videoPlayerHeight = $state(0);
-  let compact = $state(false),
-    mobileNavOpen = $state(false);
+  let pinnedPlayerHeight = $state(0);
+  let mobileNavOpen = $state(false);
+  const compact = $derived(compactViewport.current);
+  $effect(() => {
+    if (!compact) mobileNavOpen = false;
+  });
+  // The pinned player is out of flow, so the page is padded by its current
+  // height. The reveal transition animates that height while opening and
+  // closing; the padding follows it frame by frame and snaps with resizes.
+  function pinnedPlayer(node: HTMLElement) {
+    const observer = new ResizeObserver(() => {
+      pinnedPlayerHeight = node.clientHeight;
+    });
+    observer.observe(node);
+    return {
+      destroy() {
+        observer.disconnect();
+        pinnedPlayerHeight = 0;
+      },
+    };
+  }
   let route = $state<AppRoute>({ ...homeRoute });
   const section = $derived(route.section);
   const settingsSection = $derived(route.settings);
@@ -576,13 +594,6 @@
     const toolsConnection = desktop
       ? connectTools()
       : Promise.resolve(() => {});
-    const media = window.matchMedia(compactMediaQuery);
-    const resize = () => {
-      compact = media.matches;
-      mobileNavOpen = false;
-    };
-    resize();
-    media.addEventListener('change', resize);
     const incompatible = (event: Event) => {
       updateRequired = (event as CustomEvent<string>).detail;
       events?.close();
@@ -650,7 +661,6 @@
       window.removeEventListener('thelxinoe-unsaved-changes', cancelledEdits);
       teardownSession();
       sidebarMotion.destroy();
-      media.removeEventListener('change', resize);
     };
   });
 </script>
@@ -750,17 +760,23 @@
     {/snippet}
     {#if compact}
       {#if mobileNavOpen}
-        <NavigationDrawer onClose={() => (mobileNavOpen = false)}>
+        <Drawer
+          modal
+          id="mobile-navigation"
+          aria-label="Navigation menu"
+          class="inset-0 h-dvh w-64 max-w-[calc(100vw-3rem)] backdrop:bg-black/53 desktop-shell:h-[calc(100dvh-32px)]"
+          onClose={() => (mobileNavOpen = false)}
+        >
           {@render navigation(user)}
-        </NavigationDrawer>
+        </Drawer>
       {/if}
     {:else}
       {@render navigation(user)}
     {/if}
     <main
-      class="content flex min-w-0 flex-1 flex-col overflow-hidden compact:pt-(--mobile-player-height) compact:transition-[--mobile-player-height] compact:duration-[240ms] compact:ease-[cubic-bezier(0.333333,1,0.666667,1)] motion-reduce:transition-none"
+      class="content flex min-w-0 flex-1 flex-col overflow-hidden compact:pt-(--mobile-player-height)"
       bind:this={main}
-      style:--mobile-player-height={`${compact && playing && !desktop && playing.kind !== 'track' ? videoPlayerHeight : 0}px`}
+      style:--mobile-player-height={`${compact ? pinnedPlayerHeight : 0}px`}
     >
       <header
         class="page-header flex shrink-0 items-center gap-5 border-b border-line bg-background/88 px-6 py-2 narrow:px-4 compact:gap-2.5 compact:px-3 compact:py-1.5"
@@ -844,14 +860,14 @@
             />{:catch error}<Notice role="alert" variant="error"
               >{String(error)}</Notice
             >{/await}{:else if playing}<div
-            bind:clientHeight={videoPlayerHeight}
+            use:pinnedPlayer
             class={[
               'player-frame compact:fixed compact:inset-x-0 compact:top-0 compact:z-70 compact:m-0',
               providerPage
                 ? '-mt-3 -ml-3'
                 : section === 'Settings'
                   ? ''
-                  : '-mx-6 -mt-6 narrow:-mx-4 narrow:-mt-4 compact:-mx-3 compact:-mt-3',
+                  : '-mx-6 -mt-6 narrow:-mx-4 narrow:-mt-4',
             ]}
           >
             {#await players.video()}<p role="status">

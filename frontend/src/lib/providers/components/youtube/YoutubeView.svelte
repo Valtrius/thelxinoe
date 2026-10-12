@@ -57,7 +57,7 @@
   import YoutubeFeedToolbar from './YoutubeFeedToolbar.svelte';
   import VideoGrid from './VideoGrid.svelte';
   import WatchlistSidebar from './WatchlistSidebar.svelte';
-  import WatchlistDrawer from './WatchlistDrawer.svelte';
+  import Drawer from '../../../ui/Drawer.svelte';
   import { compactViewport } from '../../../responsive';
 
   let {
@@ -916,9 +916,13 @@
 {/snippet}
 
 {#if account && compactViewport.current && mobileWatchlistOpen}
-  <WatchlistDrawer onClose={() => (mobileWatchlistOpen = false)}>
+  <Drawer
+    aria-label="YouTube watchlists"
+    class="fixed inset-x-0 top-(--mobile-player-height) z-60 h-[calc(100dvh-var(--mobile-player-height,0px))] w-full max-w-none desktop-shell:h-[calc(100dvh-var(--mobile-player-height,0px)-32px)]"
+    onClose={() => (mobileWatchlistOpen = false)}
+  >
     {@render watchlist(() => (mobileWatchlistOpen = false))}
-  </WatchlistDrawer>
+  </Drawer>
 {/if}
 
 <div
