@@ -9,7 +9,8 @@ export function playerReveal(node: HTMLElement): TransitionConfig {
     duration: prefersReducedMotion() ? 0 : 240,
     easing: cubicOut,
     // Keep the video at its full size while revealing it from above. The
-    // collapsing margin lets the following page content move with its edge.
+    // collapsing margin lets the following page content move with its edge;
+    // a pinned player's frame shrinks with it so the page padding follows.
     css: (t, u) => `
       transform: translateY(${-u * height}px);
       clip-path: inset(${u * 100}% 0 0 0);

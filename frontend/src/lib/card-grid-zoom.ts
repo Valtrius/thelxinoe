@@ -452,8 +452,11 @@ export function scaleYoutubeMediaScope(
       const gutter = scrollbarGutter();
       const widthChanged =
         lastWidth === null || Math.abs(width - lastWidth) >= 0.5;
+      // Height only sizes the watchlist sidebar. Without it (mobile), the
+      // pinned player's reveal must not re-apply the layout every frame.
       const heightChanged =
-        lastHeight === null || Math.abs(height - lastHeight) >= 0.5;
+        sidebarFrame !== null &&
+        (lastHeight === null || Math.abs(height - lastHeight) >= 0.5);
       if (!widthChanged && !heightChanged) return;
       apply(width, height, gutter);
     });

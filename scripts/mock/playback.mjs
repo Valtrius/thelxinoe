@@ -94,6 +94,11 @@ export async function playbackApi(s, c) {
     });
   }
   const source = path.match(/^\/catalog\/([^/]+)\/playback$/);
+  if (
+    method === 'GET' &&
+    /^\/catalog\/(youtube|twitch|kick):[^/]+\/segments$/.test(path)
+  )
+    return json({ generation: 'preview', preferences: s.skipping, items: [] });
   if (source) {
     const item = s.library.find((item) => item.id === source[1]);
     return json({

@@ -28,5 +28,6 @@ export default defineConfig({
       '/service-access': { target: 'http://127.0.0.1:8484', ws: true },
     },
   },
-  test: { include: ['src/**/*.test.ts'] },
+  // responsive.test.ts reads app.css, which Vitest otherwise replaces with an empty module.
+  test: { include: ['src/**/*.test.ts'], css: { include: /app\.css/ } },
 });

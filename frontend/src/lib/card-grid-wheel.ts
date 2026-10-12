@@ -2,6 +2,7 @@ import { tick } from 'svelte';
 import { nextCardColumns } from './card-grid-zoom';
 import type { LayoutMotionController } from './layout-motion';
 import { captureScrollAnchor, restoreScrollAnchor } from './scroll-anchor';
+import { compactViewport } from './responsive';
 
 export function createCardGridWheelHandler({
   anchorAttribute,
@@ -15,7 +16,7 @@ export function createCardGridWheelHandler({
   setColumns: (columns: number) => void;
 }) {
   return async (event: WheelEvent) => {
-    if (!event.ctrlKey || event.deltaY === 0) return;
+    if (compactViewport.current || !event.ctrlKey || event.deltaY === 0) return;
     const root = event.currentTarget as HTMLElement;
     event.preventDefault();
     if (!root.querySelector('[data-card-grid]')) return;

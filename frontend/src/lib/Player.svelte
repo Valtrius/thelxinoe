@@ -2,7 +2,7 @@
   import Button from './ui/Button.svelte';
   import { formControlClass } from './ui/styles';
   import { twMerge } from 'tailwind-merge';
-  import { onDestroy, tick, untrack } from 'svelte';
+  import { onDestroy, onMount, tick, untrack } from 'svelte';
   import { PlaybackActivity } from './playback-activity';
   import Hls from 'hls.js';
   import {
@@ -23,7 +23,8 @@
   import PlayerOption from './PlayerOption.svelte';
   import { playerReveal } from './player-reveal';
   import { api } from './api';
-  import { appearance, updateAppearance } from './appearance';
+  import { appearance, updateAppearance, videoMuted } from './appearance';
+  import { compactViewport, touchDevice } from './responsive';
   import {
     capabilities,
     qualityOptions,
@@ -40,13 +41,18 @@
     closed,
     ended,
     resizable = false,
+    music = false,
   } = $props<{
     choice: MediaChoice;
     closed: () => void;
     ended?: () => void;
     resizable?: boolean;
+    /** Streamed music keeps the music volume and ignores device rotation. */
+    music?: boolean;
   }>();
   const playerId = $props.id();
+  const canResize = $derived(resizable && !compactViewport.current);
+  let videoAspectRatio = $state(16 / 9);
   let resizedHeight = $state<number | null>(null);
   let viewportHeight = $state(window.innerHeight);
   const minimumHeight = 210;
@@ -87,10 +93,27 @@
     controlFocused = $state(false),
     optionMenu = $state<string | null>(null),
     playerHeight = $state(0),
-    fullscreen = $state(false),
-    muted = $state(false),
+    nativeFullscreen = $state(false),
+    viewportFullscreen = $state(false),
     speed = $state(1);
+  // Phones and tablets play video at the device volume. Streamed music keeps
+  // its own mute instead of changing the remembered video mute.
+  const deviceVolume = $derived(touchDevice.current && !music);
+  let musicMuted = $state(false);
+  const muted = $derived(!deviceVolume && (music ? musicMuted : $videoMuted));
+  function setMuted(value: boolean) {
+    if (music) musicMuted = value;
+    else videoMuted.set(value);
+  }
+  const volume = $derived(deviceVolume ? 1 : $appearance.audio_volume);
   let hideTimer: ReturnType<typeof setTimeout> | undefined;
+  const fullscreen = $derived(nativeFullscreen || viewportFullscreen);
+  let rotationFullscreen = false;
+  let fullscreenRevision = 0;
+  let tapTimer: ReturnType<typeof setTimeout> | undefined;
+  let sideTap: { side: -1 | 1; time: number; seeking: boolean } | undefined;
+  let tapSeek:
+    { revision: number; target: number; resume: boolean } | undefined;
   // Touch cannot hover: a tap over hidden controls only reveals them, and the
   // :hover it leaves on a tapped control must not keep them shown.
   let touch = false,
@@ -99,7 +122,7 @@
   let lastSubtitle: string | null = null;
   $effect.pre(() => {
     const savedHeight = $appearance.player_height;
-    if (resizable && !drag) resizedHeight = savedHeight;
+    if (canResize && !drag) resizedHeight = savedHeight;
   });
   const loading = $derived(!error && (busy || buffering));
   const controlsShown = $derived(
@@ -121,7 +144,7 @@
   $effect(() => {
     if ($appearance.audio_volume > 0) audibleVolume = $appearance.audio_volume;
     if (player) {
-      player.volume = $appearance.audio_volume;
+      player.volume = volume;
       player.muted = muted;
     }
   });
@@ -144,24 +167,159 @@
     }, 2500);
   }
   function changeVolume(value: number) {
+    if (deviceVolume) return;
     value = Math.max(0, Math.min(1, value));
-    muted = false;
+    setMuted(false);
     player.volume = value;
     updateAppearance({ audio_volume: value });
   }
   function toggleMute() {
+    if (deviceVolume) return;
     if ($appearance.audio_volume === 0) changeVolume(audibleVolume);
-    else muted = !muted;
+    else setMuted(!muted);
+  }
+  async function enterFullscreen(rotated = false) {
+    const revision = ++fullscreenRevision;
+    rotationFullscreen = rotated;
+    if (
+      rotated &&
+      (!navigator.userActivation?.isActive || !document.fullscreenEnabled)
+    ) {
+      viewportFullscreen = true;
+      return;
+    }
+    try {
+      await container.requestFullscreen();
+      if (
+        revision !== fullscreenRevision &&
+        document.fullscreenElement === container
+      )
+        await document.exitFullscreen();
+    } catch {
+      if (
+        touchDevice.current &&
+        revision === fullscreenRevision &&
+        container.isConnected
+      )
+        viewportFullscreen = true;
+    }
+    if (!rotated) revealControls();
+  }
+  async function exitFullscreen(rotated = false) {
+    fullscreenRevision++;
+    viewportFullscreen = false;
+    if (document.fullscreenElement === container)
+      await document.exitFullscreen().catch(() => {});
+    rotationFullscreen = false;
+    if (!rotated) revealControls();
   }
   async function toggleFullscreen() {
-    try {
-      if (document.fullscreenElement === container)
-        await document.exitFullscreen();
-      else await container.requestFullscreen();
-    } catch {
-      // A browser may deny fullscreen without interrupting playback.
+    if (fullscreen) await exitFullscreen();
+    else await enterFullscreen();
+  }
+  $effect(() => {
+    if (
+      viewportFullscreen &&
+      container &&
+      !container.matches(':popover-open')
+    ) {
+      container.showPopover();
+      if (!rotationFullscreen) container.focus({ preventScroll: true });
     }
+  });
+  onMount(() => {
+    const landscape = () =>
+      screen.orientation
+        ? screen.orientation.type.startsWith('landscape')
+        : Math.abs(Number(window.orientation)) === 90;
+    let previousLandscape = landscape();
+    const rotate = () => {
+      const next = landscape();
+      const changed = next !== previousLandscape;
+      previousLandscape = next;
+      if (!touchDevice.current || music || !changed) return;
+      if (next && !fullscreen) void enterFullscreen(true);
+      else if (!next && rotationFullscreen) void exitFullscreen(true);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || !viewportFullscreen) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      void exitFullscreen();
+    };
+    screen.orientation?.addEventListener('change', rotate);
+    window.addEventListener('orientationchange', rotate);
+    window.addEventListener('keydown', escape, true);
+    return () => {
+      fullscreenRevision++;
+      screen.orientation?.removeEventListener('change', rotate);
+      window.removeEventListener('orientationchange', rotate);
+      window.removeEventListener('keydown', escape, true);
+    };
+  });
+  function clearSideTap() {
+    clearTimeout(tapTimer);
+    tapTimer = undefined;
+    sideTap = undefined;
+  }
+  // The previous shape is kept while the next item loads; audio-only streams
+  // have no dimensions and use the default video shape.
+  function updateAspectRatio() {
+    videoAspectRatio =
+      player.videoWidth > 0 && player.videoHeight > 0
+        ? player.videoWidth / player.videoHeight
+        : 16 / 9;
+  }
+  function tapVideo(event: MouseEvent) {
+    const revealOnly = tapRevealsControls;
+    tapRevealsControls = false;
     revealControls();
+    if (!touchDevice.current || !touch) {
+      if (!revealOnly) void toggle();
+      return;
+    }
+    const bounds = player.getBoundingClientRect();
+    const fraction = (event.clientX - bounds.left) / bounds.width;
+    if (fraction >= 1 / 3 && fraction <= 2 / 3) {
+      clearSideTap();
+      if (!revealOnly) void toggle();
+      return;
+    }
+    const side = fraction < 1 / 3 ? -1 : 1;
+    const now = performance.now();
+    const repeat = sideTap?.side === side && now - sideTap.time <= 300;
+    clearTimeout(tapTimer);
+    sideTap = { side, time: now, seeking: repeat };
+    if (repeat) void seekByTap(side * 10);
+    tapTimer = setTimeout(() => {
+      const pause = !sideTap?.seeking && !revealOnly;
+      clearSideTap();
+      if (pause) void toggle();
+    }, 300);
+  }
+  async function seekByTap(seconds: number) {
+    if (!active || active.live) return;
+    const pending = tapSeek?.revision === generation ? tapSeek : undefined;
+    if (busy && !pending) return;
+    const target = Math.max(
+      0,
+      Math.min(active.duration, (pending?.target ?? position) + seconds),
+    );
+    if (pending) {
+      pending.target = target;
+      return;
+    }
+    const request = { revision: generation, target, resume: !player.paused };
+    tapSeek = request;
+    try {
+      while (tapSeek === request && request.revision === generation) {
+        const target = request.target;
+        await seek(target, request.resume);
+        if (target === request.target) break;
+      }
+    } finally {
+      if (tapSeek === request) tapSeek = undefined;
+    }
   }
   function setSubtitle(value: string) {
     if (value === 'off') {
@@ -259,12 +417,15 @@
         seekBy(10);
         break;
       case 'ArrowUp':
+        if (deviceVolume) return;
         changeVolume($appearance.audio_volume + 0.05);
         break;
       case 'ArrowDown':
+        if (deviceVolume) return;
         changeVolume($appearance.audio_volume - 0.05);
         break;
       case 'm':
+        if (deviceVolume) return;
         toggleMute();
         break;
       case 'f':
@@ -316,6 +477,8 @@
     untrack(() => void open(current));
   });
   async function open(current: MediaChoice) {
+    clearSideTap();
+    tapSeek = undefined;
     const revision = ++generation;
     busy = true;
     buffering = true;
@@ -390,7 +553,7 @@
         }
       });
     };
-    player.volume = $appearance.audio_volume;
+    player.volume = volume;
     player.playbackRate = speed;
     if (!active.video) {
       if (audioElement !== player) {
@@ -564,6 +727,7 @@
     generation++;
     clearInterval(timer);
     clearTimeout(hideTimer);
+    clearSideTap();
     void stop();
   });
   async function toggle() {
@@ -609,7 +773,7 @@
 
 <svelte:document
   onfullscreenchange={() =>
-    (fullscreen = document.fullscreenElement === container)}
+    (nativeFullscreen = document.fullscreenElement === container)}
 />
 <svelte:window
   bind:innerHeight={viewportHeight}
@@ -622,25 +786,39 @@
 
 <section
   id={playerId}
-  data-sidebar-resize={resizable ? 'xy' : undefined}
-  data-sidebar-resize-origin={resizable ? '' : undefined}
+  popover={viewportFullscreen ? 'manual' : undefined}
+  data-sidebar-resize={canResize ? 'xy' : undefined}
+  data-sidebar-resize-origin={canResize ? '' : undefined}
   bind:this={container}
   bind:clientHeight={playerHeight}
   style:--player-height={`${playerHeight}px`}
-  style:height={fullscreen || boundedHeight === undefined
+  style:height={compactViewport.current ||
+  fullscreen ||
+  boundedHeight === undefined
     ? undefined
     : `${boundedHeight}px`}
+  style:aspect-ratio={compactViewport.current && !fullscreen
+    ? videoAspectRatio
+    : undefined}
+  style:max-height={compactViewport.current && !fullscreen
+    ? '60dvh'
+    : undefined}
   transition:playerReveal|global
   onoutrostart={() => {
     generation++;
+    fullscreenRevision++;
+    clearSideTap();
+    tapSeek = undefined;
     player?.pause();
   }}
-  class={[
-    'player relative isolate aspect-video min-h-[210px] w-full overflow-hidden bg-[#090b0c] text-[#f5f6f7] [color-scheme:dark] @container/player fullscreen:m-0 fullscreen:aspect-auto fullscreen:h-full fullscreen:max-h-none fullscreen:w-full',
+  class={twMerge([
+    'player relative isolate aspect-video min-h-[210px] w-full overflow-hidden bg-[#090b0c] text-[#f5f6f7] [color-scheme:dark] @container/player compact:min-h-0 compact:max-h-none fullscreen:m-0 fullscreen:aspect-auto fullscreen:h-full fullscreen:max-h-none fullscreen:w-full',
     resizable ? 'm-0' : 'mb-7',
     !controlsShown && 'controls-hidden cursor-none',
     boundedHeight === undefined ? 'max-h-[60vh]' : 'max-h-[calc(100dvh-120px)]',
-  ]}
+    viewportFullscreen &&
+      'fixed inset-0 z-[100] m-0 aspect-auto h-dvh max-h-none w-screen border-0 p-0',
+  ])}
   aria-label="Media player"
   tabindex="-1"
   onpointermove={(event) => {
@@ -651,6 +829,7 @@
     touch = event.pointerType !== 'mouse';
     tapRevealsControls = touch && !controlsShown;
     controlFocused = false;
+    if (isInteractiveTarget(event.target)) clearSideTap();
     if (event.button === 0 && !isInteractiveTarget(event.target))
       container.focus({ preventScroll: true });
     revealControls();
@@ -662,6 +841,7 @@
     revealControls();
   }}
   onfocusin={(event) => {
+    if (rotationFullscreen && event.target === container) return;
     controlFocused =
       event.target instanceof HTMLElement &&
       event.target.matches(':focus-visible');
@@ -673,21 +853,19 @@
   }}
 >
   <video
-    class="block h-full w-full object-contain"
+    class="block h-full w-full touch-manipulation object-contain"
     data-sidebar-resize="video"
     bind:this={player}
     playsinline
-    onclick={() => {
-      if (!tapRevealsControls) void toggle();
-      tapRevealsControls = false;
-      revealControls();
-    }}
+    onclick={tapVideo}
     ontimeupdate={update}
     onloadstart={waiting}
     onwaiting={waiting}
     onseeking={waiting}
     onseeked={ready}
     onloadeddata={ready}
+    onloadedmetadata={updateAspectRatio}
+    onresize={updateAspectRatio}
     oncanplay={ready}
     onplaying={ready}
     onplay={() => {
@@ -846,38 +1024,38 @@
             fill="currentColor"
           />{/if}
       </Button>
-      <div
-        class="volume-controls flex items-center gap-2 max-[600px]:gap-0.5"
-        data-sidebar-resize="xy-pos"
-      >
-        <Button
-          size="icon"
-          variant="player"
-          class="player-button shrink-0"
-          aria-label={muted || $appearance.audio_volume === 0
-            ? 'Unmute'
-            : 'Mute'}
-          title={muted || $appearance.audio_volume === 0 ? 'Unmute' : 'Mute'}
-          onclick={toggleMute}
+      {#if !deviceVolume}<div
+          class="volume-controls flex items-center gap-2 max-[600px]:gap-0.5"
+          data-sidebar-resize="xy-pos"
         >
-          {#if muted || $appearance.audio_volume === 0}<VolumeX
-              size={20}
-            />{:else}<Volume2 size={20} />{/if}
-        </Button>
-        <input
-          class={twMerge(
-            formControlClass,
-            'player-volume-range focus-visible:outline-2 focus-visible:outline-offset-2 player-small:hidden block h-4 w-[76px] cursor-pointer border-0 bg-transparent p-0 accent-accent max-[600px]:w-10',
-          )}
-          aria-label="Playback volume"
-          type="range"
-          min="0"
-          max="1"
-          step="0.01"
-          value={muted ? 0 : $appearance.audio_volume}
-          oninput={(event) => changeVolume(Number(event.currentTarget.value))}
-        />
-      </div>
+          <Button
+            size="icon"
+            variant="player"
+            class="player-button shrink-0"
+            aria-label={muted || $appearance.audio_volume === 0
+              ? 'Unmute'
+              : 'Mute'}
+            title={muted || $appearance.audio_volume === 0 ? 'Unmute' : 'Mute'}
+            onclick={toggleMute}
+          >
+            {#if muted || $appearance.audio_volume === 0}<VolumeX
+                size={20}
+              />{:else}<Volume2 size={20} />{/if}
+          </Button>
+          <input
+            class={twMerge(
+              formControlClass,
+              'player-volume-range focus-visible:outline-2 focus-visible:outline-offset-2 player-small:hidden block h-4 w-[76px] cursor-pointer border-0 bg-transparent p-0 accent-accent max-[600px]:w-10',
+            )}
+            aria-label="Playback volume"
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            value={muted ? 0 : $appearance.audio_volume}
+            oninput={(event) => changeVolume(Number(event.currentTarget.value))}
+          />
+        </div>{/if}
       <div
         class="playback-details ml-2 grid shrink-0 gap-0.5 max-[600px]:ml-1"
         data-sidebar-resize="xy-pos"
@@ -981,7 +1159,7 @@
   </div>
 </section>
 
-{#if resizable && !fullscreen}
+{#if canResize && !fullscreen}
   <div
     role="slider"
     tabindex="0"

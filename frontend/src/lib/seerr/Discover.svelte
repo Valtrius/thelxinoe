@@ -568,7 +568,7 @@
             : ''}
         </p>
         <div
-          class="grid grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] gap-x-5 gap-y-7 compact:grid-cols-2 compact:gap-3"
+          class="grid grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] gap-x-5 gap-y-7 compact:grid-cols-3 compact:gap-3"
         >
           {#each filtered as item (`${item.mediaType}:${item.id}`)}<PosterCard
               {item}

@@ -95,6 +95,7 @@
     choice={streamChoice}
     {closed}
     ended={nextStream}
+    music
   />{:else}<Panel aria-label="Music player">
     <SectionHeading>
       <h2>{musicState?.title ?? choice.title}</h2>
