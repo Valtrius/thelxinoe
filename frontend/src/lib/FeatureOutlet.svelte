@@ -23,7 +23,6 @@
     openSettings,
     go,
     updateFilters,
-    back,
     sessionEnded,
     switchServer,
     displayChanged,
@@ -44,7 +43,6 @@
     openSettings: (name: string, service?: string) => void;
     go: (route: AppRoute, replace?: boolean) => void;
     updateFilters: (route: AppRoute, replace?: boolean) => void;
-    back: () => void;
     sessionEnded: () => void;
     switchServer: (address: string) => Promise<void>;
     displayChanged: (timezone: string, format: '12h' | '24h') => void;
@@ -141,7 +139,7 @@
         requestsChanged={(requests) =>
           go({ ...route, detail: undefined, requests, query: undefined })}
         openMedia={(detail) => go({ ...route, detail, requests: false })}
-        {back}
+        back={() => go({ ...route, detail: undefined, requests: false })}
       />
     {:catch error}{@render failed(error)}{/await}
   {:else if ['Movies', 'Shows', 'Music'].includes(route.section)}
