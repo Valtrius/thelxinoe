@@ -405,7 +405,7 @@ test('Discover history restores the rendered screen after navigating away', asyn
   ).toBeVisible();
   await page.getByRole('link', { name: 'Movies', exact: true }).click();
   await expect(
-    page.getByRole('heading', { name: 'Movies', exact: true }),
+    page.getByRole('textbox', { name: 'Search movies', exact: true }),
   ).toBeVisible();
   await page.goBack();
   await expect(page).toHaveURL(/#discover\/movie\/11$/);
@@ -414,11 +414,11 @@ test('Discover history restores the rendered screen after navigating away', asyn
   ).toBeVisible();
   await page.goForward();
   await expect(
-    page.getByRole('heading', { name: 'Movies', exact: true }),
+    page.getByRole('textbox', { name: 'Search movies', exact: true }),
   ).toBeVisible();
   await page.reload();
   await expect(
-    page.getByRole('heading', { name: 'Movies', exact: true }),
+    page.getByRole('textbox', { name: 'Search movies', exact: true }),
   ).toBeVisible();
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);

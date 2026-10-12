@@ -4,6 +4,66 @@ test.beforeEach(async ({ request }) => {
   await request.post('/__mock/reset');
 });
 
+test('mobile page headers show each page icon immediately before its name', async ({
+  page,
+}, info) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/#home');
+  const menu = page.getByRole('button', { name: 'Open navigation' });
+  const drawer = page.getByRole('dialog', { name: 'Navigation menu' });
+  const geometry = [];
+  for (const name of [
+    'Home',
+    'Discover',
+    'Movies',
+    'Shows',
+    'Music',
+    'Playlists',
+    'YouTube',
+    'Twitch',
+    'Kick',
+    'Statistics',
+    'Settings',
+  ]) {
+    await menu.click();
+    await drawer.getByRole('link', { name, exact: true }).click();
+    await expect(drawer).toBeHidden();
+    const heading = page
+      .locator('.page-header')
+      .getByRole('heading', { name, exact: true });
+    await expect(heading).toBeVisible();
+    const icon = heading.locator('svg');
+    await expect(icon).toBeVisible();
+    const iconBounds = (await icon.boundingBox())!;
+    const titleBounds = (await heading
+      .getByText(name, { exact: true })
+      .boundingBox())!;
+    expect(iconBounds.x + iconBounds.width).toBeLessThan(titleBounds.x);
+    expect(titleBounds.x - iconBounds.x - iconBounds.width).toBeLessThanOrEqual(
+      12,
+    );
+    expect(
+      Math.abs(
+        iconBounds.y +
+          iconBounds.height / 2 -
+          titleBounds.y -
+          titleBounds.height / 2,
+      ),
+    ).toBeLessThanOrEqual(1);
+    geometry.push({ name, icon: iconBounds, title: titleBounds });
+    if (['Home', 'YouTube', 'Settings'].includes(name))
+      await page.screenshot({
+        path: info.outputPath(`mobile-header-${name.toLowerCase()}.png`),
+      });
+  }
+  await info.attach('mobile-header-geometry.json', {
+    body: JSON.stringify(geometry, null, 2),
+    contentType: 'application/json',
+  });
+  const diagnostic = await page.request.get('/__mock/diagnostics');
+  expect((await diagnostic.json()).unhandled).toEqual([]);
+});
+
 test('mock Home, Discover and request details work without external services', async ({
   page,
 }, info) => {

@@ -29,9 +29,11 @@ test('HTTPS setup, secure login, event replay, CSRF rejection and device revocat
     })
     .click();
   await expect(
-    page.getByRole('heading', { name: 'Home', exact: true }),
+    page.getByRole('button', { name: 'Refresh Home', exact: true }),
   ).toBeVisible();
-  await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+  await expect(page.locator('.page-header .connection')).toHaveText(
+    'Connected',
+  );
   const cookies = await context.cookies();
   expect(cookies.find((c) => c.name === 'thelxinoe_session')).toMatchObject({
     secure: true,

@@ -830,6 +830,35 @@ test('controls hide, recover with keyboard, retain volume, seek, and stay inside
   expect(state.errors).toEqual([]);
 });
 
+test('fullscreen shortcut exits while the entry event is still pending', async ({
+  page,
+}, testInfo) => {
+  await fixture(page);
+  await decoded(page);
+  await page.evaluate(() => {
+    document.addEventListener(
+      'fullscreenchange',
+      (event) => {
+        if (document.fullscreenElement) event.stopImmediatePropagation();
+      },
+      { capture: true },
+    );
+  });
+  await page.getByRole('region', { name: 'Media player' }).focus();
+  await page.keyboard.press('f');
+  await expect
+    .poll(() => page.evaluate(() => document.fullscreenElement !== null))
+    .toBe(true);
+  await page.keyboard.press('f');
+  await expect
+    .poll(() => page.evaluate(() => document.fullscreenElement === null))
+    .toBe(true);
+  await testInfo.attach('fullscreen-shortcut', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+});
+
 test('web player supports YouTube playback shortcuts and left/right-click pause', async ({
   page,
 }) => {

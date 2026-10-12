@@ -26,6 +26,7 @@
   } from './lib/navigation';
   import { captureSession, invalidateSession } from './lib/session';
   import Sidebar from './lib/ui/Sidebar.svelte';
+  import SectionIcon from './lib/ui/SectionIcon.svelte';
   import Drawer from './lib/ui/Drawer.svelte';
   import { connectAttention, refreshAttention } from './lib/attention';
   import WindowTitlebar from './lib/ui/WindowTitlebar.svelte';
@@ -496,10 +497,12 @@
           }),
         );
       if (routeHref(destination) !== routeHref(route)) return;
-      const heading = main?.querySelector<HTMLElement>('header h1');
-      if (heading) {
-        heading.tabIndex = -1;
-        heading.focus({ preventScroll: true });
+      const target = compact
+        ? main?.querySelector<HTMLElement>('header h1')
+        : main;
+      if (target) {
+        target.tabIndex = -1;
+        target.focus({ preventScroll: true });
       }
     }
   }
@@ -775,7 +778,7 @@
       style:--mobile-player-height={`${compact ? pinnedPlayerHeight : 0}px`}
     >
       <header
-        class="page-header flex shrink-0 items-center gap-5 border-b border-line bg-background/88 px-6 py-2 narrow:px-4 compact:gap-2.5 compact:px-3 compact:py-1.5"
+        class="page-header hidden shrink-0 items-center gap-2.5 border-b border-line bg-background/88 px-3 py-1.5 compact:flex"
       >
         {#if compact}
           <Button
@@ -792,10 +795,9 @@
         {/if}
         <div class="mr-auto min-w-0">
           <h1
-            class="m-0 text-[18px] leading-6 compact:text-[17px]"
-            data-sidebar-resize="x-pos"
+            class="m-0 flex min-w-0 items-center gap-2.5 text-[17px] leading-6"
           >
-            {section}
+            <SectionIcon {section} /><span class="truncate">{section}</span>
           </h1>
         </div>
         <span

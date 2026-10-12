@@ -80,7 +80,9 @@ test('the sole administrator cannot recover their own account while events are c
     'Requires the real HTTPS server',
   );
   await login(page, 'admin', 'test-only long passphrase');
-  await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+  await expect(page.locator('.page-header .connection')).toHaveText(
+    'Connected',
+  );
   const users = await (await page.request.get('/api/v1/users')).json();
   expect(
     users.items.filter((user: { role: string }) => user.role === 'admin'),
@@ -97,7 +99,9 @@ test('the sole administrator cannot recover their own account while events are c
   await expect(
     page.getByRole('button', { name: 'Create recovery link', exact: true }),
   ).not.toBeVisible();
-  await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+  await expect(page.locator('.page-header .connection')).toHaveText(
+    'Connected',
+  );
   expect((await post(page, `/users/${admin.id}/recovery`)).status()).toBe(409);
   expect(await (await page.request.get('/api/v1/me/auth')).json()).toEqual(
     before,
@@ -107,7 +111,9 @@ test('the sole administrator cannot recover their own account while events are c
   expect(after.items.map((session: { id: string }) => session.id)).toEqual(
     sessions.items.map((session: { id: string }) => session.id),
   );
-  await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+  await expect(page.locator('.page-header .connection')).toHaveText(
+    'Connected',
+  );
   await page.screenshot({
     path: info.outputPath('self-recovery-rejected.png'),
     fullPage: true,
@@ -115,7 +121,7 @@ test('the sole administrator cannot recover their own account while events are c
   await post(page, '/auth/logout');
   await login(page, 'admin', 'test-only long passphrase');
   await expect(
-    page.getByRole('heading', { name: 'Home', exact: true }),
+    page.getByRole('button', { name: 'Refresh Home', exact: true }),
   ).toBeVisible();
 });
 
@@ -134,7 +140,7 @@ test('real password, TOTP, passkey, remembered device, client access and adminis
   const admin = await adminContext.newPage();
   await login(admin, 'admin', 'test-only long passphrase');
   await expect(
-    admin.getByRole('heading', { name: 'Home', exact: true }),
+    admin.getByRole('button', { name: 'Refresh Home', exact: true }),
   ).toBeVisible();
   const username = `auth${Date.now()}`;
   const created = await post(admin, '/users', {
@@ -152,7 +158,7 @@ test('real password, TOTP, passkey, remembered device, client access and adminis
   await authenticator(context, page);
   await login(page, username);
   await expect(
-    page.getByRole('heading', { name: 'Home', exact: true }),
+    page.getByRole('button', { name: 'Refresh Home', exact: true }),
   ).toBeVisible();
   await page.goto('/#settings/account');
   await page.getByRole('button', { name: 'Add passkey', exact: true }).click();
@@ -197,7 +203,7 @@ test('real password, TOTP, passkey, remembered device, client access and adminis
   await page.getByLabel('Remember this device').check();
   await page.getByRole('button', { name: 'Verify code', exact: true }).click();
   await expect(
-    page.getByRole('heading', { name: 'Home', exact: true }),
+    page.getByRole('button', { name: 'Refresh Home', exact: true }),
   ).toBeVisible();
   const sessions = await (
     await page.request.get('/api/v1/auth/sessions')
@@ -247,7 +253,7 @@ test('real password, TOTP, passkey, remembered device, client access and adminis
   await post(page, '/auth/logout');
   await login(page, username);
   await expect(
-    page.getByRole('heading', { name: 'Home', exact: true }),
+    page.getByRole('button', { name: 'Refresh Home', exact: true }),
   ).toBeVisible();
   expect(
     (
@@ -318,7 +324,7 @@ test('real password, TOTP, passkey, remembered device, client access and adminis
     .getByRole('button', { name: 'Sign in with passkey', exact: true })
     .click();
   await expect(
-    page.getByRole('heading', { name: 'Home', exact: true }),
+    page.getByRole('button', { name: 'Refresh Home', exact: true }),
   ).toBeVisible();
   expect(
     (await page.request.delete('/api/v1/me/auth/password', { headers })).ok(),
@@ -363,7 +369,7 @@ test('real password, TOTP, passkey, remembered device, client access and adminis
   ).toBe(401);
   await login(page, username);
   await expect(
-    page.getByRole('heading', { name: 'Home', exact: true }),
+    page.getByRole('button', { name: 'Refresh Home', exact: true }),
   ).toBeVisible();
   await page.goto('/#settings/account');
   await expect(
@@ -382,7 +388,7 @@ test('real password, TOTP, passkey, remembered device, client access and adminis
   await post(page, '/auth/logout');
   await login(page, username, 'replacement fixture passphrase');
   await expect(
-    page.getByRole('heading', { name: 'Home', exact: true }),
+    page.getByRole('button', { name: 'Refresh Home', exact: true }),
   ).toBeVisible();
   await page.screenshot({
     path: info.outputPath('recovered-account.png'),
@@ -418,7 +424,7 @@ test('generic OIDC explicitly links accounts, verifies identities and binds nati
   const page = await context.newPage();
   await login(page, 'admin', 'test-only long passphrase');
   await expect(
-    page.getByRole('heading', { name: 'Home', exact: true }),
+    page.getByRole('button', { name: 'Refresh Home', exact: true }),
   ).toBeVisible();
   const issuer = `http://127.0.0.1:${process.env.THELXINOE_TEST_OIDC_PORT ?? '18989'}`;
   const configured = await post(page, '/admin/auth/oidc', {
@@ -466,7 +472,7 @@ test('generic OIDC explicitly links accounts, verifies identities and binds nati
   await page.getByRole('button', { name: 'Continue' }).click();
   await page.getByRole('link', { name: 'Home', exact: true }).click();
   await expect(
-    page.getByRole('heading', { name: 'Home', exact: true }),
+    page.getByRole('button', { name: 'Refresh Home', exact: true }),
   ).toBeVisible();
   const handoff = await post(page, '/auth/desktop/start', {
     device_name: 'Native fixture',
@@ -627,7 +633,7 @@ test('OIDC completion cannot commit after its provider is disabled or replaced',
   const admin = await adminContext.newPage();
   await login(admin, 'admin', 'test-only long passphrase');
   await expect(
-    admin.getByRole('heading', { name: 'Home', exact: true }),
+    admin.getByRole('button', { name: 'Refresh Home', exact: true }),
   ).toBeVisible();
   const issuer = `http://127.0.0.1:${process.env.THELXINOE_TEST_OIDC_PORT ?? '18989'}`;
   const configure = async (replacement = false) => {
@@ -664,7 +670,7 @@ test('OIDC completion cannot commit after its provider is disabled or replaced',
       const page = await context.newPage();
       await login(page, username);
       await expect(
-        page.getByRole('heading', { name: 'Home', exact: true }),
+        page.getByRole('button', { name: 'Refresh Home', exact: true }),
       ).toBeVisible();
       if (purpose !== 'link') {
         const linked = await page.request.get(
@@ -793,7 +799,7 @@ test('OIDC return redirects stay on the application origin after URL normalizati
   const page = await context.newPage();
   await login(page, 'admin', 'test-only long passphrase');
   await expect(
-    page.getByRole('heading', { name: 'Home', exact: true }),
+    page.getByRole('button', { name: 'Refresh Home', exact: true }),
   ).toBeVisible();
   const issuer = `http://127.0.0.1:${process.env.THELXINOE_TEST_OIDC_PORT ?? '18989'}`;
   expect(
@@ -816,7 +822,7 @@ test('OIDC return redirects stay on the application origin after URL normalizati
   await post(page, '/auth/logout');
   await login(page, username);
   await expect(
-    page.getByRole('heading', { name: 'Home', exact: true }),
+    page.getByRole('button', { name: 'Refresh Home', exact: true }),
   ).toBeVisible();
   const linked = await page.request.get(
     await oidcCallback(page, username, 'link', '/#settings/account'),

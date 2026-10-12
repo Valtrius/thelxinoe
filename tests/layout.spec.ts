@@ -1770,14 +1770,18 @@ test('mobile navigation opens over full-width content and restores the desktop s
   });
   const menu = page.getByRole('button', { name: 'Open navigation' });
   const drawer = page.getByRole('dialog', { name: 'Navigation menu' });
+  const header = page.locator('.page-header');
   await expect(sidebar).toBeVisible();
   await expect(menu).toBeHidden();
+  await expect(header).toBeHidden();
   await page.getByRole('button', { name: 'Collapse sidebar' }).click();
+  await expect(header).toBeHidden();
 
   for (const width of [320, 390, 720]) {
     await page.setViewportSize({ width, height: 844 });
     await expect(sidebar).toBeHidden();
     await expect(menu).toBeVisible();
+    await expect(header).toBeVisible();
     await expect(menu).toHaveAttribute('aria-expanded', 'false');
     await expect(page.locator('main')).toHaveCSS('width', `${width}px`);
     const contentBounds = await page.locator('main').boundingBox();
@@ -1837,6 +1841,7 @@ test('mobile navigation opens over full-width content and restores the desktop s
   await expect(drawer).toBeHidden();
   await expect(menu).toBeHidden();
   await expect(sidebar).toBeVisible();
+  await expect(header).toBeHidden();
   await expect(
     page.getByRole('button', { name: 'Expand sidebar' }),
   ).toBeVisible();
@@ -1852,6 +1857,10 @@ test('mobile navigation opens over full-width content and restores the desktop s
   await expect(menu).toBeVisible();
   await page.setViewportSize({ width: 1440, height: 1000 });
   await expect(sidebar).toBeVisible();
+  await expect(header).toBeHidden();
+  expect((await page.locator('.workspace-scroll').boundingBox())!.y).toBe(
+    (await page.locator('main').boundingBox())!.y,
+  );
   await expect(
     page.getByRole('button', { name: 'Collapse sidebar' }),
   ).toBeVisible();

@@ -25,10 +25,12 @@ async function login(page, username) {
     .getByLabel('Password', { exact: true })
     .fill('test-only long passphrase');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-  await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+  await expect(page.locator('.page-header .connection')).toHaveText(
+    'Connected',
+  );
   await page.getByRole('link', { name: 'Home', exact: true }).click();
   await expect(
-    page.getByRole('heading', { name: 'Home', exact: true }),
+    page.getByRole('button', { name: 'Refresh Home', exact: true }),
   ).toBeVisible();
 }
 try {
@@ -126,7 +128,7 @@ try {
   await page.getByRole('button', { name: 'Close player', exact: true }).click();
   await page.reload();
   await expect(
-    page.getByRole('heading', { name: 'Playlists', exact: true }),
+    page.getByRole('button', { name: 'New playlist', exact: true }),
   ).toBeVisible();
   expect(
     await page.evaluate(() => localStorage.getItem('thelxinoe-client-id')),

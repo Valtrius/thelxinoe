@@ -365,13 +365,19 @@ test('sidebar motion stays grouped with a fully loaded YouTube feed', async ({
         cards = 0;
       const cardTransforms = new Set<string>();
       let gridLayout = 0;
-      // Cards may only receive column shifts while they are near the viewport.
-      const nearbyCards = [
-        ...document.querySelectorAll('[data-layout-key^="youtube-video:"]'),
-      ].filter((card) => {
-        const rect = card.getBoundingClientRect();
-        return rect.bottom >= -240 && rect.top <= innerHeight + 240;
-      }).length;
+      // Resizing can bring another row into view during the transition.
+      const nearbyCards = new Set<Element>();
+      const animatedCards = new Set<Element>();
+      const collectNearbyCards = () => {
+        for (const card of document.querySelectorAll(
+          '[data-layout-key^="youtube-video:"]',
+        )) {
+          const rect = card.getBoundingClientRect();
+          if (rect.bottom >= -240 && rect.top <= innerHeight + 240)
+            nearbyCards.add(card);
+        }
+      };
+      collectNearbyCards();
       const observer = new PerformanceObserver((list) =>
         longTasks.push(...list.getEntries().map((entry) => entry.duration)),
       );
@@ -386,6 +392,7 @@ test('sidebar motion stays grouped with a fully loaded YouTube feed', async ({
           gaps.push(time - previous);
           previous = time;
           const active = document.getAnimations();
+          collectNearbyCards();
           animations = Math.max(animations, active.length);
           const cardAnimations = active.filter(
             (animation) =>
@@ -395,13 +402,17 @@ test('sidebar motion stays grouped with a fully loaded YouTube feed', async ({
               ),
           );
           cards = Math.max(cards, cardAnimations.length);
-          for (const animation of cardAnimations)
+          for (const animation of cardAnimations) {
+            animatedCards.add(
+              (animation.effect as KeyframeEffect).target as Element,
+            );
             for (const keyframe of (
               animation.effect as KeyframeEffect
             ).getKeyframes())
               cardTransforms.add(
                 String(keyframe.transform).replace(/\(.*/, ''),
               );
+          }
           gridLayout += active.filter(
             (animation) =>
               animation.effect instanceof KeyframeEffect &&
@@ -421,13 +432,17 @@ test('sidebar motion stays grouped with a fully loaded YouTube feed', async ({
         longTasks,
         animations,
         cards,
-        nearbyCards,
+        nearbyCards: nearbyCards.size,
+        offscreenCards: [...animatedCards]
+          .filter((card) => !nearbyCards.has(card))
+          .map((card) => card.getAttribute('data-layout-key')),
         cardTransforms: [...cardTransforms],
         gridLayout,
       };
     }, name);
     // Cards move with their grid; later columns only get translate shifts.
     expect(result.cards).toBeLessThanOrEqual(result.nearbyCards);
+    expect(result.offscreenCards).toEqual([]);
     expect(result.cardTransforms.every((name) => name === 'translate')).toBe(
       true,
     );
