@@ -159,8 +159,9 @@ pub async fn overrides(
     }
     Ok(Json(json!({"ok":true})))
 }
-/// A root is rescanned once its changes have been quiet this long, so imports finish first.
-const QUIET: std::time::Duration = std::time::Duration::from_secs(30);
+/// A root is rescanned once its changes pause this long, so a burst becomes one scan. A
+/// file still being written is skipped by that scan and its next write triggers another.
+const QUIET: std::time::Duration = std::time::Duration::from_secs(5);
 /// Continuous activity is still scanned at least this often.
 const BUSY: std::time::Duration = std::time::Duration::from_secs(600);
 /// Full rescans catch anything missed: rarely while live updates work, more often without.
@@ -181,7 +182,9 @@ pub async fn reconcile(state: AppState) -> anyhow::Result<()> {
     // folders don't trigger scans or spend the system's file-watch budget.
     let mut watches = std::collections::HashMap::<String, Watch>::new();
     let mut scanned = std::collections::HashMap::<String, std::time::Instant>::new();
-    let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+    // Startup catches up on every root; a root added later is scanned by whoever added it.
+    let mut started = false;
     loop {
         tick.tick().await;
         let roots = thelxinoe_catalog::roots(&state.db).await?;
@@ -205,6 +208,11 @@ pub async fn reconcile(state: AppState) -> anyhow::Result<()> {
                 .lock()
                 .ok()
                 .and_then(|activity| activity.get(&root.id).copied());
+            if started {
+                scanned
+                    .entry(root.id.clone())
+                    .or_insert_with(std::time::Instant::now);
+            }
             let last = scanned.get(&root.id).copied();
             if due(changed, last, live, std::time::Instant::now()) {
                 if let Ok(mut activity) = activity.lock() {
@@ -217,6 +225,7 @@ pub async fn reconcile(state: AppState) -> anyhow::Result<()> {
         if let Ok(mut watching) = state.library_watch.lock() {
             watching.retain(|id, _| roots.iter().any(|r| &r.id == id));
         }
+        started = true;
     }
 }
 /// A root needs a scan once its changes settle, or when its periodic refresh is due.
@@ -274,8 +283,8 @@ mod watch_tests {
         let start = Instant::now();
         let at = |seconds: u64| start + Duration::from_secs(seconds);
         // Changes wait for quiet, but continuous activity is still scanned.
-        assert!(!due(Some((at(0), at(20))), Some(at(0)), true, at(40)));
-        assert!(due(Some((at(0), at(20))), Some(at(0)), true, at(50)));
+        assert!(!due(Some((at(0), at(20))), Some(at(0)), true, at(24)));
+        assert!(due(Some((at(0), at(20))), Some(at(0)), true, at(25)));
         assert!(due(Some((at(0), at(599))), Some(at(0)), true, at(600)));
         // Without changes: never scanned, or the refresh for the watch state is due.
         assert!(due(None, None, true, at(0)));
