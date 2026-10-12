@@ -629,7 +629,10 @@ for (const [type, section] of [
       .getByRole('button', { name: 'Available request Available', exact: true })
       .click();
     await expect(
-      page.getByRole('heading', { name: section, exact: true }),
+      page.getByRole('textbox', {
+        name: `Search ${section.toLowerCase()}`,
+        exact: true,
+      }),
     ).toBeVisible();
     await page.screenshot({
       path: testInfo.outputPath('available-request-library.png'),

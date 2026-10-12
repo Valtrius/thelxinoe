@@ -214,7 +214,8 @@
     if (!rotated) revealControls();
   }
   async function toggleFullscreen() {
-    if (fullscreen) await exitFullscreen();
+    if (viewportFullscreen || document.fullscreenElement === container)
+      await exitFullscreen();
     else await enterFullscreen();
   }
   $effect(() => {

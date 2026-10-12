@@ -591,7 +591,7 @@ for (const exit of ['navigation', 'logout', 'revoke'] as const) {
       .getByRole('link', { name: 'Movies', exact: true })
       .click();
     await expect(
-      page.getByRole('heading', { name: 'Movies', exact: true }),
+      page.getByRole('textbox', { name: 'Search movies', exact: true }),
     ).toBeVisible();
     expect(writes).toHaveLength(1);
     expect(fixture.errors).toEqual([]);

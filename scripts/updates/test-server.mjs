@@ -792,11 +792,12 @@ export async function serverScenarios({
       expect(after.server.Image).toBe(before.server.Image);
       expect(after.controller.Image).toBe(before.controller.Image);
       expect(after.server.Id).not.toBe(before.server.Id);
-      await expect(
-        page.locator('header').getByText('Connected', { exact: true }),
-      ).toBeVisible({
-        timeout: 45000,
-      });
+      await expect(page.locator('.page-header .connection')).toHaveText(
+        'Connected',
+        {
+          timeout: 45000,
+        },
+      );
     },
   );
   await scenario(

@@ -28,9 +28,11 @@ try {
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await page.getByRole('link', { name: 'Home', exact: true }).click();
   await expect(
-    page.getByRole('heading', { name: 'Home', exact: true }),
+    page.getByRole('button', { name: 'Refresh Home', exact: true }),
   ).toBeVisible();
-  await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+  await expect(page.locator('.page-header .connection')).toHaveText(
+    'Connected',
+  );
   const stored = await page.evaluate(() => ({
     cookie: document.cookie,
     local: { ...localStorage },
@@ -45,7 +47,7 @@ try {
   expect(Object.keys(stored.session)).toHaveLength(0);
   await page.reload();
   await expect(
-    page.getByRole('heading', { name: 'Home', exact: true }),
+    page.getByRole('button', { name: 'Refresh Home', exact: true }),
   ).toBeVisible();
   await page
     .getByRole('navigation', { name: 'Main navigation' })
@@ -59,17 +61,23 @@ try {
     ['compose', '-f', 'compose.test.yaml', 'stop', 'server'],
     { stdio: 'pipe', windowsHide: true },
   );
-  await expect(page.getByText('Reconnecting', { exact: true })).toBeVisible({
-    timeout: 20000,
-  });
+  await expect(page.locator('.page-header .connection')).toHaveText(
+    'Reconnecting',
+    {
+      timeout: 20000,
+    },
+  );
   execFileSync(
     'docker',
     ['compose', '-f', 'compose.test.yaml', 'up', '-d', '--wait'],
     { stdio: 'pipe', windowsHide: true },
   );
-  await expect(page.getByText('Connected', { exact: true })).toBeVisible({
-    timeout: 20000,
-  });
+  await expect(page.locator('.page-header .connection')).toHaveText(
+    'Connected',
+    {
+      timeout: 20000,
+    },
+  );
   await page.screenshot({ path: '.local/desktop-library.png' });
   await page.getByRole('link', { name: 'Settings', exact: true }).click();
   await page
