@@ -28,9 +28,29 @@ export interface AnimationPlan {
   element: HTMLElement;
   keyframes: Keyframe[];
   options?: KeyframeAnimationOptions;
+  // Cancelling the owner also cancels this animation. Defaults to element.
+  owner?: HTMLElement;
 }
 
-const layoutAnimations = new WeakSet<Animation>();
+// Track our own animations: Element.getAnimations() flushes style on every
+// call, which turns cancelling a long list of elements into repeated recalcs.
+const layoutAnimations = new WeakMap<Element, Set<Animation>>();
+
+function trackAnimation(
+  owner: Element,
+  animation: Animation,
+  fill: FillMode | undefined,
+) {
+  let owned = layoutAnimations.get(owner);
+  if (!owned) layoutAnimations.set(owner, (owned = new Set()));
+  owned.add(animation);
+  const release = () => owned.delete(animation);
+  animation.addEventListener('cancel', release);
+  animation.addEventListener('remove', release);
+  // Filling animations stay in effect after finishing and remain cancellable.
+  if (fill !== 'forwards' && fill !== 'both')
+    animation.addEventListener('finish', release);
+}
 
 export function prefersReducedMotion(): boolean {
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -93,8 +113,10 @@ export function mediaZoom(element: Element): number {
 
 export function cancelLayoutAnimations(elements: Iterable<HTMLElement>) {
   for (const element of elements) {
-    for (const animation of element.getAnimations()) {
-      if (layoutAnimations.has(animation)) animation.cancel();
+    const owned = layoutAnimations.get(element);
+    if (owned) {
+      layoutAnimations.delete(element);
+      for (const animation of owned) animation.cancel();
     }
     if (element.hasAttribute('data-feed-scroll')) {
       cancelLayoutAnimations(
@@ -142,9 +164,10 @@ export function playAnimations(
   timing: KeyframeAnimationOptions = layoutAnimationTiming,
 ): Animation[] {
   if (prefersReducedMotion()) return [];
-  const animations = plans.map(({ element, keyframes, options }) => {
-    const animation = element.animate(keyframes, { ...timing, ...options });
-    layoutAnimations.add(animation);
+  const animations = plans.map(({ element, keyframes, options, owner }) => {
+    const effectTiming = { ...timing, ...options };
+    const animation = element.animate(keyframes, effectTiming);
+    trackAnimation(owner ?? element, animation, effectTiming.fill);
     return animation;
   });
   // Every group uses the same timeline origin, including long settings pages.

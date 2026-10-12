@@ -169,6 +169,73 @@ export function sidebarResizeTransform(
   return transform;
 }
 
+// Cards resize together; the screen-space gaps remain constant. Each later
+// column is shifted with a transform instead of animating column-gap, so the
+// grid and its cards stay on the compositor without per-frame layout.
+function mediaGapPlans(
+  grid: HTMLElement,
+  final: LayoutRect,
+  worldFrames: LayoutTransform[],
+  zoom: number,
+  previousGap: number,
+  viewport: LayoutRect,
+): AnimationPlan[] {
+  const finalGap = (Number.parseFloat(grid.style.gap) || 0) * zoom;
+  const last = worldFrames.length - 1;
+  // Per-column shift in the cards' own zoomed and scaled coordinate space.
+  const shifts = worldFrames.map(({ scaleX }, index) => {
+    const gap = finalGap + (previousGap - finalGap) * (1 - index / last);
+    return (gap / scaleX - finalGap) / zoom;
+  });
+  const largest = Math.max(
+    ...shifts.map(
+      (shift, index) => Math.abs(shift) * zoom * worldFrames[index].scaleX,
+    ),
+  );
+  const start = worldFrames[0];
+  const plans: AnimationPlan[] = [];
+  for (const card of grid.children) {
+    if (!(card instanceof HTMLElement)) continue;
+    const bounds = card.getBoundingClientRect();
+    if (bounds.width <= 0 || bounds.height <= 0) continue;
+    const top = final.top + start.y + (bounds.top - final.top) * start.scaleY;
+    // Cards follow row order, so nothing after this row can become visible.
+    if (Math.min(bounds.top, top) > viewport.bottom + 240) break;
+    const column = Math.round(
+      (bounds.left - final.left) / (bounds.width + finalGap),
+    );
+    if (column < 1 || column * largest < 0.5) continue;
+    const left =
+      final.left +
+      start.x +
+      column * (bounds.width * start.scaleX + previousGap);
+    const width = bounds.width * start.scaleX;
+    const height = bounds.height * start.scaleY;
+    const startBounds = {
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+    };
+    if (
+      !isVisible(bounds, viewport, 240) &&
+      !isVisible(startBounds, viewport, 240)
+    )
+      continue;
+    plans.push({
+      element: card,
+      owner: grid,
+      keyframes: shifts.map((shift, index) => ({
+        transform: `translate(${column * shift}px, 0px)`,
+        offset: index / last,
+      })),
+    });
+  }
+  return plans;
+}
+
 export function sidebarResizePlans(
   snapshots: SidebarSnapshot[],
 ): AnimationPlan[] {
@@ -268,12 +335,6 @@ export function sidebarResizePlans(
     }
     const parentFrames = origin ? worlds.get(origin.element) : undefined;
     const parentRect = origin ? finals.get(origin.element) : undefined;
-    const finalMediaGap = (Number.parseFloat(element.style.gap) || 0) * zoom;
-    const mediaColumns = Number(
-      element.style.gridTemplateColumns.match(/^repeat\((\d+),/)?.[1] ?? 1,
-    );
-    const mediaWidth =
-      Number.parseFloat(element.style.width) || final.width / zoom;
     const worldFrames: LayoutTransform[] = [];
     let changed = false;
     const keyframes = Array.from({ length: samples + 1 }, (_, index) => {
@@ -321,21 +382,26 @@ export function sidebarResizePlans(
         frame.clipPath = `inset(0px ${final.width - (final.width + (rect.width - final.width) * remaining)}px 0px 0px)`;
         changed ||= Math.abs(rect.width - final.width) >= 0.5;
       }
-      if (mode === 'media' && mediaGap !== undefined && mediaGap >= 0) {
-        // Cards resize together; the screen-space gaps remain constant.
-        const gap = finalMediaGap + (mediaGap - finalMediaGap) * remaining;
-        const columnGap = gap / (zoom * world.scaleX);
-        frame.columnGap = `${columnGap}px`;
-        frame.width = `${mediaWidth + (mediaColumns - 1) * (columnGap - finalMediaGap / zoom)}px`;
-      }
       return frame;
     });
     worlds.set(element, worldFrames);
     if (
       changed &&
       (isVisible(rect, viewport, 240) || isVisible(final, viewport, 240))
-    )
+    ) {
       plans.push({ element, keyframes });
+      if (mode === 'media' && mediaGap !== undefined && mediaGap >= 0)
+        plans.push(
+          ...mediaGapPlans(
+            element,
+            final,
+            worldFrames,
+            zoom,
+            mediaGap,
+            viewport,
+          ),
+        );
+    }
     if (
       element.hasAttribute('data-feed-content') &&
       element.hasAttribute('data-feed-scroll') &&

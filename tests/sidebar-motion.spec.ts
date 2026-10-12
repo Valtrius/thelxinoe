@@ -363,6 +363,15 @@ test('sidebar motion stays grouped with a fully loaded YouTube feed', async ({
       const longTasks: number[] = [];
       let animations = 0,
         cards = 0;
+      const cardTransforms = new Set<string>();
+      let gridLayout = 0;
+      // Cards may only receive column shifts while they are near the viewport.
+      const nearbyCards = [
+        ...document.querySelectorAll('[data-layout-key^="youtube-video:"]'),
+      ].filter((card) => {
+        const rect = card.getBoundingClientRect();
+        return rect.bottom >= -240 && rect.top <= innerHeight + 240;
+      }).length;
       const observer = new PerformanceObserver((list) =>
         longTasks.push(...list.getEntries().map((entry) => entry.duration)),
       );
@@ -378,25 +387,52 @@ test('sidebar motion stays grouped with a fully loaded YouTube feed', async ({
           previous = time;
           const active = document.getAnimations();
           animations = Math.max(animations, active.length);
-          cards = Math.max(
-            cards,
-            active.filter(
-              (animation) =>
-                animation.effect instanceof KeyframeEffect &&
-                (animation.effect.target as Element | null)?.matches(
-                  '[data-layout-key^="youtube-video:"]',
-                ),
-            ).length,
+          const cardAnimations = active.filter(
+            (animation) =>
+              animation.effect instanceof KeyframeEffect &&
+              (animation.effect.target as Element | null)?.matches(
+                '[data-layout-key^="youtube-video:"]',
+              ),
           );
+          cards = Math.max(cards, cardAnimations.length);
+          for (const animation of cardAnimations)
+            for (const keyframe of (
+              animation.effect as KeyframeEffect
+            ).getKeyframes())
+              cardTransforms.add(
+                String(keyframe.transform).replace(/\(.*/, ''),
+              );
+          gridLayout += active.filter(
+            (animation) =>
+              animation.effect instanceof KeyframeEffect &&
+              animation.effect
+                .getKeyframes()
+                .some((keyframe) => 'columnGap' in keyframe),
+          ).length;
           if (time - started < 350) requestAnimationFrame(frame);
           else resolve();
         };
         requestAnimationFrame(frame);
       });
       observer.disconnect();
-      return { name, gaps, longTasks, animations, cards };
+      return {
+        name,
+        gaps,
+        longTasks,
+        animations,
+        cards,
+        nearbyCards,
+        cardTransforms: [...cardTransforms],
+        gridLayout,
+      };
     }, name);
-    expect(result.cards).toBe(0);
+    // Cards move with their grid; later columns only get translate shifts.
+    expect(result.cards).toBeLessThanOrEqual(result.nearbyCards);
+    expect(result.cardTransforms.every((name) => name === 'translate')).toBe(
+      true,
+    );
+    // Media grids must stay on the compositor: no per-frame grid layout.
+    expect(result.gridLayout).toBe(0);
     expect(result.animations).toBeLessThan(144);
     results.push(result);
   }
