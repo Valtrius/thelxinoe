@@ -368,10 +368,7 @@ async fn movie() -> (tempfile::TempDir, AppState, std::path::PathBuf) {
         .unwrap()
         .as_nanos()
         .to_string();
-    let hash = Sha256::digest(b"generated retention fixture")
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
+    let hash = thelxinoe_catalog::fingerprint(&mut std::fs::File::open(&path).unwrap()).unwrap();
     let stored = path.to_string_lossy().to_string();
     let root = directory
         .canonicalize()

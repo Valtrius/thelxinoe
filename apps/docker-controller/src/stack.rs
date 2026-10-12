@@ -435,6 +435,7 @@ pub fn router() -> Router {
         .route("/stack/adopt/check", post(adoption::check))
         .route("/stack/adopt", post(adoption::adopt))
         .route("/stack/{id}/action", post(action))
+        .route("/stack/{id}/drift", get(adoption::drift))
         .route("/stack/{id}/recyclarr/catalog", post(recyclarr::catalog))
         .route(
             "/stack/{id}/recyclarr/run",
@@ -648,6 +649,9 @@ async fn install(
 #[derive(Deserialize)]
 struct Action {
     action: String,
+    /// The reviewed configuration an `accept_configuration` applies to.
+    #[serde(default)]
+    revision: Option<String>,
 }
 async fn action(
     State(runtime): State<Runtime>,
@@ -685,6 +689,9 @@ async fn action(
     let mut s = load(&key)?;
     if input.action == "release" {
         return adoption::release(&d, &mut s).await;
+    }
+    if input.action == "accept_configuration" {
+        return adoption::accept_configuration(&d, &mut s, input.revision.as_deref()).await;
     }
     if s.imported.is_some() && matches!(input.action.as_str(), "recreate" | "remove") {
         return Err(conflict(

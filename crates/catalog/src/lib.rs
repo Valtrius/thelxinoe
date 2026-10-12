@@ -35,6 +35,35 @@ pub fn approved_path(path: &Path, allowed: &Path) -> Result<PathBuf> {
     }
     Ok(candidate)
 }
+/// Identifies a media file from its size and three 1 MiB samples (start, middle and
+/// end) rather than every byte, so a first scan never reads whole multi-gigabyte files.
+/// Renames keep their identity, and deletion still checks size, modification time and
+/// the open handle, which detect any replacement.
+pub fn fingerprint(file: &mut std::fs::File) -> std::io::Result<String> {
+    use std::io::{Seek, SeekFrom};
+    const SAMPLE: u64 = 1 << 20;
+    let size = file.metadata()?.len();
+    let mut hash = Sha256::new();
+    hash.update(size.to_le_bytes());
+    let (offsets, length) = if size <= 3 * SAMPLE {
+        (vec![0], size)
+    } else {
+        (vec![0, size / 2 - SAMPLE / 2, size - SAMPLE], SAMPLE)
+    };
+    let mut buffer = vec![0; usize::try_from(length).unwrap_or(usize::MAX)];
+    for offset in offsets {
+        file.seek(SeekFrom::Start(offset))?;
+        file.read_exact(&mut buffer)?;
+        hash.update(&buffer);
+    }
+    Ok(hex::encode(hash.finalize()))
+}
+/// One file's scan outcome. A changing or unreadable file keeps any entry it had.
+enum Indexed {
+    File(Box<IndexedFile>),
+    Changing,
+    Gone,
+}
 struct IndexedFile {
     path: String,
     size: i64,
@@ -80,114 +109,143 @@ where
     progress(0, total).await?;
     let mut last_progress = std::time::Instant::now();
     let mut indexed = Vec::new();
-    for path in entries {
+    // One unreadable or still-changing file must not block the rest of the library.
+    let mut retained = std::collections::HashSet::new();
+    let mut failures = Vec::new();
+    for (done, path) in entries.into_iter().enumerate() {
         let path_string = path.to_string_lossy().to_string();
-        let metadata = tokio::fs::metadata(&path).await?;
-        let modified = metadata
-            .modified()?
-            .duration_since(UNIX_EPOCH)?
-            .as_nanos()
-            .to_string();
-        let size = i64::try_from(metadata.len())?;
-        let lookup = path_string.clone();
-        let old = storage::scan_with_progress_read_media_files(lookup, db).await?;
-        let (fingerprint, probe) = if let Some(old) = old.filter(|o| o.0 == size && o.1 == modified)
-        {
-            (old.2, serde_json::from_str(&old.3)?)
-        } else {
-            let mut command = tokio::process::Command::new(&tools.ffprobe.path);
-            command
-                .args([
-                    "-v",
-                    "error",
-                    "-show_format",
-                    "-show_streams",
-                    "-show_chapters",
-                    "-of",
-                    "json",
-                ])
-                .arg(&path)
-                .kill_on_drop(true);
-            #[cfg(windows)]
-            command.creation_flags(0x08000000);
-            let output = tokio::time::timeout(std::time::Duration::from_secs(30), command.output())
-                .await
-                .context("Media probe timed out")??;
-            if !output.status.success() {
-                bail!("FFprobe could not read a media file; scan kept the previous catalog");
+        let old = storage::scan_with_progress_read_media_files(path_string.clone(), db).await?;
+        match index(&path, old, &root, &tools).await {
+            Ok(Indexed::File(file)) => indexed.push(*file),
+            Ok(Indexed::Gone) => {}
+            Ok(Indexed::Changing) => {
+                retained.insert(path_string);
             }
-            let probe: Value = serde_json::from_slice(&output.stdout)?;
-            let hash_path = path.clone();
-            let fingerprint = tokio::task::spawn_blocking(move || -> Result<String> {
-                let mut file = std::fs::File::open(hash_path)?;
-                let mut hash = Sha256::new();
-                let mut buf = [0u8; 128 * 1024];
-                loop {
-                    let n = file.read(&mut buf)?;
-                    if n == 0 {
-                        break;
-                    }
-                    hash.update(&buf[..n]);
-                }
-                Ok(hex::encode(hash.finalize()))
-            })
-            .await??;
-            let after = tokio::fs::metadata(&path).await?;
-            if after.len() != metadata.len() || after.modified()? != metadata.modified()? {
-                bail!("File changed during scan; retry after the copy finishes");
+            Err(error) => {
+                failures.push(format!("{path_string} ({error:#})"));
+                retained.insert(path_string);
             }
-            (fingerprint, probe)
-        };
-        let mut probe = probe;
-        let trailer_suffix = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .filter(|s| s.to_ascii_lowercase().ends_with("-trailer"));
-        let identity_path = if root.kind == "movies"
-            && let Some(stem) = trailer_suffix
-        {
-            probe["thelxinoe_local_trailer"] = serde_json::json!(true);
-            path.with_file_name(format!(
-                "{}.{}",
-                &stem[..stem.len() - 8],
-                path.extension().and_then(|s| s.to_str()).unwrap_or("mp4")
-            ))
-        } else {
-            path.clone()
-        };
-        let (identities, edition) = identity::identify(&root.kind, &identity_path, &probe)?;
-        indexed.push(IndexedFile {
-            path: path_string,
-            size,
-            modified,
-            fingerprint,
-            probe,
-            identities,
-            edition,
-        });
-        if indexed.len() == total || last_progress.elapsed() >= std::time::Duration::from_secs(1) {
-            progress(indexed.len(), total).await?;
+        }
+        if done + 1 == total || last_progress.elapsed() >= std::time::Duration::from_secs(1) {
+            progress(done + 1, total).await?;
             last_progress = std::time::Instant::now();
         }
     }
     let count = indexed.len();
-    let current_paths: std::collections::HashSet<_> =
+    let mut current_paths: std::collections::HashSet<_> =
         indexed.iter().map(|f| f.path.clone()).collect();
+    current_paths.extend(retained.iter().cloned());
     let mut fingerprint_counts = std::collections::HashMap::new();
     for file in &indexed {
         *fingerprint_counts
             .entry(file.fingerprint.clone())
             .or_insert(0usize) += 1;
     }
+    let warning = failures.first().map(|first| {
+        format!(
+            "{} file{} couldn't be read and will be retried; the rest are up to date. First: {first}",
+            failures.len(),
+            if failures.len() == 1 { "" } else { "s" }
+        )
+    });
     storage::scan_with_progress_write_media_files(
         indexed,
         current_paths,
+        retained,
         fingerprint_counts,
+        warning,
         db,
         root,
     )
     .await?;
     Ok(count)
+}
+async fn index(
+    path: &Path,
+    old: Option<(i64, String, String, String)>,
+    root: &Root,
+    tools: &thelxinoe_tools::MediaTools,
+) -> Result<Indexed> {
+    let metadata = match tokio::fs::metadata(path).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Indexed::Gone),
+        Err(error) => return Err(error.into()),
+    };
+    let modified = metadata
+        .modified()?
+        .duration_since(UNIX_EPOCH)?
+        .as_nanos()
+        .to_string();
+    let size = i64::try_from(metadata.len())?;
+    let (hash, probe) = if let Some(old) = old.filter(|o| o.0 == size && o.1 == modified) {
+        (old.2, serde_json::from_str(&old.3)?)
+    } else {
+        let mut command = tokio::process::Command::new(&tools.ffprobe.path);
+        command
+            .args([
+                "-v",
+                "error",
+                "-show_format",
+                "-show_streams",
+                "-show_chapters",
+                "-of",
+                "json",
+            ])
+            .arg(path)
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        command.creation_flags(0x08000000);
+        let output = tokio::time::timeout(std::time::Duration::from_secs(30), command.output())
+            .await
+            .context("Media probe timed out")??;
+        if !output.status.success() {
+            bail!("FFprobe could not read it");
+        }
+        let probe: Value = serde_json::from_slice(&output.stdout)?;
+        let hash_path = path.to_path_buf();
+        let hash =
+            tokio::task::spawn_blocking(move || fingerprint(&mut std::fs::File::open(hash_path)?))
+                .await??;
+        let after = match tokio::fs::metadata(path).await {
+            Ok(after) => after,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Indexed::Gone);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        // A copy in progress is indexed once it settles; the next change triggers a scan.
+        if after.len() != metadata.len() || after.modified()? != metadata.modified()? {
+            return Ok(Indexed::Changing);
+        }
+        (hash, probe)
+    };
+    let mut probe = probe;
+    let trailer_suffix = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| s.to_ascii_lowercase().ends_with("-trailer"));
+    let identity_path = if root.kind == "movies"
+        && let Some(stem) = trailer_suffix
+    {
+        probe["thelxinoe_local_trailer"] = serde_json::json!(true);
+        path.with_file_name(format!(
+            "{}.{}",
+            &stem[..stem.len() - 8],
+            path.extension().and_then(|s| s.to_str()).unwrap_or("mp4")
+        ))
+    } else {
+        path.to_path_buf()
+    };
+    let (identities, edition) = identity::identify(&root.kind, &identity_path, &probe)?;
+    Ok(Indexed::File(Box::new(IndexedFile {
+        path: path.to_string_lossy().to_string(),
+        size,
+        modified,
+        fingerprint: hash,
+        probe,
+        identities,
+        edition,
+    })))
 }
 fn supported(path: &Path) -> bool {
     path.extension().and_then(|s| s.to_str()).is_some_and(|s| {

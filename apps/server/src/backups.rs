@@ -116,6 +116,9 @@ struct BackupInput {
     passphrase: String,
     #[serde(default)]
     confirm: bool,
+    /// Restore only: components to restore. Omitted leaves imported services unchanged.
+    #[serde(default)]
+    components: Option<Vec<String>>,
 }
 async fn backup(
     State(state): State<AppState>,
@@ -145,6 +148,18 @@ async fn backup_command(
     if !input.confirm {
         return Err(ApiError::bad("Confirm the temporary service interruption"));
     }
+    let mut body = json!({"passphrase":input.passphrase});
+    if let Some(components) = input.components.filter(|_| restore.is_some()) {
+        if components.is_empty()
+            || components.len() > 100
+            || components
+                .iter()
+                .any(|key| key != "server" && uuid::Uuid::parse_str(key).is_err())
+        {
+            return Err(ApiError::bad("Choose at least one component to restore"));
+        }
+        body["components"] = json!(components);
+    }
     let busy = storage::backup_command_read_playback_sessions(&state.db).await?;
     if busy {
         return Err(ApiError::conflict(
@@ -161,12 +176,7 @@ async fn backup_command(
     };
     storage::audit(&state.db, Some(p.user.id), action).await?;
     Ok(Json(
-        crate::managers::controller_request(
-            &state,
-            &path,
-            Some(json!({"passphrase":input.passphrase})),
-        )
-        .await?,
+        crate::managers::controller_request(&state, &path, Some(body)).await?,
     ))
 }
 

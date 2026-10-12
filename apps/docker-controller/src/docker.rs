@@ -300,8 +300,33 @@ fn redact(c: &Value) -> Result<Value> {
     let mounts=c["Mounts"].as_array().ok_or_else(unavailable)?.iter().map(|m|json!({"kind":m["Type"],"name":m["Name"],"subpath":c["HostConfig"]["Mounts"].as_array().into_iter().flatten().find(|v| v["Target"]==m["Destination"]).map(|v|v["VolumeOptions"]["Subpath"].clone()).unwrap_or(Value::Null),"source":m["Source"],"destination":m["Destination"],"writable":m["RW"]})).collect::<Vec<_>>();
     let networks=c["NetworkSettings"]["Networks"].as_object().ok_or_else(unavailable)?.iter().map(|(name,n)|json!({"name":name,"id":n["NetworkID"],"address":n["IPAddress"],"ipv6":n["GlobalIPv6Address"],"aliases":n["Aliases"]})).collect::<Vec<_>>();
     Ok(
-        json!({"id":c["Id"],"name":c["Name"],"image":c["Config"]["Image"],"image_id":c["Image"],"running":c["State"]["Running"],"mounts":mounts,"networks":networks,"network_mode":c["HostConfig"]["NetworkMode"],"compose_project":c["Config"]["Labels"]["com.docker.compose.project"]}),
+        json!({"id":c["Id"],"name":c["Name"],"image":c["Config"]["Image"],"image_id":c["Image"],"running":c["State"]["Running"],"mounts":mounts,"networks":networks,"ports":published(c),"network_mode":c["HostConfig"]["NetworkMode"],"compose_project":c["Config"]["Labels"]["com.docker.compose.project"]}),
     )
+}
+/// Host ports published for TCP; a stopped container reports only its configuration.
+fn published(c: &Value) -> Vec<Value> {
+    let live = &c["NetworkSettings"]["Ports"];
+    let bindings = if live.as_object().is_some_and(|ports| !ports.is_empty()) {
+        live
+    } else {
+        &c["HostConfig"]["PortBindings"]
+    };
+    let mut ports = Vec::new();
+    for (key, hosts) in bindings.as_object().into_iter().flatten() {
+        let Some((private, "tcp")) = key.split_once('/') else {
+            continue;
+        };
+        for host in hosts.as_array().into_iter().flatten() {
+            if let (Ok(private), Some(Ok(public))) = (
+                private.parse::<u16>(),
+                host["HostPort"].as_str().map(str::parse::<u16>),
+            ) && !ports.contains(&json!({"private":private,"public":public}))
+            {
+                ports.push(json!({"private":private,"public":public}));
+            }
+        }
+    }
+    ports
 }
 #[cfg(test)]
 mod tests {
@@ -313,6 +338,15 @@ mod tests {
         assert!(!result.to_string().contains("private"));
         assert_eq!(result["mounts"][0]["destination"], "/media");
         assert_eq!(result["networks"][0]["address"], "172.18.0.2");
+    }
+    #[test]
+    fn inspection_reports_published_tcp_ports_live_or_configured() {
+        let live = json!({"NetworkSettings":{"Ports":{"6789/tcp":[{"HostIp":"0.0.0.0","HostPort":"16789"},{"HostIp":"::","HostPort":"16789"}],"7359/udp":[{"HostPort":"7359"}],"8080/tcp":null}},
+            "HostConfig":{"PortBindings":{"6789/tcp":[{"HostPort":"1"}]}}});
+        assert_eq!(published(&live), [json!({"private":6789,"public":16789})]);
+        let stopped = json!({"NetworkSettings":{"Ports":{}},
+            "HostConfig":{"PortBindings":{"6789/tcp":[{"HostIp":"127.0.0.1","HostPort":"6789"}]}}});
+        assert_eq!(published(&stopped), [json!({"private":6789,"public":6789})]);
     }
     #[test]
     fn engine_failures_name_the_conflicting_resource() {

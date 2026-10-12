@@ -2296,3 +2296,65 @@ test('failed playback saves preserve newer text still being edited', async ({
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });
+
+test('a changed adopted configuration is reviewed before it is accepted', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+    adoptedDrift: true,
+  });
+  const revision = 'a'.repeat(64);
+  const accepted: unknown[] = [];
+  let blocked: string | null = null;
+  await page.route('**/api/v1/admin/stack/managed-radarr/drift', (route) =>
+    route.fulfill({
+      json: {
+        revision,
+        blocked,
+        changes: [
+          {
+            path: 'HostConfig.RestartPolicy.Name',
+            change: 'changed',
+            before: '"unless-stopped"',
+            after: '"always"',
+          },
+          { path: 'Config.Env.API_KEY', change: 'changed' },
+        ],
+      },
+    }),
+  );
+  await page.route('**/api/v1/admin/stack/managed-radarr/action', (route) => {
+    accepted.push(route.request().postDataJSON());
+    return route.fulfill({ json: { accepted: true } });
+  });
+  await page.goto('/');
+  await page
+    .getByRole('navigation', { name: 'Select service' })
+    .getByRole('link', { name: 'Radarr', exact: true })
+    .click();
+  await expect(
+    page.getByText('Lifecycle actions and backups wait'),
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'Review changes' }).click();
+  await expect(page.getByText('HostConfig.RestartPolicy.Name')).toBeVisible();
+  await expect(page.getByText('Config.Env.API_KEY')).toBeVisible();
+  await page
+    .getByRole('button', { name: 'Accept current configuration' })
+    .click();
+  await expect
+    .poll(() => accepted)
+    .toEqual([{ action: 'accept_configuration', revision }]);
+  // A configuration adoption would refuse can only be released.
+  blocked = "Privileged containers can't be adopted";
+  await page.getByRole('button', { name: 'Review changes' }).click();
+  await expect(
+    page.getByText("Thelxinoe can't own this configuration"),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Accept current configuration' }),
+  ).toHaveCount(0);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});

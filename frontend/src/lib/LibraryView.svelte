@@ -75,6 +75,7 @@
     path: string;
     last_scan: number | null;
     scan_error: string | null;
+    watching?: boolean | null;
   };
   let items = $state<Item[]>([]),
     roots = $state<Root[]>([]),
@@ -302,7 +303,10 @@
                   (root.last_scan
                     ? `Scanned ${new Date(root.last_scan * 1000).toLocaleString(undefined, { timeZone: timezone, hour12: timeFormat === '12h' })}`
                     : 'Waiting for first scan'))}</small
-            >
+            >{#if root.watching === false}<small class="block text-muted"
+                >Live updates are unavailable for this folder; changes appear
+                within 15 minutes.</small
+              >{/if}
           </div>
           <Button
             variant="secondary"

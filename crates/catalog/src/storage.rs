@@ -46,7 +46,9 @@ pub(super) async fn scan_with_progress_read_media_files(
 pub(super) async fn scan_with_progress_write_media_files(
     indexed: Vec<IndexedFile>,
     current_paths: std::collections::HashSet<String>,
+    retained: std::collections::HashSet<String>,
     fingerprint_counts: std::collections::HashMap<String, usize>,
+    warning: Option<String>,
     db: &Database,
     root: Root,
 ) -> anyhow::Result<()> {
@@ -54,6 +56,8 @@ pub(super) async fn scan_with_progress_write_media_files(
         let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let missing:Vec<(String,String)>=tx.prepare("SELECT id,path,fingerprint FROM media_files WHERE root_id=?1 AND present=1")?.query_map([&root.id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))?.collect::<std::result::Result<Vec<_>,_>>()?.into_iter().filter(|(_,path,_)|!current_paths.contains(path)).map(|(id,_,hash)|(id,hash)).collect();
         tx.execute("UPDATE media_files SET present=0 WHERE root_id=?1",[&root.id])?;
+        // Files that couldn't be read this time keep their previous entry until a later scan.
+        for path in &retained {tx.execute("UPDATE media_files SET present=1 WHERE root_id=?1 AND path=?2",params![root.id,path])?;}
         for file in indexed {
             let old=tx.query_row("SELECT id,fingerprint,generation FROM media_files WHERE path=?1",[&file.path],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional()?;
             let file_id=old.as_ref().map(|o|o.0.clone()).unwrap_or_else(id);
@@ -74,6 +78,6 @@ pub(super) async fn scan_with_progress_write_media_files(
                 if item.playable{if file.probe["thelxinoe_local_trailer"].as_bool()==Some(true){tx.execute("INSERT OR IGNORE INTO local_trailers VALUES (?1,?2)",params![media_id,file_id])?;}else{tx.execute("INSERT OR IGNORE INTO media_sources VALUES (?1,?2)",params![media_id,file_id])?;}}
             }
         }
-        tx.execute("UPDATE library_roots SET last_scan=?1,scan_error=NULL WHERE id=?2",params![now(),root.id])?;tx.commit()?;Ok(())
+        tx.execute("UPDATE library_roots SET last_scan=?1,scan_error=?3 WHERE id=?2",params![now(),root.id,warning])?;tx.commit()?;Ok(())
     }).await
 }

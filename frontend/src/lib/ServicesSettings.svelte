@@ -18,6 +18,7 @@
   import Switch from './ui/Switch.svelte';
   import { Copy, LoaderCircle } from '@lucide/svelte';
   import OwnershipReview from './services/OwnershipReview.svelte';
+  import DriftReview from './services/DriftReview.svelte';
   import NativeAccessSettings from './services/NativeAccessSettings.svelte';
   import ConnectionSettings from './services/ConnectionSettings.svelte';
   import RecyclarrSettings from './services/RecyclarrSettings.svelte';
@@ -1195,10 +1196,14 @@
               class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
             >
               Configuration changed outside Thelxinoe.
-              {#if live?.imported}Release ownership, then review and adopt again
-                to accept the changed deployment.{:else}Repair configuration to
-                restore managed settings.{/if}
-            </p>{/if}
+              {#if live?.imported}Lifecycle actions and backups wait until you
+                review the change and accept it, or release ownership.{:else}Repair
+                configuration to restore managed settings.{/if}
+            </p>
+            {#if live?.imported}<DriftReview
+                serviceId={live.id}
+                changed={refresh}
+              />{/if}{/if}
         </Notice>
       {/if}
       {#if transferReviews[selectedKind]}

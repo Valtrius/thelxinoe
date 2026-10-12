@@ -12,10 +12,18 @@
   import Notice from './ui/Notice.svelte';
   import Panel from './ui/Panel.svelte';
   import { rowClass } from './ui/styles';
+  import { definitions } from './services/feature';
   let { timezone, timeFormat } = $props<{
     timezone: string;
     timeFormat: '12h' | '24h';
   }>();
+  type Component = {
+    key: string;
+    kind: string;
+    name: string;
+    imported: boolean;
+  };
+  type Exclusion = { key: string; kind: string; name: string; reason: string };
   type Backup = {
     id: string;
     stage: string;
@@ -23,6 +31,8 @@
     error: string | null;
     archive: string;
     automatic?: boolean;
+    components?: Component[];
+    excluded?: Exclusion[];
   };
   type Policy = { policy: 'automatic' | 'manual'; retain: number };
   type Run = {
@@ -41,6 +51,7 @@
     passphrase = $state(''),
     confirmation = $state(false),
     restoreId = $state(''),
+    selected = $state<string[]>([]),
     restoreConfirmation = $state(''),
     message = $state(''),
     busy = $state(false),
@@ -61,6 +72,25 @@
       timeZone: timezone,
       hour12: timeFormat === '12h',
     });
+  const restoring = $derived(items.find((item) => item.id === restoreId));
+  const listed = $derived(restoring?.components ?? []);
+  const adoptedSelected = $derived(
+    listed.some((c) => c.imported && selected.includes(c.key)),
+  );
+  function label(item: { kind: string; name: string }, adopted: boolean) {
+    if (item.kind === 'server') return 'Thelxinoe server';
+    const service =
+      definitions.find((d) => d.kind === item.kind)?.label ?? item.kind;
+    return adopted ? `${service} (adopted: ${item.name})` : service;
+  }
+  function chooseRestore(item: Backup) {
+    restoreId = item.id;
+    restoreConfirmation = '';
+    // Adopted services keep their live configuration unless chosen here.
+    selected = (item.components ?? [])
+      .filter((c) => !c.imported)
+      .map((c) => c.key);
+  }
   async function load() {
     try {
       const data = await api<{
@@ -116,15 +146,23 @@
     busy = true;
     message = '';
     try {
-      await api(
+      const started = await api<Backup>(
         restore ? `/admin/backups/${restoreId}/restore` : '/admin/backups',
         'POST',
-        { passphrase, confirm: confirmation },
+        {
+          passphrase,
+          confirm: confirmation,
+          ...(restore && listed.length ? { components: selected } : {}),
+        },
       );
       passphrase = '';
       restoreConfirmation = '';
+      const skipped = restore ? [] : (started.excluded ?? []);
       message =
-        'Operation started. The server will briefly disconnect while state is copied. Refresh after it reconnects; restoration may require signing in again.';
+        'Operation started. The server will briefly disconnect while state is copied. Refresh after it reconnects; restoration may require signing in again.' +
+        (skipped.length
+          ? ` Not included and left running: ${skipped.map((e) => label(e, true)).join(', ')}.`
+          : '');
       await load();
     } catch (e) {
       message = String(e);
@@ -259,7 +297,8 @@
   <p>
     Backups include server state, credentials, deployment information and
     managed-service appdata. Media and cache are excluded. Services briefly stop
-    so their databases can be copied consistently.
+    so their databases can be copied consistently. Adopted services whose
+    storage can't be backed up are left running and out of the archive.
   </p>
   <p>
     Archives are encrypted with your passphrase and saved in {destination ||
@@ -302,23 +341,51 @@
             : ''}</strong
         ><small class="block wrap-anywhere">{item.archive}</small
         >{#if item.error}<p>{item.error}</p>{/if}
+        {#each item.excluded ?? [] as skipped (skipped.key)}<small
+            class="block text-muted"
+            >Not included: {label(skipped, true)}. {skipped.reason}</small
+          >{/each}
       </div>
       {#if ['complete', 'restored', 'restore-failed', 'imported'].includes(item.stage)}<Button
           variant="secondary"
           size="form"
           class="m-[0.3rem]"
-          onclick={() => {
-            restoreId = item.id;
-            restoreConfirmation = '';
-          }}>Restore this backup</Button
+          onclick={() => chooseRestore(item)}>Restore this backup</Button
         >{/if}
     </div>{:else}<p class="text-muted">No backups yet.</p>{/each}
   {#if restoreId}<div class="border border-line p-4">
-      <p>
-        Restoring replaces server and managed-service state with the selected
-        backup. Changes since that backup will be lost. It does not undo changes
-        to media or external services.
-      </p>
+      {#if listed.length}
+        <p>
+          Choose what to restore. Chosen components stop and are replaced with
+          the copy in this backup; changes since then are lost. Everything else
+          keeps running unchanged. It does not undo changes to media or external
+          services.
+        </p>
+        <fieldset class="my-3 grid gap-2" aria-label="Components to restore">
+          {#each listed as component (component.key)}
+            <Switch
+              checked={selected.includes(component.key)}
+              onCheckedChange={(on) =>
+                (selected = on
+                  ? [...selected, component.key]
+                  : selected.filter((key) => key !== component.key))}
+              >{label(component, component.imported)}</Switch
+            >
+          {/each}
+        </fieldset>
+        {#if adoptedSelected}<Notice tone="warning" role="status"
+            >Restoring an adopted service replaces its configuration folder with
+            the backup copy. Anything changed in that app since the backup is
+            lost.</Notice
+          >{/if}
+      {:else}
+        <p>
+          Restoring replaces server state and the services Thelxinoe installed
+          with the selected backup. Changes since that backup will be lost.
+          Adopted services keep their current configuration. It does not undo
+          changes to media or external services.
+        </p>
+      {/if}
       <FormField class="my-4 block max-w-136"
         >Type RESTORE to confirm<input
           class={formControlClass}
@@ -332,7 +399,8 @@
         disabled={busy ||
           !confirmation ||
           passphrase.length < 16 ||
-          restoreConfirmation !== 'RESTORE'}
+          restoreConfirmation !== 'RESTORE' ||
+          (listed.length > 0 && selected.length === 0)}
         onclick={() => void create(true)}>Restore selected state</Button
       ><Button
         variant="secondary"

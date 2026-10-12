@@ -1,6 +1,21 @@
 use super::*;
 use crate::test_support::{Docker, Fault};
 
+/// Plaintext directories still held for an operation.
+fn plaintext(key: &str) -> Vec<String> {
+    let mut found: Vec<String> = std::fs::read_dir(work(key))
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.path().is_dir())
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    found.sort();
+    found
+}
+
 #[tokio::test]
 async fn startup_recovers_early_restore_failure_and_accepts_the_same_archive() {
     for fault in [
@@ -14,7 +29,7 @@ async fn startup_recovers_early_restore_failure_and_accepts_the_same_archive() {
                 store::write_json(&store::root().join("desired-state.json"), &d).unwrap();
                 store::write_json(&store::root().join("generations/1/desired-state.json"), &d)
                     .unwrap();
-                let (_, mut components) = inspect(&d).await.unwrap();
+                let (_, mut components, _) = inspect(&d).await.unwrap();
                 components[0].running = true;
                 let key = thelxinoe_core::id();
                 let mut r = Record {
@@ -28,6 +43,8 @@ async fn startup_recovers_early_restore_failure_and_accepts_the_same_archive() {
                     rollback_phase: Some(RollbackPhase::Copying),
                     release_restore: None,
                     automatic: false,
+                    contents: vec![],
+                    excluded: vec![],
                 };
                 let snapshot = work(&key).join("archive-source");
                 std::fs::create_dir_all(snapshot.join("server")).unwrap();
@@ -38,6 +55,7 @@ async fn startup_recovers_early_restore_failure_and_accepts_the_same_archive() {
                     deployment: d.clone(),
                     services: vec![],
                     components,
+                    excluded: vec![],
                     compose: json!({}),
                 };
                 store::write_json(&snapshot.join("manifest.json"), &manifest).unwrap();
@@ -69,8 +87,9 @@ async fn startup_recovers_early_restore_failure_and_accepts_the_same_archive() {
                 let response = restore(
                     State(Runtime(Default::default())),
                     Path(key.clone()),
-                    Json(Input {
+                    Json(RestoreInput {
                         passphrase: passphrase.into(),
+                        components: None,
                     }),
                 )
                 .await
@@ -208,6 +227,190 @@ async fn retried_automatic_backup_returns_the_original_operation() {
             assert!(create(State(runtime.clone()), request(0)).await.is_err());
             let manual = Json(serde_json::from_value::<Creation>(json!({"passphrase":"retried automatic passphrase"})).unwrap());
             assert!(create(State(runtime), manual).await.is_err());
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn backups_leave_unsupported_imported_services_running_and_restore_them_only_when_chosen() {
+    const INSTALLED: &str = "44444444-4444-4444-4444-444444444444";
+    const KEPT: &str = "55555555-5555-5555-5555-555555555555";
+    const SKIPPED: &str = "66666666-6666-6666-6666-666666666666";
+    let fixture = Docker::new();
+    fixture
+        .scope(async {
+            let d: Deployment = fixture.backup_deployment();
+            store::write_json(&store::root().join("desired-state.json"), &d).unwrap();
+            store::write_json(&store::root().join("generations/1/desired-state.json"), &d)
+                .unwrap();
+            store::write_json(&store::root().join("compose.override.yaml"), &json!({})).unwrap();
+            updates::start("original").await.unwrap();
+            let capability = json!({"available":true,"reason":null});
+            let imported = json!({"engine":"engine","deployment":"deployment","storage":[],
+                "capabilities":{"lifecycle":capability,"backup":capability,"update":capability,
+                    "recreate":capability,"release":capability}});
+            for (key, container, kind, config, labels, import) in [
+                (INSTALLED, "installed", "prowlarr", json!({"Type":"bind","Source":fixture.root().join("installed"),"Destination":"/config","RW":true}),
+                    json!({"app.thelxinoe.deployment":"deployment","app.thelxinoe.managed-id":INSTALLED}), Value::Null),
+                (KEPT, "kept", "radarr", json!({"Type":"bind","Source":fixture.root().join("kept"),"Destination":"/config","RW":true}),
+                    json!({}), imported.clone()),
+                // A Docker volume can't be backed up, so this service stays out of every archive.
+                (SKIPPED, "skipped", "sonarr", json!({"Type":"volume","Name":"sonarr_config","Source":"/var/lib/docker/volumes/sonarr_config/_data","Destination":"/config","RW":true}),
+                    json!({}), imported.clone()),
+            ] {
+                if config["Type"] == "bind" {
+                    let source = std::path::PathBuf::from(config["Source"].as_str().unwrap());
+                    std::fs::create_dir_all(&source).unwrap();
+                    std::fs::write(source.join("marker"), format!("{container}-before")).unwrap();
+                }
+                let raw = json!({"Id":container,"Name":format!("/{container}"),"Image":"sha256:image",
+                    "Config":{"Image":"image","Labels":labels},"HostConfig":{},"Mounts":[config],
+                    "State":{"Running":true,"StartedAt":"2026-10-01T00:00:00Z"},
+                    "NetworkSettings":{"Networks":{"media":{}}}});
+                fixture.insert(container, raw.clone());
+                let service: Managed = serde_json::from_value(json!({"id":key,"kind":kind,
+                    "container":container,"name":container,"image":"image","phase":"active",
+                    "spec":{},"expected":policy::fingerprint(&raw),"imported":import})).unwrap();
+                save(&service).unwrap();
+            }
+            std::fs::write(fixture.root().join("appdata/marker"), "server-before").unwrap();
+            let skipped_started = fixture.started_at("skipped");
+            let passphrase = "partial backup regression passphrase";
+            let created = create(
+                State(Runtime(Default::default())),
+                Json(Creation {
+                    passphrase: passphrase.into(),
+                    automatic: None,
+                }),
+            )
+            .await
+            .unwrap()
+            .0;
+            assert_eq!(created["excluded"][0]["key"], SKIPPED);
+            assert!(
+                created["excluded"][0]["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Docker volume sonarr_config")
+            );
+            let contents = |value: &Value| {
+                value["components"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|c| (c["key"].as_str().unwrap().to_owned(), c["imported"] == true))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                contents(&created),
+                [
+                    ("server".to_owned(), false),
+                    (INSTALLED.to_owned(), false),
+                    (KEPT.to_owned(), true)
+                ]
+            );
+            let key = created["id"].as_str().unwrap().to_owned();
+            let finished = |stage: &'static str| {
+                let key = key.clone();
+                async move {
+                    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+                        loop {
+                            let r: Record =
+                                store::read(&work(&key).join("operation.json")).unwrap();
+                            if r.stage == stage {
+                                return r;
+                            }
+                            assert!(r.error.is_none(), "{}: {:?}", r.stage, r.error);
+                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        }
+                    })
+                    .await
+                    .unwrap()
+                }
+            };
+            finished("complete").await;
+            assert_eq!(fixture.copies(), 3);
+            let restore_with = |components: Option<Vec<String>>| {
+                restore(
+                    State(Runtime(Default::default())),
+                    Path(key.clone()),
+                    Json(RestoreInput {
+                        passphrase: passphrase.into(),
+                        components,
+                    }),
+                )
+            };
+            // Without a choice, the adopted service keeps running with its live configuration.
+            let kept_started = fixture.started_at("kept");
+            assert_eq!(
+                restore_with(None).await.unwrap().0["stage"],
+                "restore-queued"
+            );
+            finished("restored").await;
+            assert_eq!(fixture.copies(), 3 + 4);
+            assert_eq!(fixture.started_at("kept"), kept_started);
+            assert_eq!(plaintext(&key), Vec::<String>::new());
+            for (rejected, status) in [
+                (vec![], StatusCode::BAD_REQUEST),
+                (vec![KEPT.to_owned(), KEPT.to_owned()], StatusCode::BAD_REQUEST),
+                (vec![SKIPPED.to_owned()], StatusCode::CONFLICT),
+            ] {
+                assert_eq!(restore_with(Some(rejected)).await.unwrap_err().0, status);
+            }
+            // The rejected selection was checked against the decrypted manifest.
+            assert_eq!(plaintext(&key), Vec::<String>::new());
+            // An explicit choice restores only that service; the server keeps running.
+            let server_started = fixture.started_at("original");
+            assert_eq!(
+                restore_with(Some(vec![KEPT.to_owned()])).await.unwrap().0["stage"],
+                "restore-queued"
+            );
+            let r = finished("restored").await;
+            assert_eq!(fixture.copies(), 3 + 4 + 2);
+            assert_ne!(fixture.started_at("kept"), kept_started);
+            assert_eq!(fixture.started_at("original"), server_started);
+            assert_eq!(contents(&public(&r)).len(), 3);
+            assert!(fixture.running("skipped"));
+            assert_eq!(fixture.started_at("skipped"), skipped_started);
+            assert_eq!(plaintext(&key), Vec::<String>::new());
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn final_operations_keep_no_plaintext_but_recovery_keeps_its_capture() {
+    let fixture = Docker::new();
+    fixture
+        .scope(async {
+            let operation = |n: u8, stage: &str, leftovers: &[&str]| {
+                let key = format!("00000000-0000-0000-0000-{n:012}");
+                let r: Record = serde_json::from_value(json!({"id":key,"stage":stage,
+                    "created_at":n,"error":null,"components":[]}))
+                .unwrap();
+                private_dir(&work(&key)).unwrap();
+                record(&r).unwrap();
+                for leftover in leftovers {
+                    std::fs::create_dir_all(work(&key).join(leftover)).unwrap();
+                    std::fs::write(work(&key).join(leftover).join("master.key"), "secret").unwrap();
+                }
+                r
+            };
+            // Leftovers from a crash or an older build are swept at startup.
+            let failed = operation(1, "failed", &["snapshot"]);
+            let restored = operation(
+                2,
+                "restored",
+                &["11111111-1111-1111-1111-111111111111", "recovery-x"],
+            );
+            recover_interrupted().await.unwrap();
+            for r in [&failed, &restored] {
+                assert_eq!(plaintext(&r.id), Vec::<String>::new(), "{}", r.stage);
+                assert!(work(&r.id).join("operation.json").is_file());
+            }
+            // Manual recovery still needs the captured state.
+            let required = operation(3, "recovery-required", &["recovery-x"]);
+            discard_plaintext(&required).unwrap();
+            assert_eq!(plaintext(&required.id), ["recovery-x"]);
         })
         .await;
 }

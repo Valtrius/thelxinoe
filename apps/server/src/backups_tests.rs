@@ -212,3 +212,34 @@ async fn manual_policy_disables_scheduling_and_keeps_manual_backups() {
         assert_eq!(response.0, status, "{}", response.2);
     }
 }
+
+// An omitted selection leaves imported services unchanged, so a malformed one must
+// never reach the controller as a different restore.
+#[tokio::test]
+async fn malformed_restore_selection_is_rejected_before_the_controller() {
+    let (_temp, state, cookie) = fixture().await;
+    admin(&state, ALWAYS).await;
+    for components in [json!([]), json!(["radarr"]), json!(["../stack"])] {
+        let (status, _, _) = call(
+            &state,
+            "/api/v1/admin/backups/11111111-1111-1111-1111-111111111111/restore",
+            "POST",
+            json!({"passphrase":"restore selection passphrase","confirm":true,"components":components}),
+            &cookie,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{components}");
+    }
+    let audited: i64 = state
+        .db
+        .read("test.audit", |db| {
+            Ok(db.query_row(
+                "SELECT COUNT(*) FROM audit WHERE action='backup.restore'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(audited, 0);
+}

@@ -18,8 +18,17 @@ use thelxinoe_core::{Capability, id, now};
 
 pub async fn roots(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageLibrary).await?;
+    let watching = state
+        .library_watch
+        .lock()
+        .map(|watching| watching.clone())
+        .unwrap_or_default();
+    let mut items = json!(thelxinoe_catalog::roots(&state.db).await?);
+    for item in items.as_array_mut().into_iter().flatten() {
+        item["watching"] = json!(item["id"].as_str().and_then(|id| watching.get(id)));
+    }
     Ok(Json(
-        json!({"items":thelxinoe_catalog::roots(&state.db).await?,"media_mount":state.config.media}),
+        json!({"items":items,"media_mount":state.config.media}),
     ))
 }
 #[derive(Deserialize)]
@@ -150,9 +159,91 @@ pub async fn overrides(
     }
     Ok(Json(json!({"ok":true})))
 }
+/// A root is rescanned once its changes pause this long, so a burst becomes one scan. A
+/// file still being written is skipped by that scan and its next write triggers another.
+const QUIET: std::time::Duration = std::time::Duration::from_secs(5);
+/// Continuous activity is still scanned at least this often.
+const BUSY: std::time::Duration = std::time::Duration::from_secs(600);
+/// Full rescans catch anything missed: rarely while live updates work, more often without.
+const WATCHED: std::time::Duration = std::time::Duration::from_secs(3600);
+const UNWATCHED: std::time::Duration = std::time::Duration::from_secs(900);
+/// The first and latest change seen for each root since it was last scanned.
+type Activity = std::sync::Arc<
+    std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, std::time::Instant)>>,
+>;
+struct Watch {
+    path: String,
+    watcher: Option<notify::RecommendedWatcher>,
+    attempted: std::time::Instant,
+}
 pub async fn reconcile(state: AppState) -> anyhow::Result<()> {
+    let activity = Activity::default();
+    // One watcher per library root, never the whole media mount: downloads and other
+    // folders don't trigger scans or spend the system's file-watch budget.
+    let mut watches = std::collections::HashMap::<String, Watch>::new();
+    let mut scanned = std::collections::HashMap::<String, std::time::Instant>::new();
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+    // Startup catches up on every root; a root added later is scanned by whoever added it.
+    let mut started = false;
+    loop {
+        tick.tick().await;
+        let roots = thelxinoe_catalog::roots(&state.db).await?;
+        watches.retain(|id, w| roots.iter().any(|r| &r.id == id && r.path == w.path));
+        scanned.retain(|id, _| roots.iter().any(|r| &r.id == id));
+        for root in &roots {
+            let entry = watches.entry(root.id.clone()).or_insert_with(|| Watch {
+                path: root.path.clone(),
+                watcher: watch(&root.id, &root.path, &activity),
+                attempted: std::time::Instant::now(),
+            });
+            if entry.watcher.is_none() && entry.attempted.elapsed() >= UNWATCHED {
+                entry.watcher = watch(&root.id, &root.path, &activity);
+                entry.attempted = std::time::Instant::now();
+            }
+            let live = entry.watcher.is_some();
+            if let Ok(mut watching) = state.library_watch.lock() {
+                watching.insert(root.id.clone(), live);
+            }
+            let changed = activity
+                .lock()
+                .ok()
+                .and_then(|activity| activity.get(&root.id).copied());
+            if started {
+                scanned
+                    .entry(root.id.clone())
+                    .or_insert_with(std::time::Instant::now);
+            }
+            let last = scanned.get(&root.id).copied();
+            if due(changed, last, live, std::time::Instant::now()) {
+                if let Ok(mut activity) = activity.lock() {
+                    activity.remove(&root.id);
+                }
+                scanned.insert(root.id.clone(), std::time::Instant::now());
+                enqueue_scan(&state, &root.id).await?;
+            }
+        }
+        if let Ok(mut watching) = state.library_watch.lock() {
+            watching.retain(|id, _| roots.iter().any(|r| &r.id == id));
+        }
+        started = true;
+    }
+}
+/// A root needs a scan once its changes settle, or when its periodic refresh is due.
+fn due(
+    changed: Option<(std::time::Instant, std::time::Instant)>,
+    scanned: Option<std::time::Instant>,
+    live: bool,
+    now: std::time::Instant,
+) -> bool {
+    let settled = changed.is_some_and(|(first, last)| {
+        now.duration_since(last) >= QUIET || now.duration_since(first) >= BUSY
+    });
+    let refresh = if live { WATCHED } else { UNWATCHED };
+    settled || scanned.is_none_or(|at| now.duration_since(at) >= refresh)
+}
+fn watch(id: &str, path: &str, activity: &Activity) -> Option<notify::RecommendedWatcher> {
     use notify::Watcher;
-    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    let (key, sink) = (id.to_owned(), activity.clone());
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         if event.is_ok_and(|event| {
             matches!(
@@ -162,22 +253,65 @@ pub async fn reconcile(state: AppState) -> anyhow::Result<()> {
                     | notify::EventKind::Remove(_)
                     | notify::EventKind::Any
             )
-        }) {
-            let _ = tx.try_send(());
+        }) && let Ok(mut activity) = sink.lock()
+        {
+            let now = std::time::Instant::now();
+            activity
+                .entry(key.clone())
+                .and_modify(|changed| changed.1 = now)
+                .or_insert((now, now));
         }
-    })?;
-    // Watching the mounted ancestor also catches new library roots without restarting.
-    if state.config.media.exists()
-        && let Err(error) = watcher.watch(&state.config.media, notify::RecursiveMode::Recursive)
-    {
-        tracing::warn!(%error,"Filesystem notifications unavailable; periodic reconciliation remains active");
+    })
+    .ok()?;
+    match watcher.watch(std::path::Path::new(path), notify::RecursiveMode::Recursive) {
+        Ok(()) => Some(watcher),
+        Err(error) => {
+            // Dropping the watcher releases every watch added before the failure, so the
+            // system's budget stays available to media servers running as the same user.
+            tracing::warn!(%error, root = id, "Live library updates unavailable; rescanning every 15 minutes");
+            None
+        }
     }
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
-    loop {
-        tokio::select! {_=interval.tick()=>{},_=rx.recv()=>{tokio::time::sleep(std::time::Duration::from_secs(2)).await;while rx.try_recv().is_ok(){}}}
-        for root in thelxinoe_catalog::roots(&state.db).await? {
-            enqueue_scan(&state, &root.id).await?;
+}
+
+#[cfg(test)]
+mod watch_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+    #[test]
+    fn roots_scan_after_changes_settle_or_their_refresh_is_due() {
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        // Changes wait for quiet, but continuous activity is still scanned.
+        assert!(!due(Some((at(0), at(20))), Some(at(0)), true, at(24)));
+        assert!(due(Some((at(0), at(20))), Some(at(0)), true, at(25)));
+        assert!(due(Some((at(0), at(599))), Some(at(0)), true, at(600)));
+        // Without changes: never scanned, or the refresh for the watch state is due.
+        assert!(due(None, None, true, at(0)));
+        assert!(!due(None, Some(at(0)), true, at(900)));
+        assert!(due(None, Some(at(0)), false, at(900)));
+        assert!(due(None, Some(at(0)), true, at(3600)));
+    }
+    #[test]
+    fn a_root_watch_records_changes_and_an_unwatchable_root_holds_nothing() {
+        let directory = tempfile::tempdir().unwrap();
+        let activity = Activity::default();
+        let path = directory.path().to_string_lossy().into_owned();
+        let watcher = watch("root", &path, &activity).expect("watchable root");
+        std::fs::create_dir(directory.path().join("Movie (2024)")).unwrap();
+        std::fs::write(directory.path().join("Movie (2024)/movie.mkv"), b"media").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !activity.lock().unwrap().contains_key("root") {
+            assert!(Instant::now() < deadline, "no change was recorded");
+            std::thread::sleep(Duration::from_millis(20));
         }
+        drop(watcher);
+        let missing = directory
+            .path()
+            .join("missing")
+            .to_string_lossy()
+            .into_owned();
+        assert!(watch("missing", &missing, &activity).is_none());
     }
 }
 

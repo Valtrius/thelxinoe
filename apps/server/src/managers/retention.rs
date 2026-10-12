@@ -5,8 +5,6 @@ mod storage;
 
 use super::domain::{MediaAction, RetentionPolicy as Policy};
 use super::*;
-#[cfg(test)]
-use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 fn exclusion_endpoint(kind: &str) -> &'static str {
     if kind == "radarr" {

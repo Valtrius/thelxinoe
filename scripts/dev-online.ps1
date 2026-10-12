@@ -109,7 +109,17 @@ try {
         }
     }
 
-    & $dockerCommand compose -p thelxinoe-online -f compose.test.yaml -f compose.online.yaml up -d --wait --force-recreate
+    $compose = @('compose', '-p', 'thelxinoe-online', '-f', 'compose.test.yaml', '-f', 'compose.online.yaml')
+    # Rebuilt images are new containers; the saved profile accepts them before they start.
+    & $dockerCommand @compose up --no-start --force-recreate
+    if ($LASTEXITCODE -ne 0) {
+        throw "Online development containers could not be created (exit $LASTEXITCODE)."
+    }
+    & $dockerCommand @compose run --rm -T controller accept-local --yes
+    if ($LASTEXITCODE -ne 0) {
+        throw "Online development containers were not accepted (exit $LASTEXITCODE)."
+    }
+    & $dockerCommand @compose up -d --wait
     if ($LASTEXITCODE -ne 0) {
         throw "Online development startup failed (exit $LASTEXITCODE)."
     }

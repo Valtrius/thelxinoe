@@ -462,3 +462,58 @@ async fn matching_server_record_keeps_missing_container_recovery_available() {
     assert_eq!(item["registered"], true);
     assert_eq!(item["can_recreate"], true);
 }
+
+#[tokio::test]
+async fn changed_adopted_configuration_is_reviewed_before_it_is_accepted() {
+    let (_temp, state, cookie, key) = managed("radarr").await;
+    let review = format!("/api/v1/admin/stack/{key}/drift");
+    let action = format!("/api/v1/admin/stack/{key}/action");
+    let revision = "a".repeat(64);
+    let accept = json!({"action":"accept_configuration","revision":revision});
+    // A Thelxinoe installation repairs its own configuration instead.
+    assert_eq!(
+        call(&state, &review, "GET", Value::Null, &cookie).await.0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        call(&state, &action, "POST", accept.clone(), &cookie)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    let adopted = key.clone();
+    state
+        .db
+        .write("test.adopted", move |db| {
+            db.execute(
+                "UPDATE stack_provisions SET origin='adopted' WHERE id=?1",
+                [adopted],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let changes = json!({"revision":revision,"changes":[{"path":"HostConfig.RestartPolicy.Name",
+        "change":"changed","before":"\"unless-stopped\"","after":"\"always\""}],"blocked":null});
+    state.managers.docker.lock().unwrap().extend([
+        (format!("stack/{key}/drift"), changes.clone()),
+        (
+            "stack".into(),
+            json!({"items":[{"id":key,"existence":"present","phase":"active","drift":true}]}),
+        ),
+        (format!("stack/{key}/action"), json!({"accepted":true})),
+    ]);
+    let response = call(&state, &review, "GET", Value::Null, &cookie).await;
+    assert_eq!((response.0, response.2), (StatusCode::OK, changes));
+    for unreviewed in [
+        json!({"action":"accept_configuration"}),
+        json!({"action":"accept_configuration","revision":"stale"}),
+    ] {
+        assert_eq!(
+            call(&state, &action, "POST", unreviewed, &cookie).await.0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let response = call(&state, &action, "POST", accept, &cookie).await;
+    assert_eq!(response.0, StatusCode::OK, "{}", response.2);
+}

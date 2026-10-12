@@ -73,6 +73,37 @@ async function adopt(attached) {
 async function release(id) {
   await f.api(`/admin/stack/${id}/action`, 'POST', { action: 'release' });
 }
+function backupStage(id) {
+  try {
+    const row = JSON.parse(controller('/backups').body).items.find(
+      (row) => row.id === id,
+    );
+    // Failure stages carry the controller's reason into the assertion message.
+    return row?.error && /failed|required/.test(row.stage)
+      ? `${row.stage}: ${row.error}`
+      : row?.stage;
+  } catch {
+    return 'restarting';
+  }
+}
+async function healthy() {
+  await expect
+    .poll(
+      async () => {
+        try {
+          return (
+            await f.context.request.get(`${f.base}/api/v1/health`)
+          ).status();
+        } catch {
+          return 0;
+        }
+      },
+      { timeout: 90000 },
+    )
+    .toBe(200);
+}
+const startedAt = (container) =>
+  JSON.parse(docker('inspect', container))[0].State.StartedAt;
 function updateJournal(id, change) {
   const path = `/var/lib/thelxinoe/deployment/services/${id}/service.json`;
   const key = Buffer.from(
@@ -127,7 +158,7 @@ try {
     'server-secondary-media',
   ]) {
     await scenario(
-      `backup rejects ${layout} before stopping any container`,
+      `backup leaves ${layout} running and out of the archive`,
       async () => {
         const directory = `${f.root}/${layout}`;
         const source =
@@ -160,24 +191,27 @@ try {
           (await f.stack()).items.find((row) => row.id === accepted.id)
             .capabilities.backup.available,
         ).toBe(false);
-        const before = JSON.parse(docker('inspect', attached.container))[0]
-          .State.StartedAt;
-        const rejected = controller('/backups', 'POST', {
+        const before = startedAt(attached.container);
+        const created = controller('/backups', 'POST', {
           passphrase: 'service safety fixture passphrase',
         });
-        expect(rejected.status).toBe(409);
-        expect(
-          JSON.parse(docker('inspect', attached.container))[0].State.StartedAt,
-        ).toBe(before);
-        expect(
-          (await f.context.request.get(`${f.base}/api/v1/health`)).status(),
-        ).toBe(200);
+        expect(created.status).toBe(200);
+        const backup = JSON.parse(created.body);
+        expect(backup.excluded.map((row) => row.key)).toEqual([accepted.id]);
+        expect(backup.components.map((row) => row.key)).not.toContain(
+          accepted.id,
+        );
+        await expect
+          .poll(() => backupStage(backup.id), { timeout: 180000 })
+          .toBe('complete');
+        expect(startedAt(attached.container)).toBe(before);
+        await healthy();
         await release(accepted.id);
       },
     );
   }
   await scenario(
-    'isolated imported state restores while live media stays current',
+    'isolated imported state restores only when chosen while live media stays current',
     async () => {
       const attached = await f.attach(
         'radarr',
@@ -200,15 +234,12 @@ try {
       const created = controller('/backups', 'POST', { passphrase });
       expect(created.status).toBe(200);
       const id = JSON.parse(created.body).id;
-      const stage = () => {
-        try {
-          return JSON.parse(controller('/backups').body).items.find(
-            (row) => row.id === id,
-          )?.stage;
-        } catch {
-          return 'restarting';
-        }
-      };
+      expect(
+        JSON.parse(created.body).components.find(
+          (row) => row.key === accepted.id,
+        ),
+      ).toMatchObject({ kind: 'radarr', imported: true });
+      const stage = () => backupStage(id);
       await expect.poll(stage, { timeout: 180000 }).toBe('complete');
       docker(
         'exec',
@@ -229,8 +260,22 @@ try {
         '-c',
         'printf latest > /media/movies/safety-media',
       );
+      // Without a choice, the adopted service keeps running with its live configuration.
+      const running = startedAt(attached.container);
       expect(
         controller(`/backups/${id}/restore`, 'POST', { passphrase }).status,
+      ).toBe(200);
+      await expect.poll(stage, { timeout: 180000 }).toBe('restored');
+      expect(
+        docker('exec', attached.container, 'cat', '/config/safety-marker'),
+      ).toBe('after');
+      expect(startedAt(attached.container)).toBe(running);
+      await healthy();
+      expect(
+        controller(`/backups/${id}/restore`, 'POST', {
+          passphrase,
+          components: [accepted.id],
+        }).status,
       ).toBe(200);
       await expect.poll(stage, { timeout: 180000 }).toBe('restored');
       expect(
@@ -239,25 +284,71 @@ try {
       expect(
         f.compose('exec', '-T', 'server', 'cat', '/media/movies/safety-media'),
       ).toBe('latest');
-      await expect
-        .poll(
-          async () => {
-            try {
-              return (
-                await f.context.request.get(`${f.base}/api/v1/health`)
-              ).status();
-            } catch {
-              return 0;
-            }
-          },
-          { timeout: 90000 },
-        )
-        .toBe(200);
+      // The staged swap leaves no workspace behind in the service configuration.
+      expect(
+        docker('exec', attached.container, 'ls', '-A', '/config'),
+      ).not.toContain('.thelxinoe-restore');
+      // Decrypted archives and recovery captures are plaintext; only the journal stays.
+      expect(
+        f.compose(
+          'exec',
+          '-T',
+          'controller',
+          'ls',
+          '-A',
+          `/var/lib/thelxinoe/deployment/backups/${id}`,
+        ),
+      ).toBe('operation.json');
+      await healthy();
       await release(accepted.id);
     },
   );
   await scenario(
-    'auto-remove adoption blocks stop, restart and backups and permits release',
+    'a reviewed configuration change resumes lifecycle actions on an adopted service',
+    async () => {
+      const attached = await f.attach(
+        'radarr',
+        '/existing-radarr',
+        imageManifest.services.radarr,
+        { existingLayout: true },
+      );
+      const accepted = await adopt(attached);
+      // The host changes the container outside Thelxinoe, as a NAS UI would.
+      docker('update', '--restart', 'always', attached.container);
+      await expect
+        .poll(
+          async () =>
+            (await f.stack()).items.find((row) => row.id === accepted.id)
+              ?.drift,
+        )
+        .toBe(true);
+      expect(
+        controller(`/${accepted.id}/action`, 'POST', { action: 'stop' }).status,
+      ).toBe(409);
+      const review = await f.api(`/admin/stack/${accepted.id}/drift`);
+      expect(review.blocked).toBeNull();
+      expect(review.changes).toContainEqual(
+        expect.objectContaining({
+          path: 'HostConfig.RestartPolicy.Name',
+          after: '"always"',
+        }),
+      );
+      await f.api(`/admin/stack/${accepted.id}/action`, 'POST', {
+        action: 'accept_configuration',
+        revision: review.revision,
+      });
+      expect(
+        (await f.stack()).items.find((row) => row.id === accepted.id).drift,
+      ).toBe(false);
+      for (const action of ['stop', 'start'])
+        expect(
+          controller(`/${accepted.id}/action`, 'POST', { action }).status,
+        ).toBe(200);
+      await release(accepted.id);
+    },
+  );
+  await scenario(
+    'auto-remove adoption blocks stop and restart, stays out of backups and permits release',
     async () => {
       const attached = await f.attach(
         'radarr',
@@ -272,11 +363,16 @@ try {
         expect(
           controller(`/${accepted.id}/action`, 'POST', { action }).status,
         ).toBe(409);
-      expect(
-        controller('/backups', 'POST', {
-          passphrase: 'service safety fixture passphrase',
-        }).status,
-      ).toBe(409);
+      const created = controller('/backups', 'POST', {
+        passphrase: 'service safety fixture passphrase',
+      });
+      expect(created.status).toBe(200);
+      const skipped = JSON.parse(created.body);
+      expect(skipped.excluded.map((row) => row.key)).toEqual([accepted.id]);
+      await expect
+        .poll(() => backupStage(skipped.id), { timeout: 180000 })
+        .toBe('complete');
+      await healthy();
       expect(
         JSON.parse(docker('inspect', attached.container))[0].State.Running,
       ).toBe(true);

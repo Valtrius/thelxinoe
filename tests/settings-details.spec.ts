@@ -1015,3 +1015,101 @@ test('administrator setup is centered and accepts an eight-character password', 
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });
+
+test('backup restore leaves adopted services out unless chosen', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'backups',
+  });
+  const restores: { components?: string[] }[] = [];
+  const backup = {
+    id: '11111111-1111-1111-1111-111111111111',
+    stage: 'complete',
+    created_at: 1760000000,
+    error: null,
+    archive: '11111111-1111-1111-1111-111111111111.age',
+    components: [
+      {
+        key: 'server',
+        kind: 'server',
+        name: 'thelxinoe-server',
+        imported: false,
+      },
+      {
+        key: 'prowlarr-id',
+        kind: 'prowlarr',
+        name: 'prowlarr-x',
+        imported: false,
+      },
+      { key: 'radarr-id', kind: 'radarr', name: 'radarr', imported: true },
+    ],
+    excluded: [
+      {
+        key: 'sonarr-id',
+        kind: 'sonarr',
+        name: 'sonarr',
+        reason: 'Backups need /config to be a host folder',
+      },
+    ],
+  };
+  await page.route('**/api/v1/admin/backups**', (route) => {
+    if (route.request().method() !== 'POST')
+      return route.fulfill({
+        json: {
+          items: [backup],
+          destination: '/backups',
+          policy: { policy: 'manual', retain: 7 },
+          passphrase_saved: false,
+          automatic: null,
+          window: { start: 3, end: 5 },
+        },
+      });
+    restores.push(route.request().postDataJSON());
+    return route.fulfill({ json: { ...backup, stage: 'restore-queued' } });
+  });
+  await page.goto('/');
+  await expect(
+    page.getByText('Not included: Sonarr (adopted: sonarr).'),
+  ).toBeVisible();
+  await page
+    .getByRole('switch', {
+      name: 'I understand that services will temporarily stop.',
+    })
+    .check();
+  const restore = async () => {
+    await page.getByRole('button', { name: 'Restore this backup' }).click();
+    await page
+      .getByLabel('Backup passphrase')
+      .fill('restore selection passphrase');
+    await page.getByLabel('Type RESTORE to confirm').fill('RESTORE');
+  };
+  const option = (name: string) =>
+    page.getByRole('switch', { name, exact: true });
+  const warning = page.getByText('Restoring an adopted service replaces');
+  await restore();
+  await expect(option('Thelxinoe server')).toBeChecked();
+  await expect(option('Prowlarr')).toBeChecked();
+  await expect(option('Radarr (adopted: radarr)')).not.toBeChecked();
+  await expect(warning).toHaveCount(0);
+  await page.getByRole('button', { name: 'Restore selected state' }).click();
+  await expect.poll(() => restores.length).toBe(1);
+  expect(restores[0].components).toEqual(['server', 'prowlarr-id']);
+  await restore();
+  await option('Radarr (adopted: radarr)').check();
+  await expect(warning).toBeVisible();
+  await option('Thelxinoe server').uncheck();
+  await option('Prowlarr').uncheck();
+  await page.getByRole('button', { name: 'Restore selected state' }).click();
+  await expect.poll(() => restores.length).toBe(2);
+  expect(restores[1].components).toEqual(['radarr-id']);
+  await restore();
+  for (const name of ['Thelxinoe server', 'Prowlarr'])
+    await option(name).uncheck();
+  await expect(
+    page.getByRole('button', { name: 'Restore selected state' }),
+  ).toBeDisabled();
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});

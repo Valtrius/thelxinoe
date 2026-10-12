@@ -59,7 +59,109 @@ struct PeerRoute {
     network: String,
     source_host: String,
     target: String,
-    target_names: Vec<String>,
+    reach: Reach,
+}
+/// The addresses an existing record may use for the target. Servarr masks stored
+/// credentials, so where a record points is the only evidence of the instance it reaches.
+pub(super) struct Reach {
+    names: Vec<String>,
+    internal: u16,
+    published: Vec<u16>,
+}
+impl Reach {
+    fn of(target: &Value, internal: u16) -> Self {
+        let mut names: Vec<String> = Vec::new();
+        names.extend(
+            target["name"]
+                .as_str()
+                .map(|n| n.trim_start_matches('/').to_owned()),
+        );
+        names.extend(
+            target["id"]
+                .as_str()
+                .and_then(|id| id.get(..12))
+                .map(str::to_owned),
+        );
+        // Records written in a service can use any network it shares with the target.
+        for network in target["networks"].as_array().into_iter().flatten() {
+            for key in ["address", "ipv6"] {
+                names.extend(
+                    network[key]
+                        .as_str()
+                        .filter(|v| !v.is_empty())
+                        .map(str::to_owned),
+                );
+            }
+            names.extend(
+                network["aliases"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned),
+            );
+        }
+        let published = target["ports"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|p| p["private"] == internal)
+            .filter_map(|p| u16::try_from(p["public"].as_u64()?).ok())
+            .collect();
+        Self {
+            names,
+            internal,
+            published,
+        }
+    }
+    /// Whether an address written in another service reaches this target.
+    pub(super) fn reaches(&self, host: &str, port: Option<u16>) -> bool {
+        let host = host.trim().trim_start_matches('[').trim_end_matches(']');
+        if self
+            .names
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(host))
+        {
+            return true;
+        }
+        let Some(port) = port else {
+            return false;
+        };
+        // Docker forwards a published port on every address of this host.
+        (self.published.contains(&port) && host_address(host))
+            // Containers sharing a network namespace, as with a VPN, use loopback.
+            || (port == self.internal && loopback(host))
+    }
+}
+fn loopback(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+/// Addresses another container can use for the Docker host: private, loopback,
+/// link-local and CGNAT (Tailscale) ranges, Docker's host aliases and LAN-style names.
+fn host_address(host: &str) -> bool {
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => {
+            let [first, second, ..] = ip.octets();
+            ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || (first == 100 && (64..128).contains(&second))
+        }
+        Ok(std::net::IpAddr::V6(ip)) => {
+            let first = ip.segments()[0];
+            ip.is_loopback() || first & 0xfe00 == 0xfc00 || first & 0xffc0 == 0xfe80
+        }
+        Err(_) => {
+            let host = host.to_ascii_lowercase();
+            !host.contains('.')
+                || [".local", ".lan", ".home", ".internal", ".localdomain"]
+                    .iter()
+                    .any(|suffix| host.ends_with(suffix))
+        }
+    }
 }
 async fn addresses(state: &AppState, source: &Endpoint, target: &Endpoint) -> Attempt<PeerRoute> {
     let a = docker(state, &format!("containers/{}", source.container)).await?;
@@ -81,20 +183,6 @@ async fn addresses(state: &AppState, source: &Endpoint, target: &Endpoint) -> At
             if let (Some(_), Some(target_address)) =
                 (private(&network["address"]), private(&peer["address"]))
             {
-                let mut names = vec![target_address.clone()];
-                names.extend(
-                    b["name"]
-                        .as_str()
-                        .map(|n| n.trim_start_matches('/').to_owned()),
-                );
-                names.extend(
-                    peer["aliases"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(Value::as_str)
-                        .map(str::to_owned),
-                );
                 return Ok(PeerRoute {
                     network: network["id"].as_str().unwrap().to_owned(),
                     // Docker DNS resolves this name on a network shared by the
@@ -105,7 +193,7 @@ async fn addresses(state: &AppState, source: &Endpoint, target: &Endpoint) -> At
                     } else {
                         target_address
                     },
-                    target_names: names,
+                    reach: Reach::of(&b, target.port),
                 });
             }
         }
@@ -139,7 +227,7 @@ pub(super) async fn apply(
     let route = addresses(state, source, target).await?;
     tracing::debug!(network = %route.network, source = %source.id, target = %target.id, "Selected service peer route");
     let target_address = route.target;
-    let target_names = route.target_names;
+    let reach = route.reach;
     if link.kind == "requests" {
         return requests::apply(
             state,
@@ -148,9 +236,18 @@ pub(super) async fn apply(
             target,
             &target_connection,
             &target_address,
-            &target_names,
+            &reach,
         )
         .await;
+    }
+    if link.kind != "subtitles" {
+        // Before any change to either service, including NZBGet's category.
+        let (path, implementation) = if link.kind == "application" {
+            ("applications", target.kind.as_str())
+        } else {
+            ("downloadclient", "Nzbget")
+        };
+        refuse_unmanaged(link, &c, path, implementation, &reach, source, target).await?;
     }
     if link.kind == "subtitles" {
         return bazarr(
@@ -196,16 +293,72 @@ pub(super) async fn apply(
             "movieCategory":category,"tvCategory":category,"musicCategory":category,"category":category}),
         )
     };
-    upsert(
-        state,
-        link,
-        &c,
-        path,
-        &implementation,
-        &values,
-        &target_names,
-    )
-    .await
+    upsert(state, link, &c, path, &implementation, &values).await
+}
+
+/// The host and port an existing Servarr connection record points at.
+fn record_address(record: &Value, path: &str) -> Option<(String, Option<u16>)> {
+    let field = |name: &str| {
+        record["fields"]
+            .as_array()?
+            .iter()
+            .find(|f| f["name"] == name)
+            .map(|f| f["value"].clone())
+    };
+    if path == "applications" {
+        let url = reqwest::Url::parse(field("baseUrl")?.as_str()?).ok()?;
+        return Some((url.host_str()?.to_owned(), url.port_or_known_default()));
+    }
+    let port = field("port")
+        .and_then(|p| p.as_u64().or_else(|| p.as_str()?.parse().ok()))
+        .and_then(|p| u16::try_from(p).ok());
+    Some((field("host")?.as_str()?.to_owned(), port))
+}
+
+/// Never silently adopt or duplicate a connection the administrator already made to
+/// this target, however it is addressed, including records from older auto-wiring.
+async fn refuse_unmanaged(
+    link: &Link,
+    c: &Connection<'_>,
+    path: &str,
+    implementation: &str,
+    reach: &Reach,
+    source: &Endpoint,
+    target: &Endpoint,
+) -> Attempt<()> {
+    let existing = c.get(path).await?;
+    let rows = array(&existing)?;
+    // Thelxinoe's own record, or one the upsert reports as removed.
+    if let Some(id) = link.upstream_id
+        && (rows.iter().any(|r| r["id"] == id) || !link.recreate_missing)
+    {
+        return Ok(());
+    }
+    if rows.iter().any(|r| r["name"] == marker(link)) {
+        return Ok(());
+    }
+    let found = rows
+        .iter()
+        .filter(|r| {
+            r["implementation"]
+                .as_str()
+                .is_some_and(|v| v.eq_ignore_ascii_case(implementation))
+        })
+        .find_map(|r| {
+            let (host, port) = record_address(r, path)?;
+            reach.reaches(&host, port).then_some((r, host, port))
+        });
+    if let Some((record, host, port)) = found {
+        let address = port.map_or(host.clone(), |port| format!("{host}:{port}"));
+        return Err(Failure::conflict(format!(
+            "{} already connects to {} as \"{}\" ({address}); review it in {} before adding another",
+            source.name,
+            target.name,
+            record["name"].as_str().unwrap_or("unnamed"),
+            source.name
+        )));
+    }
+    Ok(())
 }
 
 async fn ensure_category(
@@ -327,7 +480,6 @@ async fn upsert(
     path: &str,
     implementation: &str,
     values: &Value,
-    target_names: &[String],
 ) -> Attempt<()> {
     let existing = c.get(path).await?;
     let rows = array(&existing)?;
@@ -372,42 +524,7 @@ async fn upsert(
         }
         saved
     } else {
-        // Do not silently adopt or duplicate a manually configured connection
-        // to the same target, including records created by older auto-wiring.
-        let target_field = if path == "applications" {
-            "baseUrl"
-        } else {
-            "host"
-        };
-        if rows.iter().any(|r| {
-            r["implementation"]
-                .as_str()
-                .is_some_and(|v| v.eq_ignore_ascii_case(implementation))
-                && r["fields"].as_array().into_iter().flatten().any(|f| {
-                    if f["name"] != target_field {
-                        return false;
-                    }
-                    let Some(address) = f["value"].as_str() else {
-                        return false;
-                    };
-                    let host = if path == "applications" {
-                        reqwest::Url::parse(address)
-                            .ok()
-                            .and_then(|u| u.host_str().map(str::to_owned))
-                    } else {
-                        Some(address.to_owned())
-                    };
-                    host.is_some_and(|host| {
-                        target_names
-                            .iter()
-                            .any(|name| name.eq_ignore_ascii_case(&host))
-                    })
-                })
-        }) {
-            return Err(Failure::conflict(
-                "An existing connection already targets this service; review it in the service before adding another",
-            ));
-        }
+        // `refuse_unmanaged` ran before any change to either service.
         let schema = c.get(&format!("{path}/schema")).await?;
         let mut record = array(&schema)?
             .iter()
@@ -622,4 +739,73 @@ async fn bazarr(
     link.pending_hash = None;
     link.prepared = false;
     Ok(())
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use super::*;
+    #[test]
+    fn existing_records_reach_the_target_by_any_address_of_this_host() {
+        let target = json!({"id":"abcdef1234567890","name":"/nzbget",
+            "ports":[{"private":6789,"public":16789},{"private":8080,"public":18080}],
+            "networks":[{"address":"172.18.0.5","ipv6":"","aliases":["downloads"]},
+                {"address":"10.20.0.7","aliases":null}]});
+        let reach = Reach::of(&target, 6789);
+        for (host, port) in [
+            ("nzbget", None),
+            ("NZBGet", Some(1)),
+            ("abcdef123456", Some(6789)),
+            ("downloads", Some(6789)),
+            // Another network the target is on, as seen from the source.
+            ("10.20.0.7", Some(6789)),
+            ("192.168.1.50", Some(16789)),
+            ("host.docker.internal", Some(16789)),
+            ("172.17.0.1", Some(16789)),
+            ("nas", Some(16789)),
+            ("diskstation.local", Some(16789)),
+            ("100.101.102.103", Some(16789)),
+            ("[fd00::5]", Some(16789)),
+            ("localhost", Some(6789)),
+            ("127.0.0.1", Some(6789)),
+        ] {
+            assert!(reach.reaches(host, port), "{host}:{port:?}");
+        }
+        for (host, port) in [
+            // Another instance elsewhere, even on the same port.
+            ("seedbox.example.com", Some(6789)),
+            ("seedbox.example.com", Some(16789)),
+            ("203.0.113.9", Some(16789)),
+            // This host, but not the port published for this service.
+            ("192.168.1.50", Some(6789)),
+            ("192.168.1.50", Some(18080)),
+            ("192.168.1.50", None),
+        ] {
+            assert!(!reach.reaches(host, port), "{host}:{port:?}");
+        }
+    }
+    #[test]
+    fn record_addresses_follow_each_record_kind() {
+        let address = |value: Value, path| record_address(&value, path);
+        assert_eq!(
+            address(
+                json!({"fields":[{"name":"baseUrl","value":"http://192.168.1.50:17878/radarr"}]}),
+                "applications"
+            ),
+            Some(("192.168.1.50".into(), Some(17878)))
+        );
+        assert_eq!(
+            address(
+                json!({"fields":[{"name":"baseUrl","value":"https://radarr.example.com"}]}),
+                "applications"
+            ),
+            Some(("radarr.example.com".into(), Some(443)))
+        );
+        assert_eq!(
+            address(
+                json!({"fields":[{"name":"host","value":"nas"},{"name":"port","value":16789}]}),
+                "downloadclient"
+            ),
+            Some(("nas".into(), Some(16789)))
+        );
+    }
 }

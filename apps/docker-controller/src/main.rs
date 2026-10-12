@@ -39,8 +39,8 @@ async fn main() -> anyhow::Result<()> {
             "adapter-health" => {
                 contract::run(&std::env::args().nth(2).unwrap_or_default(), false).await
             }
-            "snapshot-copy" => state_copy::run(false),
-            "snapshot-restore" => state_copy::run(true),
+            "snapshot-copy" => state_copy::snapshot(false),
+            "snapshot-restore" => state_copy::snapshot(true),
             "recyclarr-import" => state_copy::import_recyclarr(),
             "appdata-remove" => state_copy::remove(),
             "verify-state" => {
@@ -54,6 +54,10 @@ async fn main() -> anyhow::Result<()> {
                     &root.join(".snapshot-validation.json"),
                     &serde_json::json!({"schema":schema,"verified":true}),
                 )
+            }
+            "accept-local" => {
+                stack::product::accept_local(std::env::args().nth(2).as_deref() == Some("--yes"))
+                    .await
             }
             "controller-probe" => store::write_json(
                 std::path::Path::new("/probe/controller.json"),
@@ -81,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
                     drop(writer);
                     anyhow::ensure!(
                         handoff,
-                        "This controller is not the accepted deployment generation"
+                        "These containers differ from the accepted deployment. After a rebuild or a Compose configuration change, review and accept them with: docker compose run --rm controller accept-local"
                     );
                 }
                 Err(e) if !handoff => return Err(e),

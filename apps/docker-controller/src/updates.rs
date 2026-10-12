@@ -343,7 +343,20 @@ pub(super) async fn copy_state(
     restore: bool,
     label: &str,
 ) -> Result<()> {
-    copy_state_inner(d, operation, source, destination, restore, label).await
+    copy_state_inner(d, operation, source, destination, restore, label, None).await
+}
+
+/// Server state, without what the server deletes at startup: an install it was
+/// stopped during can hold links a snapshot must not copy.
+pub(super) async fn copy_server_state(
+    d: &Deployment,
+    operation: &str,
+    source: &str,
+    destination: &str,
+    label: &str,
+) -> Result<()> {
+    let disposable = Some(crate::state_copy::SERVER_DISPOSABLE);
+    copy_state_inner(d, operation, source, destination, false, label, disposable).await
 }
 
 pub(super) async fn copy_adoption(
@@ -352,7 +365,7 @@ pub(super) async fn copy_adoption(
     source: &str,
     destination: &str,
 ) -> Result<()> {
-    copy_state_inner(d, operation, source, destination, false, "takeover").await
+    copy_state_inner(d, operation, source, destination, false, "takeover", None).await
 }
 
 async fn copy_state_inner(
@@ -362,6 +375,7 @@ async fn copy_state_inner(
     destination: &str,
     restore: bool,
     label: &str,
+    disposable: Option<&str>,
 ) -> Result<()> {
     let name = format!("thelxinoe-state-{}-{label}", &operation[..8]);
     let command = if label == "takeover" {
@@ -391,7 +405,16 @@ async fn copy_state_inner(
         )
         .map_err(|_| unavailable())?;
         spec["Env"] = json!([format!("THELXINOE_RECYCLARR_IMPORT_HASH={hash}")]);
+    } else if let Some(rules) = disposable {
+        spec["Env"] = json!([format!("THELXINOE_SNAPSHOT_DISPOSABLE={rules}")]);
     }
+    // The worker reports progress beside the controller's own deployment mount.
+    let progress = store::root().join("progress").join(&name);
+    reset_progress(&progress)?;
+    spec["HostConfig"]["Mounts"]
+        .as_array_mut()
+        .ok_or_else(unavailable)?
+        .push(json!({"Type":"bind","Source":format!("{}/progress/{name}",d.appdata_source),"Target":"/progress"}));
     let value = request(
         Method::POST,
         &format!("/containers/create?name={name}"),
@@ -401,12 +424,58 @@ async fn copy_state_inner(
     let container = value["Id"].as_str().ok_or_else(unavailable)?;
     let result = async {
         start(container).await?;
-        wait(container, 600).await
+        wait_copy(container, &progress.join("progress.json")).await
     }
     .await;
     let cleaned = remove(container).await;
+    let _ = std::fs::remove_dir_all(&progress);
     result?;
     cleaned
+}
+fn reset_progress(directory: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    match std::fs::remove_dir_all(directory) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(unavailable()),
+        _ => {}
+    }
+    std::fs::create_dir_all(directory).map_err(|_| unavailable())?;
+    std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))
+        .map_err(|_| unavailable())
+}
+/// Large configuration may take hours to copy; only a worker that stops reporting progress fails.
+const COPY_IDLE_LIMIT: Duration = Duration::from_secs(600);
+const COPY_TIME_LIMIT: Duration = Duration::from_secs(12 * 3600);
+async fn wait_copy(container: &str, report: &std::path::Path) -> Result<()> {
+    let started = std::time::Instant::now();
+    let mut seen = None;
+    let mut advanced = started;
+    loop {
+        let raw = engine(&format!("/containers/{container}/json")).await?;
+        if raw["State"]["Running"] == false {
+            if raw["State"]["ExitCode"] == 0 {
+                return Ok(());
+            }
+            let reason = std::fs::read(report)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .and_then(|value| value["error"].as_str().map(str::to_owned));
+            return Err(conflict(
+                reason.unwrap_or_else(|| "Isolated worker failed its contract".into()),
+            ));
+        }
+        let current = std::fs::read(report).ok();
+        if current.is_some() && current != seen {
+            seen = current;
+            advanced = std::time::Instant::now();
+        }
+        if advanced.elapsed() > COPY_IDLE_LIMIT {
+            return Err(conflict("Isolated worker stopped making progress"));
+        }
+        if started.elapsed() > COPY_TIME_LIMIT {
+            return Err(conflict("Isolated worker exceeded its time limit"));
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
 }
 pub(super) async fn wait(container: &str, seconds: u64) -> Result<()> {
     for _ in 0..seconds {

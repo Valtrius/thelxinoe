@@ -53,7 +53,7 @@ pub(super) async fn apply(
     target: &Endpoint,
     manager: &Connection<'_>,
     address: &str,
-    target_names: &[String],
+    reach: &super::Reach,
 ) -> Attempt<()> {
     if c.get("settings/public").await?["initialized"] != true {
         return Err(Failure::unavailable(
@@ -105,14 +105,23 @@ pub(super) async fn apply(
             }
             link.upstream_id = record["id"].as_i64();
             previous = Some((*record).clone());
-        } else if rows.iter().any(|r| {
-            r["hostname"]
+        } else if let Some(record) = rows.iter().find(|r| {
+            // Seerr returns stored API keys, which identify the manager exactly.
+            r["apiKey"]
                 .as_str()
-                .is_some_and(|h| target_names.iter().any(|n| n.eq_ignore_ascii_case(h)))
+                .is_some_and(|key| !key.is_empty() && key == manager.key)
+                || r["hostname"].as_str().is_some_and(|host| {
+                    let port = r["port"].as_u64().and_then(|p| u16::try_from(p).ok());
+                    reach.reaches(host, port)
+                })
         }) {
-            return Err(Failure::conflict(
-                "An existing Seerr connection already targets this manager; review it before adding another",
-            ));
+            return Err(Failure::conflict(format!(
+                "Seerr already connects to {} as \"{}\" ({}:{}); review it in Seerr before adding another",
+                target.name,
+                record["name"].as_str().unwrap_or("unnamed"),
+                record["hostname"].as_str().unwrap_or_default(),
+                record["port"]
+            )));
         }
     }
     if previous
