@@ -1,6 +1,6 @@
 <script lang="ts">
   import { desktop } from '../../../api';
-  import { Copy, ExternalLink, Play } from '@lucide/svelte';
+  import { Copy, ExternalLink, Play, Trash2 } from '@lucide/svelte';
   import type { KickChannel } from '../../types';
   import LiveCard from '../ui/LiveCard.svelte';
   import LiveCardBadge from '../ui/LiveCardBadge.svelte';
@@ -12,18 +12,22 @@
     offlineConfirmed,
     isPlaying,
     isLaunching,
+    removeDisabled,
     onWatch,
     onCopy,
     onOpen,
+    onRemove,
   }: {
     channel: KickChannel;
     playbackReady: boolean;
     offlineConfirmed: boolean;
     isPlaying: boolean;
     isLaunching: boolean;
+    removeDisabled: boolean;
     onWatch: (channel: KickChannel) => void;
     onCopy: (channel: KickChannel) => void;
     onOpen: (channel: KickChannel) => void;
+    onRemove: () => void;
   } = $props();
 
   const stream = $derived(channel.liveStream);
@@ -87,6 +91,15 @@
       onclick={() => onOpen(channel)}
     >
       <ExternalLink class="size-3.5" />
+    </CardShortcutButton>
+    <CardShortcutButton
+      platform="kick"
+      aria-label={`Stop tracking ${channel.displayName}`}
+      title="Stop tracking"
+      disabled={removeDisabled}
+      onclick={onRemove}
+    >
+      <Trash2 class="size-3.5" />
     </CardShortcutButton>
   {/snippet}
   {#snippet metadata()}
