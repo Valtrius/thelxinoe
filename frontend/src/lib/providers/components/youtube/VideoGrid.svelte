@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import type { YoutubeVideoActions } from '../../youtube-video-actions';
+  import { createStickyGroupHeaders } from '../../youtube-sticky-headers';
 
   import type {
     YoutubeCardShortcut,
@@ -73,44 +74,7 @@
     closeCardActions();
   });
 
-  function trackStickyGroupHeader(node: HTMLElement) {
-    const root = node.closest<HTMLElement>('[data-feed-scroll]');
-    const section = node.closest<HTMLElement>('section');
-    if (!root || !section) return;
-    const scrollRoot: HTMLElement = root;
-    const groupSection: HTMLElement = section;
-
-    let frame: number | null = null;
-
-    function update() {
-      frame = null;
-      const rootTop =
-        scrollRoot.getBoundingClientRect().top +
-        (Number.parseFloat(getComputedStyle(scrollRoot).paddingTop) || 0);
-      const headerTop = node.getBoundingClientRect().top;
-      const sectionTop = groupSection.getBoundingClientRect().top;
-      node.toggleAttribute(
-        'data-stuck',
-        sectionTop < rootTop && Math.abs(headerTop - rootTop) <= 1,
-      );
-    }
-
-    function scheduleUpdate() {
-      if (frame === null) frame = requestAnimationFrame(update);
-    }
-
-    scrollRoot.addEventListener('scroll', scheduleUpdate, { passive: true });
-    window.addEventListener('resize', scheduleUpdate);
-    update();
-    return {
-      destroy() {
-        scrollRoot.removeEventListener('scroll', scheduleUpdate);
-        window.removeEventListener('resize', scheduleUpdate);
-        if (frame !== null) cancelAnimationFrame(frame);
-        node.removeAttribute('data-stuck');
-      },
-    };
-  }
+  const trackStickyGroupHeader = createStickyGroupHeaders();
 
   $effect(() => {
     const target = loadMoreTarget;
@@ -144,15 +108,22 @@
       <h2
         use:trackStickyGroupHeader
         data-card-group-header
-        data-sidebar-resize="y-pos"
+        data-sidebar-resize="xy"
         data-layout-key={`youtube-group:${group.key}`}
         class="sticky top-0 z-10 border-b border-line bg-transparent py-2 text-xs font-semibold tracking-[0.08em] text-foreground uppercase data-stuck:bg-background/95 data-stuck:backdrop-blur"
       >
-        <span class="feed-group-label">{group.label}</span>
+        <span data-sidebar-resize="xy-pos" class="feed-group-label"
+          >{group.label}</span
+        >
       </h2>
     {/if}
-    <div class="pt-3" data-sidebar-resize="y">
-      <div data-card-grid class="grid items-stretch [contain:layout_style]">
+    <div class="pt-3" data-sidebar-resize="y-pos">
+      <div
+        data-card-grid
+        data-sidebar-resize="media"
+        data-sidebar-group
+        class="grid items-stretch [contain:layout_style]"
+      >
         {#each group.videos as video (video.videoId)}
           <div
             data-layout-key={`youtube-video:${video.videoId}`}

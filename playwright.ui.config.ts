@@ -14,6 +14,7 @@ export default defineConfig({
       testMatch: [
         'layout.spec.ts',
         'density.spec.ts',
+        'sidebar-motion.spec.ts',
         'home.spec.ts',
         'statistics.spec.ts',
         'provider-setup.spec.ts',

@@ -38,7 +38,7 @@
     acceptAppearance,
     type Appearance,
   } from './lib/appearance';
-  import { createSidebarMotion } from './lib/sidebar-motion';
+  import { createSidebarMotion, sidebarLayout } from './lib/sidebar-motion';
   import { syncMediaLayouts } from './lib/card-grid-zoom';
   import { createLayoutMotion, settleLayoutMotions } from './lib/layout-motion';
   import { createCardGridWheelHandler } from './lib/card-grid-wheel';
@@ -731,6 +731,8 @@
   <div
     class="app-shell flex h-dvh overflow-hidden desktop-shell:mt-8 desktop-shell:h-[calc(100dvh-32px)]"
     bind:this={shell}
+    data-sidebar-shell
+    use:sidebarMotion.connect
   >
     {#snippet navigation(currentUser: User)}
       <Sidebar
@@ -807,8 +809,9 @@
         class:provider-workspace={providerPage}
         class:settings-workspace={section === 'Settings'}
         data-feed-scroll
-        data-sidebar-resize="xy"
+        data-sidebar-resize="x"
         data-sidebar-resize-origin
+        use:sidebarLayout
         use:mediaMotion.connect
         use:zoomWheel
       >

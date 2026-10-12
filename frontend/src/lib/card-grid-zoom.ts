@@ -1,6 +1,5 @@
 import {
   cancelLayoutAnimations,
-  capturePositions,
   feedTransformPlans,
   hasTransform,
   playAnimations,
@@ -11,7 +10,11 @@ import {
   type LayoutRect,
   type PositionSnapshot,
 } from './layout-animation';
-import { captureSidebarResize, sidebarResizePlans } from './sidebar-motion';
+import {
+  captureSidebarMotion,
+  captureSidebarResize,
+  sidebarResizePlans,
+} from './sidebar-motion';
 
 const MIN_CARD_COLUMNS = 3;
 const MAX_CARD_COLUMNS = 12;
@@ -142,40 +145,6 @@ function feedResizePlans(
   return hasTransform(transform)
     ? feedTransformPlans(element, transform, final)
     : [];
-}
-
-function gridFlipPlans(
-  snapshots: PositionSnapshot[],
-  zoom: number,
-  horizontal: boolean,
-): AnimationPlan[] {
-  return snapshots.flatMap(({ element, rect }) => {
-    const final = element.getBoundingClientRect();
-    if (final.width <= 0 || final.height <= 0) return [];
-    const transform = rectTransform(rect, final, zoom);
-    if (!horizontal) {
-      transform.x = 0;
-      transform.scaleX = 1;
-    }
-    return hasTransform(transform)
-      ? [{ element, keyframes: transformKeyframes(transform) }]
-      : [];
-  });
-}
-
-function headerFlipPlans(
-  snapshots: PositionSnapshot[],
-  horizontal: boolean,
-): AnimationPlan[] {
-  return snapshots.flatMap(({ element, rect }) => {
-    const transform = rectTransform(rect, element.getBoundingClientRect());
-    if (!horizontal) transform.x = 0;
-    transform.scaleX = 1;
-    transform.scaleY = 1;
-    return hasTransform(transform)
-      ? [{ element, keyframes: transformKeyframes(transform) }]
-      : [];
-  });
 }
 
 type SidebarAnimationMode = 'scale' | 'open' | 'close';
@@ -353,13 +322,9 @@ export function scaleYoutubeMediaScope(
     if (!metrics) return;
     const motionEnabled = !prefersReducedMotion();
     const feedSnapshot =
-      motionEnabled && (animateGrid || sidebarAnimation === 'scale') && feed
+      motionEnabled && !animateGrid && sidebarAnimation === 'scale' && feed
         ? { element: feed, rect: feed.getBoundingClientRect() }
         : null;
-    const gridSnapshots =
-      animateGrid && motionEnabled ? capturePositions(grids) : [];
-    const headerSnapshots =
-      animateGrid && motionEnabled ? capturePositions(headers) : [];
     const sidebarWasHidden = sidebarScale
       ? getComputedStyle(sidebarScale).visibility === 'hidden'
       : false;
@@ -367,10 +332,27 @@ export function scaleYoutubeMediaScope(
       sidebarAnimation && sidebarScale && !sidebarWasHidden && motionEnabled
         ? sidebarScale.getBoundingClientRect()
         : null;
-    const sidebarContent = captureSidebarResize(
-      sidebarScale,
-      Boolean(sidebarAnimation && !sidebarWasHidden && motionEnabled),
-    );
+    const animateSidebar =
+      animateGrid && sidebarScale
+        ? captureSidebarMotion(node, {
+            element: sidebarScale,
+            enter: sidebarAnimation === 'open' && sidebarWasHidden,
+            exit: sidebarAnimation === 'close',
+          })
+        : undefined;
+    const sidebarContent = animateSidebar
+      ? []
+      : captureSidebarResize(
+          sidebarScale,
+          Boolean(sidebarAnimation && !sidebarWasHidden && motionEnabled),
+        );
+    const feedContent =
+      animateGrid && !animateSidebar
+        ? captureSidebarResize(node, motionEnabled).filter(
+            (snapshot) =>
+              !snapshot.element.closest('[data-youtube-watchlist-frame]'),
+          )
+        : [];
     cancelLayoutAnimations([
       ...grids,
       ...headers,
@@ -383,15 +365,17 @@ export function scaleYoutubeMediaScope(
 
     if (sidebarFrame) {
       sidebarFrame.style.width = `${metrics.sidebarWidth}px`;
-      sidebarFrame.style.height = `max(0px, calc(var(--workspace-height, ${height}px) - 12px))`;
+      sidebarFrame.style.height = `${height}px`;
     }
     if (sidebarScale) {
       sidebarScale.style.visibility =
-        options.sidebarOpen || sidebarAnimation === 'close'
+        options.sidebarOpen ||
+        sidebarAnimation === 'close' ||
+        sidebarScale.hasAttribute('data-sidebar-exit')
           ? 'visible'
           : 'hidden';
       sidebarScale.style.width = `${YOUTUBE_SIDEBAR_LOGICAL_WIDTH_PX}px`;
-      sidebarScale.style.height = `max(0px, calc((var(--workspace-height, ${height}px) - 12px) / ${metrics.scale}))`;
+      sidebarScale.style.height = `${height / metrics.scale}px`;
       sidebarScale.style.zoom = String(metrics.scale);
       sidebarScale.style.transform = 'none';
       sidebarScale.style.transformOrigin = 'top left';
@@ -406,13 +390,12 @@ export function scaleYoutubeMediaScope(
     }
 
     const plans = [
-      ...feedResizePlans(feedSnapshot, animateGrid ? 'scale' : 'width'),
-      ...gridFlipPlans(gridSnapshots, metrics.scale, !feedSnapshot),
-      ...headerFlipPlans(headerSnapshots, !feedSnapshot),
+      ...feedResizePlans(feedSnapshot, 'width'),
+      ...sidebarResizePlans(feedContent),
       ...sidebarResizePlans(sidebarContent),
     ];
     let sidebarPlan: AnimationPlan | null = null;
-    if (sidebarAnimation && sidebarScale && motionEnabled) {
+    if (!animateSidebar && sidebarAnimation && sidebarScale && motionEnabled) {
       const finalRect = sidebarScale.getBoundingClientRect();
       const startRect =
         sidebarAnimation === 'open' && sidebarWasHidden
@@ -433,7 +416,9 @@ export function scaleYoutubeMediaScope(
       if (sidebarPlan) plans.push(sidebarPlan);
     }
     const generation = ++sidebarAnimationGeneration;
-    const animations = playAnimations(plans);
+    const animations = animateSidebar
+      ? animateSidebar()
+      : playAnimations(plans);
     if (sidebarAnimation === 'close' && sidebarScale) {
       const hide = () => {
         if (
@@ -444,9 +429,15 @@ export function scaleYoutubeMediaScope(
           sidebarScale.style.visibility = 'hidden';
         }
       };
-      const animation = sidebarPlan
-        ? animations[plans.indexOf(sidebarPlan)]
-        : undefined;
+      const animation = animateSidebar
+        ? animations.find(
+            (animation) =>
+              animation.effect instanceof KeyframeEffect &&
+              animation.effect.target === sidebarScale,
+          )
+        : sidebarPlan
+          ? animations[plans.indexOf(sidebarPlan)]
+          : undefined;
       if (animation) void animation.finished.then(hide, () => undefined);
       else hide();
     }

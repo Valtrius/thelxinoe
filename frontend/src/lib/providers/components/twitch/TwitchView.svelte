@@ -308,7 +308,7 @@
     use:connectLayoutMotion
     use:scaleCardScope={cardColumns}
     onwheel={handleCardGridWheel}
-    data-sidebar-resize="x"
+    data-sidebar-resize="xy"
     class={`relative ${account ? 'pt-3 pr-1' : 'pr-3'}`}
     data-feed-content
   >
@@ -398,9 +398,11 @@
         />
       {/if}
     {:else}
-      <div class="pb-4" data-sidebar-resize="y">
+      <div class="pb-4" data-sidebar-resize="y-pos">
         <section
           data-card-grid
+          data-sidebar-resize="media"
+          data-sidebar-group
           class="grid items-stretch [contain:layout_style]"
         >
           {#each streams as stream (stream.streamId)}

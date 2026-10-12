@@ -46,6 +46,8 @@
   <div
     class={`media-card-grid mb-6 grid grid-cols-6 items-stretch gap-3 [contain:layout_style] ${className}`}
     data-card-grid
+    data-sidebar-resize="media"
+    data-sidebar-group
     aria-label={label}
   >
     {@render children()}

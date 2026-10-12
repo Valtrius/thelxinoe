@@ -225,7 +225,7 @@
 
 <div class="statistics grid min-w-0 grid-cols-1 gap-3">
   {#if user.role === 'admin'}
-    <div data-sidebar-resize="xy" class="flex flex-wrap items-end gap-3">
+    <div data-sidebar-resize="xy-pos" class="flex flex-wrap items-end gap-3">
       <select
         bind:value={scope}
         onchange={publishFilters}
@@ -241,7 +241,7 @@
     </div>
   {/if}
   <div class="flex min-w-0 flex-wrap items-center gap-2">
-    <div data-sidebar-resize="xy" class="flex">
+    <div data-sidebar-resize="xy-pos" class="flex">
       <ExclusiveChoiceGroup
         choices={ranges}
         value={range}
@@ -253,7 +253,10 @@
       />
     </div>
 
-    <div data-sidebar-resize="xy" class="ml-auto max-w-full overflow-x-auto">
+    <div
+      data-sidebar-resize="xy-pos"
+      class="ml-auto max-w-full overflow-x-auto"
+    >
       <ExclusiveChoiceGroup
         choices={platforms}
         value={platform}
@@ -265,7 +268,7 @@
       />
     </div>
     <Button
-      data-sidebar-resize="xy"
+      data-sidebar-resize="xy-pos"
       size="icon"
       variant="ghost"
       aria-label="Refresh statistics"

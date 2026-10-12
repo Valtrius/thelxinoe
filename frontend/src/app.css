@@ -205,11 +205,13 @@
   @apply [zoom:var(--media-card-inverse-scale,1)];
 }
 
+/* A non-zero duration here would give every element a transition on `all`,
+   so one inherited change would start thousands of transitions. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
-    @apply scroll-auto! duration-[0.01ms]! [animation-duration:0.01ms]! [animation-iteration-count:1]!;
+    @apply scroll-auto! duration-0! [animation-duration:0.01ms]! [animation-iteration-count:1]!;
   }
 }
 
