@@ -82,7 +82,8 @@ export async function installSidebarFixture(page: Page, section = 'YouTube') {
   let appearance = {
     theme: 'dark',
     sidebar_collapsed: false,
-    card_columns: 6,
+    poster_columns: 6,
+    video_columns: 6,
     fade_watched: true,
     thumbnail_fit: 'contain',
     audio_volume: 1,
