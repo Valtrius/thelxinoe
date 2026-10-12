@@ -371,9 +371,7 @@ test('filters synchronize, refresh stays usable during sync, switches use the sh
     await expect(page.locator('.page-header h1')).toHaveText('Twitch');
     await page.goto('/');
     await expect(page.locator('.page-header h1')).toHaveText('Twitch');
-    expect(
-      (await page.locator('.page-header').boundingBox())!.height,
-    ).toBeLessThan(55);
+    await expect(page.locator('.page-header')).toBeHidden();
     expect(errors).toEqual([]);
   } finally {
     await other.close();
