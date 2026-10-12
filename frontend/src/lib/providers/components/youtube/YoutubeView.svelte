@@ -915,8 +915,10 @@
   />
 {/snippet}
 
-{#if account && compactViewport.current && mobileWatchlistOpen}
+{#if account && compactViewport.current}
   <Drawer
+    open={mobileWatchlistOpen}
+    side="right"
     aria-label="YouTube watchlists"
     class="fixed inset-x-0 top-(--mobile-player-height) z-60 h-[calc(100dvh-var(--mobile-player-height,0px))] w-full max-w-none desktop-shell:h-[calc(100dvh-var(--mobile-player-height,0px)-32px)]"
     onClose={() => (mobileWatchlistOpen = false)}

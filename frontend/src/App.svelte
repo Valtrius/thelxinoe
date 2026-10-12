@@ -485,6 +485,17 @@
     await tick();
     if (workspace) workspace.scrollTop = scroll;
     if (focus) {
+      const navigationDrawer = document.getElementById('mobile-navigation');
+      if (
+        navigationDrawer instanceof HTMLDialogElement &&
+        navigationDrawer.open
+      )
+        await new Promise<void>((resolve) =>
+          navigationDrawer.addEventListener('close', () => resolve(), {
+            once: true,
+          }),
+        );
+      if (routeHref(destination) !== routeHref(route)) return;
       const heading = main?.querySelector<HTMLElement>('header h1');
       if (heading) {
         heading.tabIndex = -1;
@@ -745,17 +756,16 @@
       />
     {/snippet}
     {#if compact}
-      {#if mobileNavOpen}
-        <Drawer
-          modal
-          id="mobile-navigation"
-          aria-label="Navigation menu"
-          class="inset-0 h-dvh w-64 max-w-[calc(100vw-3rem)] backdrop:bg-black/53 desktop-shell:h-[calc(100dvh-32px)]"
-          onClose={() => (mobileNavOpen = false)}
-        >
-          {@render navigation(user)}
-        </Drawer>
-      {/if}
+      <Drawer
+        modal
+        open={mobileNavOpen}
+        id="mobile-navigation"
+        aria-label="Navigation menu"
+        class="inset-0 h-dvh w-64 max-w-[calc(100vw-3rem)] backdrop:bg-black/53 desktop-shell:h-[calc(100dvh-32px)]"
+        onClose={() => (mobileNavOpen = false)}
+      >
+        {@render navigation(user)}
+      </Drawer>
     {:else}
       {@render navigation(user)}
     {/if}
