@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { SvelteMap } from 'svelte/reactivity';
   import type { YoutubeVideoActions } from '../../youtube-video-actions';
+  import { createStickyGroupHeaders } from '../../youtube-sticky-headers';
 
   import type {
     YoutubeCardShortcut,
@@ -74,71 +74,7 @@
     closeCardActions();
   });
 
-  const stickyHeaders = new SvelteMap<HTMLElement, HTMLElement>();
-  let stickyRoot: HTMLElement | null = null;
-  let stickyShell: HTMLElement | null = null;
-  let stickyResize: ResizeObserver | null = null;
-  let stickyFrame: number | null = null;
-
-  function updateStickyHeaders() {
-    stickyFrame = null;
-    if (!stickyRoot) return;
-    const rootTop =
-      stickyRoot.getBoundingClientRect().top +
-      (Number.parseFloat(getComputedStyle(stickyRoot).paddingTop) || 0);
-    const states = [...stickyHeaders].map(([header, section]) => ({
-      header,
-      stuck:
-        section.getBoundingClientRect().top < rootTop &&
-        Math.abs(header.getBoundingClientRect().top - rootTop) <= 1,
-    }));
-    for (const { header, stuck } of states)
-      header.toggleAttribute('data-stuck', stuck);
-  }
-
-  function scheduleStickyHeaders() {
-    if (stickyFrame === null)
-      stickyFrame = requestAnimationFrame(updateStickyHeaders);
-  }
-
-  function trackStickyGroupHeader(node: HTMLElement) {
-    const root = node.closest<HTMLElement>('[data-feed-scroll]');
-    const section = node.closest<HTMLElement>('section');
-    if (!root || !section) return;
-    if (!stickyRoot) {
-      stickyRoot = root;
-      stickyShell = root.closest('[data-sidebar-shell]');
-      stickyResize = new ResizeObserver(scheduleStickyHeaders);
-      stickyResize.observe(root);
-      root.addEventListener('scroll', scheduleStickyHeaders, { passive: true });
-      stickyShell?.addEventListener(
-        'sidebar-motion-end',
-        scheduleStickyHeaders,
-      );
-    }
-    stickyHeaders.set(node, section);
-    stickyResize?.observe(section);
-    scheduleStickyHeaders();
-    return {
-      destroy() {
-        stickyHeaders.delete(node);
-        stickyResize?.unobserve(section);
-        node.removeAttribute('data-stuck');
-        if (stickyHeaders.size > 0) return;
-        stickyRoot?.removeEventListener('scroll', scheduleStickyHeaders);
-        stickyShell?.removeEventListener(
-          'sidebar-motion-end',
-          scheduleStickyHeaders,
-        );
-        stickyResize?.disconnect();
-        if (stickyFrame !== null) cancelAnimationFrame(stickyFrame);
-        stickyFrame = null;
-        stickyRoot = null;
-        stickyShell = null;
-        stickyResize = null;
-      },
-    };
-  }
+  const trackStickyGroupHeader = createStickyGroupHeaders();
 
   $effect(() => {
     const target = loadMoreTarget;
