@@ -1,5 +1,6 @@
 import Hls from 'hls.js';
-import { api, serverUrl } from './api';
+import { api, ApiError, serverUrl } from './api';
+import { captureSession } from './session';
 
 export type MediaChoice = {
   kind?: string;
@@ -7,6 +8,7 @@ export type MediaChoice = {
   title: string;
   fileId?: string;
   restore?: boolean;
+  resolveYoutube?: boolean;
   position?: number;
   queueIndex?: number;
   queue_context?: { client_id: string; revision: number; index: number };
@@ -115,18 +117,60 @@ export function capabilities() {
 export function mediaUrl(path: string) {
   return `${serverUrl()}${path}`;
 }
+export type Preparation = {
+  signal: AbortSignal;
+  waiting?: (value: boolean) => void;
+};
+export async function playbackRequest<T>(
+  request: () => Promise<T>,
+  preparation: Preparation,
+): Promise<T> {
+  const { signal, waiting } = preparation;
+  const ownsSession = captureSession();
+  try {
+    for (;;) {
+      signal.throwIfAborted();
+      if (!ownsSession())
+        throw new DOMException('Playback canceled', 'AbortError');
+      try {
+        return await request();
+      } catch (error) {
+        if (!(error instanceof ApiError) || error.code !== 'tools_preparing')
+          throw error;
+        signal.throwIfAborted();
+        waiting?.(true);
+        await new Promise<void>((resolve, reject) => {
+          const cancel = () => {
+            clearTimeout(timer);
+            reject(signal.reason);
+          };
+          const timer = setTimeout(() => {
+            signal.removeEventListener('abort', cancel);
+            resolve();
+          }, 1000);
+          signal.addEventListener('abort', cancel, { once: true });
+        });
+      }
+    }
+  } finally {
+    waiting?.(false);
+  }
+}
 export function prepare(
   choice: MediaChoice,
   options: Options,
   position?: number,
+  preparation?: Preparation,
 ) {
-  return api<Playback>('/playback', 'POST', {
+  const body = {
     media_id: choice.id,
     file_id: choice.fileId,
     options,
     position: position ?? choice.position,
     queue: choice.queue_context,
-  });
+  };
+  const request = () => api<Playback>('/playback', 'POST', body);
+  return preparation ? playbackRequest(request, preparation) : request();
 }
 export function replayGain(probe: Probe, mode: string): number {
   if (mode === 'off') return 1;

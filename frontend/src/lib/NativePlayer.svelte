@@ -6,7 +6,11 @@
   import { onDestroy, untrack } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-  import { time, type MediaChoice } from './playback';
+  import { playbackRequest, time, type MediaChoice } from './playback';
+  import { api, ApiError } from './api';
+  import { toolsApi } from './providers/tools-api';
+  import { toolOperationActive } from './providers/tools-presentation';
+  import { LoaderCircle } from '@lucide/svelte';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
 
@@ -31,20 +35,59 @@
   }>();
   let view = $state<View | null>(null),
     error = $state(''),
-    busy = $state(false);
+    busy = $state(true),
+    waitingTools = $state(false);
+  const preparing = $derived(busy || view?.status === 'starting');
   let unsubscribe: UnlistenFn | undefined,
     generation = 0;
+  let preparation = new AbortController();
   $effect(() => {
     const selected = choice;
     untrack(() => void open(selected));
   });
   async function open(selected: MediaChoice) {
+    preparation.abort();
+    preparation = new AbortController();
     const revision = ++generation;
     busy = true;
+    waitingTools = false;
     error = '';
+    view = null;
+    const pending = {
+      signal: preparation.signal,
+      waiting: (value: boolean) => {
+        if (generation === revision) waitingTools = value;
+      },
+    };
     try {
+      if (!selected.restore)
+        await playbackRequest(async () => {
+          const snapshot = await toolsApi.get();
+          const mpv = snapshot.tools.find((tool) => tool.id === 'mpv');
+          if (
+            mpv?.preference.source === 'managed' &&
+            (!mpv.selectedPath || mpv.diagnostic?.detected === false) &&
+            snapshot.operation.tool === 'mpv' &&
+            toolOperationActive(snapshot.operation)
+          )
+            throw new ApiError(
+              503,
+              'tools_preparing',
+              'Waiting for playback tools…',
+            );
+        }, pending);
+      if (generation !== revision) return;
+      if (selected.resolveYoutube)
+        await playbackRequest(
+          () =>
+            api('/online/youtube/resolve', 'POST', {
+              video_id: selected.id.slice('youtube:'.length),
+            }),
+          pending,
+        );
+      if (generation !== revision) return;
       unsubscribe?.();
-      unsubscribe = await listen<View>('mpv-state', (event) => {
+      const listener = await listen<View>('mpv-state', (event) => {
         if (generation === revision) {
           view = event.payload;
           if (event.payload.error) error = event.payload.error;
@@ -56,6 +99,11 @@
             closed(selected);
         }
       });
+      if (generation !== revision) {
+        listener();
+        return;
+      }
+      unsubscribe = listener;
       const result = selected.restore
         ? await invoke<View>('mpv_state')
         : await invoke<View>('mpv_play', {
@@ -65,39 +113,65 @@
           });
       if (generation === revision) view = result;
     } catch (e) {
-      error = String(e);
+      if (generation === revision) error = String(e);
     } finally {
       if (generation === revision) busy = false;
     }
   }
+  async function close() {
+    const closing = choice;
+    const revision = ++generation;
+    preparation.abort();
+    await command('stop');
+    if (generation === revision) {
+      busy = false;
+      view = null;
+    }
+    closed(closing);
+  }
   async function command(command: string, value?: number) {
+    const revision = generation;
     try {
       await invoke('mpv_command', { command, value: value ?? null });
     } catch (e) {
-      error = String(e);
+      if (generation === revision) error = String(e);
     }
   }
   onDestroy(() => {
     generation++;
+    preparation.abort();
     unsubscribe?.();
+    if (preparing)
+      void invoke('mpv_command', { command: 'stop', value: null }).catch(
+        () => {},
+      );
   });
 </script>
 
-{#if choice.kind === 'track'}<Panel aria-label="Native player">
+{#if choice.kind === 'track' || preparing || error}<Panel
+    aria-label="Native player"
+  >
     <SectionHeading>
       <h2>{view?.title ?? choice.title}</h2>
-      <Button
-        variant="secondary"
-        size="form"
-        onclick={async () => {
-          const closing = choice;
-          await command('stop');
-          closed(closing);
-        }}>Close player</Button
+      <Button variant="secondary" size="form" onclick={() => void close()}
+        >Close player</Button
       >
     </SectionHeading>
     {#if error}<Notice variant="error" role="alert">{error}</Notice
-      >{/if}{#if busy}<p role="status">Opening MPV…</p>{/if}
+      >{/if}{#if preparing}<p
+        role="status"
+        class="flex items-center justify-center gap-3 py-10"
+      >
+        <LoaderCircle
+          size={32}
+          class="animate-spin text-accent motion-reduce:animate-none"
+        />{waitingTools ? 'Waiting for playback tools…' : 'Preparing playback…'}
+      </p>{/if}
+    {#if error}<Button
+        variant="secondary"
+        size="form"
+        onclick={() => void open(choice)}>Retry playback</Button
+      >{/if}
     {#if view}<p class="text-muted">
         {view.music
           ? 'Music plays through MPV.'
@@ -108,7 +182,7 @@
       >
         <Button
           size="form"
-          disabled={busy || view.status === 'stopped'}
+          disabled={preparing || view.status === 'stopped'}
           onclick={() => void command('pause')}
           >{view.paused ? 'Play' : 'Pause'}</Button
         >{#if view.music}<Button
@@ -148,5 +222,4 @@
       {#if view.count > 1}<p class="text-muted">
           Track {view.index + 1} of {view.count}
         </p>{/if}{/if}
-  </Panel>{:else if error}<Notice variant="error" role="alert">{error}</Notice
-  >{/if}
+  </Panel>{/if}

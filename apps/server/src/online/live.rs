@@ -61,6 +61,7 @@ pub(crate) async fn extract(state: &AppState, media: &str) -> Result<RemoteSourc
     {
         return Err(ApiError::bad("Invalid channel identity"));
     }
+    crate::tools::require(state, &["streamlink"]).await?;
     let _permit = state
         .online
         .extraction

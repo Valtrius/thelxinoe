@@ -327,7 +327,31 @@ async fn changed(state: &AppState) -> anyhow::Result<()> {
     state.emit(None, "tools.changed", json!({})).await
 }
 pub(crate) async fn ready(state: &AppState) -> Result<OnlineSnapshot> {
+    require(state, &["yt-dlp", "deno", "ffmpeg"]).await?;
     state.tools.runtime.online().map_err(|_|ApiError::conflict("Server tools are unavailable. An administrator can install or repair them in Settings → Server."))
+}
+pub(crate) async fn require(state: &AppState, tools: &[&str]) -> Result<()> {
+    let missing = tools
+        .iter()
+        .filter(|tool| state.tools.runtime.package(tool).is_err())
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let jobs = storage::jobs(&state.db).await?;
+    if missing.iter().all(|tool| {
+        jobs.iter()
+            .any(|job| job.tool == **tool && job.action != "check" && job.pending())
+    }) {
+        return Err(ApiError(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "tools_preparing",
+            "Waiting for playback tools…".into(),
+        ));
+    }
+    Err(ApiError::conflict(
+        "Playback tools are unavailable. An administrator can install or repair them in Settings → Server.",
+    ))
 }
 pub(crate) async fn selection(state: &AppState) -> anyhow::Result<Option<OnlineSnapshot>> {
     Ok(state.tools.runtime.online().ok())

@@ -23,32 +23,40 @@ impl Backend {
         })
     }
     pub async fn call(&self, path: &str, method: &str, body: Option<Value>) -> Result<Value> {
-        let mut request = self
-            .client
-            .request(method.parse()?, format!("{}/api/v1{path}", self.origin))
-            .bearer_auth(&self.token)
-            .header("X-Thelxinoe-Client", "1")
-            .header("X-Thelxinoe-API", thelxinoe_core::API_VERSION.to_string());
-        if let Some(body) = body {
-            request = request.json(&body);
+        loop {
+            let mut request = self
+                .client
+                .request(method.parse()?, format!("{}/api/v1{path}", self.origin))
+                .bearer_auth(&self.token)
+                .header("X-Thelxinoe-Client", "1")
+                .header("X-Thelxinoe-API", thelxinoe_core::API_VERSION.to_string());
+            if let Some(body) = &body {
+                request = request.json(body);
+            }
+            let response = request
+                .send()
+                .await
+                .map_err(|_| anyhow::anyhow!("The server connection was interrupted"))?;
+            let status = response.status();
+            let value: Value = response
+                .json()
+                .await
+                .map_err(|_| anyhow::anyhow!("The server returned an invalid response"))?;
+            if !status.is_success() {
+                if status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+                    && value["error"]["code"] == "tools_preparing"
+                {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+                bail!(
+                    "{}",
+                    value["error"]["message"]
+                        .as_str()
+                        .unwrap_or("The server rejected the playback request")
+                );
+            }
+            return Ok(value);
         }
-        let response = request
-            .send()
-            .await
-            .map_err(|_| anyhow::anyhow!("The server connection was interrupted"))?;
-        let status = response.status();
-        let value: Value = response
-            .json()
-            .await
-            .map_err(|_| anyhow::anyhow!("The server returned an invalid response"))?;
-        if !status.is_success() {
-            bail!(
-                "{}",
-                value["error"]["message"]
-                    .as_str()
-                    .unwrap_or("The server rejected the playback request")
-            );
-        }
-        Ok(value)
     }
 }

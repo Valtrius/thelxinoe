@@ -30,6 +30,7 @@
     qualityOptions,
     mediaUrl,
     prepare,
+    playbackRequest,
     time,
     replayGain,
     type MediaChoice,
@@ -83,6 +84,7 @@
     info = $state<MediaInfo | null>(null),
     error = $state(''),
     busy = $state(true),
+    waitingTools = $state(false),
     buffering = $state(true),
     paused = $state(true),
     position = $state(0),
@@ -465,6 +467,7 @@
     }
   }
   let activity = new PlaybackActivity();
+  let preparation = new AbortController();
   function waiting() {
     if (!active) return;
     buffering = true;
@@ -478,6 +481,9 @@
     untrack(() => void open(current));
   });
   async function open(current: MediaChoice) {
+    preparation.abort();
+    preparation = new AbortController();
+    waitingTools = false;
     clearSideTap();
     tapSeek = undefined;
     const revision = ++generation;
@@ -489,8 +495,26 @@
     await stop();
     if (revision !== generation) return;
     position = 0;
+    const pending = {
+      signal: preparation.signal,
+      waiting: (value: boolean) => {
+        if (revision === generation) waitingTools = value;
+      },
+    };
     try {
-      const loaded = await api<MediaInfo>(`/catalog/${current.id}/playback`);
+      if (current.resolveYoutube)
+        await playbackRequest(
+          () =>
+            api('/online/youtube/resolve', 'POST', {
+              video_id: current.id.slice('youtube:'.length),
+            }),
+          pending,
+        );
+      if (revision !== generation) return;
+      const loaded = await playbackRequest(
+        () => api<MediaInfo>(`/catalog/${current.id}/playback`),
+        pending,
+      );
       if (revision !== generation) return;
       info = loaded;
       quality = loaded.preferences.quality;
@@ -513,6 +537,12 @@
         capabilities: capabilities(),
       },
       at,
+      {
+        signal: preparation.signal,
+        waiting: (value) => {
+          if (revision === generation) waitingTools = value;
+        },
+      },
     );
     if (revision === generation && active) await stop();
     if (revision !== generation) {
@@ -725,6 +755,7 @@
     }
   }
   onDestroy(() => {
+    preparation.abort();
     generation++;
     clearInterval(timer);
     clearTimeout(hideTimer);
@@ -806,6 +837,7 @@
     : undefined}
   transition:playerReveal|global
   onoutrostart={() => {
+    preparation.abort();
     generation++;
     fullscreenRevision++;
     clearSideTap();
@@ -961,7 +993,11 @@
         class="m-0 max-w-120 wrap-anywhere text-[13px]"
         data-sidebar-resize="xy-pos"
       >
-        {busy ? 'Preparing playback…' : 'Buffering…'}
+        {waitingTools
+          ? 'Waiting for playback tools…'
+          : busy
+            ? 'Preparing playback…'
+            : 'Buffering…'}
       </p>
     </div>
   {/if}
