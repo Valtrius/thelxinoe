@@ -138,8 +138,9 @@ export type OnlineAccount = {
     updated_at?: number;
   };
   pending?: {
-    user_code: string;
-    verification_uri: string;
+    phase?: 'waiting' | 'connecting' | 'failed';
+    user_code?: string;
+    verification_uri?: string;
     expires_at: number;
     error: string | null;
   } | null;
@@ -330,6 +331,7 @@ export const api = {
   cancelTwitchAuth: async (_id: string) => {
     void _id;
     await request('/online/twitch/authorization', 'DELETE');
+    window.dispatchEvent(new Event('thelxinoe-provider-auth-cancelled'));
   },
   syncTwitch: async () => {
     await request('/online/twitch/sync', 'POST');

@@ -38,14 +38,20 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 pub async fn run(state: AppState) -> anyhow::Result<()> {
+    tokio::try_join!(
+        sync::run(state.clone()),
+        twitch::run(state.clone()),
+        kick::run(state.clone()),
+        run_extraction(state.clone())
+    )?;
+    Ok(())
+}
+async fn run_extraction(state: AppState) -> anyhow::Result<()> {
     state.tools.wait_ready().await;
     state.online.streamlink.warm(&state).await;
     tokio::try_join!(
-        sync::run(state.clone()),
         sync::run_classifications(state.clone()),
         downloads::run_watchlists(state.clone()),
-        twitch::run(state.clone()),
-        kick::run(state.clone()),
         state.online.youtube_worker.run(&state)
     )?;
     Ok(())
@@ -373,6 +379,7 @@ async fn configure(
 async fn account(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
     let user = p.user.id.clone();
+    let pending = oauth::pending(&state, user.clone()).await?;
     let sync = storage::account_read_youtube_sync(&state.db, user).await?;
     let account = storage::account_read_online_accounts(&state.db, p)
         .await?
@@ -380,7 +387,7 @@ async fn account(State(state): State<AppState>, headers: HeaderMap) -> Result<Js
             json!({"status":"disconnected","display_name":"","external_id":"","avatar_url":null}),
         );
     Ok(Json(
-        json!({"account":account,"sync":sync,"downloads_enabled":downloads::enabled(&state).await?,"configured":google(&state).await.is_ok(),"linking_available":redirect_uri(&state).is_ok(),"linking_url":state.config.public_url.as_ref().map(|u|format!("{}/?section=YouTube",u.origin().ascii_serialization())),"quota":quota::status(&state).await?}),
+        json!({"account":account,"pending":pending,"sync":sync,"downloads_enabled":downloads::enabled(&state).await?,"configured":google(&state).await.is_ok(),"linking_available":redirect_uri(&state).is_ok(),"linking_url":state.config.public_url.as_ref().map(|u|format!("{}/?section=YouTube",u.origin().ascii_serialization())),"quota":quota::status(&state).await?}),
     ))
 }
 async fn disconnect(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
@@ -421,3 +428,5 @@ async fn bounded_response(
 mod home_tests;
 #[cfg(test)]
 mod presentation_tests;
+#[cfg(test)]
+pub(crate) use twitch::tests::startup_fixture as twitch_startup_fixture;

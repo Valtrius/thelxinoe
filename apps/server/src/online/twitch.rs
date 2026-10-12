@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thelxinoe_core::{Capability, id, now};
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 const SCOPE: &str = "user:read:follows";
 pub(super) struct Runtime {
     auth: String,
@@ -130,15 +130,14 @@ async fn response(
 async fn account(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
     let data = storage::account(&state.db, p).await?;
-    let pending = if let Some((generation, encrypted, expires, error)) = data.1 {
-        let device: Device = serde_json::from_slice(
-            &state
-                .secrets
-                .decrypt(&format!("twitch-device:{generation}"), &encrypted)?,
-        )
+    let pending = if let Some(attempt) = data.1 {
+        let device: Device = serde_json::from_slice(&state.secrets.decrypt(
+            &format!("twitch-device:{}", attempt.generation),
+            &attempt.device,
+        )?)
         .map_err(|_| provider_error())?;
         Some(
-            json!({"user_code":device.user_code,"verification_uri":device.verification_uri,"expires_at":expires,"error":error}),
+            json!({"phase":attempt.phase,"user_code":device.user_code,"verification_uri":device.verification_uri,"expires_at":attempt.expires_at,"error":attempt.error}),
         )
     } else {
         None
@@ -195,6 +194,7 @@ async fn start(State(state): State<AppState>, headers: HeaderMap) -> Result<Json
         &serde_json::to_vec(&device).expect("device serialization"),
     )?;
     let hash = thelxinoe_auth::digest(&client);
+    let user = p.user.id.clone();
     let stored = storage::start_write_twitch_attempts(
         &state.db, p, generation, expires, interval, encrypted, hash,
     )
@@ -202,6 +202,13 @@ async fn start(State(state): State<AppState>, headers: HeaderMap) -> Result<Json
     if !stored {
         return Err(ApiError::conflict("The connection attempt was cancelled"));
     }
+    state
+        .emit(
+            Some(user),
+            "online.account.changed",
+            json!({"provider":"twitch"}),
+        )
+        .await?;
     Ok(Json(
         json!({"user_code":device.user_code,"verification_uri":device.verification_uri,"expires_at":expires}),
     ))
@@ -314,6 +321,16 @@ async fn poll(state: &AppState, a: &Attempt) -> Result<()> {
         return Ok(());
     }
     let credential = tokens(value)?;
+    if !storage::mark_connecting(&state.db, a.user.clone(), a.generation.clone()).await? {
+        return Ok(());
+    }
+    state
+        .emit(
+            Some(a.user.clone()),
+            "online.account.changed",
+            json!({"provider":"twitch"}),
+        )
+        .await?;
     let v = validate(state, &client, &credential.access_token).await?;
     let encrypted = state.secrets.encrypt(
         &format!("twitch:{}", a.user),
@@ -338,17 +355,38 @@ async fn poll(state: &AppState, a: &Attempt) -> Result<()> {
 pub(super) async fn run(state: AppState) -> anyhow::Result<()> {
     // Force validation on server startup in addition to the hourly check.
     storage::run_write_twitch_sync(&state.db).await?;
+    tokio::try_join!(run_authorizations(&state), run_sync(&state))?;
+    Ok(())
+}
+
+async fn run_authorizations(state: &AppState) -> anyhow::Result<()> {
     loop {
-        if !super::availability::enabled(&state, "twitch").await? {
+        if !super::availability::enabled(state, "twitch").await? {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             continue;
         }
-        if let Some(a) = claim_attempt(&state).await?
-            && let Err(error) = poll(&state, &a).await
+        if let Some(a) = claim_attempt(state).await?
+            && let Err(error) = poll(state, &a).await
         {
             storage::run_write_twitch_attempts(a, error, &state.db).await?;
         }
-        sync_tick(&state).await?;
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+}
+
+async fn run_sync(state: &AppState) -> anyhow::Result<()> {
+    let mut profiles = tokio::task::JoinSet::new();
+    loop {
+        while let Some(result) = profiles.try_join_next() {
+            result??;
+        }
+        if super::availability::enabled(state, "twitch").await?
+            && let Some(lookup) = sync_tick(state).await?
+            && profiles.len() < 2
+        {
+            let state = state.clone();
+            profiles.spawn(async move { sync_profiles(&state, lookup).await });
+        }
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }
@@ -364,15 +402,28 @@ struct Turn {
     pages: u32,
     failures: u32,
 }
-async fn sync_tick(state: &AppState) -> anyhow::Result<()> {
-    let turn = storage::sync_tick_write_twitch_sync(&state.db).await?;
-    let Some(t) = turn else { return Ok(()) };
-    if let Err(error) = sync_step(state, &t).await {
-        storage::sync_tick_write_online_accounts(t, error, &state.db).await?;
-    }
-    Ok(())
+struct ProfileLookup {
+    user: String,
+    generation: String,
+    external: String,
+    snapshot: String,
+    client: String,
+    access: String,
+    ids: Vec<String>,
 }
-async fn sync_step(state: &AppState, t: &Turn) -> Result<()> {
+
+async fn sync_tick(state: &AppState) -> anyhow::Result<Option<ProfileLookup>> {
+    let turn = storage::sync_tick_write_twitch_sync(&state.db).await?;
+    let Some(t) = turn else { return Ok(None) };
+    match sync_step(state, &t).await {
+        Ok(profiles) => Ok(profiles),
+        Err(error) => {
+            storage::sync_tick_write_online_accounts(t, error, &state.db).await?;
+            Ok(None)
+        }
+    }
+}
+async fn sync_step(state: &AppState, t: &Turn) -> Result<Option<ProfileLookup>> {
     let client = client(state).await?;
     let mut credential: Credential = serde_json::from_slice(
         &state
@@ -414,7 +465,7 @@ async fn sync_step(state: &AppState, t: &Turn) -> Result<()> {
             storage::sync_step_write_online_accounts(encrypted, user, generation, &state.db)
                 .await?;
         if !changed {
-            return Ok(());
+            return Ok(None);
         }
     }
     if refresh || t.validated <= now() - 3500 {
@@ -440,13 +491,13 @@ async fn sync_step(state: &AppState, t: &Turn) -> Result<()> {
             ]),
     )
     .await?;
-    let mut reset = headers
+    let reset = headers
         .get("ratelimit-reset")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(now() + 60)
         .clamp(now() + 1, now() + 3600);
-    let mut limited = status == axum::http::StatusCode::TOO_MANY_REQUESTS
+    let limited = status == axum::http::StatusCode::TOO_MANY_REQUESTS
         || headers.get("ratelimit-remaining").is_some_and(|v| v == "0");
     if limited {
         let user = t.user.clone();
@@ -489,95 +540,122 @@ async fn sync_step(state: &AppState, t: &Turn) -> Result<()> {
             return Err(provider_error());
         }
     }
-    let mut profiles = std::collections::HashMap::<String, String>::new();
     let owner = t.user.clone();
     let profile_due = storage::sync_step_read_online_accounts(owner, &state.db).await?;
-    let mut own_profile = None;
-    if !limited {
-        let mut ids = rows
-            .iter()
-            .filter_map(|r| r["user_id"].as_str().map(|id| ("id", id)))
-            .collect::<Vec<_>>();
-        if profile_due && !ids.iter().any(|(_, id)| *id == t.external) {
-            ids.push(("id", t.external.as_str()));
-        }
-        for ids in ids.chunks(100) {
-            if let Ok((profile_status, profile_headers, users)) = response(
-                state
-                    .online
-                    .http
-                    .get(format!("{}/users", state.online.twitch.api))
-                    .bearer_auth(&credential.access_token)
-                    .header("Client-Id", &client)
-                    .query(ids),
-            )
-            .await
-            {
-                if profile_status == axum::http::StatusCode::TOO_MANY_REQUESTS
-                    || profile_headers
-                        .get("ratelimit-remaining")
-                        .is_some_and(|v| v == "0")
-                {
-                    limited = true;
-                    reset = profile_headers
-                        .get("ratelimit-reset")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(now() + 60)
-                        .clamp(now() + 1, now() + 3600);
-                }
-                if profile_status.is_success()
-                    && let Some(users) = users["data"].as_array()
-                {
-                    for user in users.iter().take(100) {
-                        if user["id"].as_str() == Some(t.external.as_str()) {
-                            own_profile = Some((
-                                user["display_name"]
-                                    .as_str()
-                                    .map(|name| name.chars().take(200).collect::<String>()),
-                                super::public_image(user["profile_image_url"].as_str()),
-                            ));
-                        }
-                        if let (Some(id), Some(image)) = (
-                            user["id"].as_str(),
-                            super::public_image(user["profile_image_url"].as_str()),
-                        ) {
-                            profiles.insert(id.to_owned(), image);
-                        }
-                    }
-                }
-            }
-            if limited {
-                break;
-            }
-        }
+    let mut ids = rows
+        .iter()
+        .filter_map(|r| r["user_id"].as_str().map(String::from))
+        .collect::<Vec<_>>();
+    if profile_due && !ids.contains(&t.external) {
+        ids.push(t.external.clone());
     }
-    let user = t.user.clone();
-    let generation = t.generation.clone();
     let snapshot = if t.snapshot.is_empty() {
         id()
     } else {
         t.snapshot.clone()
     };
-    let profile_changed = storage::save_sync_page(
+    let saved = storage::save_sync_page(
         &state.db,
         storage::SyncPage {
             reset,
             limited,
             rows,
             next,
-            profiles,
-            own_profile,
-            user,
-            generation,
-            snapshot,
+            user: t.user.clone(),
+            generation: t.generation.clone(),
+            snapshot: snapshot.clone(),
         },
     )
     .await?;
+    if !saved {
+        return Ok(None);
+    }
+    state
+        .emit(
+            Some(t.user.clone()),
+            "online.account.changed",
+            json!({"provider":"twitch"}),
+        )
+        .await?;
+    Ok((!limited && !ids.is_empty()).then_some(ProfileLookup {
+        user: t.user.clone(),
+        generation: t.generation.clone(),
+        external: t.external.clone(),
+        snapshot,
+        client,
+        access: credential.access_token,
+        ids,
+    }))
+}
+
+async fn sync_profiles(state: &AppState, lookup: ProfileLookup) -> anyhow::Result<()> {
+    let mut profiles = std::collections::HashMap::<String, String>::new();
+    let mut own_profile = None;
+    for ids in lookup.ids.chunks(100) {
+        let query = ids.iter().map(|id| ("id", id)).collect::<Vec<_>>();
+        let mut limited = false;
+        if let Ok((profile_status, profile_headers, users)) = response(
+            state
+                .online
+                .http
+                .get(format!("{}/users", state.online.twitch.api))
+                .bearer_auth(&lookup.access)
+                .header("Client-Id", &lookup.client)
+                .query(&query),
+        )
+        .await
+        {
+            if profile_status == axum::http::StatusCode::TOO_MANY_REQUESTS
+                || profile_headers
+                    .get("ratelimit-remaining")
+                    .is_some_and(|v| v == "0")
+            {
+                limited = true;
+                let reset = profile_headers
+                    .get("ratelimit-reset")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(now() + 60)
+                    .clamp(now() + 1, now() + 3600);
+                storage::sync_step_write_twitch_sync(
+                    reset,
+                    lookup.user.clone(),
+                    lookup.generation.clone(),
+                    &state.db,
+                )
+                .await?;
+            }
+            if profile_status.is_success()
+                && let Some(users) = users["data"].as_array()
+            {
+                for user in users.iter().take(100) {
+                    if user["id"].as_str() == Some(lookup.external.as_str()) {
+                        own_profile = Some((
+                            user["display_name"]
+                                .as_str()
+                                .map(|name| name.chars().take(200).collect::<String>()),
+                            super::public_image(user["profile_image_url"].as_str()),
+                        ));
+                    }
+                    if let (Some(id), Some(image)) = (
+                        user["id"].as_str(),
+                        super::public_image(user["profile_image_url"].as_str()),
+                    ) {
+                        profiles.insert(id.to_owned(), image);
+                    }
+                }
+            }
+        }
+        if limited {
+            break;
+        }
+    }
+    let user = lookup.user.clone();
+    let profile_changed = storage::save_profiles(&state.db, lookup, profiles, own_profile).await?;
     if profile_changed {
         state
             .emit(
-                Some(t.user.clone()),
+                Some(user),
                 "online.account.changed",
                 json!({"provider":"twitch"}),
             )

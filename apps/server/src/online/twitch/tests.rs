@@ -11,6 +11,7 @@ struct Stub {
     mode: AtomicUsize,
     refreshes: AtomicUsize,
     pages: AtomicUsize,
+    profiles: Arc<crate::test_support::FaultControl>,
 }
 async fn setup() -> (
     tempfile::TempDir,
@@ -33,9 +34,11 @@ async fn setup() -> (
         mode: AtomicUsize::new(0),
         refreshes: AtomicUsize::new(0),
         pages: AtomicUsize::new(0),
+        profiles: Arc::new(crate::test_support::FaultControl::default()),
     });
     let token_control = control.clone();
     let page_control = control.clone();
+    let profile_control = control.clone();
     let stub=Router::new()
         .route("/device",post(|axum::Form(form):axum::Form<BTreeMap<String,String>>|async move {
             assert_eq!(form["scopes"],SCOPE);assert_eq!(form["client_id"],"fixtureclient");
@@ -59,13 +62,14 @@ async fn setup() -> (
             assert!(matches!(headers["authorization"].to_str().unwrap(),"OAuth access-secret"|"OAuth new-access-secret"));
             Json(json!({"client_id":"fixtureclient","login":"fixtureviewer","user_id":"123","scopes":[SCOPE],"expires_in":3600}))
         }))
-        .route("/users",get(|headers:HeaderMap,axum::extract::RawQuery(query):axum::extract::RawQuery|async move {
+        .route("/users",get(move |headers:HeaderMap,axum::extract::RawQuery(query):axum::extract::RawQuery|{let control=profile_control.clone();async move {
+            control.profiles.reached().await;
             assert_eq!(headers["client-id"], "fixtureclient");
             let users = url::form_urlencoded::parse(query.as_deref().unwrap_or("").as_bytes())
                 .filter(|(key, _)| key == "id")
                 .map(|(_, id)| json!({"id":id,"display_name":format!("User {id}"),"profile_image_url":format!("https://static-cdn.jtvnw.net/{id}.png")})).collect::<Vec<_>>();
             Json(json!({"data":users}))
-        }))
+        }}))
         .route("/streams/followed",get(move|headers:HeaderMap,Query(query):Query<BTreeMap<String,String>>|{let c=page_control.clone();async move {
             assert_eq!(headers["client-id"],"fixtureclient");assert_eq!(query["user_id"],"123");
             c.pages.fetch_add(1,Ordering::SeqCst);
@@ -81,6 +85,16 @@ async fn setup() -> (
     runtime.twitch.auth = format!("http://{address}");
     runtime.twitch.api = format!("http://{address}");
     (temp, state, cookie, control, server)
+}
+pub(crate) async fn startup_fixture() -> (
+    tempfile::TempDir,
+    AppState,
+    String,
+    tokio::task::JoinHandle<()>,
+) {
+    let (temp, state, cookie, control, server) = setup().await;
+    control.mode.store(1, Ordering::SeqCst);
+    (temp, state, cookie, server)
 }
 async fn start_attempt(state: &AppState, cookie: &str) -> Attempt {
     let result = call(
@@ -116,6 +130,91 @@ async fn ready_sync(state: &AppState) {
         .unwrap();
 }
 
+async fn sync_with_profiles(state: &AppState) {
+    if let Some(profiles) = sync_tick(state).await.unwrap() {
+        sync_profiles(state, profiles).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn first_followed_snapshot_does_not_wait_for_avatars() {
+    let (_temp, state, cookie, control, server) = setup().await;
+    let attempt = start_attempt(&state, &cookie).await;
+    control.mode.store(1, Ordering::SeqCst);
+    poll(&state, &attempt).await.unwrap();
+    let account = call(&state, "/api/v1/online/twitch", "GET", Value::Null, &cookie)
+        .await
+        .2;
+
+    let (entered, waiting) = tokio::sync::oneshot::channel();
+    let (resume, release) = tokio::sync::oneshot::channel();
+    *control.profiles.pause.lock().await = Some((entered, release));
+    let worker_state = state.clone();
+    let worker = tokio::spawn(async move { run_sync(&worker_state).await.unwrap() });
+    tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
+        .await
+        .unwrap()
+        .unwrap();
+    let feed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let feed = call(
+                &state,
+                "/api/v1/online/twitch/feed",
+                "GET",
+                Value::Null,
+                &cookie,
+            )
+            .await
+            .2;
+            if feed["items"].as_array().unwrap().len() == 2 {
+                break feed;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("The followed stream list must appear while avatar requests are still blocked");
+    assert_eq!(account["sync"]["in_progress"], true);
+    assert!(
+        feed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["profile_image_url"].is_null())
+    );
+    let account = call(&state, "/api/v1/online/twitch", "GET", Value::Null, &cookie)
+        .await
+        .2;
+    assert_eq!(account["sync"]["in_progress"], false);
+    resume.send(()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let feed = call(
+                &state,
+                "/api/v1/online/twitch/feed",
+                "GET",
+                Value::Null,
+                &cookie,
+            )
+            .await
+            .2;
+            if feed["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| item["profile_image_url"].is_string())
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    worker.abort();
+    server.abort();
+}
+
 #[tokio::test]
 async fn connected_twitch_avatar_uses_the_viewer_and_refreshes_existing_connections() {
     let (_temp, state, cookie, control, server) = setup().await;
@@ -128,7 +227,7 @@ async fn connected_twitch_avatar_uses_the_viewer_and_refreshes_existing_connecti
             Ok(())
         }).await.unwrap();
         ready_sync(&state).await;
-        sync_tick(&state).await.unwrap();
+        sync_with_profiles(&state).await;
         let account = call(&state, "/api/v1/online/twitch", "GET", Value::Null, &cookie)
             .await
             .2;
@@ -283,7 +382,7 @@ async fn followed_snapshot_is_private_paginated_and_refreshes_once() {
         })
         .await
         .unwrap();
-    sync_tick(&state).await.unwrap();
+    sync_with_profiles(&state).await;
     assert_eq!(control.refreshes.load(Ordering::SeqCst), 1);
     let first = call(
         &state,
@@ -295,7 +394,7 @@ async fn followed_snapshot_is_private_paginated_and_refreshes_once() {
     .await;
     assert_eq!(first.2["items"].as_array().unwrap().len(), 0);
     ready_sync(&state).await;
-    sync_tick(&state).await.unwrap();
+    sync_with_profiles(&state).await;
     assert_eq!(control.refreshes.load(Ordering::SeqCst), 1);
     let complete = call(
         &state,
@@ -334,7 +433,7 @@ async fn followed_snapshot_is_private_paginated_and_refreshes_once() {
     );
     control.mode.store(4, Ordering::SeqCst);
     ready_sync(&state).await;
-    sync_tick(&state).await.unwrap();
+    sync_with_profiles(&state).await;
     let next = state
         .db
         .write("test.fixture", |db| {
@@ -346,7 +445,7 @@ async fn followed_snapshot_is_private_paginated_and_refreshes_once() {
         .unwrap();
     assert!(next >= now() + 590);
     let pages = control.pages.load(Ordering::SeqCst);
-    sync_tick(&state).await.unwrap();
+    sync_with_profiles(&state).await;
     assert_eq!(control.pages.load(Ordering::SeqCst), pages);
     call(
         &state,

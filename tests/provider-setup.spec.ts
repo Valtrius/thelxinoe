@@ -13,6 +13,25 @@ async function providerFixture(page: Page, platform: string, admin = true) {
     linkingAvailable: true,
     reconnect: false,
     pending: false,
+    authPhase: 'waiting' as 'waiting' | 'connecting' | 'failed',
+    authError: null as string | null,
+    authExpiresAt: Math.floor(Date.now() / 1000) + 600,
+    connected: false,
+    sync: null as {
+      last_complete: number | null;
+      next_run: number;
+      error: string | null;
+      in_progress: boolean;
+    } | null,
+    twitchItems: [] as {
+      id: string;
+      login: string;
+      display_name: string;
+      title: string;
+      category: string;
+      viewers: number;
+      started_at: string;
+    }[],
     kickConnected: false,
     channels: [] as {
       slug: string;
@@ -65,24 +84,58 @@ async function providerFixture(page: Page, platform: string, admin = true) {
       state.writes.push({ path, body: request.postDataJSON() });
       return json({ started: true });
     }
+    if (path.endsWith('/authorization') && request.method() === 'DELETE') {
+      state.pending = false;
+      return json({ cancelled: true });
+    }
     if (path === '/online/twitch' || path === '/online/youtube')
       return json({
         configured: state.configured,
         linking_available: state.linkingAvailable,
         account: {
-          status: state.reconnect ? 'reconnect_required' : 'disconnected',
+          status: state.connected
+            ? 'connected'
+            : state.reconnect
+              ? 'reconnect_required'
+              : 'disconnected',
           display_name: '',
         },
-        pending:
-          state.pending && path.endsWith('twitch')
-            ? {
-                user_code: 'TEST-CODE',
-                verification_uri: 'https://www.twitch.tv/activate',
-                expires_at: 1999999999,
-              }
-            : null,
+        pending: state.pending
+          ? {
+              phase: state.authPhase,
+              error: state.authError,
+              ...(path.endsWith('twitch')
+                ? {
+                    user_code: 'TEST-CODE',
+                    verification_uri: 'https://www.twitch.tv/activate',
+                  }
+                : {}),
+              expires_at: state.authExpiresAt,
+            }
+          : null,
+        sync: state.sync,
       });
     if (path === '/online/youtube/watchlists') return json([]);
+    if (path === '/online/twitch/feed')
+      return json({ items: state.twitchItems });
+    if (path === '/online/youtube/feed' || path === '/online/youtube/browse')
+      return json({
+        items: [],
+        channels: [],
+        counts: {
+          all: 0,
+          unwatched: 0,
+          inProgress: 0,
+          watched: 0,
+          shorts: 0,
+          live: 0,
+          liveReplays: 0,
+          upcoming: 0,
+          subscribedChannelCount: 0,
+        },
+        page: 0,
+        hasMore: false,
+      });
     if (path === '/online/kick')
       return json({
         configured: state.configured,
@@ -167,6 +220,188 @@ test('YouTube setup saves on the page and becomes a connection action', async ({
       google: { client_id: 'fixture-client', client_secret: 'fixture-secret' },
     },
   });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('Twitch keeps loading until the first followed snapshot arrives', async ({
+  page,
+}, testInfo) => {
+  const fixture = await providerFixture(page, 'Twitch');
+  fixture.state.configured = true;
+  fixture.state.connected = true;
+  fixture.state.sync = {
+    last_complete: null,
+    next_run: 0,
+    error: null,
+    in_progress: true,
+  };
+  await page.goto('/');
+  const loading = page.getByRole('status', { name: 'Loading Twitch streams' });
+  await expect(loading).toBeVisible();
+  await page.reload();
+  await expect(loading).toBeVisible();
+  await expect(page.getByText('No followed channels are live')).toHaveCount(0);
+  await page.screenshot({
+    path: testInfo.outputPath('first-sync-pending.png'),
+  });
+
+  fixture.state.twitchItems = [
+    {
+      id: '42',
+      login: 'fixturechannel',
+      display_name: 'Fixture channel',
+      title: 'Followed channel arrived',
+      category: 'Science',
+      viewers: 8,
+      started_at: '2026-10-12T12:00:00Z',
+    },
+  ];
+  fixture.state.sync = {
+    last_complete: Math.floor(Date.now() / 1000),
+    next_run: Math.floor(Date.now() / 1000) + 60,
+    error: null,
+    in_progress: false,
+  };
+  await expect(page.getByText('Followed channel arrived')).toBeVisible();
+  await expect(loading).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath('first-sync-ready.png') });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+for (const platform of ['Twitch', 'YouTube']) {
+  test(`${platform} sign-in shows live progress through approval, refresh and connection`, async ({
+    page,
+  }, testInfo) => {
+    const fixture = await providerFixture(page, platform);
+    fixture.state.configured = true;
+    fixture.state.pending = true;
+    await page.goto('/');
+    const progress = page.getByRole('status').filter({
+      hasText:
+        platform === 'Twitch'
+          ? 'Waiting for Twitch approval'
+          : 'Waiting for Google approval',
+    });
+    await expect(progress).toBeVisible();
+    await expect(progress.locator('svg')).toHaveCSS('animation-name', /spin/);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(progress).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath('waiting-mobile.png') });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.reload();
+    await expect(progress).toBeVisible();
+    await page.screenshot({
+      path: testInfo.outputPath('waiting-for-approval.png'),
+    });
+
+    fixture.state.authPhase = 'connecting';
+    await expect(
+      page.getByRole('status').filter({ hasText: 'Finishing sign-in' }),
+    ).toBeVisible();
+    if (platform === 'Twitch') {
+      await expect(
+        page.getByRole('button', { name: 'Copy Twitch device code' }),
+      ).toHaveCount(0);
+      await expect(
+        page.getByRole('button', { name: 'Open verification page' }),
+      ).toHaveCount(0);
+    }
+    await page.reload();
+    await expect(
+      page.getByRole('status').filter({ hasText: 'Finishing sign-in' }),
+    ).toBeVisible();
+    await page.screenshot({
+      path: testInfo.outputPath('finishing-sign-in.png'),
+    });
+    fixture.state.pending = false;
+    fixture.state.connected = true;
+    await expect(
+      page.getByRole('status').filter({ hasText: 'Finishing sign-in' }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole('button', { name: `Connect ${platform}`, exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole('button', {
+        name: platform === 'Twitch' ? 'Refresh' : 'Refresh YouTube feed',
+        exact: true,
+      }),
+    ).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath('connected.png') });
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.unexpected).toEqual([]);
+  });
+
+  test(`${platform} sign-in stops waiting when cancelled or expired`, async ({
+    page,
+  }, testInfo) => {
+    const fixture = await providerFixture(page, platform);
+    fixture.state.configured = true;
+    fixture.state.pending = true;
+    await page.clock.install();
+    await page.goto('/');
+    await expect(
+      page.getByRole('status').filter({ hasText: 'Waiting for' }),
+    ).toBeVisible();
+    await page
+      .getByRole('button', {
+        name: platform === 'Twitch' ? 'Cancel' : 'Cancel sign-in',
+        exact: true,
+      })
+      .click();
+    await expect(
+      page.getByRole('button', { name: `Connect ${platform}`, exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole('status').filter({ hasText: 'Waiting for' }),
+    ).toHaveCount(0);
+    fixture.state.pending = true;
+    fixture.state.authExpiresAt = Math.floor(Date.now() / 1000) + 5;
+    await page.reload();
+    await expect(
+      page.getByRole('status').filter({ hasText: 'Waiting for' }),
+    ).toBeVisible();
+    await page.clock.fastForward(6000);
+    await expect(
+      page.getByRole('alert').filter({ hasText: 'expired' }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole('status').filter({ hasText: 'Waiting for' }),
+    ).toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath('expired.png') });
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.unexpected).toEqual([]);
+  });
+}
+
+test('YouTube sign-in failure stops the spinner and allows retry', async ({
+  page,
+}, testInfo) => {
+  const fixture = await providerFixture(page, 'YouTube');
+  fixture.state.configured = true;
+  fixture.state.pending = true;
+  fixture.state.authPhase = 'failed';
+  fixture.state.authError = 'Google authorization was declined';
+  await page.goto('/');
+  await expect(
+    page
+      .getByRole('alert')
+      .filter({ hasText: 'Google authorization was declined' }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('status').filter({ hasText: 'Waiting for' }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Connect YouTube', exact: true }),
+  ).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('declined.png') });
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });

@@ -10,12 +10,14 @@
     configured,
     onConfigured,
     onConnect,
+    connecting = false,
   }: {
     platform: 'youtube' | 'twitch' | 'kick';
     admin: boolean;
     configured: boolean;
     onConfigured: () => void;
     onConnect?: () => void;
+    connecting?: boolean;
   } = $props();
 </script>
 
@@ -72,7 +74,7 @@
       </p>
     {/if}
     {#if onConnect && (configured || platform === 'kick')}
-      <Button onclick={onConnect}
+      <Button onclick={onConnect} loading={connecting}
         >{platform === 'youtube'
           ? 'Connect YouTube'
           : platform === 'twitch'

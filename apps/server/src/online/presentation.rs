@@ -25,7 +25,15 @@ pub async fn cancel(
         return Err(ApiError::not_found());
     }
     let p = security::principal(&state, &headers).await?;
-    storage::cancel(&state.db, provider, p).await?;
+    let user = p.user.id.clone();
+    storage::cancel(&state.db, provider.clone(), p).await?;
+    state
+        .emit(
+            Some(user),
+            "online.account.changed",
+            json!({"provider":provider}),
+        )
+        .await?;
     Ok(Json(json!({"cancelled":true})))
 }
 pub async fn refresh(

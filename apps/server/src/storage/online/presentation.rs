@@ -7,11 +7,21 @@ pub(super) async fn cancel(
     provider: String,
     p: thelxinoe_core::Principal,
 ) -> anyhow::Result<()> {
-    db.write("online.presentation.cancel", move|db|{
-        if provider=="youtube" {db.execute("DELETE FROM oauth_attempts WHERE user_id=?1 AND session_id=?2 AND provider='youtube'",params![p.user.id,p.session_id])?;}
-        else {db.execute("DELETE FROM twitch_attempts WHERE user_id=?1 AND session_id=?2",params![p.user.id,p.session_id])?;}
+    db.write("online.presentation.cancel", move |db| {
+        if provider == "youtube" {
+            db.execute(
+                "DELETE FROM oauth_attempts WHERE user_id=?1 AND provider='youtube'",
+                params![p.user.id],
+            )?;
+        } else {
+            db.execute(
+                "DELETE FROM twitch_attempts WHERE user_id=?1 AND session_id=?2",
+                params![p.user.id, p.session_id],
+            )?;
+        }
         Ok(())
-    }).await
+    })
+    .await
 }
 
 pub(super) async fn refresh(
