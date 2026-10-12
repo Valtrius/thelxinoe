@@ -8,11 +8,12 @@ import {
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { docker, fixture } from './service-access-fixture.mjs';
 import { imageManifest } from './ci-images.mjs';
+import { budgets, waitForState } from './ci-readiness.mjs';
 
 const output = 'test-results/service-safety';
 const seerrOnly = process.argv.includes('--seerr-only');
 mkdirSync(output, { recursive: true });
-const result = { passed: false, scenarios: [] };
+const result = { passed: false, scenarios: [], restores: [] };
 const f = await fixture({
   separateMovies: true,
   moviesDirectory: 'shared/movies',
@@ -40,6 +41,32 @@ function controller(path, method = 'GET', body) {
     status: Number(response.slice(split + 1)),
     body: response.slice(0, split),
   };
+}
+async function restoreBackup(id, input) {
+  await waitForState(
+    'Backup restore accepted',
+    () => {
+      try {
+        const response = controller(`/backups/${id}/restore`, 'POST', input);
+        result.restores.push({ id, ...response });
+        if (
+          response.status !== 200 &&
+          !(
+            response.status === 409 &&
+            response.body === 'Another Docker operation is active'
+          )
+        )
+          throw Error(
+            `Restore rejected (${response.status}): ${response.body}`,
+          );
+        return response;
+      } catch (error) {
+        throw Object.assign(error, { fatal: true });
+      }
+    },
+    (response) => response.status === 200,
+    { timeout: budgets.startup },
+  );
 }
 async function scenario(name, run) {
   if (seerrOnly && !name.startsWith('Seerr')) return;
@@ -265,18 +292,22 @@ try {
       expect(
         controller(`/backups/${id}/restore`, 'POST', { passphrase }).status,
       ).toBe(200);
+      expect(
+        controller(`/backups/${id}/restore`, 'POST', {
+          passphrase,
+          components: [accepted.id],
+        }),
+      ).toEqual({ status: 409, body: 'Another Docker operation is active' });
       await expect.poll(stage, { timeout: 180000 }).toBe('restored');
       expect(
         docker('exec', attached.container, 'cat', '/config/safety-marker'),
       ).toBe('after');
       expect(startedAt(attached.container)).toBe(running);
       await healthy();
-      expect(
-        controller(`/backups/${id}/restore`, 'POST', {
-          passphrase,
-          components: [accepted.id],
-        }).status,
-      ).toBe(200);
+      await restoreBackup(id, {
+        passphrase,
+        components: [accepted.id],
+      });
       await expect.poll(stage, { timeout: 180000 }).toBe('restored');
       expect(
         docker('exec', attached.container, 'cat', '/config/safety-marker'),

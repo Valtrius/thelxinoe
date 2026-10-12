@@ -499,20 +499,6 @@
   function openSettings(name: string, service?: string) {
     go({ ...sectionRoute('Settings', name), service });
   }
-  function back() {
-    if (history.state?.thelxinoeRoute) history.back();
-    else
-      go(
-        {
-          ...route,
-          detail: undefined,
-          item: undefined,
-          playlist: undefined,
-          requests: false,
-        },
-        true,
-      );
-  }
   async function switchServer(address: string) {
     teardownSession();
     await changeServer(address);
@@ -896,7 +882,6 @@
           {openSettings}
           {go}
           {updateFilters}
-          {back}
           sessionEnded={teardownSession}
           {switchServer}
           displayChanged={(zone, format) => {

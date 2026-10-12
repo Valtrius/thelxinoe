@@ -428,6 +428,87 @@ test('Discover history restores the rendered screen after navigating away', asyn
   });
 });
 
+for (const entry of ['feed', 'search', 'direct link'] as const) {
+  test(`Back to discover leaves recommendation history from ${entry}`, async ({
+    page,
+  }, testInfo) => {
+    const fixture = await discoverFixture(page);
+    const recommended = { ...movie, id: 33, title: 'Interstellar' };
+    const next = { ...movie, id: 44, title: 'Contact' };
+    for (const [source, destination] of [
+      [movie, recommended],
+      [recommended, next],
+    ])
+      await page.route(
+        `**/api/v1/seerr/movie/${source.id}/recommendations`,
+        (route) => route.fulfill({ json: results([destination]) }),
+      );
+    for (const item of [recommended, next])
+      await page.route(`**/api/v1/seerr/movie/${item.id}`, (route) =>
+        route.fulfill({ json: item }),
+      );
+    const query = entry === 'search' ? '?q=Arrival' : '';
+    await page.goto(
+      entry === 'direct link' ? '/#discover/movie/11' : `/#discover${query}`,
+    );
+    if (entry !== 'direct link')
+      await page
+        .getByRole('button', { name: 'View Arrival', exact: true })
+        .first()
+        .click();
+    const heading = (name: string) =>
+      page.getByRole('heading', { name, exact: true });
+    await expect(heading('Arrival')).toBeVisible();
+    if (entry === 'direct link') {
+      await page.getByRole('button', { name: 'Back to discover' }).click();
+      await expect(page).toHaveURL(/#discover$/);
+      await page.goto('/#discover/movie/11');
+      await expect(heading('Arrival')).toBeVisible();
+    }
+    await page
+      .getByRole('button', { name: 'View Interstellar', exact: true })
+      .click();
+    await expect(heading('Interstellar')).toBeVisible();
+    await page
+      .getByRole('button', { name: 'View Contact', exact: true })
+      .click();
+    await expect(heading('Contact')).toBeVisible();
+    await page.goBack();
+    await expect(heading('Interstellar')).toBeVisible();
+    await page.goBack();
+    await expect(heading('Arrival')).toBeVisible();
+    await page.goForward();
+    await expect(heading('Interstellar')).toBeVisible();
+    await page.goForward();
+    await expect(heading('Contact')).toBeVisible();
+    if (entry === 'direct link') {
+      await page.reload();
+      await expect(heading('Contact')).toBeVisible();
+    }
+    await testInfo.attach('recommendation-history', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+    await page.getByRole('button', { name: 'Back to discover' }).click();
+    await expect(page).toHaveURL(
+      new RegExp(`#discover${query.replace('?', '\\?')}$`),
+    );
+    await expect(
+      page.getByRole('textbox', { name: 'Search movies and series' }),
+    ).toHaveValue(entry === 'search' ? 'Arrival' : '');
+    await expect(heading('Contact')).toHaveCount(0);
+    await expect(
+      page.getByRole('button', { name: 'View Arrival', exact: true }).first(),
+    ).toBeVisible();
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.unexpected).toEqual([]);
+    await testInfo.attach('returned-to-discover', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+  });
+}
+
 test('posters align at the top of discovery rows and search rows with wrapped titles', async ({
   page,
 }, testInfo) => {
