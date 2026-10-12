@@ -6,6 +6,7 @@ import { artwork } from './density-fixtures.mjs';
 import { createMockState, installMockApi } from './mock/api.mjs';
 import { prepareSample, samplePath } from './mock/playback.mjs';
 import { mockUiPlugin } from './mock/build.mjs';
+import { freePort } from './ci-resources.mjs';
 
 const requireFrontend = createRequire(
   new URL('../frontend/package.json', import.meta.url),
@@ -18,7 +19,7 @@ const configFile = fileURLToPath(
   new URL('../frontend/vite.config.ts', import.meta.url),
 );
 // Keep the mock-only artwork adapter out of the production distribution.
-const port = Number(process.env.THELXINOE_MOCK_PORT ?? 5175);
+const port = Number(process.env.THELXINOE_MOCK_PORT ?? (await freePort()));
 if (!Number.isInteger(port) || port < 1 || port > 65535)
   throw Error('Invalid THELXINOE_MOCK_PORT');
 const outDir = fileURLToPath(
