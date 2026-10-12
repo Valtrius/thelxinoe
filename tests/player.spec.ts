@@ -848,6 +848,40 @@ test('web playback records active time but excludes paused time and seeking', as
   expect(state.errors).toEqual([]);
 });
 
+test('opening and replacing web playback focuses the player for immediate shortcuts', async ({
+  page,
+}, info) => {
+  const state = await fixture(page, { app: true, hold: true });
+  const player = page.getByRole('region', { name: 'Media player' });
+  const video = page.locator('video');
+  await page
+    .getByRole('button', { name: 'Watch Channel 0', exact: true })
+    .click();
+  await expect(player).toBeFocused();
+  await page.keyboard.press('m');
+  await expect(video).toHaveJSProperty('muted', true);
+
+  state.metadata.release();
+  state.preparation.release();
+  state.media.release();
+  await decoded(page);
+  await page.keyboard.press('Space');
+  await expect(video).toHaveJSProperty('paused', true);
+  await page.keyboard.press('k');
+  await expect(video).toHaveJSProperty('paused', false);
+
+  await page
+    .getByRole('button', { name: 'Watch Channel 1', exact: true })
+    .click();
+  await expect(player).toBeFocused();
+  await expect.poll(() => state.starts.length).toBe(2);
+  await decoded(page);
+  await page.keyboard.press('m');
+  await expect(video).toHaveJSProperty('muted', false);
+  await page.screenshot({ path: info.outputPath('opened-player-focus.png') });
+  expect(state.errors).toEqual([]);
+});
+
 test('web player fills the workspace edges and resizes by pointer and keyboard', async ({
   page,
 }) => {
@@ -1260,7 +1294,7 @@ test('fullscreen shortcut exits while the entry event is still pending', async (
 
 test('web player supports YouTube playback shortcuts and left/right-click pause', async ({
   page,
-}) => {
+}, info) => {
   const state = await fixture(page, { subtitles: true });
   await decoded(page);
   const player = page.getByRole('region', { name: 'Media player' });
@@ -1331,6 +1365,8 @@ test('web player supports YouTube playback shortcuts and left/right-click pause'
     .toBeCloseTo(0.31, 2);
   await page.keyboard.press('m');
   expect(await video.evaluate((element) => element.muted)).toBe(true);
+  await expect(player).toBeFocused();
+  await expect(player).not.toHaveCSS('outline-style', 'none');
 
   await page.keyboard.press('f');
   await expect
@@ -1340,10 +1376,18 @@ test('web player supports YouTube playback shortcuts and left/right-click pause'
       ),
     )
     .toBe(true);
+  await expect(player).toBeFocused();
+  await expect(player).toHaveCSS('outline-style', 'none');
+  await page.keyboard.press('m');
+  expect(await video.evaluate((element) => element.muted)).toBe(false);
+  await expect(player).toHaveCSS('outline-style', 'none');
+  await page.screenshot({ path: info.outputPath('fullscreen-keyboard.png') });
   await page.keyboard.press('f');
   await expect
     .poll(() => page.evaluate(() => document.fullscreenElement))
     .toBeNull();
+  await expect(player).toBeFocused();
+  await expect(player).not.toHaveCSS('outline-style', 'none');
 
   await expect
     .poll(() => video.evaluate((element) => element.textTracks.length))

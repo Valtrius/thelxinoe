@@ -481,6 +481,7 @@
     untrack(() => void open(current));
   });
   async function open(current: MediaChoice) {
+    container.focus({ preventScroll: true });
     preparation.abort();
     preparation = new AbortController();
     waitingTools = false;
@@ -847,6 +848,7 @@
   class={twMerge([
     'player relative isolate aspect-video min-h-[210px] w-full overflow-hidden bg-[#090b0c] text-[#f5f6f7] [color-scheme:dark] @container/player compact:min-h-0 compact:max-h-none fullscreen:m-0 fullscreen:aspect-auto fullscreen:h-full fullscreen:max-h-none fullscreen:w-full',
     resizable ? 'm-0' : 'mb-7',
+    fullscreen && 'outline-none',
     !controlsShown && 'controls-hidden cursor-none',
     boundedHeight === undefined ? 'max-h-[60vh]' : 'max-h-[calc(100dvh-120px)]',
     viewportFullscreen &&
@@ -876,6 +878,7 @@
   onfocusin={(event) => {
     if (rotationFullscreen && event.target === container) return;
     controlFocused =
+      event.target !== container &&
       event.target instanceof HTMLElement &&
       event.target.matches(':focus-visible');
     revealControls();
