@@ -102,6 +102,17 @@ async function providerFixture(page: Page, platform: string, admin = true) {
       state.kickConnected = true;
       return json({ slug: 'fixture' });
     }
+    if (path === '/online/kick/channels/fixture') {
+      state.channels = state.channels.filter(
+        (channel) => channel.slug !== 'fixture',
+      );
+      state.writes.push({ path, body: null });
+      return json({ removed: true });
+    }
+    if (path === '/online/kick/sync') {
+      state.writes.push({ path, body: null });
+      return json({ started: true });
+    }
     if (path === '/online/kick/connect') {
       state.kickConnected = true;
       state.writes.push({ path, body: request.postDataJSON() });
@@ -429,31 +440,68 @@ test('Google branding pages are public and readable without JavaScript', async (
   }
 });
 
-test('Kick tracking works without credentials and optional metadata saves inline', async ({
+test('Kick toolbar tracks channels and links administrators to metadata settings', async ({
   page,
-}) => {
+}, testInfo) => {
   const fixture = await providerFixture(page, 'Kick');
   await page.goto('/');
-  const guide = page.getByRole('region', { name: 'kick connection guide' });
-  await guide.getByRole('button', { name: 'Manage channels' }).click();
-  await page.getByLabel('Kick channel', { exact: true }).fill('fixture');
+  const input = page.getByLabel('Kick channel', { exact: true });
+  const setup = page.getByRole('link', {
+    name: 'Show live status, titles and thumbnails',
+    exact: true,
+  });
+  const refresh = page.getByRole('button', { name: 'Refresh metadata' });
+  await expect(input).toBeVisible();
+  await expect(setup).toHaveAttribute('href', '#admin/providers');
+  await expect(
+    page.getByRole('button', { name: 'Manage channels' }),
+  ).toHaveCount(0);
+  await expect(page.getByText(/\d+ tracked|metadata is optional/i)).toHaveCount(
+    0,
+  );
+  await expect(refresh).toHaveCount(0);
+  await expect(page.getByLabel('Kick client ID')).toHaveCount(0);
+  await input.fill('https://kick.com/fixture');
   await page.getByRole('button', { name: 'Add', exact: true }).click();
-  await expect(page.getByText('1 tracked', { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole('heading', { name: 'fixture', exact: true }),
+  ).toBeVisible();
+  await expect(input).toHaveValue('');
+  await expect(setup).toBeVisible();
+  await expect(refresh).toHaveCount(0);
   await expect(
     page.getByRole('button', { name: 'Resume tracking' }),
   ).toHaveCount(0);
   expect(fixture.state.writes[0]).toMatchObject({
     path: '/online/kick/channels',
-    body: { channel: 'fixture' },
+    body: { channel: 'https://kick.com/fixture' },
   });
-  await page
-    .getByText('Optional: show live status, titles and thumbnails')
-    .click();
-  await page.screenshot({ path: '.local/provider-setup/kick-desktop.png' });
+  const inputBounds = await input.boundingBox();
+  const setupBounds = await setup.boundingBox();
+  expect(Math.abs(inputBounds!.y - setupBounds!.y)).toBeLessThan(12);
+  await testInfo.attach('kick-unconfigured-admin', {
+    body: await page.screenshot({ fullPage: true }),
+    contentType: 'image/png',
+  });
+  await setup.click();
+  await expect(page).toHaveURL(/#admin\/providers$/);
   await page.getByLabel('Kick client ID').fill('fixture-kick');
   await page.getByLabel('Kick client secret').fill('fixture-secret');
   await page.getByRole('button', { name: 'Save Kick settings' }).click();
-  await expect(guide).toHaveCount(0);
+  await expect.poll(() => fixture.state.configured).toBe(true);
+  await page
+    .getByRole('navigation', { name: 'Main navigation' })
+    .getByRole('link', { name: 'Kick', exact: true })
+    .click();
+  await expect(setup).toHaveCount(0);
+  await expect(refresh).toBeEnabled();
+  const refreshBounds = await refresh.boundingBox();
+  expect(refreshBounds!.x).toBeGreaterThan(inputBounds!.x + inputBounds!.width);
+  expect(Math.abs(inputBounds!.y - refreshBounds!.y)).toBeLessThan(2);
+  await refresh.click();
+  await expect
+    .poll(() => fixture.state.writes.at(-1)?.path)
+    .toBe('/online/kick/sync');
   fixture.state.kickConnected = false;
   await page.reload();
   await page.getByRole('button', { name: 'Resume tracking' }).click();
@@ -463,8 +511,85 @@ test('Kick tracking works without credentials and optional metadata saves inline
   expect(fixture.state.writes.map((write) => write.path)).toEqual([
     '/online/kick/channels',
     '/admin/online/kick',
+    '/online/kick/sync',
     '/online/kick/connect',
   ]);
+  const card = page.locator('[data-channel-slug="fixture"]');
+  await card.hover();
+  await page
+    .getByRole('button', { name: 'Stop tracking fixture', exact: true })
+    .click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(card).toBeVisible();
+  await card.hover();
+  await page
+    .getByRole('button', { name: 'Stop tracking fixture', exact: true })
+    .click();
+  await dialog
+    .getByRole('button', { name: 'Stop tracking', exact: true })
+    .click();
+  await expect(card).toHaveCount(0);
+  await expect(input).toBeVisible();
+  await expect(refresh).toBeDisabled();
+  await testInfo.attach('kick-configured-empty', {
+    body: await page.screenshot({ fullPage: true }),
+    contentType: 'image/png',
+  });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('Kick toolbar prompts regular users to ask an administrator and fits mobile', async ({
+  page,
+}, testInfo) => {
+  const fixture = await providerFixture(page, 'Kick', false);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/');
+  await expect(
+    page.getByText(
+      'Ask your administrator to set up Kick to show live status, titles and thumbnails.',
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('link', { name: 'Show live status, titles and thumbnails' }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Refresh metadata' }),
+  ).toHaveCount(0);
+  await page.getByLabel('Kick channel', { exact: true }).fill('fixture');
+  await page.getByLabel('Kick channel', { exact: true }).press('Enter');
+  await expect(
+    page.getByRole('heading', { name: 'fixture', exact: true }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await testInfo.attach('kick-unconfigured-user-mobile', {
+    body: await page.screenshot({ fullPage: true }),
+    contentType: 'image/png',
+  });
+  fixture.state.configured = true;
+  await page.reload();
+  await expect(
+    page.getByText(/Ask your administrator to set up Kick/),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Refresh metadata' }),
+  ).toBeEnabled();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await testInfo.attach('kick-configured-user-mobile', {
+    body: await page.screenshot({ fullPage: true }),
+    contentType: 'image/png',
+  });
+  expect(fixture.state.adminReads).toEqual([]);
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });
