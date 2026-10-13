@@ -63,6 +63,7 @@
   let shell = $state<HTMLDivElement | null>(null);
   let main = $state<HTMLElement | null>(null);
   let workspace = $state<HTMLElement | null>(null);
+  let stopScrollRestoration = () => {};
   let workspaceHeight = $state(0);
   let pinnedPlayerHeight = $state(0);
   let mobileNavOpen = $state(false);
@@ -431,6 +432,7 @@
     });
   }
   function teardownSession() {
+    stopScrollRestoration();
     cancelVerification();
     invalidateSession();
     navigationReady = false;
@@ -465,26 +467,64 @@
     if (!user) return;
     const next = allowedRoute(destination, user, desktop, $providers);
     if (routeHref(next) === routeHref(route)) return;
+    stopScrollRestoration();
     const scroll = workspace?.scrollTop ?? 0;
+    const preserveSettingsScroll =
+      route.section === 'Settings' &&
+      next.section === 'Settings' &&
+      !next.workflow;
     history.replaceState({ ...history.state, scroll }, '', location.href);
     route = next;
-    writeLocation(next, replace, preserveWorkspace ? scroll : 0);
+    writeLocation(
+      next,
+      replace,
+      preserveWorkspace || preserveSettingsScroll ? scroll : 0,
+    );
     if (!preserveWorkspace) {
       mobileNavOpen = false;
       unsavedChanges = false;
       error = '';
-      void restoreWorkspace(0, true);
+      void restoreWorkspace(
+        preserveSettingsScroll ? scroll : 0,
+        !preserveSettingsScroll,
+      );
     }
   }
   function updateFilters(destination: AppRoute, replace = true) {
     go(destination, replace, true);
   }
   async function restoreWorkspace(scroll: number, focus = false) {
+    stopScrollRestoration();
     const destination = route;
     await preloadPage(destination).catch(() => {});
     if (routeHref(destination) !== routeHref(route)) return;
     await tick();
-    if (workspace) workspace.scrollTop = scroll;
+    if (workspace) {
+      const scroller = workspace;
+      const settings =
+        destination.section === 'Settings'
+          ? scroller.querySelector('.settings-layout')
+          : null;
+      if (scroll > 0 && settings) {
+        const events = new AbortController();
+        const observer = new ResizeObserver(() => {
+          scroller.scrollTop = scroll;
+          if (scroller.scrollTop >= scroll) stop();
+        });
+        const stop = () => {
+          observer.disconnect();
+          events.abort();
+        };
+        stopScrollRestoration = stop;
+        for (const event of ['wheel', 'pointerdown', 'keydown'])
+          scroller.addEventListener(event, stop, {
+            passive: true,
+            signal: events.signal,
+          });
+        observer.observe(settings);
+      }
+      scroller.scrollTop = scroll;
+    }
     if (focus) {
       const navigationDrawer = document.getElementById('mobile-navigation');
       if (
