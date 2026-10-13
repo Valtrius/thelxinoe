@@ -1247,7 +1247,7 @@ test('controls hide, recover with keyboard, retain volume, seek, and stay inside
   await page.getByRole('button', { name: 'Quality', exact: true }).click();
   await expect(page.getByRole('menu', { name: 'Quality' })).toBeVisible();
   await page
-    .getByRole('menuitemradio', { name: 'Original', exact: true })
+    .getByRole('menuitemradio', { name: 'Original (540p)', exact: true })
     .click();
   await expect.poll(() => state.starts.length).toBe(2);
   expect(state.starts[1].options.quality).toBe('original');
@@ -1256,7 +1256,7 @@ test('controls hide, recover with keyboard, retain volume, seek, and stay inside
   await expect(volume).toHaveValue('0.23');
   await page.getByRole('button', { name: 'Quality', exact: true }).click();
   await expect(
-    page.getByRole('menuitemradio', { name: 'Original', exact: true }),
+    page.getByRole('menuitemradio', { name: 'Original (540p)', exact: true }),
   ).toHaveAttribute('aria-checked', 'true');
   await page.screenshot({ path: '.local/player-ui/settings.png' });
   await page.keyboard.press('Escape');
