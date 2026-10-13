@@ -320,16 +320,20 @@ try {
         docker('exec', attached.container, 'ls', '-A', '/config'),
       ).not.toContain('.thelxinoe-restore');
       // Decrypted archives and recovery captures are plaintext; only the journal stays.
-      expect(
-        f.compose(
-          'exec',
-          '-T',
-          'controller',
-          'ls',
-          '-A',
-          `/var/lib/thelxinoe/deployment/backups/${id}`,
-        ),
-      ).toBe('operation.json');
+      await expect
+        .poll(
+          () =>
+            f.compose(
+              'exec',
+              '-T',
+              'controller',
+              'ls',
+              '-A',
+              `/var/lib/thelxinoe/deployment/backups/${id}`,
+            ),
+          { timeout: budgets.stateCopy },
+        )
+        .toBe('operation.json');
       await healthy();
       await release(accepted.id);
     },
