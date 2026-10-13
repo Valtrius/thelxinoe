@@ -279,6 +279,16 @@ async fn process(state: &AppState, key: &str) -> anyhow::Result<()> {
     let endpoints = storage::endpoints(&state.db).await?;
     let source = endpoints.iter().find(|s| s.id == link.source);
     let target = endpoints.iter().find(|s| s.id == link.target);
+    if link.state != "connected" {
+        link.state = if link.enabled {
+            "connecting"
+        } else {
+            "cleaning"
+        }
+        .into();
+        storage::save(&state.db, link.clone()).await?;
+        state.notify_attention();
+    }
     let outcome = if let Some(source) = source {
         adapters::apply(state, &mut link, source, target).await
     } else {
@@ -313,6 +323,7 @@ async fn process(state: &AppState, key: &str) -> anyhow::Result<()> {
     }
     link.updated_at = now();
     storage::save(&state.db, link).await?;
+    state.notify_attention();
     Ok(())
 }
 

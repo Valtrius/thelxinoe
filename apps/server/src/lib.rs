@@ -371,6 +371,7 @@ async fn run_service_jobs(state: AppState) -> anyhow::Result<()> {
             }
         };
         if let Some(job) = job {
+            state.notify_attention();
             running.spawn(run_service_job(state.clone(), job));
         } else {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -394,6 +395,7 @@ async fn run_general_jobs(state: AppState) -> anyhow::Result<()> {
             }
         };
         if let Some(job) = job {
+            state.notify_attention();
             match job.kind.as_str() {
                 "checkpoint" => queue.checkpoint(&job).await?,
                 "manager.request" => {

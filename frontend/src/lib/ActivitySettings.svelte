@@ -2,6 +2,7 @@
   import { RefreshCw } from '@lucide/svelte';
   import type { Job } from './api';
   import { attention, acknowledgeAttention } from './attention';
+  import { activity } from './activity';
   import AttentionDot from './ui/AttentionDot.svelte';
   import Button from './ui/Button.svelte';
   import FormField from './ui/FormField.svelte';
@@ -69,7 +70,12 @@
             >{/if}
         </div>
         <span class={badgeClass}>{states[job.state]}</span>
-        <AttentionDot items={entries} />
+        <AttentionDot
+          items={entries}
+          activity={$activity.filter(
+            (item) => item.target === 'jobs' && item.resource === job.id,
+          )}
+        />
         {#each entries as entry (entry.id)}<Button
             variant="secondary"
             size="sm"

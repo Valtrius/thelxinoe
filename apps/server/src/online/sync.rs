@@ -43,9 +43,11 @@ pub async fn request(State(state): State<AppState>, headers: HeaderMap) -> Resul
             "Connect YouTube first, or wait for the current retry delay and five-minute sync cooldown",
         ));
     }
+    state.notify_attention();
     Ok(Json(json!({"queued":true})))
 }
 pub async fn run(state: AppState) -> anyhow::Result<()> {
+    storage::recover_activity(&state.db).await?;
     loop {
         let delay = if tick(&state).await? { 250 } else { 2000 };
         tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
@@ -87,6 +89,9 @@ async fn tick(state: &AppState) -> anyhow::Result<bool> {
     let Some(turn) = claim(state).await? else {
         return Ok(false);
     };
+    if turn.cursor.phase.is_empty() {
+        state.notify_attention();
+    }
     let user = turn.user.clone();
     let generation = turn.generation.clone();
     let failures = turn.failures;
@@ -103,6 +108,7 @@ async fn tick(state: &AppState) -> anyhow::Result<bool> {
             30i64.saturating_mul(1i64 << failures.min(7)).min(3600)
         };
         storage::tick(user, generation, message, delay, &state.db).await?;
+        state.notify_attention();
     }
     Ok(true)
 }
@@ -172,6 +178,9 @@ async fn save(state: &AppState, turn: Turn, done: bool, page: storage::Page) -> 
     let changed = storage::save(cursor, &state.db, turn, done, page).await?;
     if changed {
         state.notify_events();
+        if done {
+            state.notify_attention();
+        }
     }
     Ok(())
 }

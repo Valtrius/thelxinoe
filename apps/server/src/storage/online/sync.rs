@@ -3,7 +3,23 @@ use super::*;
 use thelxinoe_database::Database;
 
 pub(super) async fn request(db: &Database, p: thelxinoe_core::Principal) -> anyhow::Result<bool> {
-    db.write("online.sync.request", move|db|Ok(db.execute("UPDATE youtube_sync SET next_run=?1 WHERE user_id=?2 AND (last_complete IS NULL OR last_complete<?1-300) AND failures=0 AND EXISTS(SELECT 1 FROM online_accounts a WHERE a.user_id=youtube_sync.user_id AND a.provider='youtube' AND a.status='connected' AND a.generation=youtube_sync.generation)",params![now(),p.user.id])?==1)).await
+    db.write("online.sync.request", move |db| {
+        let tx = db.transaction()?;
+        let changed = tx.execute("UPDATE youtube_sync SET next_run=?1 WHERE user_id=?2 AND (last_complete IS NULL OR last_complete<?1-300) AND failures=0 AND EXISTS(SELECT 1 FROM online_accounts a WHERE a.user_id=youtube_sync.user_id AND a.provider='youtube' AND a.status='connected' AND a.generation=youtube_sync.generation)", params![now(),p.user.id])? == 1;
+        if changed {
+            let value = tx.query_row("SELECT generation,COALESCE(last_complete,0),last_turn FROM youtube_sync WHERE user_id=?1", [&p.user.id], |r| Ok(json!({"generation":r.get::<_,String>(0)?,"last_complete":r.get::<_,i64>(1)?,"last_turn":r.get::<_,i64>(2)?})))?;
+            tx.execute("INSERT INTO settings(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![format!("activity.youtube-sync:{}",p.user.id),value.to_string()])?;
+        }
+        tx.commit()?;
+        Ok(changed)
+    }).await
+}
+
+pub(super) async fn recover_activity(db: &Database) -> anyhow::Result<()> {
+    db.write("online.sync.recover_activity", |db| {
+        db.execute("UPDATE settings AS s SET value=json_set(value,'$.last_turn',(SELECT last_turn FROM youtube_sync y WHERE s.key='activity.youtube-sync:'||y.user_id)) WHERE s.key LIKE 'activity.youtube-sync:%' AND EXISTS(SELECT 1 FROM youtube_sync y WHERE s.key='activity.youtube-sync:'||y.user_id)", [])?;
+        Ok(())
+    }).await
 }
 
 pub(super) async fn claim_classification(

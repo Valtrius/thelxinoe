@@ -1,5 +1,7 @@
 <script lang="ts">
   import { api } from './api';
+  import { startActivity } from './activity';
+  import { refreshAttention } from './attention';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
   let { id, kind, changed } = $props<{
@@ -21,6 +23,16 @@
     );
   async function act(fn: () => Promise<void>) {
     busy = true;
+    const finish = startActivity({
+      target: ['show', 'season', 'episode'].includes(kind)
+        ? 'shows'
+        : ['artist', 'album', 'track'].includes(kind)
+          ? 'music'
+          : 'movies',
+      resource: id,
+      media_ids: [id],
+      message: 'Applying media changes',
+    });
     message = '';
     try {
       await fn();
@@ -28,6 +40,8 @@
       message = String(e);
     } finally {
       busy = false;
+      await refreshAttention();
+      finish();
     }
   }
   async function prepare(action: string) {

@@ -9,17 +9,25 @@ async function desktopFixture(page: Page, signedIn = false) {
       startupReveals: { text: string; iconsReady: boolean; theme: string }[];
       __TAURI_INTERNALS__: unknown;
       __TAURI_EVENT_PLUGIN_INTERNALS__: unknown;
+      emitDesktopEvent: (name: string, payload: unknown) => void;
     };
     bridge.isTauri = true;
     bridge.startupReveals = [];
     bridge.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
     let callback = 0;
+    const callbacks = new Map<number, (event: unknown) => void>();
+    const listeners = new Map<string, number>();
+    bridge.emitDesktopEvent = (event, payload) =>
+      callbacks.get(listeners.get(event) ?? -1)?.({ event, id: 1, payload });
     bridge.__TAURI_INTERNALS__ = {
       metadata: {
         currentWindow: { label: 'main' },
         currentWebview: { label: 'main' },
       },
-      transformCallback: () => ++callback,
+      transformCallback: (handler: (event: unknown) => void) => {
+        callbacks.set(++callback, handler);
+        return callback;
+      },
       unregisterCallback() {},
       async invoke(command: string, args: Record<string, unknown> = {}) {
         if (command === 'server_url') return location.origin;
@@ -47,7 +55,10 @@ async function desktopFixture(page: Page, signedIn = false) {
         if (command === 'tools_get') return { tools: [], mpv: {} };
         if (command === 'plugin:app|version') return '0.1.0';
         if (command === 'desktop_update_status') return null;
-        if (command === 'plugin:event|listen') return ++callback;
+        if (command === 'plugin:event|listen') {
+          listeners.set(String(args.event), Number(args.handler));
+          return ++callback;
+        }
         return false;
       },
     };
@@ -58,6 +69,82 @@ async function desktopFixture(page: Page, signedIn = false) {
   });
   return fixture;
 }
+
+test('desktop update and tool activity reaches navigation independently of server connectivity', async ({
+  page,
+}, testInfo) => {
+  const fixture = await desktopFixture(page, true);
+  await page.goto('/');
+  const settings = page.getByRole('link', { name: 'Settings', exact: true });
+  await expect(settings).toBeVisible();
+  const emit = (name: string, payload: unknown) =>
+    page.evaluate(
+      ({ name, payload }) =>
+        (
+          window as unknown as {
+            emitDesktopEvent: (name: string, payload: unknown) => void;
+          }
+        ).emitDesktopEvent(name, payload),
+      { name, payload },
+    );
+  await emit('desktop-update-changed', {
+    phase: 'downloading',
+    installed: '0.1.0',
+    policy: 'automatic',
+    release: null,
+    received: 1,
+    total: 2,
+    error: null,
+  });
+  const marker = settings.locator('[data-activity-state]');
+  await expect(marker).toHaveAttribute('data-activity-state', 'running');
+  await expect(marker).toHaveAttribute(
+    'aria-label',
+    /Downloading desktop update/,
+  );
+  await settings.click();
+  const nav = page.getByRole('navigation', { name: 'Settings navigation' });
+  await expect(
+    nav
+      .getByRole('link', { name: 'Desktop', exact: true })
+      .locator('[data-activity-state]'),
+  ).toHaveAttribute('data-activity-state', 'running');
+  await page.route('**/api/v1/me/attention', (route) =>
+    route.fulfill({
+      status: 503,
+      json: { error: { code: 'unavailable', message: 'Unavailable' } },
+    }),
+  );
+  await page.evaluate(() =>
+    window.dispatchEvent(new Event('thelxinoe-attention-refresh')),
+  );
+  await expect(marker).toHaveAttribute('data-activity-state', 'running');
+  await emit('desktop-update-changed', { phase: 'waiting' });
+  await expect(marker).toHaveAttribute('data-activity-state', 'queued');
+  await emit('desktop-update-changed', { phase: 'idle' });
+  await expect(marker).toHaveCount(0);
+  await emit('tools-progress', {
+    tool: 'ffmpeg',
+    phase: 'verifying',
+    packageId: 'next',
+    downloaded: 2,
+    total: 2,
+    error: null,
+  });
+  await expect(
+    nav
+      .getByRole('link', { name: 'MPV', exact: true })
+      .locator('[data-activity-state]'),
+  ).toHaveAttribute('data-activity-state', 'running');
+  await expect(marker).toHaveAttribute('aria-label', /Verifying FFmpeg/);
+  await page.screenshot({
+    path: testInfo.outputPath('desktop-tool-activity.png'),
+  });
+  await emit('tools-progress', { tool: 'ffmpeg', phase: 'complete' });
+  await expect(marker).toHaveCount(0);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
 
 function reveals(page: Page) {
   return page.evaluate(

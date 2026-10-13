@@ -11,6 +11,7 @@
   import Panel from './ui/Panel.svelte';
   import AttentionDot from './ui/AttentionDot.svelte';
   import { attention } from './attention';
+  import { activity } from './activity';
   import { providers } from './providers/availability';
 
   let {
@@ -107,6 +108,10 @@
           <div>
             <strong class="inline-flex items-center gap-2"
               >{label}<AttentionDot
+                activity={$activity.filter(
+                  (item) =>
+                    item.target === 'online' && item.resource === provider,
+                )}
                 items={$attention.filter(
                   (item) =>
                     item.target === 'online' && item.resource === provider,
