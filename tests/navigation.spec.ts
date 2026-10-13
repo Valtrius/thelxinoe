@@ -688,3 +688,216 @@ test('service selection is addressable and restored by browser history', async (
     contentType: 'image/png',
   });
 });
+
+for (const viewport of [
+  { width: 1440, height: 700 },
+  { width: 390, height: 844 },
+]) {
+  test(`settings sections and service tabs keep workspace scroll at ${viewport.width}px`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(viewport);
+    const fixture = await installUiFixture(page, { role: 'admin' });
+    await page.goto('/');
+    await expect(
+      page.getByRole('heading', {
+        name: 'Your display preferences',
+        exact: true,
+      }),
+    ).toBeVisible();
+    const workspace = page.locator('.workspace-scroll');
+    const nav = page.getByRole('navigation', { name: 'Settings navigation' });
+    const scroll = async () =>
+      workspace.evaluate((element) => element.scrollTop);
+    const position = 80;
+    await workspace.evaluate((element, top) => {
+      element.scrollTop = top;
+    }, position);
+    expect(await scroll()).toBe(position);
+    for (const name of ['Devices', 'Account', 'Media services']) {
+      const link = nav.getByRole('link', { name, exact: true });
+      await link.click();
+      await expect(page.locator('.settings-content > h1')).toHaveText(name);
+      await expect.poll(scroll).toBe(position);
+      await expect(link).toBeFocused();
+    }
+    const services = page.getByRole('navigation', { name: 'Select service' });
+    for (const name of ['Radarr', 'Sonarr', 'NZBGet', 'Seerr']) {
+      const link = services.getByRole('link', { name, exact: true });
+      await link.click();
+      await expect(link).toHaveAttribute('aria-current', 'true');
+      await expect.poll(scroll).toBe(position);
+      await expect(link).toBeFocused();
+    }
+    await page.goBack();
+    await expect(page).toHaveURL(/#admin\/services\/nzbget$/);
+    await expect.poll(scroll).toBe(position);
+    await page.goForward();
+    await expect(page).toHaveURL(/#admin\/services\/seerr$/);
+    await expect.poll(scroll).toBe(position);
+    await testInfo.attach('settings-scroll', {
+      body: JSON.stringify({
+        viewport,
+        scroll: await scroll(),
+        url: page.url(),
+      }),
+      contentType: 'application/json',
+    });
+    await testInfo.attach('settings-scroll-view', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.unexpected).toEqual([]);
+  });
+}
+
+test('shorter settings sections clamp scroll to the available content', async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 700 });
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'devices',
+  });
+  await page.goto('/');
+  await expect(page.getByText('Browser 39', { exact: true })).toBeAttached();
+  const workspace = page.locator('.workspace-scroll');
+  await workspace.evaluate((element) => {
+    element.scrollTop = 1200;
+  });
+  expect(await workspace.evaluate((element) => element.scrollTop)).toBe(1200);
+  await page
+    .getByRole('navigation', { name: 'Settings navigation' })
+    .getByRole('link', { name: 'Online accounts', exact: true })
+    .click();
+  await expect(
+    page.getByRole('button', { name: 'Connect YouTube', exact: true }),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      workspace.evaluate(
+        (element) =>
+          element.scrollTop ===
+          Math.min(1200, element.scrollHeight - element.clientHeight),
+      ),
+    )
+    .toBe(true);
+  await testInfo.attach('shorter-settings-scroll', {
+    body: JSON.stringify(
+      await workspace.evaluate((element) => ({
+        scroll: element.scrollTop,
+        maxScroll: element.scrollHeight - element.clientHeight,
+      })),
+    ),
+    contentType: 'application/json',
+  });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+for (const manualScroll of [false, true]) {
+  test(`delayed settings loading ${manualScroll ? 'respects manual scrolling' : 'restores the retained scroll'}`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width: 1440, height: 700 });
+    const fixture = await installUiFixture(page, { role: 'admin' });
+    const devices = responseGate();
+    await page.route('**/api/v1/auth/sessions', async (route) => {
+      await devices.promise;
+      await route.fallback();
+    });
+    await page.goto('/');
+    await expect(
+      page.getByLabel('New password', { exact: true }),
+    ).toBeVisible();
+    const workspace = page.locator('.workspace-scroll');
+    const scroll = () => workspace.evaluate((element) => element.scrollTop);
+    await workspace.evaluate((element) => {
+      element.scrollTop = 80;
+    });
+    await page
+      .getByRole('navigation', { name: 'Settings navigation' })
+      .getByRole('link', { name: 'Devices', exact: true })
+      .click();
+    await expect(
+      page.getByRole('status', { name: 'Loading devices', exact: true }),
+    ).toBeVisible();
+    await expect.poll(scroll).toBeLessThan(80);
+    let expected = 80;
+    if (manualScroll) {
+      const before = await scroll();
+      await workspace.hover();
+      await page.mouse.wheel(0, -12);
+      await expect.poll(scroll).toBe(Math.max(0, before - 12));
+      expected = await scroll();
+    }
+    devices.release();
+    await expect(page.getByText('Browser 39', { exact: true })).toBeAttached();
+    await workspace.evaluate(
+      () => new Promise((resolve) => requestAnimationFrame(resolve)),
+    );
+    await expect.poll(scroll).toBe(expected);
+    await testInfo.attach('delayed-settings-scroll', {
+      body: JSON.stringify({ manualScroll, scroll: await scroll(), expected }),
+      contentType: 'application/json',
+    });
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.unexpected).toEqual([]);
+  });
+}
+
+test('rapid settings switches keep the latest scroll while a section first loads', async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 700 });
+  const fixture = await installUiFixture(page, { role: 'admin' });
+  await page.goto('/');
+  await expect(page.getByLabel('New password', { exact: true })).toBeVisible();
+  const chunks = responseGate();
+  const devices = responseGate();
+  await page.route('**/assets/*.js', async (route) => {
+    await chunks.promise;
+    await route.continue();
+  });
+  await page.route('**/api/v1/auth/sessions', async (route) => {
+    await devices.promise;
+    await route.fallback();
+  });
+  const workspace = page.locator('.workspace-scroll');
+  const nav = page.getByRole('navigation', { name: 'Settings navigation' });
+  await workspace.evaluate((element) => {
+    element.scrollTop = 80;
+  });
+  await nav.getByRole('link', { name: 'Devices', exact: true }).click();
+  await expect(page.locator('.settings-content > h1')).toHaveText('Devices');
+  await nav.getByRole('link', { name: 'Account', exact: true }).click();
+  await expect(page.getByLabel('New password', { exact: true })).toBeVisible();
+  await workspace.hover();
+  await page.mouse.wheel(0, -200);
+  await expect
+    .poll(() => workspace.evaluate((element) => element.scrollTop))
+    .toBe(0);
+  await nav.getByRole('link', { name: 'Devices', exact: true }).click();
+  chunks.release();
+  await expect(
+    page.getByRole('heading', { name: 'Connect a TV' }),
+  ).toBeAttached();
+  devices.release();
+  await expect(page.getByText('Browser 39', { exact: true })).toBeAttached();
+  await workspace.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(resolve)),
+  );
+  await expect
+    .poll(() => workspace.evaluate((element) => element.scrollTop))
+    .toBe(0);
+  await testInfo.attach('rapid-settings-scroll', {
+    body: JSON.stringify({
+      scroll: await workspace.evaluate((element) => element.scrollTop),
+      url: page.url(),
+    }),
+    contentType: 'application/json',
+  });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
