@@ -39,7 +39,34 @@ test('first-time tools stay queued or installing until verified installation com
   await page.route('**/api/v1/admin/tools', (route) =>
     route.fulfill({ json: { items, supported: true } }),
   );
+  await page.route('**/api/v1/me/attention', (route) =>
+    route.fulfill({
+      json: {
+        items: [],
+        activity: items
+          .filter((item) => item.job.stage !== 'complete')
+          .map((item) => ({
+            id: item.job.id,
+            target: 'server',
+            resource: item.id,
+            state: ['queued', 'waiting'].includes(item.job.stage)
+              ? 'queued'
+              : 'running',
+            message: `${item.id}: ${item.job.stage}`,
+            media_ids: [],
+          })),
+      },
+    }),
+  );
+  const update = () =>
+    page.evaluate(() => {
+      window.dispatchEvent(new Event('thelxinoe-tools'));
+      window.dispatchEvent(new Event('thelxinoe-attention-refresh'));
+    });
   await page.goto('/');
+  const settings = page.getByRole('link', { name: 'Settings', exact: true });
+  const marker = settings.locator('[data-activity-state]');
+  await expect(marker).toHaveAttribute('data-activity-state', 'queued');
   const tools = page.getByRole('region', { name: 'Server tools', exact: true });
   await expect(tools.getByRole('row')).toHaveCount(5);
   for (const row of await tools
@@ -55,17 +82,48 @@ test('first-time tools stay queued or installing until verified installation com
   const ffmpeg = tools.getByRole('row', { name: /FFmpeg/ });
   for (const [stage, label] of [
     ['installing', 'Installing'],
+    ['verifying', 'Verifying'],
     ['validating', 'Validating'],
+    ['activating', 'Activating'],
   ]) {
     items[3].job.stage = stage;
-    await page.evaluate(() =>
-      window.dispatchEvent(new Event('thelxinoe-tools')),
-    );
+    await update();
+    await expect(marker).toHaveAttribute('data-activity-state', 'running');
+    await expect
+      .poll(() =>
+        marker.evaluate((node) => node.getAnimations({ subtree: true }).length),
+      )
+      .toBeGreaterThan(0);
     await expect(ffmpeg.getByRole('status')).toContainText(label);
     await expect(
       ffmpeg.getByRole('button', { name: label, exact: true }),
     ).toBeDisabled();
   }
+  items[3].installed = {
+    id: 'ffmpeg-verified',
+    candidate_id: 'ffmpeg-seed',
+    version: '1.0',
+  };
+  items[3].job.stage = 'complete';
+  items[0].job.stage = 'waiting';
+  await update();
+  await expect(marker).toHaveAttribute('data-activity-state', 'queued');
+  await expect
+    .poll(() =>
+      marker.evaluate((node) => node.getAnimations({ subtree: true }).length),
+    )
+    .toBe(0);
+  items[0].job.stage = 'verifying';
+  await update();
+  await expect(marker).toHaveAttribute('data-activity-state', 'running');
+  await expect
+    .poll(() =>
+      marker.evaluate((node) => node.getAnimations({ subtree: true }).length),
+    )
+    .toBeGreaterThan(0);
+  await page.screenshot({
+    path: info.outputPath('first-tool-complete-next-tool-verifying.png'),
+  });
   for (const item of items) {
     item.installed = {
       id: item.id + '-verified',
@@ -74,7 +132,8 @@ test('first-time tools stay queued or installing until verified installation com
     };
     item.job.stage = 'complete';
   }
-  await page.evaluate(() => window.dispatchEvent(new Event('thelxinoe-tools')));
+  await update();
+  await expect(marker).toHaveCount(0);
   for (const item of items)
     await expect(
       tools

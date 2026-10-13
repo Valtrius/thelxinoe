@@ -15,6 +15,7 @@
   import Button from './ui/Button.svelte';
   import Notice from './ui/Notice.svelte';
   import LibraryCard from './ui/LibraryCard.svelte';
+  import { activity } from './activity';
   import MediaRow from './ui/MediaRow.svelte';
   import MediaSkeleton from './ui/MediaSkeleton.svelte';
   import LiveCard from './providers/components/ui/LiveCard.svelte';
@@ -447,6 +448,9 @@
       {#each continuing as item (item.id)}
         <LibraryCard
           {item}
+          activity={$activity.filter((entry) =>
+            entry.media_ids.includes(item.id),
+          )}
           landscape
           keyPrefix="home-continue"
           open={() => playItem(item, true)}
@@ -472,6 +476,9 @@
           {#each library.next_up as item (item.id)}
             <LibraryCard
               {item}
+              activity={$activity.filter((entry) =>
+                entry.media_ids.includes(item.id),
+              )}
               landscape
               keyPrefix="home-next"
               open={() => playItem(item)}
@@ -493,6 +500,9 @@
           {#each youtube.next_up.map(youtubeItem) as item (item.id)}
             <LibraryCard
               {item}
+              activity={$activity.filter((entry) =>
+                entry.media_ids.includes(item.id),
+              )}
               landscape
               keyPrefix="home-youtube"
               open={() => playItem(item)}
@@ -559,6 +569,9 @@
         {#each shelf.items as item (item.id)}
           <LibraryCard
             {item}
+            activity={$activity.filter((entry) =>
+              entry.media_ids.includes(item.id),
+            )}
             landscape
             keyPrefix={`home-${shelf.label}`}
             open={() => details(item.id, item.kind)}

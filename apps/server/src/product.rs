@@ -167,8 +167,19 @@ async fn controller_status(state: &AppState) -> Result<Value> {
     })?
 }
 pub(crate) async fn observe(state: &AppState) -> Result<()> {
-    let value = crate::managers::controller_request(state, "/product", None).await?;
-    save(state, "product.controller", value).await
+    match controller_status(state).await {
+        Ok(mut value) => {
+            value["available"] = json!(true);
+            save(state, "product.controller", value).await
+        }
+        Err(error) => {
+            if let Some(mut value) = setting(state, "product.controller").await? {
+                value["available"] = json!(false);
+                save(state, "product.controller", value).await?;
+            }
+            Err(error)
+        }
+    }
 }
 async fn policy(
     State(state): State<AppState>,

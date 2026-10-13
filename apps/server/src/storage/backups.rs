@@ -2,6 +2,35 @@
 use super::*;
 use thelxinoe_database::Database;
 
+pub(super) async fn observe_controller(
+    db: &Database,
+    observed: Option<Value>,
+) -> anyhow::Result<bool> {
+    db.write("backups.observe_controller", move |db| {
+        let previous = db.query_row("SELECT value FROM settings WHERE key='backups.controller'", [], |r| r.get::<_, String>(0)).optional()?;
+        let value = if let Some(observed) = observed.filter(|v| v["items"].is_array()) {
+            json!({"available":true,"items":observed["items"].as_array().unwrap().iter().map(|item| json!({"id":item["id"],"stage":item["stage"],"needs_attention":!item["error"].is_null()})).collect::<Vec<_>>()})
+        } else if let Some(previous) = &previous {
+            let mut value: Value = serde_json::from_str(previous)?;
+            value["available"] = json!(false);
+            value
+        } else {
+            return Ok(false);
+        };
+        let next = value.to_string();
+        if previous.as_deref() == Some(next.as_str()) { return Ok(false); }
+        db.execute("INSERT INTO settings(key,value) VALUES ('backups.controller',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [next])?;
+        Ok(true)
+    }).await
+}
+
+pub(super) async fn accepted(db: &Database, id: String, restore: bool) -> anyhow::Result<()> {
+    db.write("backups.accepted", move |db| {
+        db.execute("INSERT INTO settings(key,value) VALUES ('backups.controller',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [json!({"available":true,"items":[{"id":id,"stage":if restore { "restore-queued" } else { "queued" },"needs_attention":false}]}).to_string()])?;
+        Ok(())
+    }).await
+}
+
 pub(super) async fn policy(db: &Database) -> anyhow::Result<Option<Policy>> {
     db.read("backups.policy", |db| {
         Ok(db

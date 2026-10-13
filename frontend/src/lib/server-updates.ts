@@ -1,5 +1,7 @@
 import { readable } from 'svelte/store';
 import { api, ApiError, desktop, serverUrl } from './api';
+import { startActivity } from './activity';
+import { refreshAttention } from './attention';
 
 export type ServerUpdate = {
   id: string;
@@ -176,6 +178,16 @@ export async function serverUpdateAction(
       : null;
   uncertainInstall = null;
   update({ action, error: '' });
+  const finish = startActivity({
+    target: 'server',
+    resource: null,
+    message:
+      action === 'check'
+        ? 'Checking server updates'
+        : action === 'recover'
+          ? 'Recovering server update'
+          : 'Updating Thelxinoe server',
+  });
   // Record before sending: losing the response during restart still reconnects.
   if (action === 'install' && !desktop)
     sessionStorage.setItem(reloadKey, version!);
@@ -220,7 +232,12 @@ export async function serverUpdateAction(
     }
     return false;
   } finally {
-    await refreshServerUpdate();
-    update({ action: null });
+    try {
+      await refreshServerUpdate();
+      await refreshAttention();
+    } finally {
+      update({ action: null });
+      finish();
+    }
   }
 }

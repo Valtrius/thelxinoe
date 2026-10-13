@@ -5,6 +5,7 @@
   import AttentionDot from './AttentionDot.svelte';
   import PlatformIcon from './PlatformIcon.svelte';
   import { attentionDescription, type AttentionItem } from '../attention';
+  import type { ActivityItem } from '../activity';
   let {
     item,
     open,
@@ -12,6 +13,7 @@
     details,
     keyPrefix = 'library',
     attention = [],
+    activity = [],
     onSeen,
     attentionError = '',
     landscape = false,
@@ -32,6 +34,7 @@
     play?: () => void;
     details?: () => void;
     attention?: AttentionItem[];
+    activity?: ActivityItem[];
     onSeen?: () => void;
     attentionError?: string;
     landscape?: boolean;
@@ -40,7 +43,7 @@
   const wide = $derived(landscape || item.kind === 'episode');
   const cardId = $props.id();
   const description = $derived(
-    attentionError || attentionDescription(attention),
+    attentionError || attentionDescription(attention, activity),
   );
   let imageFailed = $state(false);
   const actionClass =
@@ -104,7 +107,10 @@
         />{/if}
       <AttentionDot
         items={attention}
-        class="absolute top-2 left-2 z-3 size-2.5 border-2 border-surface-strong box-content"
+        {activity}
+        class={activity.length
+          ? 'absolute top-2 left-2 z-3 bg-surface-strong/90 rounded-full'
+          : 'absolute top-2 left-2 z-3 size-2.5 border-2 border-surface-strong box-content'}
       />
     </div>
     <div id={`${cardId}-label`} class="tile-body min-w-0 p-4">

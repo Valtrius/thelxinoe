@@ -4,6 +4,7 @@
   import SectionIcon from './SectionIcon.svelte';
   import AttentionDot from './AttentionDot.svelte';
   import { attention, attentionDescription } from '../attention';
+  import { activity } from '../activity';
   import Button from './Button.svelte';
   import type { User } from '../api';
   import {
@@ -50,6 +51,27 @@
       ['services', 'server', 'backups', 'jobs', 'online'].includes(item.target),
     ),
   );
+  const settingsActivity = $derived(
+    $activity.filter((item) =>
+      [
+        'services',
+        'server',
+        'backups',
+        'jobs',
+        'online',
+        'connection',
+        'mpv',
+        'analysis',
+      ].includes(item.target),
+    ),
+  );
+  function menuActivity(name: string) {
+    return $activity.filter(
+      (item) =>
+        item.target === name.toLowerCase() ||
+        (name === 'Discover' && item.target === 'requests'),
+    );
+  }
   function menuAttention(name: string) {
     return $attention.filter(
       (item) =>
@@ -116,7 +138,10 @@
           {collapsed}
           title={collapsed ? name : undefined}
           aria-label={name}
-          description={attentionDescription(menuAttention(name))}
+          description={attentionDescription(
+            menuAttention(name),
+            menuActivity(name),
+          )}
           active={section === name}
           href={routeHref(sectionRoute(name))}
           onclick={(event) => {
@@ -128,6 +153,7 @@
           ><span class="relative size-5 shrink-0"
             ><SectionIcon section={name} /><AttentionDot
               items={menuAttention(name)}
+              activity={menuActivity(name)}
               class="absolute -top-1 -right-1.5"
             /></span
           ></SidebarButton
@@ -146,6 +172,10 @@
               (entry) =>
                 entry.target === 'online' && entry.resource === item.platform,
             ),
+            $activity.filter(
+              (entry) =>
+                entry.target === 'online' && entry.resource === item.platform,
+            ),
           )}
           active={section === item.name}
           href={routeHref(sectionRoute(item.name))}
@@ -158,6 +188,10 @@
           ><span class="relative size-5 shrink-0"
             ><SectionIcon section={item.name} /><AttentionDot
               items={$attention.filter(
+                (entry) =>
+                  entry.target === 'online' && entry.resource === item.platform,
+              )}
+              activity={$activity.filter(
                 (entry) =>
                   entry.target === 'online' && entry.resource === item.platform,
               )}
@@ -185,7 +219,7 @@
         label="Settings"
         {collapsed}
         aria-label="Settings"
-        description={attentionDescription(settingsAttention)}
+        description={attentionDescription(settingsAttention, settingsActivity)}
         title={collapsed ? 'Settings' : undefined}
         active={section === 'Settings'}
         href={routeHref(sectionRoute('Settings', settingsSection))}
@@ -198,6 +232,7 @@
         ><span class="relative size-5 shrink-0"
           ><SectionIcon section="Settings" /><AttentionDot
             items={settingsAttention}
+            activity={settingsActivity}
             class="absolute -top-1 -right-1.5"
           /></span
         ></SidebarButton

@@ -5,6 +5,7 @@
   import { formControlClass } from './ui/styles';
   import { Folder, RefreshCw, ArrowLeft } from '@lucide/svelte';
   import { api } from './api';
+  import { activity } from './activity';
   import { LatestRequest } from './latest-request';
   import {
     attention,
@@ -410,6 +411,9 @@
   >
     {#each items as item (item.id)}<LibraryCard
         {item}
+        activity={$activity.filter((entry) =>
+          entry.media_ids.includes(item.id),
+        )}
         attention={$attention.filter((entry) =>
           entry.media_ids.includes(item.id),
         )}

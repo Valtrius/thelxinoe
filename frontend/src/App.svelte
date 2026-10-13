@@ -29,6 +29,7 @@
   import SectionIcon from './lib/ui/SectionIcon.svelte';
   import Drawer from './lib/ui/Drawer.svelte';
   import { connectAttention, refreshAttention } from './lib/attention';
+  import { setActivityConnected } from './lib/activity';
   import WindowTitlebar from './lib/ui/WindowTitlebar.svelte';
   import {
     appearance,
@@ -391,6 +392,7 @@
       (value) => {
         if (!ownsSession()) return;
         connected = value;
+        setActivityConnected(value);
         if (value && user) void refreshAppearance(user.id);
       },
     );

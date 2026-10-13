@@ -23,6 +23,7 @@
   import { followLink, routeHref, sectionRoute } from '../navigation';
   import AttentionDot from './AttentionDot.svelte';
   import { attention, attentionDescription } from '../attention';
+  import { activity } from '../activity';
   import { formControlClass } from './styles';
   import { providers } from '../providers/availability';
   let {
@@ -208,6 +209,7 @@
                 aria-label={item.label}
                 description={attentionDescription(
                   $attention.filter((entry) => entry.target === item.id),
+                  $activity.filter((entry) => entry.target === item.id),
                 )}
                 active={active === item.id}
                 href={routeHref(sectionRoute('Settings', item.id))}
@@ -230,6 +232,9 @@
                 >
                 <AttentionDot
                   items={$attention.filter((entry) => entry.target === item.id)}
+                  activity={$activity.filter(
+                    (entry) => entry.target === item.id,
+                  )}
                 />
               </NavigationItem>
             {/each}
