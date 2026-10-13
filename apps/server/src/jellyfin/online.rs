@@ -26,7 +26,7 @@ pub async fn views(state: &AppState) -> Result<Vec<Value>> {
     let mut items = Vec::new();
     for (id, provider, name) in ROOTS {
         if crate::online::availability::enabled(state, provider).await? {
-            items.push(json!({"Id":id,"Name":name,"Type":"CollectionFolder","CollectionType":"homevideos","IsFolder":true,"ServerId":state.server_id.as_str(),"ImageTags":{}}));
+            items.push(json!({"Id":id,"DisplayPreferencesId":id,"Name":name,"Type":"CollectionFolder","CollectionType":"homevideos","IsFolder":true,"ServerId":state.server_id.as_str(),"ImageTags":{}}));
         }
     }
     Ok(items)

@@ -5,10 +5,11 @@ use thelxinoe_database::Database;
 pub(super) async fn views(server: String, db: &Database) -> anyhow::Result<Vec<Value>> {
     db.read("jellyfin.catalog.views", move |db| {
         let mut items = db.prepare("SELECT id,name,kind FROM library_roots ORDER BY name")?.query_map([], |r| {
+            let id: String = r.get(0)?;
             let domain: String = r.get(2)?;
-            Ok(json!({"Id":r.get::<_,String>(0)?,"Name":r.get::<_,String>(1)?,"Type":"CollectionFolder","IsFolder":true,"CollectionType":if domain=="shows" {"tvshows"}else{&domain},"ServerId":server,"ImageTags":{}}))
+            Ok(json!({"Id":id,"DisplayPreferencesId":id,"Name":r.get::<_,String>(1)?,"Type":"CollectionFolder","IsFolder":true,"CollectionType":if domain=="shows" {"tvshows"}else{&domain},"ServerId":server,"ImageTags":{}}))
         })?.collect::<std::result::Result<Vec<_>,_>>()?;
-        items.push(json!({"Id":PLAYLIST_VIEW,"Name":"Playlists","Type":"CollectionFolder","IsFolder":true,"CollectionType":"playlists","ServerId":server,"ImageTags":{}}));
+        items.push(json!({"Id":PLAYLIST_VIEW,"DisplayPreferencesId":PLAYLIST_VIEW,"Name":"Playlists","Type":"CollectionFolder","IsFolder":true,"CollectionType":"playlists","ServerId":server,"ImageTags":{}}));
         Ok(items)
     }).await
 }
