@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import dgram from 'node:dgram';
 import { Jellyfin, API_VERSION } from '@jellyfin/sdk';
 import { getAuthenticationApi } from '@jellyfin/sdk/lib/utils/api/authentication-api.js';
+import { getDisplayPreferenceApi } from '@jellyfin/sdk/lib/utils/api/display-preference-api.js';
 import { getFilterApi } from '@jellyfin/sdk/lib/utils/api/filter-api.js';
 import { getLibraryApi } from '@jellyfin/sdk/lib/utils/api/library-api.js';
 import { getSystemApi } from '@jellyfin/sdk/lib/utils/api/system-api.js';
@@ -143,6 +144,59 @@ r = await compat.get('/UserViews', { headers });
 assert.equal(r.status(), 200);
 const views = await r.json();
 assert.ok(views.Items.length >= 3);
+const displayPreferencesApi = getDisplayPreferenceApi(sdkApi);
+const libraryPreferences = [];
+for (const view of views.Items) {
+  assert.equal(typeof view.DisplayPreferencesId, 'string', view.Name);
+  assert.ok(view.DisplayPreferencesId.length > 0, view.Name);
+  for (const path of [
+    `/Items/${view.Id}`,
+    `/Users/${login.User.Id}/Items/${view.Id}`,
+  ]) {
+    const item = await compat.get(path, { headers });
+    assert.equal(item.status(), 200, path);
+    assert.equal(
+      (await item.json()).DisplayPreferencesId,
+      view.DisplayPreferencesId,
+      `${view.Name} keeps its preferences when opened`,
+    );
+  }
+  const parameters = {
+    displayPreferencesId: view.DisplayPreferencesId,
+    client: 'jellyfin-androidtv',
+  };
+  const original = (
+    await displayPreferencesApi.getDisplayPreferences(parameters)
+  ).data;
+  const gridDirection =
+    original.CustomPrefs.GridDirection === 'VERTICAL'
+      ? 'HORIZONTAL'
+      : 'VERTICAL';
+  await displayPreferencesApi.updateDisplayPreferences({
+    ...parameters,
+    displayPreferencesDto: {
+      ...original,
+      CustomPrefs: { ...original.CustomPrefs, GridDirection: gridDirection },
+    },
+  });
+  const saved = (await displayPreferencesApi.getDisplayPreferences(parameters))
+    .data;
+  assert.equal(saved.CustomPrefs.GridDirection, gridDirection, view.Name);
+  await displayPreferencesApi.updateDisplayPreferences({
+    ...parameters,
+    displayPreferencesDto: original,
+  });
+  libraryPreferences.push({
+    name: view.Name,
+    displayPreferencesId: view.DisplayPreferencesId,
+    gridDirection,
+  });
+}
+assert.equal(
+  new Set(libraryPreferences.map((view) => view.displayPreferencesId)).size,
+  libraryPreferences.length,
+  'Each library has independent display preferences',
+);
 r = await compat.get('/Items?IncludeItemTypes=Movie&Recursive=true', {
   headers,
 });
@@ -586,6 +640,7 @@ writeFileSync(
       filterLanguagesAndCollectionReads: true,
       rejectedInvalidUpdatesWithoutMutation: true,
       views: views.Items.map((i) => i.Name),
+      libraryPreferences,
       movies: movies.Items.map((i) => i.Name),
       compatibilityTokenRejectedByFirstParty: true,
       grantedDirectPlaybackAndProgress: true,
