@@ -496,9 +496,25 @@
   async function restoreWorkspace(scroll: number, focus = false) {
     stopScrollRestoration();
     const destination = route;
+    let cancelled = false;
+    let observer: ResizeObserver | undefined;
+    const events = new AbortController();
+    const stop = () => {
+      cancelled = true;
+      observer?.disconnect();
+      events.abort();
+    };
+    stopScrollRestoration = stop;
+    if (destination.section === 'Settings' && workspace)
+      for (const event of ['wheel', 'pointerdown', 'keydown'])
+        workspace.addEventListener(event, stop, {
+          passive: true,
+          signal: events.signal,
+        });
     await preloadPage(destination).catch(() => {});
-    if (routeHref(destination) !== routeHref(route)) return;
+    if (cancelled || routeHref(destination) !== routeHref(route)) return;
     await tick();
+    if (cancelled) return;
     if (workspace) {
       const scroller = workspace;
       const settings =
@@ -506,25 +522,14 @@
           ? scroller.querySelector('.settings-layout')
           : null;
       if (scroll > 0 && settings) {
-        const events = new AbortController();
-        const observer = new ResizeObserver(() => {
+        observer = new ResizeObserver(() => {
           scroller.scrollTop = scroll;
           if (scroller.scrollTop >= scroll) stop();
         });
-        const stop = () => {
-          observer.disconnect();
-          events.abort();
-        };
-        stopScrollRestoration = stop;
-        for (const event of ['wheel', 'pointerdown', 'keydown'])
-          scroller.addEventListener(event, stop, {
-            passive: true,
-            signal: events.signal,
-          });
         observer.observe(settings);
-      }
+      } else stop();
       scroller.scrollTop = scroll;
-    }
+    } else stop();
     if (focus) {
       const navigationDrawer = document.getElementById('mobile-navigation');
       if (

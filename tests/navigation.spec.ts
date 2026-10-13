@@ -846,3 +846,58 @@ for (const manualScroll of [false, true]) {
     expect(fixture.unexpected).toEqual([]);
   });
 }
+
+test('rapid settings switches keep the latest scroll while a section first loads', async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 700 });
+  const fixture = await installUiFixture(page, { role: 'admin' });
+  await page.goto('/');
+  await expect(page.getByLabel('New password', { exact: true })).toBeVisible();
+  const chunks = responseGate();
+  const devices = responseGate();
+  await page.route('**/assets/*.js', async (route) => {
+    await chunks.promise;
+    await route.continue();
+  });
+  await page.route('**/api/v1/auth/sessions', async (route) => {
+    await devices.promise;
+    await route.fallback();
+  });
+  const workspace = page.locator('.workspace-scroll');
+  const nav = page.getByRole('navigation', { name: 'Settings navigation' });
+  await workspace.evaluate((element) => {
+    element.scrollTop = 80;
+  });
+  await nav.getByRole('link', { name: 'Devices', exact: true }).click();
+  await expect(page.locator('.settings-content > h1')).toHaveText('Devices');
+  await nav.getByRole('link', { name: 'Account', exact: true }).click();
+  await expect(page.getByLabel('New password', { exact: true })).toBeVisible();
+  await workspace.hover();
+  await page.mouse.wheel(0, -200);
+  await expect
+    .poll(() => workspace.evaluate((element) => element.scrollTop))
+    .toBe(0);
+  await nav.getByRole('link', { name: 'Devices', exact: true }).click();
+  chunks.release();
+  await expect(
+    page.getByRole('heading', { name: 'Connect a TV' }),
+  ).toBeAttached();
+  devices.release();
+  await expect(page.getByText('Browser 39', { exact: true })).toBeAttached();
+  await workspace.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(resolve)),
+  );
+  await expect
+    .poll(() => workspace.evaluate((element) => element.scrollTop))
+    .toBe(0);
+  await testInfo.attach('rapid-settings-scroll', {
+    body: JSON.stringify({
+      scroll: await workspace.evaluate((element) => element.scrollTop),
+      url: page.url(),
+    }),
+    contentType: 'application/json',
+  });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
