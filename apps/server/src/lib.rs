@@ -33,6 +33,7 @@ pub mod segments;
 mod statistics;
 mod timezones;
 pub mod tools;
+mod transcoding;
 pub mod user_media;
 pub mod validation;
 pub use jellyfin::discovery::run as run_discovery;
@@ -74,6 +75,7 @@ pub struct AppState {
     pub password_slots: Arc<tokio::sync::Semaphore>,
     pub dummy_hash: Arc<String>,
     pub playback: Arc<thelxinoe_playback::Pipelines>,
+    pub(crate) transcoding: Arc<tokio::sync::RwLock<transcoding::Policy>>,
     pub tools: Arc<tools::Manager>,
     pub subtitle_slots: Arc<tokio::sync::Semaphore>,
     pub compatibility_audio: Arc<tokio::sync::Mutex<()>>,
@@ -96,6 +98,7 @@ impl AppState {
         let db = Database::open(config.state.join("thelxinoe.sqlite3"))?;
         storage::open_write_media_operations(&db).await?;
         let server_id = storage::open_write_settings(&db).await?;
+        let transcoding = accounts::transcoding_policy(&db).await?;
         if !config.state.join("secrets/master.key").exists()
             && storage::open_read_secrets(&db).await? > 0
         {
@@ -113,6 +116,7 @@ impl AppState {
                 thelxinoe_playback::Pipelines::open(&config.cache, tools.runtime.clone()).await?,
             ),
             tools,
+            transcoding: Arc::new(tokio::sync::RwLock::new(transcoding)),
             subtitle_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             db,
             secrets,

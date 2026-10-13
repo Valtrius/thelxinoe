@@ -408,13 +408,73 @@ assert.equal((await r.json()).UserData.Played, true);
 r = await compat.get(streamPath);
 assert.equal(r.status(), 401);
 await call(`/catalog/${direct.Id}/state`, 'PUT', { watched: false });
+const originalPolicy = await call('/admin/settings');
+try {
+  await call('/admin/settings', 'PUT', {
+    video_transcoding: false,
+    audio_transcoding: false,
+  });
+  const policyResponse = await compat.get('/Users/Me', { headers });
+  assert.equal(policyResponse.status(), 200);
+  const disabledPolicy = (await policyResponse.json()).Policy;
+  assert.equal(disabledPolicy.EnableVideoPlaybackTranscoding, false);
+  assert.equal(disabledPolicy.EnableAudioPlaybackTranscoding, false);
+  assert.equal(disabledPolicy.EnablePlaybackRemuxing, true);
+  for (const [title, stream, status] of [
+    ['Direct', true, 200],
+    ['Remux', true, 200],
+    ['Remux', false, 403],
+    ['Audio Only', true, 403],
+  ]) {
+    const item = movies.Items.find((i) => i.Name === title);
+    assert.ok(item);
+    const response = await compat.post(`/Items/${item.Id}/PlaybackInfo`, {
+      headers,
+      data: {
+        DeviceProfile: profile,
+        EnableDirectPlay: title === 'Direct',
+        EnableDirectStream: stream,
+        EnableTranscoding: true,
+      },
+    });
+    assert.equal(
+      response.status(),
+      status,
+      `Disabled conversion: ${title}, direct stream ${stream}`,
+    );
+    if (response.ok()) {
+      const session = await response.json();
+      const url = session.MediaSources[0].DirectStreamUrl;
+      assert.equal(
+        (await compat.get(new URL(url, origin).toString())).status(),
+        200,
+      );
+      await compat.delete(
+        `/Videos/ActiveEncodings?PlaySessionId=${session.PlaySessionId}`,
+        { headers },
+      );
+    }
+  }
+} finally {
+  await call('/admin/settings', 'PUT', {
+    video_transcoding: originalPolicy.video_transcoding,
+    audio_transcoding: originalPolicy.audio_transcoding,
+  });
+}
 for (const mode of [
   'remux',
   'transcode',
+  'audio-only',
   ...(process.argv.includes('--tv') ? ['limited', 'hdr'] : []),
 ]) {
   const item = movies.Items.find(
-    (i) => i.Name === (mode === 'hdr' ? 'TV HDR' : 'Remux'),
+    (i) =>
+      i.Name ===
+      (mode === 'hdr'
+        ? 'TV HDR'
+        : mode === 'audio-only'
+          ? 'Audio Only'
+          : 'Remux'),
   );
   assert.ok(item, 'Generate playback and TV fixtures first');
   const deviceProfile = structuredClone(profile);
@@ -450,7 +510,7 @@ for (const mode of [
     data: {
       DeviceProfile: deviceProfile,
       EnableDirectPlay: false,
-      EnableDirectStream: mode === 'remux',
+      EnableDirectStream: ['remux', 'audio-only'].includes(mode),
       EnableTranscoding: true,
       SubtitleStreamIndex: -2,
       ...(mode === 'limited' ? { MaxStreamingBitrate: 2_500_000 } : {}),
@@ -485,6 +545,30 @@ for (const mode of [
       ),
     );
     assert.ok(probe.streams.some((s) => s.codec_name === 'h264'));
+    if (mode === 'audio-only') {
+      assert.ok(probe.streams.some((s) => s.codec_name === 'aac'));
+      const hashes = (file) =>
+        execFileSync(
+          'ffmpeg',
+          ['-v', 'error', '-i', file, '-map', '0:v:0', '-f', 'framemd5', '-'],
+          { encoding: 'utf8', windowsHide: true },
+        )
+          .split('\n')
+          .filter((line) => line && !line.startsWith('#'))
+          .map((line) => line.split(',').at(-1).trim());
+      const original = hashes(
+        '.local/fixtures/playback/movies/Audio Only (2020).mkv',
+      );
+      const delivered = hashes(path);
+      assert.ok(delivered.length > 12);
+      const first = original.indexOf(delivered[0]);
+      assert.ok(first >= 0);
+      assert.deepEqual(
+        delivered,
+        original.slice(first, first + delivered.length),
+        'Jellyfin audio conversion must preserve original video frames, including reverse segment requests',
+      );
+    }
     if (mode === 'limited') {
       const video = probe.streams.find((s) => s.codec_type === 'video');
       assert.equal(video.width, 160);
@@ -592,6 +676,9 @@ writeFileSync(
       revokedStreamRejected: true,
       queryCredentialsAbsentFromLogs: true,
       seekableRemuxAndTranscode: true,
+      serverTranscodingPolicyEnforced: true,
+      separateTranscodingPermissions: true,
+      remuxWithTranscodingDisabled: true,
     },
     null,
     2,

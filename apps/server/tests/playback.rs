@@ -107,6 +107,7 @@ async fn replacement_and_restart_keep_resume_but_invalidate_old_playback_generat
             native_tracks: false,
             native_remote: false,
             conversion: None,
+            ..Default::default()
         },
     };
     let active = create_for(

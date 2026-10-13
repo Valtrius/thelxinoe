@@ -255,6 +255,7 @@ pub fn negotiate(
                     && matches(&p["VideoCodec"], video)
                     && matches(&p["AudioCodec"], audio)
             });
+    let allow_remux = remux;
     let remux = remux
         && hls(profile, kind, video, audio, &values)
         && constraints(profile, "ts", video, audio, &values);
@@ -371,14 +372,62 @@ pub fn negotiate(
     } else {
         conversion.is_some()
     };
+    let mut audio_converted = values.clone();
+    for key in [
+        "AudioChannels",
+        "AudioProfile",
+        "AudioBitrate",
+        "AudioSampleRate",
+        "AudioBitDepth",
+        "NumAudioStreams",
+    ] {
+        if let Some(value) = converted.get(key) {
+            audio_converted.insert(key.into(), value.clone());
+        }
+    }
+    let copy_video = allow_remux
+        && !video.is_empty()
+        && hls(profile, kind, video, "aac", &audio_converted)
+        && constraints(profile, "ts", video, "aac", &audio_converted);
+    let mut video_converted = converted.clone();
+    for key in [
+        "AudioChannels",
+        "AudioProfile",
+        "AudioBitrate",
+        "AudioSampleRate",
+        "AudioBitDepth",
+        "NumAudioStreams",
+    ] {
+        if let Some(value) = values.get(key) {
+            video_converted.insert(key.into(), value.clone());
+        } else {
+            video_converted.remove(key);
+        }
+    }
+    let copy_audio = allow_remux
+        && can_convert
+        && hls(
+            profile,
+            kind,
+            if video.is_empty() { "" } else { "h264" },
+            audio,
+            &video_converted,
+        )
+        && constraints(
+            profile,
+            "ts",
+            if video.is_empty() { "" } else { "h264" },
+            audio,
+            &video_converted,
+        );
     Capabilities {
         containers: if direct { vec![container] } else { vec![] },
-        video: if direct || remux {
+        video: if direct || remux || copy_video {
             vec![video.into()]
         } else {
             vec![]
         },
-        audio: if direct || remux {
+        audio: if direct || remux || copy_audio {
             vec![audio.into()]
         } else {
             vec![]
@@ -387,6 +436,19 @@ pub fn negotiate(
         native_tracks: true,
         conversion,
         native_remote: false,
+        hls_video: Some(if remux || copy_video {
+            vec![video.into()]
+        } else {
+            vec![]
+        }),
+        hls_audio: Some(if remux || copy_audio {
+            vec![audio.into()]
+        } else {
+            vec![]
+        }),
+        supported_media: None,
+        hls_media: None,
+        allow_conversion: None,
     }
 }
 

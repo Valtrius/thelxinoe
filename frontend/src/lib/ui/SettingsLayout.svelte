@@ -86,7 +86,7 @@
       label: 'Server',
       icon: Server,
       keywords:
-        'health storage cache docker tools updates maintenance window timezone time format diagnostics',
+        'health storage cache docker tools updates maintenance window timezone time format diagnostics transcoding video audio',
     },
     {
       id: 'analysis',

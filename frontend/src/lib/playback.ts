@@ -43,6 +43,8 @@ export type Playback = {
   id: string;
   url: string;
   mode: string;
+  encoding?: { video: boolean; audio: boolean };
+  conversion_reason?: string | null;
   qualities?: { value: string; label: string }[];
   quality?: string;
   position: number;
@@ -61,6 +63,10 @@ export type Probe = {
   streams?: {
     tags?: Record<string, string>;
     codec_type?: string;
+    codec_name?: string;
+    profile?: string;
+    level?: number;
+    pix_fmt?: string;
     height?: number;
     avg_frame_rate?: string;
     r_frame_rate?: string;
@@ -80,9 +86,98 @@ export type MediaInfo = {
   progress: { edition: string; position: number; duration: number }[];
   watched: boolean;
 };
-export function capabilities() {
+export function capabilities(probe: Probe = {}) {
   const media = document.createElement('video');
   const supports = (type: string) => !!media.canPlayType(type);
+  const nativeHls = supports('application/vnd.apple.mpegurl');
+  const mseHls = Hls.isSupported();
+  const source =
+    globalThis.MediaSource ??
+    (
+      globalThis as typeof globalThis & {
+        ManagedMediaSource?: typeof MediaSource;
+      }
+    ).ManagedMediaSource;
+  const hlsSupports = (type: string) =>
+    mseHls
+      ? (source?.isTypeSupported(type) ?? false)
+      : nativeHls && supports(type);
+  const candidates: Record<string, string[]> = {
+    h264: [66, 77, 100, 110, 122, 244].flatMap((profile) =>
+      [30, 31, 32, 40, 41, 42, 50, 51, 52, 60, 61, 62].flatMap((level) =>
+        (profile === 66 ? [0, 224] : [0]).map(
+          (flags) =>
+            `avc1.${[profile, flags, level].map((v) => v.toString(16).padStart(2, '0').toUpperCase()).join('')}`,
+        ),
+      ),
+    ),
+    hevc: [1, 2].flatMap((profile) =>
+      [90, 93, 120, 123, 150, 153, 156, 180, 183, 186].map(
+        (level) => `hvc1.${profile}.6.L${level}.B0`,
+      ),
+    ),
+    vp8: ['vp8'],
+    vp9: ['vp09.00.10.08', 'vp09.02.10.10'],
+    av1: ['av01.0.08M.08', 'av01.0.08M.10'],
+    aac: ['mp4a.40.2', 'mp4a.40.5', 'mp4a.40.29', 'mp4a.40.4'],
+    mp3: ['mp4a.6B'],
+    flac: ['flac'],
+    vorbis: ['vorbis'],
+    opus: ['opus'],
+    ac3: ['ac-3'],
+    eac3: ['ec-3'],
+  };
+  for (const stream of probe.streams ?? []) {
+    if (stream.codec_name === 'h264' && stream.level) {
+      const profile =
+        (
+          {
+            'Constrained Baseline': 66,
+            Baseline: 66,
+            Main: 77,
+            'High 10': 110,
+            'High 4:2:2': 122,
+            'High 4:4:4 Predictive': 244,
+          } as Record<string, number>
+        )[stream.profile ?? ''] ?? 100;
+      const flags = stream.profile === 'Constrained Baseline' ? 224 : 0;
+      candidates.h264.push(
+        `avc1.${[profile, flags, stream.level].map((v) => v.toString(16).padStart(2, '0').toUpperCase()).join('')}`,
+      );
+    }
+  }
+  const supported_media: string[] = supports('audio/wav') ? ['audio/wav'] : [];
+  const hls_media: string[] = [];
+  const video: string[] = [],
+    audio: string[] = [],
+    hls_video: string[] = [],
+    hls_audio: string[] = [];
+  for (const [codec, container] of [
+    ['flac', 'flac'],
+    ['mp3', 'mpeg'],
+  ]) {
+    if (supports(`audio/${container}`)) {
+      audio.push(codec);
+      supported_media.push(`audio/${container}`);
+    }
+  }
+  for (const [codec, strings] of Object.entries(candidates)) {
+    const isVideo = ['h264', 'hevc', 'vp8', 'vp9', 'av1'].includes(codec);
+    for (const name of strings) {
+      for (const container of ['mp4', 'webm', 'ogg', 'mpeg', 'flac']) {
+        const type = `${isVideo ? 'video' : 'audio'}/${container}; codecs="${name}"`;
+        if (supports(type)) {
+          supported_media.push(type);
+          (isVideo ? video : audio).push(codec);
+        }
+        if (container === 'mp4' && hlsSupports(type)) {
+          hls_media.push(type);
+          (isVideo ? hls_video : hls_audio).push(codec);
+          (isVideo ? video : audio).push(codec);
+        }
+      }
+    }
+  }
   return {
     containers: [
       'mp4',
@@ -95,23 +190,20 @@ export function capabilities() {
       'opus',
       'webm',
     ],
-    video: [
-      ...(supports('video/mp4; codecs="avc1.42E01E"') ? ['h264'] : []),
-      ...(supports('video/webm; codecs="vp9"') ? ['vp9'] : []),
-      ...(supports('video/webm; codecs="vp8"') ? ['vp8'] : []),
-      ...(supports('video/mp4; codecs="av01.0.04M.08"') ? ['av1'] : []),
-    ],
+    video: [...new Set(video)],
     audio: [
-      'aac',
-      'mp3',
-      'flac',
-      'vorbis',
-      'opus',
-      'pcm_s16le',
-      'pcm_s24le',
-      'pcm_f32le',
+      ...new Set([
+        ...audio,
+        ...(supports('audio/wav')
+          ? ['pcm_s16le', 'pcm_s24le', 'pcm_f32le']
+          : []),
+      ]),
     ],
-    hls: Hls.isSupported() || supports('application/vnd.apple.mpegurl'),
+    hls_video: [...new Set(hls_video)],
+    hls_audio: [...new Set(hls_audio)],
+    supported_media,
+    hls_media,
+    hls: mseHls || nativeHls,
   };
 }
 export function mediaUrl(path: string) {
@@ -212,8 +304,10 @@ export function time(value: number) {
 export function qualityOptions(
   playback: Playback | null,
   info: MediaInfo | null,
+  quality: string,
+  delivered = playback?.quality,
 ) {
-  const selected = playback?.quality;
+  const selected = quality === 'auto' ? delivered : undefined;
   const automatic = {
     value: 'auto',
     label: selected ? `Auto (${selected})` : 'Auto',
@@ -221,9 +315,12 @@ export function qualityOptions(
   if (playback?.qualities?.length) return [automatic, ...playback.qualities];
   if (playback && !playback.video)
     return [automatic, { value: 'original', label: 'Original' }];
-  const height = info?.sources
-    .flatMap((source) => source.probe.streams ?? [])
-    .find((stream) => stream.codec_type === 'video')?.height;
+  const height = (
+    info?.sources
+      .flatMap((source) => source.probe.streams ?? [])
+      .find((stream) => stream.codec_type === 'video') ??
+    playback?.probe.streams?.find((stream) => stream.codec_type === 'video')
+  )?.height;
   return [
     automatic,
     { value: 'original', label: `Original${height ? ` (${height}p)` : ''}` },
