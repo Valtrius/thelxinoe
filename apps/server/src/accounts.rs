@@ -371,7 +371,9 @@ pub async fn save_settings(
     }
     // Serialize policy edits with playback preparation and lazy VOD encoding.
     let mut policy = state.transcoding.write().await;
-    let value = storage::save_settings(&state.db, settings, p).await?;
+    let value = storage::save_settings(&state.db, settings, p)
+        .await?
+        .ok_or_else(ApiError::forbidden)?;
     *policy = value.transcoding;
     for run in state.playback.runs().await {
         if let Some(encoding) = state.playback.encoding(&run).await

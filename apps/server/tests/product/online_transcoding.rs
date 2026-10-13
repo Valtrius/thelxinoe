@@ -66,6 +66,7 @@ async fn server_policy_allows_existing_provider_resolutions_without_encoding() {
     let root = temp.path();
     state.db.write("test.fixture", |db| {
         db.execute("UPDATE users SET role='admin' WHERE id='alice'", [])?;
+        db.execute("UPDATE sessions SET verified_at=?1 WHERE user_id='alice'", [now()-301])?;
         db.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES ('alice','abcdefghijk','Offline provider variants')", [])?;
         Ok(())
     }).await.unwrap();
@@ -162,6 +163,28 @@ async fn server_policy_allows_existing_provider_resolutions_without_encoding() {
         .2;
     assert_eq!(defaults["video_transcoding"], true);
     assert_eq!(defaults["audio_transcoding"], true);
+    let display = call(
+        &state,
+        "/api/v1/admin/settings",
+        "PUT",
+        json!({"timezone":"Europe/Paris"}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(display.0, StatusCode::OK, "{}", display.2);
+    assert_eq!(display.2["timezone"], "Europe/Paris");
+    assert_eq!(display.2["video_transcoding"], true);
+    assert_eq!(display.2["audio_transcoding"], true);
+    let sensitive = call(
+        &state,
+        "/api/v1/users",
+        "POST",
+        json!({"username":"verification-check","password":"product test passphrase","role":"user"}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(sensitive.0, StatusCode::FORBIDDEN);
+    assert_eq!(sensitive.2["error"]["code"], "verification_required");
     assert_eq!(
         call(
             &state,
@@ -388,5 +411,5 @@ async fn server_policy_allows_existing_provider_resolutions_without_encoding() {
     tokio::fs::create_dir_all(evidence_path.parent().unwrap())
         .await
         .unwrap();
-    tokio::fs::write(evidence_path, serde_json::to_vec_pretty(&json!({"variants":evidence,"disabled_encoding_rejected":true,"fallback_did_not_encode":true,"persisted_after_reopen":true})).unwrap()).await.unwrap();
+    tokio::fs::write(evidence_path, serde_json::to_vec_pretty(&json!({"variants":evidence,"disabled_encoding_rejected":true,"fallback_did_not_encode":true,"persisted_after_reopen":true,"settings_after_verification_window":true,"sensitive_action_still_requires_verification":true})).unwrap()).await.unwrap();
 }

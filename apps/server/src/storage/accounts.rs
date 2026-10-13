@@ -170,10 +170,11 @@ pub(super) async fn save_settings(
     db: &Database,
     settings: Settings,
     p: thelxinoe_core::Principal,
-) -> anyhow::Result<SettingsView> {
+) -> anyhow::Result<Option<SettingsView>> {
     db.write("accounts.save_settings", move |db|{
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        crate::authentication::authorize_admin(&tx, &p)?;
+        let authorized=tx.query_row("SELECT EXISTS(SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id=?1 AND s.user_id=?2 AND s.expires_at>?3 AND u.role='admin')",params![p.session_id,p.user.id,now()],|r|r.get::<_,bool>(0))?;
+        if !authorized {return Ok(None);}
         if let Some(timezone)=settings.timezone {
             tx.execute("INSERT INTO settings VALUES ('timezone',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[timezone])?;
         }
@@ -188,6 +189,6 @@ pub(super) async fn save_settings(
         let current=settings_view(&tx)?;
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'settings.update','server',?2)",params![p.user.id,now()])?;
         tx.commit()?;
-        Ok(current)
+        Ok(Some(current))
     }).await
 }
