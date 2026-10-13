@@ -2,6 +2,14 @@
 use super::*;
 use thelxinoe_database::Database;
 
+pub(super) struct PendingAuthorization {
+    pub(super) generation: String,
+    pub(super) device: Vec<u8>,
+    pub(super) expires_at: i64,
+    pub(super) error: Option<String>,
+    pub(super) phase: String,
+}
+
 pub(super) async fn configure(
     db: &Database,
     p: thelxinoe_core::Principal,
@@ -21,18 +29,11 @@ pub(super) async fn configure(
 pub(super) async fn account(
     db: &Database,
     p: thelxinoe_core::Principal,
-) -> std::prelude::v1::Result<
-    (
-        Value,
-        Option<(String, Vec<u8>, i64, Option<String>)>,
-        Option<Value>,
-    ),
-    anyhow::Error,
-> {
+) -> std::prelude::v1::Result<(Value, Option<PendingAuthorization>, Option<Value>), anyhow::Error> {
     db.read("online.twitch.account", move|db|{
         let account=db.query_row("SELECT status,display_name,avatar_url FROM online_accounts WHERE user_id=?1 AND provider='twitch'",[&p.user.id],|r|Ok(json!({"status":r.get::<_,String>(0)?,"display_name":r.get::<_,String>(1)?,"avatar_url":r.get::<_,Option<String>>(2)?}))).optional()?.unwrap_or(json!({"status":"disconnected","display_name":"","avatar_url":null}));
-        let attempt=db.query_row("SELECT generation,device,expires_at,error FROM twitch_attempts WHERE user_id=?1 AND session_id=?2 AND expires_at>?3",params![p.user.id,p.session_id,now()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Vec<u8>>(1)?,r.get::<_,i64>(2)?,r.get::<_,Option<String>>(3)?))).optional()?;
-        let sync=db.query_row("SELECT last_complete,next_run,error FROM twitch_sync WHERE user_id=?1",[p.user.id],|r|Ok(json!({"last_complete":r.get::<_,Option<i64>>(0)?,"next_run":r.get::<_,i64>(1)?,"error":r.get::<_,Option<String>>(2)?}))).optional()?;
+        let attempt=db.query_row("SELECT t.generation,t.device,t.expires_at,t.error,t.phase FROM twitch_attempts t JOIN online_accounts a ON a.user_id=t.user_id AND a.provider='twitch' AND a.generation=t.generation WHERE t.user_id=?1 AND t.session_id=?2 AND t.expires_at>?3",params![p.user.id,p.session_id,now()],|r|Ok(PendingAuthorization{generation:r.get(0)?,device:r.get(1)?,expires_at:r.get(2)?,error:r.get(3)?,phase:r.get(4)?})).optional()?;
+        let sync=db.query_row("SELECT last_complete,next_run,error,(last_complete IS NULL OR cursor<>'') AND error IS NULL FROM twitch_sync WHERE user_id=?1",[p.user.id],|r|Ok(json!({"last_complete":r.get::<_,Option<i64>>(0)?,"next_run":r.get::<_,i64>(1)?,"error":r.get::<_,Option<String>>(2)?,"in_progress":r.get::<_,bool>(3)?}))).optional()?;
         Ok((account,attempt,sync))
     }).await
 }
@@ -108,7 +109,17 @@ pub(super) async fn poll_write_twitch_attempts(
     generation: String,
     db: &Database,
 ) -> anyhow::Result<()> {
-    db.write("online.twitch.poll_write_twitch_attempts", move|db|{if terminal{db.execute("DELETE FROM twitch_attempts WHERE user_id=?1 AND generation=?2",params![user,generation])?;}else{db.execute("UPDATE twitch_attempts SET next_poll=?1,interval=?2 WHERE user_id=?3 AND generation=?4",params![now()+delay,delay.min(300),user,generation])?;}Ok(())}).await
+    db.write("online.twitch.poll_write_twitch_attempts", move|db|{if terminal{db.execute("DELETE FROM twitch_attempts WHERE user_id=?1 AND generation=?2",params![user,generation])?;}else{db.execute("UPDATE twitch_attempts SET next_poll=?1,interval=?2,phase='waiting',error=NULL WHERE user_id=?3 AND generation=?4",params![now()+delay,delay.min(300),user,generation])?;}Ok(())}).await
+}
+
+pub(super) async fn mark_connecting(
+    db: &Database,
+    user: String,
+    generation: String,
+) -> anyhow::Result<bool> {
+    db.write("online.twitch.mark_connecting", move |db| {
+        Ok(db.execute("UPDATE twitch_attempts SET phase='connecting',error=NULL WHERE user_id=?1 AND generation=?2 AND expires_at>?3",params![user,generation,now()])?==1)
+    }).await
 }
 
 pub(super) async fn complete_authorization(
@@ -143,7 +154,7 @@ pub(super) async fn run_write_twitch_attempts(
 ) -> anyhow::Result<()> {
     db.write("online.twitch.run_write_twitch_attempts", move |db| {
         db.execute(
-            "UPDATE twitch_attempts SET error=?1,next_poll=?2 WHERE user_id=?3 AND generation=?4",
+            "UPDATE twitch_attempts SET error=?1,next_poll=?2,phase='waiting' WHERE user_id=?3 AND generation=?4",
             params![error.2, now() + 30, a.user, a.generation],
         )?;
         Ok(())
@@ -197,7 +208,7 @@ pub(super) async fn sync_step_write_twitch_sync(
 ) -> anyhow::Result<()> {
     db.write("online.twitch.sync_step_write_twitch_sync", move |db| {
         db.execute(
-            "UPDATE twitch_sync SET next_run=?1 WHERE user_id=?2 AND generation=?3",
+            "UPDATE twitch_sync SET next_run=MAX(next_run,?1) WHERE user_id=?2 AND generation=?3",
             params![reset, user, generation],
         )?;
         Ok(())
@@ -219,8 +230,6 @@ pub(super) struct SyncPage {
     pub(super) limited: bool,
     pub(super) rows: Vec<Value>,
     pub(super) next: String,
-    pub(super) profiles: std::collections::HashMap<String, String>,
-    pub(super) own_profile: Option<(Option<String>, Option<String>)>,
     pub(super) user: String,
     pub(super) generation: String,
     pub(super) snapshot: String,
@@ -232,8 +241,6 @@ pub(super) async fn save_sync_page(db: &Database, input: SyncPage) -> anyhow::Re
         limited,
         rows,
         next,
-        profiles,
-        own_profile,
         user,
         generation,
         snapshot,
@@ -242,16 +249,34 @@ pub(super) async fn save_sync_page(db: &Database, input: SyncPage) -> anyhow::Re
     db.write("online.twitch.save_sync_page", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let valid=tx.query_row("SELECT EXISTS(SELECT 1 FROM online_accounts WHERE user_id=?1 AND provider='twitch' AND generation=?2 AND status='connected')",params![user,generation],|r|r.get::<_,bool>(0))?;
         if !valid{return Ok(false)}
-        let profile_changed = own_profile.is_some();
-        if let Some((name, avatar)) = own_profile {
-            tx.execute("UPDATE online_accounts SET display_name=COALESCE(?1,display_name),avatar_url=?2,profile_checked_at=?3 WHERE user_id=?4 AND provider='twitch'",params![name,avatar,now(),user])?;
-        }
-        for r in rows {tx.execute("INSERT INTO twitch_streams(user_id,channel_id,login,display_name,title,category,viewers,started_at,snapshot,thumbnail_url,profile_image_url) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(user_id,channel_id) DO UPDATE SET login=excluded.login,display_name=excluded.display_name,title=excluded.title,category=excluded.category,viewers=excluded.viewers,started_at=excluded.started_at,snapshot=excluded.snapshot,thumbnail_url=excluded.thumbnail_url,profile_image_url=COALESCE(excluded.profile_image_url,twitch_streams.profile_image_url)",params![user,r["user_id"].as_str(),r["user_login"].as_str(),r["user_name"].as_str(),r["title"].as_str(),r["game_name"].as_str(),r["viewer_count"].as_i64(),r["started_at"].as_str(),snapshot,super::super::public_image(r["thumbnail_url"].as_str()).map(|url|url.replace("{width}","640").replace("{height}","360")),profiles.get(r["user_id"].as_str().unwrap_or(""))])?;}
+        for r in rows {tx.execute("INSERT INTO twitch_streams(user_id,channel_id,login,display_name,title,category,viewers,started_at,snapshot,thumbnail_url) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(user_id,channel_id) DO UPDATE SET login=excluded.login,display_name=excluded.display_name,title=excluded.title,category=excluded.category,viewers=excluded.viewers,started_at=excluded.started_at,snapshot=excluded.snapshot,thumbnail_url=excluded.thumbnail_url",params![user,r["user_id"].as_str(),r["user_login"].as_str(),r["user_name"].as_str(),r["title"].as_str(),r["game_name"].as_str(),r["viewer_count"].as_i64(),r["started_at"].as_str(),snapshot,super::super::public_image(r["thumbnail_url"].as_str()).map(|url|url.replace("{width}","640").replace("{height}","360"))])?;}
         if next.is_empty(){
             tx.execute("DELETE FROM twitch_streams WHERE user_id=?1 AND snapshot<>?2",params![user,snapshot])?;
             tx.execute("UPDATE twitch_streams SET active=1 WHERE user_id=?1",[&user])?;
             tx.execute("UPDATE twitch_sync SET cursor='',snapshot='',pages=0,next_run=?1,last_complete=?2,failures=0,error=NULL WHERE user_id=?3 AND generation=?4",params![if limited{reset.max(now()+60)}else{now()+60},now(),user,generation])?;
         }else{tx.execute("UPDATE twitch_sync SET cursor=?1,snapshot=?2,pages=pages+1,next_run=?3,failures=0,error=NULL WHERE user_id=?4 AND generation=?5",params![next,snapshot,if limited{reset}else{now()+1},user,generation])?;}
-        tx.commit()?;Ok(profile_changed)
+        tx.commit()?;Ok(true)
+    }).await
+}
+
+pub(super) async fn save_profiles(
+    db: &Database,
+    lookup: ProfileLookup,
+    profiles: std::collections::HashMap<String, String>,
+    own_profile: Option<(Option<String>, Option<String>)>,
+) -> anyhow::Result<bool> {
+    db.write("online.twitch.save_profiles", move |db| {
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let valid = tx.query_row("SELECT EXISTS(SELECT 1 FROM online_accounts WHERE user_id=?1 AND provider='twitch' AND generation=?2 AND status='connected')", params![lookup.user,lookup.generation], |r| r.get::<_,bool>(0))?;
+        if !valid { return Ok(false); }
+        let mut changed = false;
+        if let Some((name, avatar)) = own_profile {
+            changed |= tx.execute("UPDATE online_accounts SET display_name=COALESCE(?1,display_name),avatar_url=?2,profile_checked_at=?3 WHERE user_id=?4 AND provider='twitch'", params![name,avatar,now(),lookup.user])? > 0;
+        }
+        for (id, image) in profiles {
+            changed |= tx.execute("UPDATE twitch_streams SET profile_image_url=?1 WHERE user_id=?2 AND channel_id=?3 AND snapshot=?4", params![image,lookup.user,id,lookup.snapshot])? > 0;
+        }
+        tx.commit()?;
+        Ok(changed)
     }).await
 }

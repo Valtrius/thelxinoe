@@ -31,6 +31,7 @@
   import Button from '../../../ui/Button.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
   import ProviderConnection from '../../ProviderConnection.svelte';
+  import ProviderAuthProgress from '../../ProviderAuthProgress.svelte';
   import { eyebrowTextClass as eyebrowClass } from '../../../ui/styles';
   import StreamCard from './StreamCard.svelte';
 
@@ -66,6 +67,7 @@
 
   let streams = $state<TwitchLiveStream[]>([]);
   let loading = $state(true);
+  let connecting = $state(false);
   let error = $state<AppError | null>(null);
   let lastSyncErrorFingerprint = $state<string | null>(null);
   let observedDataRevision = $state<number | null>(null);
@@ -216,12 +218,16 @@
   }
 
   async function connect() {
+    if (connecting) return;
+    connecting = true;
     error = null;
     try {
       onAuthStarted(await api.startTwitchAuth());
     } catch (caught) {
       error = normalizeError(caught);
       if (error.category === 'authentication') onAccountChanged();
+    } finally {
+      connecting = false;
     }
   }
 
@@ -288,8 +294,9 @@
       class="mr-3 flex shrink-0 flex-wrap items-center gap-2 border-b border-line pb-2"
     >
       <span class="ml-auto text-[0.65rem] text-muted">
-        {#if syncStatus.isRefreshing}{syncStatus.phase} · {syncStatus.completed}/{syncStatus.total ??
-            '—'}{:else}Updated {relativeTime(syncStatus.lastSuccessAt)}{/if}
+        {#if syncStatus.isRefreshing}{syncStatus.phase}{:else}Updated {relativeTime(
+            syncStatus.lastSuccessAt,
+          )}{/if}
       </span>
       <Button
         size="sm"
@@ -318,40 +325,63 @@
           class="border border-line-strong bg-surface p-6 text-center shadow-panel"
         >
           <p class={eyebrowClass}>DEVICE AUTH / TWITCH</p>
-          <h2 class="mt-2 text-xl">Enter this code in Twitch</h2>
-          <button
-            type="button"
-            class="mt-5 border border-line-strong bg-accent-soft px-8 py-4 font-mono text-3xl tracking-[0.22em] text-accent"
-            aria-label="Copy Twitch device code"
-            onclick={() =>
-              authState.userCode &&
-              navigator.clipboard.writeText(authState.userCode)}
-            >{authState.userCode ?? 'WAIT'}</button
-          >
-          <p class="mt-3 text-xs text-muted">
-            {authState.message ??
-              'Approve read-only followed-channel access in the browser.'}
-          </p>
-          {#if authState.verificationUri}
-            <p class="mt-2 font-mono text-[0.65rem] break-all text-muted">
-              {authState.verificationUri}
+          <h2 class="mt-2 text-xl">
+            {authState.phase === 'connecting'
+              ? 'Connecting Twitch'
+              : 'Enter this code in Twitch'}
+          </h2>
+          {#if authState.phase !== 'connecting'}
+            <button
+              type="button"
+              class="mt-5 border border-line-strong bg-accent-soft px-8 py-4 font-mono text-3xl tracking-[0.22em] text-accent"
+              aria-label="Copy Twitch device code"
+              onclick={() =>
+                authState.userCode &&
+                navigator.clipboard.writeText(authState.userCode)}
+              >{authState.userCode ?? 'WAIT'}</button
+            >
+            <p class="mt-3 text-xs text-muted">
+              Approve read-only followed-channel access in the browser.
             </p>
-            <div class="mt-4 flex justify-center gap-2">
-              <Button
-                variant="secondary"
-                onclick={() =>
-                  navigator.clipboard.writeText(authState.userCode ?? '')}
-                ><Copy class="size-3.5" />Copy code</Button
-              >
-              <Button
-                variant="secondary"
-                onclick={() => open(authState.verificationUri ?? '')}
-                ><ExternalLink class="size-3.5" />Open verification page</Button
-              >
+          {/if}
+          <ProviderAuthProgress
+            label={authState.phase === 'connecting'
+              ? 'Finishing sign-in…'
+              : 'Waiting for Twitch approval…'}
+          />
+          {#if authState.message}
+            <p role="alert" class="mt-3 text-xs text-muted">
+              {authState.message}
+            </p>
+          {/if}
+          {#if authState.phase === 'connecting'}
+            <div class="mt-4 flex justify-center">
               <Button variant="ghost" onclick={cancelAuth}
                 ><X class="size-3.5" />Cancel</Button
               >
             </div>
+          {:else}
+            {#if authState.verificationUri}
+              <p class="mt-2 font-mono text-[0.65rem] break-all text-muted">
+                {authState.verificationUri}
+              </p>
+              <div class="mt-4 flex flex-wrap justify-center gap-2">
+                <Button
+                  variant="secondary"
+                  onclick={() =>
+                    navigator.clipboard.writeText(authState.userCode ?? '')}
+                  ><Copy class="size-3.5" />Copy code</Button
+                >
+                <Button
+                  variant="secondary"
+                  onclick={() => open(authState.verificationUri ?? '')}
+                  ><ExternalLink class="size-3.5" />Open verification page</Button
+                >
+                <Button variant="ghost" onclick={cancelAuth}
+                  ><X class="size-3.5" />Cancel</Button
+                >
+              </div>
+            {/if}
           {/if}
         </section>
       {:else}
@@ -367,9 +397,10 @@
           configured={clientConfigured}
           onConfigured={onAccountChanged}
           onConnect={connect}
+          {connecting}
         />
       {/if}
-    {:else if loading && streams.length === 0}
+    {:else if streams.length === 0 && (loading || (syncStatus.isRefreshing && !syncStatus.lastSuccessAt))}
       <MediaSkeleton
         label="Loading Twitch streams"
         layout="feed"

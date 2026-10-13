@@ -147,9 +147,12 @@ pub(crate) async fn create_with_delivery(
         prepared.quality = Some(format.quality());
         prepared.remux = !vod && !format.source.live;
     }
+    let native = prepared.native && options.capabilities.native_remote && !vod;
+    if !native {
+        crate::tools::require(state, &["ffmpeg"]).await?;
+    }
     let sid = thelxinoe_core::id();
     let _lifecycle = state.playback_lifecycle.write(&[&sid]).await;
-    let native = prepared.native && options.capabilities.native_remote && !vod;
     let mode = if native {
         "direct"
     } else if prepared.remux {

@@ -47,6 +47,7 @@ pub(super) fn client(state: &AppState, google: Google, redirect: String) -> Resu
 }
 pub async fn start(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
     let p = security::principal(&state, &headers).await?;
+    let user = p.user.id.clone();
     if p.transport != "web" {
         return Err(ApiError::bad(
             "Open Thelxinoe in your browser to link your YouTube account",
@@ -84,6 +85,13 @@ pub async fn start(State(state): State<AppState>, headers: HeaderMap) -> Result<
         },
     )
     .await?;
+    state
+        .emit(
+            Some(user),
+            "online.account.changed",
+            json!({"provider":"youtube"}),
+        )
+        .await?;
     let mut response = Json(json!({"url":url.as_str()})).into_response();
     response.headers_mut().insert(header::SET_COOKIE,format!("{COOKIE}={browser}; HttpOnly; SameSite=Lax; Path=/api/v1/online/youtube/callback; Max-Age=600{}",if state.config.public_url.as_ref().is_some_and(|u|u.scheme()=="https"){"; Secure"}else{""}).parse().unwrap());
     Ok(response)
@@ -161,9 +169,37 @@ pub async fn callback(
 async fn complete(state: &AppState, headers: &HeaderMap, input: Callback) -> Result<()> {
     let csrf = input
         .state
-        .as_deref()
+        .clone()
         .ok_or_else(|| ApiError::bad("Missing authorization state"))?;
-    let attempt = consume(state, headers, csrf).await?;
+    let attempt = consume(state, headers, &csrf).await?;
+    let user = attempt.user.clone();
+    let generation = attempt.generation.clone();
+    state
+        .emit(
+            Some(user.clone()),
+            "online.account.changed",
+            json!({"provider":"youtube"}),
+        )
+        .await?;
+    let result = finish(state, attempt, input, &csrf).await;
+    if let Err(error) = &result {
+        storage::fail(&state.db, user.clone(), generation, error.2.clone()).await?;
+    }
+    state
+        .emit(
+            Some(user),
+            "online.account.changed",
+            json!({"provider":"youtube"}),
+        )
+        .await?;
+    result
+}
+
+pub(super) async fn pending(state: &AppState, user: String) -> Result<Option<Value>> {
+    Ok(storage::pending(&state.db, user).await?)
+}
+
+async fn finish(state: &AppState, attempt: Attempt, input: Callback, csrf: &str) -> Result<()> {
     if input.error.is_some() {
         return Err(ApiError::bad("Google authorization was declined"));
     }
@@ -259,7 +295,6 @@ async fn complete(state: &AppState, headers: &HeaderMap, input: Callback) -> Res
             "Google application settings changed; start again",
         ));
     }
-    let user = attempt.user.clone();
     let saved = storage::complete(
         attempt, expires, name, avatar, external, encrypted, &state.db,
     )
@@ -269,13 +304,6 @@ async fn complete(state: &AppState, headers: &HeaderMap, input: Callback) -> Res
             "The account or session changed; start account linking again",
         ));
     }
-    state
-        .emit(
-            Some(user),
-            "online.account.changed",
-            json!({"provider":"youtube"}),
-        )
-        .await?;
     Ok(())
 }
 pub(super) async fn send(

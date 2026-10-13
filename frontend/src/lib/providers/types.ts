@@ -427,6 +427,7 @@ export interface BootstrapData {
 
 export interface AuthState {
   platform: 'youtube' | 'twitch';
+  phase?: 'waiting' | 'connecting';
   operationId?: string | null;
   status:
     | 'idle'

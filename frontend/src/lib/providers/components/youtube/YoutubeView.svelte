@@ -53,6 +53,7 @@
   import Button from '../../../ui/Button.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
   import ProviderConnection from '../../ProviderConnection.svelte';
+  import ProviderAuthProgress from '../../ProviderAuthProgress.svelte';
   import { eyebrowTextClass as eyebrowClass } from '../../../ui/styles';
   import YoutubeFeedToolbar from './YoutubeFeedToolbar.svelte';
   import VideoGrid from './VideoGrid.svelte';
@@ -144,6 +145,7 @@
   );
 
   let error = $state<AppError | null>(null);
+  let connecting = $state(false);
   let refreshing = $state(false);
   let desktopWatchlistSidebarOpen = $state(
     preferences.getItem(watchlistSidebarKey) === 'true',
@@ -665,12 +667,16 @@
   }
 
   async function connect() {
+    if (connecting) return;
+    connecting = true;
     error = null;
     try {
       onAuthStarted(await api.connectYoutube());
     } catch (caught) {
       error = normalizeError(caught);
       if (error.category === 'authentication') onAccountChanged();
+    } finally {
+      connecting = false;
     }
   }
 
@@ -977,11 +983,27 @@
           >
             <div class="max-w-md">
               <p class={eyebrowClass}>AUTH / SYSTEM BROWSER</p>
-              <h2 class="mt-2 text-xl">Finish Google sign-in</h2>
-              <p class="mt-3 text-sm leading-6 text-muted">
-                {authState.message ??
-                  'Use the browser window opened by Thelxinoe. Continue signing in to your server in that browser.'}
-              </p>
+              <h2 class="mt-2 text-xl">
+                {authState.phase === 'connecting'
+                  ? 'Connecting YouTube'
+                  : 'Finish Google sign-in'}
+              </h2>
+              {#if authState.phase !== 'connecting'}
+                <p class="mt-3 text-sm leading-6 text-muted">
+                  Use the browser window opened by Thelxinoe. Continue signing
+                  in to your server in that browser.
+                </p>
+              {/if}
+              <ProviderAuthProgress
+                label={authState.phase === 'connecting'
+                  ? 'Finishing sign-in…'
+                  : 'Waiting for Google approval…'}
+              />
+              {#if authState.message}
+                <p role="alert" class="mt-3 text-sm text-muted">
+                  {authState.message}
+                </p>
+              {/if}
               <div class="mt-5">
                 <Button variant="ghost" onclick={cancelAuth}
                   >Cancel sign-in</Button
@@ -1002,6 +1024,7 @@
             configured={clientConfigured}
             onConfigured={onAccountChanged}
             onConnect={connect}
+            {connecting}
           />
         {/if}
       {:else if feed.loading && feed.videos.length === 0}

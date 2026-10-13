@@ -554,13 +554,9 @@
     const request = ++playbackRequest;
     const owner = user?.id;
     await act(async () => {
-      if (resolveYoutube)
-        await api('/online/youtube/resolve', 'POST', {
-          video_id: choice.id.slice('youtube:'.length),
-        });
       const next = await persistQueue(choice);
       if (request !== playbackRequest || user?.id !== owner) return;
-      playing = next;
+      playing = resolveYoutube ? { ...next, resolveYoutube: true } : next;
       if (!desktop) {
         await tick();
         workspace?.scrollTo({

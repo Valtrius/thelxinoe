@@ -880,7 +880,7 @@ test('desktop trailers resolve through the server and launch MPV with the same v
   await page.getByRole('link', { name: 'Watch trailer' }).click();
   await expect
     .poll(() => launches)
-    .toEqual([
+    .toMatchObject([
       {
         choice: {
           id: 'youtube:xwdamnfS6IM',
@@ -900,7 +900,7 @@ test('desktop trailers resolve through the server and launch MPV with the same v
 
 test('YouTube link lookup failures keep details open and allow another attempt', async ({
   page,
-}) => {
+}, testInfo) => {
   const fixture = await discoverFixture(page);
   const resolved: string[] = [];
   await page.route('**/api/v1/online/youtube/resolve', async (route) => {
@@ -913,16 +913,37 @@ test('YouTube link lookup failures keep details open and allow another attempt',
   await page.goto('/#discover/movie/11');
   const trailer = page.getByRole('link', { name: 'Watch trailer' });
   await trailer.click();
-  await expect(page.getByRole('alert')).toContainText(
+  const player = page.getByRole('region', { name: 'Media player' });
+  await expect(player.getByRole('alert')).toContainText(
     'Video lookup is temporarily unavailable',
   );
   await expect(page).toHaveURL(/#discover\/movie\/11$/);
+  await expect(
+    page.getByRole('heading', { name: 'Arrival', exact: true }),
+  ).toBeVisible();
+  await player.getByRole('button', { name: 'Retry playback' }).click();
+  await expect.poll(() => resolved).toEqual(['xwdamnfS6IM', 'xwdamnfS6IM']);
+  await expect(player.getByRole('alert')).toContainText(
+    'Video lookup is temporarily unavailable',
+  );
+  await testInfo.attach('trailer-lookup-error-after-retry', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+  await player.getByRole('button', { name: 'Close player' }).click();
+  await expect(player).toHaveCount(0);
   await trailer.evaluate((link) =>
     link.setAttribute('href', 'https://youtu.be/9pkqztOC1WM'),
   );
   await trailer.click();
-  await expect.poll(() => resolved).toEqual(['xwdamnfS6IM', '9pkqztOC1WM']);
+  await expect
+    .poll(() => resolved)
+    .toEqual(['xwdamnfS6IM', 'xwdamnfS6IM', '9pkqztOC1WM']);
+  await expect(player.getByRole('alert')).toContainText(
+    'Video lookup is temporarily unavailable',
+  );
   expect(page.context().pages()).toHaveLength(1);
+  await player.getByRole('button', { name: 'Close player' }).click();
   await expect(page.locator('video')).toHaveCount(0);
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);

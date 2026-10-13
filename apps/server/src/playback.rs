@@ -238,6 +238,9 @@ pub(crate) async fn create_with_delivery(
             "Media duration is unavailable; rescan the library",
         ));
     }
+    if mode != "direct" {
+        crate::tools::require(state, &["ffmpeg"]).await?;
+    }
     let sid = id();
     let _lifecycle = state.playback_lifecycle.write(&[&sid]).await;
     let key = sid.clone();

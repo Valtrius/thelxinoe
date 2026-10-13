@@ -33,6 +33,100 @@ fn attempt(response: (StatusCode, HeaderMap, Value)) -> (String, String, String)
     )
 }
 #[tokio::test]
+async fn pending_authorization_is_visible_and_can_be_cancelled_during_token_exchange() {
+    let (_temp, mut state, session) = fixture().await;
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let resume = Arc::new(tokio::sync::Notify::new());
+    let token_entered = entered.clone();
+    let token_resume = resume.clone();
+    let server = crate::online::sync::tests::stub(
+        &mut state,
+        axum::Router::new()
+            .route("/token", post(move || {
+                let entered = token_entered.clone();
+                let resume = token_resume.clone();
+                async move {
+                    entered.notify_one();
+                    resume.notified().await;
+                    Json(json!({"access_token":"viewer-access-secret","refresh_token":"viewer-refresh-secret","token_type":"Bearer","expires_in":3600,"scope":SCOPE}))
+                }
+            }))
+            .route("/channels", axum::routing::get(|| async {
+                Json(json!({"items":[{"id":"UCfixture","snippet":{"title":"Viewer"}}]}))
+            })),
+    ).await;
+    let (csrf, browser, _) = attempt(
+        call(
+            &state,
+            "/api/v1/online/youtube/connect",
+            "POST",
+            json!({}),
+            &session,
+        )
+        .await,
+    );
+    let pending = call(
+        &state,
+        "/api/v1/online/youtube",
+        "GET",
+        Value::Null,
+        &session,
+    )
+    .await
+    .2;
+    assert_eq!(pending["pending"]["phase"], "waiting");
+    assert!(!pending.to_string().contains("secret"));
+    let callback_state = state.clone();
+    let callback = tokio::spawn(async move {
+        call(
+            &callback_state,
+            &format!("/api/v1/online/youtube/callback?state={csrf}&code=code"),
+            "GET",
+            Value::Null,
+            &browser,
+        )
+        .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+        .await
+        .unwrap();
+    let pending = call(
+        &state,
+        "/api/v1/online/youtube",
+        "GET",
+        Value::Null,
+        &session,
+    )
+    .await
+    .2;
+    assert_eq!(pending["pending"]["phase"], "connecting");
+    assert!(!pending.to_string().contains("secret"));
+    call(
+        &state,
+        "/api/v1/online/youtube/authorization",
+        "DELETE",
+        Value::Null,
+        &session,
+    )
+    .await;
+    resume.notify_one();
+    let result = callback.await.unwrap();
+    assert_eq!(result.1[header::LOCATION], "/?youtube_link=failed");
+    let account = call(
+        &state,
+        "/api/v1/online/youtube",
+        "GET",
+        Value::Null,
+        &session,
+    )
+    .await
+    .2;
+    assert_eq!(account["account"]["status"], "disconnected");
+    assert!(account["pending"].is_null());
+    server.abort();
+}
+
+#[tokio::test]
 async fn oauth_is_browser_bound_single_use_and_keeps_tokens_encrypted() {
     let (_temp, mut state, session) = fixture().await;
     let requests = Arc::new(AtomicUsize::new(0));
