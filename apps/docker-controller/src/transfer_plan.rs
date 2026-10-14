@@ -305,6 +305,8 @@ pub fn layout(kind: &str, raw: &Value, context: &Context) -> Result<Layout, Stri
         }
         mounts.push(mount);
     }
+    // Docker doesn't keep mount order stable between inspections; reviews must be.
+    mounts.sort_by(|a, b| a.destination.cmp(&b.destination));
     let Some(appdata) = mounts
         .iter()
         .find(|m| m.destination == destination)
@@ -668,6 +670,8 @@ pub fn automation(raw: &Value, others: &[Value], controller: &str) -> Vec<Automa
             });
         }
     }
+    // Container listings aren't ordered; the reviewed evidence must be.
+    found.sort_by(|a, b| a.name.cmp(&b.name));
     found
 }
 
@@ -681,6 +685,8 @@ pub fn compose(raw: &Value, others: &[Value]) -> Option<Value> {
         .map(|o| json!({"name":o["Name"].as_str().unwrap_or("").trim_start_matches('/'),
             "service":o["Config"]["Labels"]["com.docker.compose.service"],"running":o["State"]["Running"]}))
         .collect::<Vec<_>>();
+    let mut members = members;
+    members.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
     Some(
         json!({"project":project,"service":labels["com.docker.compose.service"],
         "working_dir":labels["com.docker.compose.project.working_dir"],
@@ -855,9 +861,28 @@ mod tests {
                 .iter()
                 .map(|m| m.role.as_str())
                 .collect::<Vec<_>>(),
-            ["media", "media", "timezone"]
+            // Sorted by container path: /downloads, /etc/localtime, /movies.
+            ["media", "timezone", "media"]
         );
         assert_eq!(layout.supplementary[0].destination, "/certs");
+    }
+
+    #[test]
+    fn layout_does_not_depend_on_dockers_mount_order() {
+        let mounts = [
+            json!({"Type":"volume","Name":"radarr_config","Source":"/var/lib/docker/volumes/radarr_config/_data","Destination":"/config","RW":true}),
+            bind("/srv/media/movies", "/movies", true),
+            bind("/srv/media/tv", "/tv", true),
+            bind("/srv/media/downloads", "/downloads", true),
+        ];
+        let forward = json!({"Id":"a","Config":{"Env":[]},"Mounts":mounts});
+        let mut reversed = mounts.to_vec();
+        reversed.reverse();
+        let reversed = json!({"Id":"a","Config":{"Env":[]},"Mounts":reversed});
+        assert_eq!(
+            serde_json::to_value(layout("radarr", &forward, &context(&[])).unwrap()).unwrap(),
+            serde_json::to_value(layout("radarr", &reversed, &context(&[])).unwrap()).unwrap()
+        );
     }
 
     #[test]
@@ -1011,11 +1036,19 @@ mod tests {
         let labelled = json!({"Id":"l","Name":"/labelled","Config":{"Image":"containrrr/watchtower","Env":["WATCHTOWER_LABEL_ENABLE=true"]},"Mounts":[]});
         let portainer = json!({"Id":"p","Name":"/portainer","Config":{"Image":"portainer/portainer-ce"},"Mounts":[{"Source":"/var/run/docker.sock"}]});
         let found = automation(&source, &[watchtower, labelled, portainer], "controller");
+        // Sorted by name: labelled, portainer, watchtower.
         assert_eq!(
-            found.iter().map(|a| a.blocks).collect::<Vec<_>>(),
-            [true, false, false]
+            found
+                .iter()
+                .map(|a| (a.name.as_str(), a.blocks))
+                .collect::<Vec<_>>(),
+            [
+                ("labelled", false),
+                ("portainer", false),
+                ("watchtower", true)
+            ]
         );
-        assert_eq!(found[2].kind, "docker_access");
+        assert_eq!(found[1].kind, "docker_access");
         let excluded = json!({"Id":"source","Config":{"Labels":{"com.centurylinklabs.watchtower.enable":"false"}}});
         let watchtower = json!({"Id":"w","Name":"/watchtower","Config":{"Image":"containrrr/watchtower:latest","Env":[]},"Mounts":[]});
         assert!(!automation(&excluded, &[watchtower], "controller")[0].blocks);
