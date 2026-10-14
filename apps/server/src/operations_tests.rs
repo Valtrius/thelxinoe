@@ -68,6 +68,70 @@ async fn activity_summary_tracks_real_operations_and_respects_audience() {
     }
 }
 
+// A running transfer is activity; a failed or suspended one stays an attention item
+// until it is recovered.
+#[tokio::test]
+async fn transfers_are_activity_while_running_and_attention_until_recovered() {
+    let (_temp, state, _alice) = fixture().await;
+    let set = |value: &'static str| {
+        let state = state.clone();
+        async move {
+            state
+                .db
+                .write("test.transfer_state", move |db| {
+                    db.execute("UPDATE service_transfers SET state=?1", [value])?;
+                    Ok(())
+                })
+                .await
+                .unwrap();
+        }
+    };
+    state.db.write("test.transfer_activity", |db| {
+        db.execute("UPDATE users SET role='admin' WHERE id='bob'", [])?;
+        db.execute("INSERT INTO service_transfers(id,kind,service_id,actor_id,container_id,engine,connection_revision,review_revision,review,state,step,created_at,updated_at) VALUES ('move','radarr','service','bob','container','engine','revision','review','{}','running','copy',1,1)", [])?;
+        Ok(())
+    }).await.unwrap();
+    let admin =
+        crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
+            .await
+            .unwrap();
+    let admin = format!("thelxinoe_session={admin}");
+    let attention = || call(&state, "/api/v1/me/attention", "GET", json!({}), &admin);
+    let running = attention().await.2;
+    assert!(
+        running["activity"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["id"] == "transfer:move"
+                && v["target"] == "services"
+                && v["resource"] == "radarr"
+                && v["state"] == "running")
+    );
+    for stuck in ["failed", "suspended"] {
+        set(stuck).await;
+        let held = attention().await.2;
+        assert!(
+            held["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["id"] == "transfer:move"),
+            "{held}"
+        );
+        assert!(
+            !held["activity"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["id"] == "transfer:move")
+        );
+    }
+    set("complete").await;
+    let done = attention().await.2;
+    assert!(!done.to_string().contains("transfer:move"));
+}
+
 // UI fixtures cannot catch the storage limit or administrator visibility scope.
 // Follow the public history/acknowledgment routes against the real database.
 #[tokio::test]
