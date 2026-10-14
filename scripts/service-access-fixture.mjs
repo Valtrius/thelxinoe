@@ -308,6 +308,8 @@ export async function fixture({
       volume = false,
       // LinuxServer PUID:PGID of the original; Seerr always runs as node.
       identity = '10001:10001',
+      // Read-only supplementary files or folders: [{ source, destination }].
+      extraMounts = [],
     } = {},
   ) {
     const name = `${project}-attached-${kind}-${attachedContainers.length}`;
@@ -462,6 +464,10 @@ export async function fixture({
                   `${mediaSource('downloads')}:/downloads`,
                 ]
               : ['-v', `${mediaSource()}:/media`]),
+        ...extraMounts.flatMap(({ source, destination }) => [
+          '--mount',
+          `type=bind,source=${source},target=${destination},readonly`,
+        ]),
         '-p',
         `127.0.0.1:${port}:${internalPort}`,
         image,

@@ -1112,8 +1112,26 @@ pub fn access() -> anyhow::Result<()> {
                 missing.iter().take(3).cloned().collect::<Vec<_>>().join(", ")
             ));
         }
-        Ok(json!({"checked":checked,"problems":problems,"roots":roots}))
+        let supplementary: Vec<Value> = input["supplementary"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|destination| json!({"destination":destination,"entry":entry(Path::new(destination))}))
+            .collect();
+        Ok(
+            json!({"checked":checked,"problems":problems,"roots":roots,"supplementary":supplementary}),
+        )
     })
+}
+
+/// What a read-only supplementary mount holds: a folder, one regular file, or neither.
+fn entry(path: &Path) -> &'static str {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => "directory",
+        Ok(meta) if meta.is_file() => "file",
+        _ => "unsupported",
+    }
 }
 
 // ---------- Digests ----------

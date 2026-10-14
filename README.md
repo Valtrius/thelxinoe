@@ -77,7 +77,9 @@ A Connected container may be recreated by Compose or an updater. Thelxinoe follo
 
 The original container and its configuration folder are kept, stopped with restart disabled. After completion, **Remove the stopped original container** deletes only that container, never its configuration.
 
-If a step fails before the replacement starts, Thelxinoe restores the original automatically. After the replacement has started, normal operations stay held and **Open transfer recovery** shows what changed since activation, what recovery can't undo and the available choices: retry setup and checks, return to the original, restore the verified snapshot, or suspend for manual resolution. Service updates, backups and lifecycle actions wait while a service is held.
+If a step fails before the replacement starts, Thelxinoe restores the original automatically. After the replacement has started, normal operations stay held and **Open transfer recovery** shows what changed since activation, what recovery can't undo and the available choices: retry setup and checks, return to the original, restore the verified snapshot, or suspend for manual resolution. A replacement never starts while the original can run. Returning to the original removes the stopped replacement container and keeps its configuration as a preserved generation, so you can take ownership again later. Restoring the snapshot builds a new replacement and runs the reviewed setup again for it. A recovery you approve finishes even if the page closes or Thelxinoe restarts. Service updates, backups and lifecycle actions wait while a service is held.
+
+Read-only supplementary mounts, such as a certificate folder or a single custom script, are copied into managed storage and mounted read-only at the same paths.
 
 ## Development
 

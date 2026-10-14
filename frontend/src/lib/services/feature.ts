@@ -410,7 +410,9 @@ export type TransferView = {
   choices: { compose_mode?: 'scoped' | 'project' | null };
   checks: TransferCheck[];
   setup: { action: string; label: string; state: string; error?: string }[];
-  recovery: TransferRecovery | Record<string, never>;
+  recovery: (TransferRecovery | Record<string, never>) & {
+    command?: TransferRecoveryCommand;
+  };
   progress: {
     phase?: string;
     bytes?: number;
@@ -434,7 +436,14 @@ export type TransferView = {
     boundary_at: number | null;
     completed: boolean;
     source: { stopped: boolean; restart_disabled: boolean; removed: boolean };
+    command?: { operation: string; phase: string; state: string } | null;
   } | null;
+};
+/** An approved recovery the controller runs and journals phase by phase. */
+export type TransferRecoveryCommand = {
+  operation: string;
+  action: string;
+  outcome?: 'applied' | 'failed' | 'refused';
 };
 export type TransferRecovery = {
   revision: string;
@@ -455,6 +464,8 @@ export type TransferRecovery = {
     action: string;
     label: string;
     available: boolean;
+    /** Why an unavailable option can't run now. */
+    unavailable?: string | null;
     description: string;
     requires?: string[];
   }[];

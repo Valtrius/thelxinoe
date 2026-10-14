@@ -36,6 +36,21 @@ pub(crate) async fn controller(state: &AppState, path: &str, body: Option<Value>
         .unwrap()
         .get(&format!("stack{path}"))
     {
+        // Tests script a controller refusal as {"__error":[code,message]}.
+        if let Some([code, message]) = value["__error"].as_array().map(Vec::as_slice) {
+            let code = match code.as_str() {
+                Some("revision_changed") => "revision_changed",
+                Some("not_found") => "not_found",
+                Some("dependency_unavailable") => "dependency_unavailable",
+                Some("operation_contended") => "operation_contended",
+                _ => "conflict",
+            };
+            return Err(ApiError(
+                axum::http::StatusCode::CONFLICT,
+                code,
+                message.as_str().unwrap_or_default().into(),
+            ));
+        }
         return Ok(value.clone());
     }
     #[cfg(unix)]

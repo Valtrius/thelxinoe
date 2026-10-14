@@ -57,7 +57,6 @@ pub(super) struct Row {
     pub(super) declarations: Value,
     pub(super) state: String,
     pub(super) step: String,
-    pub(super) steps: Value,
     pub(super) checks: Value,
     pub(super) setup: Value,
     pub(super) recovery: Value,
@@ -70,7 +69,7 @@ pub(super) struct Row {
     pub(super) updated_at: i64,
     pub(super) completed_at: Option<i64>,
 }
-const COLUMNS: &str = "id,kind,service_id,actor_id,container_id,engine,connection_revision,review_revision,review,choices,declarations,state,step,steps,checks,setup,recovery,progress,replacement_id,error,approved_by,approved_at,created_at,updated_at,completed_at";
+const COLUMNS: &str = "id,kind,service_id,actor_id,container_id,engine,connection_revision,review_revision,review,choices,declarations,state,step,checks,setup,recovery,progress,replacement_id,error,approved_by,approved_at,created_at,updated_at,completed_at";
 fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Row> {
     let json = |i: usize| -> rusqlite::Result<Value> {
         Ok(serde_json::from_str(&r.get::<_, String>(i)?).unwrap_or(Value::Null))
@@ -89,18 +88,17 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Row> {
         declarations: json(10)?,
         state: r.get(11)?,
         step: r.get(12)?,
-        steps: json(13)?,
-        checks: json(14)?,
-        setup: json(15)?,
-        recovery: json(16)?,
-        progress: json(17)?,
-        replacement_id: r.get(18)?,
-        error: r.get(19)?,
-        approved_by: r.get(20)?,
-        approved_at: r.get(21)?,
-        created_at: r.get(22)?,
-        updated_at: r.get(23)?,
-        completed_at: r.get(24)?,
+        checks: json(13)?,
+        setup: json(14)?,
+        recovery: json(15)?,
+        progress: json(16)?,
+        replacement_id: r.get(17)?,
+        error: r.get(18)?,
+        approved_by: r.get(19)?,
+        approved_at: r.get(20)?,
+        created_at: r.get(21)?,
+        updated_at: r.get(22)?,
+        completed_at: r.get(23)?,
     })
 }
 
@@ -131,7 +129,6 @@ pub(super) struct Draft {
     pub(super) actor: String,
     pub(super) review_revision: String,
     pub(super) review: Value,
-    pub(super) steps: Value,
 }
 /// A reviewed plan. A newer review replaces older drafts of the same service.
 pub(super) async fn save_review(db: &Database, draft: Draft) -> anyhow::Result<()> {
@@ -139,8 +136,8 @@ pub(super) async fn save_review(db: &Database, draft: Draft) -> anyhow::Result<(
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let c = &draft.connected;
         tx.execute("UPDATE service_transfers SET state='cancelled',error='Replaced by a newer review',updated_at=?2 WHERE service_id=?1 AND state='review'", params![c.id, now()])?;
-        tx.execute("INSERT INTO service_transfers(id,kind,service_id,actor_id,container_id,engine,connection_revision,review_revision,review,state,step,steps,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'review','review',?10,?11,?11)",
-            params![draft.id, c.kind, c.id, draft.actor, c.container, c.engine, c.access_revision, draft.review_revision, draft.review.to_string(), draft.steps.to_string(), now()])?;
+        tx.execute("INSERT INTO service_transfers(id,kind,service_id,actor_id,container_id,engine,connection_revision,review_revision,review,state,step,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'review','review',?10,?10)",
+            params![draft.id, c.kind, c.id, draft.actor, c.container, c.engine, c.access_revision, draft.review_revision, draft.review.to_string(), now()])?;
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'transfer.review',?2,?3)", params![draft.actor, draft.id, now()])?;
         tx.commit()?;
         Ok(())
@@ -283,6 +280,7 @@ pub(super) async fn journal(db: &Database, id: String, setup: Value) -> anyhow::
     .await
 }
 
+/// Record evaluated checks. A required check that failed is a recorded local failure.
 pub(super) async fn checks(
     db: &Database,
     id: String,
@@ -291,12 +289,31 @@ pub(super) async fn checks(
     error: Option<String>,
 ) -> anyhow::Result<()> {
     db.write("managers.transfers.checks", move |db| {
-        db.execute("UPDATE service_transfers SET checks=?2,step=?3,error=?4,state=CASE WHEN ?4 IS NULL THEN state ELSE 'failed' END,updated_at=?5 WHERE id=?1", params![id, checks.to_string(), step, error, now()])?;
+        db.execute(&format!("UPDATE service_transfers SET checks=?2,step=?3,error=?4,state=CASE WHEN ?4 IS NULL THEN state ELSE 'failed' END,updated_at=?5 WHERE id=?1 AND {ACTIVE}"), params![id, checks.to_string(), step, error, now()])?;
         Ok(())
     }).await
 }
 
-/// Completion and operational-hold release are one durable event.
+/// A confirmed failure of an unfinished transfer. Its holds stay exactly as they are; a
+/// finished or recovering transfer is never reopened or demoted here.
+pub(super) async fn fail(
+    db: &Database,
+    id: String,
+    step: Option<String>,
+    error: String,
+) -> anyhow::Result<()> {
+    db.write("managers.transfers.fail", move |db| {
+        let tx = db.transaction()?;
+        if tx.execute("UPDATE service_transfers SET state='failed',step=COALESCE(?2,step),error=?3,updated_at=?4 WHERE id=?1 AND state IN ('queued','running','committed')", params![id, step, error, now()])? == 1 {
+            tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (NULL,'transfer.failed',?1,?2)", params![id, now()])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }).await
+}
+
+/// Completion and operational-hold release are one durable event, recorded only after the
+/// controller agreed. A transfer that failed after that agreement completes the same way.
 pub(super) async fn complete(db: &Database, id: String) -> anyhow::Result<()> {
     db.write("managers.transfers.complete", move |db| {
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -304,7 +321,7 @@ pub(super) async fn complete(db: &Database, id: String) -> anyhow::Result<()> {
         if state == "complete" {
             return Ok(());
         }
-        anyhow::ensure!(state == "committed", "Only a committed transfer can complete");
+        anyhow::ensure!(matches!(state.as_str(), "committed" | "failed"), "Only a committed transfer can complete");
         anyhow::ensure!(tx.execute("UPDATE stack_provisions SET hold=NULL,error=NULL,updated_at=?2 WHERE transfer_id=?1 AND hold='transfer'", params![id, now()])? == 1, "The transfer's ownership record changed");
         if kind != "recyclarr" {
             let table = if matches!(kind.as_str(), "radarr" | "sonarr" | "lidarr") { "manager_services" } else { "support_services" };
@@ -319,6 +336,8 @@ pub(super) async fn complete(db: &Database, id: String) -> anyhow::Result<()> {
 
 pub(super) struct Original {
     pub(super) id: String,
+    /// The recovery command that returned it, or none when reconciling the controller's outcome.
+    pub(super) operation: Option<String>,
     pub(super) kind: String,
     pub(super) service: String,
     pub(super) container: String,
@@ -328,12 +347,20 @@ pub(super) struct Original {
     pub(super) media_source: String,
     pub(super) evidence: Value,
     pub(super) engine: String,
-    pub(super) actor: String,
+    pub(super) actor: Option<String>,
 }
-/// End a failed transfer in the Connected stage, after the controller stopped its replacement.
-pub(super) async fn return_original(db: &Database, original: Original) -> anyhow::Result<()> {
+/// End a failed transfer in the Connected stage, after the controller retired its replacement
+/// and restarted the original. Repeating it changes nothing.
+pub(super) async fn return_original(db: &Database, original: Original) -> anyhow::Result<bool> {
     db.write("managers.transfers.return_original", move |db| {
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let current: bool = match &original.operation {
+            Some(operation) => tx.query_row("SELECT EXISTS(SELECT 1 FROM service_transfers WHERE id=?1 AND state='recovery' AND json_extract(recovery,'$.command.operation')=?2)", params![original.id, operation], |r| r.get(0))?,
+            None => tx.query_row("SELECT EXISTS(SELECT 1 FROM service_transfers WHERE id=?1 AND state IN ('queued','running','committed','failed','suspended'))", [&original.id], |r| r.get(0))?,
+        };
+        if !current {
+            return Ok(false);
+        }
         tx.execute("DELETE FROM stack_provisions WHERE transfer_id=?1", [&original.id])?;
         if original.kind == "recyclarr" {
             tx.execute("INSERT INTO recyclarr_connections(id,container_id,container_name,engine,access_revision,checked_at,error) VALUES (?1,?2,?3,?4,?5,0,'Returned to the original after a failed transfer') ON CONFLICT(id) DO NOTHING",
@@ -343,10 +370,10 @@ pub(super) async fn return_original(db: &Database, original: Original) -> anyhow
             tx.execute(&format!("UPDATE {table} SET container_id=?2,container_name=?3,port=?4,url_base=?5,generation=?6,access_revision=?7,media_source=?8,evidence=?9,operational=0,verified=0,checked_at=0,error='Returned to the original after a failed transfer; test the connection' WHERE id=?1"),
                 params![original.service, original.container, original.container_name, original.port, original.url_base, thelxinoe_core::id(), thelxinoe_core::id(), original.media_source, original.evidence.to_string()])?;
         }
-        tx.execute("UPDATE service_transfers SET state='returned',step='recovery',completed_at=?2,updated_at=?2 WHERE id=?1", params![original.id, now()])?;
+        tx.execute("UPDATE service_transfers SET state='returned',progress='{}',recovery=CASE WHEN json_extract(recovery,'$.command') IS NULL THEN recovery ELSE json_set(recovery,'$.command.outcome','applied','$.command.finished_at',?2) END,completed_at=?2,updated_at=?2 WHERE id=?1", params![original.id, now()])?;
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'transfer.return-original',?2,?3)", params![original.actor, original.id, now()])?;
         tx.commit()?;
-        Ok(())
+        Ok(true)
     }).await
 }
 
@@ -367,14 +394,75 @@ pub(super) async fn recovery(
     }).await
 }
 
+fn queue(db: &rusqlite::Connection, transfer: &str, delay: i64) -> rusqlite::Result<()> {
+    let changed = db.execute("UPDATE jobs SET state='queued',available_at=?2,started_at=NULL,error=NULL WHERE kind='service.transfer' AND json_extract(payload,'$.id')=?1", params![transfer, now() + delay])?;
+    if changed == 0 {
+        db.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'service.transfer',?2,?3,'queued',?4,?4)", params![thelxinoe_core::id(), json!({"id":transfer}).to_string(), format!("transfer:{transfer}"), now() + delay])?;
+    }
+    Ok(())
+}
+
 /// Run the transfer job again soon, without losing its identity.
 pub(super) async fn requeue(db: &Database, transfer: String, delay: i64) -> anyhow::Result<()> {
     db.write("managers.transfers.requeue", move |db| {
-        let changed = db.execute("UPDATE jobs SET state='queued',available_at=?2,started_at=NULL,error=NULL WHERE kind='service.transfer' AND json_extract(payload,'$.id')=?1", params![transfer, now() + delay])?;
-        if changed == 0 {
-            db.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'service.transfer',?2,?3,'queued',?4,?4)", params![thelxinoe_core::id(), json!({"id":transfer}).to_string(), format!("transfer:{transfer}"), now() + delay])?;
-        }
+        queue(db, &transfer, delay)?;
         Ok(())
+    })
+    .await
+}
+
+/// Make an approved recovery command durable before it is sent. The transfer job observes the
+/// controller until the command's outcome is known, whatever happens to this request.
+pub(super) async fn begin_recovery(
+    db: &Database,
+    id: String,
+    from: String,
+    command: Value,
+    actor: String,
+) -> anyhow::Result<bool> {
+    db.write("managers.transfers.begin_recovery", move |db| {
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if tx.execute("UPDATE service_transfers SET state='recovery',error=NULL,progress='{}',recovery=json_set(recovery,'$.command',json(?3)),updated_at=?4 WHERE id=?1 AND state=?2", params![id, from, command.to_string(), now()])? == 0 {
+            return Ok(false);
+        }
+        queue(&tx, &id, 0)?;
+        tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'transfer.recovery.request',?2,?3)", params![actor, id, now()])?;
+        tx.commit()?;
+        Ok(true)
+    }).await
+}
+
+/// The controller's outcome of one recovery command and the state it leaves the transfer in.
+pub(super) struct Outcome {
+    pub(super) id: String,
+    pub(super) operation: String,
+    pub(super) state: String,
+    pub(super) error: Option<String>,
+    /// `applied`, `failed` or `refused`.
+    pub(super) outcome: &'static str,
+    /// A restored candidate replaced the held container.
+    pub(super) replacement: Option<String>,
+    pub(super) action: &'static str,
+}
+/// Record a recovery command's outcome once. Later observations of the same outcome change
+/// nothing; a different command's outcome never applies to this one.
+pub(super) async fn end_recovery(db: &Database, end: Outcome) -> anyhow::Result<bool> {
+    db.write("managers.transfers.end_recovery", move |db| {
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let actor: Option<Option<String>> = tx.query_row("SELECT json_extract(recovery,'$.command.by') FROM service_transfers WHERE id=?1 AND state='recovery' AND json_extract(recovery,'$.command.operation')=?2", params![end.id, end.operation], |r| r.get(0)).optional()?;
+        let Some(actor) = actor else {
+            return Ok(false);
+        };
+        if let Some(container) = &end.replacement {
+            rebind(&tx, &end.id, container)?;
+        }
+        tx.execute("UPDATE service_transfers SET state=?2,error=?3,progress='{}',recovery=json_set(recovery,'$.command.outcome',?4,'$.command.finished_at',?5),updated_at=?5 WHERE id=?1", params![end.id, end.state, end.error, end.outcome, now()])?;
+        if matches!(end.state.as_str(), "running" | "committed") {
+            queue(&tx, &end.id, 0)?;
+        }
+        tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,?2,?3,?4)", params![actor, end.action, end.id, now()])?;
+        tx.commit()?;
+        Ok(true)
     }).await
 }
 
@@ -528,18 +616,33 @@ pub(super) async fn recyclarr_paused(db: &Database, provision: String) -> anyhow
     .await
 }
 
-/// A recovery candidate replaced the held container: point ownership at it, still held.
-pub(super) async fn rebind(db: &Database, id: String, container: String) -> anyhow::Result<()> {
-    db.write("managers.transfers.rebind", move |db| {
-        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let (kind, service): (String, String) = tx.query_row("SELECT kind,service_id FROM service_transfers WHERE id=?1", [&id], |r| Ok((r.get(0)?, r.get(1)?)))?;
-        tx.execute("UPDATE stack_provisions SET container_id=?2,updated_at=?3 WHERE transfer_id=?1 AND hold IS NOT NULL", params![id, container, now()])?;
-        if kind != "recyclarr" {
-            let table = if matches!(kind.as_str(), "radarr" | "sonarr" | "lidarr") { "manager_services" } else { "support_services" };
-            tx.execute(&format!("UPDATE {table} SET container_id=?2,generation=?3,access_revision=?4,operational=0 WHERE id=?1"), params![service, container, thelxinoe_core::id(), thelxinoe_core::id()])?;
-        }
-        tx.execute("UPDATE service_transfers SET replacement_id=?2,updated_at=?3 WHERE id=?1", params![id, container, now()])?;
-        tx.commit()?;
-        Ok(())
-    }).await
+/// A restored candidate replaced the held container: point ownership at it, still held.
+/// Its appdata is a new generation, so setup and checks of the discarded one stop counting;
+/// they are kept only as that generation's evidence.
+fn rebind(tx: &rusqlite::Transaction<'_>, id: &str, container: &str) -> anyhow::Result<()> {
+    let (kind, service, replacement, setup, checks, recovery): (String, String, Option<String>, String, String, String) = tx.query_row(
+        "SELECT kind,service_id,replacement_id,setup,checks,recovery FROM service_transfers WHERE id=?1", [id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?;
+    if replacement.as_deref() == Some(container) {
+        return Ok(());
+    }
+    let parse = |text: &str| serde_json::from_str::<Value>(text).unwrap_or(Value::Null);
+    let mut recovery = parse(&recovery);
+    let superseded =
+        json!({"replacement":replacement,"setup":parse(&setup),"checks":parse(&checks),"at":now()});
+    match recovery["superseded"].as_array_mut() {
+        Some(list) => list.push(superseded),
+        None => recovery["superseded"] = json!([superseded]),
+    }
+    tx.execute("UPDATE stack_provisions SET container_id=?2,updated_at=?3 WHERE transfer_id=?1 AND hold IS NOT NULL", params![id, container, now()])?;
+    if kind != "recyclarr" {
+        let table = if matches!(kind.as_str(), "radarr" | "sonarr" | "lidarr") {
+            "manager_services"
+        } else {
+            "support_services"
+        };
+        tx.execute(&format!("UPDATE {table} SET container_id=?2,generation=?3,access_revision=?4,operational=0 WHERE id=?1"), params![service, container, thelxinoe_core::id(), thelxinoe_core::id()])?;
+    }
+    tx.execute("UPDATE service_transfers SET replacement_id=?2,setup='[]',checks='[]',recovery=?3,updated_at=?4 WHERE id=?1", params![id, container, recovery.to_string(), now()])?;
+    Ok(())
 }

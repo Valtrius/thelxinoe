@@ -56,8 +56,11 @@ from its pinned image with bind-mounted and Docker-volume configuration, populat
 records, connects it and takes ownership through the public API. It checks that the
 original stays stopped and unchanged, that record identities survive in the replacement
 and that the disposable validation copy reached none of the egress sentinels. It also
-covers a controller restart during a transfer and a stale review. Narrow a run with
-`--kinds=radarr,sonarr`, `--storage=bind` or `--scenarios=matrix`. Results are
+covers a controller restart during a transfer and a stale review, recreation of
+transferred services, a return to the original followed by a new takeover, a snapshot
+restore interrupted by a controller restart and supplementary file mounts. Narrow a run with
+`--kinds=radarr,sonarr`, `--storage=bind` or `--scenarios=matrix` (also `interruption`,
+`recovery` and `storage`). Results are
 written to `test-results/transfers/result.json` and the qualification artifact
 `.local/transfer-qualification.json`. No other container may mount the fixture
 folders: the transfer review refuses a configuration with a second writer, so stop

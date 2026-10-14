@@ -417,6 +417,25 @@ test('a failure after production offers evidence-based recovery choices', async 
       continue_in_background: false,
     },
   });
+  // The approved command runs in the controller; the modal follows it until it ends.
+  const recovering = view('recovery', 'checks', {
+    recovery: {
+      command: { operation: 'operation-1', action: 'return_original' },
+    },
+    controller: {
+      stage: 'recovering',
+      boundary_at: 1789984800,
+      completed: false,
+      source: { stopped: true, restart_disabled: true, removed: false },
+      command: {
+        operation: 'operation-1',
+        phase: 'starting-original',
+        state: 'running',
+      },
+    },
+    actions: { ...failed.actions, retry: false, recovery: false },
+  });
+  let current = failed;
   const applied: unknown[] = [];
   await page.route('**/api/v1/admin/services', (route) =>
     route.fulfill({
@@ -477,6 +496,14 @@ test('a failure after production offers evidence-based recovery choices', async 
               requires: ['state_loss', 'reconciliation'],
             },
             {
+              action: 'repair',
+              label: 'Repair and continue',
+              available: false,
+              unavailable:
+                'The original is running; a replacement never starts beside it',
+              description: 'Start the replacement again',
+            },
+            {
               action: 'suspend',
               label: 'Suspend for manual resolution',
               available: true,
@@ -488,9 +515,11 @@ test('a failure after production offers evidence-based recovery choices', async 
           peer_note: '',
         },
       });
-    if (path.endsWith('/recovery'))
+    if (path.endsWith('/recovery')) {
       applied.push(route.request().postDataJSON());
-    return route.fulfill({ json: failed });
+      current = recovering;
+    }
+    return route.fulfill({ json: current });
   });
   await page.goto('/');
   await page
@@ -511,6 +540,13 @@ test('a failure after production offers evidence-based recovery choices', async 
   const plan = dialog.getByRole('region', { name: 'Recovery plan' });
   await expect(plan).toContainText('Stopped, unchanged');
   await expect(plan).toContainText('Indexer searches already sent');
+  // A replacement never starts beside a running original; the plan says why.
+  await expect(plan).toContainText(
+    'Unavailable: The original is running; a replacement never starts beside it',
+  );
+  await expect(
+    plan.getByRole('radio', { name: /Repair and continue/ }),
+  ).toBeDisabled();
   await plan.getByRole('radio', { name: /Return to the original/ }).check();
   const apply = plan.getByRole('button', { name: 'Apply recovery' });
   await expect(apply).toBeDisabled();
@@ -535,6 +571,10 @@ test('a failure after production offers evidence-based recovery choices', async 
         approval: { state_loss: true, reconciliation: true },
       },
     ]);
+  await expect(dialog.getByRole('status').first()).toContainText(
+    'Applying the approved recovery: Return to the original',
+  );
+  await expect(dialog).toContainText('Restarting the original');
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });

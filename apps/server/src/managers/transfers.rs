@@ -1,8 +1,12 @@
 //! Guided ownership transfer of a Connected service into the Owned stage. The controller
-//! journals Docker and file transitions; this record holds the reviewed plan, approval,
-//! setup journal, checks and recovery, and gates every normal worker through its hold.
+//! journals Docker and file transitions and owns their outcomes; this record holds the
+//! reviewed plan, approval, setup journal, checks and recovery, projects the controller's
+//! outcomes and gates every normal worker through its hold.
 #[path = "transfer_checks.rs"]
 mod checks;
+#[cfg(test)]
+#[path = "transfer_tests.rs"]
+mod lifecycle_tests;
 #[path = "../storage/managers/transfers.rs"]
 mod storage;
 
@@ -49,6 +53,23 @@ fn valid_id(value: &str) -> Result<()> {
     uuid::Uuid::parse_str(value)
         .map(|_| ())
         .map_err(|_| ApiError::bad("Invalid identity"))
+}
+
+/// A controller reply that never arrived, couldn't be read or met another operation. Its
+/// outcome is unknown, not failed: the transfer job observes the controller again.
+const UNCERTAIN: &str = "controller_uncertain";
+fn observe<T>(result: Result<T>) -> Result<T> {
+    result.map_err(|error| match error.1 {
+        "dependency_unavailable" | "operation_contended" => ApiError(error.0, UNCERTAIN, error.2),
+        _ => error,
+    })
+}
+fn uncertain(error: &ApiError) -> bool {
+    error.1 == UNCERTAIN
+}
+/// A controller request whose failure tells an unknown outcome from a refusal.
+async fn controller_call(state: &AppState, path: &str, body: Option<Value>) -> Result<Value> {
+    observe(controller_request(state, path, body).await)
 }
 
 /// The guided workflow, in order. Each step says who acts.
@@ -131,12 +152,16 @@ fn steps(t: &storage::Row) -> Vec<Value> {
 fn actions(t: &storage::Row, controller: &Value) -> Value {
     let stage = controller["stage"].as_str().unwrap_or("");
     let boundary = controller["boundary_at"].is_number();
+    // An outcome the controller already reached leaves nothing to retry or recover.
+    let ended = matches!(stage, "complete" | "returned" | "cancelled" | "stale");
     json!({
         "approve": t.state == "review" && t.review["blockers"].as_array().is_none_or(Vec::is_empty),
         "cancel": t.state == "review" || (t.state == "queued" && matches!(stage, "" | "approved") && controller["source"]["restart_disabled"] != true),
-        "retry": t.state == "failed" && t.replacement_id.is_some(),
-        "restore": t.state == "failed" && !boundary && stage == "failed",
-        "recovery": matches!(t.state.as_str(), "failed" | "suspended" | "recovery") && boundary && controller["completed"] != true,
+        "retry": t.state == "failed" && t.replacement_id.is_some() && !ended,
+        // Before the boundary the controller restores, or already restored, the original.
+        "restore": t.state == "failed" && !boundary && matches!(stage, "failed" | "stale" | "returned"),
+        "recovery": matches!(t.state.as_str(), "failed" | "suspended") && boundary && controller["completed"] != true
+            && !ended && stage != "recovering",
         "remove_original": t.state == "complete" && controller["source"]["removed"] != true,
         "continue_in_background": matches!(t.state.as_str(), "queued" | "running" | "committed" | "recovery"),
     })
@@ -168,7 +193,8 @@ async fn present(state: &AppState, t: &storage::Row) -> Value {
         "controller":if controller.is_null() {Value::Null} else {json!({"stage":controller["stage"],"boundary_at":controller["boundary_at"],
             "activated":controller["activated"],"committed":controller["committed"],"completed":controller["completed"],
             "operation_active":controller["operation_active"],"snapshot":controller["snapshot"],"qualification":controller["qualification"],
-            "source":controller["source"],"generations":controller["generations"],"error":controller["error"]})}})
+            "source":controller["source"],"generations":controller["generations"],"activations":controller["activations"],
+            "command":controller["command"],"error":controller["error"]})}})
 }
 
 async fn load(state: &AppState, id: &str) -> Result<storage::Row> {
@@ -460,7 +486,6 @@ async fn review(
             actor: actor.user.id,
             review_revision: revision,
             review,
-            steps: json!({}),
         },
     )
     .await?;
@@ -832,6 +857,11 @@ async fn restore(
 ) -> Result<Json<Value>> {
     let actor = security::require(&state, &headers, Capability::ManageServer).await?;
     let t = load(&state, &id).await?;
+    if t.state != "failed" {
+        return Err(ApiError::conflict(
+            "Only a failed transfer before production activation restores its original",
+        ));
+    }
     let _guard = state.managers.guard.service(&t.kind).await;
     controller_request(&state, &format!("/transfers/{id}/restore"), Some(json!({}))).await?;
     storage::outcome(
@@ -851,6 +881,9 @@ async fn restore(
 // ---------- The transfer job ----------
 
 /// Drive one approved transfer from its durable state. Returns false when it waits.
+///
+/// The controller owns Docker and file effects; this record projects its journal. A reply
+/// that never arrived is an unknown outcome, observed again later, never a failure.
 pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyhow::Result<bool> {
     let id = job.payload["id"]
         .as_str()
@@ -861,7 +894,10 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
         .ok_or_else(|| anyhow::anyhow!("Transfer not found"))?;
     let outcome = match t.state.as_str() {
         "queued" | "running" => drive(state, &t).await,
-        "committed" => finish(state, &t).await.map(|()| true),
+        "committed" => finish(state, &t).await,
+        "recovery" => advance_recovery(state, &t)
+            .await
+            .map(|progress| !matches!(progress, Recovery::Running)),
         _ => return Ok(true),
     };
     match outcome {
@@ -875,19 +911,27 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
             storage::requeue(&state.db, id, 5).await?;
             Ok(false)
         }
-        Err(error) => {
-            // A failed post-commit transfer stays Owned under its hold with recovery available.
-            storage::checks(
-                &state.db,
-                id.clone(),
-                storage::load(&state.db, id.clone())
-                    .await?
-                    .map(|t| t.checks)
-                    .unwrap_or_default(),
-                t.step.clone(),
-                Some(error.2.clone()),
+        // A recovery command always converges to the controller's outcome.
+        Err(error) if uncertain(&error) || t.state == "recovery" => {
+            wait(
+                state,
+                &t,
+                format!(
+                    "Waiting for the Docker controller to confirm the outcome: {}",
+                    error.2
+                ),
             )
-            .await?;
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e.2))?;
+            storage::requeue(&state.db, id.clone(), 15).await?;
+            state
+                .emit(None, "stack.changed", json!({"transfer":id}))
+                .await?;
+            Ok(false)
+        }
+        Err(error) => {
+            // A confirmed failure keeps every hold, so recovery stays available.
+            storage::fail(&state.db, id.clone(), None, error.2.clone()).await?;
             state
                 .emit(None, "stack.changed", json!({"transfer":id}))
                 .await?;
@@ -909,125 +953,226 @@ async fn wait(state: &AppState, t: &storage::Row, reason: String) -> Result<bool
     Ok(false)
 }
 
-/// Start or follow the controller's journal; commit once the replacement is activated.
-async fn drive(state: &AppState, t: &storage::Row) -> Result<bool> {
-    // A restart after the controller accepted the start must follow its journal, not
-    // recheck prerequisites against an original that may already be stopped.
-    let started = t.state == "queued"
-        && controller_status(state, &t.id).await["stage"]
-            .as_str()
-            .is_some_and(|stage| !matches!(stage, "" | "review" | "approved"));
-    if started {
-        storage::update(
-            &state.db,
-            t.id.clone(),
-            Some("running".into()),
-            None,
-            None,
-            None,
-        )
-        .await?;
-    }
-    if t.state == "queued" && !started {
-        // Required peers must be operationally ready; unrelated services keep working meanwhile.
-        for target in t.review["recyclarr_targets"]
-            .as_array()
-            .into_iter()
-            .flatten()
-        {
-            let id = target["service_id"].as_str().unwrap_or_default();
-            if !ownership::operational(state, id).await? {
-                return wait(
-                    state,
-                    t,
-                    format!(
-                        "Waiting for {} to become an operational Owned service",
-                        failures::label(target["kind"].as_str().unwrap_or("its target"))
-                    ),
-                )
-                .await;
+/// Project a controller outcome this record doesn't show yet. Returns true when it did.
+async fn reconcile(state: &AppState, t: &storage::Row, status: &Value) -> Result<bool> {
+    let stage = status["stage"].as_str().unwrap_or("");
+    let projected = if status["completed"] == true {
+        // The controller completes only after this server's checks passed.
+        if matches!(t.state.as_str(), "committed" | "failed") && t.replacement_id.is_some() {
+            storage::complete(&state.db, t.id.clone()).await?;
+            state.managers.connection_wake.notify_one();
+            true
+        } else {
+            false
+        }
+    } else {
+        match (stage, t.state.as_str()) {
+            ("returned", "queued" | "running" | "committed" | "failed" | "suspended") => {
+                if t.replacement_id.is_some() {
+                    return_to_original(state, t, None, None).await?
+                } else {
+                    storage::outcome(
+                        &state.db,
+                        t.id.clone(),
+                        "returned".into(),
+                        status["error"].as_str().map(str::to_owned).or(Some(
+                            "The transfer stopped before production and restored the original"
+                                .into(),
+                        )),
+                        None,
+                    )
+                    .await?;
+                    true
+                }
             }
-        }
-        // Recheck activity immediately before the original stops.
-        let busy = match t.kind.as_str() {
-            "recyclarr" => Ok(()),
-            "radarr" | "sonarr" | "lidarr" => operations::ensure_idle(state, &t.service_id).await,
-            _ => support::ensure_idle(state, &t.service_id).await,
-        };
-        if let Err(error) = busy {
-            return wait(
-                state,
-                t,
-                format!(
-                    "Waiting for {} to become idle: {}",
-                    failures::label(&t.kind),
-                    error.2
-                ),
-            )
-            .await;
-        }
-        let started = controller_request(
-            state,
-            &format!("/transfers/{}/start", t.id),
-            Some(json!({"revision":t.review["plan"]["revision"],"declarations":t.declarations,"compose_mode":t.choices["compose_mode"]})),
-        )
-        .await;
-        match started {
-            Ok(_) => {}
-            Err(error) if error.1 == "revision_changed" => {
+            ("stale", "queued" | "running") => {
                 storage::outcome(
                     &state.db,
                     t.id.clone(),
                     "returned".into(),
-                    Some(format!("{}; nothing changed", error.2)),
-                    None,
-                )
-                .await?;
-                return Ok(true);
-            }
-            Err(error) => return Err(error),
-        }
-        storage::update(
-            &state.db,
-            t.id.clone(),
-            Some("running".into()),
-            Some("stop".into()),
-            Some(json!({})),
-            Some(None),
-        )
-        .await?;
-    }
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(600);
-    loop {
-        let status = controller_request(state, &format!("/transfers/{}", t.id), None).await?;
-        let stage = status["stage"].as_str().unwrap_or("").to_owned();
-        match stage.as_str() {
-            "activated" | "committed" | "complete" => break,
-            "returned" | "stale" => {
-                storage::outcome(
-                    &state.db,
-                    t.id.clone(),
-                    "returned".into(),
-                    status["error"].as_str().map(str::to_owned).or(Some(
-                        "The transfer stopped before production and restored the original".into(),
+                    Some(format!(
+                        "{}; nothing changed",
+                        status["error"]
+                            .as_str()
+                            .unwrap_or("The reviewed deployment changed")
                     )),
                     None,
                 )
                 .await?;
-                return Ok(true);
+                true
             }
-            "cancelled" => {
+            ("cancelled", "queued" | "running") => {
                 storage::outcome(&state.db, t.id.clone(), "cancelled".into(), None, None).await?;
+                true
+            }
+            _ => false,
+        }
+    };
+    if projected {
+        state
+            .emit(None, "stack.changed", json!({"transfer":t.id}))
+            .await?;
+    }
+    Ok(projected)
+}
+
+/// End the transfer Connected to its original again, after the controller restarted it.
+async fn return_to_original(
+    state: &AppState,
+    t: &storage::Row,
+    operation: Option<String>,
+    actor: Option<String>,
+) -> Result<bool> {
+    let source = &t.review["source_connection"];
+    let returned = storage::return_original(
+        &state.db,
+        storage::Original {
+            id: t.id.clone(),
+            operation,
+            kind: t.kind.clone(),
+            service: t.service_id.clone(),
+            container: source["container_id"]
+                .as_str()
+                .unwrap_or(&t.container_id)
+                .to_owned(),
+            container_name: source["container_name"].as_str().unwrap_or("").to_owned(),
+            port: source["port"].as_u64().unwrap_or(0) as u16,
+            url_base: source["url_base"].as_str().unwrap_or("").to_owned(),
+            media_source: source["media_source"].as_str().unwrap_or("").to_owned(),
+            evidence: source["evidence"].clone(),
+            engine: t.engine.clone(),
+            actor,
+        },
+    )
+    .await?;
+    state.managers.connection_wake.notify_one();
+    Ok(returned)
+}
+
+/// Start or follow the controller's journal; commit once the replacement is activated.
+async fn drive(state: &AppState, t: &storage::Row) -> Result<bool> {
+    // Read the journal before acting: an accepted start is followed, never submitted again,
+    // and prerequisites aren't rechecked against an original that may already be stopped.
+    let journal = match controller_call(state, &format!("/transfers/{}", t.id), None).await {
+        Ok(status) => Some(status),
+        Err(error) if error.1 == "not_found" => None,
+        Err(error) => return Err(error),
+    };
+    match journal {
+        Some(status) => {
+            if reconcile(state, t, &status).await? {
                 return Ok(true);
             }
-            "failed" | "recovery-required" => {
+            if t.state == "queued" {
                 storage::update(
                     &state.db,
                     t.id.clone(),
-                    Some("failed".into()),
-                    Some(controller_step(&stage).into()),
+                    Some("running".into()),
                     None,
-                    Some(status["error"].as_str().map(str::to_owned)),
+                    None,
+                    None,
+                )
+                .await?;
+            }
+        }
+        None if t.state == "queued" => {
+            // Required peers must be operationally ready; unrelated services keep working meanwhile.
+            for target in t.review["recyclarr_targets"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                let id = target["service_id"].as_str().unwrap_or_default();
+                if !ownership::operational(state, id).await? {
+                    return wait(
+                        state,
+                        t,
+                        format!(
+                            "Waiting for {} to become an operational Owned service",
+                            failures::label(target["kind"].as_str().unwrap_or("its target"))
+                        ),
+                    )
+                    .await;
+                }
+            }
+            // Recheck activity immediately before the original stops.
+            let busy = match t.kind.as_str() {
+                "recyclarr" => Ok(()),
+                "radarr" | "sonarr" | "lidarr" => {
+                    operations::ensure_idle(state, &t.service_id).await
+                }
+                _ => support::ensure_idle(state, &t.service_id).await,
+            };
+            if let Err(error) = busy {
+                return wait(
+                    state,
+                    t,
+                    format!(
+                        "Waiting for {} to become idle: {}",
+                        failures::label(&t.kind),
+                        error.2
+                    ),
+                )
+                .await;
+            }
+            let started = controller_call(
+                state,
+                &format!("/transfers/{}/start", t.id),
+                Some(json!({"revision":t.review["plan"]["revision"],"declarations":t.declarations,"compose_mode":t.choices["compose_mode"]})),
+            )
+            .await;
+            match started {
+                Ok(_) => {}
+                // An unknown outcome is read from the journal on the next pass.
+                Err(error) if uncertain(&error) => return Err(error),
+                // A refused start changed nothing; the original keeps running.
+                Err(error) => {
+                    storage::outcome(
+                        &state.db,
+                        t.id.clone(),
+                        "returned".into(),
+                        Some(format!("{}; nothing changed", error.2)),
+                        None,
+                    )
+                    .await?;
+                    return Ok(true);
+                }
+            }
+            storage::update(
+                &state.db,
+                t.id.clone(),
+                Some("running".into()),
+                Some("stop".into()),
+                Some(json!({})),
+                Some(None),
+            )
+            .await?;
+        }
+        None => {
+            return Err(ApiError::conflict(
+                "The Docker controller has no journal for this transfer",
+            ));
+        }
+    }
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(600);
+    loop {
+        let status = controller_call(state, &format!("/transfers/{}", t.id), None).await?;
+        if reconcile(state, t, &status).await? {
+            return Ok(true);
+        }
+        let stage = status["stage"].as_str().unwrap_or("").to_owned();
+        match stage.as_str() {
+            "activated" | "committed" | "complete" => break,
+            // The controller's own journal confirms the failure.
+            "failed" | "recovery-required" => {
+                storage::fail(
+                    &state.db,
+                    t.id.clone(),
+                    Some(controller_step(&stage).into()),
+                    status["error"]
+                        .as_str()
+                        .unwrap_or("The transfer failed")
+                        .to_owned(),
                 )
                 .await?;
                 return Ok(true);
@@ -1045,7 +1190,7 @@ async fn drive(state: &AppState, t: &storage::Row) -> Result<bool> {
         .await?;
         if status["operation_active"] == false {
             // An interrupted controller resumes from its own journal.
-            controller_request(
+            controller_call(
                 state,
                 &format!("/transfers/{}/resume", t.id),
                 Some(json!({})),
@@ -1061,19 +1206,18 @@ async fn drive(state: &AppState, t: &storage::Row) -> Result<bool> {
     let committed = storage::load(&state.db, t.id.clone())
         .await?
         .ok_or_else(unavailable)?;
-    finish(state, &committed).await?;
-    Ok(true)
+    finish(state, &committed).await
 }
 
 /// Commit the activated replacement under its transfer hold, then record controller agreement.
 async fn commit(state: &AppState, t: &storage::Row) -> Result<()> {
-    let status = controller_request(state, &format!("/transfers/{}", t.id), None).await?;
+    let status = controller_call(state, &format!("/transfers/{}", t.id), None).await?;
     let replacement = status["replacement"]
         .as_str()
         .ok_or_else(unavailable)?
         .to_owned();
-    let observed = docker(state, &format!("containers/{replacement}")).await?;
-    let template = controller_request(state, "/templates", None).await?["items"]
+    let observed = observe(docker(state, &format!("containers/{replacement}")).await)?;
+    let template = controller_call(state, "/templates", None).await?["items"]
         .as_array()
         .into_iter()
         .flatten()
@@ -1157,7 +1301,7 @@ async fn commit(state: &AppState, t: &storage::Row) -> Result<()> {
         },
     )
     .await?;
-    controller_request(
+    controller_call(
         state,
         &format!("/transfers/{}/commit", t.id),
         Some(json!({"container_id":replacement})),
@@ -1166,19 +1310,29 @@ async fn commit(state: &AppState, t: &storage::Row) -> Result<()> {
     Ok(())
 }
 
-/// Reviewed setup, required checks, then completion with hold release in one transaction.
-async fn finish(state: &AppState, t: &storage::Row) -> Result<()> {
-    let status = controller_request(state, &format!("/transfers/{}", t.id), None).await?;
+/// Reviewed setup, required checks, then completion. Both sides stay held until the
+/// controller agrees to complete; only then does this server release normal operations, so
+/// a lost acknowledgement is retried rather than leaving one side released.
+async fn finish(state: &AppState, t: &storage::Row) -> Result<bool> {
+    let status = controller_call(state, &format!("/transfers/{}", t.id), None).await?;
+    if reconcile(state, t, &status).await? {
+        return Ok(true);
+    }
     if status["committed"] != true {
         // Reconcile a commit the controller didn't record before continuing.
         let replacement = t.replacement_id.clone().ok_or_else(unavailable)?;
-        controller_request(
+        controller_call(
             state,
             &format!("/transfers/{}/commit", t.id),
             Some(json!({"container_id":replacement})),
         )
         .await?;
     }
+    // Setup and checks are evidence about the exact appdata generation the replacement runs.
+    let generation = status["production"]["generation"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
     storage::update(
         &state.db,
         t.id.clone(),
@@ -1188,7 +1342,7 @@ async fn finish(state: &AppState, t: &storage::Row) -> Result<()> {
         None,
     )
     .await?;
-    checks::setup(state, t).await?;
+    checks::setup(state, t, &generation).await?;
     let t = storage::load(&state.db, t.id.clone())
         .await?
         .ok_or_else(unavailable)?;
@@ -1217,15 +1371,16 @@ async fn finish(state: &AppState, t: &storage::Row) -> Result<()> {
                 .map(|d| format!(" ({d})"))
                 .unwrap_or_default()
         );
+        // A recorded local check failure; the transfer stays held for retry or recovery.
         storage::checks(
             &state.db,
             t.id.clone(),
             json!(results),
             "checks".into(),
-            Some(message.clone()),
+            Some(message),
         )
         .await?;
-        return Err(ApiError::conflict(message));
+        return Ok(true);
     }
     storage::checks(
         &state.db,
@@ -1235,16 +1390,15 @@ async fn finish(state: &AppState, t: &storage::Row) -> Result<()> {
         None,
     )
     .await?;
-    storage::complete(&state.db, t.id.clone()).await?;
-    // The server released its hold durably; the controller hold follows and is reconciled on retry.
-    controller_request(
+    controller_call(
         state,
         &format!("/transfers/{}/complete", t.id),
         Some(json!({})),
     )
     .await?;
+    storage::complete(&state.db, t.id.clone()).await?;
     state.managers.connection_wake.notify_one();
-    Ok(())
+    Ok(true)
 }
 
 // ---------- Recovery after the production boundary ----------
@@ -1256,9 +1410,12 @@ async fn recovery_plan(
 ) -> Result<Json<Value>> {
     let actor = security::require(&state, &headers, Capability::ManageServer).await?;
     let t = load(&state, &id).await?;
-    if !matches!(t.state.as_str(), "failed" | "suspended" | "recovery") {
+    recoverable(&t)?;
+    // An outcome the controller already reached is recorded first, never offered again.
+    let status = controller_call(&state, &format!("/transfers/{id}"), None).await?;
+    if reconcile(&state, &t, &status).await? {
         return Err(ApiError::conflict(
-            "Recovery is available for a failed or suspended transfer",
+            "The transfer already reached an outcome; review its current state",
         ));
     }
     let plan = controller_request(&state, &format!("/transfers/{id}/recovery"), None).await?;
@@ -1270,6 +1427,16 @@ async fn recovery_plan(
     recovery["peer_note"] = json!(
         "Takeover setup doesn't write peer services; links are created only after completion"
     );
+    // Earlier commands and superseded generations stay part of the record.
+    let mut history = t.recovery["history"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if t.recovery["command"].is_object() {
+        history.push(t.recovery["command"].clone());
+    }
+    recovery["history"] = json!(history);
+    recovery["superseded"] = t.recovery["superseded"].clone();
     storage::recovery(
         &state.db,
         id.clone(),
@@ -1280,6 +1447,19 @@ async fn recovery_plan(
     )
     .await?;
     Ok(Json(recovery))
+}
+
+/// Recovery is planned and approved only for a failed or suspended transfer.
+fn recoverable(t: &storage::Row) -> Result<()> {
+    match t.state.as_str() {
+        "failed" | "suspended" => Ok(()),
+        "recovery" => Err(ApiError::conflict(
+            "A recovery is already running; its outcome is shown when the controller reports it",
+        )),
+        _ => Err(ApiError::conflict(
+            "Recovery is available for a failed or suspended transfer",
+        )),
+    }
 }
 
 #[derive(Deserialize)]
@@ -1297,124 +1477,76 @@ async fn recover(
 ) -> Result<Json<Value>> {
     let actor = security::require(&state, &headers, Capability::ManageServer).await?;
     let t = load(&state, &id).await?;
-    if !matches!(t.state.as_str(), "failed" | "suspended" | "recovery") {
+    recoverable(&t)?;
+    // The reviewed plan names what may run and which consequences need approval.
+    if t.recovery["revision"] != input.revision.as_str() {
+        return Err(ApiError(
+            axum::http::StatusCode::CONFLICT,
+            "revision_changed",
+            "The recovery evidence changed; review the plan again".into(),
+        ));
+    }
+    let option = t.recovery["options"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|o| o["action"] == input.action.as_str())
+        .ok_or_else(|| ApiError::bad("Unknown recovery action"))?;
+    if option["available"] != true {
         return Err(ApiError::conflict(
-            "Recovery is available for a failed or suspended transfer",
+            "This recovery action isn't available for the recorded state",
+        ));
+    }
+    if option["requires"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .any(|required| input.approval[required] != true)
+    {
+        return Err(ApiError::conflict(
+            "Approve the listed consequences before this recovery",
         ));
     }
     let _lease = state.managers.maintenance(&state).await;
     let _guard = state.managers.guard.service(&t.kind).await;
-    storage::update(
+    // The command is durable before it is sent. Its identity makes a repeated submission
+    // continue the same command, and the job follows it until the controller reports it.
+    let command = json!({"operation":thelxinoe_core::id(),"action":input.action,"revision":input.revision,
+        "approval":input.approval,"by":actor.user.id,"from":t.state,"at":now()});
+    if !storage::begin_recovery(
         &state.db,
         id.clone(),
-        Some("recovery".into()),
-        Some("recovery".into()),
-        None,
-        None,
+        t.state.clone(),
+        command,
+        actor.user.id.clone(),
     )
-    .await?;
-    let result = controller_request(
-        &state,
-        &format!("/transfers/{id}/recovery"),
-        Some(json!({"action":input.action,"revision":input.revision,"approval":input.approval})),
-    )
-    .await;
-    let mut recovery = t.recovery.clone();
-    recovery["executed"] = json!({"action":input.action,"approval":input.approval,"by":actor.user.id,"at":now(),
-        "outcome":match &result {Ok(_) => json!("applied"), Err(error) => json!(error.2)}});
-    let status = match result {
-        Ok(status) => status,
-        Err(error) => {
-            storage::recovery(
-                &state.db,
-                id.clone(),
-                recovery,
-                Some(t.state.clone()),
-                Some(actor.user.id),
-                "transfer.recovery.failed",
-            )
-            .await?;
+    .await?
+    {
+        return Err(ApiError::conflict(
+            "The transfer changed; review its recovery again",
+        ));
+    }
+    let row = load(&state, &id).await?;
+    match advance_recovery(&state, &row).await {
+        Ok(Recovery::Refused(error)) => {
+            state
+                .emit(None, "stack.changed", json!({"transfer":id}))
+                .await?;
             return Err(error);
         }
-    };
-    match input.action.as_str() {
-        "return_original" => {
-            let source = &t.review["source_connection"];
-            storage::return_original(
-                &state.db,
-                storage::Original {
-                    id: id.clone(),
-                    kind: t.kind.clone(),
-                    service: t.service_id.clone(),
-                    container: source["container_id"]
-                        .as_str()
-                        .unwrap_or(&t.container_id)
-                        .to_owned(),
-                    container_name: source["container_name"].as_str().unwrap_or("").to_owned(),
-                    port: source["port"].as_u64().unwrap_or(0) as u16,
-                    url_base: source["url_base"].as_str().unwrap_or("").to_owned(),
-                    media_source: source["media_source"].as_str().unwrap_or("").to_owned(),
-                    evidence: source["evidence"].clone(),
-                    engine: t.engine.clone(),
-                    actor: actor.user.id.clone(),
-                },
+        Ok(_) => {}
+        Err(error) => {
+            // The job keeps observing the controller; the outcome appears when it is known.
+            wait(
+                &state,
+                &row,
+                format!(
+                    "Waiting for the Docker controller to confirm the recovery: {}",
+                    error.2
+                ),
             )
             .await?;
-            storage::recovery(
-                &state.db,
-                id.clone(),
-                recovery,
-                None,
-                Some(actor.user.id),
-                "transfer.recovery.return",
-            )
-            .await?;
-        }
-        "suspend" => {
-            storage::recovery(
-                &state.db,
-                id.clone(),
-                recovery,
-                Some("suspended".into()),
-                Some(actor.user.id),
-                "transfer.recovery.suspend",
-            )
-            .await?;
-        }
-        _ => {
-            // Repair or a restored candidate repeats commit agreement, setup and required checks.
-            let next = if t.replacement_id.is_some() {
-                "committed"
-            } else {
-                "running"
-            };
-            if next == "committed"
-                && status["replacement"]
-                    != t.replacement_id
-                        .as_deref()
-                        .map(Value::from)
-                        .unwrap_or(Value::Null)
-            {
-                storage::rebind(
-                    &state.db,
-                    id.clone(),
-                    status["replacement"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_owned(),
-                )
-                .await?;
-            }
-            storage::recovery(
-                &state.db,
-                id.clone(),
-                recovery,
-                Some(next.into()),
-                Some(actor.user.id),
-                "transfer.recovery.continue",
-            )
-            .await?;
-            storage::requeue(&state.db, id.clone(), 0).await?;
         }
     }
     state.managers.connection_wake.notify_one();
@@ -1422,6 +1554,165 @@ async fn recover(
         .emit(None, "stack.changed", json!({"transfer":id}))
         .await?;
     Ok(Json(present(&state, &load(&state, &id).await?).await))
+}
+
+/// The last observed progress of a durable recovery command.
+enum Recovery {
+    /// The controller reported its outcome and this record shows it.
+    Finished,
+    Running,
+    /// The controller refused it before any effect; the transfer is where it was.
+    Refused(ApiError),
+}
+
+/// Follow the durable recovery command to the controller's outcome. A command the controller
+/// never received is submitted again under the same identity and an interrupted one resumes;
+/// an outcome is never inferred from a failed reply.
+async fn advance_recovery(state: &AppState, t: &storage::Row) -> Result<Recovery> {
+    let command = &t.recovery["command"];
+    let operation = command["operation"]
+        .as_str()
+        .ok_or_else(unavailable)?
+        .to_owned();
+    let from = command["from"].as_str().unwrap_or("failed").to_owned();
+    let path = format!("/transfers/{}", t.id);
+    let mut status = controller_call(state, &path, None).await?;
+    if status["command"]["operation"] != operation.as_str() {
+        let submitted = controller_call(
+            state,
+            &format!("{path}/recovery"),
+            Some(json!({"operation":operation,"action":command["action"],
+                "revision":command["revision"],"approval":command["approval"]})),
+        )
+        .await;
+        match submitted {
+            Ok(value) => status = value,
+            Err(error) if uncertain(&error) => return Err(error),
+            Err(error) => {
+                storage::end_recovery(
+                    &state.db,
+                    storage::Outcome {
+                        id: t.id.clone(),
+                        operation,
+                        state: from,
+                        error: Some(error.2.clone()),
+                        outcome: "refused",
+                        replacement: None,
+                        action: "transfer.recovery.refused",
+                    },
+                )
+                .await?;
+                // A refusal can mean the controller already reached an outcome.
+                if let (Ok(status), Some(row)) = (
+                    controller_call(state, &path, None).await,
+                    storage::load(&state.db, t.id.clone()).await?,
+                ) {
+                    reconcile(state, &row, &status).await?;
+                }
+                return Ok(Recovery::Refused(error));
+            }
+        }
+    }
+    let observed = &status["command"];
+    match observed["state"].as_str() {
+        Some("applied") => {
+            project_recovery(state, t, operation, &status).await?;
+            Ok(Recovery::Finished)
+        }
+        Some("failed") => {
+            storage::end_recovery(
+                &state.db,
+                storage::Outcome {
+                    id: t.id.clone(),
+                    operation,
+                    state: from,
+                    error: Some(
+                        observed["error"]
+                            .as_str()
+                            .unwrap_or("The recovery failed")
+                            .to_owned(),
+                    ),
+                    outcome: "failed",
+                    replacement: None,
+                    action: "transfer.recovery.failed",
+                },
+            )
+            .await?;
+            Ok(Recovery::Finished)
+        }
+        _ => {
+            if status["operation_active"] != true {
+                // Interrupted: continue the same command from its journal.
+                controller_call(state, &format!("{path}/resume"), Some(json!({}))).await?;
+            }
+            storage::update(
+                &state.db,
+                t.id.clone(),
+                None,
+                None,
+                Some(json!({"phase":observed["phase"],"waiting":observed["error"]})),
+                None,
+            )
+            .await?;
+            Ok(Recovery::Running)
+        }
+    }
+}
+
+/// Record an applied recovery command as the state it leaves the transfer in.
+async fn project_recovery(
+    state: &AppState,
+    t: &storage::Row,
+    operation: String,
+    status: &Value,
+) -> Result<()> {
+    let actor = t.recovery["command"]["by"].as_str().map(str::to_owned);
+    match t.recovery["command"]["action"].as_str().unwrap_or_default() {
+        "return_original" => {
+            return_to_original(state, t, Some(operation), actor).await?;
+        }
+        "suspend" => {
+            storage::end_recovery(
+                &state.db,
+                storage::Outcome {
+                    id: t.id.clone(),
+                    operation,
+                    state: "suspended".into(),
+                    error: None,
+                    outcome: "applied",
+                    replacement: None,
+                    action: "transfer.recovery.suspend",
+                },
+            )
+            .await?;
+        }
+        _ => {
+            // Repair or a restored candidate repeats commit agreement, setup and required
+            // checks. A restored candidate is new appdata, so earlier setup no longer counts.
+            let replacement = status["replacement"].as_str().map(str::to_owned);
+            let (next, rebind) = match &t.replacement_id {
+                Some(current) => (
+                    "committed",
+                    replacement.filter(|candidate| candidate != current),
+                ),
+                None => ("running", None),
+            };
+            storage::end_recovery(
+                &state.db,
+                storage::Outcome {
+                    id: t.id.clone(),
+                    operation,
+                    state: next.into(),
+                    error: None,
+                    outcome: "applied",
+                    replacement: rebind,
+                    action: "transfer.recovery.continue",
+                },
+            )
+            .await?;
+        }
+    }
+    Ok(())
 }
 
 /// Remove the stopped original container after success; its appdata is never deleted.
@@ -1505,7 +1796,6 @@ mod tests {
             declarations: json!({}),
             state: state.into(),
             step: step.into(),
-            steps: json!({}),
             checks: json!([]),
             setup: json!([]),
             recovery: json!({}),

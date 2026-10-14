@@ -1,7 +1,8 @@
 //! Copy-based ownership transfer. The original keeps its container and appdata; a managed
 //! replacement is built from an untouched snapshot after disposable isolated validation.
 //! Each irreversible transition is journaled before it happens. After the production
-//! boundary, recovery needs an operation-bound reviewed plan.
+//! boundary, recovery runs one operation-bound command at a time, journaled phase by phase,
+//! so a lost reply or a restart continues that exact command instead of choosing again.
 use super::*;
 use crate::transfer_plan as plan;
 use reqwest::Method;
@@ -18,6 +19,19 @@ fn host(d: &Deployment, key: &str, leaf: &str) -> String {
 fn stale(message: impl Into<std::borrow::Cow<'static, str>>) -> crate::docker::Failure {
     (StatusCode::PRECONDITION_FAILED, message.into())
 }
+/// Another operation holds the service; the caller observes again rather than failing.
+fn busy() -> crate::docker::Failure {
+    (
+        StatusCode::LOCKED,
+        "This service has another active operation".into(),
+    )
+}
+/// Outcomes that end a transfer; nothing remains to recover after them.
+fn terminal(stage: &str) -> bool {
+    matches!(stage, "complete" | "returned" | "cancelled" | "stale")
+}
+/// Supplementary single files are copied into a folder under this name and mounted from there.
+const SUPPLEMENTARY_FILE: &str = "file";
 fn digest(value: &Value) -> String {
     use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(value.to_string().as_bytes()))
@@ -78,12 +92,19 @@ pub(super) struct Transfer {
     production: Option<Value>,
     intent: Option<creation::Intent>,
     pub replacement: Option<String>,
+    /// The first production boundary. It is never cleared: production effects already happened.
     boundary_at: Option<i64>,
+    /// Every replacement that crossed the boundary, with the appdata generation it ran.
+    #[serde(default)]
+    activations: Vec<Value>,
     activated: bool,
     committed: bool,
     completed: bool,
     #[serde(default)]
     recovery: Value,
+    /// The current or last recovery command.
+    #[serde(default)]
+    command: Option<Command>,
     #[serde(default)]
     generations: Vec<Value>,
     #[serde(default)]
@@ -94,6 +115,48 @@ pub(super) struct Transfer {
     compose_mode: Option<String>,
     created_at: i64,
     updated_at: i64,
+}
+
+/// One approved recovery, bound to the server's operation identity. Each phase is journaled
+/// before its effect, so a repeated submission or a resume continues this command exactly.
+#[derive(Clone, Serialize, Deserialize)]
+pub(super) struct Command {
+    operation: String,
+    action: String,
+    approval: Value,
+    /// The stage the transfer was in when the command was accepted.
+    from: String,
+    phase: String,
+    /// `running`, `applied` or `failed`.
+    state: String,
+    error: Option<String>,
+    /// The preserved generation for replaced appdata, named before the appdata moves.
+    generation: Option<String>,
+    started_at: i64,
+    finished_at: Option<i64>,
+}
+impl Command {
+    /// Where a command that stopped with an error leaves the transfer. Before any
+    /// irreversible step it returns to where it started. A discarded replacement needs a
+    /// new decision. A return already under way has no alternative and only resumes.
+    fn failure_stage(&self) -> Option<String> {
+        let irreversible = match self.action.as_str() {
+            "return_original" => matches!(
+                self.phase.as_str(),
+                "retiring-replacement" | "releasing" | "starting-original"
+            ),
+            "restore_snapshot" => !matches!(
+                self.phase.as_str(),
+                "accepted" | "checking-original" | "stopping-replacement"
+            ),
+            _ => false,
+        };
+        match (irreversible, self.action.as_str()) {
+            (false, _) => Some(self.from.clone()),
+            (true, "restore_snapshot") => Some("recovery-required".into()),
+            _ => None,
+        }
+    }
 }
 
 fn read(key: &str) -> Result<Transfer> {
@@ -134,12 +197,7 @@ pub(super) fn active_kind(kind: &str) -> Result<bool> {
             continue;
         }
         let t = read(&key)?;
-        if t.kind == kind
-            && !matches!(
-                t.stage.as_str(),
-                "complete" | "returned" | "cancelled" | "stale"
-            )
-        {
+        if t.kind == kind && !terminal(&t.stage) {
             return Ok(true);
         }
     }
@@ -344,7 +402,7 @@ async fn inspect(d: &Deployment, input: &ReviewInput, key: String) -> Result<Rev
             others: &others,
         },
     );
-    let layout = match layout {
+    let mut layout = match layout {
         Ok(layout) => layout,
         Err(reason) => {
             blockers.push(reason);
@@ -355,6 +413,7 @@ async fn inspect(d: &Deployment, input: &ReviewInput, key: String) -> Result<Rev
                     destination: plan::appdata_destination(kind, &raw),
                     writable: true,
                     role: "appdata".into(),
+                    file: false,
                 },
                 retained: vec![],
                 supplementary: vec![],
@@ -454,14 +513,27 @@ async fn inspect(d: &Deployment, input: &ReviewInput, key: String) -> Result<Rev
     for problem in inspection["blockers"].as_array().into_iter().flatten() {
         blockers.extend(problem.as_str().map(str::to_owned));
     }
-    let access = if inspection["references"].is_array() {
+    // Supplementary mounts join the access namespace, so references into them resolve and
+    // each is probed as a folder or a single file before anything stops.
+    let access = if inspection["references"].is_array() || !layout.supplementary.is_empty() {
+        let references = if inspection["references"].is_array() {
+            inspection["references"].clone()
+        } else {
+            json!([])
+        };
+        let supplementary = layout
+            .supplementary
+            .iter()
+            .map(|m| source_mount(m, &m.destination, true))
+            .collect();
         match access_check(
             d,
             &key,
             kind,
             &layout,
             (target.uid, target.gid),
-            &inspection["references"],
+            &references,
+            supplementary,
         )
         .await
         {
@@ -476,6 +548,23 @@ async fn inspect(d: &Deployment, input: &ReviewInput, key: String) -> Result<Rev
     };
     for problem in access["problems"].as_array().into_iter().flatten() {
         blockers.extend(problem.as_str().map(str::to_owned));
+    }
+    for mount in &mut layout.supplementary {
+        let entry = access["supplementary"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|e| e["destination"] == mount.destination.as_str())
+            .map(|e| e["entry"].as_str().unwrap_or_default());
+        match entry {
+            // A failed access check already names why the mount couldn't be probed.
+            None | Some("directory") => {}
+            Some("file") => mount.file = true,
+            Some(_) => blockers.push(format!(
+                "The read-only {} mount is neither a folder nor a regular file; transfers copy only those",
+                mount.destination
+            )),
+        }
     }
     let mut hosts = aliases.clone();
     hosts.push(format!("thelxinoe-{kind}-{key}"));
@@ -875,6 +964,7 @@ async fn wait_worker(container: &str, report: &std::path::Path, idle_seconds: u6
 }
 
 /// Target-identity access to retained media and every path the configuration references.
+/// `supplementary` mounts the read-only supplementary files at their container paths.
 async fn access_check(
     d: &Deployment,
     key: &str,
@@ -882,13 +972,20 @@ async fn access_check(
     layout: &plan::Layout,
     identity: (u32, u32),
     references: &Value,
+    supplementary: Vec<Value>,
 ) -> Result<Value> {
-    let mounts = layout
+    let mut mounts = layout
         .retained
         .iter()
         .filter(|m| m.role == "media")
         .map(|m| source_mount(m, &m.destination, true))
         .collect::<Vec<_>>();
+    mounts.extend(supplementary);
+    let destinations: Vec<&str> = layout
+        .supplementary
+        .iter()
+        .map(|m| m.destination.as_str())
+        .collect();
     let groups = if matches!(kind, "seerr" | "recyclarr") {
         vec![identity.1]
     } else {
@@ -908,7 +1005,8 @@ async fn access_check(
             idle_seconds: 300,
             network: "none".into(),
             input: Some(
-                json!({"references":references,"uid":identity.0,"gid":identity.1,"groups":groups}),
+                json!({"references":references,"uid":identity.0,"gid":identity.1,"groups":groups,
+                    "supplementary":destinations}),
             ),
         },
     )
@@ -954,10 +1052,7 @@ pub(super) async fn start(
             "Choose scoped Compose detachment or project-wide retirement",
         ));
     }
-    let guard = runtime
-        .0
-        .try_service(&reviewed.kind)
-        .map_err(|_| conflict("This service has another active operation"))?;
+    let guard = runtime.0.try_service(&reviewed.kind).map_err(|_| busy())?;
     if !crate::lease::active() {
         return Err(conflict("The controller writer lease is unavailable"));
     }
@@ -1008,10 +1103,12 @@ pub(super) async fn start(
         intent: None,
         replacement: None,
         boundary_at: None,
+        activations: vec![],
         activated: false,
         committed: false,
         completed: false,
         recovery: Value::Null,
+        command: None,
         generations: vec![],
         original_removed: false,
         worker: None,
@@ -1029,29 +1126,42 @@ pub(super) async fn start(
     Ok(Json(result))
 }
 
-/// Continue an interrupted transfer from its journal.
+/// Continue an interrupted transfer or recovery command from its journal. A transfer that
+/// is already running is reported as active, so the caller keeps observing it.
 pub(super) async fn resume(
     State(runtime): State<Runtime>,
     Path(key): Path<String>,
 ) -> Result<Json<Value>> {
-    let t = read(&key)?;
-    if !matches!(
-        t.stage.as_str(),
-        "approved" | "stopping" | "copying" | "validating" | "building" | "creating" | "activating"
-    ) {
-        let active = runtime.0.try_service(&t.kind).is_err();
-        return Ok(Json(status(&t, active)));
-    }
-    let guard = runtime
-        .0
-        .try_service(&t.kind)
-        .map_err(|_| conflict("This transfer is already running"))?;
-    let d = bootstrap().await?;
+    let resumable = |t: &Transfer| {
+        matches!(
+            t.stage.as_str(),
+            "approved"
+                | "stopping"
+                | "copying"
+                | "validating"
+                | "building"
+                | "creating"
+                | "activating"
+                | "recovering"
+        )
+    };
+    let probe = read(&key)?;
+    let Ok(guard) = runtime.0.try_service(&probe.kind) else {
+        return Ok(Json(status(&probe, true)));
+    };
     let mut t = read(&key)?;
+    if !resumable(&t) {
+        return Ok(Json(status(&t, false)));
+    }
+    let d = bootstrap().await?;
     let result = status(&t, true);
     crate::recovery::spawn(async move {
         let _guard = guard;
-        run(&d, &mut t).await;
+        if t.stage == "recovering" {
+            run_command(&d, &mut t).await;
+        } else {
+            run(&d, &mut t).await;
+        }
     });
     Ok(Json(result))
 }
@@ -1141,7 +1251,7 @@ async fn execute(d: &Deployment, t: &mut Transfer) -> Result<()> {
     if t.stage == "creating" {
         create(d, t).await?;
         // The production boundary is durable before the replacement may reach peers or media.
-        t.boundary_at = Some(thelxinoe_core::now());
+        cross_boundary(t);
         t.stage = "activating".into();
         write(t)?;
     }
@@ -1153,6 +1263,29 @@ async fn execute(d: &Deployment, t: &mut Transfer) -> Result<()> {
         write(t)?;
     }
     Ok(())
+}
+
+/// The replacement crosses the production boundary. The first crossing stays the transfer's
+/// boundary; each crossing is recorded with the appdata generation the replacement runs.
+fn cross_boundary(t: &mut Transfer) {
+    let now = thelxinoe_core::now();
+    t.boundary_at.get_or_insert(now);
+    let replacement = json!(t.replacement);
+    if t.activations
+        .last()
+        .is_none_or(|a| a["replacement"] != replacement)
+    {
+        t.activations
+            .push(json!({"replacement":replacement,"generation":generation(t),"at":now}));
+    }
+}
+/// The identity of the production appdata built from the snapshot. Setup and checks are
+/// evidence about this generation; a rebuilt replacement gets a new one.
+fn generation(t: &Transfer) -> Value {
+    t.production
+        .as_ref()
+        .map(|p| p["generation"].clone())
+        .unwrap_or(Value::Null)
 }
 
 fn original_id(t: &Transfer) -> Result<String> {
@@ -1301,14 +1434,13 @@ async fn snapshot(d: &Deployment, t: &mut Transfer) -> Result<()> {
     for (index, mount) in t.review.layout.supplementary.clone().iter().enumerate() {
         let leaf = format!("supplementary/{index}");
         clear(d, t, &leaf).await?;
-        copy(
-            d,
-            t,
-            "supplementary",
-            source_mount(mount, "/source", true),
-            host(d, &t.id, &leaf),
-        )
-        .await?;
+        // A single file is copied into a folder of its own, keeping its mode and owner.
+        let source = if mount.file {
+            source_mount(mount, &format!("/source/{SUPPLEMENTARY_FILE}"), true)
+        } else {
+            source_mount(mount, "/source", true)
+        };
+        copy(d, t, "supplementary", source, host(d, &t.id, &leaf)).await?;
         let copied = tree_digest(
             d,
             t,
@@ -1374,11 +1506,27 @@ fn mounts(d: &Deployment, t: &Transfer, appdata: &str, media: Option<&str>) -> V
             (None, _) => mounts.push(source_mount(m, &m.destination, !m.writable)),
         }
     }
-    for (index, m) in t.review.layout.supplementary.iter().enumerate() {
-        mounts.push(json!({"Type":"bind","Source":format!("{appdata}/.thelxinoe-supplementary/{index}"),"Target":m.destination,"ReadOnly":true}));
-    }
+    mounts.extend(supplementary_mounts(t, appdata));
     let _ = d;
     mounts
+}
+/// The managed copies of supplementary folders and files, read-only at their container paths.
+fn supplementary_mounts(t: &Transfer, appdata: &str) -> Vec<Value> {
+    t.review
+        .layout
+        .supplementary
+        .iter()
+        .enumerate()
+        .map(|(index, m)| {
+            let copy = format!("{appdata}/.thelxinoe-supplementary/{index}");
+            let source = if m.file {
+                format!("{copy}/{SUPPLEMENTARY_FILE}")
+            } else {
+                copy
+            };
+            json!({"Type":"bind","Source":source,"Target":m.destination,"ReadOnly":true})
+        })
+        .collect()
 }
 
 /// Copy supplementary files into an appdata tree and apply the reviewed transformations.
@@ -1785,6 +1933,7 @@ async fn build(d: &Deployment, t: &mut Transfer) -> Result<()> {
         .as_ref()
         .map(|s| s["references"].clone())
         .unwrap_or(json!([]));
+    // The replacement reaches its managed supplementary copies, not the external originals.
     let access = access_check(
         d,
         &t.id,
@@ -1792,6 +1941,7 @@ async fn build(d: &Deployment, t: &mut Transfer) -> Result<()> {
         &t.review.layout,
         t.review.target_identity,
         &references,
+        supplementary_mounts(t, &appdata),
     )
     .await?;
     if let Some(problem) = access["problems"].as_array().and_then(|p| p.first()) {
@@ -1803,7 +1953,8 @@ async fn build(d: &Deployment, t: &mut Transfer) -> Result<()> {
         ));
     }
     t.production = Some(
-        json!({"digest":produced["digest"],"prepared":prepared,"access":access,"at":thelxinoe_core::now()}),
+        json!({"digest":produced["digest"],"generation":thelxinoe_core::id(),"prepared":prepared,
+            "access":access,"at":thelxinoe_core::now()}),
     );
     Ok(())
 }
@@ -2002,9 +2153,10 @@ pub(super) fn status(t: &Transfer, active: bool) -> Value {
     json!({"id":t.id,"kind":t.kind,"stage":t.stage,"error":t.error,"revision":t.review.revision,
         "source":{"container_id":t.review.original["Id"],"running_before":t.source_running,"restart_disabled":t.restart_disabled,"stopped":t.stopped,
             "appdata":t.review.layout.appdata,"removed":t.original_removed},
-        "snapshot":t.snapshot,"qualification":t.qualification,"production":t.production.as_ref().map(|p| json!({"digest":p["digest"],"access":p["access"],"at":p["at"]})),
-        "replacement":t.replacement,"boundary_at":t.boundary_at,"activated":t.activated,"committed":t.committed,"completed":t.completed,
-        "recovery":t.recovery,"generations":t.generations,"progress":progress,"operation_active":active,"updated_at":t.updated_at,
+        "snapshot":t.snapshot,"qualification":t.qualification,
+        "production":t.production.as_ref().map(|p| json!({"digest":p["digest"],"generation":p["generation"],"access":p["access"],"at":p["at"]})),
+        "replacement":t.replacement,"boundary_at":t.boundary_at,"activations":t.activations,"activated":t.activated,"committed":t.committed,"completed":t.completed,
+        "recovery":t.recovery,"command":t.command,"generations":t.generations,"progress":progress,"operation_active":active,"updated_at":t.updated_at,
         // Preserved identities are needed only for post-activation checks.
         "source_records":if t.boundary_at.is_some() {t.source_state.as_ref().map(|s| s["records"].clone())} else {None}})
 }
@@ -2031,6 +2183,11 @@ pub(super) async fn commit(
     let probe = read(&key)?;
     let _guard = runtime.0.service(&probe.kind).await;
     let mut t = read(&key)?;
+    if terminal(&t.stage) || t.stage == "recovering" {
+        return Err(conflict(
+            "This transfer can't commit a replacement in its current stage",
+        ));
+    }
     if !t.activated || t.replacement.as_deref() != Some(input.container_id.as_str()) {
         return Err(conflict("Only the activated replacement can be committed"));
     }
@@ -2044,7 +2201,8 @@ pub(super) async fn commit(
     Ok(Json(status(&t, false)))
 }
 
-/// Transfer completion: the controller releases its operational hold.
+/// Transfer completion: the controller releases its operational hold. Repeating it after a
+/// lost reply reports the recorded completion.
 pub(super) async fn complete(
     State(runtime): State<Runtime>,
     Path(key): Path<String>,
@@ -2054,6 +2212,11 @@ pub(super) async fn complete(
     let mut t = read(&key)?;
     if t.completed {
         return Ok(Json(status(&t, false)));
+    }
+    if terminal(&t.stage) || t.stage == "recovering" {
+        return Err(conflict(
+            "This transfer can't complete in its current stage",
+        ));
     }
     if !t.committed {
         return Err(conflict(
@@ -2108,10 +2271,7 @@ pub(super) async fn restore(
     Path(key): Path<String>,
 ) -> Result<Json<Value>> {
     let probe = read(&key)?;
-    let _guard = runtime
-        .0
-        .try_service(&probe.kind)
-        .map_err(|_| conflict("This service has another active operation"))?;
+    let _guard = runtime.0.try_service(&probe.kind).map_err(|_| busy())?;
     let d = bootstrap().await?;
     let mut t = read(&key)?;
     if t.stage == "returned" {
@@ -2128,30 +2288,74 @@ pub(super) async fn restore(
     Ok(Json(status(&t, false)))
 }
 
+/// Recovery applies after the production boundary to a transfer that hasn't ended and
+/// isn't already running a recovery command.
+fn plannable(t: &Transfer) -> Result<()> {
+    if t.boundary_at.is_none() || t.completed {
+        return Err(conflict(
+            "Recovery plans apply to activated transfers that are not complete",
+        ));
+    }
+    match t.stage.as_str() {
+        "returned" => Err(conflict(
+            "This transfer already returned to the original; nothing remains to recover",
+        )),
+        "recovering" => Err(conflict(
+            "A recovery is already running; it continues from its journal",
+        )),
+        stage if terminal(stage) => Err(conflict(
+            "This transfer already ended; nothing remains to recover",
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// A replacement may start only while the original can't write: stopped with its restart
+/// disabled, or no longer present.
+async fn original_quiet(t: &Transfer) -> Result<()> {
+    match engine(&format!("/containers/{}/json", original_id(t)?)).await {
+        Ok(raw) => {
+            if raw["State"]["Running"] != false || raw["State"]["Restarting"] == true {
+                return Err(conflict(
+                    "The original is running; a replacement never starts beside it",
+                ));
+            }
+            if raw["HostConfig"]["RestartPolicy"]["Name"]
+                .as_str()
+                .is_some_and(|name| !matches!(name, "" | "no"))
+            {
+                return Err(conflict(
+                    "The original's restart policy is enabled again; disable it before a replacement starts",
+                ));
+            }
+            Ok(())
+        }
+        Err((StatusCode::NOT_FOUND, _)) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 /// Evidence and options for a transfer that crossed the production boundary.
 pub(super) async fn recovery_plan(
     State(runtime): State<Runtime>,
     Path(key): Path<String>,
 ) -> Result<Json<Value>> {
     let probe = read(&key)?;
-    let _guard = runtime
-        .0
-        .try_service(&probe.kind)
-        .map_err(|_| conflict("This service has another active operation"))?;
+    let _guard = runtime.0.try_service(&probe.kind).map_err(|_| busy())?;
     let d = bootstrap().await?;
     let mut t = read(&key)?;
-    if t.boundary_at.is_none() || t.completed {
-        return Err(conflict(
-            "Recovery plans apply to activated transfers that are not complete",
-        ));
-    }
+    plannable(&t)?;
     let s = load(&t.id)?;
-    let replacement = match engine(&format!("/containers/{}/json", s.container)).await {
-        Ok(raw) => {
-            json!({"id":s.container,"present":true,"running":raw["State"]["Running"],"started_at":raw["State"]["StartedAt"],"verified":verify_ownership(&d,&s,&raw).await.is_ok()})
+    let replacement = if s.container.is_empty() {
+        json!({"present":false})
+    } else {
+        match engine(&format!("/containers/{}/json", s.container)).await {
+            Ok(raw) => {
+                json!({"id":s.container,"present":true,"running":raw["State"]["Running"],"started_at":raw["State"]["StartedAt"],"verified":verify_ownership(&d,&s,&raw).await.is_ok()})
+            }
+            Err((StatusCode::NOT_FOUND, _)) => json!({"id":s.container,"present":false}),
+            Err(error) => return Err(error),
         }
-        Err((StatusCode::NOT_FOUND, _)) => json!({"id":s.container,"present":false}),
-        Err(error) => return Err(error),
     };
     let original = match engine(&format!("/containers/{}/json", original_id(&t)?)).await {
         Ok(raw) => json!({"id":raw["Id"],"present":true,"running":raw["State"]["Running"],
@@ -2159,6 +2363,8 @@ pub(super) async fn recovery_plan(
         Err((StatusCode::NOT_FOUND, _)) => json!({"present":false}),
         Err(error) => return Err(error),
     };
+    // Single writer: nothing that starts a replacement is offered while the original can write.
+    let quiet = original_quiet(&t).await.err().map(|error| error.1);
     let appdata = format!("{}/services/{}/appdata", d.appdata_source, t.id);
     let effects = run_worker(
         &d,
@@ -2181,7 +2387,7 @@ pub(super) async fn recovery_plan(
     let evidence = json!({"images":{"source":t.review.source_image,"replacement":t.review.decision.image()},
         "versions":{"source":t.review.source_version.text,"replacement":t.review.target_version.text},
         "generations":{"source_appdata":t.review.layout.appdata,"snapshot":t.snapshot.as_ref().map(|s| &s["digest"]),
-            "activated":t.production.as_ref().map(|p| &p["digest"]),"preserved":t.generations},
+            "activated":t.production.as_ref().map(|p| &p["digest"]),"preserved":t.generations,"activations":t.activations},
         "boundary_at":t.boundary_at,"containers":{"replacement":replacement,"original":original},"effects":effects,
         "automation_revision":current_evidence});
     let cannot_undo = [
@@ -2190,14 +2396,26 @@ pub(super) async fn recovery_plan(
         "Changes it or Thelxinoe made to peer services",
         "Requests submitted since activation",
     ];
+    let starts = |available: bool, missing: &str| match (&quiet, available) {
+        (_, false) => (false, Some(missing.to_owned())),
+        (Some(reason), true) => (false, Some(reason.to_string())),
+        (None, true) => (true, None),
+    };
+    let (repair, repair_reason) = starts(
+        replacement["present"] == true,
+        "The replacement container no longer exists",
+    );
+    let (snapshot, snapshot_reason) = starts(t.snapshot.is_some(), "The transfer has no snapshot");
+    let back = original["present"] == true && original["unchanged"] == true;
     let options = json!([
-        {"action":"repair","label":"Repair and continue","available":replacement["present"]==true,
+        {"action":"repair","label":"Repair and continue","available":repair,"unavailable":repair_reason,
             "description":"Keep the replacement's latest appdata, repeat the required checks and finish the transfer when healthy"},
-        {"action":"restore_snapshot","label":"Restore the transfer snapshot into a new candidate","available":t.snapshot.is_some(),
-            "description":"Preserve the current appdata as a generation and activate an independent replacement built from the snapshot taken when the original stopped",
+        {"action":"restore_snapshot","label":"Restore the transfer snapshot into a new candidate","available":snapshot,"unavailable":snapshot_reason,
+            "description":"Preserve the current appdata as a generation and activate an independent replacement built from the snapshot taken when the original stopped. Reviewed setup runs again for the new appdata",
             "requires":["state_loss","reconciliation"]},
-        {"action":"return_original","label":"Return to the original","available":original["present"]==true && original["unchanged"]==true,
-            "description":"Stop and verify the replacement, then restart the original. The service ends Connected with this failed transfer recorded",
+        {"action":"return_original","label":"Return to the original","available":back,
+            "unavailable":if back {Value::Null} else {json!("The original container is missing or its configuration changed")},
+            "description":"Stop and remove the replacement, keeping its appdata as a generation, then restart the original. The service ends Connected with this failed transfer recorded",
             "requires":["state_loss","reconciliation","automation"]},
         {"action":"suspend","label":"Suspend for manual resolution","available":true,
             "description":"Keep normal operations blocked and preserve all data and evidence"}
@@ -2210,24 +2428,37 @@ pub(super) async fn recovery_plan(
 
 #[derive(Deserialize)]
 pub(super) struct Recover {
+    /// The server's identity for this command; a repeat with it continues the same command.
+    operation: String,
     action: String,
     revision: String,
     #[serde(default)]
     approval: Value,
 }
-/// Execute one approved recovery action. Acknowledgements never bypass identity or writer checks.
+/// Accept one approved recovery command and run it in the background from its journal.
+/// Acknowledgements never bypass identity or single-writer checks.
 pub(super) async fn recover(
     State(runtime): State<Runtime>,
     Path(key): Path<String>,
     Json(input): Json<Recover>,
 ) -> Result<Json<Value>> {
+    id(&input.operation)?;
     let probe = read(&key)?;
-    let _guard = runtime
-        .0
-        .try_service(&probe.kind)
-        .map_err(|_| conflict("This service has another active operation"))?;
+    if probe
+        .command
+        .as_ref()
+        .is_some_and(|c| c.operation == input.operation)
+    {
+        // A repeated submission after a lost reply: report or continue the same command.
+        return resume(State(runtime), Path(key)).await;
+    }
+    let guard = runtime.0.try_service(&probe.kind).map_err(|_| busy())?;
+    if !crate::lease::active() {
+        return Err(conflict("The controller writer lease is unavailable"));
+    }
     let d = bootstrap().await?;
     let mut t = read(&key)?;
+    plannable(&t)?;
     if t.recovery["revision"] != input.revision.as_str() {
         return Err(stale(
             "The recovery evidence changed; review the plan again",
@@ -2257,104 +2488,278 @@ pub(super) async fn recover(
             ));
         }
     }
-    let mut s = load(&t.id)?;
-    match input.action.as_str() {
-        "suspend" => {
-            t.stage = "suspended".into();
-        }
-        "repair" => {
-            let raw = engine(&format!("/containers/{}/json", s.container)).await?;
-            verify_ownership(&d, &s, &raw).await?;
-            if t.kind != "recyclarr" {
-                if raw["State"]["Running"] != true {
-                    updates::start(&s.container).await?;
-                }
-                health(&d, &t, &s.container).await?;
-            }
-            s.expected =
-                policy::fingerprint(&engine(&format!("/containers/{}/json", s.container)).await?);
-            s.phase = "active".into();
-            save(&s)?;
-            t.activated = true;
-            t.stage = if t.committed {
-                "committed"
-            } else {
-                "activated"
-            }
-            .into();
-        }
-        "return_original" => {
-            // Single writer: the replacement is stopped and verified before the original starts.
-            stop_replacement(&d, &s).await?;
-            let raw = source(&t).await?;
-            if raw["State"]["Running"] != false {
-                return Err(conflict(
-                    "The original is running beside the replacement; stop it before recovery",
-                ));
-            }
-            let current = inspect(
-                &d,
-                &ReviewInput {
-                    kind: t.kind.clone(),
-                    container_id: original_id(&t)?,
-                    service_id: t.review.service.clone(),
-                },
-                t.id.clone(),
-            )
-            .await?;
-            if current.evidence_revision != t.review.evidence_revision {
-                return Err(conflict(
-                    "Automation around the original changed; review its evidence before restarting it",
-                ));
-            }
-            s.phase = "returned".into();
-            s.hold = None;
-            save(&s)?;
-            request(
-                Method::POST,
-                &format!("/containers/{}/update", original_id(&t)?),
-                Some(json!({"RestartPolicy":t.review.original["HostConfig"]["RestartPolicy"]})),
-            )
-            .await?;
-            if t.source_running {
-                updates::start(&original_id(&t)?).await?;
-            }
-            t.stage = "returned".into();
-        }
-        "restore_snapshot" => {
-            stop_replacement(&d, &s).await?;
-            updates::remove(&s.container).await?;
-            // Preserve the activated generation before building an independent candidate.
-            let generation = format!("generation-{}", t.generations.len() + 1);
-            let local = service_path(&t.id).with_file_name("appdata");
-            persisted(
-                std::fs::rename(&local, directory(&t.id).join(&generation)).map_err(Into::into),
-            )?;
-            t.generations.push(json!({"name":generation,"from":"activated","digest":t.production.as_ref().map(|p| p["digest"].clone()),"at":thelxinoe_core::now()}));
-            t.intent = None;
-            t.replacement = None;
-            t.boundary_at = None;
-            t.activated = false;
-            write(&mut t)?;
-            build(&d, &mut t).await?;
-            create(&d, &mut t).await?;
-            t.boundary_at = Some(thelxinoe_core::now());
-            write(&mut t)?;
-            activate(&d, &mut t).await?;
-            t.activated = true;
-            t.committed = false;
-            t.stage = "activated".into();
-        }
-        _ => return Err(bad("Unknown recovery action")),
-    }
-    t.recovery["executed"] =
-        json!({"action":input.action,"approval":input.approval,"at":thelxinoe_core::now()});
+    // The command is durable before any effect; from here on it only continues.
+    t.command = Some(Command {
+        operation: input.operation,
+        action: input.action,
+        approval: input.approval,
+        from: t.stage.clone(),
+        phase: "accepted".into(),
+        state: "running".into(),
+        error: None,
+        generation: None,
+        started_at: thelxinoe_core::now(),
+        finished_at: None,
+    });
+    t.stage = "recovering".into();
     t.error = None;
     write(&mut t)?;
-    Ok(Json(status(&t, false)))
+    let result = status(&t, true);
+    crate::recovery::spawn(async move {
+        let _guard = guard;
+        run_command(&d, &mut t).await;
+    });
+    Ok(Json(result))
+}
+
+/// Run the journaled command to its outcome. An error after a return to the original began
+/// leaves it running, to be resumed; otherwise it fails and the transfer stage says why.
+async fn run_command(d: &Deployment, t: &mut Transfer) {
+    let result = execute_command(d, t).await;
+    let Some(c) = t.command.as_mut() else {
+        return;
+    };
+    let now = thelxinoe_core::now();
+    match result {
+        Ok(()) => {
+            c.state = "applied".into();
+            c.error = None;
+            c.finished_at = Some(now);
+            t.error = None;
+        }
+        Err(error) => {
+            let message = error.1.to_string();
+            c.error = Some(message.clone());
+            if let Some(stage) = c.failure_stage() {
+                c.state = "failed".into();
+                c.finished_at = Some(now);
+                t.stage = stage;
+                t.error = Some(message);
+            }
+        }
+    }
+    t.worker = None;
+    if let Err(error) = write(t) {
+        eprintln!("Transfer journal failed: {}", error.1);
+    }
+}
+
+fn phase(t: &Transfer) -> String {
+    t.command
+        .as_ref()
+        .map(|c| c.phase.clone())
+        .unwrap_or_default()
+}
+/// Journal the next phase before its effect.
+fn advance(t: &mut Transfer, phase: &str) -> Result<()> {
+    t.command.as_mut().ok_or_else(unavailable)?.phase = phase.into();
+    write(t)
+}
+
+async fn execute_command(d: &Deployment, t: &mut Transfer) -> Result<()> {
+    let action = t
+        .command
+        .as_ref()
+        .map(|c| c.action.clone())
+        .ok_or_else(unavailable)?;
+    match action.as_str() {
+        "suspend" => {
+            t.stage = "suspended".into();
+            Ok(())
+        }
+        "repair" => repair(d, t).await,
+        "return_original" => return_original(d, t).await,
+        "restore_snapshot" => restore_snapshot(d, t).await,
+        _ => Err(bad("Unknown recovery action")),
+    }
+}
+
+/// Start the retained replacement again over its latest appdata.
+async fn repair(d: &Deployment, t: &mut Transfer) -> Result<()> {
+    if phase(t) == "accepted" {
+        advance(t, "starting")?;
+    }
+    original_quiet(t).await?;
+    let mut s = load(&t.id)?;
+    let raw = engine(&format!("/containers/{}/json", s.container)).await?;
+    verify_ownership(d, &s, &raw).await?;
+    if t.kind != "recyclarr" {
+        if raw["State"]["Running"] != true {
+            updates::start(&s.container).await?;
+        }
+        health(d, t, &s.container).await?;
+    }
+    s.expected = policy::fingerprint(&engine(&format!("/containers/{}/json", s.container)).await?);
+    s.phase = "active".into();
+    save(&s)?;
+    t.activated = true;
+    t.stage = if t.committed {
+        "committed"
+    } else {
+        "activated"
+    }
+    .into();
+    Ok(())
+}
+
+/// Single writer: the replacement stops and is retired before the original starts again.
+async fn return_original(d: &Deployment, t: &mut Transfer) -> Result<()> {
+    if phase(t) == "accepted" {
+        advance(t, "stopping-replacement")?;
+    }
+    if phase(t) == "stopping-replacement" {
+        stop_replacement(d, &load(&t.id)?).await?;
+        advance(t, "checking-original")?;
+    }
+    if phase(t) == "checking-original" {
+        let raw = source(t).await?;
+        if raw["State"]["Running"] != false {
+            return Err(conflict(
+                "The original is running beside the replacement; stop it before recovery",
+            ));
+        }
+        let current = inspect(
+            d,
+            &ReviewInput {
+                kind: t.kind.clone(),
+                container_id: original_id(t)?,
+                service_id: t.review.service.clone(),
+            },
+            t.id.clone(),
+        )
+        .await?;
+        if current.evidence_revision != t.review.evidence_revision {
+            return Err(conflict(
+                "Automation around the original changed; review its evidence before restarting it",
+            ));
+        }
+        advance(t, "retiring-replacement")?;
+    }
+    if phase(t) == "retiring-replacement" {
+        remove_replacements(d, t).await?;
+        preserve_appdata(t, "returned")?;
+        advance(t, "releasing")?;
+    }
+    if phase(t) == "releasing" {
+        let mut s = load(&t.id)?;
+        s.phase = "returned".into();
+        s.hold = None;
+        save(&s)?;
+        advance(t, "starting-original")?;
+    }
+    request(
+        Method::POST,
+        &format!("/containers/{}/update", original_id(t)?),
+        Some(json!({"RestartPolicy":t.review.original["HostConfig"]["RestartPolicy"]})),
+    )
+    .await?;
+    if t.source_running && source(t).await?["State"]["Running"] != true {
+        updates::start(&original_id(t)?).await?;
+    }
+    t.stage = "returned".into();
+    Ok(())
+}
+
+/// Build an independent replacement from the untouched snapshot. The discarded appdata is
+/// kept as a generation and the new activation is recorded beside the first boundary.
+async fn restore_snapshot(d: &Deployment, t: &mut Transfer) -> Result<()> {
+    if phase(t) == "accepted" {
+        advance(t, "checking-original")?;
+    }
+    if phase(t) == "checking-original" {
+        original_quiet(t).await?;
+        advance(t, "stopping-replacement")?;
+    }
+    if phase(t) == "stopping-replacement" {
+        stop_replacement(d, &load(&t.id)?).await?;
+        advance(t, "removing-replacement")?;
+    }
+    if phase(t) == "removing-replacement" {
+        remove_replacements(d, t).await?;
+        advance(t, "preserving-appdata")?;
+    }
+    if phase(t) == "preserving-appdata" {
+        preserve_appdata(t, "replacement")?;
+        t.intent = None;
+        t.replacement = None;
+        t.production = None;
+        t.activated = false;
+        t.committed = false;
+        advance(t, "building")?;
+    }
+    if phase(t) == "building" {
+        build(d, t).await?;
+        advance(t, "creating")?;
+    }
+    if phase(t) == "creating" {
+        create(d, t).await?;
+        cross_boundary(t);
+        advance(t, "activating")?;
+    }
+    original_quiet(t).await?;
+    activate(d, t).await?;
+    t.activated = true;
+    t.stage = "activated".into();
+    Ok(())
+}
+
+/// Remove every stopped container this transfer created, after verifying it is ours.
+async fn remove_replacements(d: &Deployment, t: &Transfer) -> Result<()> {
+    for row in engine("/containers/json?all=true")
+        .await?
+        .as_array()
+        .ok_or_else(unavailable)?
+    {
+        if row["Labels"]["app.thelxinoe.deployment"] != d.id.as_str()
+            || row["Labels"]["app.thelxinoe.managed-id"] != t.id.as_str()
+        {
+            continue;
+        }
+        let container = row["Id"].as_str().ok_or_else(unavailable)?;
+        let raw = engine(&format!("/containers/{container}/json")).await?;
+        if raw["State"]["Running"] != false {
+            return Err(conflict("A replacement container is running; it was kept"));
+        }
+        updates::remove(container).await?;
+    }
+    Ok(())
+}
+
+/// Keep the replacement's appdata as a named generation. The name is journaled before the
+/// appdata moves, so a resumed command neither loses nor duplicates it.
+fn preserve_appdata(t: &mut Transfer, from: &str) -> Result<()> {
+    let local = service_path(&t.id).with_file_name("appdata");
+    let name = match t.command.as_ref().and_then(|c| c.generation.clone()) {
+        Some(name) => name,
+        None => {
+            let name = (t.generations.len() + 1..)
+                .map(|n| format!("generation-{n}"))
+                .find(|name| {
+                    !directory(&t.id).join(name).exists()
+                        && !t.generations.iter().any(|g| g["name"] == name.as_str())
+                })
+                .ok_or_else(unavailable)?;
+            t.command.as_mut().ok_or_else(unavailable)?.generation = Some(name.clone());
+            write(t)?;
+            name
+        }
+    };
+    let target = directory(&t.id).join(&name);
+    if local.exists() {
+        persisted(std::fs::rename(&local, &target).map_err(Into::into))?;
+    }
+    if target.exists() && !t.generations.iter().any(|g| g["name"] == name.as_str()) {
+        t.generations.push(json!({"name":name,"from":from,"replacement":t.replacement,
+            "generation":generation(t),"digest":t.production.as_ref().map(|p| p["digest"].clone()),"at":thelxinoe_core::now()}));
+        write(t)?;
+    }
+    Ok(())
 }
 
 async fn stop_replacement(d: &Deployment, s: &Managed) -> Result<()> {
+    if s.container.is_empty() {
+        return Ok(());
+    }
     match engine(&format!("/containers/{}/json", s.container)).await {
         Ok(raw) => {
             verify_ownership(d, s, &raw).await?;
@@ -2449,6 +2854,141 @@ mod tests {
             "the problems the review found"
         );
         assert_eq!(changed_parts(&reviewed, &reviewed), "the deployment");
+    }
+
+    /// A journal after the production boundary, in `stage`.
+    fn journal(stage: &str) -> Transfer {
+        let version = json!({"numbers":[1],"build":null,"text":"1"});
+        let mount = json!({"kind":"bind","source":"/srv/config","destination":"/config","writable":true,"role":"appdata"});
+        serde_json::from_value(json!({
+            "id":"transfer","kind":"radarr","stage":stage,"error":null,
+            "review":{"id":"transfer","kind":"radarr","service":"service","deployment":"deployment","engine":"engine",
+                "original":{"Id":"original"},"source_image":"image","source_version":version,
+                "decision":{"decision":"same","image":"image"},"target_version":version,
+                "layout":{"appdata":mount,"retained":[],"supplementary":[]},"source_identity":[1000,1000],
+                "target_identity":[10001,10001],"aliases":[],"published":null,"automation":[],"compose":null,
+                "inspection":{},"access":{},"changes":[],"settings":[],"transformations":{},"blockers":[],
+                "evidence_revision":"evidence","revision":"revision","created_at":0},
+            "source_running":true,"restart_disabled":true,"stopped":true,"snapshot":{"digest":"snapshot"},
+            "source_state":null,"qualification":null,"production":{"digest":"first","generation":"one"},
+            "intent":null,"replacement":"first","boundary_at":100,"activated":true,"committed":true,
+            "completed":false,"declarations":{},"compose_mode":null,"created_at":0,"updated_at":0
+        }))
+        .unwrap()
+    }
+    fn command(action: &str, phase: &str) -> Command {
+        Command {
+            operation: "operation".into(),
+            action: action.into(),
+            approval: json!({}),
+            from: "recovery-required".into(),
+            phase: phase.into(),
+            state: "running".into(),
+            error: None,
+            generation: None,
+            started_at: 0,
+            finished_at: None,
+        }
+    }
+
+    #[test]
+    fn commands_fail_back_before_irreversible_steps_and_only_resume_a_return_under_way() {
+        for (action, phase) in [
+            ("repair", "starting"),
+            ("return_original", "stopping-replacement"),
+            ("return_original", "checking-original"),
+            ("restore_snapshot", "checking-original"),
+            ("restore_snapshot", "stopping-replacement"),
+        ] {
+            assert_eq!(
+                command(action, phase).failure_stage().as_deref(),
+                Some("recovery-required"),
+                "{action} {phase}"
+            );
+        }
+        // Without its replacement, a restored transfer needs a new decision.
+        for phase in [
+            "removing-replacement",
+            "preserving-appdata",
+            "building",
+            "activating",
+        ] {
+            assert_eq!(
+                command("restore_snapshot", phase)
+                    .failure_stage()
+                    .as_deref(),
+                Some("recovery-required")
+            );
+        }
+        let mut from_suspended = command("restore_snapshot", "accepted");
+        from_suspended.from = "suspended".into();
+        assert_eq!(from_suspended.failure_stage().as_deref(), Some("suspended"));
+        // Once the replacement is retired, a return can only continue.
+        for phase in ["retiring-replacement", "releasing", "starting-original"] {
+            assert_eq!(command("return_original", phase).failure_stage(), None);
+        }
+    }
+
+    #[test]
+    fn recovery_is_planned_only_for_an_unfinished_transfer_after_the_boundary() {
+        assert!(plannable(&journal("recovery-required")).is_ok());
+        assert!(plannable(&journal("suspended")).is_ok());
+        // A lost reply after a return must never offer starting the replacement again.
+        for stage in ["returned", "recovering", "complete", "cancelled", "stale"] {
+            assert!(plannable(&journal(stage)).is_err(), "{stage}");
+        }
+        let mut before = journal("failed");
+        before.boundary_at = None;
+        assert!(plannable(&before).is_err());
+    }
+
+    #[test]
+    fn the_first_boundary_stays_while_each_activation_is_recorded_once() {
+        let mut t = journal("activating");
+        cross_boundary(&mut t);
+        cross_boundary(&mut t);
+        assert_eq!(t.boundary_at, Some(100));
+        assert_eq!(t.activations.len(), 1);
+        // A restored candidate is a new activation with its own appdata generation.
+        t.replacement = Some("second".into());
+        t.production = Some(json!({"digest":"second","generation":"two"}));
+        cross_boundary(&mut t);
+        assert_eq!(t.boundary_at, Some(100));
+        assert_eq!(t.activations[1]["replacement"], "second");
+        assert_eq!(t.activations[1]["generation"], "two");
+    }
+
+    #[test]
+    fn supplementary_files_mount_from_their_managed_copy() {
+        let mut t = journal("building");
+        t.review.layout.supplementary = vec![
+            plan::Mount {
+                kind: "bind".into(),
+                source: "/srv/certs".into(),
+                destination: "/certs".into(),
+                writable: false,
+                role: "supplementary".into(),
+                file: false,
+            },
+            plan::Mount {
+                kind: "bind".into(),
+                source: "/srv/hook.sh".into(),
+                destination: "/custom/hook.sh".into(),
+                writable: false,
+                role: "supplementary".into(),
+                file: true,
+            },
+        ];
+        let mounts = supplementary_mounts(&t, "/appdata");
+        assert_eq!(mounts[0]["Source"], "/appdata/.thelxinoe-supplementary/0");
+        assert_eq!(
+            mounts[1]["Source"],
+            format!("/appdata/.thelxinoe-supplementary/1/{SUPPLEMENTARY_FILE}")
+        );
+        assert_eq!(mounts[1]["Target"], "/custom/hook.sh");
+        assert!(mounts.iter().all(|m| m["ReadOnly"] == true));
+        // Folder mounts keep their reviewed shape; only files carry the flag.
+        assert!(serde_json::to_value(&t.review.layout.supplementary[0]).unwrap()["file"].is_null());
     }
 
     #[test]

@@ -489,3 +489,58 @@ async fn matching_server_record_keeps_missing_container_recovery_available() {
     assert_eq!(item["registered"], true);
     assert_eq!(item["can_recreate"], true);
 }
+
+#[tokio::test]
+async fn a_recreated_transferred_service_is_reverified_under_its_own_authority() {
+    let (_temp, state, _cookie, key) = managed("radarr").await;
+    // A completed transfer: transferred provenance and no installation job of its own.
+    let transferred = key.clone();
+    state
+        .db
+        .write("test.transferred", move |db| {
+            db.execute("DELETE FROM jobs", [])?;
+            db.execute(
+                "UPDATE stack_provisions SET origin='transferred',transfer_id=?1",
+                [transferred],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    storage::action_write_stack_provisions(&state.db, key.clone(), "recreated".into())
+        .await
+        .unwrap();
+    let (job, provision, operational): (String, String, bool) = state
+        .db
+        .read("test.reverification", |db| {
+            Ok(db.query_row(
+                "SELECT (SELECT state FROM jobs WHERE kind='stack.install'),(SELECT hold||':'||state FROM stack_provisions),(SELECT operational FROM manager_services)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(job, "queued");
+    assert_eq!(provision, "setup:connecting");
+    assert!(!operational);
+    // Setup authority binds the exact provision, connection and container, not provenance.
+    let grant = |container: &str| ownership::Grant {
+        scope: ownership::Scope::Setup {
+            provision: key.clone(),
+        },
+        service: "integration".into(),
+        generation: String::new(),
+        container: container.into(),
+    };
+    assert!(
+        ownership::authorize(&state, "radarr", &grant("recreated"))
+            .await
+            .is_ok()
+    );
+    assert!(
+        ownership::authorize(&state, "radarr", &grant("old"))
+            .await
+            .is_err()
+    );
+}

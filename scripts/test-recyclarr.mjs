@@ -1677,6 +1677,26 @@ scenario: try {
   record(
     'Unsupported or stale transfers preserve the original; a reviewed transfer stops cron, copies and scrubs appdata, starts paused and retains mappings',
   );
+  // A transferred definition is reverified like an installed one after recreation.
+  docker('rm', '-f', services.recyclarr.container_id);
+  await api(`/admin/stack/${services.recyclarr.id}/action`, 'POST', {
+    action: 'recreate',
+  });
+  await expect
+    .poll(
+      async () => {
+        const provision = (await api('/admin/stack')).provisions.find(
+          (item) => item.id === services.recyclarr.id,
+        );
+        return `${provision?.origin}:${provision?.state}:${provision?.hold}`;
+      },
+      { timeout: 45000 },
+    )
+    .toBe('transferred:complete:null');
+  expect((await settings()).settings.paused).toBe(true);
+  record(
+    'A recreated transferred job definition is reverified and keeps its paused schedule',
+  );
   await api(`/admin/stack/${services.recyclarr.id}/action`, 'POST', {
     action: 'remove',
   });

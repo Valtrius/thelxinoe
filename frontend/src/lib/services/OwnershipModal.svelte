@@ -158,9 +158,15 @@
     );
   }
   async function loadRecovery() {
-    recovery = await api<TransferRecovery>(
-      `/admin/transfers/${operation!.id}/recovery`,
-    );
+    try {
+      recovery = await api<TransferRecovery>(
+        `/admin/transfers/${operation!.id}/recovery`,
+      );
+    } catch (error) {
+      // The controller may already have reached an outcome; show it.
+      await load();
+      throw error;
+    }
     recoveryAction = '';
     // Every acknowledgement starts unchecked and must be given for this plan.
     for (const option of recovery.options)
@@ -200,6 +206,27 @@
     failed: 'Failed',
     skipped: 'Skipped',
     pending: 'Upcoming',
+  };
+  const recoveryLabels: Record<string, string> = {
+    repair: 'Repair and continue',
+    restore_snapshot: 'Restore the transfer snapshot into a new candidate',
+    return_original: 'Return to the original',
+    suspend: 'Suspend for manual resolution',
+  };
+  const recoveryPhases: Record<string, string> = {
+    accepted: 'The controller accepted the recovery',
+    starting: 'Starting the replacement',
+    'checking-original': 'Checking that the original stays stopped',
+    'stopping-replacement': 'Stopping the replacement',
+    'retiring-replacement':
+      'Removing the stopped replacement and keeping its appdata',
+    releasing: 'Releasing the replacement',
+    'starting-original': 'Restarting the original',
+    'removing-replacement': 'Removing the replacement',
+    'preserving-appdata': 'Keeping the replaced appdata as a generation',
+    building: 'Building a new candidate from the snapshot',
+    creating: 'Creating the new candidate',
+    activating: 'Starting the new candidate',
   };
   const explanations: Record<string, string> = {
     prerequisites:
@@ -437,7 +464,9 @@
               onclick={() => (viewing = 'review')}>Back to review</Button
             >
           </div>
-        {:else if ['failed', 'suspended', 'recovery'].includes(operation.state)}
+        {:else if operation.state === 'recovery'}
+          {@render recoveryProgress()}
+        {:else if ['failed', 'suspended'].includes(operation.state)}
           {@render failure()}
         {:else if operation.state === 'returned' || operation.state === 'cancelled'}
           <Notice tone={operation.error ? 'warning' : 'info'} role="status">
@@ -823,6 +852,23 @@
   </div>
 {/snippet}
 
+{#snippet recoveryProgress()}
+  {@const command = operation!.recovery.command}
+  {@const phase = operation!.controller?.command?.phase}
+  <Notice tone="info" role="status">
+    <strong
+      >Applying the approved recovery: {recoveryLabels[command?.action ?? ''] ??
+        'recovery'}</strong
+    >
+    <p>
+      {recoveryPhases[phase ?? ''] ?? 'Waiting for the Docker controller'}.
+      Thelxinoe continues this exact recovery from its journal after any
+      interruption, and keeps normal operations held until it finishes.
+    </p>
+  </Notice>
+  {@render progressStep()}
+{/snippet}
+
 {#snippet failure()}
   <Notice tone="warning" role="alert">
     <strong
@@ -922,7 +968,10 @@
             <span
               ><strong>{option.label}</strong><span class="block text-muted"
                 >{option.description}</span
-              ></span
+              >{#if !option.available && option.unavailable}<span
+                  class="block text-muted"
+                  >Unavailable: {option.unavailable}</span
+                >{/if}</span
             >
           </label>
         {/each}

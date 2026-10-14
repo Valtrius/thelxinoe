@@ -25,7 +25,12 @@ const kinds = option('kinds') ?? [
   'seerr',
 ];
 const storages = option('storage') ?? ['bind', 'volume'];
-const scenarios = option('scenarios') ?? ['matrix', 'interruption', 'recovery'];
+const scenarios = option('scenarios') ?? [
+  'matrix',
+  'interruption',
+  'recovery',
+  'storage',
+];
 const result = {
   passed: false,
   started_at: new Date().toISOString(),
@@ -562,6 +567,49 @@ try {
             expect(inspect(source.container).State.Running).toBe(false);
           },
         );
+    if (scenarios.includes('interruption'))
+      await scenario(
+        'transferred services recreate a missing container and are reverified with preserved settings',
+        async () => {
+          for (const kind of ['sonarr', 'nzbget']) {
+            const before = (await f.stack()).items.find(
+              (item) => item.kind === kind,
+            );
+            docker('rm', '-f', before.container_id);
+            await expect
+              .poll(
+                async () =>
+                  (await f.stack()).items.find((item) => item.kind === kind)
+                    ?.existence,
+                { timeout: 30000 },
+              )
+              .toBe('missing');
+            await f.api(`/admin/stack/${before.id}/action`, 'POST', {
+              action: 'recreate',
+            });
+            // The same verification job as an installation releases the setup hold.
+            await expect
+              .poll(
+                async () => {
+                  const current = await stage(kind);
+                  return (
+                    current.stage === 'owned' &&
+                    current.hold === null &&
+                    current.connection?.operational === true
+                  );
+                },
+                { timeout: 180000 },
+              )
+              .toBe(true);
+            const after = (await f.stack()).items.find(
+              (item) => item.kind === kind,
+            );
+            expect(after.container_id).not.toBe(before.container_id);
+            expect(after.running).toBe(true);
+            expect((await stage(kind)).ownership.origin).toBe('transferred');
+          }
+        },
+      );
     if (scenarios.includes('recovery')) {
       await scenario('a stale review never stops the original', async () => {
         const source = await f.attach(
@@ -723,6 +771,23 @@ try {
           expect(returned.state, returned.error ?? '').toBe('returned');
           expect(inspect(source.container).State.Running).toBe(true);
           expect((await stage('radarr')).stage).toBe('connected');
+          // The return is final: recovery is never offered again, so nothing can start
+          // the replacement beside the running original.
+          await expect(
+            f.api(`/admin/transfers/${reached.id}/recovery`),
+          ).rejects.toThrow(/HTTP 409/);
+          // The stopped replacement was retired; its appdata is kept as a generation.
+          expect(
+            docker(
+              'ps',
+              '-aq',
+              '--filter',
+              `label=app.thelxinoe.managed-id=${reached.id}`,
+            ),
+          ).toBe('');
+          expect(returned.controller.generations).toContainEqual(
+            expect.objectContaining({ from: 'returned' }),
+          );
           // The returned connection is the original's again, storage mounts included,
           // once the restarted original finishes starting.
           await expect
@@ -736,13 +801,164 @@ try {
               { timeout: 180000 },
             )
             .toBe(true);
+          // Nothing of the returned attempt reserves the kind: the next takeover succeeds.
+          const again = await f.transfer(source.id);
+          expect(again.view.state, again.view.error ?? '').toBe('complete');
+          const managed = (await f.stack()).items.filter(
+            (item) => item.kind === 'radarr',
+          );
+          expect(managed).toHaveLength(1);
+          expect(managed[0].running).toBe(true);
+          expect(inspect(source.container).State.Running).toBe(false);
           result.recovery = {
             ...result.recovery,
-            post_activation: { plan, outcome: returned.state },
+            post_activation: {
+              plan,
+              outcome: returned.state,
+              next_takeover: again.view.state,
+            },
+          };
+        },
+      );
+      await scenario(
+        'a restored snapshot resumes across a controller restart and repeats setup for its new appdata',
+        async () => {
+          const source = await f.attach(
+            'seerr',
+            '',
+            imageManifest.services.seerr,
+          );
+          const reached = await approveUntil(source, 'activate');
+          await expect
+            .poll(
+              async () =>
+                (await f.api(`/admin/transfers/${reached.id}`)).controller
+                  ?.boundary_at ?? null,
+              { timeout: 300000, intervals: [250] },
+            )
+            .not.toBeNull();
+          const replacement = () =>
+            docker(
+              'ps',
+              '-aq',
+              '--filter',
+              `label=app.thelxinoe.managed-id=${reached.id}`,
+            );
+          await expect
+            .poll(replacement, { timeout: 120000, intervals: [250] })
+            .not.toBe('');
+          docker('kill', replacement());
+          const failed = await f.waitTransfer(reached.id);
+          expect(failed.state).toBe('failed');
+          const plan = await f.api(`/admin/transfers/${reached.id}/recovery`);
+          const restore = plan.options.find(
+            (option) => option.action === 'restore_snapshot',
+          );
+          expect(restore.available, restore.unavailable ?? '').toBe(true);
+          await f.api(`/admin/transfers/${reached.id}/recovery`, 'POST', {
+            action: 'restore_snapshot',
+            revision: plan.revision,
+            approval: Object.fromEntries(
+              restore.requires.map((requirement) => [requirement, true]),
+            ),
+          });
+          // Interrupt the command while it rebuilds; it continues from its journal.
+          const rebuilding = await f.waitTransfer(
+            reached.id,
+            ['complete', 'failed', 'suspended', 'returned'],
+            undefined,
+            (view) =>
+              ['building', 'creating', 'activating'].includes(
+                view.controller?.command?.phase,
+              ),
+          );
+          const interrupted = rebuilding.state === 'recovery';
+          if (interrupted) f.compose('restart', 'controller');
+          const finished = await f.waitTransfer(reached.id);
+          expect(finished.state, finished.error ?? '').toBe('complete');
+          // The first boundary stays; the restored candidate is a second activation.
+          expect(finished.controller.boundary_at).toBe(
+            failed.controller.boundary_at,
+          );
+          expect(finished.controller.activations).toHaveLength(2);
+          expect(finished.controller.generations).toContainEqual(
+            expect.objectContaining({ from: 'replacement' }),
+          );
+          // Reviewed setup ran for the appdata the replacement runs now.
+          const { generation } = finished.controller.activations.at(-1);
+          expect(finished.setup.length).toBeGreaterThan(0);
+          for (const entry of finished.setup)
+            expect(entry).toMatchObject({ state: 'applied', generation });
+          expect(replacement().split(/\s+/).filter(Boolean)).toHaveLength(1);
+          expect(inspect(source.container).State.Running).toBe(false);
+          result.recovery = {
+            ...result.recovery,
+            restored_snapshot: {
+              interrupted,
+              activations: finished.controller.activations,
+              generations: finished.controller.generations,
+            },
           };
         },
       );
     }
+    if (scenarios.includes('storage'))
+      await scenario(
+        'supplementary files and folders are copied and mounted read-only from managed storage',
+        async () => {
+          const folder = `${f.root}/supplementary`;
+          const hook = `${folder}/hook.sh`;
+          const certificates = `${folder}/certs`;
+          mkdirSync(certificates, { recursive: true });
+          writeFileSync(hook, '#!/bin/sh\necho transferred-hook\n', {
+            mode: 0o755,
+          });
+          writeFileSync(`${certificates}/ca.pem`, 'fixture certificate\n');
+          const source = await f.attach(
+            'prowlarr',
+            '',
+            imageManifest.services.prowlarr,
+            {
+              extraMounts: [
+                { source: hook, destination: '/custom/hook.sh' },
+                { source: certificates, destination: '/custom/certs' },
+              ],
+            },
+          );
+          const { view, review } = await f.transfer(source.id);
+          expect(review.review.plan.target.supplementary).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                destination: '/custom/hook.sh',
+                file: true,
+              }),
+              expect.objectContaining({ destination: '/custom/certs' }),
+            ]),
+          );
+          expect(view.state, view.error ?? '').toBe('complete');
+          const replacement = (await f.stack()).items.find(
+            (item) => item.kind === 'prowlarr',
+          );
+          expect(
+            docker(
+              'exec',
+              replacement.container_id,
+              'sh',
+              '-c',
+              'stat -c %a /custom/hook.sh && cat /custom/hook.sh /custom/certs/ca.pem',
+            ),
+          ).toBe('755\n#!/bin/sh\necho transferred-hook\nfixture certificate');
+          // The replacement reads managed copies, never the external originals.
+          const mounts = inspect(replacement.container_id).Mounts.filter(
+            (mount) => mount.Destination.startsWith('/custom'),
+          );
+          expect(mounts).toHaveLength(2);
+          for (const mount of mounts) {
+            expect(mount.RW).toBe(false);
+            expect(mount.Source.startsWith(folder)).toBe(false);
+          }
+        },
+      );
   });
   result.passed = true;
 } finally {

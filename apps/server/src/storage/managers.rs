@@ -39,7 +39,7 @@ pub(super) async fn register_with_actor_write_stack_provisions(
     db.write("managers.register_with_actor_write_stack_provisions", move|db|{
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let allowed:bool=match &registration.setup {
-            Some(provision)=>tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE id=?1 AND kind=?2 AND origin='installed' AND hold='setup' AND state='connecting' AND container_id=?3)",params![provision,input.kind,input.container_id],|r|r.get(0))?,
+            Some(provision)=>tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE id=?1 AND kind=?2 AND hold='setup' AND state='connecting' AND container_id=?3 AND (service_id IS NULL OR service_id=?4))",params![provision,input.kind,input.container_id,registration.key],|r|r.get(0))?,
             // A Connected service never coexists with an installation or unfinished transfer of its kind.
             None=>tx.query_row("SELECT NOT EXISTS(SELECT 1 FROM stack_provisions WHERE kind=?1) AND NOT EXISTS(SELECT 1 FROM service_transfers WHERE kind=?1 AND state NOT IN ('review','complete','cancelled','returned'))",[&input.kind],|r|r.get(0))?,
         };

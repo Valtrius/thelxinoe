@@ -232,6 +232,9 @@ pub struct Mount {
     pub destination: String,
     pub writable: bool,
     pub role: String,
+    /// A supplementary bind of one regular file rather than a folder, probed during review.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub file: bool,
 }
 
 /// Source storage and how the replacement reaches the same files.
@@ -278,6 +281,7 @@ fn mount_of(m: &Value) -> Result<Mount, String> {
             .into(),
         writable: m["RW"] == true,
         role: String::new(),
+        file: false,
     })
 }
 

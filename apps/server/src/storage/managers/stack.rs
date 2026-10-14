@@ -33,7 +33,8 @@ pub(super) async fn action_read_service(
     .await
 }
 
-/// A replaced or restarted Owned container is held again until its API is reverified.
+/// A replaced or restarted Owned container is held again until its API is reverified. Every
+/// Owned service, installed or transferred, gets the same durable verification job.
 pub(super) async fn action_write_stack_provisions(
     db: &Database,
     key: String,
@@ -52,7 +53,10 @@ pub(super) async fn action_write_stack_provisions(
         tx.execute("UPDATE stack_provisions SET container_id=?1,updated_at=?2 WHERE id=?3", params![container,now(),key])?;
         if state == "blocked" || replaced {
             tx.execute("UPDATE stack_provisions SET state='connecting',hold='setup',error=NULL WHERE id=?1",[&key])?;
-            tx.execute("UPDATE jobs SET state='queued',error=NULL,available_at=?1 WHERE kind='stack.install' AND json_extract(payload,'$.id')=?2 AND state IN ('failed','complete')",params![now(),key])?;
+            if tx.execute("UPDATE jobs SET state='queued',error=NULL,available_at=?1,started_at=NULL WHERE kind='stack.install' AND json_extract(payload,'$.id')=?2 AND state IN ('failed','complete')",params![now(),key])? == 0 {
+                // A transferred service never had an installation job; one that is already queued keeps it.
+                tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) SELECT ?1,'stack.install',?2,?3,'queued',?4,?4 WHERE NOT EXISTS(SELECT 1 FROM jobs WHERE kind='stack.install' AND json_extract(payload,'$.id')=?5)",params![id(),json!({"id":key}).to_string(),format!("stack:{key}"),now(),key])?;
+            }
         }tx.commit()?;Ok(())}).await
 }
 

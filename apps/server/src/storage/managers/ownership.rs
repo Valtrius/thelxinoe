@@ -31,7 +31,8 @@ pub(super) async fn operational_any(db: &Database, service: String) -> anyhow::R
     .await
 }
 
-/// A fresh installation may configure only its own new container while setup holds it.
+/// Setup or reverification of an Owned service may configure only its exact held container,
+/// whether it was installed or transferred. Provenance never grants or denies authority.
 pub(super) async fn setup(
     db: &Database,
     provision: String,
@@ -40,7 +41,7 @@ pub(super) async fn setup(
 ) -> anyhow::Result<bool> {
     db.read("managers.ownership.setup", move |db| {
         Ok(db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE id=?1 AND origin='installed' AND hold='setup' AND state='connecting' AND service_id=?2 AND container_id=?3)",
+            "SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE id=?1 AND hold='setup' AND state='connecting' AND service_id=?2 AND container_id=?3)",
             params![provision, service, container],
             |r| r.get(0),
         )?)

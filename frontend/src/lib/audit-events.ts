@@ -93,7 +93,11 @@ const labels: Record<string, string> = {
   'transfer.cancelled': 'Cancelled an ownership transfer',
   'transfer.returned': 'Returned a service to its original',
   'transfer.retry': 'Retried an ownership transfer',
+  'transfer.failed': 'An ownership transfer failed',
   'transfer.recovery.plan': 'Reviewed transfer recovery',
+  'transfer.recovery.request': 'Approved a transfer recovery',
+  'transfer.recovery.refused':
+    'Transfer recovery was refused before any change',
   'transfer.recovery.return': 'Returned to the original service',
   'transfer.recovery.suspend': 'Suspended a transfer for manual resolution',
   'transfer.recovery.continue': 'Continued a transfer recovery',

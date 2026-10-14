@@ -1,5 +1,6 @@
 //! Reviewed post-commit setup and the completion checks of a transfer. Setup runs only the
-//! actions the administrator approved, against the exact replacement, and is journaled.
+//! actions the administrator approved, against the exact replacement, and is journaled as
+//! evidence about one appdata generation: a replacement restored from the snapshot repeats it.
 use super::*;
 
 /// Setup actions a transfer may perform after its ownership commit, by service kind.
@@ -122,21 +123,29 @@ pub(super) fn plan(kind: &str) -> Vec<Value> {
     checks
 }
 
-/// Run approved setup actions not yet applied. Each is recorded before and after it runs.
-pub(super) async fn setup(state: &AppState, t: &storage::Row) -> Result<()> {
+/// Whether `action` was applied to the appdata `generation` the replacement runs now.
+pub(super) fn applied<'a>(setup: &'a Value, action: &str, generation: &str) -> Option<&'a Value> {
+    setup
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|e| e["action"] == action && e["state"] == "applied" && e["generation"] == generation)
+}
+
+/// Run approved setup actions not yet applied to this appdata generation. Each is recorded
+/// before and after it runs.
+pub(super) async fn setup(state: &AppState, t: &storage::Row, generation: &str) -> Result<()> {
     let mut journal = t.setup.as_array().cloned().unwrap_or_default();
     for action in t.review["setup_actions"].as_array().into_iter().flatten() {
         let name = action["action"].as_str().unwrap_or_default().to_owned();
-        if journal
-            .iter()
-            .any(|e| e["action"] == name.as_str() && e["state"] == "applied")
-        {
+        if applied(&t.setup, &name, generation).is_some() {
             continue;
         }
         journal.retain(|e| e["action"] != name.as_str());
         // An interrupted action is reconciled by repeating it: every action is idempotent.
         journal.push(
-            json!({"action":name,"label":action["label"],"state":"started","started_at":now()}),
+            json!({"action":name,"label":action["label"],"state":"started",
+            "generation":generation,"started_at":now()}),
         );
         storage::journal(&state.db, t.id.clone(), json!(journal)).await?;
         let authority = ownership::Authority {
@@ -203,7 +212,7 @@ async fn apply(state: &AppState, t: &storage::Row, action: &str) -> Result<Value
                 .flatten()
                 .map(|v| json!({"service_id":v["service_id"],"kind":v["kind"],"trash_id":v["trash_id"]}))
                 .collect::<Vec<_>>();
-            controller_request(
+            controller_call(
                 state,
                 &format!("/{}/recyclarr/import", t.id),
                 Some(json!({"targets":targets})),
@@ -292,7 +301,12 @@ pub(super) async fn evaluate(
     match t.kind.as_str() {
         "radarr" | "sonarr" | "lidarr" => manager_checks(state, t, source, &mut checks).await,
         "recyclarr" => recyclarr_checks(state, t, &mut checks).await,
-        _ => support_checks(state, t, source, &mut checks).await,
+        _ => {
+            let generation = controller["production"]["generation"]
+                .as_str()
+                .unwrap_or_default();
+            support_checks(state, t, source, generation, &mut checks).await
+        }
     }
     // Optional links are completed by normal link workers once both endpoints are Owned and ready.
     let optional = optional_detail(state, &t.kind).await;
@@ -469,7 +483,13 @@ async fn manager_checks(state: &AppState, t: &storage::Row, source: &Value, chec
     }
 }
 
-async fn support_checks(state: &AppState, t: &storage::Row, source: &Value, checks: &mut [Value]) {
+async fn support_checks(
+    state: &AppState,
+    t: &storage::Row,
+    source: &Value,
+    generation: &str,
+    checks: &mut [Value],
+) {
     let result = async {
         let s = support::load_connected(state, &t.service_id).await?;
         let c = support::connect(state, &s).await?;
@@ -525,8 +545,7 @@ async fn support_checks(state: &AppState, t: &storage::Row, source: &Value, chec
                 let managed = main["localLogin"] == false && main["mediaServerLogin"] == false;
                 set(checks, "policy", if managed {"passed"} else {"failed"}, Value::Null,
                     json!({"local_login":main["localLogin"],"media_server_login":main["mediaServerLogin"]}));
-                let administrator = t.setup.as_array().into_iter().flatten()
-                    .find(|e| e["action"] == "seerr.administrator" && e["state"] == "applied")
+                let administrator = applied(&t.setup, "seerr.administrator", generation)
                     .and_then(|e| e["evidence"]["seerr_user"].as_i64());
                 let read_back = match administrator {
                     Some(id) => c.get(&format!("user/{id}")).await.is_ok_and(|u| u["id"] == id),

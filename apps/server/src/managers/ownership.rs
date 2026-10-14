@@ -15,7 +15,8 @@ pub(super) enum Scope {
     Validation,
     /// Owned, committed, set up and not held; rechecked with its generation before mutations.
     Operational,
-    /// Fresh installation setup under its `setup` hold.
+    /// Setup or reverification of an Owned container under its `setup` hold, whether it was
+    /// installed or transferred.
     Setup { provision: String },
     /// One reviewed setup action of a committed transfer, against its exact replacement.
     Transfer { operation: String, action: String },

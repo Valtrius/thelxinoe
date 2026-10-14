@@ -710,7 +710,6 @@ CREATE TABLE service_transfers (
     declarations TEXT NOT NULL DEFAULT '{}',
     state TEXT NOT NULL CHECK(state IN ('review','queued','running','committed','failed','recovery','suspended','complete','cancelled','returned')),
     step TEXT NOT NULL,
-    steps TEXT NOT NULL DEFAULT '{}',
     checks TEXT NOT NULL DEFAULT '[]',
     setup TEXT NOT NULL DEFAULT '[]',
     recovery TEXT NOT NULL DEFAULT '{}',
