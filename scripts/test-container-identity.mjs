@@ -330,7 +330,7 @@ async function scenario(uid, gid, full) {
         checked(`${kind} preflight, update and missing-container recovery`);
       }
 
-      // Adoption preserves a different UID and an omitted PGID (image default 911).
+      // A source with a different UID and an omitted PGID (image default 911).
       const template = controller('/stack/templates').items.find(
         (t) => t.kind === 'prowlarr',
       );
@@ -397,47 +397,63 @@ async function scenario(uid, gid, full) {
         credentials: { username: '', secret: key },
       });
       const originalDeployment = inspect(original);
-      const review = await api('admin/stack/adopt/preview', 'POST', {
-        service_id: attached.id,
+      let transfer = await api(
+        `admin/services/${attached.id}/transfer`,
+        'POST',
+      );
+      expect(transfer.review.blockers).toEqual([]);
+      await api(`admin/transfers/${transfer.id}/approve`, 'POST', {
+        review_revision: transfer.review_revision,
+        confirm: true,
+        declarations: {
+          cron: true,
+          systemd: true,
+          ci_cd: true,
+          configuration_management: true,
+          manual_compose: true,
+          unobservable_automation: true,
+        },
       });
-      const adopted = await api('admin/stack/adopt', 'POST', {
-        service_id: attached.id,
-        review_id: review.review_id,
-      });
-      const service = await readyService(adopted.id);
-      expect(service.container_id).toBe(original);
+      await expect
+        .poll(
+          async () => {
+            transfer = await api(`admin/transfers/${transfer.id}`);
+            return transfer.state;
+          },
+          { timeout: 600000, intervals: [2000] },
+        )
+        .toMatch(/^(complete|failed|suspended|returned)$/);
+      expect(transfer.state, transfer.error ?? '').toBe('complete');
+      const service = await readyService(transfer.id);
+      expect(service.container_id).not.toBe(original);
+      // The original keeps its identity and configuration, stopped as the fallback.
       expect(inspect(original).Config).toEqual(originalDeployment.Config);
-      expect(inspect(original).State.StartedAt).toBe(
-        originalDeployment.State.StartedAt,
-      );
-      docker(
-        'exec',
-        '--user',
-        '34567:911',
-        service.container_id,
-        'chmod',
-        '600',
-        '/config/config.xml',
-      );
-      const preflight = await client.post(
-        `admin/service-updates/preflight/${service.id}`,
-        { data: {} },
-      );
-      expect(preflight.status()).toBe(409);
+      expect(inspect(original).State.Running).toBe(false);
+      // The copy belongs to the deployment's identity, whatever the original used.
       const env = inspect(service.container_id).Config.Env;
-      expect(env).toContain('PUID=34567');
-      expect(env.some((entry) => entry.startsWith('PGID='))).toBe(false);
+      expect(env).toContain(`PUID=${uid}`);
+      expect(env).toContain(`PGID=${gid}`);
+      expect(
+        docker(
+          'exec',
+          service.container_id,
+          'stat',
+          '-c',
+          '%u:%g',
+          '/config/config.xml',
+        ),
+      ).toBe(`${uid}:${gid}`);
       docker(
         'exec',
         '--user',
-        '34567:911',
+        `${uid}:${gid}`,
         service.container_id,
         'sh',
         '-c',
-        'touch /config/adopted-write',
+        'touch /config/transferred-write',
       );
       checked(
-        'in-place adoption preserves UID and the default GID; unsupported recreation remains blocked',
+        'a transfer from another UID and the default GID re-owns only the copy for the deployment identity',
       );
 
       // Exercise product snapshot verification and server validation with these IDs.

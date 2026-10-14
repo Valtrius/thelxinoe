@@ -81,44 +81,6 @@ impl Filter {
     }
 }
 
-pub fn import_recyclarr() -> anyhow::Result<()> {
-    reported(|progress| {
-        use sha2::{Digest, Sha256};
-        let actual = format!("{:x}", Sha256::digest(fs::read("/source/recyclarr.yml")?));
-        anyhow::ensure!(
-            std::env::var("THELXINOE_RECYCLARR_IMPORT_HASH")? == actual,
-            "Recyclarr configuration changed after review"
-        );
-        copy_tree(
-            Path::new("/source"),
-            Path::new("/destination"),
-            false,
-            &Filter::default(),
-            progress,
-        )?;
-        let metadata = Path::new("/destination/.thelxinoe");
-        if metadata.exists() {
-            fs::remove_dir_all(metadata)?;
-        }
-        let path = Path::new("/destination/recyclarr.yml");
-        let mut config: serde_yaml_ng::Value = serde_yaml_ng::from_str(&fs::read_to_string(path)?)?;
-        for kind in ["radarr", "sonarr"] {
-            for (_, instance) in config
-                .get_mut(kind)
-                .and_then(|v| v.as_mapping_mut())
-                .into_iter()
-                .flatten()
-            {
-                if let Some(map) = instance.as_mapping_mut() {
-                    map.insert("api_key".into(), "REDACTED_REGENERATED_AT_SYNC".into());
-                }
-            }
-        }
-        fs::write(path, serde_yaml_ng::to_string(&config)?)?;
-        Ok(())
-    })
-}
-
 pub fn remove() -> anyhow::Result<()> {
     let destination = Path::new("/destination");
     anyhow::ensure!(

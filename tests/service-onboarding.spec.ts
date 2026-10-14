@@ -736,6 +736,7 @@ for (const kind of ['lidarr']) {
     const fixture = await installUiFixture(page, {
       role: 'admin',
       settingsSection: 'services',
+      owned: [kind],
     });
     const label = kind[0].toUpperCase() + kind.slice(1);
     let created: {

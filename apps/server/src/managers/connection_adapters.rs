@@ -247,7 +247,7 @@ pub(super) async fn apply(
         } else {
             ("downloadclient", "Nzbget")
         };
-        refuse_unmanaged(link, &c, path, implementation, &reach, source, target).await?;
+        refuse_unmanaged(&mut *link, &c, path, implementation, &reach, source, target).await?;
     }
     if link.kind == "subtitles" {
         return bazarr(
@@ -318,7 +318,7 @@ fn record_address(record: &Value, path: &str) -> Option<(String, Option<u16>)> {
 /// Never silently adopt or duplicate a connection the administrator already made to
 /// this target, however it is addressed, including records from older auto-wiring.
 async fn refuse_unmanaged(
-    link: &Link,
+    link: &mut Link,
     c: &Connection<'_>,
     path: &str,
     implementation: &str,
@@ -350,6 +350,9 @@ async fn refuse_unmanaged(
         });
     if let Some((record, host, port)) = found {
         let address = port.map_or(host.clone(), |port| format!("{host}:{port}"));
+        link.candidate = Some(
+            json!({"id":record["id"],"name":record["name"],"address":address,"hash":digest(&fields(record))}),
+        );
         return Err(Failure::conflict(format!(
             "{} already connects to {} as \"{}\" ({address}); review it in {} before adding another",
             source.name,
@@ -684,6 +687,8 @@ async fn bazarr(
             .as_str()
             .is_some_and(|key| !key.is_empty())
     {
+        link.candidate = Some(json!({"name":format!("Bazarr {target_kind} settings"),
+            "address":format!("{}:{}",current["ip"].as_str().unwrap_or_default(),current["port"]),"hash":current_hash}));
         return Err(Failure::conflict(
             "Bazarr already has settings for this manager; review them in Bazarr before connecting",
         ));
@@ -718,6 +723,7 @@ async fn bazarr(
                 form.push((format!("settings-{target_kind}-{name}"), value));
             }
         }
+        c.authorize().await?;
         let response = state
             .managers
             .http

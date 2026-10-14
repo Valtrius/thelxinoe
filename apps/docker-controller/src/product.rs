@@ -1028,7 +1028,7 @@ pub(crate) async fn accepted_writer() -> anyhow::Result<bool> {
 /// `docker compose run --rm controller accept-local [--yes]`. Running it needs the host
 /// Docker access that changing the deployment already implies. It records the project's
 /// current server and controller as the next generation of the same deployment, so
-/// installed and adopted services stay registered.
+/// installed and transferred services stay registered.
 pub(crate) async fn accept_local(confirmed: bool) -> anyhow::Result<()> {
     let own = std::env::var("HOSTNAME")?;
     let runtime =
@@ -1152,7 +1152,7 @@ async fn accept_containers(
     let installed: Vec<Managed> = services()
         .map_err(fail)?
         .into_iter()
-        .filter(|s| s.imported.is_none())
+        .filter(|s| s.phase != "transferring")
         .collect();
     anyhow::ensure!(
         networks[0] == d.network || installed.is_empty(),
@@ -1670,7 +1670,7 @@ mod tests {
                 assert!(error.to_string().contains("exactly one Docker network"), "{error}");
                 let installed: Managed = serde_json::from_value(json!({"id":"88888888-8888-8888-8888-888888888888",
                     "kind":"radarr","container":"radarr","name":"radarr","image":"image","phase":"active",
-                    "spec":{},"expected":null,"imported":null})).unwrap();
+                    "spec":{},"expected":null})).unwrap();
                 save(&installed).unwrap();
                 let mut moved = server("server", &format!("sha256:{}", "3".repeat(64)), &[]);
                 moved["Mounts"][0]["Source"] = json!("/srv/other-media");

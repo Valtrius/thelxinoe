@@ -21,7 +21,6 @@
     key: string;
     kind: string;
     name: string;
-    imported: boolean;
   };
   type Exclusion = { key: string; kind: string; name: string; reason: string };
   type Backup = {
@@ -74,22 +73,14 @@
     });
   const restoring = $derived(items.find((item) => item.id === restoreId));
   const listed = $derived(restoring?.components ?? []);
-  const adoptedSelected = $derived(
-    listed.some((c) => c.imported && selected.includes(c.key)),
-  );
-  function label(item: { kind: string; name: string }, adopted: boolean) {
+  function label(item: { kind: string; name: string }) {
     if (item.kind === 'server') return 'Thelxinoe server';
-    const service =
-      definitions.find((d) => d.kind === item.kind)?.label ?? item.kind;
-    return adopted ? `${service} (adopted: ${item.name})` : service;
+    return definitions.find((d) => d.kind === item.kind)?.label ?? item.kind;
   }
   function chooseRestore(item: Backup) {
     restoreId = item.id;
     restoreConfirmation = '';
-    // Adopted services keep their live configuration unless chosen here.
-    selected = (item.components ?? [])
-      .filter((c) => !c.imported)
-      .map((c) => c.key);
+    selected = (item.components ?? []).map((c) => c.key);
   }
   async function load() {
     try {
@@ -161,7 +152,7 @@
       message =
         'Operation started. The server will briefly disconnect while state is copied. Refresh after it reconnects; restoration may require signing in again.' +
         (skipped.length
-          ? ` Not included and left running: ${skipped.map((e) => label(e, true)).join(', ')}.`
+          ? ` Not included and left running: ${skipped.map((e) => label(e)).join(', ')}.`
           : '');
       await load();
     } catch (e) {
@@ -297,8 +288,9 @@
   <p>
     Backups include server state, credentials, deployment information and
     managed-service appdata. Media and cache are excluded. Services briefly stop
-    so their databases can be copied consistently. Adopted services whose
-    storage can't be backed up are left running and out of the archive.
+    so their databases can be copied consistently. Services held by an ownership
+    transfer or recovery are left running and out of the archive, as are the
+    stopped originals a transfer retains.
   </p>
   <p>
     Archives are encrypted with your passphrase and saved in {destination ||
@@ -343,7 +335,7 @@
         >{#if item.error}<p>{item.error}</p>{/if}
         {#each item.excluded ?? [] as skipped (skipped.key)}<small
             class="block text-muted"
-            >Not included: {label(skipped, true)}. {skipped.reason}</small
+            >Not included: {label(skipped)}. {skipped.reason}</small
           >{/each}
       </div>
       {#if ['complete', 'restored', 'restore-failed', 'imported'].includes(item.stage)}<Button
@@ -369,21 +361,16 @@
                 (selected = on
                   ? [...selected, component.key]
                   : selected.filter((key) => key !== component.key))}
-              >{label(component, component.imported)}</Switch
+              >{label(component)}</Switch
             >
           {/each}
         </fieldset>
-        {#if adoptedSelected}<Notice tone="warning" role="status"
-            >Restoring an adopted service replaces its configuration folder with
-            the backup copy. Anything changed in that app since the backup is
-            lost.</Notice
-          >{/if}
       {:else}
         <p>
-          Restoring replaces server state and the services Thelxinoe installed
-          with the selected backup. Changes since that backup will be lost.
-          Adopted services keep their current configuration. It does not undo
-          changes to media or external services.
+          Restoring replaces server state and Thelxinoe's Owned services with
+          the selected backup. Changes since that backup will be lost. Services
+          still held by an ownership transfer aren't in the backup. It does not
+          undo changes to media or external services.
         </p>
       {/if}
       <FormField class="my-4 block max-w-136"

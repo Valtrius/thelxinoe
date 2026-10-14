@@ -50,7 +50,7 @@ pub(in crate::managers) fn insert_prepared(
         "File generation or ownership changed before proposal persistence"
     );
     for claim in operation.selection.files.iter().flat_map(|f| &f.claims) {
-        anyhow::ensure!(db.query_row("SELECT EXISTS(SELECT 1 FROM manager_services WHERE id=?1 AND generation=?2 AND enabled=1)",params![claim.service_id,claim.service_generation],|r|r.get::<_,bool>(0))?,"Manager configuration changed before proposal persistence");
+        anyhow::ensure!(db.query_row("SELECT EXISTS(SELECT 1 FROM manager_services WHERE id=?1 AND generation=?2 AND operational=1)",params![claim.service_id,claim.service_generation],|r|r.get::<_,bool>(0))?,"Manager configuration changed before proposal persistence");
     }
     db.execute(
         "INSERT INTO media_operations VALUES (?1,?2,?3,?4,'pending',?5,?6,?6,NULL)",

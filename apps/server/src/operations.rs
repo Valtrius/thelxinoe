@@ -174,6 +174,7 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
     loop {
         let _ = crate::product::observe(&state).await;
         crate::managers::operational_health(&state).await?;
+        let _ = crate::managers::connected_health(&state).await;
         let _ = crate::managers::observe_requests(&state).await;
         observe(&state).await?;
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;

@@ -223,13 +223,13 @@ mod tests {
             .await
             .unwrap();
         });
-        let connection = Connection {
-            state: &state,
-            base: format!("http://{address}"),
-            url_base: String::new(),
-            key: "fixture".into(),
-            kind: "sonarr".into(),
-        };
+        let connection = Connection::validation(
+            &state,
+            format!("http://{address}"),
+            String::new(),
+            "fixture".into(),
+            "sonarr".into(),
+        );
         let series = json!({"id":7,"seasons":[{"seasonNumber":0},{"seasonNumber":3}]});
         assert!(
             candidates(&connection, &series, &ReleaseTarget::default())

@@ -292,15 +292,30 @@ async fn inspect(Path(id): Path<String>) -> Result<Json<Value>> {
     if !(12..=64).contains(&id.len()) || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err((StatusCode::BAD_REQUEST, "Use a Docker container ID".into()));
     }
-    Ok(Json(redact(
-        &engine(&format!("/containers/{id}/json")).await?,
-    )?))
+    let mut value = redact(&engine(&format!("/containers/{id}/json")).await?)?;
+    value["engine"] = json!(engine_identity().await?);
+    Ok(Json(value))
+}
+/// The Docker engine serving this controller; connections and transfers are bound to it.
+pub(crate) async fn engine_identity() -> Result<String> {
+    static ENGINE: tokio::sync::OnceCell<String> = tokio::sync::OnceCell::const_new();
+    ENGINE
+        .get_or_try_init(|| async {
+            engine("/info").await?["ID"]
+                .as_str()
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned)
+                .ok_or_else(unavailable)
+        })
+        .await
+        .cloned()
 }
 fn redact(c: &Value) -> Result<Value> {
     let mounts=c["Mounts"].as_array().ok_or_else(unavailable)?.iter().map(|m|json!({"kind":m["Type"],"name":m["Name"],"subpath":c["HostConfig"]["Mounts"].as_array().into_iter().flatten().find(|v| v["Target"]==m["Destination"]).map(|v|v["VolumeOptions"]["Subpath"].clone()).unwrap_or(Value::Null),"source":m["Source"],"destination":m["Destination"],"writable":m["RW"]})).collect::<Vec<_>>();
     let networks=c["NetworkSettings"]["Networks"].as_object().ok_or_else(unavailable)?.iter().map(|(name,n)|json!({"name":name,"id":n["NetworkID"],"address":n["IPAddress"],"ipv6":n["GlobalIPv6Address"],"aliases":n["Aliases"]})).collect::<Vec<_>>();
+    let labels = &c["Config"]["Labels"];
     Ok(
-        json!({"id":c["Id"],"name":c["Name"],"image":c["Config"]["Image"],"image_id":c["Image"],"running":c["State"]["Running"],"mounts":mounts,"networks":networks,"ports":published(c),"network_mode":c["HostConfig"]["NetworkMode"],"compose_project":c["Config"]["Labels"]["com.docker.compose.project"]}),
+        json!({"id":c["Id"],"name":c["Name"],"image":c["Config"]["Image"],"image_id":c["Image"],"running":c["State"]["Running"],"mounts":mounts,"networks":networks,"ports":published(c),"network_mode":c["HostConfig"]["NetworkMode"],"restart_policy":c["HostConfig"]["RestartPolicy"]["Name"],"compose_project":labels["com.docker.compose.project"],"compose_service":labels["com.docker.compose.service"]}),
     )
 }
 /// Host ports published for TCP; a stopped container reports only its configuration.

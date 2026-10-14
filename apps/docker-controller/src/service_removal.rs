@@ -77,7 +77,7 @@ pub(super) async fn remove(d: &Deployment, s: &mut Managed) -> Result<Json<Value
     if !matches!(
         s.phase.as_str(),
         "active" | "creating" | "recreating" | "changing" | "removing"
-    ) || adoption::pending(s)
+    ) || s.hold.is_some()
     {
         return Err(conflict(
             "Finish the pending service operation before removal",

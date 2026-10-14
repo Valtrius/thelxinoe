@@ -22,6 +22,7 @@ export default defineConfig({
         'seerr.spec.ts',
         'service-onboarding.spec.ts',
         'service-updates.spec.ts',
+        'service-ownership.spec.ts',
         'server-updates.spec.ts',
         'server-tools.spec.ts',
         'authentication.spec.ts',

@@ -37,7 +37,7 @@ pub(super) async fn file_generations(
 pub(super) async fn reconcile_read_manager_services(db: &Database) -> anyhow::Result<Vec<String>> {
     db.read("managers.bindings.reconcile_read_manager_services", |db| {
         Ok(db
-            .prepare("SELECT id FROM manager_services WHERE enabled=1 ORDER BY id")?
+            .prepare("SELECT id FROM manager_services WHERE operational=1 ORDER BY id")?
             .query_map([], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?)
     })
@@ -52,7 +52,7 @@ pub(super) async fn reconcile_write_media_files(
 ) -> anyhow::Result<()> {
     db.write("managers.bindings.reconcile_write_media_files", move|db| {
         let tx=db.transaction()?;
-        anyhow::ensure!(tx.query_row("SELECT EXISTS(SELECT 1 FROM manager_services WHERE id=?1 AND enabled=1 AND generation=?2)",params![key,generation],|r|r.get::<_,bool>(0))?,"Manager configuration changed during reconciliation");
+        anyhow::ensure!(tx.query_row("SELECT EXISTS(SELECT 1 FROM manager_services WHERE id=?1 AND operational=1 AND generation=?2)",params![key,generation],|r|r.get::<_,bool>(0))?,"Manager configuration changed during reconciliation");
         match result {
             Ok(claims)=> {
                 let mut current=Vec::new();
@@ -76,8 +76,8 @@ pub(super) async fn reconcile_write_media_files(
 pub(super) async fn refresh_ownership(db: &Database) -> anyhow::Result<()> {
     db.write("managers.bindings.refresh_ownership", |db| {
         db.execute("UPDATE media_files SET ownership=CASE
-          WHEN EXISTS(SELECT 1 FROM manager_services s LEFT JOIN manager_reconciliations r ON r.service_id=s.id JOIN library_roots l ON l.id=media_files.root_id WHERE s.enabled=1 AND s.kind=CASE l.kind WHEN 'movies' THEN 'radarr' WHEN 'shows' THEN 'sonarr' ELSE 'lidarr' END AND (r.error IS NOT NULL OR r.checked_at IS NULL OR r.checked_at<?1 OR r.generation<>s.generation)) THEN 'unresolved'
-          WHEN EXISTS(SELECT 1 FROM manager_bindings b JOIN manager_services s ON s.id=b.service_id WHERE b.file_id=media_files.id AND b.generation=media_files.generation AND b.service_generation=s.generation AND b.checked_at>=?1 AND s.enabled=1) THEN 'managed'
+          WHEN EXISTS(SELECT 1 FROM manager_services s LEFT JOIN manager_reconciliations r ON r.service_id=s.id JOIN library_roots l ON l.id=media_files.root_id WHERE s.operational=1 AND s.kind=CASE l.kind WHEN 'movies' THEN 'radarr' WHEN 'shows' THEN 'sonarr' ELSE 'lidarr' END AND (r.error IS NOT NULL OR r.checked_at IS NULL OR r.checked_at<?1 OR r.generation<>s.generation)) THEN 'unresolved'
+          WHEN EXISTS(SELECT 1 FROM manager_bindings b JOIN manager_services s ON s.id=b.service_id WHERE b.file_id=media_files.id AND b.generation=media_files.generation AND b.service_generation=s.generation AND b.checked_at>=?1 AND s.operational=1) THEN 'managed'
           WHEN EXISTS(SELECT 1 FROM manager_bindings b WHERE b.file_id=media_files.id) THEN 'unresolved'
           ELSE 'unmanaged' END WHERE present=1",[now()-60])?;
         Ok(())

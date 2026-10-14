@@ -13,8 +13,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::borrow::Cow;
-#[path = "adoption.rs"]
-pub(crate) mod adoption;
 #[path = "backups.rs"]
 mod backups;
 #[path = "creation.rs"]
@@ -25,10 +23,10 @@ pub(crate) mod product;
 mod recovery;
 #[path = "recyclarr.rs"]
 mod recyclarr;
-#[path = "recyclarr_import.rs"]
-mod recyclarr_import;
 #[path = "service_removal.rs"]
 mod removal;
+#[path = "transfer.rs"]
+mod transfer;
 #[path = "updates.rs"]
 mod updates;
 pub async fn retain_worker_image() -> anyhow::Result<()> {
@@ -56,9 +54,19 @@ struct Managed {
     active_update: Option<String>,
     spec: Value,
     expected: Value,
-    imported: Option<adoption::Imported>,
+    /// Normal lifecycle, update and backup work waits while a transfer or recovery holds it.
+    #[serde(default)]
+    hold: Option<String>,
+    /// Provenance only: `installed` or `transferred`.
+    #[serde(default = "installed")]
+    origin: String,
+    #[serde(default)]
+    transfer: Option<String>,
     #[serde(default)]
     error: Option<String>,
+}
+fn installed() -> String {
+    "installed".into()
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Deployment {
@@ -171,7 +179,7 @@ fn deployment_has_kind(containers: &Value, deployment: &str, kind: &str) -> Resu
         }))
 }
 async fn ensure_kind_available(d: &Deployment, kind: &str) -> Result<Value> {
-    if services()?.iter().any(|service| service.kind == kind) {
+    if services()?.iter().any(|service| service.kind == kind) || transfer::active_kind(kind)? {
         return Err(conflict("This service already has a managed installation"));
     }
     let containers = engine("/containers/json?all=true").await?;
@@ -431,11 +439,25 @@ pub fn router() -> Router {
         .route("/stack/updates/{id}/activate", post(updates::activate))
         .route("/stack/updates/{id}/recover", post(updates::recover))
         .route("/stack/releases", get(releases))
-        .route("/stack/adopt/preview", post(adoption::preview))
-        .route("/stack/adopt/check", post(adoption::check))
-        .route("/stack/adopt", post(adoption::adopt))
+        .route("/stack/transfers", get(transfer::list))
+        .route("/stack/transfers/review", post(transfer::review))
+        .route("/stack/transfers/validate", post(transfer::check))
+        .route("/stack/transfers/{id}", get(transfer::get))
+        .route("/stack/transfers/{id}/start", post(transfer::start))
+        .route("/stack/transfers/{id}/resume", post(transfer::resume))
+        .route("/stack/transfers/{id}/commit", post(transfer::commit))
+        .route("/stack/transfers/{id}/complete", post(transfer::complete))
+        .route("/stack/transfers/{id}/cancel", post(transfer::cancel))
+        .route("/stack/transfers/{id}/restore", post(transfer::restore))
+        .route(
+            "/stack/transfers/{id}/recovery",
+            get(transfer::recovery_plan).post(transfer::recover),
+        )
+        .route(
+            "/stack/transfers/{id}/original/remove",
+            post(transfer::remove_original),
+        )
         .route("/stack/{id}/action", post(action))
-        .route("/stack/{id}/drift", get(adoption::drift))
         .route("/stack/{id}/recyclarr/catalog", post(recyclarr::catalog))
         .route(
             "/stack/{id}/recyclarr/run",
@@ -466,16 +488,13 @@ async fn list(State(runtime): State<Runtime>) -> Result<Json<Value>> {
         bootstrap().await?
     };
     let mut result = Vec::new();
-    for mut s in services()? {
+    for s in services()? {
         let identity = if s.container.is_empty() {
             &s.name
         } else {
             &s.container
         };
         let live = engine(&format!("/containers/{identity}/json")).await;
-        if let (Some(imported), Ok(raw)) = (&mut s.imported, &live) {
-            adoption::refresh_capabilities(raw, &d, &mut imported.capabilities);
-        }
         result.push(recovery::observation(&s, &live));
     }
     Ok(Json(
@@ -636,7 +655,9 @@ async fn install(
         active_update: None,
         spec: spec.clone(),
         expected: Value::Null,
-        imported: None,
+        hold: None,
+        origin: installed(),
+        transfer: None,
         error: None,
     };
     s.spec["Labels"][creation::ATTEMPT_LABEL] = json!(thelxinoe_core::id());
@@ -649,9 +670,6 @@ async fn install(
 #[derive(Deserialize)]
 struct Action {
     action: String,
-    /// The reviewed configuration an `accept_configuration` applies to.
-    #[serde(default)]
-    revision: Option<String>,
 }
 async fn action(
     State(runtime): State<Runtime>,
@@ -680,22 +698,12 @@ async fn action(
             json!({"accepted":true,"retired":true,"appdata_preserved":true}),
         ));
     }
-    if input.action == "restore_original" && !service_path(&key).exists() {
-        return adoption::cancel_unsubmitted(&d, &key).await;
-    }
-    if input.action == "release" && !service_path(&key).exists() {
-        return Ok(Json(json!({"accepted":true,"released":true})));
-    }
     let mut s = load(&key)?;
-    if input.action == "release" {
-        return adoption::release(&d, &mut s).await;
-    }
-    if input.action == "accept_configuration" {
-        return adoption::accept_configuration(&d, &mut s, input.revision.as_deref()).await;
-    }
-    if s.imported.is_some() && matches!(input.action.as_str(), "recreate" | "remove") {
+    // Controller authority for Docker lifecycle: held services change only through
+    // their transfer or recovery operation.
+    if s.hold.is_some() {
         return Err(conflict(
-            "Imported storage is retained; use Release ownership instead of removal or template recreation",
+            "This service is held by its ownership transfer; use the transfer's recovery options",
         ));
     }
     if input.action == "remove" {
@@ -707,16 +715,7 @@ async fn action(
     if input.action == "recreate" {
         return recovery::recreate(&d, &mut s).await;
     }
-    if input.action == "complete_adoption" {
-        return adoption::complete(&d, &mut s).await;
-    }
-    if input.action == "restore_original" {
-        return recyclarr_import::restore(&d, &mut s).await;
-    }
     if input.action == "reconcile" {
-        if adoption::pending(&s) {
-            return recyclarr_import::reconcile(&d, &mut s).await;
-        }
         return reconcile(&d, &mut s).await;
     }
     if s.phase != "active" {
@@ -868,17 +867,6 @@ async fn reconcile(d: &Deployment, s: &mut Managed) -> Result<Json<Value>> {
 }
 
 async fn verify_ownership(d: &Deployment, s: &Managed, raw: &Value) -> Result<()> {
-    if let Some(imported) = &s.imported {
-        if raw["Id"] != s.container
-            || imported.deployment != d.id
-            || imported.engine != adoption::engine_identity().await?
-        {
-            return Err(conflict(
-                "The registered container or Docker engine identity changed",
-            ));
-        }
-        return Ok(());
-    }
     if raw["Config"]["Labels"]["app.thelxinoe.deployment"] != d.id
         || raw["Config"]["Labels"]["app.thelxinoe.managed-id"] != s.id
     {

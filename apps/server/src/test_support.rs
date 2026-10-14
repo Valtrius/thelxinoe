@@ -94,3 +94,29 @@ pub(crate) async fn fixture() -> (tempfile::TempDir, AppState, String) {
     .unwrap();
     (temp, state, format!("thelxinoe_session={token}"))
 }
+
+/// Make every saved connection an operational Owned installation, as completed setup does.
+/// Tests of normal operations use this; Connected services stay validation-only otherwise.
+pub(crate) async fn own_services(state: &AppState) {
+    state
+        .db
+        .write("test.own_services", |db| {
+            let tx = db.transaction()?;
+            own(&tx)?;
+            tx.commit()?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
+/// Marks every registered fixture service as a completed Owned installation.
+pub(crate) fn own(db: &rusqlite::Connection) -> rusqlite::Result<()> {
+    db.execute(
+        "INSERT OR IGNORE INTO stack_provisions(id,kind,actor_id,state,container_id,service_id,origin,created_at,updated_at) SELECT 'owned-'||id,kind,'alice','complete',container_id,id,'installed',1,1 FROM (SELECT id,kind,container_id FROM manager_services WHERE enabled=1 UNION ALL SELECT id,kind,container_id FROM support_services) s WHERE NOT EXISTS(SELECT 1 FROM stack_provisions p WHERE p.kind=s.kind)",
+        [],
+    )?;
+    db.execute("UPDATE manager_services SET operational=1 WHERE enabled=1 AND id IN (SELECT service_id FROM stack_provisions WHERE hold IS NULL AND state='complete')", [])?;
+    db.execute("UPDATE support_services SET operational=1 WHERE id IN (SELECT service_id FROM stack_provisions WHERE hold IS NULL AND state='complete')", [])?;
+    Ok(())
+}

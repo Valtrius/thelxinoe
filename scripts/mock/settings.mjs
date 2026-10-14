@@ -1,4 +1,5 @@
 import { admin, definitions, label, now } from './data.mjs';
+import { stagesApi } from './transfers.mjs';
 
 export function settingsSeed() {
   const services = definitions
@@ -52,12 +53,7 @@ export function settingsSeed() {
     can_remove: true,
     error: null,
     transfer_pending: false,
-    capabilities: Object.fromEntries(
-      ['lifecycle', 'backup', 'update', 'recreate', 'release'].map((key) => [
-        key,
-        { available: true, reason: null },
-      ]),
-    ),
+    origin: 'installed',
     provision: {
       id: `managed-${kind}`,
       kind,
@@ -67,6 +63,8 @@ export function settingsSeed() {
       service_id: role === 'job' ? null : `${role}-${kind}`,
       error: null,
       origin: 'installed',
+      hold: null,
+      transfer_id: null,
     },
   }));
   const defaults = {
@@ -776,6 +774,8 @@ export async function settingsApi(s, c) {
 
 export async function servicesApi(s, c) {
   const { path, method, body, json, fail } = c;
+  const staged = stagesApi(s, c);
+  if (staged) return staged;
   if (path === '/admin/managers' || path === '/admin/support') {
     const manager = path.endsWith('managers');
     if (method === 'POST') {
@@ -1133,73 +1133,19 @@ export async function servicesApi(s, c) {
     }
     return json({ id: item.id, queued: true });
   }
-  if (path === '/admin/stack/adopt/preview') {
-    const service = s.services.find((item) => item.id === body.service_id);
-    if (!service) return fail(404, 'Service not found');
-    return json({
-      review_id: `review-${service.kind}`,
-      name: service.name,
-      image: `mock/${service.kind}:stable`,
-      source_config: `/mock/external/${service.kind}`,
-      compose_project: null,
-      compose_service: null,
-      mode: 'in_place',
-      authentication: 'preserved',
-      restart_required: false,
-      changes: [],
-      capabilities: settingsSeed().stack[0].capabilities,
-      integration_ready: true,
-      warnings: [],
-      automation: [],
-    });
-  }
-  if (path === '/admin/stack/adopt') {
-    const service = s.services.find(
-      (item) =>
-        item.id === body.service_id || `review-${item.kind}` === body.review_id,
-    );
-    if (service) {
-      const item = settingsSeed().stack.find(
-        (item) => item.kind === service.kind,
-      );
-      item.imported = true;
-      item.can_release = true;
-      item.provision.origin = 'adopted';
-      s.stack.push(item);
-    }
-    return json({ queued: true });
-  }
-  if (path === '/admin/recyclarr/adopt/preview')
-    return json({
-      review_id: 'review-recyclarr',
-      targets: ['radarr', 'sonarr'].map((kind) => ({
-        service_id: `manager-${kind}`,
-        name: label(kind),
-        kind,
-        trash_id: 'preview-profile',
-        guide_name: 'HD-1080p',
-      })),
-    });
-  if (path === '/admin/recyclarr/adopt') {
-    s.stack.push(
-      settingsSeed().stack.find((item) => item.kind === 'recyclarr'),
-    );
-    return json({ queued: true });
-  }
   const stackAction = path.match(
-    /^\/admin\/stack\/([^/]+)\/(action|retry|login|restore-original)$/,
+    /^\/admin\/stack\/([^/]+)\/(action|retry|login)$/,
   );
   if (stackAction) {
     if (stackAction[2] === 'login')
       return json({ username: 'preview', password: 'preview-only' });
     const item = s.stack.find((item) => item.id === stackAction[1]);
     if (!item) return fail(404, 'Managed service not found');
-    if (['remove', 'retire', 'release'].includes(body.action)) {
+    if (['remove', 'retire'].includes(body.action)) {
       s.stack = s.stack.filter((service) => service !== item);
-      if (body.action !== 'release')
-        s.services = s.services.filter(
-          (service) => service.id !== item.provision.service_id,
-        );
+      s.services = s.services.filter(
+        (service) => service.id !== item.provision.service_id,
+      );
     } else {
       item.running = body.action !== 'stop';
       item.status = item.running ? 'running' : 'stopped';

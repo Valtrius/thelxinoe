@@ -23,8 +23,13 @@ mod templates;
 #[cfg(all(unix, test))]
 mod test_support;
 #[cfg(unix)]
+mod transfer_plan;
+#[cfg(unix)]
+mod transfer_worker;
+#[cfg(unix)]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let arg = |n: usize| std::env::args().nth(n).unwrap_or_default();
     if let Some(command) = std::env::args().nth(1) {
         return match command.as_str() {
             "recyclarr-check" => contract::recyclarr().await,
@@ -41,7 +46,13 @@ async fn main() -> anyhow::Result<()> {
             }
             "snapshot-copy" => state_copy::snapshot(false),
             "snapshot-restore" => state_copy::snapshot(true),
-            "recyclarr-import" => state_copy::import_recyclarr(),
+            "transfer-inspect" => transfer_worker::inspect(&arg(2), &arg(3)),
+            "transfer-prepare" => transfer_worker::prepare(&arg(2), &arg(3)),
+            "transfer-fixture" => transfer_worker::fixture(),
+            "transfer-access" => transfer_worker::access(),
+            "transfer-digest" => transfer_worker::digest(),
+            "transfer-effects" => transfer_worker::effects(&arg(2)),
+            "transfer-contract" => contract::transfer(&arg(2), &arg(3)).await,
             "appdata-remove" => state_copy::remove(),
             "verify-state" => {
                 let root = std::path::Path::new("/state");

@@ -6,7 +6,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-// These HTTP regressions cover interrupted ownership and API maintenance without
+// These HTTP regressions cover Connected maintenance and transfer review without
 // requiring a live downloader or a timing-dependent Docker transport outage.
 async fn existing() -> (
     tempfile::TempDir,
@@ -47,6 +47,8 @@ async fn existing() -> (
                 "/api/v3/system/status" => json!({"appName":"Radarr","version":"6","urlBase":""}),
                 "/api/v3/rootfolder" => json!([{"id":1,"path":"/movies"}]),
                 "/api/v3/qualityprofile" => json!([{"id":1,"name":"Existing HD","items":[]}]),
+                "/api/v3/command" => json!([]),
+                "/api/v3/queue" => json!({"totalRecords":0}),
                 _ => Value::Null,
             };
             (StatusCode::OK, Json(value))
@@ -90,47 +92,8 @@ async fn existing() -> (
 }
 
 #[tokio::test]
-async fn connection_can_be_repaired_after_stopped_adoption_without_changing_defaults_or_application()
- {
+async fn connected_service_can_be_repaired_without_changing_defaults_or_application() {
     let (_temp, state, cookie, key, port, writes, upstream) = existing().await;
-    let review_id = id();
-    state.managers.docker.lock().unwrap().extend([
-        ("stack/adopt/preview".into(), json!({"review_id":review_id})),
-        ("stack/adopt/check".into(), json!({"accepted":true})),
-    ]);
-    let preview = call(
-        &state,
-        "/api/v1/admin/stack/adopt/preview",
-        "POST",
-        json!({"service_id":key}),
-        &cookie,
-    )
-    .await;
-    assert_eq!(preview.0, StatusCode::OK);
-    let adopted = call(
-        &state,
-        "/api/v1/admin/stack/adopt",
-        "POST",
-        json!({"service_id":key,"review_id":review_id}),
-        &cookie,
-    )
-    .await;
-    assert_eq!(adopted.0, StatusCode::OK, "{}", adopted.2);
-    state
-        .db
-        .write("test.complete", move |db| {
-            db.execute(
-                "UPDATE stack_provisions SET state='complete' WHERE id=?1",
-                [review_id],
-            )?;
-            db.execute(
-                "UPDATE jobs SET state='complete' WHERE kind='stack.install'",
-                [],
-            )?;
-            Ok(())
-        })
-        .await
-        .unwrap();
     state
         .managers
         .docker
@@ -139,7 +102,7 @@ async fn connection_can_be_repaired_after_stopped_adoption_without_changing_defa
         .get_mut(&format!("containers/{}", "a".repeat(64)))
         .unwrap()["running"] = json!(true);
     let route = format!("/api/v1/admin/services/{key}/connection");
-    let original = service(&state, &key).await.unwrap();
+    let original = connected(&state, &key).await.unwrap();
     assert_eq!(
         call(
             &state,
@@ -166,14 +129,14 @@ async fn connection_can_be_repaired_after_stopped_adoption_without_changing_defa
         StatusCode::OK
     );
     assert_eq!(
-        service(&state, &key).await.unwrap().access_revision,
+        connected(&state, &key).await.unwrap().access_revision,
         original.access_revision
     );
     assert_eq!(
         call(&state, &route, "PUT", input, &cookie).await.0,
         StatusCode::OK
     );
-    let repaired = service(&state, &key).await.unwrap();
+    let repaired = connected(&state, &key).await.unwrap();
     assert_eq!(repaired.container, original.container);
     assert_eq!(repaired.defaults, original.defaults);
     assert_ne!(repaired.access_revision, original.access_revision);
@@ -189,6 +152,17 @@ async fn connection_can_be_repaired_after_stopped_adoption_without_changing_defa
         .2["healthy"],
         true
     );
+    // A Connected service is validation-only; request options need an Owned service.
+    let options = call(
+        &state,
+        &format!("/api/v1/admin/managers/{key}/options"),
+        "GET",
+        Value::Null,
+        &cookie,
+    )
+    .await;
+    assert_eq!(options.0, StatusCode::CONFLICT, "{}", options.2);
+    crate::test_support::own_services(&state).await;
     for _ in 0..2 {
         let options = call(
             &state,
@@ -208,120 +182,92 @@ async fn connection_can_be_repaired_after_stopped_adoption_without_changing_defa
 }
 
 #[tokio::test]
-async fn release_keeps_a_retryable_intent_after_transport_or_confirmation_loss() {
-    for controller_committed in [false, true] {
-        let (_temp, state, cookie, key, _port, _writes, upstream) = existing().await;
-        let provision = id();
-        let insert = provision.clone();
-        state.db.write("test.owned",move |db| {
-            db.execute("INSERT INTO stack_provisions(id,kind,actor_id,state,container_id,service_id,origin,created_at,updated_at) VALUES (?1,'radarr','alice','complete',?2,?3,'adopted',1,1)",params![insert,"a".repeat(64),key])?;
-            Ok(())
-        }).await.unwrap();
-        let route = format!("/api/v1/admin/stack/{provision}/action");
-        let failed = crate::test_support::CONTROLLER_FAILURE
-            .scope(
-                ("dependency_unavailable", "Response lost"),
-                call(&state, &route, "POST", json!({"action":"release"}), &cookie),
-            )
-            .await;
-        assert_eq!(failed.0, StatusCode::CONFLICT);
-        state.managers.docker.lock().unwrap().extend([
-            ("stack".into(),json!({"items":if controller_committed {json!([])} else {json!([{"id":provision,"kind":"radarr"}])}})),
-            (format!("stack/{provision}/action"),json!({"accepted":true,"released":true})),
-        ]);
-        let list = call(&state, "/api/v1/admin/stack", "GET", Value::Null, &cookie).await;
-        assert_eq!(list.2["provisions"][0]["operation"], "release");
-        assert_eq!(
-            call(&state, &route, "POST", json!({"action":"remove"}), &cookie)
-                .await
-                .0,
-            StatusCode::CONFLICT
-        );
-        assert_eq!(
-            call(&state, &route, "POST", json!({"action":"release"}), &cookie)
-                .await
-                .0,
-            StatusCode::OK
-        );
-        assert_eq!(
-            call(&state, &route, "POST", json!({"action":"release"}), &cookie)
-                .await
-                .0,
-            StatusCode::OK
-        );
-        assert!(
-            call(&state, "/api/v1/admin/stack", "GET", Value::Null, &cookie)
-                .await
-                .2["provisions"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
-        assert_eq!(
-            call(
-                &state,
-                "/api/v1/admin/managers",
-                "GET",
-                Value::Null,
-                &cookie
-            )
-            .await
-            .2["items"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1
-        );
-        upstream.abort();
-    }
-}
-
-#[tokio::test]
-async fn adoption_rejects_a_review_after_connection_revision_changes() {
-    let (_temp, state, cookie, key, port, _writes, upstream) = existing().await;
+async fn transfer_approval_is_rejected_after_the_connection_changes() {
+    let (_temp, state, cookie, key, port, writes, upstream) = existing().await;
+    state
+        .managers
+        .docker
+        .lock()
+        .unwrap()
+        .get_mut(&format!("containers/{}", "a".repeat(64)))
+        .unwrap()["running"] = json!(true);
+    let route = format!("/api/v1/admin/services/{key}/connection");
+    let input = json!({"port":port,"url_base":"","secret":"correct-fixture-api-key"});
+    assert_eq!(
+        call(&state, &route, "PUT", input.clone(), &cookie).await.0,
+        StatusCode::OK
+    );
     let review_id = id();
-    state.managers.docker.lock().unwrap().extend([
-        ("stack/adopt/preview".into(), json!({"review_id":review_id})),
-        ("stack/adopt/check".into(), json!({"accepted":true})),
-    ]);
-    assert_eq!(
-        call(
-            &state,
-            "/api/v1/admin/stack/adopt/preview",
-            "POST",
-            json!({"service_id":key}),
-            &cookie
-        )
-        .await
-        .0,
-        StatusCode::OK
+    state.managers.docker.lock().unwrap().insert(
+        "stack/transfers/review".into(),
+        json!({"review_id":review_id,"revision":"plan","kind":"radarr","blockers":[],"automation":[],"compose":null}),
     );
-    assert_eq!(
-        call(
-            &state,
-            &format!("/api/v1/admin/services/{key}/connection"),
-            "PUT",
-            json!({"port":port,"url_base":"","secret":"correct-fixture-api-key","allow_unverified":true}),
-            &cookie
-        )
-        .await
-        .0,
-        StatusCode::OK
-    );
-    let result = call(
+    let review = call(
         &state,
-        "/api/v1/admin/stack/adopt",
+        &format!("/api/v1/admin/services/{key}/transfer"),
         "POST",
-        json!({"service_id":key,"review_id":review_id}),
+        json!({}),
         &cookie,
     )
     .await;
-    assert_eq!(result.0, StatusCode::CONFLICT, "{}", result.2);
+    assert_eq!(review.0, StatusCode::OK, "{}", review.2);
+    assert_eq!(review.2["state"], "review");
+    assert_eq!(review.2["review"]["blockers"], json!([]), "{}", review.2);
+    let approval = json!({"review_revision":review.2["review_revision"],"confirm":true,
+        "declarations":{"cron":true,"systemd":true,"ci_cd":true,"configuration_management":true,"manual_compose":true}});
+    // Reviewing reads the original's API only; it never changes the Connected service.
+    assert_eq!(writes.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        call(&state, &route, "PUT", input, &cookie).await.0,
+        StatusCode::OK
+    );
+    let approve = format!("/api/v1/admin/transfers/{review_id}/approve");
+    let stale = call(&state, &approve, "POST", approval.clone(), &cookie).await;
+    assert_eq!(stale.0, StatusCode::CONFLICT, "{}", stale.2);
+    assert_eq!(stale.2["error"]["code"], "revision_changed");
+    // The stale review is closed; nothing was queued and the original keeps running.
+    let closed = call(
+        &state,
+        &format!("/api/v1/admin/transfers/{review_id}"),
+        "GET",
+        Value::Null,
+        &cookie,
+    )
+    .await;
+    assert_eq!(closed.2["state"], "cancelled", "{}", closed.2);
+    assert_eq!(
+        call(&state, &approve, "POST", approval, &cookie).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &state,
+            &format!("/api/v1/admin/transfers/{review_id}"),
+            "GET",
+            Value::Null,
+            &cookie
+        )
+        .await
+        .2["state"],
+        "cancelled"
+    );
+    let queued: i64 = state
+        .db
+        .read("test.transfer_jobs", |db| {
+            Ok(db.query_row(
+                "SELECT COUNT(*) FROM jobs WHERE kind='service.transfer'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(queued, 0);
     upstream.abort();
 }
 
 #[tokio::test]
-async fn seerr_requires_a_managed_link_and_preserves_conflicting_native_connections() {
+async fn seerr_links_only_owned_pairs_and_preserves_conflicting_native_connections() {
     let (_temp, state, cookie, manager_id, manager_port, _writes, manager_upstream) =
         existing().await;
     call(
@@ -392,16 +338,9 @@ async fn seerr_requires_a_managed_link_and_preserves_conflicting_native_connecti
     assert_eq!(registered.0, StatusCode::OK, "{}", registered.2);
     let seerr_id = registered.2["id"].as_str().unwrap().to_owned();
     let original = native.lock().await.clone();
-    let stored_manager = manager_id.clone();
-    state.db.write("test.request_choices",move |db| {
-        db.execute("UPDATE manager_services SET defaults=?1 WHERE id=?2",params![json!({"root_folder":"/movies","quality_profile":1,"monitored":true}).to_string(),stored_manager])?;
-        db.execute("INSERT INTO stack_provisions(id,kind,actor_id,state,service_id,created_at,updated_at) VALUES ('installed-radarr','radarr','alice','complete',?1,1,1)",[stored_manager])?;
-        Ok(())
-    }).await.unwrap();
-    connections::tick(&state).await.unwrap();
-    assert_eq!(*native.lock().await, original);
     let configure =
         |action: &str| json!({"source_id":seerr_id,"target_id":manager_id,"action":action});
+    // Connected services are validation-only: no link is offered or written.
     assert_eq!(
         call(
             &state,
@@ -412,10 +351,31 @@ async fn seerr_requires_a_managed_link_and_preserves_conflicting_native_connecti
         )
         .await
         .0,
-        StatusCode::OK
+        StatusCode::NOT_FOUND
     );
     connections::tick(&state).await.unwrap();
+    assert_eq!(*native.lock().await, original);
+    let stored_manager = manager_id.clone();
+    state
+        .db
+        .write("test.request_choices", move |db| {
+            db.execute(
+                "UPDATE manager_services SET defaults=?1 WHERE id=?2",
+                params![
+                    json!({"root_folder":"/movies","quality_profile":1,"monitored":true})
+                        .to_string(),
+                    stored_manager
+                ],
+            )?;
+            crate::test_support::own(db)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    // Owned pairs link automatically, beside the conflicting record it never touches.
+    connections::tick(&state).await.unwrap();
     assert_eq!(native.lock().await.len(), 2);
+    assert_eq!(native.lock().await[0], original[0]);
     native.lock().await[1]["activeDirectory"] = json!("/manual-choice");
     let manual = native.lock().await.clone();
     assert_eq!(
@@ -509,7 +469,7 @@ async fn recreated_container_is_followed_only_with_the_same_name_mounts_and_api_
     recreate(&state, &original, &followed, media);
     let test = call(&state, &probe, "POST", Value::Null, &cookie).await;
     assert_eq!(test.0, StatusCode::OK, "{}", test.2);
-    assert_eq!(service(&state, &key).await.unwrap().container, followed);
+    assert_eq!(connected(&state, &key).await.unwrap().container, followed);
 
     // Different storage must be reviewed before Thelxinoe uses the replacement.
     let changed = "d".repeat(64);
@@ -529,7 +489,7 @@ async fn recreated_container_is_followed_only_with_the_same_name_mounts_and_api_
         "{}",
         test.2
     );
-    assert_eq!(service(&state, &key).await.unwrap().container, followed);
+    assert_eq!(connected(&state, &key).await.unwrap().container, followed);
     let chosen = call(
         &state,
         &route,
@@ -539,14 +499,10 @@ async fn recreated_container_is_followed_only_with_the_same_name_mounts_and_api_
     )
     .await;
     assert_eq!(chosen.0, StatusCode::OK, "{}", chosen.2);
-    assert_eq!(service(&state, &key).await.unwrap().container, changed);
+    assert_eq!(connected(&state, &key).await.unwrap().container, changed);
 
-    // Installed and adopted identities belong to the controller, never to name matching.
-    let stored = key.clone();
-    state.db.write("test.owned", move |db| {
-        db.execute("INSERT INTO stack_provisions(id,kind,actor_id,state,service_id,created_at,updated_at) VALUES ('adopted-radarr','radarr','alice','complete',?1,1,1)",[stored])?;
-        Ok(())
-    }).await.unwrap();
+    // Owned identities belong to the controller, never to name matching.
+    crate::test_support::own_services(&state).await;
     recreate(&state, &changed, &"e".repeat(64), json!([]));
     let test = call(&state, &probe, "POST", Value::Null, &cookie).await;
     assert_eq!(test.0, StatusCode::CONFLICT, "{}", test.2);

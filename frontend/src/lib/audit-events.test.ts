@@ -10,14 +10,16 @@ describe('audit event presentation', () => {
   it('labels known actions and spells out unknown ones', () => {
     expect(auditLabel('auth.passkey.added')).toBe('Added a passkey');
     expect(auditLabel('media.delete.complete')).toBe('Media delete complete');
-    expect(auditLabel('stack.restore-original')).toBe(
-      'Restored original service settings',
+    expect(auditLabel('transfer.recovery.return')).toBe(
+      'Returned to the original service',
     );
   });
 
   it('groups whole action families by their first segment', () => {
     expect(auditCategory('session.revoke')).toBe('Security');
     expect(auditCategory('service.update.apply')).toBe('Services');
+    expect(auditCategory('transfer.commit')).toBe('Services');
+    expect(auditCategory('connection.forget')).toBe('Services');
     expect(auditCategory('auto_delete.watched')).toBe('Retention');
     expect(auditCategory('unknown.thing')).toBe('Other');
   });

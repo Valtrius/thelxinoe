@@ -17,8 +17,7 @@
   import ConfirmDialog from './providers/components/ui/ConfirmDialog.svelte';
   import Switch from './ui/Switch.svelte';
   import { Copy, LoaderCircle } from '@lucide/svelte';
-  import OwnershipReview from './services/OwnershipReview.svelte';
-  import DriftReview from './services/DriftReview.svelte';
+  import OwnershipModal from './services/OwnershipModal.svelte';
   import NativeAccessSettings from './services/NativeAccessSettings.svelte';
   import ConnectionSettings from './services/ConnectionSettings.svelte';
   import RecyclarrSettings from './services/RecyclarrSettings.svelte';
@@ -46,6 +45,7 @@
   import IndexerOnboarding from './services/IndexerOnboarding.svelte';
   import ConnectionTestButton from './ui/ConnectionTestButton.svelte';
   import ServiceConnections, {
+    type ConnectionAction,
     type ServiceConnection,
   } from './ServiceConnections.svelte';
 
@@ -74,7 +74,7 @@
     type SupportSnapshot,
     type StackService,
     type Provision,
-    type TransferReview,
+    type ServiceStage,
     type UpdatePolicy,
     type Update,
     type UpdateTarget,
@@ -137,16 +137,14 @@
       ]),
     ) as Record<ServiceKind, UpdateDraft>,
   );
-  const transferReviews = $state(
-    Object.fromEntries(
-      definitions.map((definition) => [definition.kind, null]),
-    ) as Record<ServiceKind, TransferReview | null>,
-  );
-  const releasedCompose = $state(
-    Object.fromEntries(
-      definitions.map((definition) => [definition.kind, false]),
-    ) as Record<ServiceKind, boolean>,
-  );
+  let serviceStages = $state<ServiceStage[]>([]);
+  // The guided ownership workflow; reopening resumes its durable operation.
+  let ownershipModal = $state<{
+    kind: ServiceKind;
+    serviceId: string;
+    transferId: string | null;
+  } | null>(null);
+  let forgetKind = $state<ServiceKind | null>(null);
   const snapshots = $state<Partial<Record<ServiceKind, SupportSnapshot>>>({});
   const managerOptions = $state<Partial<Record<ServiceKind, ManagerOptions>>>(
     {},
@@ -189,6 +187,7 @@
     containers: '',
     stack: '',
     connections: '',
+    stages: '',
   });
 
   function integration(definition: Definition) {
@@ -207,6 +206,27 @@
   }
   function runtime(kind: ServiceKind) {
     return stackServices.find((item) => item.kind === kind);
+  }
+  function stageOf(kind: ServiceKind) {
+    return serviceStages.find((item) => item.kind === kind);
+  }
+  /** Owned, set up and not held: the only state with normal operations. */
+  function operational(kind: ServiceKind) {
+    const stage = stageOf(kind);
+    return stage?.stage === 'owned' && !stage.hold;
+  }
+  function openOwnership(kind: ServiceKind) {
+    const stage = stageOf(kind);
+    const serviceId = stage?.connection?.id ?? stage?.ownership?.id;
+    if (!serviceId) return;
+    ownershipModal = {
+      kind,
+      serviceId,
+      transferId:
+        stage?.operation?.type === 'transfer'
+          ? stage.operation.id
+          : (stage?.draft_review ?? null),
+    };
   }
   function updateTarget(kind: ServiceKind) {
     return updateTargets.find((item) => item.kind === kind);
@@ -257,6 +277,7 @@
   const connected = $derived(integration(definition));
   const item = $derived(provision(selectedKind));
   const live = $derived(runtime(selectedKind));
+  const selectedStage = $derived(stageOf(selectedKind));
   const supportData = $derived(snapshots[selectedKind]);
   const nzbgetLoginTarget = $derived(
     provision('nzbget') ?? supportService('nzbget'),
@@ -315,7 +336,7 @@
     return (
       !serviceOperationActive(kind) &&
       !!item &&
-      (item.origin !== 'adopted' || kind === 'recyclarr') &&
+      !item.hold?.startsWith('transfer') &&
       (live?.can_retire ||
         (!live && ['blocked', 'retiring'].includes(item.state)))
     );
@@ -327,6 +348,7 @@
       live: runtime(kind),
       connected: integration(definition),
       update: serviceUpdates(kind)[0],
+      stage: stageOf(kind),
       unavailable: Boolean(
         loadErrors[definition.role === 'manager' ? 'managers' : 'support'] ||
         loadErrors.stack,
@@ -462,6 +484,27 @@
       loadErrors.containers = String(error);
     }
   }
+  async function loadStages() {
+    loadErrors.stages = '';
+    try {
+      serviceStages = (await api<{ items: ServiceStage[] }>('/admin/services'))
+        .items;
+    } catch (error) {
+      loadErrors.stages = String(error);
+    }
+  }
+  async function testConnection(kind: ServiceKind) {
+    const id = stageOf(kind)?.connection?.id;
+    if (!id) return;
+    await api(`/admin/services/${id}/test`, 'POST', {});
+    await refresh();
+  }
+  async function forgetConnection(kind: ServiceKind) {
+    const id = stageOf(kind)?.connection?.id;
+    if (!id) return;
+    await api(`/admin/services/${id}/forget`, 'POST', {});
+    await refresh();
+  }
   async function loadStack() {
     loadErrors.stack = '';
     try {
@@ -508,6 +551,7 @@
       loadApprovalUsers(),
       loadUpdateData(),
       loadStack(),
+      loadStages(),
       loadConnections(),
     ]);
     await loadContainers();
@@ -528,7 +572,7 @@
   }
   async function connectionAction(
     connection: ServiceConnection,
-    action: 'connect' | 'disconnect' | 'retry',
+    action: ConnectionAction,
   ) {
     ++connectionLoad;
     const updated = await api<ServiceConnection>(
@@ -721,28 +765,6 @@
     await api(`/admin/support/${service.id}`, 'POST', { action, ...extra });
     await refreshSupport(kind);
   }
-  async function previewAdoption(definition: Definition) {
-    const connected = integration(definition);
-    if (!connected) return;
-    transferReviews[definition.kind] = await api<TransferReview>(
-      '/admin/stack/adopt/preview',
-      'POST',
-      { service_id: connected.id },
-    );
-    releasedCompose[definition.kind] = false;
-  }
-  async function adopt(definition: Definition) {
-    const connected = integration(definition);
-    const review = transferReviews[definition.kind];
-    if (!connected || !review) return;
-    await api('/admin/stack/adopt', 'POST', {
-      service_id: connected.id,
-      review_id: review.review_id,
-      released_compose: releasedCompose[definition.kind],
-    });
-    transferReviews[definition.kind] = null;
-    await refresh();
-  }
   async function stackAction(kind: ServiceKind, action: string) {
     const service = runtime(kind) ?? provision(kind);
     if (!service) return;
@@ -814,6 +836,33 @@
       if (kind) void work(() => stackAction(kind, 'remove'), '', kind, true);
     }}
   />
+  <ConfirmDialog
+    open={forgetKind !== null}
+    title={`Forget ${definitions.find((service) => service.kind === forgetKind)?.label ?? 'service'}?`}
+    message="Thelxinoe deletes only its own connection record. The container, its configuration and its data are not touched."
+    confirmLabel="Forget connection"
+    eyebrow="FORGET / CONNECTED SERVICE"
+    busy={forgetKind ? isBusy(forgetKind) : false}
+    error={forgetKind ? (feedback[forgetKind] ?? '') : ''}
+    onCancel={() => (forgetKind = null)}
+    onConfirm={() => {
+      const kind = forgetKind;
+      forgetKind = null;
+      if (kind) void work(() => forgetConnection(kind), '', kind, true);
+    }}
+  />
+  {#if ownershipModal}
+    {@const modal = ownershipModal}
+    <OwnershipModal
+      serviceId={modal.serviceId}
+      transferId={modal.transferId}
+      label={definitions.find((service) => service.kind === modal.kind)
+        ?.label ?? modal.kind}
+      onClose={() => (ownershipModal = null)}
+      changed={refresh}
+      openService={() => selectService(modal.kind)}
+    />
+  {/if}
   <nav
     class="service-strip mb-7 grid grid-cols-2 gap-1.5 @min-[270px]/settings:grid-cols-4 @min-[1100px]/settings:grid-cols-8"
     aria-label="Select service"
@@ -888,7 +937,7 @@
         {@const attached = integration(service)}
         {@const provisioned = provision(service.kind)}
         {@const runtimeService = runtime(service.kind)}
-        {@const review = transferReviews[service.kind]}
+        {@const stageInfo = stageOf(service.kind)}
         {@const container = containerFor(service)}
         {@const state = status(service.kind)}
         {@const url = hasNativeAccess(service.kind)
@@ -991,39 +1040,41 @@
           ]}
           inert={!active}
         >
-          {#if !operating}
-            {#if review}
+          {#if stageInfo?.operation?.type === 'transfer'}
+            <!-- The operation stays reachable while its modal is closed. -->
+            <Button size="form" onclick={() => openOwnership(service.kind)}
+              >{['failed', 'suspended'].includes(stageInfo.operation.state)
+                ? 'Open transfer recovery'
+                : 'Open ownership transfer'}</Button
+            >
+          {:else if !operating}
+            {#if stageInfo?.stage === 'connected'}
               <Button
                 size="form"
-                disabled={isBusy(service.kind) ||
-                  (!!review.compose_project && !releasedCompose[service.kind])}
-                onclick={() =>
-                  void operate(
-                    service.kind,
-                    () => adopt(service),
-                    `${service.label} ownership transfer queued.`,
-                  )}>Take ownership</Button
+                disabled={isBusy(service.kind)}
+                onclick={() => openOwnership(service.kind)}
+                >{stageInfo.draft_review
+                  ? 'Continue ownership review'
+                  : 'Take ownership'}</Button
               >
               <Button
                 size="form"
                 variant="secondary"
                 disabled={isBusy(service.kind)}
-                onclick={() => (transferReviews[service.kind] = null)}
-                >Cancel</Button
+                onclick={() =>
+                  void work(
+                    () => testConnection(service.kind),
+                    `${service.label} connection checked.`,
+                  )}>Test connection</Button
               >
-            {:else if provisioned?.state === 'retiring' && provisioned.operation === 'release'}
               <Button
                 size="form"
                 variant="secondary"
-                disabled={!!pendingActions[service.kind] ||
-                  !!activeUpdate(service.kind)}
-                onclick={() =>
-                  void work(
-                    () => stackAction(service.kind, 'release'),
-                    `${service.label} ownership released. Container and data retained.`,
-                    service.kind,
-                    true,
-                  )}>Retry release</Button
+                disabled={isBusy(service.kind)}
+                onclick={() => {
+                  feedback[service.kind] = '';
+                  forgetKind = service.kind;
+                }}>Forget connection</Button
               >
             {:else if provisioned?.state === 'blocked'}
               <Button
@@ -1034,29 +1085,9 @@
                     retryProvision(service.kind),
                   )}>Retry setup</Button
               >
-              {#if provisioned.origin === 'adopted' && (service.kind !== 'recyclarr' || !stackServices.some((entry) => entry.id === provisioned.id && !entry.transfer_pending))}<Button
-                  size="form"
-                  variant="secondary"
-                  disabled={isBusy(service.kind)}
-                  onclick={() =>
-                    void work(async () => {
-                      if (service.kind === 'recyclarr') {
-                        await api(
-                          `/admin/stack/${provisioned.id}/restore-original`,
-                          'POST',
-                        );
-                        await refresh();
-                      } else {
-                        await stackAction(service.kind, 'release');
-                      }
-                    })}
-                  >{service.kind === 'recyclarr'
-                    ? 'Restore original'
-                    : 'Cancel ownership transfer'}</Button
-                >{/if}
-            {:else if runtimeService && runtimeService.registered !== false && !setupActive(service.kind)}
+            {:else if runtimeService && runtimeService.registered !== false && !setupActive(service.kind) && operational(service.kind)}
               {#if runtimeService.existence === 'present'}
-                {#each service.role === 'job' ? ['reconcile'] : runtimeService.imported ? (runtimeService.running ? ['restart', 'stop', 'reconcile'] : ['start', 'reconcile']) : runtimeService.running ? ['restart', 'stop', 'reconcile'] : ['start', 'reconcile'] as action (action)}
+                {#each service.role === 'job' ? ['reconcile'] : runtimeService.running ? ['restart', 'stop', 'reconcile'] : ['start', 'reconcile'] as action (action)}
                   <Button
                     size="form"
                     variant="secondary"
@@ -1064,24 +1095,11 @@
                     onclick={() =>
                       void work(() => stackAction(service.kind, action))}
                     >{action === 'reconcile'
-                      ? runtimeService.imported
-                        ? 'Refresh Docker state'
-                        : 'Repair configuration'
+                      ? 'Repair configuration'
                       : action[0].toUpperCase() + action.slice(1)}</Button
                   >
                 {/each}
               {/if}
-              {#if runtimeService.can_release}<Button
-                  size="form"
-                  variant="secondary"
-                  disabled={isBusy(service.kind)}
-                  onclick={() =>
-                    void operate(
-                      service.kind,
-                      () => stackAction(service.kind, 'release'),
-                      `${service.label} ownership released. Container and data retained.`,
-                    )}>Release ownership</Button
-                >{/if}
               {#if runtimeService.can_recreate}<Button
                   size="form"
                   disabled={isBusy(service.kind)}
@@ -1090,14 +1108,6 @@
                       stackAction(service.kind, 'recreate'),
                     )}>Recreate and start</Button
                 >{/if}
-            {:else if attached && !provisioned}
-              <Button
-                size="form"
-                variant="secondary"
-                disabled={isBusy(service.kind) || !!loadErrors.stack}
-                onclick={() => void work(() => previewAdoption(service))}
-                >Review ownership transfer</Button
-              >
             {/if}
             {#if canRetire(service.kind)}
               <Button
@@ -1109,7 +1119,7 @@
                 >Retire and keep data</Button
               >
             {/if}
-            {#if provisioned && (provisioned.origin !== 'adopted' || service.kind === 'recyclarr') && (runtimeService?.can_remove || (provisioned.state === 'retiring' && provisioned.operation === 'remove'))}
+            {#if provisioned && !provisioned.hold?.startsWith('transfer') && (runtimeService?.can_remove || (provisioned.state === 'retiring' && provisioned.operation === 'remove'))}
               <Button
                 size="form"
                 variant="secondary"
@@ -1120,7 +1130,7 @@
                 }}>Remove service</Button
               >
             {/if}
-            {#if !attached && !provisioned && !runtimeService}<span
+            {#if !stageInfo || stageInfo.stage === 'none'}<span
                 class="text-xs text-muted">Choose how to connect.</span
               >{/if}
           {/if}
@@ -1137,10 +1147,10 @@
               Ownership
             </dt>
             <dd class="mt-0.75 wrap-anywhere text-[11px]">
-              {runtimeService || provisioned
-                ? 'Thelxinoe'
-                : attached
-                  ? 'External'
+              {stageInfo?.stage === 'owned'
+                ? `Owned${stageInfo.ownership?.origin === 'transferred' ? ' · transferred' : ''}${stageInfo.hold ? ' · held' : ''}`
+                : stageInfo?.stage === 'connected'
+                  ? 'Connected · external'
                   : 'Not configured'}
             </dd>
           </div>
@@ -1149,7 +1159,7 @@
               Application version
             </dt>
             <dd class="mt-0.75 wrap-anywhere text-[11px]">
-              {attached?.version || '—'}
+              {attached?.version || stageInfo?.connection?.version || '—'}
             </dd>
           </div>
           <div>
@@ -1159,6 +1169,7 @@
             <dd class="mt-0.75 wrap-anywhere text-[11px]">
               {runtimeService?.name ||
                 container?.names[0]?.replace(/^\//, '') ||
+                stageInfo?.connection?.container_name ||
                 (attached ? 'Unavailable' : '—')}
             </dd>
           </div>
@@ -1195,25 +1206,69 @@
           {#if live?.drift}<p
               class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
             >
-              Configuration changed outside Thelxinoe.
-              {#if live?.imported}Lifecycle actions and backups wait until you
-                review the change and accept it, or release ownership.{:else}Repair
-                configuration to restore managed settings.{/if}
-            </p>
-            {#if live?.imported}<DriftReview
-                serviceId={live.id}
-                changed={refresh}
-              />{/if}{/if}
+              Configuration changed outside Thelxinoe. Repair configuration to
+              restore managed settings.
+            </p>{/if}
         </Notice>
       {/if}
-      {#if transferReviews[selectedKind]}
-        {@const review = transferReviews[selectedKind]!}
-        <OwnershipReview
-          {review}
-          bind:releasedCompose={releasedCompose[selectedKind]}
-        />
+      {#if selectedStage?.stage === 'connected'}
+        <section
+          class="work-section settings-section"
+          aria-label="Connected service"
+        >
+          <h3 class="mb-3.25 text-[12px] font-[650]">Connected</h3>
+          <p class="mb-3 text-[11px] leading-[1.6] text-muted">
+            Thelxinoe only checks this externally managed {definition.label}'s
+            health and identity. Requests, downloads, library sync, links and
+            container management become available after you take ownership.
+          </p>
+          <dl
+            class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-[11px]"
+          >
+            <dt class="text-muted">Status</dt>
+            <dd>
+              {selectedStage.connection?.verified &&
+              !selectedStage.connection.error
+                ? 'Verified'
+                : 'Unverified'}
+            </dd>
+            <dt class="text-muted">Version</dt>
+            <dd>{selectedStage.connection?.version || '—'}</dd>
+            <dt class="text-muted">Container</dt>
+            <dd class="wrap-anywhere">
+              {selectedStage.connection?.container_name}
+              ({selectedStage.connection?.container_id.slice(0, 12)})
+            </dd>
+            <dt class="text-muted">Docker engine</dt>
+            <dd class="wrap-anywhere">
+              {selectedStage.connection?.engine || '—'}
+            </dd>
+            <dt class="text-muted">Last check</dt>
+            <dd>
+              {selectedStage.connection?.checked_at
+                ? new Date(
+                    selectedStage.connection.checked_at * 1000,
+                  ).toLocaleString(undefined, {
+                    timeZone: timezone || undefined,
+                    hour12: timeFormat === '12h',
+                  })
+                : 'Not checked yet'}{#if selectedStage.connection?.error}<span
+                  class="block text-warning"
+                  >{selectedStage.connection.error}</span
+                >{/if}
+            </dd>
+          </dl>
+        </section>
+      {:else if selectedStage?.stage === 'owned' && selectedStage.hold && selectedStage.hold !== 'setup'}
+        <Notice class="col-span-full" tone="warning" role="status">
+          <strong>Owned, under an operational hold</strong>
+          <p>
+            Normal operations stay paused until its ownership transfer finishes
+            its required checks or a recovery completes.
+          </p>
+        </Notice>
       {/if}
-      {#if !connected && !item && !live}
+      {#if !selectedStage || selectedStage.stage === 'none'}
         <section
           class="work-section settings-section"
           aria-label="Service setup"
@@ -1361,7 +1416,7 @@
           </div>
         </section>
       {/if}
-      {#if connected && !setupActive(selectedKind)}
+      {#if connected && !setupActive(selectedKind) && (selectedStage?.stage === 'connected' || operational(selectedKind)) && !selectedStage?.operation}
         {#key connected.id}
           <ConnectionSettings
             service={connected}
@@ -1371,7 +1426,7 @@
             changed={refresh}
           />
         {/key}
-        {#if hasNativeAccess(selectedKind) && (!connected.access_url || connected.native_url)}
+        {#if hasNativeAccess(selectedKind) && operational(selectedKind) && (!connected.access_url || connected.native_url)}
           <NativeAccessSettings
             id={connected.id}
             url={connected.native_url ?? ''}
@@ -1379,7 +1434,7 @@
           />
         {/if}
 
-        {#if definition.role === 'manager' || ['prowlarr', 'nzbget', 'bazarr'].includes(definition.kind)}
+        {#if operational(selectedKind) && (definition.role === 'manager' || ['prowlarr', 'nzbget', 'bazarr'].includes(definition.kind))}
           <div
             class={[
               'grid min-w-0 gap-7',
@@ -1642,9 +1697,9 @@
           Retiring removes the installation and its API connection. Appdata,
           request history, and media files are kept.
         </Notice>{/if}
-      {#if selectedKind === 'recyclarr' && item?.state === 'complete'}<RecyclarrSettings
+      {#if selectedKind === 'recyclarr' && item?.state === 'complete' && operational('recyclarr')}<RecyclarrSettings
         />{/if}
-      {#if (connected || (definition.role === 'job' && live)) && !setupActive(selectedKind)}
+      {#if operational(selectedKind) && (connected || (definition.role === 'job' && live)) && !setupActive(selectedKind)}
         <section
           class="work-section settings-section"
           aria-label="Updates"
@@ -1652,42 +1707,37 @@
         >
           <h3 class="mb-3.25 text-[12px] font-[650]">Updates</h3>
           {#if target}
-            {#if live?.capabilities?.update.available !== false}{#key target.id}<AutoSaveForm
-                  class="grid gap-3 [&_label]:m-0"
-                  label={`${definition.label} update settings`}
-                  value={{
-                    policy: servicePolicy.policy,
-                    window_start: servicePolicy.start,
-                    window_end: servicePolicy.end,
-                  }}
-                  onRevert={(previous) => {
-                    servicePolicy.policy = previous.policy;
-                    servicePolicy.start = previous.window_start;
-                    servicePolicy.end = previous.window_end;
-                  }}
-                  onsave={(submitted) =>
-                    api(
-                      `/admin/service-updates/policy/${target.id}`,
-                      'POST',
-                      submitted,
-                    )}
-                >
-                  {#snippet children(save)}
-                    <UpdatePolicyFields
-                      bind:policy={servicePolicy.policy}
-                      bind:start={servicePolicy.start}
-                      bind:end={servicePolicy.end}
-                      {timezone}
-                      inherited={serverPolicy}
-                      onChange={() => void save()}
-                    />
-                  {/snippet}
-                </AutoSaveForm>{/key}{/if}
-            {#if live?.capabilities?.update.available === false}<p
-                class="my-2 text-xs text-muted"
+            {#key target.id}<AutoSaveForm
+                class="grid gap-3 [&_label]:m-0"
+                label={`${definition.label} update settings`}
+                value={{
+                  policy: servicePolicy.policy,
+                  window_start: servicePolicy.start,
+                  window_end: servicePolicy.end,
+                }}
+                onRevert={(previous) => {
+                  servicePolicy.policy = previous.policy;
+                  servicePolicy.start = previous.window_start;
+                  servicePolicy.end = previous.window_end;
+                }}
+                onsave={(submitted) =>
+                  api(
+                    `/admin/service-updates/policy/${target.id}`,
+                    'POST',
+                    submitted,
+                  )}
               >
-                Check only. {live.capabilities.update.reason}
-              </p>{/if}
+                {#snippet children(save)}
+                  <UpdatePolicyFields
+                    bind:policy={servicePolicy.policy}
+                    bind:start={servicePolicy.start}
+                    bind:end={servicePolicy.end}
+                    {timezone}
+                    inherited={serverPolicy}
+                    onChange={() => void save()}
+                  />
+                {/snippet}
+              </AutoSaveForm>{/key}
             {#if policy?.candidate && policy.candidate !== live?.image}
               <ServiceUpdateRelease
                 image={policy.candidate}
@@ -1715,7 +1765,7 @@
               >
                 {policy.error}
               </Notice>{/if}
-            {#if policy?.candidate && policy.candidate !== live?.image && !policy.error && live?.capabilities?.update.available !== false}
+            {#if policy?.candidate && policy.candidate !== live?.image && !policy.error}
               <div class="row-actions flex flex-wrap items-center gap-2">
                 <Button
                   variant="secondary"

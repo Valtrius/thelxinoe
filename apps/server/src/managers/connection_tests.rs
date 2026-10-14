@@ -13,7 +13,7 @@ async fn removed_target_cleanup_stays_visible_retries_and_removes_only_its_link(
     let key = id();
     let insert_key = key.clone();
     state.db.write("test.remove", move |db| {
-        db.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,container_id,service_id,created_at,updated_at) VALUES (?1,'radarr','alice',17878,X'01','complete','old','radarr',1,1)",[insert_key])?;
+        db.execute("UPDATE stack_provisions SET id=?1,host_port=17878,container_id='old' WHERE kind='radarr'",[insert_key])?;
         Ok(())
     }).await.unwrap();
     state.managers.docker.lock().unwrap().extend([
@@ -84,7 +84,7 @@ async fn retired_target_cleanup_preserves_disabled_link_for_reinstall() {
         .db
         .write("test.retire", move |db| {
             db.execute(
-                "INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,container_id,service_id,created_at,updated_at) VALUES (?1,'radarr','alice',17878,X'01','complete','old','radarr',1,1)",
+                "UPDATE stack_provisions SET id=?1,host_port=17878,container_id='old' WHERE kind='radarr'",
                 [insert_key],
             )?;
             Ok(())
@@ -132,6 +132,7 @@ async fn retired_target_cleanup_preserves_disabled_link_for_reinstall() {
                 "UPDATE manager_services SET enabled=1,error=NULL WHERE id='radarr'",
                 [],
             )?;
+            crate::test_support::own(db)?;
             Ok(())
         })
         .await
@@ -400,6 +401,8 @@ async fn connected_services_on(
             Ok(())
         }).await.unwrap();
     }
+    // Links join operational Owned services only.
+    crate::test_support::own_services(&state).await;
     // Adapter regressions explicitly opt into each link; automatic discovery is
     // covered against real services in scripts/test-service-connections.mjs.
     action(&state, &cookie, "radarr", "disconnect").await;

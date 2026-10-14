@@ -527,7 +527,11 @@ fn credential(kind: &str) -> anyhow::Result<(String, String)> {
                 .unwrap_or_default(),
         )
     };
-    anyhow::ensure!(!secret.is_empty(), "Service credential unavailable");
+    // NZBGet without a control password accepts unauthenticated requests.
+    anyhow::ensure!(
+        kind == "nzbget" || !secret.is_empty(),
+        "Service credential unavailable"
+    );
     Ok((username, secret))
 }
 
@@ -546,4 +550,151 @@ fn bazarr_peer_base(kind: &str) -> anyhow::Result<String> {
         }
     }
     Ok(String::new())
+}
+
+/// Disposable transfer validation from inside the candidate's namespace: egress sentinels
+/// first, then the authenticated API and workflow contract, then preserved-record evidence.
+pub async fn transfer(kind: &str, pass: &str) -> anyhow::Result<()> {
+    let write = |name: &str, value: &Value| {
+        let _ = std::fs::write(Path::new("/progress").join(name), value.to_string());
+    };
+    write("progress.json", &json!({"phase":"sentinels"}));
+    let outcome = async {
+        let input: Value = serde_json::from_slice(&std::fs::read("/progress/input.json")?)?;
+        let sentinels = egress(&input["remotes"]).await?;
+        write("progress.json", &json!({"phase":"contract"}));
+        run(kind, true).await?;
+        write("progress.json", &json!({"phase":"evidence"}));
+        // Counts are evidence; the contract above already decided readiness.
+        let evidence = evidence(kind)
+            .await
+            .unwrap_or_else(|error| json!({"unavailable":format!("{error:#}")}));
+        Ok::<_, anyhow::Error>(json!({"pass":pass,"sentinels":sentinels,"api":evidence}))
+    }
+    .await;
+    match &outcome {
+        Ok(report) => {
+            write("report.json", report);
+            write("progress.json", &json!({"phase":"complete"}));
+        }
+        Err(error) => write(
+            "progress.json",
+            &json!({"phase":"failed","error":format!("{error:#}")}),
+        ),
+    }
+    outcome.map(|_| ())
+}
+
+/// Every route out of the namespace must fail: public, DNS, metadata, host, LAN and the
+/// remote services named in the copied configuration. Loopback fixtures don't count.
+async fn egress(remotes: &Value) -> anyhow::Result<Value> {
+    let mut targets: Vec<(String, String, u16)> = [
+        ("public", "1.1.1.1", 443),
+        ("public-dns", "8.8.8.8", 53),
+        ("metadata", "169.254.169.254", 80),
+        ("host", "172.17.0.1", 80),
+        ("lan", "192.168.1.1", 80),
+        ("lan", "10.0.0.1", 80),
+        ("dns-name", "example.com", 443),
+    ]
+    .iter()
+    .map(|(label, host, port)| (label.to_string(), host.to_string(), *port))
+    .collect();
+    for remote in remotes.as_array().into_iter().flatten().take(200) {
+        if let Some(host) = remote["host"].as_str() {
+            let port = remote["port"]
+                .as_u64()
+                .and_then(|p| u16::try_from(p).ok())
+                .unwrap_or(80);
+            targets.push(("configured".into(), host.into(), port));
+        }
+    }
+    let mut results = Vec::new();
+    for (label, host, port) in targets {
+        let resolved = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            tokio::net::lookup_host((host.as_str(), port)),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .map(|addresses| {
+            addresses
+                .filter(|a| !a.ip().is_loopback())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+        let mut reached = false;
+        for address in &resolved {
+            if let Ok(Ok(_)) = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                tokio::net::TcpStream::connect(address),
+            )
+            .await
+            {
+                reached = true;
+            }
+        }
+        anyhow::ensure!(
+            !reached,
+            "Validation reached {label} endpoint {host}:{port}; isolation failed"
+        );
+        results.push(json!({"kind":label,"host":host,"port":port,"blocked":true}));
+    }
+    Ok(json!(results))
+}
+
+/// API-visible preserved records, read with the copied credential.
+async fn evidence(kind: &str) -> anyhow::Result<Value> {
+    let template =
+        crate::templates::find(kind).ok_or_else(|| anyhow::anyhow!("Unsupported adapter"))?;
+    let Some(port) = template.port else {
+        return Ok(json!({}));
+    };
+    let (username, secret) = credential(kind)?;
+    let base = match kind {
+        "radarr" | "sonarr" | "lidarr" | "prowlarr" | "bazarr" => format!(
+            "http://127.0.0.1:{port}{}",
+            thelxinoe_core::service_url_base(kind)
+        ),
+        _ => format!("http://127.0.0.1:{port}"),
+    };
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+    let get = |path: String| {
+        let request = client
+            .get(format!("{base}/{path}"))
+            .header("X-Api-Key", &secret);
+        async move { bounded(request.send().await?).await }
+    };
+    let count = |value: Value| value.as_array().map_or(0, Vec::len);
+    Ok(match kind {
+        "radarr" => json!({"movies":count(get("api/v3/movie".into()).await?)}),
+        "sonarr" => json!({"series":count(get("api/v3/series".into()).await?)}),
+        "lidarr" => json!({"artists":count(get("api/v1/artist".into()).await?)}),
+        "prowlarr" => json!({"indexers":count(get("api/v1/indexer".into()).await?),
+            "applications":count(get("api/v1/applications".into()).await?)}),
+        "bazarr" => {
+            json!({"languages_profiles":count(get("api/system/languages/profiles".into()).await?)})
+        }
+        "seerr" => {
+            json!({"requests":get("api/v1/request?take=1".into()).await?["pageInfo"]["results"]})
+        }
+        "nzbget" => {
+            let history = bounded(
+                client
+                    .post(format!("{base}/jsonrpc"))
+                    .basic_auth(&username, Some(&secret))
+                    .json(&json!({"method":"history","params":[true],"id":1}))
+                    .send()
+                    .await?,
+            )
+            .await?;
+            json!({"history":count(history["result"].clone())})
+        }
+        _ => json!({}),
+    })
 }

@@ -446,8 +446,9 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<
     Ok(Json(json!({"items":rows})))
 }
 
+/// Read-only: Connected services may be checked before a transfer stops them.
 pub(super) async fn ensure_idle(state: &AppState, key: &str) -> Result<()> {
-    let s = service(state, key).await?;
+    let s = connected(state, key).await?;
     let c = Connection::open(state, &s).await?;
     manager_idle(&c).await
 }

@@ -70,7 +70,7 @@ async fn managed(kind: &'static str) -> (tempfile::TempDir, AppState, String, St
     state.db.write("test.managed", move |db| {
         db.execute("UPDATE users SET role='admin' WHERE id='alice'",[])?;
         let table = if kind == "radarr" { "manager_services" } else { "support_services" };
-        db.execute(&format!("INSERT INTO {table}(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('integration','Saved service',?1,'old',7878,'old-generation',X'01','/media','1',1)"),[kind])?;
+        db.execute(&format!("INSERT INTO {table}(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at,operational) VALUES ('integration','Saved service',?1,'old',7878,'old-generation',X'01','/media','1',1,1)"),[kind])?;
         db.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,container_id,service_id,created_at,updated_at) VALUES (?1,?2,'alice',17878,X'01','complete','old','integration',1,1)",params![insert_key,kind])?;
         db.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES ('install','stack.install',?1,'install','complete',1,1)",[json!({"id":insert_key}).to_string()])?;
         Ok(())
@@ -281,34 +281,61 @@ async fn retirement_preserves_history_and_releases_the_kind_for_a_new_installati
     .unwrap()
     .unwrap();
     assert_eq!(retained, "integration");
+    let provision: String = state
+        .db
+        .read("test.provision", |db| {
+            Ok(db.query_row("SELECT id FROM stack_provisions", [], |r| r.get(0))?)
+        })
+        .await
+        .unwrap();
+    let register = |setup: Option<String>| super::super::Register {
+        name: "Replacement".into(),
+        kind: "radarr".into(),
+        container_id: "replacement".into(),
+        port: 7878,
+        api_key: "unused".into(),
+        url_base: "/services/radarr".into(),
+        allow_unverified: false,
+        container_name: "replacement".into(),
+        setup,
+    };
+    let registration = |setup: Option<String>| super::super::Registration {
+        key: retained.clone(),
+        credential: vec![1],
+        media_source: "/media".into(),
+        version: "2".into(),
+        engine: "engine".into(),
+        evidence: json!({}),
+        verified: true,
+        setup,
+    };
+    // A plain connection can't take over the kind while its installation is set up.
     assert!(
-        super::super::storage::register_with_actor_write_stack_provisions(
-            "/media".into(),
-            "2".into(),
-            retained,
-            vec![1],
+        !super::super::storage::register_with_actor_write_stack_provisions(
             &state.db,
-            super::super::Register {
-                name: "Replacement".into(),
-                kind: "radarr".into(),
-                container_id: "replacement".into(),
-                port: 7878,
-                api_key: "unused".into(),
-                url_base: "/services/radarr".into(),
-                allow_unverified: false,
-                container_name: "replacement".into(),
-            },
+            registration(None),
+            register(None),
             "alice".into()
         )
         .await
         .unwrap()
     );
     assert!(
-        super::super::storage::service("integration".into(), &state.db)
-            .await
-            .unwrap()
-            .is_some()
+        super::super::storage::register_with_actor_write_stack_provisions(
+            &state.db,
+            registration(Some(provision.clone())),
+            register(Some(provision)),
+            "alice".into()
+        )
+        .await
+        .unwrap()
     );
+    let reconnected = super::super::storage::service("integration".into(), &state.db)
+        .await
+        .unwrap()
+        .unwrap();
+    // Setup holds it: normal workers can't use the replacement yet.
+    assert!(reconnected.scope == super::super::ownership::Scope::Validation);
 }
 
 #[tokio::test]
@@ -461,59 +488,4 @@ async fn matching_server_record_keeps_missing_container_recovery_available() {
     let item = &response.2["items"][0];
     assert_eq!(item["registered"], true);
     assert_eq!(item["can_recreate"], true);
-}
-
-#[tokio::test]
-async fn changed_adopted_configuration_is_reviewed_before_it_is_accepted() {
-    let (_temp, state, cookie, key) = managed("radarr").await;
-    let review = format!("/api/v1/admin/stack/{key}/drift");
-    let action = format!("/api/v1/admin/stack/{key}/action");
-    let revision = "a".repeat(64);
-    let accept = json!({"action":"accept_configuration","revision":revision});
-    // A Thelxinoe installation repairs its own configuration instead.
-    assert_eq!(
-        call(&state, &review, "GET", Value::Null, &cookie).await.0,
-        StatusCode::CONFLICT
-    );
-    assert_eq!(
-        call(&state, &action, "POST", accept.clone(), &cookie)
-            .await
-            .0,
-        StatusCode::CONFLICT
-    );
-    let adopted = key.clone();
-    state
-        .db
-        .write("test.adopted", move |db| {
-            db.execute(
-                "UPDATE stack_provisions SET origin='adopted' WHERE id=?1",
-                [adopted],
-            )?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-    let changes = json!({"revision":revision,"changes":[{"path":"HostConfig.RestartPolicy.Name",
-        "change":"changed","before":"\"unless-stopped\"","after":"\"always\""}],"blocked":null});
-    state.managers.docker.lock().unwrap().extend([
-        (format!("stack/{key}/drift"), changes.clone()),
-        (
-            "stack".into(),
-            json!({"items":[{"id":key,"existence":"present","phase":"active","drift":true}]}),
-        ),
-        (format!("stack/{key}/action"), json!({"accepted":true})),
-    ]);
-    let response = call(&state, &review, "GET", Value::Null, &cookie).await;
-    assert_eq!((response.0, response.2), (StatusCode::OK, changes));
-    for unreviewed in [
-        json!({"action":"accept_configuration"}),
-        json!({"action":"accept_configuration","revision":"stale"}),
-    ] {
-        assert_eq!(
-            call(&state, &action, "POST", unreviewed, &cookie).await.0,
-            StatusCode::BAD_REQUEST
-        );
-    }
-    let response = call(&state, &action, "POST", accept, &cookie).await;
-    assert_eq!(response.0, StatusCode::OK, "{}", response.2);
 }

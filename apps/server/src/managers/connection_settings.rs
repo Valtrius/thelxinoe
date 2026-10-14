@@ -136,13 +136,13 @@ async fn edit(
     }
     let (base, media_source) =
         support::api_evidence(&state, &container, input.port, &record.kind).await?;
-    let c = Connection {
-        state: &state,
-        base,
-        url_base: input.url_base.clone(),
-        key: credentials.secret.clone(),
-        kind: record.kind.clone(),
-    };
+    let c = Connection::validation(
+        &state,
+        base.clone(),
+        input.url_base.clone(),
+        credentials.secret.clone(),
+        record.kind.clone(),
+    );
     let observed = docker(&state, &format!("containers/{container}")).await?;
     let container_name = observed["name"]
         .as_str()
@@ -192,22 +192,21 @@ async fn edit(
         serde_json::to_vec(&credentials).map_err(|_| unavailable())?
     };
     let encrypted = state.secrets.encrypt(&scope, &plaintext)?;
-    if !storage::save(
-        &state.db,
-        key.clone(),
-        record,
-        (container, container_name),
-        input.port,
-        input.url_base,
+    let saved = storage::Saved {
+        container,
+        container_name,
+        port: input.port,
+        url_base: input.url_base,
         media_source,
+        verified: observed["running"] == true,
         version,
-        encrypted,
-        actor.user.id,
-    )
-    .await?
-    {
+        engine: observed["engine"].as_str().unwrap_or_default().to_owned(),
+        evidence: connection_evidence(&observed, &base),
+        credential: encrypted,
+    };
+    if !storage::save(&state.db, key.clone(), record, saved, actor.user.id).await? {
         return Err(ApiError::conflict(
-            "Finish the current ownership or update operation before editing this connection, and choose a container no other service uses",
+            "Finish the current installation, transfer, recovery or update before editing this connection, and choose a container no other service uses",
         ));
     }
     state.managers.connection_wake.notify_one();

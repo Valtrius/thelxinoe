@@ -16,6 +16,8 @@ reqwest.workspace = true
 sha2 = "0.10"
 roxmltree = "0.21"
 serde_yaml_ng = "0.10"
+libc = "0.2"
+rusqlite.workspace = true
 
 serde.workspace = true
 thelxinoe-backup = { path = "../../crates/backup" }

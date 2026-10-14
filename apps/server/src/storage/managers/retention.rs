@@ -258,7 +258,7 @@ pub(super) fn eligibility(
     if files.is_empty() || files.iter().any(|f| f.2 != "managed") {
         return Ok(None);
     };
-    let permitted = db.query_row("SELECT NOT EXISTS(SELECT 1 FROM manager_bindings b JOIN manager_services s ON s.id=b.service_id JOIN media_files f ON f.id=b.file_id WHERE s.enabled=1 AND b.service_generation=s.generation AND b.generation=f.generation AND b.checked_at>=?2 AND b.file_id IN (SELECT value FROM json_each(?1)) AND NOT COALESCE((SELECT value='true' FROM settings WHERE key='manager.retention.'||b.service_id),EXISTS(SELECT 1 FROM stack_provisions WHERE service_id=b.service_id AND origin='installed')))", params![json!(files.iter().map(|f| &f.0).collect::<Vec<_>>()).to_string(),now()-60], |r| r.get::<_,bool>(0))?;
+    let permitted = db.query_row("SELECT NOT EXISTS(SELECT 1 FROM manager_bindings b JOIN manager_services s ON s.id=b.service_id JOIN media_files f ON f.id=b.file_id WHERE s.operational=1 AND b.service_generation=s.generation AND b.generation=f.generation AND b.checked_at>=?2 AND b.file_id IN (SELECT value FROM json_each(?1)) AND NOT COALESCE((SELECT value='true' FROM settings WHERE key='manager.retention.'||b.service_id),EXISTS(SELECT 1 FROM stack_provisions WHERE service_id=b.service_id AND origin='installed')))", params![json!(files.iter().map(|f| &f.0).collect::<Vec<_>>()).to_string(),now()-60], |r| r.get::<_,bool>(0))?;
     if !permitted {
         return Ok(None);
     }
@@ -317,7 +317,7 @@ pub(super) fn complete_season(
     if episodes.is_empty() {
         return Ok(false);
     };
-    let binding=db.query_row("SELECT m.metadata,b.service_id,b.external_id,b.refreshed_at FROM media m JOIN metadata_bindings b ON b.media_id=m.id JOIN manager_services s ON s.id=b.service_id AND s.kind='sonarr' AND s.enabled=1 AND s.generation=b.service_generation WHERE m.id=?1",[show],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?))).optional()?;
+    let binding=db.query_row("SELECT m.metadata,b.service_id,b.external_id,b.refreshed_at FROM media m JOIN metadata_bindings b ON b.media_id=m.id JOIN manager_services s ON s.id=b.service_id AND s.kind='sonarr' AND s.operational=1 AND s.generation=b.service_generation WHERE m.id=?1",[show],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?))).optional()?;
     let Some((metadata, service, series, refreshed_at)) = binding else {
         return Ok(false);
     };

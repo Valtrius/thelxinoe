@@ -109,67 +109,6 @@ test('A stopped existing container connects only after skipping verification', a
   expect(fixture.unexpected).toEqual([]);
 });
 
-test('Interrupted imported release can be retried after the controller entry disappears', async ({
-  page,
-}, testInfo) => {
-  const fixture = await installUiFixture(page, {
-    role: 'admin',
-    settingsSection: 'services',
-  });
-  let released = false;
-  await page.route('**/api/v1/admin/stack', async (route) =>
-    route.fulfill({
-      json: {
-        items: [],
-        provisions: released
-          ? []
-          : [
-              {
-                id: 'imported-radarr',
-                kind: 'radarr',
-                origin: 'adopted',
-                state: 'retiring',
-                operation: 'release',
-                container_id: 'container-radarr',
-                service_id: 'manager-radarr',
-              },
-            ],
-      },
-    }),
-  );
-  await page.route(
-    '**/api/v1/admin/stack/imported-radarr/action',
-    async (route) => {
-      expect(route.request().postDataJSON()).toEqual({ action: 'release' });
-      released = true;
-      await route.fulfill({ json: { accepted: true, released: true } });
-    },
-  );
-  await page.goto('/');
-  await page
-    .getByRole('navigation', { name: 'Select service' })
-    .getByRole('link', { name: 'Radarr', exact: true })
-    .click();
-  await expect(
-    page.getByRole('button', { name: 'Remove service', exact: true }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByRole('button', { name: 'Retry release', exact: true }),
-  ).toBeEnabled();
-  await page.screenshot({
-    path: testInfo.outputPath('release-retry.png'),
-    fullPage: true,
-  });
-  await page
-    .getByRole('button', { name: 'Retry release', exact: true })
-    .click();
-  await expect(
-    page.getByRole('button', { name: 'Review ownership transfer' }),
-  ).toBeVisible();
-  expect(fixture.errors).toEqual([]);
-  expect(fixture.unexpected).toEqual([]);
-});
-
 for (const width of [1280, 1760, 1920, 2560]) {
   test(`settings follow sidebar motion continuously at ${width}px`, async ({
     page,
@@ -454,6 +393,7 @@ test('a stopped service can be removed after reviewing its configuration cleanup
     async (route) => {
       actions.push(route.request().postDataJSON());
       removed = true;
+      fixture.cleared.add('radarr');
       await route.fulfill({ json: { removed: true } });
     },
   );
@@ -758,6 +698,8 @@ for (const savedControllerData of [false, true]) {
         route.fulfill({ json: { items: [] } }),
       );
     }
+    for (const kind of ['radarr', 'prowlarr', 'nzbget'])
+      fixture.cleared.add(kind);
     await page.route('**/api/v1/admin/stack', (route) =>
       route.fulfill({
         json: {
@@ -1189,58 +1131,6 @@ test('media services preserve real controls across adaptive layouts', async ({
   await expect(
     page.getByRole('switch', { name: 'Enable Fixture indexer' }),
   ).toBeVisible();
-  await page.getByRole('button', { name: 'Review ownership transfer' }).click();
-  await expect(
-    page.getByRole('region', { name: 'Ownership review' }),
-  ).toContainText('Existing container retained');
-  await expect(
-    page.getByRole('region', { name: 'Ownership review' }),
-  ).toContainText('Authentication');
-  await expect(
-    page.getByRole('region', { name: 'Ownership review' }),
-  ).toContainText('Storage and ports');
-  await expect(
-    page.getByRole('region', { name: 'Ownership review' }),
-  ).toContainText('Unchanged');
-  await page.screenshot({
-    path: '.local/services-ownership-review.png',
-    fullPage: true,
-  });
-  await page.setViewportSize({ width: 320, height: 850 });
-  await page
-    .getByRole('region', { name: 'Ownership review' })
-    .scrollIntoViewIfNeeded();
-  await page.screenshot({
-    path: '.local/services-ownership-review-mobile.png',
-    fullPage: true,
-  });
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= window.innerWidth,
-    ),
-  ).toBe(true);
-  await page.setViewportSize({ width: 1280, height: 900 });
-  await expect(
-    page.getByRole('button', { name: 'Take ownership', exact: true }),
-  ).toBeDisabled();
-  await page
-    .getByRole('switch', {
-      name: 'The entire previous Compose project is retired',
-    })
-    .press('Space');
-  await page
-    .getByRole('button', { name: 'Take ownership', exact: true })
-    .click();
-  await expect
-    .poll(() =>
-      fixture.writes.some(
-        (write) =>
-          write.path === '/admin/stack/adopt' &&
-          JSON.stringify(write.body) ===
-            '{"service_id":"support-prowlarr","review_id":"review-prowlarr","released_compose":true}',
-      ),
-    )
-    .toBe(true);
   for (const width of [720, 480, 440, 320]) {
     await page.setViewportSize({ width, height: 850 });
     await page.screenshot({
@@ -1444,93 +1334,6 @@ test('Existing acquisition choices require an explicit root and profile selectio
     path: '.local/existing-acquisition-selected.png',
     fullPage: true,
   });
-  expect(fixture.errors).toEqual([]);
-  expect(fixture.unexpected).toEqual([]);
-});
-
-test('NZBGet ownership preserves authentication and keeps hardening separate', async ({
-  page,
-}) => {
-  const fixture = await installUiFixture(page, {
-    role: 'admin',
-    settingsSection: 'services',
-  });
-  await page.goto('/');
-  await page
-    .getByRole('navigation', { name: 'Select service' })
-    .getByRole('link', { name: 'NZBGet', exact: true })
-    .click();
-  await page.getByRole('button', { name: 'Review ownership transfer' }).click();
-  const review = page.getByRole('region', { name: 'Ownership review' });
-  await expect(review).toContainText('Existing container retained');
-  await expect(review).toContainText('Authentication');
-  await expect(review).toContainText('Unchanged');
-  await expect(review).toContainText('Check only');
-  await expect(review).toContainText('Security recommendations');
-  await expect(review).toContainText('The log file may grow indefinitely.');
-  await expect(review).toContainText('The native password is empty.');
-  await expect(review).toContainText(
-    'Outgoing TLS certificate verification is disabled.',
-  );
-  await expect(review).toContainText(
-    'Exclude this container from watchtower before taking ownership',
-  );
-  await expect(
-    review.getByRole('switch', { name: 'Rotate logs; keep 3 days' }),
-  ).toHaveCount(0);
-  await expect(
-    review.getByRole('switch', { name: 'Verify outgoing TLS certificates' }),
-  ).toHaveCount(0);
-  for (const width of [1280, 320]) {
-    await page.setViewportSize({ width, height: 900 });
-    await review.scrollIntoViewIfNeeded();
-    expect(
-      await page.evaluate(
-        () => document.documentElement.scrollWidth <= window.innerWidth,
-      ),
-    ).toBe(true);
-    await page.screenshot({
-      path: '.local/nzbget-preserved-ownership-' + width + '.png',
-      fullPage: true,
-    });
-  }
-  await page
-    .getByRole('button', { name: 'Take ownership', exact: true })
-    .click();
-  await expect
-    .poll(
-      () => fixture.writes.find((w) => w.path === '/admin/stack/adopt')?.body,
-    )
-    .toEqual({
-      service_id: 'support-nzbget',
-      review_id: 'review-nzbget',
-      released_compose: false,
-    });
-  expect(fixture.errors).toEqual([]);
-  expect(fixture.unexpected).toEqual([]);
-});
-
-test('Ownership review explains unavailable recovery without blocking lifecycle ownership', async ({
-  page,
-}) => {
-  const fixture = await installUiFixture(page, {
-    role: 'admin',
-    settingsSection: 'services',
-    importedBackupAvailable: false,
-  });
-  await page.goto('/');
-  await page
-    .getByRole('navigation', { name: 'Select service' })
-    .getByRole('link', { name: 'NZBGet', exact: true })
-    .click();
-  await page.getByRole('button', { name: 'Review ownership transfer' }).click();
-  const review = page.getByRole('region', { name: 'Ownership review' });
-  await expect(review).toContainText(
-    'Backups need /config to be a host folder; it currently uses the Docker volume nzbget_config',
-  );
-  await expect(
-    page.getByRole('button', { name: 'Take ownership', exact: true }),
-  ).toBeEnabled();
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });
@@ -2293,68 +2096,6 @@ test('failed playback saves preserve newer text still being edited', async ({
   await expect(page.getByRole('alert')).toContainText('Playback save failed');
   await expect(page.getByLabel('Default quality')).toHaveValue('auto');
   await expect(page.getByLabel('Audio language')).toHaveValue('fra');
-  expect(fixture.errors).toEqual([]);
-  expect(fixture.unexpected).toEqual([]);
-});
-
-test('a changed adopted configuration is reviewed before it is accepted', async ({
-  page,
-}) => {
-  const fixture = await installUiFixture(page, {
-    role: 'admin',
-    settingsSection: 'services',
-    adoptedDrift: true,
-  });
-  const revision = 'a'.repeat(64);
-  const accepted: unknown[] = [];
-  let blocked: string | null = null;
-  await page.route('**/api/v1/admin/stack/managed-radarr/drift', (route) =>
-    route.fulfill({
-      json: {
-        revision,
-        blocked,
-        changes: [
-          {
-            path: 'HostConfig.RestartPolicy.Name',
-            change: 'changed',
-            before: '"unless-stopped"',
-            after: '"always"',
-          },
-          { path: 'Config.Env.API_KEY', change: 'changed' },
-        ],
-      },
-    }),
-  );
-  await page.route('**/api/v1/admin/stack/managed-radarr/action', (route) => {
-    accepted.push(route.request().postDataJSON());
-    return route.fulfill({ json: { accepted: true } });
-  });
-  await page.goto('/');
-  await page
-    .getByRole('navigation', { name: 'Select service' })
-    .getByRole('link', { name: 'Radarr', exact: true })
-    .click();
-  await expect(
-    page.getByText('Lifecycle actions and backups wait'),
-  ).toBeVisible();
-  await page.getByRole('button', { name: 'Review changes' }).click();
-  await expect(page.getByText('HostConfig.RestartPolicy.Name')).toBeVisible();
-  await expect(page.getByText('Config.Env.API_KEY')).toBeVisible();
-  await page
-    .getByRole('button', { name: 'Accept current configuration' })
-    .click();
-  await expect
-    .poll(() => accepted)
-    .toEqual([{ action: 'accept_configuration', revision }]);
-  // A configuration adoption would refuse can only be released.
-  blocked = "Privileged containers can't be adopted";
-  await page.getByRole('button', { name: 'Review changes' }).click();
-  await expect(
-    page.getByText("Thelxinoe can't own this configuration"),
-  ).toBeVisible();
-  await expect(
-    page.getByRole('button', { name: 'Accept current configuration' }),
-  ).toHaveCount(0);
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });

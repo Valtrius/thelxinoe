@@ -84,6 +84,20 @@ pub const TEMPLATES: [Template; 8] = [
         digest: "sha256:3b92679543623c8710fec557de7dd525d55bb5dfc8c59526f054123eaae0f995",
     },
 ];
+/// The service name administrators see.
+pub fn label(kind: &str) -> &'static str {
+    match kind {
+        "radarr" => "Radarr",
+        "sonarr" => "Sonarr",
+        "lidarr" => "Lidarr",
+        "bazarr" => "Bazarr",
+        "prowlarr" => "Prowlarr",
+        "nzbget" => "NZBGet",
+        "seerr" => "Seerr",
+        "recyclarr" => "Recyclarr",
+        _ => "The service",
+    }
+}
 pub fn find(kind: &str) -> Option<Template> {
     TEMPLATES.iter().find(|t| t.kind == kind).copied()
 }

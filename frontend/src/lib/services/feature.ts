@@ -95,9 +95,8 @@ export type StackService = {
   can_remove: boolean;
   error: string | null;
   transfer_pending: boolean;
-  imported?: boolean;
-  can_release?: boolean;
-  capabilities?: OwnershipCapabilities;
+  hold?: string | null;
+  origin?: 'installed' | 'transferred';
 };
 export type Provision = {
   id: string;
@@ -107,30 +106,10 @@ export type Provision = {
   container_id: string | null;
   service_id: string | null;
   error: string | null;
-  origin: string;
-  operation?: 'release' | 'remove' | 'retire' | null;
-};
-export type OwnershipCapability = { available: boolean; reason: string | null };
-export type OwnershipCapabilities = Record<
-  'lifecycle' | 'backup' | 'update' | 'recreate' | 'release',
-  OwnershipCapability
->;
-export type TransferReview = {
-  review_id: string;
-  name: string;
-  image: string;
-  source_config: string | null;
-  compose_project: string | null;
-  compose_service: string | null;
-  mode: 'in_place';
-  authentication: 'preserved';
-  restart_required: boolean;
-  changes: { setting: string; before: string; after: string; reason: string }[];
-  capabilities: OwnershipCapabilities;
-  integration_ready?: boolean;
-  integration_error?: string | null;
-  warnings?: string[];
-  automation?: string[];
+  origin: 'installed' | 'transferred';
+  hold: 'setup' | 'transfer' | 'recovery' | null;
+  transfer_id: string | null;
+  operation?: 'remove' | 'retire' | null;
 };
 export type UpdatePolicy = {
   service_id: string;
@@ -268,4 +247,232 @@ export const loaderSubsystems = [
   { key: 'containers', label: 'Docker container discovery' },
   { key: 'stack', label: 'Managed service runtime' },
   { key: 'connections', label: 'Optional service connections' },
+  { key: 'stages', label: 'Service stages' },
 ] as const;
+
+/** Thelxinoe's two service stages; setup, transfer and recovery are operations. */
+export type ServiceStageName = 'none' | 'connected' | 'owned';
+export type ServiceStage = {
+  kind: ServiceKind;
+  stage: ServiceStageName;
+  hold: 'setup' | 'transfer' | 'recovery' | null;
+  agreed: boolean;
+  draft_review: string | null;
+  actions: string[];
+  connection: {
+    id: string;
+    container_id: string;
+    container_name: string;
+    engine: string;
+    version: string;
+    verified: boolean;
+    operational: boolean;
+    checked_at: number;
+    error: string | null;
+  } | null;
+  ownership: {
+    id: string;
+    state: string;
+    origin: 'installed' | 'transferred';
+    hold: string | null;
+    transfer_id: string | null;
+  } | null;
+  operation: {
+    type: 'transfer' | 'install';
+    id: string;
+    state: string;
+    step?: string;
+    error: string | null;
+  } | null;
+};
+export type TransferStepStatus =
+  | 'complete'
+  | 'running'
+  | 'awaiting_input'
+  | 'blocked'
+  | 'failed'
+  | 'skipped'
+  | 'pending';
+export type TransferStep = {
+  key: string;
+  label: string;
+  actor: 'user' | 'backend';
+  status: TransferStepStatus;
+};
+export type TransferCheck = {
+  id: string;
+  label: string;
+  required: boolean;
+  status: 'pending' | 'passed' | 'failed' | 'skipped';
+  detail: string | null;
+  evidence: unknown;
+};
+export type TransferChange = {
+  area?: string;
+  setting?: string;
+  before: unknown;
+  after: unknown;
+  reason: string;
+};
+export type TransferMount = {
+  kind: string;
+  source: string;
+  destination: string;
+  writable: boolean;
+  role: string;
+};
+export type TransferPlan = {
+  review_id: string;
+  revision: string;
+  kind: ServiceKind;
+  source: {
+    container_id: string;
+    name: string;
+    image: string;
+    version: string;
+    running: boolean;
+    restart_policy: string;
+    networks: string[] | null;
+    appdata: TransferMount;
+    identity: { uid: number; gid: number };
+  };
+  target: {
+    image: string;
+    version: string;
+    decision: { decision: 'same' | 'upgrade'; image: string; reason?: string };
+    appdata: string;
+    appdata_destination: string;
+    identity: { uid: number; gid: number };
+    aliases: string[];
+    published_port: number | null;
+    mounts: TransferMount[];
+    supplementary: TransferMount[];
+  };
+  changes: TransferChange[];
+  settings: TransferChange[];
+  automation: {
+    kind: 'updater' | 'docker_access';
+    name: string;
+    scope: string;
+    blocks: boolean;
+  }[];
+  compose: {
+    project: string;
+    service: string | null;
+    working_dir: string | null;
+    config_files: string | null;
+    unrelated: { name: string; service: string | null; running: boolean }[];
+  } | null;
+  blockers: string[];
+};
+export type TransferView = {
+  id: string;
+  kind: ServiceKind;
+  service_id: string;
+  state:
+    | 'review'
+    | 'queued'
+    | 'running'
+    | 'committed'
+    | 'failed'
+    | 'recovery'
+    | 'suspended'
+    | 'complete'
+    | 'cancelled'
+    | 'returned';
+  step: string;
+  steps: TransferStep[];
+  review: {
+    plan: TransferPlan;
+    blockers: string[];
+    links: {
+      kind: string;
+      peer: string;
+      peer_kind: ServiceKind;
+      direction: string;
+      action: 'connect_after_completion' | 'stays_disconnected';
+    }[];
+    dependencies: {
+      host: string;
+      kind: ServiceKind | null;
+      status: string;
+      detail: string;
+    }[];
+    checks: TransferCheck[];
+    setup_actions: { action: string; label: string }[];
+    recyclarr_targets: {
+      kind: string;
+      name: string;
+      rewrite: TransferChange;
+    }[];
+  };
+  review_revision: string;
+  choices: { compose_mode?: 'scoped' | 'project' | null };
+  checks: TransferCheck[];
+  setup: { action: string; label: string; state: string; error?: string }[];
+  recovery: TransferRecovery | Record<string, never>;
+  progress: {
+    phase?: string;
+    bytes?: number;
+    files?: number;
+    entries?: number;
+    waiting?: string;
+  } | null;
+  error: string | null;
+  replacement_id: string | null;
+  actions: {
+    approve: boolean;
+    cancel: boolean;
+    retry: boolean;
+    restore: boolean;
+    recovery: boolean;
+    remove_original: boolean;
+    continue_in_background: boolean;
+  };
+  controller: {
+    stage: string;
+    boundary_at: number | null;
+    completed: boolean;
+    source: { stopped: boolean; restart_disabled: boolean; removed: boolean };
+  } | null;
+};
+export type TransferRecovery = {
+  revision: string;
+  evidence: {
+    boundary_at: number;
+    images: { source: string; replacement: string };
+    versions: { source: string; replacement: string };
+    containers: {
+      replacement: { present: boolean; running?: boolean };
+      original: { present: boolean; running?: boolean; unchanged?: boolean };
+    };
+    effects: {
+      known: { effect: string; count: number }[];
+      uncertain: string[];
+    };
+  };
+  options: {
+    action: string;
+    label: string;
+    available: boolean;
+    description: string;
+    requires?: string[];
+  }[];
+  cannot_undo: string[];
+  transfer_written: { action: string; label: string; state: string }[];
+  peer_note: string;
+};
+export type TransferDeclarations = {
+  cron: boolean;
+  systemd: boolean;
+  ci_cd: boolean;
+  configuration_management: boolean;
+  manual_compose: boolean;
+  unobservable_automation: boolean;
+  scoped_removed_from_files: boolean;
+  scoped_no_orphan_removal: boolean;
+  scoped_no_restart: boolean;
+  scoped_no_appdata_writes: boolean;
+  project_retired: boolean;
+  unrelated_services_acknowledged: boolean;
+};
