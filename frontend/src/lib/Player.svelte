@@ -255,7 +255,7 @@
       previousLandscape = next;
       if (!touchDevice.current || music || !changed) return;
       if (next && !fullscreen) void enterFullscreen(true);
-      else if (!next && rotationFullscreen) void exitFullscreen(true);
+      else if (!next) void exitFullscreen(true);
     };
     const escape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || !viewportFullscreen) return;

@@ -545,6 +545,90 @@ test.describe('mobile player gestures', () => {
     await cdp.detach();
   });
 
+  for (const mode of ['native', 'fallback'] as const) {
+    for (const enteredOrientation of ['portrait', 'landscape'] as const) {
+      test(`portrait rotation exits manual ${mode} fullscreen entered in ${enteredOrientation}`, async ({
+        page,
+      }, info) => {
+        if (mode === 'fallback')
+          await page.addInitScript(() => {
+            HTMLElement.prototype.requestFullscreen = async () => {
+              throw new DOMException(
+                'Fullscreen unavailable',
+                'NotSupportedError',
+              );
+            };
+          });
+        const cdp = await page.context().newCDPSession(page);
+        const rotate = (landscape: boolean) =>
+          cdp.send('Emulation.setDeviceMetricsOverride', {
+            width: landscape ? 844 : 390,
+            height: landscape ? 390 : 844,
+            screenWidth: landscape ? 844 : 390,
+            screenHeight: landscape ? 390 : 844,
+            deviceScaleFactor: 1,
+            mobile: true,
+            screenOrientation: {
+              type: landscape ? 'landscapePrimary' : 'portraitPrimary',
+              angle: landscape ? 90 : 0,
+            },
+          });
+        await rotate(false);
+        const video = await openVideo(page);
+        const player = page.getByRole('region', { name: 'Media player' });
+        const enter = page.getByRole('button', {
+          name: 'Fullscreen',
+          exact: true,
+        });
+        const exit = page.getByRole('button', {
+          name: 'Exit fullscreen',
+          exact: true,
+        });
+        if (enteredOrientation === 'landscape') {
+          await rotate(true);
+          await exit.tap();
+          await expect(enter).toBeVisible();
+        }
+        await enter.tap();
+        await expect(exit).toBeVisible();
+        await expect
+          .poll(() => page.evaluate(() => document.fullscreenElement !== null))
+          .toBe(mode === 'native');
+        if (mode === 'fallback')
+          await expect(player).toHaveJSProperty('popover', 'manual');
+        if (enteredOrientation === 'portrait') await rotate(true);
+        await expect(exit).toBeVisible();
+        await expect
+          .poll(async () => (await player.boundingBox())!.width)
+          .toBe(844);
+        await expect
+          .poll(async () => (await player.boundingBox())!.height)
+          .toBe(390);
+        await page.screenshot({
+          path: info.outputPath('manual-fullscreen-landscape.png'),
+        });
+        await rotate(false);
+        await expect(enter).toBeVisible();
+        expect(
+          await page.evaluate(() => document.fullscreenElement),
+        ).toBeNull();
+        await expect(player).not.toHaveAttribute('popover');
+        await expect
+          .poll(async () => (await player.boundingBox())!.width)
+          .toBe(390);
+        await expect
+          .poll(async () => (await player.boundingBox())!.height)
+          .toBeCloseTo((390 * 9) / 16, 0);
+        await expect.poll(async () => (await player.boundingBox())!.y).toBe(0);
+        await expect(video).toHaveJSProperty('paused', false);
+        await page.screenshot({
+          path: info.outputPath('manual-fullscreen-portrait.png'),
+        });
+        await cdp.detach();
+      });
+    }
+  }
+
   test('held watchlist handles reorder while ordinary swipes keep scrolling', async ({
     page,
   }, info) => {
