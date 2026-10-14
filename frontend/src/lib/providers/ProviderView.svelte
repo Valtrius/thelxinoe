@@ -6,6 +6,7 @@
   import { captureSession } from '../session';
   import { LatestRequest } from '../latest-request';
   import { appearance, updateAppearance } from '../appearance';
+  import { compactViewport } from '../responsive';
   import type { MediaChoice } from '../playback';
   import {
     connectPresentation,
@@ -54,6 +55,9 @@
     watchlistId?: number;
     watchlistChanged: (id: number) => void;
   }>();
+  const cardColumns = $derived(
+    compactViewport.current ? 2 : $appearance.video_columns,
+  );
   const disconnect = untrack(() => connectPresentation(userId, play));
   const ownsSession = captureSession();
   const watchlistController = createYoutubeWatchlists(
@@ -70,7 +74,8 @@
     videoId: string;
     sequence: number;
   } | null>(null);
-  let pendingGoogle = $state(false);
+  let pendingGoogleUntil = $state<number | null>(null);
+  let authNow = $state(Date.now());
   let nativeReady = $state(true);
   let disposed = false;
   let loadingPlatform: typeof platform | null = null;
@@ -109,24 +114,51 @@
         }
       : null,
   );
-  const authState = $derived<AuthState>({
-    platform: platform === 'youtube' ? 'youtube' : 'twitch',
-    operationId: platform,
-    status:
-      rawAccount?.pending ||
-      (platform === 'youtube' && pendingGoogle && !account)
-        ? 'pending'
-        : rawAccount?.account.status === 'reconnect_required'
+  const authState = $derived.by((): AuthState => {
+    const pending = rawAccount?.pending;
+    const expires = pending
+      ? pending.expires_at * 1000
+      : platform === 'youtube'
+        ? pendingGoogleUntil
+        : null;
+    const expired = expires !== null && expires <= authNow;
+    return {
+      platform: platform === 'youtube' ? 'youtube' : 'twitch',
+      operationId: platform,
+      phase: pending?.phase === 'connecting' ? 'connecting' : 'waiting',
+      status:
+        pending?.phase === 'failed'
           ? 'error'
-          : 'idle',
-    message:
-      rawAccount?.pending?.error ||
-      (rawAccount?.account.status === 'reconnect_required'
-        ? 'Reconnect your account to resume synchronization.'
-        : undefined),
-    userCode: rawAccount?.pending?.user_code,
-    verificationUri: rawAccount?.pending?.verification_uri,
-    expiresAt: iso(rawAccount?.pending?.expires_at),
+          : expired
+            ? 'expired'
+            : pending || (expires !== null && !account)
+              ? 'pending'
+              : rawAccount?.account.status === 'reconnect_required'
+                ? 'error'
+                : 'idle',
+      message: expired
+        ? 'The sign-in request expired. Start again.'
+        : pending?.error ||
+          (!pending &&
+          expires === null &&
+          rawAccount?.account.status === 'reconnect_required'
+            ? 'Reconnect your account to resume synchronization.'
+            : undefined),
+      userCode: pending?.user_code,
+      verificationUri: pending?.verification_uri,
+      expiresAt: expires === null ? null : new Date(expires).toISOString(),
+    };
+  });
+  const authPending = $derived(authState.status === 'pending');
+  $effect(() => {
+    const timer = setInterval(
+      () => {
+        authNow = Date.now();
+        if (!document.hidden) void load();
+      },
+      authPending ? 1000 : 5000,
+    );
+    return () => clearInterval(timer);
   });
   const syncStatus = $derived.by((): SyncStatus => {
     const sync = rawAccount?.sync;
@@ -188,11 +220,13 @@
       if (disposed || !current() || selected !== platform) return;
       if (selected === 'kick') kick = value as KickFeed;
       else accounts[selected] = value as OnlineAccount;
+      authNow = Date.now();
       if (
         selected === 'youtube' &&
-        (value as OnlineAccount).account.status === 'connected'
+        ((value as OnlineAccount).pending ||
+          (value as OnlineAccount).account.status === 'connected')
       )
-        pendingGoogle = false;
+        pendingGoogleUntil = null;
       const snapshot = JSON.stringify([selected, value]);
       if (snapshot !== lastSnapshot) {
         lastSnapshot = snapshot;
@@ -259,7 +293,7 @@
       };
     };
     const cancelled = () => {
-      pendingGoogle = false;
+      pendingGoogleUntil = null;
       void load();
     };
     window.addEventListener('thelxinoe-provider-auth-cancelled', cancelled);
@@ -280,13 +314,13 @@
     const refreshVisible = () => {
       if (!document.hidden) void load();
     };
-    const timer = setInterval(refreshVisible, 5000);
     document.addEventListener('visibilitychange', refreshVisible);
+    window.addEventListener('focus', refreshVisible);
     return () => {
       disposed = true;
       accountRequests.invalidate();
-      clearInterval(timer);
       document.removeEventListener('visibilitychange', refreshVisible);
+      window.removeEventListener('focus', refreshVisible);
       clearTimeout(refreshTimer);
       clearToasts();
       window.removeEventListener('thelxinoe-download-progress', downloading);
@@ -314,7 +348,8 @@
     );
   }
   function authStarted() {
-    pendingGoogle = platform === 'youtube';
+    pendingGoogleUntil =
+      platform === 'youtube' && desktop ? Date.now() + 600_000 : null;
     void load();
   }
 </script>
@@ -341,7 +376,7 @@
         {syncStatus}
         {playback}
         {activeSessions}
-        cardColumns={$appearance.video_columns}
+        {cardColumns}
         fadeWatchedCards={$appearance.fade_watched}
         youtubeCardShortcuts={$appearance.youtube_card_shortcuts}
         signedInPlaybackAvailable={false}
@@ -372,7 +407,7 @@
         {syncStatus}
         {playback}
         {activeSessions}
-        cardColumns={$appearance.video_columns}
+        {cardColumns}
         {authState}
         clientConfigured={!!rawAccount?.configured}
         {dataRevision}
@@ -395,7 +430,7 @@
         {syncStatus}
         {playback}
         {activeSessions}
-        cardColumns={$appearance.video_columns}
+        {cardColumns}
         metadataConfigured={!!kick?.configured}
         {dataRevision}
         onNavigateSettings={navigateSettings}

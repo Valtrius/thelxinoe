@@ -52,7 +52,7 @@ try {
     })
     .click();
   await expect(
-    page.getByRole('heading', { name: 'Home', exact: true }),
+    page.getByRole('button', { name: 'Refresh Home', exact: true }),
   ).toBeVisible();
   expect(
     (await context.cookies()).find((c) => c.name === 'thelxinoe_session'),
@@ -116,7 +116,7 @@ try {
   await context.setOffline(false);
   await page.getByRole('link', { name: 'Reconnect' }).click();
   await expect(
-    page.getByRole('heading', { name: 'Settings', exact: true }),
+    page.getByRole('navigation', { name: 'Settings navigation', exact: true }),
   ).toBeVisible();
   expect(
     (

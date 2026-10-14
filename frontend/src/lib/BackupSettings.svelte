@@ -4,6 +4,9 @@
   import Switch from './ui/Switch.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
+  import { activity, startActivity } from './activity';
+  import { refreshAttention } from './attention';
+  import AttentionDot from './ui/AttentionDot.svelte';
   import { withVerification } from './authentication';
   import { captureSession } from './session';
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
@@ -135,6 +138,11 @@
   }
   async function create(restore = false) {
     busy = true;
+    const finish = startActivity({
+      target: 'backups',
+      resource: restore ? restoreId : null,
+      message: restore ? 'Restoring backup' : 'Creating encrypted backup',
+    });
     message = '';
     try {
       const started = await api<Backup>(
@@ -159,6 +167,8 @@
       message = String(e);
     } finally {
       busy = false;
+      await refreshAttention();
+      finish();
     }
   }
 </script>
@@ -327,10 +337,15 @@
   <h2>Backup archives</h2>
   {#each items as item (item.id)}<div class={rowClass}>
       <div>
-        <strong
+        <strong class="inline-flex items-center gap-2"
           >{time(item.created_at)} · {item.stage}{item.automatic
             ? ' · automatic'
-            : ''}</strong
+            : ''}<AttentionDot
+            activity={$activity.filter(
+              (entry) =>
+                entry.target === 'backups' && entry.resource === item.id,
+            )}
+          /></strong
         ><small class="block wrap-anywhere">{item.archive}</small
         >{#if item.error}<p>{item.error}</p>{/if}
         {#each item.excluded ?? [] as skipped (skipped.key)}<small

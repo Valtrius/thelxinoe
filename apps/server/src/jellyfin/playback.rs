@@ -222,9 +222,11 @@ pub(super) async fn info_source(
         subtitle,
         capabilities: negotiate(thelxinoe_playback::bitrate(quality)?.unwrap_or(8_000_000)),
     };
-    let planned =
-        thelxinoe_playback::plan(&source, &options).map_err(|e| ApiError::bad(e.to_string()))?;
-    if planned == "transcode"
+    options.capabilities.allow_conversion =
+        Some(field("EnableTranscoding").as_ref() != Some(&json!(false)));
+    let planned = thelxinoe_playback::decision(&source, &options)
+        .map_err(|e| ApiError::bad(e.to_string()))?;
+    if planned.encoding.video
         && let Some(max) = max.filter(|n| *n < 8_192_000)
     {
         options.quality = if !video && max >= 192_000 {
@@ -240,8 +242,10 @@ pub(super) async fn info_source(
         }
         .into();
         options.capabilities = negotiate(thelxinoe_playback::bitrate(&options.quality)?.unwrap());
+        options.capabilities.allow_conversion =
+            Some(field("EnableTranscoding").as_ref() != Some(&json!(false)));
     }
-    if planned == "transcode"
+    if planned.encoding.video
         && source.video_codec().is_some()
         && options.capabilities.conversion.is_none()
     {
@@ -249,7 +253,7 @@ pub(super) async fn info_source(
             "The client does not support the available H.264/AAC conversion",
         ));
     }
-    if planned == "transcode" && field("EnableTranscoding").as_ref() == Some(&json!(false)) {
+    if planned.mode == "transcode" && field("EnableTranscoding").as_ref() == Some(&json!(false)) {
         return Err(ApiError::bad("The client disabled the required conversion"));
     }
     let playback = core::create_with_delivery(

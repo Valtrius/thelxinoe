@@ -58,12 +58,14 @@
     </section>
   {:else if layout === 'posters'}
     <div
-      class="grid grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] gap-x-5 gap-y-7 compact:grid-cols-2 compact:gap-3"
+      class="grid grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] gap-x-5 gap-y-7 compact:grid-cols-3 compact:gap-3"
       aria-hidden="true"
     >
       {@render cards()}
     </div>
   {:else}
-    <MediaGrid {label}>{@render cards()}</MediaGrid>
+    <MediaGrid {label} mobileColumns={shape === 'landscape' ? 2 : 3}>
+      {@render cards()}
+    </MediaGrid>
   {/if}
 </div>

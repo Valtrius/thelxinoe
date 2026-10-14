@@ -1,4 +1,5 @@
 import { writable } from 'svelte/store';
+import { startActivity } from '../activity';
 import { normalizeError } from './api';
 import { LatestRequest } from '../latest-request';
 import {
@@ -142,6 +143,14 @@ export function createToolsState(api = toolsApi) {
     const task = previous
       .then(async () => {
         let success = false;
+        const finish = startActivity(
+          {
+            target: 'mpv',
+            resource: key === 'configuration' || key === 'updates' ? null : key,
+            message: label,
+          },
+          'desktop',
+        );
         try {
           await action();
           errors = { ...errors, [queueKey]: '' };
@@ -149,6 +158,8 @@ export function createToolsState(api = toolsApi) {
         } catch (error) {
           errors = { ...errors, [queueKey]: normalizeError(error).message };
           publish();
+        } finally {
+          finish();
         }
         try {
           await refresh();

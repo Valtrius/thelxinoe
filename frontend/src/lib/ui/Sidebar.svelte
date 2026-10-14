@@ -1,25 +1,18 @@
 <script lang="ts">
-  import {
-    House,
-    Compass,
-    Film,
-    Tv,
-    Music,
-    ListMusic,
-    ChartNoAxesCombined,
-    PanelLeftClose,
-    PanelLeftOpen,
-    Settings,
-    LogOut,
-    X,
-  } from '@lucide/svelte';
+  import { PanelLeftClose, PanelLeftOpen, LogOut, X } from '@lucide/svelte';
   import SidebarButton from './SidebarButton.svelte';
-  import PlatformIcon from './PlatformIcon.svelte';
+  import SectionIcon from './SectionIcon.svelte';
   import AttentionDot from './AttentionDot.svelte';
   import { attention, attentionDescription } from '../attention';
+  import { activity } from '../activity';
   import Button from './Button.svelte';
   import type { User } from '../api';
-  import { followLink, routeHref, sectionRoute } from '../navigation';
+  import {
+    followLink,
+    routeHref,
+    sectionRoute,
+    type Section,
+  } from '../navigation';
   import { providers as availability } from '../providers/availability';
   let {
     section,
@@ -31,7 +24,7 @@
     onClose,
     settingsSection = 'account',
   } = $props<{
-    section: string;
+    section: Section;
     collapsed: boolean;
     user: User;
     navigate: (name: string) => void;
@@ -41,13 +34,13 @@
     settingsSection?: string;
   }>();
   const library = [
-    { name: 'Home', icon: House },
-    { name: 'Discover', icon: Compass },
-    { name: 'Movies', icon: Film },
-    { name: 'Shows', icon: Tv },
-    { name: 'Music', icon: Music },
-    { name: 'Playlists', icon: ListMusic },
-  ];
+    'Home',
+    'Discover',
+    'Movies',
+    'Shows',
+    'Music',
+    'Playlists',
+  ] as const;
   const providers = [
     { name: 'YouTube', platform: 'youtube' },
     { name: 'Twitch', platform: 'twitch' },
@@ -58,6 +51,27 @@
       ['services', 'server', 'backups', 'jobs', 'online'].includes(item.target),
     ),
   );
+  const settingsActivity = $derived(
+    $activity.filter((item) =>
+      [
+        'services',
+        'server',
+        'backups',
+        'jobs',
+        'online',
+        'connection',
+        'mpv',
+        'analysis',
+      ].includes(item.target),
+    ),
+  );
+  function menuActivity(name: string) {
+    return $activity.filter(
+      (item) =>
+        item.target === name.toLowerCase() ||
+        (name === 'Discover' && item.target === 'requests'),
+    );
+  }
   function menuAttention(name: string) {
     return $attention.filter(
       (item) =>
@@ -118,24 +132,28 @@
       aria-label="Main navigation"
       data-sidebar-resize="width"
     >
-      {#each library as item (item.name)}<SidebarButton
-          label={item.name}
+      {#each library as name (name)}<SidebarButton
+          label={name}
           resizeWithSidebar={false}
           {collapsed}
-          title={collapsed ? item.name : undefined}
-          aria-label={item.name}
-          description={attentionDescription(menuAttention(item.name))}
-          active={section === item.name}
-          href={routeHref(sectionRoute(item.name))}
+          title={collapsed ? name : undefined}
+          aria-label={name}
+          description={attentionDescription(
+            menuAttention(name),
+            menuActivity(name),
+          )}
+          active={section === name}
+          href={routeHref(sectionRoute(name))}
           onclick={(event) => {
             if (followLink(event)) {
               event.preventDefault();
-              navigate(item.name);
+              navigate(name);
             }
           }}
           ><span class="relative size-5 shrink-0"
-            ><item.icon class="size-5" /><AttentionDot
-              items={menuAttention(item.name)}
+            ><SectionIcon section={name} /><AttentionDot
+              items={menuAttention(name)}
+              activity={menuActivity(name)}
               class="absolute -top-1 -right-1.5"
             /></span
           ></SidebarButton
@@ -154,6 +172,10 @@
               (entry) =>
                 entry.target === 'online' && entry.resource === item.platform,
             ),
+            $activity.filter(
+              (entry) =>
+                entry.target === 'online' && entry.resource === item.platform,
+            ),
           )}
           active={section === item.name}
           href={routeHref(sectionRoute(item.name))}
@@ -164,11 +186,12 @@
             }
           }}
           ><span class="relative size-5 shrink-0"
-            ><PlatformIcon
-              platform={item.platform}
-              class="size-5 shrink-0"
-            /><AttentionDot
+            ><SectionIcon section={item.name} /><AttentionDot
               items={$attention.filter(
+                (entry) =>
+                  entry.target === 'online' && entry.resource === item.platform,
+              )}
+              activity={$activity.filter(
                 (entry) =>
                   entry.target === 'online' && entry.resource === item.platform,
               )}
@@ -190,13 +213,13 @@
             event.preventDefault();
             navigate('Statistics');
           }
-        }}><ChartNoAxesCombined class="size-5 shrink-0" /></SidebarButton
+        }}><SectionIcon section="Statistics" /></SidebarButton
       >
       <SidebarButton
         label="Settings"
         {collapsed}
         aria-label="Settings"
-        description={attentionDescription(settingsAttention)}
+        description={attentionDescription(settingsAttention, settingsActivity)}
         title={collapsed ? 'Settings' : undefined}
         active={section === 'Settings'}
         href={routeHref(sectionRoute('Settings', settingsSection))}
@@ -207,8 +230,9 @@
           }
         }}
         ><span class="relative size-5 shrink-0"
-          ><Settings class="size-5" /><AttentionDot
+          ><SectionIcon section="Settings" /><AttentionDot
             items={settingsAttention}
+            activity={settingsActivity}
             class="absolute -top-1 -right-1.5"
           /></span
         ></SidebarButton

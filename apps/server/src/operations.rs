@@ -24,6 +24,7 @@ pub(crate) enum AttentionTarget {
     Movies,
     Shows,
     Music,
+    Analysis,
 }
 #[derive(Clone, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct AttentionItem {
@@ -35,6 +36,28 @@ pub(crate) struct AttentionItem {
     revision: String,
     dismissible: bool,
     media_ids: Vec<String>,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ActivityState {
+    Queued,
+    Running,
+    Unknown,
+}
+#[derive(serde::Serialize)]
+pub(crate) struct ActivityItem {
+    id: String,
+    target: AttentionTarget,
+    resource: Option<String>,
+    state: ActivityState,
+    message: String,
+    media_ids: Vec<String>,
+}
+#[derive(serde::Serialize)]
+pub(crate) struct AttentionSummary {
+    items: Vec<AttentionItem>,
+    activity: Vec<ActivityItem>,
 }
 
 #[derive(serde::Serialize)]
@@ -144,10 +167,12 @@ async fn delete_user(
     state.emit(None, "users.changed", json!({})).await?;
     Ok(Json(json!({"deleted":true})))
 }
-async fn attention(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
+async fn attention(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<AttentionSummary>> {
     let p = security::principal(&state, &headers).await?;
-    let items = attention_storage::summary(&state.db, p).await?;
-    Ok(Json(json!({"items":items})))
+    Ok(Json(attention_storage::summary(&state.db, p).await?))
 }
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -171,13 +196,21 @@ async fn acknowledge(
     Ok(Json(json!({"saved":true})))
 }
 pub async fn run(state: AppState) -> anyhow::Result<()> {
+    let mut next_health = tokio::time::Instant::now();
     loop {
-        let _ = crate::product::observe(&state).await;
-        crate::managers::operational_health(&state).await?;
-        let _ = crate::managers::connected_health(&state).await;
-        let _ = crate::managers::observe_requests(&state).await;
+        let _ = tokio::join!(
+            crate::product::observe(&state),
+            crate::backups::observe(&state)
+        );
+        if tokio::time::Instant::now() >= next_health {
+            crate::managers::operational_health(&state).await?;
+            // Read-only checks of Connected services keep their own longer interval.
+            let _ = crate::managers::connected_health(&state).await;
+            let _ = crate::managers::observe_requests(&state).await;
+            next_health = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        }
         observe(&state).await?;
-        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 }
 /// Push attention changes as soon as a domain change commits. Bursts collapse

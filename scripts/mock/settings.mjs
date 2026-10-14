@@ -172,7 +172,12 @@ export function settingsSeed() {
       integrity_error: null,
       job: null,
     })),
-    serverSettings: { timezone: 'Europe/Paris', time_format: '24h' },
+    serverSettings: {
+      timezone: 'Europe/Paris',
+      time_format: '24h',
+      video_transcoding: true,
+      audio_transcoding: true,
+    },
     youtubeConfig: {
       google_configured: true,
       redirect_uri: null,

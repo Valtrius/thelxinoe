@@ -48,7 +48,14 @@
 /* Preserve the existing application breakpoints without changing provider sm/md/lg. */
 @custom-variant service-narrow (@media (max-width: 1050px));
 @custom-variant narrow (@media (max-width: 1000px));
-@custom-variant compact (@media (max-width: 720px));
+/* Keep compact and touch identical to the queries in lib/responsive.ts. */
+@custom-variant compact {
+  @media (max-width: 720px),
+    (max-height: 720px) and (pointer: coarse) and (hover: none) {
+    @slot;
+  }
+}
+@custom-variant touch (@media (pointer: coarse) and (hover: none));
 @custom-variant tight (@media (max-width: 440px));
 @custom-variant player-small (@container player (max-width: 380px));
 @custom-variant desktop-shell (&:where(.desktop-app *));

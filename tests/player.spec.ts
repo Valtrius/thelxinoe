@@ -9,11 +9,12 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { freezeClock } from './helpers/clock';
 
 // Exercise the real player with decoded media and a controlled server boundary.
 // This suite starts its own Vite server and never touches an account or deployment.
 const title = 'A journey through the mountains';
-let mp4: Buffer, segment: Buffer;
+let mp4: Buffer, segment: Buffer, shortSegment: Buffer;
 test.beforeAll(() => {
   const directory = mkdtempSync(join(tmpdir(), 'thelxinoe-player-'));
   const file = join(directory, 'fixture.mp4');
@@ -71,6 +72,23 @@ test.beforeAll(() => {
     ],
     { input: mp4, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
   );
+  shortSegment = execFileSync(
+    'ffmpeg',
+    [
+      '-v',
+      'error',
+      '-i',
+      'pipe:0',
+      '-t',
+      '4',
+      '-c',
+      'copy',
+      '-f',
+      'mpegts',
+      'pipe:1',
+    ],
+    { input: mp4, windowsHide: true },
+  );
   mkdirSync('.local/player-ui', { recursive: true });
 });
 test.afterEach(async ({ page }) => {
@@ -96,6 +114,14 @@ async function fixture(
     playerHeight?: number | null;
     subtitles?: boolean;
     qualities?: { value: string; label: string }[];
+    autoQuality?: string;
+    local?: boolean;
+    stalled?: boolean;
+    tools?: 'metadata' | 'playback';
+    music?: boolean;
+    native?: boolean;
+    nativeTools?: boolean;
+    nativeRestore?: boolean;
   } = {},
 ) {
   const metadata = gate(!!options.hold),
@@ -105,7 +131,11 @@ async function fixture(
     metadata,
     preparation,
     media,
-    starts: [] as { position: number; options: { quality: string } }[],
+    starts: [] as {
+      media_id: string;
+      position: number;
+      options: { quality: string };
+    }[],
     seeks: [] as number[],
     progress: [] as {
       state: string;
@@ -116,6 +146,10 @@ async function fixture(
     savedVolume: 0.31,
     savedHeight: options.playerHeight ?? null,
     fail: options.fail ?? false,
+    toolsPreparing: !!options.tools,
+    toolsFailed: false,
+    resolvePreparing: false,
+    autoQuality: options.autoQuality ?? '1080p',
   };
   page.on('pageerror', (error) => state.errors.push(error.message));
   const videos = Array.from({ length: 80 }, (_, i) => ({
@@ -137,6 +171,16 @@ async function fixture(
   }));
   await page.route('**/api/v1/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
+    if (path === '/api/v1/online/youtube/resolve' && state.resolvePreparing)
+      return route.fulfill({
+        status: 503,
+        json: {
+          error: {
+            code: 'tools_preparing',
+            message: 'Waiting for playback tools…',
+          },
+        },
+      });
     if (options.app) {
       if (path === '/api/v1/online/providers')
         return route.fulfill({
@@ -262,6 +306,23 @@ async function fixture(
       });
     }
     if (path.startsWith('/api/v1/catalog/') && path.endsWith('/playback')) {
+      if (options.tools === 'metadata' && state.toolsPreparing)
+        return route.fulfill({
+          status: 503,
+          json: {
+            error: {
+              code: 'tools_preparing',
+              message: 'Waiting for playback tools…',
+            },
+          },
+        });
+      if (state.toolsFailed)
+        return route.fulfill({
+          status: 409,
+          json: {
+            error: { code: 'conflict', message: 'Playback tools need repair.' },
+          },
+        });
       await metadata.promise;
       return route.fulfill({
         json: {
@@ -273,6 +334,16 @@ async function fixture(
       });
     }
     if (path === '/api/v1/playback') {
+      if (options.tools === 'playback' && state.toolsPreparing)
+        return route.fulfill({
+          status: 503,
+          json: {
+            error: {
+              code: 'tools_preparing',
+              message: 'Waiting for playback tools…',
+            },
+          },
+        });
       const input = route.request().postDataJSON();
       state.starts.push(input);
       await preparation.promise;
@@ -290,8 +361,11 @@ async function fixture(
         json: {
           id: 'fixture',
           qualities: options.qualities,
-          quality:
-            input.options.quality === 'auto' ? '1080p' : input.options.quality,
+          quality: options.local
+            ? undefined
+            : input.options.quality === 'auto'
+              ? state.autoQuality
+              : input.options.quality,
           mode: options.mode ?? 'direct',
           live: options.live ?? false,
           url:
@@ -316,7 +390,9 @@ async function fixture(
           selected_subtitle: 'off',
           options: input.options,
           probe: {
-            streams: [{ codec_type: 'video', avg_frame_rate: '12/1' }],
+            streams: [
+              { codec_type: 'video', height: 540, avg_frame_rate: '12/1' },
+            ],
           },
           replay_gain: 'off',
         },
@@ -360,11 +436,17 @@ async function fixture(
       if (url.pathname.endsWith('.m3u8'))
         return route.fulfill({
           contentType: 'application/vnd.apple.mpegurl',
-          body: '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:60\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:60,\nsegment.ts\n#EXT-X-ENDLIST\n',
+          body: options.stalled
+            ? '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:4,\nsegment.ts\n'
+            : '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:60\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:60,\nsegment.ts\n#EXT-X-ENDLIST\n',
         });
       return route.fulfill({
         contentType: url.pathname.endsWith('.ts') ? 'video/mp2t' : 'video/mp4',
-        body: url.pathname.endsWith('.ts') ? segment : mp4,
+        body: url.pathname.endsWith('.ts')
+          ? options.stalled
+            ? shortSegment
+            : segment
+          : mp4,
       });
     },
   );
@@ -382,6 +464,8 @@ async function fixture(
         import { mount, unmount } from '/node_modules/.vite/deps/svelte.js';
         import Player from '/src/lib/Player.svelte';
         import App from '/src/App.svelte';
+        import MusicPlayer from '/src/lib/MusicPlayer.svelte';
+        import NativePlayer from '/src/lib/NativePlayer.svelte';
         import { loadAppearance, acceptAppearance } from '/src/lib/appearance.ts';
         import '/src/app.css';
         await loadAppearance('fixture');
@@ -389,13 +473,112 @@ async function fixture(
         const app = ${
           options.app
             ? "mount(App, { target: document.querySelector('#fixture-root') })"
-            : `mount(Player, { target: document.querySelector('#fixture-root'), props: {
-          choice: { id: 'fixture', title: ${JSON.stringify(title)} }, closed: () => unmount(app, { outro: true })
+            : `mount(${options.native ? 'NativePlayer' : options.music ? 'MusicPlayer' : 'Player'}, { target: document.querySelector('#fixture-root'), props: {
+          choice: { id: 'fixture', title: ${JSON.stringify(title)}, kind: ${JSON.stringify(options.music ? 'track' : 'movie')}, restore: ${!!options.nativeRestore} }, closed: () => unmount(app, { outro: true })
         }})`
         };
       </script></body></html>`,
     }),
   );
+  if (options.native)
+    await page.addInitScript((holdTools: boolean) => {
+      const bridge = window as unknown as {
+        __TAURI_INTERNALS__: unknown;
+        __TAURI_EVENT_PLUGIN_INTERNALS__: unknown;
+        nativeReady: () => void;
+        nativeStarts: number;
+        nativeInvocations: number;
+      };
+      let ready!: () => void;
+      const pending = new Promise<void>((resolve) => (ready = resolve));
+      let canceled = false;
+      let listener: ((event: unknown) => void) | undefined;
+      let toolsReady = !holdTools;
+      bridge.nativeReady = () => {
+        toolsReady = true;
+        ready();
+        listener?.({
+          event: 'mpv-state',
+          id: 1,
+          payload: {
+            status: 'playing',
+            media_id: 'fixture',
+            title: 'Native fixture',
+          },
+        });
+      };
+      bridge.nativeStarts = 0;
+      bridge.nativeInvocations = 0;
+      bridge.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
+      bridge.__TAURI_INTERNALS__ = {
+        transformCallback: (callback: (event: unknown) => void) => {
+          listener = callback;
+          return 1;
+        },
+        unregisterCallback() {},
+        async invoke(
+          command: string,
+          args: {
+            command?: string;
+            path?: string;
+            method?: string;
+            body?: unknown;
+          } = {},
+        ) {
+          if (command === 'backend_request') {
+            const response = await fetch(`/api/v1${args.path}`, {
+              method: args.method,
+              headers: { 'Content-Type': 'application/json' },
+              ...(args.body ? { body: JSON.stringify(args.body) } : {}),
+            });
+            return { status: response.status, body: await response.json() };
+          }
+          if (command === 'plugin:event|listen') return 1;
+          if (command === 'mpv_state')
+            return {
+              status: 'starting',
+              media_id: 'fixture',
+              title: 'Native fixture',
+            };
+          if (command === 'tools_get')
+            return {
+              tools: holdTools
+                ? [
+                    {
+                      id: 'mpv',
+                      preference: {
+                        source: 'managed',
+                        active: toolsReady ? 'mpv-installed' : null,
+                      },
+                      selectedPath: toolsReady ? 'mpv.exe' : null,
+                    },
+                  ]
+                : [],
+              operation: {
+                tool: 'mpv',
+                phase: toolsReady ? 'idle' : 'downloading',
+                error: null,
+              },
+            };
+          if (command === 'mpv_command' && args.command === 'stop') {
+            canceled = true;
+            return;
+          }
+          if (command === 'mpv_play') {
+            bridge.nativeInvocations++;
+            await pending;
+            if (canceled) throw new Error('Playback canceled');
+            bridge.nativeStarts++;
+            return {
+              status: 'playing',
+              media_id: 'fixture',
+              title: 'Native fixture',
+            };
+          }
+          return null;
+        },
+      };
+    }, !!options.nativeTools);
   await page.goto(`/player-test${options.app ? '?section=Twitch' : ''}`);
   return state;
 }
@@ -411,6 +594,255 @@ async function decoded(page: Page) {
     )
     .toBeGreaterThan(0);
   await expect(page.getByRole('status')).toHaveCount(0);
+}
+async function revealedPlayer(page: Page) {
+  await page
+    .getByRole('region', { name: 'Media player' })
+    .evaluate(async (element) => {
+      await Promise.all(
+        element
+          .getAnimations({ subtree: true })
+          .filter(
+            (animation) =>
+              animation.effect?.getTiming().iterations !== Infinity,
+          )
+          .map((animation) => animation.finished.catch(() => {})),
+      );
+    });
+}
+
+test('restored native player keeps its spinner until pending playback starts', async ({
+  page,
+}, testInfo) => {
+  const state = await fixture(page, { native: true, nativeRestore: true });
+  await expect(page.getByRole('status')).toContainText('Preparing playback…');
+  await testInfo.attach('restored-native-preparation', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+  await page.evaluate(() =>
+    (window as unknown as { nativeReady: () => void }).nativeReady(),
+  );
+  await expect(page.getByRole('status')).toHaveCount(0);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { nativeInvocations: number }).nativeInvocations,
+    ),
+  ).toBe(0);
+  expect(state.errors).toEqual([]);
+});
+
+for (const tools of ['metadata', 'playback'] as const) {
+  test(`player waits for tools during ${tools} and starts automatically`, async ({
+    page,
+  }, testInfo) => {
+    const state = await fixture(page, { tools });
+    await expect(page.getByRole('status')).toContainText(
+      'Waiting for playback tools…',
+    );
+    await expect(page.locator('.loading-spinner')).toBeVisible();
+    expect(state.starts).toEqual([]);
+    await revealedPlayer(page);
+    await testInfo.attach('waiting-for-tools', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+    state.toolsPreparing = false;
+    await decoded(page);
+    await expect.poll(() => state.starts.length).toBe(1);
+    expect(state.errors).toEqual([]);
+    await testInfo.attach('automatic-playback', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+  });
+}
+
+test('closing a player waiting for tools cancels its pending playback', async ({
+  page,
+}, testInfo) => {
+  const state = await fixture(page, { tools: 'metadata' });
+  await expect(page.getByRole('status')).toContainText(
+    'Waiting for playback tools…',
+  );
+  await page.getByRole('button', { name: 'Close player' }).click();
+  await expect(page.getByRole('region', { name: 'Media player' })).toHaveCount(
+    0,
+  );
+  state.toolsPreparing = false;
+  await page.waitForTimeout(1500);
+  expect(state.starts).toEqual([]);
+  expect(state.errors).toEqual([]);
+  await testInfo.attach('closed-without-playback', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+});
+
+test('choosing another item while waiting only starts the latest item', async ({
+  page,
+}, testInfo) => {
+  const state = await fixture(page, { tools: 'metadata', app: true });
+  await page
+    .getByRole('button', { name: 'Watch Channel 0', exact: true })
+    .click();
+  await expect(
+    page.getByRole('status').filter({ hasText: 'Waiting for playback tools…' }),
+  ).toBeVisible();
+  await page
+    .getByRole('button', { name: 'Watch Channel 1', exact: true })
+    .click();
+  state.toolsPreparing = false;
+  await decoded(page);
+  expect(state.starts.map((item) => item.media_id)).toEqual(['twitch:1']);
+  expect(state.errors).toEqual([]);
+  await testInfo.attach('latest-item-playing', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+});
+
+test('a YouTube link opens a cancelable player while its tools are preparing', async ({
+  page,
+}, testInfo) => {
+  const state = await fixture(page, { app: true });
+  state.resolvePreparing = true;
+  await expect(
+    page.getByRole('button', { name: 'Watch Channel 0', exact: true }),
+  ).toBeVisible();
+  await page.evaluate(() => {
+    const link = document.createElement('a');
+    link.href = 'https://www.youtube.com/watch?v=abcdefghijk';
+    link.textContent = 'Linked video';
+    document.body.append(link);
+    link.click();
+  });
+  await expect(
+    page.getByRole('region', { name: 'Media player' }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('status').filter({ hasText: 'Waiting for playback tools…' }),
+  ).toBeVisible();
+  await revealedPlayer(page);
+  await testInfo.attach('linked-video-waiting', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+  await page.getByRole('button', { name: 'Close player' }).click();
+  state.resolvePreparing = false;
+  await expect(page.getByRole('region', { name: 'Media player' })).toHaveCount(
+    0,
+  );
+  await page.waitForTimeout(1500);
+  expect(state.starts).toEqual([]);
+  expect(state.errors).toEqual([]);
+});
+
+test('failed tool preparation replaces the spinner with a retryable error', async ({
+  page,
+}, testInfo) => {
+  const state = await fixture(page, { tools: 'metadata' });
+  await expect(page.getByRole('status')).toContainText(
+    'Waiting for playback tools…',
+  );
+  state.toolsPreparing = false;
+  state.toolsFailed = true;
+  await expect(page.getByRole('alert')).toContainText(
+    'Playback tools need repair.',
+  );
+  await expect(page.getByRole('status')).toHaveCount(0);
+  await testInfo.attach('tool-failure', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+  state.toolsFailed = false;
+  await page.getByRole('button', { name: 'Retry playback' }).click();
+  await decoded(page);
+  expect(state.errors).toEqual([]);
+});
+
+test('music waits for tools and starts its streaming fallback automatically', async ({
+  page,
+}, testInfo) => {
+  const state = await fixture(page, { tools: 'metadata', music: true });
+  await expect(page.getByRole('status')).toContainText(
+    'Waiting for playback tools…',
+  );
+  await expect(page.getByRole('status').locator('svg')).toBeVisible();
+  await testInfo.attach('music-waiting-for-tools', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+  state.toolsPreparing = false;
+  await decoded(page);
+  expect(state.errors).toEqual([]);
+});
+
+for (const close of [false, true]) {
+  test(`native player ${close ? 'cancels' : 'automatically starts'} pending preparation`, async ({
+    page,
+  }, testInfo) => {
+    const state = await fixture(page, { native: true });
+    await expect(page.getByRole('status')).toContainText('Preparing playback…');
+    await expect(page.getByRole('status').locator('svg')).toBeVisible();
+    await testInfo.attach('native-preparation', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+    if (close) await page.getByRole('button', { name: 'Close player' }).click();
+    await page.evaluate(() =>
+      (window as unknown as { nativeReady: () => void }).nativeReady(),
+    );
+    await expect(page.getByRole('status')).toHaveCount(0);
+    expect(
+      await page.evaluate(
+        () => (window as unknown as { nativeStarts: number }).nativeStarts,
+      ),
+    ).toBe(close ? 0 : 1);
+    expect(state.errors).toEqual([]);
+    await testInfo.attach('native-preparation-finished', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+  });
+}
+
+for (const close of [false, true]) {
+  test(`native MPV installation ${close ? 'can be canceled' : 'automatically resumes playback'}`, async ({
+    page,
+  }, testInfo) => {
+    const state = await fixture(page, { native: true, nativeTools: true });
+    await expect(page.getByRole('status')).toContainText(
+      'Waiting for playback tools…',
+    );
+    expect(
+      await page.evaluate(
+        () =>
+          (window as unknown as { nativeInvocations: number })
+            .nativeInvocations,
+      ),
+    ).toBe(0);
+    await testInfo.attach('waiting-for-mpv', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+    if (close) await page.getByRole('button', { name: 'Close player' }).click();
+    await page.evaluate(() =>
+      (window as unknown as { nativeReady: () => void }).nativeReady(),
+    );
+    await expect(page.getByRole('status')).toHaveCount(0);
+    expect(
+      await page.evaluate(
+        () => (window as unknown as { nativeStarts: number }).nativeStarts,
+      ),
+    ).toBe(close ? 0 : 1);
+    expect(state.errors).toEqual([]);
+    await testInfo.attach('mpv-installation-finished', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+  });
 }
 
 test('web playback records active time but excludes paused time and seeking', async ({
@@ -445,6 +877,40 @@ test('web playback records active time but excludes paused time and seeking', as
   await expect.poll(() => state.progress.at(-1)?.state).toBe('stopped');
   expect(state.progress.at(-1)!.active_seconds).toBe(seconds);
   expect(state.progress.at(-1)!.position).toBeGreaterThanOrEqual(45);
+  expect(state.errors).toEqual([]);
+});
+
+test('opening and replacing web playback focuses the player for immediate shortcuts', async ({
+  page,
+}, info) => {
+  const state = await fixture(page, { app: true, hold: true });
+  const player = page.getByRole('region', { name: 'Media player' });
+  const video = page.locator('video');
+  await page
+    .getByRole('button', { name: 'Watch Channel 0', exact: true })
+    .click();
+  await expect(player).toBeFocused();
+  await page.keyboard.press('m');
+  await expect(video).toHaveJSProperty('muted', true);
+
+  state.metadata.release();
+  state.preparation.release();
+  state.media.release();
+  await decoded(page);
+  await page.keyboard.press('Space');
+  await expect(video).toHaveJSProperty('paused', true);
+  await page.keyboard.press('k');
+  await expect(video).toHaveJSProperty('paused', false);
+
+  await page
+    .getByRole('button', { name: 'Watch Channel 1', exact: true })
+    .click();
+  await expect(player).toBeFocused();
+  await expect.poll(() => state.starts.length).toBe(2);
+  await decoded(page);
+  await page.keyboard.press('m');
+  await expect(video).toHaveJSProperty('muted', false);
+  await page.screenshot({ path: info.outputPath('opened-player-focus.png') });
   expect(state.errors).toEqual([]);
 });
 
@@ -781,7 +1247,7 @@ test('controls hide, recover with keyboard, retain volume, seek, and stay inside
   await page.getByRole('button', { name: 'Quality', exact: true }).click();
   await expect(page.getByRole('menu', { name: 'Quality' })).toBeVisible();
   await page
-    .getByRole('menuitemradio', { name: 'Original', exact: true })
+    .getByRole('menuitemradio', { name: 'Original (540p)', exact: true })
     .click();
   await expect.poll(() => state.starts.length).toBe(2);
   expect(state.starts[1].options.quality).toBe('original');
@@ -790,7 +1256,7 @@ test('controls hide, recover with keyboard, retain volume, seek, and stay inside
   await expect(volume).toHaveValue('0.23');
   await page.getByRole('button', { name: 'Quality', exact: true }).click();
   await expect(
-    page.getByRole('menuitemradio', { name: 'Original', exact: true }),
+    page.getByRole('menuitemradio', { name: 'Original (540p)', exact: true }),
   ).toHaveAttribute('aria-checked', 'true');
   await page.screenshot({ path: '.local/player-ui/settings.png' });
   await page.keyboard.press('Escape');
@@ -817,6 +1283,7 @@ test('controls hide, recover with keyboard, retain volume, seek, and stay inside
   await expect(page.locator('.player-volume-range')).toBeHidden();
   await expect(page.locator('.playback-mode')).toBeHidden();
   await page.setViewportSize({ width: outsidePlayer + 381, height: 844 });
+  // Narrow windows with a mouse keep the player volume; only touch devices hide it.
   await expect(page.locator('.player-volume-range')).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
   await insidePlayer(page);
@@ -828,9 +1295,38 @@ test('controls hide, recover with keyboard, retain volume, seek, and stay inside
   expect(state.errors).toEqual([]);
 });
 
+test('fullscreen shortcut exits while the entry event is still pending', async ({
+  page,
+}, testInfo) => {
+  await fixture(page);
+  await decoded(page);
+  await page.evaluate(() => {
+    document.addEventListener(
+      'fullscreenchange',
+      (event) => {
+        if (document.fullscreenElement) event.stopImmediatePropagation();
+      },
+      { capture: true },
+    );
+  });
+  await page.getByRole('region', { name: 'Media player' }).focus();
+  await page.keyboard.press('f');
+  await expect
+    .poll(() => page.evaluate(() => document.fullscreenElement !== null))
+    .toBe(true);
+  await page.keyboard.press('f');
+  await expect
+    .poll(() => page.evaluate(() => document.fullscreenElement === null))
+    .toBe(true);
+  await testInfo.attach('fullscreen-shortcut', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+});
+
 test('web player supports YouTube playback shortcuts and left/right-click pause', async ({
   page,
-}) => {
+}, info) => {
   const state = await fixture(page, { subtitles: true });
   await decoded(page);
   const player = page.getByRole('region', { name: 'Media player' });
@@ -901,6 +1397,8 @@ test('web player supports YouTube playback shortcuts and left/right-click pause'
     .toBeCloseTo(0.31, 2);
   await page.keyboard.press('m');
   expect(await video.evaluate((element) => element.muted)).toBe(true);
+  await expect(player).toBeFocused();
+  await expect(player).not.toHaveCSS('outline-style', 'none');
 
   await page.keyboard.press('f');
   await expect
@@ -910,10 +1408,18 @@ test('web player supports YouTube playback shortcuts and left/right-click pause'
       ),
     )
     .toBe(true);
+  await expect(player).toBeFocused();
+  await expect(player).toHaveCSS('outline-style', 'none');
+  await page.keyboard.press('m');
+  expect(await video.evaluate((element) => element.muted)).toBe(false);
+  await expect(player).toHaveCSS('outline-style', 'none');
+  await page.screenshot({ path: info.outputPath('fullscreen-keyboard.png') });
   await page.keyboard.press('f');
   await expect
     .poll(() => page.evaluate(() => document.fullscreenElement))
     .toBeNull();
+  await expect(player).toBeFocused();
+  await expect(player).not.toHaveCSS('outline-style', 'none');
 
   await expect
     .poll(() => video.evaluate((element) => element.textTracks.length))
@@ -947,7 +1453,49 @@ test('web player supports YouTube playback shortcuts and left/right-click pause'
 test.describe('touch video playback', () => {
   test.use({ hasTouch: true, viewport: { width: 390, height: 844 } });
 
-  test('tapping the video reveals hidden controls before toggling playback', async ({
+  test('repeated side taps accumulate during a slow transcoded seek and keep paused playback paused', async ({
+    page,
+  }, testInfo) => {
+    await page.clock.install();
+    const state = await fixture(page, { mode: 'remux' });
+    await decoded(page);
+    const video = page.locator('video');
+    await page.getByRole('button', { name: 'Pause', exact: true }).tap();
+    const position = page.getByRole('slider', { name: 'Playback position' });
+    await position.fill('20');
+    await expect
+      .poll(async () => Number(await position.inputValue()))
+      .toBeCloseTo(20, 0);
+    await expect
+      .poll(() =>
+        video.evaluate((element: HTMLVideoElement) => element.readyState),
+      )
+      .toBeGreaterThanOrEqual(2);
+    await page.route('**/api/v1/playback/*/seek', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await route.fallback();
+    });
+    await freezeClock(page);
+    for (let tap = 0; tap < 3; tap++) {
+      await video.tap({ position: { x: 340, y: 95 } });
+    }
+    await page.clock.resume();
+    await expect
+      .poll(async () => Number(await position.inputValue()))
+      .toBeCloseTo(40, 0);
+    await expect
+      .poll(() =>
+        video.evaluate((element: HTMLVideoElement) => element.readyState),
+      )
+      .toBeGreaterThanOrEqual(2);
+    await expect(video).toHaveJSProperty('paused', true);
+    await page.screenshot({
+      path: testInfo.outputPath('mobile-transcoded-seek.png'),
+    });
+    expect(state.errors).toEqual([]);
+  });
+
+  test('tapping the center reveals hidden controls before toggling playback', async ({
     page,
   }, testInfo) => {
     const state = await fixture(page);
@@ -956,10 +1504,10 @@ test.describe('touch video playback', () => {
     const controls = page.locator('.player-controls');
 
     await expect(controls).toHaveCSS('opacity', '0', { timeout: 5000 });
-    await video.tap({ position: { x: 100, y: 100 } });
+    await video.tap({ position: { x: 195, y: 100 } });
     await expect(controls).toHaveCSS('opacity', '1');
     await expect(video).toHaveJSProperty('paused', false);
-    await video.tap({ position: { x: 100, y: 100 } });
+    await video.tap({ position: { x: 195, y: 100 } });
     await expect(video).toHaveJSProperty('paused', true);
     await expect(
       page.getByRole('button', { name: 'Play', exact: true }),
@@ -971,15 +1519,16 @@ test.describe('touch video playback', () => {
       }),
       contentType: 'image/png',
     });
-    await video.tap({ position: { x: 100, y: 100 } });
+    await video.tap({ position: { x: 195, y: 100 } });
     await expect(video).toHaveJSProperty('paused', false);
 
     await page.getByRole('button', { name: 'Pause', exact: true }).tap();
     await expect(video).toHaveJSProperty('paused', true);
     await page.getByRole('button', { name: 'Play', exact: true }).tap();
     await expect(video).toHaveJSProperty('paused', false);
-    await page.getByRole('button', { name: 'Mute', exact: true }).tap();
-    await expect(video).toHaveJSProperty('muted', true);
+    await expect(page.locator('.volume-controls')).toHaveCount(0);
+    await expect(video).toHaveJSProperty('volume', 1);
+    await expect(video).toHaveJSProperty('muted', false);
     await expect(video).toHaveJSProperty('paused', false);
     // Mobile browsers leave :hover on the controls after tapping one.
     const cdp = await page.context().newCDPSession(page);
@@ -996,7 +1545,7 @@ test.describe('touch video playback', () => {
     });
     await expect(page.locator('.player-controls:hover')).toHaveCount(1);
     await expect(controls).toHaveCSS('opacity', '0', { timeout: 5000 });
-    await video.tap({ position: { x: 100, y: 100 } });
+    await video.tap({ position: { x: 195, y: 100 } });
     await expect(controls).toHaveCSS('opacity', '1');
     await expect(video).toHaveJSProperty('paused', false);
     expect(state.errors).toEqual([]);
@@ -1520,5 +2069,117 @@ test('buffered HLS resumes without rebuilding its pipeline and quality changes p
     .poll(() => page.locator('video').evaluate((video) => video.currentTime))
     .toBeGreaterThan(before + 0.2);
   expect(state.seeks).toEqual([]);
+  expect(state.errors).toEqual([]);
+});
+
+test('An online stream that stops supplying media offers recovery', async ({
+  page,
+}, testInfo) => {
+  test.setTimeout(65000);
+  await fixture(page, { mode: 'remux', stalled: true });
+  await decoded(page);
+  await expect(
+    page.getByRole('button', { name: 'Retry playback' }),
+  ).toBeVisible({ timeout: 50000 });
+  await expect(page.getByRole('alert')).toContainText(
+    'stopped supplying media',
+  );
+  await testInfo.attach('stalled-stream', {
+    body: await page.screenshot({
+      path: '.local/player-ui/stalled-stream.png',
+    }),
+    contentType: 'image/png',
+  });
+});
+
+test('Original playback shows its decoded resolution', async ({
+  page,
+}, testInfo) => {
+  await fixture(page, { local: true });
+  await decoded(page);
+  const quality = page.getByRole('button', { name: 'Quality', exact: true });
+  await expect(page.locator('.playback-mode')).toHaveText('540p · Original');
+  await quality.click();
+  await expect(
+    page.getByRole('menuitemradio', { name: 'Auto (540p)', exact: true }),
+  ).toHaveAttribute('aria-checked', 'true');
+  await page
+    .getByRole('menuitemradio', { name: 'Original (540p)', exact: true })
+    .click();
+  await expect(page.locator('.playback-mode')).toHaveText('540p · Original');
+  await expect(quality).toBeEnabled();
+  await quality.click();
+  await expect(
+    page.getByRole('menuitemradio', { name: 'Auto', exact: true }),
+  ).toHaveAttribute('aria-checked', 'false');
+  await testInfo.attach('original-resolution', {
+    body: await page.screenshot({
+      path: '.local/player-ui/original-resolution.png',
+    }),
+    contentType: 'image/png',
+  });
+});
+
+test('Auto shows the delivered resolution only when selected', async ({
+  page,
+}, testInfo) => {
+  const state = await fixture(page, {
+    live: true,
+    mode: 'remux',
+    autoQuality: '1080p60',
+    qualities: [
+      { value: '1080p60', label: '1080p60' },
+      { value: '720p60', label: '720p60' },
+      { value: '480p', label: '480p' },
+    ],
+  });
+  await decoded(page);
+  const quality = page.getByRole('button', { name: 'Quality', exact: true });
+  await expect(page.locator('.playback-mode')).toHaveText('1080p60 · Remuxed');
+  await quality.click();
+  await expect(
+    page.getByRole('menuitemradio', { name: 'Auto (1080p60)', exact: true }),
+  ).toHaveAttribute('aria-checked', 'true');
+  await page
+    .getByRole('menuitemradio', { name: '720p60', exact: true })
+    .click();
+  await expect(page.locator('.playback-mode')).toHaveText('720p60 · Remuxed');
+  await expect(quality).toBeEnabled();
+  await quality.click();
+  await expect(
+    page.getByRole('menuitemradio', { name: 'Auto', exact: true }),
+  ).toHaveAttribute('aria-checked', 'false');
+  await expect(
+    page.getByRole('menuitemradio', { name: '720p60', exact: true }),
+  ).toHaveAttribute('aria-checked', 'true');
+  await expect(page.getByRole('menu', { name: 'Quality' })).not.toContainText(
+    'Auto (',
+  );
+  await testInfo.attach('manual-quality-menu', {
+    body: await page.screenshot({
+      path: '.local/player-ui/manual-quality-menu.png',
+    }),
+    contentType: 'image/png',
+  });
+  state.autoQuality = '480p';
+  await page.getByRole('menuitemradio', { name: 'Auto', exact: true }).click();
+  await expect(page.locator('.playback-mode')).toHaveText('480p · Remuxed');
+  await expect(quality).toBeEnabled();
+  await expect(quality).toHaveAttribute('title', 'Quality: Auto (480p)');
+  await quality.click();
+  await expect(
+    page.getByRole('menuitemradio', { name: 'Auto (480p)', exact: true }),
+  ).toHaveAttribute('aria-checked', 'true');
+  await testInfo.attach('automatic-quality-menu', {
+    body: await page.screenshot({
+      path: '.local/player-ui/automatic-quality-menu.png',
+    }),
+    contentType: 'image/png',
+  });
+  expect(state.starts.map((start) => start.options.quality)).toEqual([
+    'auto',
+    '720p60',
+    'auto',
+  ]);
   expect(state.errors).toEqual([]);
 });

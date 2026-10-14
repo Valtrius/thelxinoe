@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod startup_tests;
 #[path = "../storage/tools.rs"]
 mod storage;
 
@@ -325,7 +327,31 @@ async fn changed(state: &AppState) -> anyhow::Result<()> {
     state.emit(None, "tools.changed", json!({})).await
 }
 pub(crate) async fn ready(state: &AppState) -> Result<OnlineSnapshot> {
+    require(state, &["yt-dlp", "deno", "ffmpeg"]).await?;
     state.tools.runtime.online().map_err(|_|ApiError::conflict("Server tools are unavailable. An administrator can install or repair them in Settings → Server."))
+}
+pub(crate) async fn require(state: &AppState, tools: &[&str]) -> Result<()> {
+    let missing = tools
+        .iter()
+        .filter(|tool| state.tools.runtime.package(tool).is_err())
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let jobs = storage::jobs(&state.db).await?;
+    if missing.iter().all(|tool| {
+        jobs.iter()
+            .any(|job| job.tool == **tool && job.action != "check" && job.pending())
+    }) {
+        return Err(ApiError(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "tools_preparing",
+            "Waiting for playback tools…".into(),
+        ));
+    }
+    Err(ApiError::conflict(
+        "Playback tools are unavailable. An administrator can install or repair them in Settings → Server.",
+    ))
 }
 pub(crate) async fn selection(state: &AppState) -> anyhow::Result<Option<OnlineSnapshot>> {
     Ok(state.tools.runtime.online().ok())
@@ -830,6 +856,7 @@ async fn operation(state: &AppState, job: &Job) -> anyhow::Result<()> {
         return Ok(());
     }
     if job.generation.is_none() {
+        working(state, job, "installing").await?;
         let generation = if job.action == "rollback" {
             storage::generations(&state.db)
                 .await?
@@ -842,17 +869,6 @@ async fn operation(state: &AppState, job: &Job) -> anyhow::Result<()> {
                 .iter()
                 .find(|g| &g.candidate == candidate)
                 .context("The bundled package changed; check for updates to install")?;
-            storage::progress(
-                &state.db,
-                job.id.clone(),
-                "installing".into(),
-                0,
-                0,
-                None,
-                None,
-            )
-            .await?;
-            changed(state).await?;
             serde_json::from_value(
                 invoke(
                     &state.tools.root,
@@ -942,6 +958,20 @@ async fn wait(state: &AppState, job: &Job, reason: String) -> anyhow::Result<()>
     .await
 }
 
+async fn working(state: &AppState, job: &Job, stage: &str) -> anyhow::Result<()> {
+    storage::progress(
+        &state.db,
+        job.id.clone(),
+        stage.into(),
+        job.received,
+        job.total,
+        None,
+        None,
+    )
+    .await?;
+    changed(state).await
+}
+
 async fn protocol(state: &AppState, proposed: &[Generation]) -> anyhow::Result<()> {
     let selected = storage::inventory(&state.db).await?;
     let generations = storage::generations(&state.db).await?;
@@ -1021,6 +1051,7 @@ async fn activate(state: &AppState, job: &Job, t: &Tool) -> anyhow::Result<()> {
             return wait(state, job, format!("Waiting for {peer} preparation")).await;
         }
     }
+    working(state, job, "verifying").await?;
     for generation in &proposed {
         invoke(
             &state.tools.root,
@@ -1031,6 +1062,7 @@ async fn activate(state: &AppState, job: &Job, t: &Tool) -> anyhow::Result<()> {
         )
         .await?;
     }
+    working(state, job, "validating").await?;
     if let Err(error) = protocol(state, &proposed).await {
         if retry_at(&error).is_some() {
             return Err(error);
@@ -1054,6 +1086,7 @@ async fn activate(state: &AppState, job: &Job, t: &Tool) -> anyhow::Result<()> {
             return wait(state, job, reason).await;
         }
     }
+    working(state, job, "activating").await?;
     if storage::activate(&state.db, selections).await? {
         state.tools.validated(&proposed);
         publish(state).await?;
@@ -1083,6 +1116,8 @@ async fn activate(state: &AppState, job: &Job, t: &Tool) -> anyhow::Result<()> {
         }
         refresh_invalid(state).await?;
         publish(state).await?;
+    } else {
+        wait(state, job, "Tool settings changed before activation".into()).await?;
     }
     Ok(())
 }

@@ -2,6 +2,72 @@ use crate::test_support::{call, fixture};
 use axum::http::StatusCode;
 use serde_json::json;
 
+// Browser fixtures cannot validate state selection or per-user visibility.
+#[tokio::test]
+async fn activity_summary_tracks_real_operations_and_respects_audience() {
+    let (_temp, state, alice) = fixture().await;
+    state.db.write("test.activity", |db| {
+        db.execute("UPDATE users SET role='admin' WHERE id='bob'", [])?;
+        db.execute("INSERT INTO stack_provisions(id,kind,actor_id,state,created_at,updated_at) VALUES ('radarr','radarr','bob','installing',1,1)", [])?;
+        db.execute("INSERT INTO tool_jobs(id,tool,action,manual,revision,stage,created_at,updated_at) VALUES ('tool','ffmpeg','install',1,0,'waiting',1,1)", [])?;
+        db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Movies','movies','/movies')", [])?;
+        db.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES ('scan','library.scan','{\"root_id\":\"root\",\"secret\":\"PRIVATE-TOKEN\"}','scan','running',1,1)", [])?;
+        db.execute("INSERT INTO settings(key,value) VALUES ('product.controller','{\"items\":[{\"id\":\"product\",\"stage\":\"preparing\"}]}'),('backups.controller','{\"items\":[{\"id\":\"backup\",\"stage\":\"snapshotting\"}]}')", [])?;
+        db.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES ('alice','private-video','Private video')", [])?;
+        db.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) VALUES ('private-video','g','downloading','{}',1,1)", [])?;
+        db.execute("INSERT INTO youtube_download_requests(user_id,video_id,requested_at) VALUES ('alice','private-video',1)", [])?;
+        Ok(())
+    }).await.unwrap();
+    let admin =
+        crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
+            .await
+            .unwrap();
+    let admin = format!("thelxinoe_session={admin}");
+    let member = call(&state, "/api/v1/me/attention", "GET", json!({}), &alice).await;
+    assert_eq!(member.0, StatusCode::OK);
+    let member_activity = member.2["activity"].as_array().unwrap();
+    assert_eq!(member_activity.len(), 1);
+    assert_eq!(member_activity[0]["target"], "online");
+    assert_eq!(member_activity[0]["resource"], "youtube");
+    let result = call(&state, "/api/v1/me/attention", "GET", json!({}), &admin).await;
+    assert_eq!(result.0, StatusCode::OK);
+    let activity = result.2["activity"].as_array().unwrap();
+    assert!(activity.iter().any(|v| v["target"] == "services"
+        && v["resource"] == "radarr"
+        && v["state"] == "running"));
+    assert!(
+        activity.iter().any(|v| v["target"] == "server"
+            && v["resource"] == "ffmpeg"
+            && v["state"] == "queued")
+    );
+    assert!(
+        activity
+            .iter()
+            .any(|v| v["target"] == "movies" && v["resource"] == "root")
+    );
+    assert!(activity.iter().any(|v| v["target"] == "backups"));
+    assert!(activity.iter().any(|v| v["id"] == "product:product"));
+    assert!(!activity.iter().any(|v| v["target"] == "online"));
+    assert!(!result.2.to_string().contains("PRIVATE-TOKEN"));
+    state.db.write("test.activity_finish", |db| {
+        db.execute("UPDATE stack_provisions SET state='ready'", [])?;
+        db.execute("UPDATE tool_jobs SET stage='complete'", [])?;
+        db.execute("UPDATE jobs SET state='complete'", [])?;
+        db.execute("UPDATE settings SET value='{\"items\":[{\"id\":\"complete\",\"stage\":\"committed\"}]}' WHERE key='product.controller'", [])?;
+        db.execute("UPDATE settings SET value='{\"items\":[{\"id\":\"complete\",\"stage\":\"complete\"}]}' WHERE key='backups.controller'", [])?;
+        db.execute("UPDATE youtube_downloads SET state='ready'", [])?;
+        Ok(())
+    }).await.unwrap();
+    for cookie in [&alice, &admin] {
+        assert_eq!(
+            call(&state, "/api/v1/me/attention", "GET", json!({}), cookie)
+                .await
+                .2["activity"],
+            json!([])
+        );
+    }
+}
+
 // UI fixtures cannot catch the storage limit or administrator visibility scope.
 // Follow the public history/acknowledgment routes against the real database.
 #[tokio::test]

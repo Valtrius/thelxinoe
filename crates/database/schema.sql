@@ -335,6 +335,8 @@ CREATE TABLE oauth_attempts (
     redirect_uri TEXT NOT NULL,
     client_hash TEXT NOT NULL,
     expires_at INTEGER NOT NULL,
+    phase TEXT NOT NULL DEFAULT 'waiting' CHECK(phase IN ('waiting','connecting','failed')),
+    error TEXT,
     FOREIGN KEY(user_id,session_id) REFERENCES sessions(user_id,id) ON DELETE CASCADE
 ) STRICT;
 
@@ -446,6 +448,7 @@ CREATE TABLE twitch_attempts (
     next_poll INTEGER NOT NULL,
     interval INTEGER NOT NULL,
     error TEXT,
+    phase TEXT NOT NULL DEFAULT 'waiting' CHECK(phase IN ('waiting','connecting')),
     FOREIGN KEY(user_id,session_id) REFERENCES sessions(user_id,id) ON DELETE CASCADE
 ) STRICT;
 

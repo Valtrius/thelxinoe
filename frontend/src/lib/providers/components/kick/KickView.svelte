@@ -2,7 +2,7 @@
   import MediaSkeleton from '../../../ui/MediaSkeleton.svelte';
   import { LatestRequest } from '../../../latest-request';
   import { untrack } from 'svelte';
-  import { Plus, RefreshCw, Settings2, Trash2 } from '@lucide/svelte';
+  import { Plus, RefreshCw } from '@lucide/svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import { api, normalizeError } from '../../api';
   import { createCardGridWheelHandler } from '../../../card-grid-wheel';
@@ -20,9 +20,7 @@
   import Button from '../../../ui/Button.svelte';
   import ConfirmDialog from '../ui/ConfirmDialog.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
-  import ProviderConnection from '../../ProviderConnection.svelte';
   import { api as request } from '../../../api';
-  import { eyebrowTextClass as eyebrowClass } from '../../../ui/styles';
   import KickCard from './KickCard.svelte';
 
   let {
@@ -54,7 +52,6 @@
   let channels = $state<KickChannel[]>([]);
   let loading = $state(true);
   let error = $state<AppError | null>(null);
-  let managerOpen = $state(false);
   let channelInput = $state('');
   let adding = $state(false);
   let removalTarget = $state<KickChannel | null>(null);
@@ -303,129 +300,72 @@
       aria-hidden="true"
       class="pointer-events-none absolute right-0 -bottom-px left-0 h-px bg-line"
     ></span>
-    <Button
+    <form
       data-sidebar-resize="xy-pos"
-      size="sm"
-      variant="ghost"
-      aria-expanded={managerOpen}
-      onclick={() => (managerOpen = !managerOpen)}
+      class="flex w-full min-w-0 items-center gap-2 sm:w-80"
+      onsubmit={addChannel}
     >
-      <Settings2 class="size-3.5" />Manage channels
-    </Button>
-    <span data-sidebar-resize="xy-pos" class="text-[0.65rem] text-muted">
-      {channels.length} tracked
-    </span>
-    <span
-      data-sidebar-resize="xy-pos"
-      class="ml-auto text-[0.65rem] text-muted"
-    >
-      {#if syncStatus.isRefreshing}{syncStatus.phase} · {syncStatus.completed}/{syncStatus.total ??
-          '—'}{:else if metadataConfigured}Metadata updated {relativeTime(
-          syncStatus.lastSuccessAt,
-        )}{:else}Live metadata is optional{/if}
-    </span>
-    <Button
-      data-sidebar-resize="xy-pos"
-      size="sm"
-      variant="secondary"
-      disabled={!metadataConfigured ||
-        syncStatus.isRefreshing ||
-        channels.length === 0}
-      onclick={refresh}
-      title={metadataConfigured
-        ? 'Refresh Kick live metadata'
-        : 'Add an optional Kick API client in Settings to refresh live metadata'}
-    >
-      <RefreshCw
-        class={`size-3.5 ${syncStatus.isRefreshing ? 'animate-spin' : ''}`}
-      />Refresh metadata
-    </Button>
-  </div>
-
-  {#if managerOpen}
-    <section
-      data-sidebar-resize="x"
-      class="mt-3 mr-3 shrink-0 border border-line bg-surface-soft p-3 shadow-panel"
-      aria-label="Tracked Kick channels"
-    >
-      <div class="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p class={eyebrowClass}>TRACKED CHANNELS / KICK</p>
-          <p class="mt-1 max-w-2xl text-xs leading-5 text-muted">
-            This private list does not need a Kick sign-in or API client. Add
-            each channel once by slug or <span class="font-mono"
-              >https://kick.com/&lt;channel&gt;</span
-            >.
-          </p>
-        </div>
-        <form
-          class="flex min-w-72 flex-1 gap-2 sm:max-w-xl"
-          onsubmit={addChannel}
-        >
-          <label class="sr-only" for="kick-channel-input">Kick channel</label>
-          <input
-            id="kick-channel-input"
-            class="min-h-9 min-w-0 flex-1 border border-line bg-surface px-3 text-xs text-foreground focus:border-line-strong"
-            type="text"
-            placeholder="Channel slug or Kick URL"
-            autocomplete="off"
-            spellcheck="false"
-            disabled={adding}
-            bind:value={channelInput}
-          />
-          <Button
-            size="sm"
-            type="submit"
-            disabled={adding || !channelInput.trim()}
+      <label class="sr-only" for="kick-channel-input">Kick channel</label>
+      <input
+        id="kick-channel-input"
+        class="h-8 min-w-0 flex-1 border border-line bg-surface px-3 text-xs text-foreground focus:border-line-strong"
+        type="text"
+        placeholder="Channel slug or Kick URL"
+        autocomplete="off"
+        spellcheck="false"
+        disabled={adding}
+        bind:value={channelInput}
+      />
+      <Button
+        size="sm"
+        class="shrink-0"
+        type="submit"
+        disabled={adding || !channelInput.trim()}
+      >
+        <Plus class="size-3.5" />{adding ? 'Adding…' : 'Add'}
+      </Button>
+    </form>
+    {#if !metadataConfigured}
+      <p data-sidebar-resize="xy-pos" class="text-[0.65rem] text-muted">
+        {#if admin}
+          <a
+            href="#admin/providers"
+            class="text-accent underline underline-offset-2 hover:text-foreground"
+            onclick={(event) => {
+              event.preventDefault();
+              onNavigateSettings('kick');
+            }}>Show live status, titles and thumbnails</a
           >
-            <Plus class="size-3.5" />{adding ? 'Adding…' : 'Add'}
-          </Button>
-        </form>
-      </div>
-      {#if channels.length > 0}
-        <ul class="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-          {#each channels as channel (channel.slug)}
-            <li
-              class="flex min-w-0 items-center gap-2 border border-line bg-surface p-2"
-            >
-              {#if channel.profilePictureUrl}
-                <img
-                  class="size-8 shrink-0 rounded-full object-cover"
-                  src={channel.profilePictureUrl}
-                  alt=""
-                  loading="lazy"
-                />
-              {:else}
-                <span
-                  class="grid size-8 shrink-0 place-items-center rounded-full border border-line text-xs text-[#72ff43]"
-                  >{channel.displayName.slice(0, 1).toUpperCase()}</span
-                >
-              {/if}
-              <span class="min-w-0 flex-1">
-                <strong class="block truncate text-xs"
-                  >{channel.displayName}</strong
-                >
-                <span class="block truncate font-mono text-[0.6rem] text-muted"
-                  >kick.com/{channel.slug}</span
-                >
-              </span>
-              <Button
-                size="icon"
-                class="size-8"
-                variant="ghost"
-                aria-label={`Stop tracking ${channel.displayName}`}
-                disabled={removing ||
-                  activeSlugs.has(channel.slug.toLowerCase())}
-                onclick={() => (removalTarget = channel)}
-              >
-                <Trash2 class="size-3.5" />
-              </Button>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    </section>
-  {/if}
+        {:else}
+          Ask your administrator to set up Kick to show live status, titles and
+          thumbnails.
+        {/if}
+      </p>
+    {:else}
+      <span
+        data-sidebar-resize="xy-pos"
+        class="ml-auto text-[0.65rem] text-muted"
+      >
+        {#if syncStatus.isRefreshing}{syncStatus.phase} · {syncStatus.completed}/{syncStatus.total ??
+            '—'}{:else}Metadata updated {relativeTime(
+            syncStatus.lastSuccessAt,
+          )}{/if}
+      </span>
+      <Button
+        data-sidebar-resize="xy-pos"
+        size="sm"
+        variant="secondary"
+        class="ml-auto shrink-0 sm:ml-0"
+        disabled={syncStatus.isRefreshing || channels.length === 0}
+        onclick={refresh}
+        title="Refresh Kick live metadata"
+      >
+        <RefreshCw
+          class={`size-3.5 ${syncStatus.isRefreshing ? 'animate-spin' : ''}`}
+        />Refresh metadata
+      </Button>
+    {/if}
+  </div>
 
   <div
     use:connectLayoutMotion
@@ -450,13 +390,7 @@
         onAction={load}
       />
     {:else if channels.length === 0}
-      <ProviderConnection
-        platform="kick"
-        {admin}
-        configured={metadataConfigured}
-        onConfigured={onAccountChanged}
-        onConnect={() => (managerOpen = true)}
-      />
+      <p class="py-12 text-center text-sm text-muted">No tracked channels.</p>
     {:else}
       {#if !connected}
         <div
@@ -468,16 +402,6 @@
             >Resume tracking</Button
           >
           {#if error}<p role="alert">{error.message}</p>{/if}
-        </div>
-      {/if}
-      {#if !metadataConfigured}
-        <div class="mb-3">
-          <ProviderConnection
-            platform="kick"
-            {admin}
-            configured={metadataConfigured}
-            onConfigured={onAccountChanged}
-          />
         </div>
       {/if}
       <div class="pb-4" data-sidebar-resize="y-pos">
@@ -499,9 +423,12 @@
                 offlineConfirmed={liveMetadataIsFresh && !channel.liveStream}
                 isPlaying={activeSlugs.has(channel.slug.toLowerCase())}
                 isLaunching={launchingSlugs.has(channel.slug.toLowerCase())}
+                removeDisabled={removing ||
+                  activeSlugs.has(channel.slug.toLowerCase())}
                 onWatch={watch}
                 onCopy={copy}
                 onOpen={open}
+                onRemove={() => (removalTarget = channel)}
               />
             </div>
           {/each}

@@ -39,7 +39,7 @@ impl Pool {
         }
     }
 
-    pub async fn resolve(&self, state: &AppState, provider: &str, channel: &str) -> Result<String> {
+    pub async fn resolve(&self, state: &AppState, provider: &str, channel: &str) -> Result<Value> {
         let package = state.tools.runtime.package("streamlink")?;
         let mut slot = if let Some(slot) = self
             .workers
@@ -77,10 +77,11 @@ impl Pool {
         match result {
             Ok(Ok(value)) => {
                 *slot = Some(worker);
-                value["url"]
-                    .as_str()
-                    .map(str::to_owned)
-                    .context("Public stream extraction failed")
+                ensure!(
+                    value["formats"].is_array(),
+                    "Public stream extraction failed"
+                );
+                Ok(value)
             }
             _ => {
                 worker.stop().await;
@@ -170,7 +171,7 @@ async fn response(input: &mut (impl AsyncBufRead + Unpin)) -> Result<Value> {
             .position(|v| *v == b'\n')
             .map_or(buffer.len(), |n| n + 1);
         ensure!(
-            bytes.len() + count <= 32 * 1024,
+            bytes.len() + count <= 1024 * 1024,
             "Worker response exceeded its limit"
         );
         bytes.extend_from_slice(&buffer[..count]);
@@ -190,6 +191,10 @@ mod tests {
         assert_eq!(response(&mut input).await.unwrap()["ready"], true);
         assert!(response(&mut input).await.unwrap()["url"].is_string());
         assert!(response(&mut &b"{\"ready\":true}"[..]).await.is_err());
-        assert!(response(&mut &vec![b'a'; 32769][..]).await.is_err());
+        assert!(
+            response(&mut &vec![b'a'; 1024 * 1024 + 1][..])
+                .await
+                .is_err()
+        );
     }
 }

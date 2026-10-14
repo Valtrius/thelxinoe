@@ -53,10 +53,13 @@
   import Button from '../../../ui/Button.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
   import ProviderConnection from '../../ProviderConnection.svelte';
+  import ProviderAuthProgress from '../../ProviderAuthProgress.svelte';
   import { eyebrowTextClass as eyebrowClass } from '../../../ui/styles';
   import YoutubeFeedToolbar from './YoutubeFeedToolbar.svelte';
   import VideoGrid from './VideoGrid.svelte';
   import WatchlistSidebar from './WatchlistSidebar.svelte';
+  import Drawer from '../../../ui/Drawer.svelte';
+  import { compactViewport } from '../../../responsive';
 
   let {
     admin,
@@ -142,12 +145,24 @@
   );
 
   let error = $state<AppError | null>(null);
+  let connecting = $state(false);
   let refreshing = $state(false);
-  let watchlistSidebarOpen = $state(
+  let desktopWatchlistSidebarOpen = $state(
     preferences.getItem(watchlistSidebarKey) === 'true',
   );
+  let mobileWatchlistOpen = $state(false);
+  const watchlistSidebarOpen = $derived(
+    compactViewport.current ? mobileWatchlistOpen : desktopWatchlistSidebarOpen,
+  );
+  function setWatchlistOpen(open: boolean) {
+    if (compactViewport.current) mobileWatchlistOpen = open;
+    else desktopWatchlistSidebarOpen = open;
+  }
   $effect(() => {
-    if (showWatchlist) watchlistSidebarOpen = true;
+    if (showWatchlist) setWatchlistOpen(true);
+  });
+  $effect(() => {
+    if (!compactViewport.current) mobileWatchlistOpen = false;
   });
 
   let actionBusy = $state(false);
@@ -319,7 +334,7 @@
   });
   $effect(() => {
     const saved = $preferences[watchlistSidebarKey];
-    if (saved !== undefined) watchlistSidebarOpen = saved === 'true';
+    if (saved !== undefined) desktopWatchlistSidebarOpen = saved === 'true';
   });
 
   $effect(() => {
@@ -353,7 +368,10 @@
   });
 
   $effect(() => {
-    preferences.setItem(watchlistSidebarKey, String(watchlistSidebarOpen));
+    preferences.setItem(
+      watchlistSidebarKey,
+      String(desktopWatchlistSidebarOpen),
+    );
   });
 
   const handleCardGridWheel = createCardGridWheelHandler({
@@ -649,12 +667,16 @@
   }
 
   async function connect() {
+    if (connecting) return;
+    connecting = true;
     error = null;
     try {
       onAuthStarted(await api.connectYoutube());
     } catch (caught) {
       error = normalizeError(caught);
       if (error.category === 'authentication') onAccountChanged();
+    } finally {
+      connecting = false;
     }
   }
 
@@ -873,6 +895,44 @@
   }
 </script>
 
+{#snippet watchlist(onClose?: () => void)}
+  <WatchlistSidebar
+    actions={videoActions}
+    watchlists={watchlistController.watchlists}
+    selectedWatchlistId={watchlistController.selectedWatchlistId}
+    {downloadProgress}
+    downloadBusyIds={watchlistController.downloadBusyIds}
+    {activeVideoIds}
+    {launchingVideoIds}
+    mpvReady={playback.mpv.detected}
+    ytdlpReady={playback.ytdlp.detected}
+    ffmpegReady={playback.ffmpeg.detected}
+    {onClose}
+    onSelect={(watchlistId) => {
+      watchlistController.selectedWatchlistId = watchlistId;
+      onWatchlistSelected?.(watchlistId);
+    }}
+    onCreate={watchlistController.createWatchlist}
+    onUpdate={watchlistController.updateWatchlist}
+    onDelete={watchlistController.deleteWatchlist}
+    onReorder={watchlistController.reorderWatchlist}
+    onRemove={(watchlistId, video) =>
+      void watchlistController.removeFromWatchlist(watchlistId, video)}
+  />
+{/snippet}
+
+{#if account && compactViewport.current}
+  <Drawer
+    open={mobileWatchlistOpen}
+    side="right"
+    aria-label="YouTube watchlists"
+    class="fixed inset-x-0 top-(--mobile-player-height) z-60 h-[calc(100dvh-var(--mobile-player-height,0px))] w-full max-w-none desktop-shell:h-[calc(100dvh-var(--mobile-player-height,0px)-32px)]"
+    onClose={() => (mobileWatchlistOpen = false)}
+  >
+    {@render watchlist(() => (mobileWatchlistOpen = false))}
+  </Drawer>
+{/if}
+
 <div
   data-sidebar-resize="x"
   class="flex h-full min-h-0 flex-col overflow-hidden"
@@ -880,7 +940,7 @@
   {#if account}
     <YoutubeFeedToolbar
       bind:filters
-      bind:watchlistSidebarOpen
+      bind:watchlistSidebarOpen={() => watchlistSidebarOpen, setWatchlistOpen}
       {refreshing}
       channels={feed.channels}
       counts={feed.counts}
@@ -902,7 +962,7 @@
   <div
     use:scaleYoutubeMediaScope={{
       columns: cardColumns,
-      sidebarOpen: watchlistSidebarOpen,
+      sidebarOpen: !compactViewport.current && desktopWatchlistSidebarOpen,
     }}
     class="flex min-h-0 min-w-0 flex-1"
   >
@@ -923,11 +983,27 @@
           >
             <div class="max-w-md">
               <p class={eyebrowClass}>AUTH / SYSTEM BROWSER</p>
-              <h2 class="mt-2 text-xl">Finish Google sign-in</h2>
-              <p class="mt-3 text-sm leading-6 text-muted">
-                {authState.message ??
-                  'Use the browser window opened by Thelxinoe. Continue signing in to your server in that browser.'}
-              </p>
+              <h2 class="mt-2 text-xl">
+                {authState.phase === 'connecting'
+                  ? 'Connecting YouTube'
+                  : 'Finish Google sign-in'}
+              </h2>
+              {#if authState.phase !== 'connecting'}
+                <p class="mt-3 text-sm leading-6 text-muted">
+                  Use the browser window opened by Thelxinoe. Continue signing
+                  in to your server in that browser.
+                </p>
+              {/if}
+              <ProviderAuthProgress
+                label={authState.phase === 'connecting'
+                  ? 'Finishing sign-in…'
+                  : 'Waiting for Google approval…'}
+              />
+              {#if authState.message}
+                <p role="alert" class="mt-3 text-sm text-muted">
+                  {authState.message}
+                </p>
+              {/if}
               <div class="mt-5">
                 <Button variant="ghost" onclick={cancelAuth}
                   >Cancel sign-in</Button
@@ -948,6 +1024,7 @@
             configured={clientConfigured}
             onConfigured={onAccountChanged}
             onConnect={connect}
+            {connecting}
           />
         {/if}
       {:else if feed.loading && feed.videos.length === 0}
@@ -1054,7 +1131,7 @@
         />
       {/if}
     </div>
-    {#if account}
+    {#if account && !compactViewport.current}
       <div
         data-youtube-watchlist-frame
         class={`relative z-20 shrink-0 self-start overflow-visible ${watchlistSidebarOpen ? '' : 'pointer-events-none'}`}
@@ -1066,28 +1143,7 @@
           data-sidebar-resize-zoom
           class="absolute top-0 right-0"
         >
-          <WatchlistSidebar
-            actions={videoActions}
-            watchlists={watchlistController.watchlists}
-            selectedWatchlistId={watchlistController.selectedWatchlistId}
-            {downloadProgress}
-            downloadBusyIds={watchlistController.downloadBusyIds}
-            {activeVideoIds}
-            {launchingVideoIds}
-            mpvReady={playback.mpv.detected}
-            ytdlpReady={playback.ytdlp.detected}
-            ffmpegReady={playback.ffmpeg.detected}
-            onSelect={(watchlistId) => {
-              watchlistController.selectedWatchlistId = watchlistId;
-              onWatchlistSelected?.(watchlistId);
-            }}
-            onCreate={watchlistController.createWatchlist}
-            onUpdate={watchlistController.updateWatchlist}
-            onDelete={watchlistController.deleteWatchlist}
-            onReorder={watchlistController.reorderWatchlist}
-            onRemove={(watchlistId, video) =>
-              void watchlistController.removeFromWatchlist(watchlistId, video)}
-          />
+          {@render watchlist()}
         </div>
       </div>
     {/if}

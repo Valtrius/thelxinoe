@@ -5,6 +5,7 @@
   import { formControlClass } from './ui/styles';
   import { Folder, RefreshCw, ArrowLeft } from '@lucide/svelte';
   import { api } from './api';
+  import { activity } from './activity';
   import { LatestRequest } from './latest-request';
   import {
     attention,
@@ -83,7 +84,7 @@
     busy = $state(true);
   let collections = $state<{ id: number; name: string; count: number }[]>([]),
     collection = $state('');
-  let breadcrumbs = $state<{ id: string; title: string }[]>([]),
+  let breadcrumbs = $state<{ id: string; title: string; kind: string }[]>([]),
     selected = $state<Item | null>(null),
     details = $state<{
       files: {
@@ -94,6 +95,7 @@
       }[];
       local_trailers?: { file_id: string }[];
     } | null>(null);
+  const browsing = $derived(breadcrumbs.at(-1));
   let generation = 0;
   const detailRequests = new LatestRequest();
   let search = $state('');
@@ -167,7 +169,11 @@
             parents.map((parent) => api<Item>(`/catalog/${parent}`)),
           );
           if (!current()) return;
-          breadcrumbs = ancestry.map(({ id, title }) => ({ id, title }));
+          breadcrumbs = ancestry.map(({ id, title, kind }) => ({
+            id,
+            title,
+            kind,
+          }));
           if (id) {
             const item = await api<Item & NonNullable<typeof details>>(
               `/catalog/${id}`,
@@ -179,7 +185,7 @@
             } else
               breadcrumbs = [
                 ...breadcrumbs,
-                { id: item.id, title: item.title },
+                { id: item.id, title: item.title, kind: item.kind },
               ];
           }
           if (current()) await load(false);
@@ -207,7 +213,10 @@
       await select(item);
     } else {
       closeDetails();
-      breadcrumbs = [...breadcrumbs, { id: item.id, title: item.title }];
+      breadcrumbs = [
+        ...breadcrumbs,
+        { id: item.id, title: item.title, kind: item.kind },
+      ];
       await load();
     }
   }
@@ -340,10 +349,11 @@
     </SectionHeading>
     {#if selected.overview}<p class="text-muted">{selected.overview}</p>{/if}
     <MediaActions id={selected.id} kind={selected.kind} {userId} />
-    {#if admin}<MediaOperations
-        id={selected.id}
-        changed={() => void load()}
-      />{/if}
+    {#if admin}{#key selected.id}<MediaOperations
+          id={selected.id}
+          kind={selected.kind}
+          changed={() => void load()}
+        />{/key}{/if}
     {#if details?.local_trailers?.length}<p class="text-muted">
         {details.local_trailers.length} local trailer(s) indexed.
       </p>{/if}
@@ -388,12 +398,22 @@
           changed={() => void load()}
         />{/if}{/if}
   </Panel>{/if}
+{#if admin && !selected && browsing && ['show', 'season'].includes(browsing.kind)}
+  {#key browsing.id}<MediaOperations
+      id={browsing.id}
+      kind={browsing.kind}
+      changed={() => void load()}
+    />{/key}
+{/if}
 {#if items.length}<MediaGrid
     revision={items.map((i) => i.id).join(',')}
     label={domain}
   >
     {#each items as item (item.id)}<LibraryCard
         {item}
+        activity={$activity.filter((entry) =>
+          entry.media_ids.includes(item.id),
+        )}
         attention={$attention.filter((entry) =>
           entry.media_ids.includes(item.id),
         )}

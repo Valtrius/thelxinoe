@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { compactViewport } from './lib/responsive';
   import { hasNativeAccess } from './lib/services/presentation';
   import Notice from './lib/ui/Notice.svelte';
   import FormField from './lib/ui/FormField.svelte';
@@ -25,8 +26,10 @@
   } from './lib/navigation';
   import { captureSession, invalidateSession } from './lib/session';
   import Sidebar from './lib/ui/Sidebar.svelte';
-  import NavigationDrawer from './lib/ui/NavigationDrawer.svelte';
+  import SectionIcon from './lib/ui/SectionIcon.svelte';
+  import Drawer from './lib/ui/Drawer.svelte';
   import { connectAttention, refreshAttention } from './lib/attention';
+  import { setActivityConnected } from './lib/activity';
   import WindowTitlebar from './lib/ui/WindowTitlebar.svelte';
   import {
     appearance,
@@ -61,9 +64,29 @@
   let shell = $state<HTMLDivElement | null>(null);
   let main = $state<HTMLElement | null>(null);
   let workspace = $state<HTMLElement | null>(null);
+  let stopScrollRestoration = () => {};
   let workspaceHeight = $state(0);
-  let compact = $state(false),
-    mobileNavOpen = $state(false);
+  let pinnedPlayerHeight = $state(0);
+  let mobileNavOpen = $state(false);
+  const compact = $derived(compactViewport.current);
+  $effect(() => {
+    if (!compact) mobileNavOpen = false;
+  });
+  // The pinned player is out of flow, so the page is padded by its current
+  // height. The reveal transition animates that height while opening and
+  // closing; the padding follows it frame by frame and snaps with resizes.
+  function pinnedPlayer(node: HTMLElement) {
+    const observer = new ResizeObserver(() => {
+      pinnedPlayerHeight = node.clientHeight;
+    });
+    observer.observe(node);
+    return {
+      destroy() {
+        observer.disconnect();
+        pinnedPlayerHeight = 0;
+      },
+    };
+  }
   let route = $state<AppRoute>({ ...homeRoute });
   const section = $derived(route.section);
   const settingsSection = $derived(route.settings);
@@ -370,6 +393,7 @@
       (value) => {
         if (!ownsSession()) return;
         connected = value;
+        setActivityConnected(value);
         if (value && user) void refreshAppearance(user.id);
       },
     );
@@ -410,6 +434,7 @@
     });
   }
   function teardownSession() {
+    stopScrollRestoration();
     cancelVerification();
     invalidateSession();
     navigationReady = false;
@@ -444,31 +469,87 @@
     if (!user) return;
     const next = allowedRoute(destination, user, desktop, $providers);
     if (routeHref(next) === routeHref(route)) return;
+    stopScrollRestoration();
     const scroll = workspace?.scrollTop ?? 0;
+    const preserveSettingsScroll =
+      route.section === 'Settings' &&
+      next.section === 'Settings' &&
+      !next.workflow;
     history.replaceState({ ...history.state, scroll }, '', location.href);
     route = next;
-    writeLocation(next, replace, preserveWorkspace ? scroll : 0);
+    writeLocation(
+      next,
+      replace,
+      preserveWorkspace || preserveSettingsScroll ? scroll : 0,
+    );
     if (!preserveWorkspace) {
       mobileNavOpen = false;
       unsavedChanges = false;
       error = '';
-      void restoreWorkspace(0, true);
+      void restoreWorkspace(
+        preserveSettingsScroll ? scroll : 0,
+        !preserveSettingsScroll,
+      );
     }
   }
   function updateFilters(destination: AppRoute, replace = true) {
     go(destination, replace, true);
   }
   async function restoreWorkspace(scroll: number, focus = false) {
+    stopScrollRestoration();
     const destination = route;
+    let cancelled = false;
+    let observer: ResizeObserver | undefined;
+    const events = new AbortController();
+    const stop = () => {
+      cancelled = true;
+      observer?.disconnect();
+      events.abort();
+    };
+    stopScrollRestoration = stop;
+    if (destination.section === 'Settings' && workspace)
+      for (const event of ['wheel', 'pointerdown', 'keydown'])
+        workspace.addEventListener(event, stop, {
+          passive: true,
+          signal: events.signal,
+        });
     await preloadPage(destination).catch(() => {});
-    if (routeHref(destination) !== routeHref(route)) return;
+    if (cancelled || routeHref(destination) !== routeHref(route)) return;
     await tick();
-    if (workspace) workspace.scrollTop = scroll;
+    if (cancelled) return;
+    if (workspace) {
+      const scroller = workspace;
+      const settings =
+        destination.section === 'Settings'
+          ? scroller.querySelector('.settings-layout')
+          : null;
+      if (scroll > 0 && settings) {
+        observer = new ResizeObserver(() => {
+          scroller.scrollTop = scroll;
+          if (scroller.scrollTop >= scroll) stop();
+        });
+        observer.observe(settings);
+      } else stop();
+      scroller.scrollTop = scroll;
+    } else stop();
     if (focus) {
-      const heading = main?.querySelector<HTMLElement>('header h1');
-      if (heading) {
-        heading.tabIndex = -1;
-        heading.focus({ preventScroll: true });
+      const navigationDrawer = document.getElementById('mobile-navigation');
+      if (
+        navigationDrawer instanceof HTMLDialogElement &&
+        navigationDrawer.open
+      )
+        await new Promise<void>((resolve) =>
+          navigationDrawer.addEventListener('close', () => resolve(), {
+            once: true,
+          }),
+        );
+      if (routeHref(destination) !== routeHref(route)) return;
+      const target = compact
+        ? main?.querySelector<HTMLElement>('header h1')
+        : main;
+      if (target) {
+        target.tabIndex = -1;
+        target.focus({ preventScroll: true });
       }
     }
   }
@@ -478,20 +559,6 @@
   }
   function openSettings(name: string, service?: string) {
     go({ ...sectionRoute('Settings', name), service });
-  }
-  function back() {
-    if (history.state?.thelxinoeRoute) history.back();
-    else
-      go(
-        {
-          ...route,
-          detail: undefined,
-          item: undefined,
-          playlist: undefined,
-          requests: false,
-        },
-        true,
-      );
   }
   async function switchServer(address: string) {
     teardownSession();
@@ -534,13 +601,9 @@
     const request = ++playbackRequest;
     const owner = user?.id;
     await act(async () => {
-      if (resolveYoutube)
-        await api('/online/youtube/resolve', 'POST', {
-          video_id: choice.id.slice('youtube:'.length),
-        });
       const next = await persistQueue(choice);
       if (request !== playbackRequest || user?.id !== owner) return;
-      playing = next;
+      playing = resolveYoutube ? { ...next, resolveYoutube: true } : next;
       if (!desktop) {
         await tick();
         workspace?.scrollTo({
@@ -574,13 +637,6 @@
     const toolsConnection = desktop
       ? connectTools()
       : Promise.resolve(() => {});
-    const media = window.matchMedia('(max-width: 720px)');
-    const resize = () => {
-      compact = media.matches;
-      mobileNavOpen = false;
-    };
-    resize();
-    media.addEventListener('change', resize);
     const incompatible = (event: Event) => {
       updateRequired = (event as CustomEvent<string>).detail;
       events?.close();
@@ -648,7 +704,6 @@
       window.removeEventListener('thelxinoe-unsaved-changes', cancelledEdits);
       teardownSession();
       sidebarMotion.destroy();
-      media.removeEventListener('change', resize);
     };
   });
 </script>
@@ -747,20 +802,26 @@
       />
     {/snippet}
     {#if compact}
-      {#if mobileNavOpen}
-        <NavigationDrawer onClose={() => (mobileNavOpen = false)}>
-          {@render navigation(user)}
-        </NavigationDrawer>
-      {/if}
+      <Drawer
+        modal
+        open={mobileNavOpen}
+        id="mobile-navigation"
+        aria-label="Navigation menu"
+        class="inset-0 h-dvh w-64 max-w-[calc(100vw-3rem)] backdrop:bg-black/53 desktop-shell:h-[calc(100dvh-32px)]"
+        onClose={() => (mobileNavOpen = false)}
+      >
+        {@render navigation(user)}
+      </Drawer>
     {:else}
       {@render navigation(user)}
     {/if}
     <main
-      class="content flex min-w-0 flex-1 flex-col overflow-hidden"
+      class="content flex min-w-0 flex-1 flex-col overflow-hidden compact:pt-(--mobile-player-height)"
       bind:this={main}
+      style:--mobile-player-height={`${compact ? pinnedPlayerHeight : 0}px`}
     >
       <header
-        class="page-header flex shrink-0 items-center gap-5 border-b border-line bg-background/88 px-6 py-2 narrow:px-4 compact:gap-2.5 compact:px-3 compact:py-1.5"
+        class="page-header hidden shrink-0 items-center gap-2.5 border-b border-line bg-background/88 px-3 py-1.5 compact:flex"
       >
         {#if compact}
           <Button
@@ -777,10 +838,9 @@
         {/if}
         <div class="mr-auto min-w-0">
           <h1
-            class="m-0 text-[18px] leading-6 compact:text-[17px]"
-            data-sidebar-resize="x-pos"
+            class="m-0 flex min-w-0 items-center gap-2.5 text-[17px] leading-6"
           >
-            {section}
+            <SectionIcon {section} /><span class="truncate">{section}</span>
           </h1>
         </div>
         <span
@@ -841,13 +901,14 @@
             />{:catch error}<Notice role="alert" variant="error"
               >{String(error)}</Notice
             >{/await}{:else if playing}<div
+            use:pinnedPlayer
             class={[
-              'player-frame',
+              'player-frame compact:fixed compact:inset-x-0 compact:top-0 compact:z-70 compact:m-0',
               providerPage
                 ? '-mt-3 -ml-3'
                 : section === 'Settings'
                   ? ''
-                  : '-mx-6 -mt-6 narrow:-mx-4 narrow:-mt-4 compact:-mx-3 compact:-mt-3',
+                  : '-mx-6 -mt-6 narrow:-mx-4 narrow:-mt-4',
             ]}
           >
             {#await players.video()}<p role="status">
@@ -876,7 +937,6 @@
           {openSettings}
           {go}
           {updateFilters}
-          {back}
           sessionEnded={teardownSession}
           {switchServer}
           displayChanged={(zone, format) => {

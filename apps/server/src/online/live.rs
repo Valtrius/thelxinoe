@@ -9,7 +9,6 @@ use crate::{
 };
 use rusqlite::{OptionalExtension, params};
 use thelxinoe_core::Principal;
-use thelxinoe_playback::RemoteSource;
 
 pub(crate) fn domain(media: &str) -> bool {
     media.starts_with("twitch:") || media.starts_with("kick:")
@@ -39,7 +38,7 @@ pub(crate) async fn authorize(
         .await?
         .ok_or_else(ApiError::not_found)
 }
-pub(crate) async fn extract(state: &AppState, media: &str) -> Result<RemoteSource> {
+pub(crate) async fn extract(state: &AppState, media: &str) -> Result<serde_json::Value> {
     super::availability::require_media(state, media).await?;
     let kick = media.starts_with("kick:");
     let login: String = if let Some(channel) = media.strip_prefix("kick:") {
@@ -61,13 +60,14 @@ pub(crate) async fn extract(state: &AppState, media: &str) -> Result<RemoteSourc
     {
         return Err(ApiError::bad("Invalid channel identity"));
     }
+    crate::tools::require(state, &["streamlink"]).await?;
     let _permit = state
         .online
         .extraction
         .acquire()
         .await
         .map_err(|_| ApiError::conflict("Extraction is unavailable"))?;
-    let address = state
+    let metadata = state
         .online
         .streamlink
         .resolve(state, if kick { "kick" } else { "twitch" }, &login)
@@ -77,25 +77,18 @@ pub(crate) async fn extract(state: &AppState, media: &str) -> Result<RemoteSourc
                 "This channel is offline or public extraction is unavailable; retry later",
             )
         })?;
-    let source = RemoteSource {
-        video: address.trim().to_owned(),
-        audio: None,
-        live: true,
-        proxy: None,
-        segments: Vec::new(),
-    };
-    source
-        .validate()
-        .map_err(|_| ApiError::conflict("Unsupported public live media address"))?;
-    let host = url::Url::parse(&source.video)
-        .ok()
-        .and_then(|u| u.host_str().map(str::to_owned))
-        .unwrap_or_default();
     let domain = if kick { "live-video.net" } else { "ttvnw.net" };
-    if host != domain && !host.ends_with(&format!(".{domain}")) {
-        return Err(ApiError::conflict("Unsupported live media address"));
+    for format in metadata["formats"].as_array().into_iter().flatten() {
+        let host = format["url"]
+            .as_str()
+            .and_then(|s| url::Url::parse(s).ok())
+            .and_then(|u| u.host_str().map(str::to_owned))
+            .unwrap_or_default();
+        if host != domain && !host.ends_with(&format!(".{domain}")) {
+            return Err(ApiError::conflict("Unsupported live media address"));
+        }
     }
-    Ok(source)
+    Ok(metadata)
 }
 #[cfg(test)]
 mod tests {

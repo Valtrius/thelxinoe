@@ -30,6 +30,7 @@
   import Switch from '../../../ui/Switch.svelte';
   import { eyebrowTextClass as eyebrowClass } from '../../../ui/styles';
   import WatchlistItem from './WatchlistItem.svelte';
+  import { touchDevice } from '../../../responsive';
 
   let {
     actions,
@@ -48,6 +49,7 @@
     onDelete,
     onReorder,
     onRemove,
+    onClose,
   }: {
     actions: YoutubeVideoActions;
     watchlists: YoutubeWatchlist[];
@@ -68,6 +70,7 @@
     onDelete: (watchlistId: number) => Promise<void>;
     onReorder: (watchlistId: number, videoIds: string[]) => Promise<void>;
     onRemove: (watchlistId: number, video: YoutubeVideo) => void;
+    onClose?: () => void;
   } = $props();
 
   let listMenuOpen = $state(false);
@@ -79,6 +82,7 @@
   let dragItems = $state<string[] | null>(null);
   let dragSnapshot: LayoutSnapshot | null = null;
   let suppressDragClickVideoId = $state<string | null>(null);
+  let dragHoldTimer: ReturnType<typeof setTimeout> | undefined;
   let dragCandidate: {
     pointerId: number;
     videoId: string;
@@ -87,6 +91,7 @@
     startY: number;
     offsetX: number;
     offsetY: number;
+    heldHandle: boolean;
   } | null = null;
   let dragPreview: HTMLElement | null = null;
   let dragPreviewScale = 1;
@@ -185,23 +190,41 @@
   }
 
   function removePointerDragListeners() {
+    clearTimeout(dragHoldTimer);
+    dragHoldTimer = undefined;
     window.removeEventListener('pointermove', movePointerDrag);
     window.removeEventListener('pointerup', finishPointerDrag);
     window.removeEventListener('pointercancel', cancelPointerDrag);
+    window.removeEventListener('touchmove', preventDragScroll);
   }
 
-  function beginPointerDrag(event: PointerEvent, videoId: string) {
+  function preventDragScroll(event: TouchEvent) {
+    if (draggingVideoId) event.preventDefault();
+  }
+
+  function beginPointerDrag(
+    event: PointerEvent,
+    videoId: string,
+    heldHandle = false,
+  ) {
     if (
       !selected ||
       !canReorder ||
+      (touchDevice.current && !heldHandle) ||
       event.button !== 0 ||
-      (event.target as HTMLElement).closest(
-        'button, input, textarea, select, a',
-      )
+      (!heldHandle &&
+        (event.target as HTMLElement).closest(
+          'button, input, textarea, select, a',
+        ))
     ) {
       return;
     }
-    const source = event.currentTarget as HTMLElement;
+    if (dragCandidate) return;
+    const source = heldHandle
+      ? (event.currentTarget as HTMLElement).closest<HTMLElement>(
+          '[data-watchlist-video-id]',
+        )!
+      : (event.currentTarget as HTMLElement);
     const rect = source.getBoundingClientRect();
     dragCandidate = {
       pointerId: event.pointerId,
@@ -211,10 +234,20 @@
       startY: event.clientY,
       offsetX: event.clientX - rect.left,
       offsetY: event.clientY - rect.top,
+      heldHandle,
     };
     window.addEventListener('pointermove', movePointerDrag);
     window.addEventListener('pointerup', finishPointerDrag);
     window.addEventListener('pointercancel', cancelPointerDrag);
+    if (heldHandle) {
+      dragHoldTimer = setTimeout(() => {
+        dragHoldTimer = undefined;
+        startPointerDrag(event);
+      }, 350);
+      window.addEventListener('touchmove', preventDragScroll, {
+        passive: false,
+      });
+    }
   }
 
   function startPointerDrag(event: PointerEvent) {
@@ -264,6 +297,10 @@
         event.clientX - dragCandidate.startX,
         event.clientY - dragCandidate.startY,
       );
+      if (dragCandidate.heldHandle) {
+        if (distance > 10) cancelPointerDrag(event);
+        return;
+      }
       if (distance < 5) return;
       startPointerDrag(event);
     }
@@ -366,13 +403,22 @@
 </script>
 
 <aside
-  class="flex h-full min-h-0 w-full flex-col border-l border-line bg-surface"
+  class="flex h-full min-h-0 w-full flex-col border-l border-line bg-surface compact:border-l-0"
 >
   <div
     data-sidebar-resize="y"
     data-sidebar-resize-zoom
     class="flex shrink-0 items-center gap-1.5 border-b border-line p-2"
   >
+    {#if onClose}
+      <Button
+        size="icon"
+        variant="ghost"
+        aria-label="Close watchlists"
+        title="Close watchlists"
+        onclick={onClose}><X class="size-4" /></Button
+      >
+    {/if}
     <div class="relative min-w-0 flex-1">
       <Popover.Root
         bind:open={listMenuOpen}
@@ -694,6 +740,8 @@
                   dragging={draggingVideoId === item.video.videoId}
                   suppressClick={suppressDragClickVideoId ===
                     item.video.videoId}
+                  onReorderStart={(event) =>
+                    beginPointerDrag(event, item.video.videoId, true)}
                   onRemove={(video) => onRemove(selected.id, video)}
                 />
               {/if}

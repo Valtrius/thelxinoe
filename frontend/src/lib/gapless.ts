@@ -5,6 +5,7 @@ import {
   capabilities,
   mediaUrl,
   prepare,
+  playbackRequest,
   replayGain,
   scheduleBuffer,
   type MediaChoice,
@@ -55,10 +56,12 @@ export class GaplessQueue {
   private timer: ReturnType<typeof setInterval>;
   private heartbeat: ReturnType<typeof setInterval>;
   private lastCurrent?: Entry;
+  private preparation = new AbortController();
   constructor(
     private choices: MediaChoice[],
     private changed: (s: MusicState) => void,
     private failed: (e: unknown) => void,
+    private waiting?: (value: boolean) => void,
   ) {
     this.volume.connect(this.context.destination);
     this.timer = setInterval(() => this.update(), 100);
@@ -84,7 +87,11 @@ export class GaplessQueue {
     if (this.closed || this.next >= this.choices.length) return;
     const first = this.next === 0;
     const choice = this.choices[this.next++];
-    const info = await api<MediaInfo>(`/catalog/${choice.id}/playback`);
+    const pending = { signal: this.preparation.signal, waiting: this.waiting };
+    const info = await playbackRequest(
+      () => api<MediaInfo>(`/catalog/${choice.id}/playback`),
+      pending,
+    );
     if (this.closed || !this.ownsSession()) return;
     const source = info.sources.find(
       (s) => !choice.fileId || s.id === choice.fileId,
@@ -116,6 +123,7 @@ export class GaplessQueue {
         capabilities: capabilities(),
       },
       first ? undefined : 0,
+      pending,
     );
     try {
       if (this.closed || !this.ownsSession()) return;
@@ -354,6 +362,7 @@ export class GaplessQueue {
   close(): Promise<void> {
     if (this.closing) return this.closing;
     this.closed = true;
+    this.preparation.abort();
     clearInterval(this.timer);
     clearInterval(this.heartbeat);
     const position = this.context.currentTime;

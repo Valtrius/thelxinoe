@@ -390,7 +390,7 @@ test('Discover history restores the rendered screen after navigating away', asyn
   ).toBeVisible();
   await page.getByRole('link', { name: 'Movies', exact: true }).click();
   await expect(
-    page.getByRole('heading', { name: 'Movies', exact: true }),
+    page.getByRole('textbox', { name: 'Search movies', exact: true }),
   ).toBeVisible();
   await page.goBack();
   await expect(page).toHaveURL(/#discover\/movie\/11$/);
@@ -399,11 +399,11 @@ test('Discover history restores the rendered screen after navigating away', asyn
   ).toBeVisible();
   await page.goForward();
   await expect(
-    page.getByRole('heading', { name: 'Movies', exact: true }),
+    page.getByRole('textbox', { name: 'Search movies', exact: true }),
   ).toBeVisible();
   await page.reload();
   await expect(
-    page.getByRole('heading', { name: 'Movies', exact: true }),
+    page.getByRole('textbox', { name: 'Search movies', exact: true }),
   ).toBeVisible();
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
@@ -412,6 +412,87 @@ test('Discover history restores the rendered screen after navigating away', asyn
     contentType: 'image/png',
   });
 });
+
+for (const entry of ['feed', 'search', 'direct link'] as const) {
+  test(`Back to discover leaves recommendation history from ${entry}`, async ({
+    page,
+  }, testInfo) => {
+    const fixture = await discoverFixture(page);
+    const recommended = { ...movie, id: 33, title: 'Interstellar' };
+    const next = { ...movie, id: 44, title: 'Contact' };
+    for (const [source, destination] of [
+      [movie, recommended],
+      [recommended, next],
+    ])
+      await page.route(
+        `**/api/v1/seerr/movie/${source.id}/recommendations`,
+        (route) => route.fulfill({ json: results([destination]) }),
+      );
+    for (const item of [recommended, next])
+      await page.route(`**/api/v1/seerr/movie/${item.id}`, (route) =>
+        route.fulfill({ json: item }),
+      );
+    const query = entry === 'search' ? '?q=Arrival' : '';
+    await page.goto(
+      entry === 'direct link' ? '/#discover/movie/11' : `/#discover${query}`,
+    );
+    if (entry !== 'direct link')
+      await page
+        .getByRole('button', { name: 'View Arrival', exact: true })
+        .first()
+        .click();
+    const heading = (name: string) =>
+      page.getByRole('heading', { name, exact: true });
+    await expect(heading('Arrival')).toBeVisible();
+    if (entry === 'direct link') {
+      await page.getByRole('button', { name: 'Back to discover' }).click();
+      await expect(page).toHaveURL(/#discover$/);
+      await page.goto('/#discover/movie/11');
+      await expect(heading('Arrival')).toBeVisible();
+    }
+    await page
+      .getByRole('button', { name: 'View Interstellar', exact: true })
+      .click();
+    await expect(heading('Interstellar')).toBeVisible();
+    await page
+      .getByRole('button', { name: 'View Contact', exact: true })
+      .click();
+    await expect(heading('Contact')).toBeVisible();
+    await page.goBack();
+    await expect(heading('Interstellar')).toBeVisible();
+    await page.goBack();
+    await expect(heading('Arrival')).toBeVisible();
+    await page.goForward();
+    await expect(heading('Interstellar')).toBeVisible();
+    await page.goForward();
+    await expect(heading('Contact')).toBeVisible();
+    if (entry === 'direct link') {
+      await page.reload();
+      await expect(heading('Contact')).toBeVisible();
+    }
+    await testInfo.attach('recommendation-history', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+    await page.getByRole('button', { name: 'Back to discover' }).click();
+    await expect(page).toHaveURL(
+      new RegExp(`#discover${query.replace('?', '\\?')}$`),
+    );
+    await expect(
+      page.getByRole('textbox', { name: 'Search movies and series' }),
+    ).toHaveValue(entry === 'search' ? 'Arrival' : '');
+    await expect(heading('Contact')).toHaveCount(0);
+    await expect(
+      page.getByRole('button', { name: 'View Arrival', exact: true }).first(),
+    ).toBeVisible();
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.unexpected).toEqual([]);
+    await testInfo.attach('returned-to-discover', {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    });
+  });
+}
 
 test('posters align at the top of discovery rows and search rows with wrapped titles', async ({
   page,
@@ -784,7 +865,7 @@ test('desktop trailers resolve through the server and launch MPV with the same v
   await page.getByRole('link', { name: 'Watch trailer' }).click();
   await expect
     .poll(() => launches)
-    .toEqual([
+    .toMatchObject([
       {
         choice: {
           id: 'youtube:xwdamnfS6IM',
@@ -804,7 +885,7 @@ test('desktop trailers resolve through the server and launch MPV with the same v
 
 test('YouTube link lookup failures keep details open and allow another attempt', async ({
   page,
-}) => {
+}, testInfo) => {
   const fixture = await discoverFixture(page);
   const resolved: string[] = [];
   await page.route('**/api/v1/online/youtube/resolve', async (route) => {
@@ -817,16 +898,37 @@ test('YouTube link lookup failures keep details open and allow another attempt',
   await page.goto('/#discover/movie/11');
   const trailer = page.getByRole('link', { name: 'Watch trailer' });
   await trailer.click();
-  await expect(page.getByRole('alert')).toContainText(
+  const player = page.getByRole('region', { name: 'Media player' });
+  await expect(player.getByRole('alert')).toContainText(
     'Video lookup is temporarily unavailable',
   );
   await expect(page).toHaveURL(/#discover\/movie\/11$/);
+  await expect(
+    page.getByRole('heading', { name: 'Arrival', exact: true }),
+  ).toBeVisible();
+  await player.getByRole('button', { name: 'Retry playback' }).click();
+  await expect.poll(() => resolved).toEqual(['xwdamnfS6IM', 'xwdamnfS6IM']);
+  await expect(player.getByRole('alert')).toContainText(
+    'Video lookup is temporarily unavailable',
+  );
+  await testInfo.attach('trailer-lookup-error-after-retry', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+  await player.getByRole('button', { name: 'Close player' }).click();
+  await expect(player).toHaveCount(0);
   await trailer.evaluate((link) =>
     link.setAttribute('href', 'https://youtu.be/9pkqztOC1WM'),
   );
   await trailer.click();
-  await expect.poll(() => resolved).toEqual(['xwdamnfS6IM', '9pkqztOC1WM']);
+  await expect
+    .poll(() => resolved)
+    .toEqual(['xwdamnfS6IM', 'xwdamnfS6IM', '9pkqztOC1WM']);
+  await expect(player.getByRole('alert')).toContainText(
+    'Video lookup is temporarily unavailable',
+  );
   expect(page.context().pages()).toHaveLength(1);
+  await player.getByRole('button', { name: 'Close player' }).click();
   await expect(page.locator('video')).toHaveCount(0);
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);

@@ -48,6 +48,8 @@ export async function installUiFixture(
   let serverSettings = {
     timezone: 'UTC',
     time_format: '24h' as '12h' | '24h',
+    video_transcoding: true,
+    audio_transcoding: true,
   };
   let productUpdate = {
     version: '0.1.0',

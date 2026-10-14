@@ -1,6 +1,8 @@
 //! A complete VOD timeline for clients that seek by requesting HLS segments.
 //! Segments are generated on demand and may be evicted and regenerated.
-use crate::{CleanupReason, Options, RemoteSource, RunHandle, Source, StoppedRun, conversion_args};
+use crate::{
+    CleanupReason, Decision, Encoding, Options, RemoteSource, RunHandle, Source, StoppedRun,
+};
 use anyhow::{Context, Result, bail};
 use std::{
     collections::HashMap,
@@ -23,7 +25,7 @@ struct Run {
     source: Source,
     remote: Option<RemoteSource>,
     options: Options,
-    mode: String,
+    encoding: Encoding,
     boundaries: Vec<f64>,
     video_start: f64,
     gate: Mutex<Option<RemoteWork>>,
@@ -70,39 +72,54 @@ impl VodCache {
         options: &Options,
         mode: &str,
     ) -> Result<String> {
-        self.start_input(id, source, options, mode, None).await
+        self.start_input(
+            id,
+            source,
+            options,
+            Encoding::for_mode(source, options, mode)?,
+            None,
+        )
+        .await
     }
     pub async fn start_remote(
         &self,
         id: &str,
         remote: &RemoteSource,
-        duration: f64,
+        source: &Source,
         options: &Options,
+        decision: &Decision,
     ) -> Result<String> {
         remote.validate()?;
         if remote.live {
             bail!("A live stream has no VOD timeline");
         }
-        let source = Source {
-            id: id.into(),
-            media_id: id.into(),
-            generation: id.into(),
-            edition: "public".into(),
-            path: PathBuf::new(),
-            root: PathBuf::new(),
-            size: 0,
-            modified: String::new(),
-            probe: serde_json::json!({"format":{"duration":duration.to_string()},"streams":[{"codec_type":"video","codec_name":"h264"},{"codec_type":"audio","codec_name":"aac"}]}),
-        };
-        self.start_input(id, &source, options, "transcode", Some(remote.clone()))
-            .await
+        let mut source = source.clone();
+        if !remote.segments.is_empty()
+            && let Some(start) = source.probe["streams"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|s| s["codec_type"] == "video")
+                .and_then(|s| s["start_time"].as_str())
+                .map(str::to_owned)
+        {
+            source.probe["format"]["start_time"] = serde_json::json!(start);
+        }
+        self.start_input(
+            id,
+            &source,
+            options,
+            decision.encoding,
+            Some(remote.clone()),
+        )
+        .await
     }
     async fn start_input(
         &self,
         id: &str,
         source: &Source,
         options: &Options,
-        mode: &str,
+        encoding: Encoding,
         remote: Option<RemoteSource>,
     ) -> Result<String> {
         if remote.is_none() {
@@ -118,13 +135,15 @@ impl VodCache {
         // Remote windows prepare adjacent segments over the same connection.
         // Six-second segments also keep conversion overhead bounded on TVs.
         let segment = 6.0;
-        let (boundaries, video_start) = if mode == "remux" && source.video_codec().is_some() {
+        let (boundaries, video_start) = if !encoding.video && source.video_codec().is_some() {
             let _slot = self
                 .slots
                 .clone()
                 .try_acquire_owned()
                 .context("All conversion slots are busy")?;
-            keyframes(source, &tools).await?
+            keyframes(source, &tools, remote.as_ref())
+                .await
+                .context("Source keyframe index is unavailable")?
         } else {
             (
                 (0..(duration / segment).ceil() as usize)
@@ -154,15 +173,24 @@ impl VodCache {
         let mut manifest = format!(
             "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-TARGETDURATION:{target}\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-INDEPENDENT-SEGMENTS\n"
         );
+        let fragmented =
+            remote.is_some() && options.capabilities.hls_container.as_deref() == Some("mp4");
+        if fragmented {
+            manifest = manifest.replace("#EXT-X-VERSION:3", "#EXT-X-VERSION:7");
+        }
         for (index, times) in boundaries.windows(2).enumerate() {
             // Independent muxer runs need a discontinuity even when remuxed
             // packets retain their original presentation timestamps.
             if index > 0 {
                 manifest.push_str("#EXT-X-DISCONTINUITY\n");
             }
+            if fragmented {
+                manifest.push_str(&format!("#EXT-X-MAP:URI=\"init-{index:06}.mp4\"\n"));
+            }
             manifest.push_str(&format!(
-                "#EXTINF:{:.6},\nsegment-{index:06}.ts\n",
-                times[1] - times[0]
+                "#EXTINF:{:.6},\nsegment-{index:06}.{}\n",
+                times[1] - times[0],
+                if fragmented { "m4s" } else { "ts" }
             ));
         }
         manifest.push_str("#EXT-X-ENDLIST\n");
@@ -176,7 +204,7 @@ impl VodCache {
                 source: source.clone(),
                 remote,
                 options: options.clone(),
-                mode: mode.into(),
+                encoding,
                 boundaries,
                 video_start,
                 gate: Mutex::new(None),
@@ -199,9 +227,20 @@ impl VodCache {
         if name == "index.m3u8" {
             return Ok(Some(run.directory.join(name)));
         }
+        let fragmented = run.remote.is_some()
+            && run.options.capabilities.hls_container.as_deref() == Some("mp4");
+        let init = name.starts_with("init-");
         let Some(index) = name
-            .strip_prefix("segment-")
-            .and_then(|s| s.strip_suffix(".ts"))
+            .strip_prefix(if init { "init-" } else { "segment-" })
+            .and_then(|s| {
+                s.strip_suffix(if init {
+                    ".mp4"
+                } else if fragmented {
+                    ".m4s"
+                } else {
+                    ".ts"
+                })
+            })
             .filter(|s| s.len() == 6 && s.bytes().all(|b| b.is_ascii_digit()))
             .and_then(|s| s.parse::<usize>().ok())
         else {
@@ -216,17 +255,24 @@ impl VodCache {
         if *run.canceled.borrow() {
             return Ok(None);
         }
-        let path = run.directory.join(name);
+        let path = run.directory.join(if init {
+            format!("segment-{index:06}.m4s")
+        } else {
+            name.into()
+        });
         if tokio::fs::try_exists(&path).await? {
-            return Ok(Some(path));
+            if let Some(work) = gate.as_ref() {
+                publish_initializations(&run, work).await?;
+            }
+            return Ok(Some(if init { run.directory.join(name) } else { path }));
         }
-        if run.remote.is_some() {
-            return self
-                .remote_file(&run, index, path, &mut gate)
-                .await
-                .map(Some);
+        if run.remote.is_some() && run.encoding.video {
+            let path = self.remote_file(&run, index, path, &mut gate).await?;
+            return Ok(Some(if init { run.directory.join(name) } else { path }));
         }
-        run.source.validate().await?;
+        if run.remote.is_none() {
+            run.source.validate().await?;
+        }
         if fs2::available_space(&run.directory)? < 512 * 1024 * 1024 {
             bail!("Insufficient conversion cache space");
         }
@@ -235,10 +281,10 @@ impl VodCache {
             .clone()
             .try_acquire_owned()
             .context("All conversion slots are busy")?;
-        let temp = run.directory.join(format!("{name}.tmp"));
+        let temp = path.with_extension("tmp");
         let start = run.boundaries[index];
         let duration = run.boundaries[index + 1] - start;
-        let remux_video = run.mode == "remux" && run.source.video_codec().is_some();
+        let remux_video = !run.encoding.video && run.source.video_codec().is_some();
         let mut command = Command::new(&run.tools.ffmpeg.path);
         command.args([
             "-hide_banner",
@@ -250,10 +296,24 @@ impl VodCache {
             "+genpts",
         ]);
         // Some AVI indexes skip the first GOP even for an explicit -ss 0.
-        if start > 0.0 {
+        if start > 0.0 && run.remote.is_none() {
             command.args(["-ss", &start.to_string()]);
         }
-        command.arg("-i").arg(&run.source.path);
+        if let Some(remote) = &run.remote {
+            command.env_remove("FFREPORT");
+            for address in std::iter::once(&remote.video).chain(remote.audio.iter()) {
+                command
+                    .args(remote.network_args())
+                    .args(["-rw_timeout", "15000000"]);
+                if start > 0.0 {
+                    command.args(["-ss", &start.to_string()]);
+                }
+                command.args(["-i", address]);
+            }
+        } else {
+            command.arg("-i").arg(&run.source.path);
+        }
+        command.args(run.encoding.args(&run.options)?);
         if remux_video {
             command.arg("-copyts");
         } else if index + 2 < run.boundaries.len() {
@@ -266,12 +326,14 @@ impl VodCache {
         }
         command
             .arg("-map")
-            .arg(
+            .arg(if run.remote.as_ref().is_some_and(|r| r.audio.is_some()) {
+                "1:a:0".into()
+            } else {
                 run.options
                     .audio
                     .map(|n| format!("0:{n}"))
-                    .unwrap_or_else(|| "0:a:0?".into()),
-            )
+                    .unwrap_or_else(|| "0:a:0?".into())
+            })
             .args(["-sn", "-dn", "-map_metadata", "-1"]);
         if remux_video {
             let origin = run.source.probe["format"]["start_time"]
@@ -284,8 +346,6 @@ impl VodCache {
             clean_work(&run.directory).await?;
             command
                 .args([
-                    "-c",
-                    "copy",
                     "-to",
                     &(origin + start + duration + 0.1).to_string(),
                     "-f",
@@ -299,19 +359,23 @@ impl VodCache {
                 .arg(run.directory.join("work.csv"))
                 .args([
                     "-segment_format",
-                    "mpegts",
+                    if fragmented { "mp4" } else { "mpegts" },
                     "-segment_format_options",
-                    "mpegts_copyts=1:mpegts_flags=+resend_headers:avoid_negative_ts=disabled",
+                    if fragmented {
+                        "avoid_negative_ts=disabled"
+                    } else {
+                        "mpegts_copyts=1:mpegts_flags=+resend_headers:avoid_negative_ts=disabled"
+                    },
                     "-reset_timestamps",
                     "0",
                     "-avoid_negative_ts",
                     "disabled",
                 ])
-                .arg(run.directory.join("work-%03d.ts"));
-        } else if run.mode == "remux" {
-            command.args(["-c:a", "copy"]);
-        } else {
-            command.args(conversion_args(&run.options)?);
+                .arg(run.directory.join(if fragmented {
+                    "work-%03d.mp4"
+                } else {
+                    "work-%03d.ts"
+                }));
         }
         if !remux_video {
             command
@@ -369,9 +433,73 @@ impl VodCache {
             let _ = tokio::fs::remove_file(&temp).await;
             bail!("Unable to prepare a bounded playback segment");
         }
+        if fragmented {
+            // Verify the copied interval before MP4 normalizes decode times.
+            // Each HLS interval has its own discontinuity and initialization.
+            let muxed = run.directory.join(format!("fragment-{index:06}.tmp"));
+            let mut command = Command::new(&run.tools.ffmpeg.path);
+            command
+                .env_remove("FFREPORT")
+                .args(["-v", "error", "-nostdin", "-y", "-copyts", "-i"])
+                .arg(&temp)
+                .args(["-map", "0", "-c", "copy"]);
+            if start > 0.0 && !run.encoding.audio {
+                // PTS would trim valid audio alongside B frames. Drop only
+                // packets that belong before this GOP's decode boundary.
+                let (_, dts) = packet_start(&run.tools, &temp).await?;
+                command.args([
+                    "-bsf:a",
+                    &format!("noise=amount=0:drop='lt(pts*tb,{dts:.9})'"),
+                ]);
+            }
+            command
+                .args([
+                    "-movflags",
+                    "+frag_keyframe+empty_moov+default_base_moof",
+                    "-avoid_negative_ts",
+                    "make_zero",
+                    "-f",
+                    "mp4",
+                ])
+                .arg(&muxed)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .kill_on_drop(true);
+            #[cfg(windows)]
+            command.creation_flags(0x08000000);
+            let mut child = command.spawn()?;
+            let status = tokio::select! { result=tokio::time::timeout(Duration::from_secs(20),child.wait())=>result.context("Media muxing timed out")??,_=canceled.changed()=>{let _=child.kill().await;bail!("Playback was stopped");} };
+            if !status.success() {
+                bail!("Unable to mux original packets");
+            }
+            tokio::fs::rename(&muxed, &temp).await?;
+            let bytes = tokio::fs::read(&temp).await?;
+            let mut offset = 0;
+            while offset + 8 <= bytes.len() {
+                let size =
+                    u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+                if &bytes[offset + 4..offset + 8] == b"moof" {
+                    break;
+                }
+                if size < 8 || offset + size > bytes.len() {
+                    bail!("Invalid fragmented media output");
+                }
+                offset += size;
+            }
+            if offset == 0 || offset + 8 > bytes.len() {
+                bail!("Missing media initialization");
+            }
+            tokio::fs::write(
+                run.directory.join(format!("init-{index:06}.mp4")),
+                &bytes[..offset],
+            )
+            .await?;
+            tokio::fs::write(&temp, &bytes[offset..]).await?;
+        }
         tokio::fs::rename(&temp, &path).await?;
         trim(&run.directory, &path).await?;
-        Ok(Some(path))
+        Ok(Some(if init { run.directory.join(name) } else { path }))
     }
     pub async fn stop(&self, id: &str) {
         let run = self.runs.lock().await.remove(id);
@@ -398,6 +526,14 @@ impl VodCache {
                 revision: run.revision.clone(),
             })
             .collect()
+    }
+    pub async fn encoding(&self, handle: &RunHandle) -> Option<Encoding> {
+        self.runs
+            .lock()
+            .await
+            .get(&handle.session)
+            .filter(|run| run.revision == handle.revision)
+            .map(|run| run.encoding)
     }
     pub async fn stop_revision(&self, handle: &RunHandle) -> bool {
         let run = {
@@ -432,6 +568,7 @@ impl VodCache {
             let mut old = work.take().unwrap();
             old.task.abort();
             let _ = (&mut old.task).await;
+            publish_initializations(run, &old).await?;
         }
         if work.is_none() {
             let remote = run.remote.as_ref().unwrap();
@@ -482,7 +619,16 @@ impl VodCache {
                 "-map_metadata",
                 "-1",
             ]);
-            command.args(conversion_args(&run.options)?);
+            command.args(run.encoding.args(&run.options)?);
+            let fragmented = run.options.capabilities.hls_container.as_deref() == Some("mp4");
+            if fragmented {
+                command.args([
+                    "-hls_segment_type",
+                    "fmp4",
+                    "-hls_fmp4_init_filename",
+                    "work-init.mp4",
+                ]);
+            }
             command
                 .args([
                     "-force_key_frames",
@@ -501,7 +647,11 @@ impl VodCache {
                     "independent_segments+temp_file",
                     "-hls_segment_filename",
                 ])
-                .arg(run.directory.join("segment-%06d.ts"))
+                .arg(run.directory.join(if fragmented {
+                    "segment-%06d.m4s"
+                } else {
+                    "segment-%06d.ts"
+                }))
                 .arg(run.directory.join("work.m3u8"))
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
@@ -538,11 +688,14 @@ impl VodCache {
                     bail!("Playback was stopped");
                 }
                 if tokio::fs::try_exists(&path).await? {
+                    publish_initializations(run, work.as_ref().unwrap()).await?;
                     trim(&run.directory, &path).await?;
                     return Ok(path);
                 }
                 if work.as_ref().unwrap().task.is_finished() {
-                    (&mut work.take().unwrap().task).await??;
+                    let mut finished = work.take().unwrap();
+                    (&mut finished.task).await??;
+                    publish_initializations(run, &finished).await?;
                     // A successful muxer must have published the requested segment.
                     if tokio::fs::try_exists(&path).await? {
                         return Ok(path);
@@ -609,12 +762,30 @@ impl VodCache {
         Ok(removed)
     }
 }
+async fn publish_initializations(run: &Run, work: &RemoteWork) -> Result<()> {
+    if run.options.capabilities.hls_container.as_deref() != Some("mp4") {
+        return Ok(());
+    }
+    for index in work.first..work.end {
+        let init = run.directory.join(format!("init-{index:06}.mp4"));
+        if tokio::fs::try_exists(run.directory.join(format!("segment-{index:06}.m4s"))).await?
+            && !tokio::fs::try_exists(&init).await?
+        {
+            tokio::fs::copy(run.directory.join("work-init.mp4"), init).await?;
+        }
+    }
+    Ok(())
+}
 async fn trim(directory: &Path, current: &Path) -> Result<()> {
     let mut entries = tokio::fs::read_dir(directory).await?;
     let mut files = Vec::new();
     let mut total = 0;
     while let Some(entry) = entries.next_entry().await? {
-        if entry.path().extension().is_some_and(|e| e == "ts") {
+        if entry
+            .path()
+            .extension()
+            .is_some_and(|e| e == "ts" || e == "m4s")
+        {
             let meta = entry.metadata().await?;
             total += meta.len();
             files.push((entry.path(), meta.len(), meta.modified()?));
@@ -626,15 +797,53 @@ async fn trim(directory: &Path, current: &Path) -> Result<()> {
         if total <= 192 * 1024 * 1024 && count <= 24 {
             break;
         }
-        if path != current && tokio::fs::remove_file(path).await.is_ok() {
+        if path != current && tokio::fs::remove_file(&path).await.is_ok() {
+            if let Some(index) = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(|s| s.strip_prefix("segment-"))
+            {
+                let _ = tokio::fs::remove_file(directory.join(format!("init-{index}.mp4"))).await;
+            }
             total -= size;
             count -= 1;
         }
     }
     Ok(())
 }
-async fn keyframes(source: &Source, tools: &MediaTools) -> Result<(Vec<f64>, f64)> {
+async fn keyframes(
+    source: &Source,
+    tools: &MediaTools,
+    remote: Option<&RemoteSource>,
+) -> Result<(Vec<f64>, f64)> {
+    if let Some(remote) = remote.filter(|remote| !remote.segments.is_empty()) {
+        let mut boundaries = remote
+            .segments
+            .iter()
+            .copied()
+            .filter(|time| *time >= 0.0 && *time < source.duration())
+            .collect::<Vec<_>>();
+        boundaries.push(source.duration());
+        if boundaries.first() != Some(&0.0)
+            || boundaries
+                .windows(2)
+                .any(|pair| !pair[0].is_finite() || pair[1] <= pair[0] || pair[1] - pair[0] > 30.0)
+        {
+            bail!("Cannot verify the provider's segment index");
+        }
+        let origin = source.probe["format"]["start_time"]
+            .as_str()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.0);
+        return Ok((boundaries, origin));
+    }
     let mut command = Command::new(&tools.ffprobe.path);
+    command.env_remove("FFREPORT");
+    if let Some(remote) = remote {
+        command
+            .args(remote.network_args())
+            .args(["-rw_timeout", "15000000"]);
+    }
     command
         .args([
             "-v",
@@ -647,11 +856,14 @@ async fn keyframes(source: &Source, tools: &MediaTools) -> Result<(Vec<f64>, f64
             "v:0",
             "-show_frames",
             "-show_entries",
-            "frame=best_effort_timestamp_time",
+            "frame=key_frame,best_effort_timestamp_time",
             "-of",
             "json",
         ])
-        .arg(&source.path)
+        .arg(remote.map_or_else(
+            || source.path.to_string_lossy().into_owned(),
+            |r| r.video.clone(),
+        ))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -678,11 +890,18 @@ async fn keyframes(source: &Source, tools: &MediaTools) -> Result<(Vec<f64>, f64
         bail!("Keyframe indexing failed");
     }
     let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-    let video_start = value["frames"][0]["best_effort_timestamp_time"]
-        .as_str()
-        .and_then(|s| s.parse::<f64>().ok())
-        .filter(|v| v.is_finite())
-        .context("Missing first video timestamp")?;
+    let frames = value["frames"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|frame| frame["key_frame"] == 1)
+        .collect::<Vec<_>>();
+    let video_start =
+        frames.first().context("Missing first video keyframe")?["best_effort_timestamp_time"]
+            .as_str()
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|v| v.is_finite())
+            .context("Missing first video timestamp")?;
     let origin = source.probe["format"]["start_time"]
         .as_str()
         .and_then(|s| s.parse::<f64>().ok())
@@ -691,7 +910,7 @@ async fn keyframes(source: &Source, tools: &MediaTools) -> Result<(Vec<f64>, f64
     let duration = source.duration();
     // The first keyframe may follow a short audio encoder delay. Its media
     // interval still begins at zero; do not create a tiny audio-only segment.
-    for frame in value["frames"].as_array().into_iter().flatten().skip(1) {
+    for frame in frames.into_iter().skip(1) {
         if let Some(time) = frame["best_effort_timestamp_time"]
             .as_str()
             .and_then(|s| s.parse::<f64>().ok())
@@ -774,8 +993,8 @@ async fn select_part(run: &Run, start: f64, duration: f64) -> Result<PathBuf> {
             .and_then(|s| s.to_str())
             .context("Invalid segment name")?;
         if !file.starts_with("work-")
-            || !file.ends_with(".ts")
-            || file.len() != 11
+            || !(file.ends_with(".ts") || file.ends_with(".mp4"))
+            || !(file.len() == 11 || file.len() == 12)
             || !file[5..8].bytes().all(|b| b.is_ascii_digit())
         {
             bail!("Invalid segment name");
@@ -784,40 +1003,59 @@ async fn select_part(run: &Run, start: f64, duration: f64) -> Result<PathBuf> {
         // The segment muxer reports zero for its first entry even when input
         // seeking starts later. Read that entry's first video packet instead.
         if index == 0 {
-            let mut command = Command::new(&run.tools.ffprobe.path);
-            command
-                .args([
-                    "-v",
-                    "error",
-                    "-select_streams",
-                    "v:0",
-                    "-read_intervals",
-                    "%+#1",
-                    "-show_entries",
-                    "packet=pts_time",
-                    "-of",
-                    "json",
-                ])
-                .arg(&path)
-                .stdin(Stdio::null())
-                .stderr(Stdio::null())
-                .kill_on_drop(true);
-            #[cfg(windows)]
-            command.creation_flags(0x08000000);
-            let output = tokio::time::timeout(Duration::from_secs(5), command.output()).await??;
-            if !output.status.success() || output.stdout.len() > 8192 {
-                bail!("Cannot verify remux timing");
-            }
-            let value: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-            begin = value["packets"][0]["pts_time"]
-                .as_str()
-                .and_then(|s| s.parse::<f64>().ok())
-                .context("Missing remux timestamp")?;
+            begin = packet_start(&run.tools, &path).await?.0;
         }
         // The CSV end describes video; the final audio packet can end later.
+        tracing::debug!(
+            begin,
+            end,
+            expected,
+            start,
+            duration,
+            "Checking original segment interval"
+        );
         if (begin - expected).abs() < 0.01 && (last || end >= start + duration - 0.1) {
             return Ok(path);
         }
     }
     bail!("The requested keyframe interval could not be remuxed")
+}
+async fn packet_start(tools: &MediaTools, path: &Path) -> Result<(f64, f64)> {
+    let mut command = Command::new(&tools.ffprobe.path);
+    command
+        .env_remove("FFREPORT")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-read_intervals",
+            "%+#1",
+            "-show_entries",
+            "packet=pts_time,dts_time",
+            "-of",
+            "json",
+        ])
+        .arg(path)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    let output = tokio::time::timeout(Duration::from_secs(5), command.output()).await??;
+    if !output.status.success() || output.stdout.len() > 8192 {
+        bail!("Cannot verify remux timing");
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let pts = value["packets"][0]["pts_time"]
+        .as_str()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .context("Missing remux timestamp")?;
+    let dts = value["packets"][0]["dts_time"]
+        .as_str()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .unwrap_or(pts);
+    Ok((pts, dts))
 }

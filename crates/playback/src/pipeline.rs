@@ -1,4 +1,4 @@
-use crate::{Options, RemoteSource, Source, conversion_args};
+use crate::{Options, RemoteSource, Source};
 use anyhow::{Context, Result, bail};
 use std::{
     collections::HashMap,
@@ -14,6 +14,7 @@ use tokio::{
 };
 
 struct Running {
+    encoding: crate::Encoding,
     _tools: MediaTools,
     _slot: OwnedSemaphorePermit,
     child: Child,
@@ -42,6 +43,7 @@ enum Input<'a> {
     Remote {
         source: &'a RemoteSource,
         position: f64,
+        audio_codec: Option<&'a str>,
     },
 }
 pub struct Pipelines {
@@ -83,7 +85,8 @@ impl Pipelines {
     ) -> Result<(String, f64)> {
         source.validate().await?;
         let tools = self.tools.media()?;
-        let timeline_start = if mode == "remux" && start > 0.0 && source.video_codec().is_some() {
+        let encoding = crate::Encoding::for_mode(source, options, mode)?;
+        let timeline_start = if !encoding.video && start > 0.0 && source.video_codec().is_some() {
             keyframe_start(source, start, &tools).await?
         } else {
             start
@@ -92,7 +95,7 @@ impl Pipelines {
             id,
             Input::Local(source),
             options,
-            mode,
+            encoding,
             timeline_start,
             tools,
         )
@@ -103,7 +106,7 @@ impl Pipelines {
         id: &str,
         source: &RemoteSource,
         options: &Options,
-        mode: &str,
+        decision: &crate::Decision,
         start: f64,
     ) -> Result<(String, f64)> {
         source.validate()?;
@@ -111,7 +114,7 @@ impl Pipelines {
         if !start.is_finite() || start < 0.0 {
             bail!("Invalid stream position");
         }
-        let timeline_start = if mode == "remux" && start > 0.0 {
+        let timeline_start = if !decision.encoding.video && start > 0.0 {
             match source.segment_start(start) {
                 Some(segment) => segment,
                 None => remote_keyframe_start(source, start, &tools).await?,
@@ -124,9 +127,10 @@ impl Pipelines {
             Input::Remote {
                 source,
                 position: start,
+                audio_codec: decision.audio_codec.as_deref(),
             },
             options,
-            mode,
+            decision.encoding,
             if source.live { 0.0 } else { timeline_start },
             tools,
         )
@@ -137,7 +141,7 @@ impl Pipelines {
         id: &str,
         input: Input<'_>,
         options: &Options,
-        mode: &str,
+        encoding: crate::Encoding,
         timeline_start: f64,
         tools: MediaTools,
     ) -> Result<(String, f64)> {
@@ -167,7 +171,10 @@ impl Pipelines {
         let segment_seconds = if online { "2" } else { "6" };
         tools.ffmpeg.verify_unchanged().await?;
         let mut command = Command::new(&tools.ffmpeg.path);
-        if let Input::Remote { source, position } = &input {
+        if let Input::Remote {
+            source, position, ..
+        } = &input
+        {
             // FFREPORT may otherwise write signed upstream addresses to disk.
             command.env_remove("FFREPORT");
             command.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y"]);
@@ -229,16 +236,39 @@ impl Pipelines {
             );
         }
         command.args(["-sn", "-dn", "-map_metadata", "-1"]);
-        if mode == "remux" {
-            command.args(["-c", "copy"]);
-        } else {
-            command.args(conversion_args(options)?).args([
+        command.args(encoding.args(options)?);
+        if encoding.video {
+            command.args([
                 "-force_key_frames",
                 &format!("expr:gte(t,n_forced*{segment_seconds})"),
             ]);
         }
-        let fragmented = online && mode == "remux";
+        let fragmented = options
+            .capabilities
+            .hls_container
+            .as_deref()
+            .map(|c| c == "mp4")
+            .unwrap_or(
+                (online && !encoding.video && !encoding.audio)
+                    || options.capabilities.supported_media.is_some(),
+            );
         if fragmented {
+            let copied_aac = !encoding.audio
+                && match &input {
+                    Input::Remote { audio_codec, .. } => *audio_codec == Some("aac"),
+                    Input::Local(source) => source.probe["streams"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .find(|s| {
+                            s["codec_type"] == "audio"
+                                && options.audio.is_none_or(|n| s["index"].as_i64() == Some(n))
+                        })
+                        .is_some_and(|s| s["codec_name"] == "aac"),
+                };
+            if copied_aac {
+                command.args(["-bsf:a", "aac_adtstoasc"]);
+            }
             command.args([
                 "-hls_segment_type",
                 "fmp4",
@@ -284,6 +314,7 @@ impl Pipelines {
         running.insert(
             id.to_owned(),
             Running {
+                encoding,
                 _tools: tools,
                 _slot: slot,
                 child,
@@ -330,11 +361,14 @@ impl Pipelines {
         &self,
         id: &str,
         source: &RemoteSource,
-        duration: f64,
+        probe: &Source,
         options: &Options,
+        decision: &crate::Decision,
     ) -> Result<(String, f64)> {
         Ok((
-            self.vod.start_remote(id, source, duration, options).await?,
+            self.vod
+                .start_remote(id, source, probe, options, decision)
+                .await?,
             0.0,
         ))
     }
@@ -345,6 +379,11 @@ impl Pipelines {
                 && ((name.ends_with(".ts") && name.len() == 17)
                     || (name.ends_with(".m4s") && name.len() == 18))
                 && name[8..14].bytes().all(|v| v.is_ascii_digit()));
+        let valid = valid
+            || (name.starts_with("init-")
+                && name.ends_with(".mp4")
+                && name.len() == 15
+                && name[5..11].bytes().all(|v| v.is_ascii_digit()));
         if !valid {
             return Ok(None);
         }
@@ -379,6 +418,19 @@ impl Pipelines {
             .collect::<Vec<_>>();
         runs.extend(self.vod.runs().await);
         runs
+    }
+    pub async fn encoding(&self, handle: &RunHandle) -> Option<crate::Encoding> {
+        if let Some(encoding) = self
+            .running
+            .lock()
+            .await
+            .get(&handle.session)
+            .filter(|run| run.revision == handle.revision)
+            .map(|run| run.encoding)
+        {
+            return Some(encoding);
+        }
+        self.vod.encoding(handle).await
     }
     pub async fn has_newer_run(&self, handle: &RunHandle) -> bool {
         self.runs()

@@ -44,7 +44,10 @@ test('poster and video density stay independent across settings, all views and r
     const posters = ['Movies', 'Shows', 'Music'].includes(section);
     const before = posters ? posterColumns : videoColumns;
     await nav.getByRole('link', { name: section, exact: true }).click();
-    const grid = page.locator('[data-card-grid]').first();
+    const grid = page
+      .locator('[data-card-grid]')
+      .filter({ has: page.getByRole('button') })
+      .first();
     await expect(grid).toBeVisible();
     const columns = () =>
       grid.evaluate(
@@ -53,6 +56,7 @@ test('poster and video density stay independent across settings, all views and r
       );
     await expect.poll(columns).toBe(before);
     const card = grid.locator(':scope > *').first();
+    await expect(card).toBeVisible();
     const width = (await card.boundingBox())!.width;
     await card.hover();
     const writes = fixture.writes.filter(

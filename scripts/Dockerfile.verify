@@ -5,7 +5,7 @@ ENV THELXINOE_CI_IN_VERIFY=1
 WORKDIR /src
 ENV CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg python3 && rm -rf /var/lib/apt/lists/* && rustup component add clippy rustfmt
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg python3 && ln -s /usr/bin/python3 /usr/local/bin/python3 && rm -rf /var/lib/apt/lists/* && rustup component add clippy rustfmt
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates crates
 COPY apps apps

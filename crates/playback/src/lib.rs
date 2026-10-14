@@ -3,9 +3,11 @@ mod cache;
 mod maintenance_tests;
 mod pipeline;
 mod remote;
-pub use remote::RemoteSource;
+pub use remote::{MediaAccessDenied, RemoteSource};
+mod planning;
 mod vod;
 pub use pipeline::{CleanupReason, Pipelines, RunHandle, StoppedRun};
+pub use planning::{Decision, Encoding, codec_string, decision};
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
@@ -24,7 +26,19 @@ pub struct Capabilities {
     #[serde(default)]
     pub native_remote: bool,
     #[serde(default)]
+    pub hls_container: Option<String>,
+    #[serde(default)]
     pub conversion: Option<Conversion>,
+    #[serde(default)]
+    pub supported_media: Option<Vec<String>>,
+    #[serde(default)]
+    pub hls_media: Option<Vec<String>>,
+    #[serde(default)]
+    pub hls_video: Option<Vec<String>>,
+    #[serde(default)]
+    pub hls_audio: Option<Vec<String>>,
+    #[serde(default)]
+    pub allow_conversion: Option<bool>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Conversion {
@@ -365,81 +379,7 @@ pub fn bitrate(quality: &str) -> Result<Option<u32>> {
     })
 }
 pub fn plan(source: &Source, options: &Options) -> Result<&'static str> {
-    let rate = bitrate(&options.quality)?;
-    let video = source.video_codec();
-    let audio = source.probe["streams"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|s| {
-            s["codec_type"] == "audio"
-                && options
-                    .audio
-                    .is_none_or(|index| s["index"].as_i64() == Some(index))
-        });
-    if options.audio.is_some() && audio.is_none() {
-        bail!("Audio track no longer exists");
-    }
-    let audio_codec = audio.and_then(|s| s["codec_name"].as_str());
-    let caps = &options.capabilities;
-    let video_ok = video.is_none_or(|v| caps.video.iter().any(|c| c == v));
-    let audio_ok = audio_codec.is_none_or(|v| caps.audio.iter().any(|c| c == v));
-    let extension = source
-        .path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    let container = caps.containers.contains(&extension);
-    // AVI has no presentation timestamps. With reordered video frames its
-    // generated keyframe times are not reliable enough for stream-copy seeks.
-    let remux_timestamps = extension != "avi"
-        || video.is_none()
-        || source.probe["streams"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|s| s["codec_type"] == "video")
-            .is_some_and(|s| s["has_b_frames"] == 0);
-    let first_audio = source.probe["streams"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|s| s["codec_type"] == "audio")
-        .and_then(|s| s["index"].as_i64());
-    if rate.is_none()
-        && video_ok
-        && audio_ok
-        && container
-        && (caps.native_tracks || options.audio.is_none_or(|a| Some(a) == first_audio))
-    {
-        return Ok("direct");
-    }
-    if !caps.hls {
-        bail!("This client cannot play the selected media and quality");
-    }
-    if options.quality == "original"
-        && (!video_ok
-            || !remux_timestamps
-            || !audio_ok
-            || video.is_some_and(|v| v != "h264")
-            || audio_codec.is_some_and(|v| !["aac", "mp3"].contains(&v)))
-    {
-        bail!("Original quality is unsupported by this client; select Auto");
-    }
-    Ok(
-        if rate.is_none()
-            && video_ok
-            && remux_timestamps
-            && audio_ok
-            && video.is_none_or(|v| v == "h264")
-            && audio_codec.is_none_or(|v| ["aac", "mp3"].contains(&v))
-        {
-            "remux"
-        } else {
-            "transcode"
-        },
-    )
+    Ok(decision(source, options)?.mode)
 }
 pub fn media_type(path: &Path) -> &'static str {
     match path

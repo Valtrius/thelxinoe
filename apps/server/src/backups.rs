@@ -64,6 +64,9 @@ async fn configured(state: &AppState) -> Result<Policy> {
 async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
     let mut value = crate::managers::controller_request(&state, "/backups", None).await?;
+    if storage::observe_controller(&state.db, Some(value.clone())).await? {
+        state.notify_attention();
+    }
     let window = crate::product::configured_policy(&state).await?;
     value["policy"] = json!(configured(&state).await?);
     value["passphrase_saved"] = json!(storage::passphrase_saved(&state.db).await?);
@@ -175,9 +178,25 @@ async fn backup_command(
         "backup.create"
     };
     storage::audit(&state.db, Some(p.user.id), action).await?;
-    Ok(Json(
-        crate::managers::controller_request(&state, &path, Some(body)).await?,
-    ))
+    let result = crate::managers::controller_request(&state, &path, Some(body)).await?;
+    if let Some(id) = result["id"].as_str() {
+        storage::accepted(&state.db, id.into(), restore.is_some()).await?;
+        state.notify_attention();
+    }
+    Ok(Json(result))
+}
+
+pub(crate) async fn observe(state: &AppState) -> anyhow::Result<()> {
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        crate::managers::controller_request(state, "/backups", None),
+    )
+    .await;
+    let observed = result.ok().and_then(Result::ok);
+    if storage::observe_controller(&state.db, observed).await? {
+        state.notify_attention();
+    }
+    Ok(())
 }
 
 /// The local date of the server window that is open now, when automatic backups are enabled.
@@ -308,6 +327,7 @@ async fn advance(state: &AppState, run: &mut Run, open: bool) -> Result<()> {
     {
         Ok(_) => {
             run.state = "running".into();
+            storage::accepted(&state.db, run.id.clone(), false).await?;
             storage::audit(&state.db, None, "backup.create").await?;
         }
         // Contention and an unavailable controller retry with the same ID.

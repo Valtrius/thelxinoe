@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import dgram from 'node:dgram';
 import { Jellyfin, API_VERSION } from '@jellyfin/sdk';
 import { getAuthenticationApi } from '@jellyfin/sdk/lib/utils/api/authentication-api.js';
+import { getDisplayPreferenceApi } from '@jellyfin/sdk/lib/utils/api/display-preference-api.js';
 import { getFilterApi } from '@jellyfin/sdk/lib/utils/api/filter-api.js';
 import { getLibraryApi } from '@jellyfin/sdk/lib/utils/api/library-api.js';
 import { getSystemApi } from '@jellyfin/sdk/lib/utils/api/system-api.js';
@@ -143,6 +144,59 @@ r = await compat.get('/UserViews', { headers });
 assert.equal(r.status(), 200);
 const views = await r.json();
 assert.ok(views.Items.length >= 3);
+const displayPreferencesApi = getDisplayPreferenceApi(sdkApi);
+const libraryPreferences = [];
+for (const view of views.Items) {
+  assert.equal(typeof view.DisplayPreferencesId, 'string', view.Name);
+  assert.ok(view.DisplayPreferencesId.length > 0, view.Name);
+  for (const path of [
+    `/Items/${view.Id}`,
+    `/Users/${login.User.Id}/Items/${view.Id}`,
+  ]) {
+    const item = await compat.get(path, { headers });
+    assert.equal(item.status(), 200, path);
+    assert.equal(
+      (await item.json()).DisplayPreferencesId,
+      view.DisplayPreferencesId,
+      `${view.Name} keeps its preferences when opened`,
+    );
+  }
+  const parameters = {
+    displayPreferencesId: view.DisplayPreferencesId,
+    client: 'jellyfin-androidtv',
+  };
+  const original = (
+    await displayPreferencesApi.getDisplayPreferences(parameters)
+  ).data;
+  const gridDirection =
+    original.CustomPrefs.GridDirection === 'VERTICAL'
+      ? 'HORIZONTAL'
+      : 'VERTICAL';
+  await displayPreferencesApi.updateDisplayPreferences({
+    ...parameters,
+    displayPreferencesDto: {
+      ...original,
+      CustomPrefs: { ...original.CustomPrefs, GridDirection: gridDirection },
+    },
+  });
+  const saved = (await displayPreferencesApi.getDisplayPreferences(parameters))
+    .data;
+  assert.equal(saved.CustomPrefs.GridDirection, gridDirection, view.Name);
+  await displayPreferencesApi.updateDisplayPreferences({
+    ...parameters,
+    displayPreferencesDto: original,
+  });
+  libraryPreferences.push({
+    name: view.Name,
+    displayPreferencesId: view.DisplayPreferencesId,
+    gridDirection,
+  });
+}
+assert.equal(
+  new Set(libraryPreferences.map((view) => view.displayPreferencesId)).size,
+  libraryPreferences.length,
+  'Each library has independent display preferences',
+);
 r = await compat.get('/Items?IncludeItemTypes=Movie&Recursive=true', {
   headers,
 });
@@ -408,13 +462,73 @@ assert.equal((await r.json()).UserData.Played, true);
 r = await compat.get(streamPath);
 assert.equal(r.status(), 401);
 await call(`/catalog/${direct.Id}/state`, 'PUT', { watched: false });
+const originalPolicy = await call('/admin/settings');
+try {
+  await call('/admin/settings', 'PUT', {
+    video_transcoding: false,
+    audio_transcoding: false,
+  });
+  const policyResponse = await compat.get('/Users/Me', { headers });
+  assert.equal(policyResponse.status(), 200);
+  const disabledPolicy = (await policyResponse.json()).Policy;
+  assert.equal(disabledPolicy.EnableVideoPlaybackTranscoding, false);
+  assert.equal(disabledPolicy.EnableAudioPlaybackTranscoding, false);
+  assert.equal(disabledPolicy.EnablePlaybackRemuxing, true);
+  for (const [title, stream, status] of [
+    ['Direct', true, 200],
+    ['Remux', true, 200],
+    ['Remux', false, 403],
+    ['Audio Only', true, 403],
+  ]) {
+    const item = movies.Items.find((i) => i.Name === title);
+    assert.ok(item);
+    const response = await compat.post(`/Items/${item.Id}/PlaybackInfo`, {
+      headers,
+      data: {
+        DeviceProfile: profile,
+        EnableDirectPlay: title === 'Direct',
+        EnableDirectStream: stream,
+        EnableTranscoding: true,
+      },
+    });
+    assert.equal(
+      response.status(),
+      status,
+      `Disabled conversion: ${title}, direct stream ${stream}`,
+    );
+    if (response.ok()) {
+      const session = await response.json();
+      const url = session.MediaSources[0].DirectStreamUrl;
+      assert.equal(
+        (await compat.get(new URL(url, origin).toString())).status(),
+        200,
+      );
+      await compat.delete(
+        `/Videos/ActiveEncodings?PlaySessionId=${session.PlaySessionId}`,
+        { headers },
+      );
+    }
+  }
+} finally {
+  await call('/admin/settings', 'PUT', {
+    video_transcoding: originalPolicy.video_transcoding,
+    audio_transcoding: originalPolicy.audio_transcoding,
+  });
+}
 for (const mode of [
   'remux',
   'transcode',
+  'audio-only',
   ...(process.argv.includes('--tv') ? ['limited', 'hdr'] : []),
 ]) {
   const item = movies.Items.find(
-    (i) => i.Name === (mode === 'hdr' ? 'TV HDR' : 'Remux'),
+    (i) =>
+      i.Name ===
+      (mode === 'hdr'
+        ? 'TV HDR'
+        : mode === 'audio-only'
+          ? 'Audio Only'
+          : 'Remux'),
   );
   assert.ok(item, 'Generate playback and TV fixtures first');
   const deviceProfile = structuredClone(profile);
@@ -450,7 +564,7 @@ for (const mode of [
     data: {
       DeviceProfile: deviceProfile,
       EnableDirectPlay: false,
-      EnableDirectStream: mode === 'remux',
+      EnableDirectStream: ['remux', 'audio-only'].includes(mode),
       EnableTranscoding: true,
       SubtitleStreamIndex: -2,
       ...(mode === 'limited' ? { MaxStreamingBitrate: 2_500_000 } : {}),
@@ -485,6 +599,30 @@ for (const mode of [
       ),
     );
     assert.ok(probe.streams.some((s) => s.codec_name === 'h264'));
+    if (mode === 'audio-only') {
+      assert.ok(probe.streams.some((s) => s.codec_name === 'aac'));
+      const hashes = (file) =>
+        execFileSync(
+          'ffmpeg',
+          ['-v', 'error', '-i', file, '-map', '0:v:0', '-f', 'framemd5', '-'],
+          { encoding: 'utf8', windowsHide: true },
+        )
+          .split('\n')
+          .filter((line) => line && !line.startsWith('#'))
+          .map((line) => line.split(',').at(-1).trim());
+      const original = hashes(
+        '.local/fixtures/playback/movies/Audio Only (2020).mkv',
+      );
+      const delivered = hashes(path);
+      assert.ok(delivered.length > 12);
+      const first = original.indexOf(delivered[0]);
+      assert.ok(first >= 0);
+      assert.deepEqual(
+        delivered,
+        original.slice(first, first + delivered.length),
+        'Jellyfin audio conversion must preserve original video frames, including reverse segment requests',
+      );
+    }
     if (mode === 'limited') {
       const video = probe.streams.find((s) => s.codec_type === 'video');
       assert.equal(video.width, 160);
@@ -586,12 +724,16 @@ writeFileSync(
       filterLanguagesAndCollectionReads: true,
       rejectedInvalidUpdatesWithoutMutation: true,
       views: views.Items.map((i) => i.Name),
+      libraryPreferences,
       movies: movies.Items.map((i) => i.Name),
       compatibilityTokenRejectedByFirstParty: true,
       grantedDirectPlaybackAndProgress: true,
       revokedStreamRejected: true,
       queryCredentialsAbsentFromLogs: true,
       seekableRemuxAndTranscode: true,
+      serverTranscodingPolicyEnforced: true,
+      separateTranscodingPermissions: true,
+      remuxWithTranscodingDisabled: true,
     },
     null,
     2,

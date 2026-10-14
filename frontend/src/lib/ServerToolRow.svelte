@@ -14,6 +14,9 @@
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
   import ExclusiveChoiceGroup from './ui/ExclusiveChoiceGroup.svelte';
   import OrbitAction from './ui/OrbitAction.svelte';
+  import AttentionDot from './ui/AttentionDot.svelte';
+  import { activity, startActivity } from './activity';
+  import { attention, refreshAttention } from './attention';
   import Switch from './ui/Switch.svelte';
   import { formControlClass } from './ui/styles';
   import { toolBusy, toolName, type ServerTool } from './server-tools';
@@ -205,6 +208,11 @@
   async function perform(kind: string, candidateId?: string) {
     if (action) return;
     action = kind;
+    const finish = startActivity({
+      target: 'server',
+      resource: item.id,
+      message: `${name} ${kind} in progress`,
+    });
     error = '';
     try {
       await api('/admin/tools/' + item.id + '/' + kind, 'POST', {
@@ -213,8 +221,13 @@
     } catch (caught) {
       error = String(caught);
     } finally {
-      await refresh();
-      action = '';
+      try {
+        await refresh();
+        await refreshAttention();
+      } finally {
+        action = '';
+        finish();
+      }
     }
   }
   function activate() {
@@ -231,7 +244,18 @@
 </script>
 
 <tr class="border-t border-line align-top">
-  <th scope="row" class="py-3 pr-3 text-left text-sm font-medium">{name}</th>
+  <th scope="row" class="py-3 pr-3 text-left text-sm font-medium"
+    ><span class="inline-flex items-center gap-2"
+      >{name}<AttentionDot
+        items={$attention.filter(
+          (entry) => entry.target === 'server' && entry.resource === item.id,
+        )}
+        activity={$activity.filter(
+          (entry) => entry.target === 'server' && entry.resource === item.id,
+        )}
+      /></span
+    ></th
+  >
   <td class="py-3 pr-3 text-sm tabular-nums"
     >{item.installed?.version ?? 'Not installed'}</td
   >

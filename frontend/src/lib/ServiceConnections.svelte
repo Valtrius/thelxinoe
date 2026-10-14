@@ -19,6 +19,8 @@
 
 <script lang="ts">
   import Button from './ui/Button.svelte';
+  import AttentionDot from './ui/AttentionDot.svelte';
+  import { activity } from './activity';
   let {
     kind,
     connections,
@@ -101,7 +103,13 @@
         aria-label={`${connection.target_name} connection`}
       >
         <div class="flex flex-col flex-wrap items-start justify-center gap-1">
-          <strong class="text-xs">{connection.target_name}</strong>
+          <strong class="inline-flex items-center gap-2 text-xs"
+            >{connection.target_name}<AttentionDot
+              activity={$activity.filter(
+                (item) => item.id === `connection:${connection.id}`,
+              )}
+            /></strong
+          >
           <span class="text-xs text-muted" role="status"
             >{status(connection)}</span
           >

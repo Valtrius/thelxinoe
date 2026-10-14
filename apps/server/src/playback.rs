@@ -107,27 +107,10 @@ pub struct Create {
 }
 pub async fn create(
     State(state): State<AppState>,
-    axum::Extension(context): axum::Extension<security::RequestContext>,
     headers: HeaderMap,
-    Json(mut input): Json<Create>,
+    Json(input): Json<Create>,
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
-    if context.remote()
-        && input.options.quality == "auto"
-        && input.options.capabilities.hls
-        && !crate::online::live::domain(&input.media_id)
-        && !input.media_id.starts_with("youtube:")
-    {
-        let video = crate::online::live::domain(&input.media_id)
-            || input.media_id.starts_with("youtube:")
-            || source(&state, &input.media_id, input.file_id.as_deref())
-                .await?
-                .video_codec()
-                .is_some();
-        if video {
-            input.options.quality = "4mbps".into();
-        }
-    }
     create_for(&state, &p, input).await.map(Json)
 }
 pub async fn create_for(state: &AppState, p: &Principal, input: Create) -> Result<Value> {
@@ -230,13 +213,19 @@ pub(crate) async fn create_with_delivery(
     {
         return Err(ApiError::bad("Unsupported subtitle track"));
     }
-    let mode = thelxinoe_playback::plan(&source, &input.options)
+    let decision = thelxinoe_playback::decision(&source, &input.options)
         .map_err(|e| ApiError::bad(e.to_string()))?;
+    let policy = state.transcoding.read().await;
+    policy.check(decision.encoding)?;
+    let mode = decision.mode;
     let duration = source.duration();
     if duration <= 0.0 || !duration.is_finite() {
         return Err(ApiError::conflict(
             "Media duration is unavailable; rescan the library",
         ));
+    }
+    if mode != "direct" {
+        crate::tools::require(state, &["ffmpeg"]).await?;
     }
     let sid = id();
     let _lifecycle = state.playback_lifecycle.write(&[&sid]).await;
@@ -290,7 +279,7 @@ pub(crate) async fn create_with_delivery(
     };
     let subtitles:Vec<_>=tracks.iter().filter(|t|t.kind=="subtitle" && t.supported).map(|t|json!({"id":t.id,"language":t.language,"title":t.title,"url":format!("/api/v1/playback/{sid}/subtitles/{}?grant={grant}",t.id)})).collect();
     Ok(
-        json!({"id":sid,"file_id":source.id,"generation":source.generation,"url":url,"grant":grant,"mode":mode,"position":position,"duration":duration,"timeline_start":timeline_start,"video":source.video_codec().is_some(),"tracks":tracks,"subtitles":subtitles,"selected_subtitle":input.options.subtitle,"options":input.options,"probe":source.probe,"replay_gain":prefs.replay_gain}),
+        json!({"id":sid,"file_id":source.id,"generation":source.generation,"url":url,"grant":grant,"mode":mode,"encoding":decision.encoding,"conversion_reason":decision.conversion_reason,"position":position,"duration":duration,"timeline_start":timeline_start,"video":source.video_codec().is_some(),"tracks":tracks,"subtitles":subtitles,"selected_subtitle":input.options.subtitle,"options":input.options,"probe":source.probe,"replay_gain":prefs.replay_gain}),
     )
 }
 #[derive(Clone)]
@@ -385,6 +374,7 @@ pub async fn hls(
     Query(grant): Query<Grant>,
     request: Request,
 ) -> Result<Response> {
+    let _policy = state.transcoding.read().await;
     let (_, session) = from_grant(&state, &id, &grant.grant).await?;
     if session.streaming {
         crate::online::streams::validate(&state, &id).await?;
@@ -405,8 +395,11 @@ pub async fn hls(
             .map(|line| {
                 if line.starts_with("segment-") {
                     format!("{line}?grant={}", grant.grant)
-                } else if line == "#EXT-X-MAP:URI=\"init.mp4\"" {
-                    format!("#EXT-X-MAP:URI=\"init.mp4?grant={}\"", grant.grant)
+                } else if let Some(name) = line
+                    .strip_prefix("#EXT-X-MAP:URI=\"")
+                    .and_then(|s| s.strip_suffix('"'))
+                {
+                    format!("#EXT-X-MAP:URI=\"{name}?grant={}\"", grant.grant)
                 } else {
                     line.into()
                 }
@@ -458,6 +451,7 @@ pub async fn seek(
     Path(id): Path<String>,
     Json(input): Json<Position>,
 ) -> Result<Json<Value>> {
+    let policy = state.transcoding.read().await;
     let _lifecycle = state.playback_lifecycle.write(&[&id]).await;
     let p = security::principal(&state, &headers).await?;
     let session = session(&state, &p, &id).await?;
@@ -471,7 +465,8 @@ pub async fn seek(
         format!("/api/v1/playback/{id}/remote/video?grant={grant}")
     } else if session.streaming {
         let (revision, offset) =
-            crate::online::streams::seek(&state, &id, &session.options, input.position).await?;
+            crate::online::streams::seek(&state, &id, &session.options, input.position, &policy)
+                .await?;
         timeline_start = offset;
         format!("/api/v1/playback/{id}/hls/{revision}/index.m3u8?grant={grant}")
     } else if session.mode == "direct" {
@@ -479,6 +474,11 @@ pub async fn seek(
         format!("/api/v1/playback/{id}/stream?grant={grant}")
     } else {
         let src = current_source(&state, &session).await?;
+        policy.check(
+            thelxinoe_playback::decision(&src, &session.options)
+                .map_err(|e| ApiError::bad(e.to_string()))?
+                .encoding,
+        )?;
         let (revision, offset) = state
             .playback
             .start(&id, &src, &session.options, &session.mode, input.position)
@@ -610,7 +610,7 @@ pub async fn subtitle(
     .map_err(|_| ApiError::conflict("Subtitle conversion timed out"))??;
     Ok(([(header::CONTENT_TYPE, content_type)], output).into_response())
 }
-async fn fail(state: &AppState, id: &str) -> anyhow::Result<()> {
+pub(crate) async fn fail(state: &AppState, id: &str) -> anyhow::Result<()> {
     let id = id.to_owned();
     storage::fail(id, &state.db).await
 }

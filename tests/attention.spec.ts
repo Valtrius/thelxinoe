@@ -1,6 +1,282 @@
 import { expect, test } from '@playwright/test';
 import { installUiFixture } from './helpers/ui-fixture';
 
+test('activity arcs follow operation lifetime, scope, severity and reduced motion across navigation', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    section: 'Movies',
+  });
+  await page.route('**/api/v1/catalog/roots', (route) =>
+    route.fulfill({ json: { items: [], media_mount: '/media' } }),
+  );
+  let items = [
+    {
+      id: 'service:radarr',
+      severity: 'error',
+      target: 'services',
+      resource: 'radarr',
+      message: 'Radarr API unavailable',
+      revision: '1',
+      dismissible: false,
+      media_ids: [],
+    },
+  ];
+  let activity = [
+    {
+      id: 'setup:radarr',
+      target: 'services',
+      resource: 'radarr',
+      state: 'running',
+      message: 'Restarting Radarr',
+      media_ids: [],
+    },
+  ];
+  let offline = false;
+  await page.route('**/api/v1/me/attention', (route) =>
+    offline
+      ? route.fulfill({
+          status: 503,
+          json: { error: { code: 'unavailable', message: 'Unavailable' } },
+        })
+      : route.fulfill({ json: { items, activity } }),
+  );
+  await page.goto('/');
+  const settings = page.getByRole('link', { name: 'Settings', exact: true });
+  const marker = settings.locator('[data-activity-state]');
+  await expect(marker).toHaveAttribute('data-activity-state', 'running');
+  await expect(marker).toHaveAttribute('data-attention-severity', 'error');
+  const icon = await settings.locator('svg').first().boundingBox();
+  const placement = await marker.boundingBox();
+  expect(placement!.x).toBeGreaterThan(icon!.x);
+  expect(placement!.y).toBeLessThan(icon!.y);
+  await expect(marker).toHaveAttribute(
+    'aria-label',
+    /Restarting Radarr.*\nIssue: Radarr API unavailable/,
+  );
+  await expect
+    .poll(() =>
+      marker.evaluate((node) => node.getAnimations({ subtree: true }).length),
+    )
+    .toBeGreaterThan(0);
+  await page.getByRole('button', { name: 'Collapse sidebar' }).click();
+  await expect(marker).toBeVisible();
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await expect
+    .poll(() =>
+      marker.evaluate((node) => node.getAnimations({ subtree: true }).length),
+    )
+    .toBe(0);
+  await page.screenshot({
+    path: testInfo.outputPath(
+      'activity-with-issue-collapsed-reduced-motion.png',
+    ),
+  });
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await settings.click();
+  const nav = page.getByRole('navigation', { name: 'Settings navigation' });
+  await expect(
+    nav
+      .getByRole('link', { name: 'Media services', exact: true })
+      .locator('[data-activity-state]'),
+  ).toHaveAttribute('data-activity-state', 'running');
+  await expect(
+    nav
+      .getByRole('link', { name: 'Server', exact: true })
+      .locator('[data-activity-state]'),
+  ).toHaveCount(0);
+  await nav.getByRole('link', { name: 'Media services', exact: true }).click();
+  const services = page.getByRole('navigation', { name: 'Select service' });
+  const radarr = services
+    .getByRole('link', { name: 'Radarr', exact: true })
+    .locator('[data-activity-state]');
+  await expect(radarr).toHaveAttribute('data-activity-state', 'running');
+  await expect(
+    services
+      .getByRole('link', { name: 'Sonarr', exact: true })
+      .locator('[data-activity-state]'),
+  ).toHaveCount(0);
+  await page.screenshot({
+    path: testInfo.outputPath('activity-scoped-service.png'),
+  });
+  await page.getByRole('link', { name: 'Movies', exact: true }).click();
+  const refresh = () =>
+    page.evaluate(() =>
+      window.dispatchEvent(new Event('thelxinoe-attention-refresh')),
+    );
+  activity = activity.map((item) => ({
+    ...item,
+    state: 'queued',
+    message: 'Radarr restart queued',
+  }));
+  await refresh();
+  await expect(marker).toHaveAttribute('data-activity-state', 'queued');
+  await expect
+    .poll(() =>
+      marker.evaluate((node) => node.getAnimations({ subtree: true }).length),
+    )
+    .toBe(0);
+  activity = activity.map((item) => ({
+    ...item,
+    state: 'running',
+    message: 'Restarting Radarr',
+  }));
+  await refresh();
+  await expect(marker).toHaveAttribute('data-activity-state', 'running');
+  offline = true;
+  await refresh();
+  await expect(marker).toHaveAttribute('data-activity-state', 'unknown');
+  await expect(marker).toHaveAttribute('aria-label', /Status unknown/);
+  await expect
+    .poll(() =>
+      marker.evaluate((node) => node.getAnimations({ subtree: true }).length),
+    )
+    .toBe(0);
+  offline = false;
+  activity = [];
+  await refresh();
+  await expect(marker).toHaveCount(0);
+  await expect(settings.locator('[data-attention-severity]')).toHaveAttribute(
+    'data-attention-severity',
+    'error',
+  );
+  items = [];
+  await refresh();
+  await expect(settings.locator('[data-attention-severity]')).toHaveCount(0);
+  activity = [
+    {
+      id: 'backup:1',
+      target: 'backups',
+      resource: 'backup-1',
+      state: 'running',
+      message: 'Creating encrypted backup',
+      media_ids: [],
+    },
+  ];
+  await refresh();
+  await expect(marker).toHaveAttribute('data-activity-state', 'running');
+  await expect(settings.locator('[data-attention-severity]')).toHaveCount(0);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('button', { name: 'Open navigation' }).click();
+  await expect(
+    page
+      .getByRole('dialog')
+      .getByRole('link', { name: 'Settings', exact: true })
+      .locator('[data-activity-state]'),
+  ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath('activity-mobile-navigation.png'),
+  });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('a pending service action remains marked after leaving its page and hands off to durable activity', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'services',
+  });
+  await page.route('**/api/v1/catalog/roots', (route) =>
+    route.fulfill({ json: { items: [], media_mount: '/media' } }),
+  );
+  let release: (() => void) | undefined;
+  let activity: {
+    id: string;
+    target: string;
+    resource: string;
+    state: string;
+    message: string;
+    media_ids: string[];
+  }[] = [];
+  let holdSnapshot = false;
+  let releaseSnapshot: (() => void) | undefined;
+  await page.route('**/api/v1/me/attention', async (route) => {
+    const snapshot = structuredClone(activity);
+    if (holdSnapshot) {
+      holdSnapshot = false;
+      await new Promise<void>((resolve) => {
+        releaseSnapshot = resolve;
+      });
+    }
+    return route.fulfill({ json: { items: [], activity: snapshot } });
+  });
+  await page.route(
+    '**/api/v1/admin/stack/managed-radarr/action',
+    async (route) => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      activity = [
+        {
+          id: 'restart:radarr',
+          target: 'services',
+          resource: 'radarr',
+          state: 'running',
+          message: 'Restarting Radarr',
+          media_ids: [],
+        },
+      ];
+      return route.fulfill({ json: { accepted: true } });
+    },
+  );
+  await page.goto('/');
+  await page
+    .getByRole('navigation', { name: 'Select service' })
+    .getByRole('link', { name: 'Radarr', exact: true })
+    .click();
+  await page.getByRole('button', { name: 'Restart', exact: true }).click();
+  await expect.poll(() => Boolean(release)).toBe(true);
+  const settings = page.getByRole('link', { name: 'Settings', exact: true });
+  await expect(settings.locator('[data-activity-state]')).toHaveAttribute(
+    'data-activity-state',
+    'running',
+  );
+  await page.getByRole('link', { name: 'Movies', exact: true }).click();
+  await expect(settings.locator('[data-activity-state]')).toHaveAttribute(
+    'data-activity-state',
+    'running',
+  );
+  holdSnapshot = true;
+  await page.evaluate(() =>
+    window.dispatchEvent(new Event('thelxinoe-attention-refresh')),
+  );
+  await expect.poll(() => Boolean(releaseSnapshot)).toBe(true);
+  const accepted = page.waitForResponse((response) =>
+    response.url().endsWith('/admin/stack/managed-radarr/action'),
+  );
+  release!();
+  await accepted;
+  await page.evaluate(async () => {
+    for (let frame = 0; frame < 6; frame++)
+      await new Promise(requestAnimationFrame);
+  });
+  await expect(settings.locator('[data-activity-state]')).toHaveAttribute(
+    'data-activity-state',
+    'running',
+  );
+  await page.screenshot({
+    path: testInfo.outputPath('service-action-awaits-fresh-snapshot.png'),
+  });
+  releaseSnapshot!();
+  await expect(settings.locator('[data-activity-state]')).toHaveAttribute(
+    'aria-label',
+    /Restarting Radarr/,
+  );
+  await page.screenshot({
+    path: testInfo.outputPath('service-action-persists-after-navigation.png'),
+  });
+  activity = [];
+  await page.evaluate(() =>
+    window.dispatchEvent(new Event('thelxinoe-attention-refresh')),
+  );
+  await expect(settings.locator('[data-activity-state]')).toHaveCount(0);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 test('delayed request details cannot acknowledge a newer unseen decision', async ({
   page,
 }, testInfo) => {
@@ -629,7 +905,10 @@ for (const [type, section] of [
       .getByRole('button', { name: 'Available request Available', exact: true })
       .click();
     await expect(
-      page.getByRole('heading', { name: section, exact: true }),
+      page.getByRole('textbox', {
+        name: `Search ${section.toLowerCase()}`,
+        exact: true,
+      }),
     ).toBeVisible();
     await page.screenshot({
       path: testInfo.outputPath('available-request-library.png'),

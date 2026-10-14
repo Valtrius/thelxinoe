@@ -18,7 +18,7 @@ use axum::{
     http::HeaderMap,
 };
 use serde_json::{Value, json};
-use std::{ffi::OsString, time::Duration};
+use std::{ffi::OsString, future::Future, time::Duration};
 
 pub async fn inspect(
     State(state): State<AppState>,
@@ -52,6 +52,17 @@ pub async fn inspect(
 }
 /// Signed media addresses only work from the returned address family.
 pub(super) async fn metadata(state: &AppState, id: &str) -> Result<(Value, Family)> {
+    with_metadata(state, id, |value, _| std::future::ready(Ok(value))).await
+}
+pub(super) async fn with_metadata<T, F, Fut>(
+    state: &AppState,
+    id: &str,
+    inspect: F,
+) -> Result<(T, Family)>
+where
+    F: Fn(Value, Family) -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
     if !sync::identifier(id, 11) {
         return Err(ApiError::bad("Invalid YouTube video"));
     }
@@ -61,7 +72,15 @@ pub(super) async fn metadata(state: &AppState, id: &str) -> Result<(Value, Famil
         .try_acquire()
         .map_err(|_| ApiError::conflict("Both extraction slots are busy; try again shortly"))?;
     let bundle = tools::ready(state).await?;
-    network::attempt(state, |family| extract(state, &bundle, id, family)).await
+    network::attempt(state, |family| {
+        let bundle = &bundle;
+        let inspect = &inspect;
+        async move {
+            let metadata = extract(state, bundle, id, family).await?;
+            inspect(metadata, family).await
+        }
+    })
+    .await
 }
 async fn extract(
     state: &AppState,

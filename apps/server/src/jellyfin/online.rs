@@ -22,11 +22,34 @@ pub const ROOTS: [(&str, &str, &str); 3] = [
     ("d7df0f21-caa6-45a0-9798-267150600002", "twitch", "Twitch"),
     ("d7df0f21-caa6-45a0-9798-267150600003", "kick", "Kick"),
 ];
+
+fn format_viewers(viewers: i64) -> String {
+    if viewers < 1_000 {
+        return viewers.to_string();
+    }
+    let viewers = viewers as u64;
+    let suffixes = ["k", "m", "b", "t"];
+    let mut unit = 0;
+    let mut divisor = 1_000;
+    let mut tenths = (viewers + divisor / 20) / (divisor / 10);
+    while tenths >= 10_000 && unit < suffixes.len() - 1 {
+        divisor *= 1_000;
+        unit += 1;
+        tenths = (viewers + divisor / 20) / (divisor / 10);
+    }
+    let suffix = suffixes[unit];
+    if tenths.is_multiple_of(10) {
+        format!("{}{suffix}", tenths / 10)
+    } else {
+        format!("{}.{}{suffix}", tenths / 10, tenths % 10)
+    }
+}
+
 pub async fn views(state: &AppState) -> Result<Vec<Value>> {
     let mut items = Vec::new();
     for (id, provider, name) in ROOTS {
         if crate::online::availability::enabled(state, provider).await? {
-            items.push(json!({"Id":id,"Name":name,"Type":"CollectionFolder","CollectionType":"homevideos","IsFolder":true,"ServerId":state.server_id.as_str(),"ImageTags":{}}));
+            items.push(json!({"Id":id,"DisplayPreferencesId":id,"Name":name,"Type":"CollectionFolder","CollectionType":"homevideos","IsFolder":true,"ServerId":state.server_id.as_str(),"ImageTags":{}}));
         }
     }
     Ok(items)
@@ -388,7 +411,55 @@ pub async fn sources(state: &AppState, p: &Principal, item: &Identity) -> Result
     let dto = browse(state, p, &Query::new(), Some(&item.id))
         .await?
         .ok_or_else(ApiError::not_found)?;
-    Ok(vec![source_dto(&dto)])
+    if item.kind == "youtube" {
+        crate::online::downloads::authorize(state, p, &item.key).await?;
+        match crate::online::downloads::source(state, &item.key).await {
+            Ok(source) => return Ok(vec![super::playback::source_dto(&source).await?]),
+            Err(error) if error.0 == axum::http::StatusCode::CONFLICT => {}
+            Err(error) => return Err(error),
+        }
+    }
+    let key = if item.kind == "youtube" {
+        item.key.clone()
+    } else {
+        item.media()
+    };
+    Ok(crate::online::streams::variants(state, p, &key)
+        .await?
+        .iter()
+        .map(|variant| variant_dto(&dto, item, variant))
+        .collect())
+}
+fn variant_id(item: &Identity, variant: &Value) -> String {
+    let digest = thelxinoe_auth::digest(&format!(
+        "{}:{}:{}:{}",
+        item.id, variant["quality"], variant["video"], variant["audio"]
+    ));
+    uuid::Uuid::parse_str(&digest[..32]).unwrap().to_string()
+}
+fn variant_dto(dto: &Value, item: &Identity, variant: &Value) -> Value {
+    let mut source = source_dto(dto);
+    source["Id"] = json!(variant_id(item, variant));
+    source["Name"] = json!(format!(
+        "{} · {}",
+        variant["quality"].as_str().unwrap_or_default(),
+        variant["video"]
+            .as_str()
+            .unwrap_or_default()
+            .to_ascii_uppercase()
+    ));
+    source["Bitrate"] = variant["bitrate"].clone();
+    for (name, key) in [
+        ("Codec", "video"),
+        ("Width", "width"),
+        ("Height", "height"),
+        ("AverageFrameRate", "fps"),
+        ("RealFrameRate", "fps"),
+    ] {
+        source["MediaStreams"][0][name] = variant[key].clone();
+    }
+    source["MediaStreams"][1]["Codec"] = variant["audio"].clone();
+    source
 }
 fn source_dto(dto: &Value) -> Value {
     let mut source = json!({"Id":dto["Id"],"Name":"Public stream","Protocol":"Http","Type":"Default","IsRemote":true,"Container":"hls","RunTimeTicks":dto["RunTimeTicks"],"Bitrate":8192000,"IsInfiniteStream":dto["IsLive"],"SupportsTranscoding":true,"TranscodingSubProtocol":"hls","DefaultAudioStreamIndex":1,"DefaultSubtitleStreamIndex":-1,"MediaStreams":[{"Type":"Video","Index":0,"Codec":"h264","IsDefault":true},{"Type":"Audio","Index":1,"Codec":"aac","Channels":2,"SampleRate":48000,"IsDefault":true}],"MediaAttachments":[],"Formats":[]});
@@ -426,7 +497,7 @@ pub async fn playback_info(
     p: &Principal,
     item: &Identity,
     query: &Query,
-    mut input: Value,
+    input: Value,
 ) -> Result<Value> {
     if item.kind == "watchlist" {
         return Err(ApiError::bad("Select a video in this watchlist"));
@@ -452,10 +523,6 @@ pub async fn playback_info(
                 {
                     return Err(ApiError::not_found());
                 }
-                // Standard compatibility HLS gives downloaded videos a complete
-                // seekable timeline, with the same progress and retention checks.
-                input["EnableDirectPlay"] = json!(false);
-                input["EnableDirectStream"] = json!(false);
                 return super::playback::info_source(state, p, &media, query, input, source).await;
             }
             Err(e) if e.0 == axum::http::StatusCode::CONFLICT => {}
@@ -464,68 +531,126 @@ pub async fn playback_info(
     } else {
         crate::online::live::authorize(state, p, &media).await?;
     }
-    if file.as_ref().is_some_and(|f| f != &item.id) {
-        return Err(ApiError::not_found());
-    }
-    if input["EnableTranscoding"] == false {
-        return Err(ApiError::bad("Public streams require HLS conversion"));
-    }
+    let source_key = if item.kind == "youtube" {
+        item.key.as_str()
+    } else {
+        media.as_str()
+    };
     let profile = &input["DeviceProfile"];
+    let variants = crate::online::streams::variants(state, p, source_key).await?;
+    let selected = file
+        .as_ref()
+        .filter(|id| *id != &item.id)
+        .map(|id| {
+            variants
+                .iter()
+                .find(|variant| variant_id(item, variant) == *id)
+                .ok_or_else(ApiError::not_found)
+        })
+        .transpose()?;
+    let codecs: Vec<String> = profile["TranscodingProfiles"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| {
+            p["Type"] == "Video"
+                && p["Protocol"]
+                    .as_str()
+                    .is_some_and(|p| p.eq_ignore_ascii_case("hls"))
+        })
+        .flat_map(|p| {
+            p["VideoCodec"]
+                .as_str()
+                .filter(|codec| !codec.trim().is_empty())
+                .unwrap_or("h264,hevc,vp9,av1")
+                .split(',')
+                .map(|codec| codec.trim().to_ascii_lowercase())
+                .collect::<Vec<_>>()
+        })
+        .collect();
     let max = [
         input["MaxStreamingBitrate"].as_i64(),
         profile["MaxStreamingBitrate"].as_i64(),
+        query
+            .get("maxstreamingbitrate")
+            .and_then(|v| v.parse().ok()),
     ]
     .into_iter()
     .flatten()
     .filter(|v| *v > 0)
-    .min()
-    .unwrap_or(8_192_000);
-    let quality = if max >= 8_192_000 {
-        "8mbps"
-    } else if max >= 4_192_000 {
-        "4mbps"
-    } else if max >= 2_192_000 {
-        "2mbps"
+    .min();
+    let (source, _, rendition) = crate::online::streams::negotiate_source(
+        state,
+        source_key,
+        if input["EnableDirectStream"] == false {
+            &[]
+        } else {
+            &codecs
+        },
+        max,
+        selected,
+        |source| {
+            super::profile::negotiate_online(
+                source,
+                None,
+                profile,
+                false,
+                input["EnableDirectStream"] != false,
+                8_000_000,
+            )
+        },
+    )
+    .await?;
+    let source_rate = source.probe["format"]["bit_rate"]
+        .as_str()
+        .and_then(|v| v.parse::<i64>().ok());
+    let quality = if max.is_some_and(|max| source_rate.is_none_or(|rate| rate > max)) {
+        match max.unwrap() {
+            n if n >= 20_192_000 => "20mbps",
+            n if n >= 8_192_000 => "8mbps",
+            n if n >= 4_192_000 => "4mbps",
+            n if n >= 2_192_000 => "2mbps",
+            _ => {
+                return Err(ApiError::bad(
+                    "This client bitrate limit is below the supported conversion quality",
+                ));
+            }
+        }
     } else {
-        return Err(ApiError::bad(
-            "This client bitrate limit is below the supported conversion quality",
-        ));
+        rendition.as_deref().unwrap_or("auto")
     };
-    // Negotiate a bounded output envelope, then fit the actual upstream aspect
-    // ratio into it. Source URLs and extractor metadata stay inside the server.
-    let envelope = thelxinoe_playback::Source {
-        id: String::new(),
-        media_id: String::new(),
-        generation: String::new(),
-        edition: String::new(),
-        path: "public.ts".into(),
-        root: std::path::PathBuf::new(),
-        size: 0,
-        modified: String::new(),
-        probe: json!({"format":{"duration":"1"},"streams":[{"codec_type":"video","codec_name":"h264","width":1920,"height":1080,"avg_frame_rate":"30/1","pix_fmt":"yuv420p","field_order":"progressive"},{"codec_type":"audio","codec_name":"aac","channels":2,"sample_rate":"48000"}]}),
-    };
-    let mut capabilities = super::profile::negotiate(
-        &envelope,
+    let mut capabilities = super::profile::negotiate_online(
+        &source,
         None,
         profile,
         false,
-        false,
-        thelxinoe_playback::bitrate(quality)?.unwrap(),
+        input["EnableDirectStream"] != false,
+        thelxinoe_playback::bitrate(if rendition.as_deref() == Some(quality) {
+            "auto"
+        } else {
+            quality
+        })?
+        .unwrap_or(8_000_000),
     );
-    let conversion = capabilities
-        .conversion
-        .as_mut()
-        .ok_or_else(|| ApiError::bad("The client does not support H.264/AAC HLS playback"))?;
-    conversion.fit = true;
-    capabilities.video = vec!["h264".into()];
-    capabilities.audio = vec!["aac".into()];
+    capabilities.allow_conversion = Some(input["EnableTranscoding"] != false);
     let options = thelxinoe_playback::Options {
         quality: quality.into(),
         audio: None,
         subtitle: Some("off".into()),
         capabilities,
     };
-    let mut dto = sources(state, p, item).await?.remove(0);
+    let delivered = selected
+        .or_else(|| {
+            variants.iter().find(|variant| {
+                Some(variant["quality"].as_str().unwrap_or_default()) == rendition.as_deref()
+                    && variant["video"] == source.video_codec().unwrap_or_default()
+            })
+        })
+        .unwrap_or(&variants[0]);
+    let item_dto = browse(state, p, &Query::new(), Some(&item.id))
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    let mut dto = variant_dto(&item_dto, item, delivered);
     let playback = crate::playback::create_with_delivery(
         state,
         p,
@@ -543,9 +668,19 @@ pub async fn playback_info(
     let key = sid.clone();
     storage::playback_info(key, &state.db).await?;
     dto["TranscodingUrl"] = playback["url"].clone();
-    dto["TranscodingContainer"] = json!("ts");
+    dto["TranscodingContainer"] = playback["options"]["capabilities"]["hls_container"]
+        .as_str()
+        .map(|c| json!(c))
+        .unwrap_or(json!("ts"));
     dto["ETag"] = playback["grant"].clone();
     dto["RunTimeTicks"] = json!(catalog::ticks(playback["duration"].as_f64().unwrap_or(0.0)));
     dto["IsInfiniteStream"] = playback["live"].clone();
+    dto["MediaStreams"] = json!(playback["probe"]["streams"].as_array().into_iter().flatten().filter(|stream| ["video", "audio"].contains(&stream["codec_type"].as_str().unwrap_or(""))).map(|stream| {
+        let video = stream["codec_type"] == "video";
+        let encoded = playback["encoding"][if video { "video" } else { "audio" }] == true;
+        let conversion=&playback["options"]["capabilities"]["conversion"];
+        let rate=stream["avg_frame_rate"].as_str().and_then(|s|s.split_once('/')).and_then(|(a,b)|Some(a.parse::<f64>().ok()?/b.parse::<f64>().ok()?)).filter(|r|r.is_finite());
+        json!({"Type": if video { "Video" } else { "Audio" }, "Index": stream["index"], "Codec": if encoded { json!(if video { "h264" } else { "aac" }) } else { stream["codec_name"].clone() }, "IsDefault": true, "Width": if encoded && video {conversion["width"].clone()}else{stream["width"].clone()}, "Height": if encoded && video {conversion["height"].clone()}else{stream["height"].clone()},"AverageFrameRate":if encoded && video {conversion["frame_rate"].clone()}else{json!(rate)},"RealFrameRate":if encoded && video {conversion["frame_rate"].clone()}else{json!(rate)}, "Channels": if encoded && !video { json!(2) } else { stream["channels"].clone() }, "SampleRate": stream["sample_rate"]})
+    }).collect::<Vec<_>>());
     Ok(json!({"MediaSources":[dto],"PlaySessionId":sid}))
 }

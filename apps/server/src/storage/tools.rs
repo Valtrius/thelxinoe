@@ -149,7 +149,7 @@ pub async fn activate(db: &Database, selections: Vec<(Job, Tool, String)>) -> Re
             let (revision,pinned,current):(i64,bool,Option<String>)=tx.query_row("SELECT revision,pinned,installed FROM server_tools WHERE id=?1",[&tool.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
             if revision!=tool.revision || pinned || current!=tool.installed { return Ok(false); }
             let (stage,manual):(String,bool)=tx.query_row("SELECT stage,manual FROM tool_jobs WHERE id=?1",[&job.id],|r|Ok((r.get(0)?,r.get(1)?)))?;
-            if stage!="waiting" { return Ok(false); }
+            if !["waiting", "activating"].contains(&stage.as_str()) { return Ok(false); }
             if !manual {
                 let default:crate::product::Policy=tx.query_row("SELECT value FROM settings WHERE key='product.policy'",[],|r|r.get::<_,String>(0)).optional()?.map(|v|serde_json::from_str(&v)).transpose()?.unwrap_or_default();
                 let effective=if tool.policy=="inherit"{&default.policy}else{&tool.policy};

@@ -35,12 +35,17 @@ export const appearance = writable<Appearance>({
     : 'system',
 });
 export const appearanceError = writable('');
+export const videoMuted = writable(false);
 let owner = '';
 let generation = 0;
 let acceptedRevision = 0;
 let pending = Promise.resolve();
 const localChanges = new Map<number, Partial<Appearance>>();
 let changeId = 0;
+videoMuted.subscribe((muted) => {
+  if (owner)
+    localStorage.setItem(`thelxinoe-video-muted:${owner}`, String(muted));
+});
 function merge(value: Appearance, change: Partial<Appearance>): Appearance {
   return {
     ...value,
@@ -78,6 +83,9 @@ appearance.subscribe((value) => {
 });
 export async function loadAppearance(userId: string) {
   owner = userId;
+  videoMuted.set(
+    localStorage.getItem(`thelxinoe-video-muted:${userId}`) === 'true',
+  );
   const current = ++generation;
   try {
     const value = await api<Appearance>('/me/appearance');
@@ -115,6 +123,7 @@ export async function refreshAppearance(userId: string) {
 }
 export function resetAppearance() {
   owner = '';
+  videoMuted.set(false);
   generation++;
   localChanges.clear();
 }

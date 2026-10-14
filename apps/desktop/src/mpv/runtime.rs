@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::{
     net::windows::named_pipe::ClientOptions,
     process::Command,
-    sync::{Mutex, mpsc, oneshot},
+    sync::{Mutex, mpsc, oneshot, watch},
     task::JoinHandle,
 };
 
@@ -56,10 +56,19 @@ struct Run {
     task: JoinHandle<()>,
     view: Arc<Mutex<View>>,
 }
-#[derive(Default)]
 pub struct Player {
     operation: Mutex<()>,
     run: Mutex<Option<Run>>,
+    requests: watch::Sender<u64>,
+}
+impl Default for Player {
+    fn default() -> Self {
+        Self {
+            operation: Mutex::default(),
+            run: Mutex::default(),
+            requests: watch::channel(0).0,
+        }
+    }
 }
 impl Player {
     pub async fn restart_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
@@ -77,11 +86,18 @@ impl Player {
         }
     }
     pub async fn stop(&self) {
+        self.requests
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
         let _operation = self.operation.lock().await;
         self.stop_inner().await;
     }
     async fn stop_inner(&self) {
         if let Some(run) = self.run.lock().await.take() {
+            if run.view.lock().await.status == "starting" {
+                run.task.abort();
+                let _ = run.task.await;
+                return;
+            }
             let _ = run.commands.send(Control::Stop).await;
             let mut task = run.task;
             if tokio::time::timeout(Duration::from_secs(10), &mut task)
@@ -102,6 +118,25 @@ impl Player {
             .map_err(|_| anyhow::anyhow!("MPV has stopped"))
     }
     pub async fn play(
+        &self,
+        app: AppHandle,
+        tools: Arc<ToolManager>,
+        choices: Vec<Choice>,
+        music: bool,
+    ) -> Result<View> {
+        let mut request = self.requests.subscribe();
+        let mut revision = 0;
+        self.requests.send_modify(|current| {
+            *current = current.wrapping_add(1);
+            revision = *current;
+        });
+        tokio::select! {
+            biased;
+            _ = request.wait_for(|current| *current != revision) => Err(anyhow::anyhow!("Playback canceled")),
+            result = self.play_inner(app, tools, choices, music) => result,
+        }
+    }
+    async fn play_inner(
         &self,
         app: AppHandle,
         tools: Arc<ToolManager>,
@@ -142,6 +177,7 @@ impl Player {
         let state = view.clone();
         let (ready, started) = oneshot::channel();
         let controls = commands.clone();
+        let mut owned_run = self.run.lock().await;
         let task = tokio::spawn(async move {
             if let Err(error) = run(
                 &app,
@@ -163,11 +199,13 @@ impl Player {
                 let _ = app.emit("mpv-state", state.clone());
             }
         });
-        *self.run.lock().await = Some(Run {
+        *owned_run = Some(Run {
             commands,
             task,
             view,
         });
+        drop(owned_run);
+        drop(_operation);
         started.await.context("MPV failed before connecting")??;
         Ok(self.view().await)
     }
@@ -299,6 +337,19 @@ async fn run(
     controls: mpsc::Sender<Control>,
     ready: oneshot::Sender<Result<()>>,
 ) -> Result<()> {
+    let mut prepared = BTreeMap::new();
+    let mut next = 0;
+    for _ in 0..if music { choices.len().min(2) } else { 1 } {
+        let entry = match prepare(&backend, &choices[next], next == 0).await {
+            Ok(entry) => entry,
+            Err(error) => {
+                let _ = ready.send(Err(anyhow::anyhow!(error.to_string())));
+                return Err(error);
+            }
+        };
+        prepared.insert(next, entry);
+        next += 1;
+    }
     let pipe = format!(r"\\.\pipe\thelxinoe-{}", uuid::Uuid::new_v4());
     let segment_script = app.path().app_local_data_dir()?.join("segments.lua");
     std::fs::write(&segment_script, include_str!("segments.lua"))?;
@@ -369,8 +420,6 @@ async fn run(
         ipc.call(json!(["observe_property", index, property]))
             .await?;
     }
-    let mut prepared = BTreeMap::new();
-    let mut next = 0;
     let mut current = 0;
     let mut paused = false;
     let mut idle = true;
@@ -378,11 +427,8 @@ async fn run(
     let mut video_ready = false;
     let mut started = false;
     let work = async {
-        for _ in 0..if music { choices.len().min(2) } else { 1 } {
-            let mut entry = prepare(&backend, &choices[next], next == 0).await?;
-            load(&mut ipc, &mut entry, &choices[next].title, "append").await?;
-            prepared.insert(next, entry);
-            next += 1;
+        for (index, entry) in &mut prepared {
+            load(&mut ipc, entry, &choices[*index].title, "append").await?;
         }
         // Prepare both entries before audio starts, even for very short tracks.
         ipc.call(json!(["playlist-play-index", 0])).await?;

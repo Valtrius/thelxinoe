@@ -150,6 +150,8 @@ test('server-setting events cannot invalidate a save acknowledgement or block la
     return route.fulfill({
       json: {
         ...settings,
+        video_transcoding: true,
+        audio_transcoding: true,
         public_url: 'https://media.example',
         trusted_proxies: [],
       },
@@ -591,7 +593,7 @@ for (const exit of ['navigation', 'logout', 'revoke'] as const) {
       .getByRole('link', { name: 'Movies', exact: true })
       .click();
     await expect(
-      page.getByRole('heading', { name: 'Movies', exact: true }),
+      page.getByRole('textbox', { name: 'Search movies', exact: true }),
     ).toBeVisible();
     expect(writes).toHaveLength(1);
     expect(fixture.errors).toEqual([]);
@@ -624,7 +626,12 @@ test('server display defaults wait for hydration and roll back to the loaded bas
     requested = true;
     await held.promise;
     return route.fulfill({
-      json: { timezone: 'Europe/Paris', time_format: '12h' },
+      json: {
+        timezone: 'Europe/Paris',
+        time_format: '12h',
+        video_transcoding: true,
+        audio_transcoding: true,
+      },
     });
   });
   await page.goto('/');

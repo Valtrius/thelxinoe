@@ -8,11 +8,17 @@ pub(super) struct Format {
     pub native: bool,
     hls: bool,
     pub height: u64,
+    pub width: Option<u64>,
     pub fps: u64,
+    pub frame_rate: Option<f64>,
+    pub bitrate: Option<u64>,
     pub video: String,
     pub audio: String,
 }
 impl Format {
+    pub fn descriptor(&self) -> Value {
+        json!({"quality":self.quality(),"video":self.video,"audio":self.audio,"width":self.width,"height":self.height,"fps":self.frame_rate,"bitrate":self.bitrate})
+    }
     pub fn quality(&self) -> String {
         format!(
             "{}p{}",
@@ -40,6 +46,8 @@ fn codec(value: &Value) -> String {
         "vp9"
     } else if value.starts_with("av01") || value == "av1" {
         "av1"
+    } else if value.starts_with("hvc1") || value.starts_with("hev1") || value == "hevc" {
+        "hevc"
     } else if value.starts_with("mp4a") || value == "aac" {
         "aac"
     } else {
@@ -73,7 +81,10 @@ pub(super) fn extract(metadata: &Value, proxy: Option<String>) -> Result<Vec<For
     for video in formats.iter().filter(|f| {
         transport(f)
             && f["height"].as_u64().is_some_and(|h| h > 0)
-            && matches!(codec(&f["vcodec"]).as_str(), "h264" | "vp9" | "av1")
+            && matches!(
+                codec(&f["vcodec"]).as_str(),
+                "h264" | "hevc" | "vp9" | "av1"
+            )
     }) {
         // Prefer SDR formats until the player negotiates HDR transfer functions.
         if video["dynamic_range"].as_str().is_some_and(|v| v != "SDR") {
@@ -96,6 +107,12 @@ pub(super) fn extract(metadata: &Value, proxy: Option<String>) -> Result<Vec<For
         source.validate().map_err(|_| {
             ApiError::conflict("The extractor returned an unsupported media address")
         })?;
+        let frame_rate = video["fps"].as_f64().filter(|f| f.is_finite() && *f > 0.0);
+        let bitrate = video["tbr"]
+            .as_f64()
+            .map(|rate| (rate + audio.and_then(|f| f["abr"].as_f64()).unwrap_or(0.0)) * 1000.0)
+            .filter(|r| r.is_finite() && *r > 0.0)
+            .map(|r| r as u64);
         output.push(Format {
             hls: matches!(video["protocol"].as_str(), Some("m3u8_native" | "m3u8")),
             native: !live
@@ -104,7 +121,10 @@ pub(super) fn extract(metadata: &Value, proxy: Option<String>) -> Result<Vec<For
                 && audio.is_none_or(|f| f["protocol"] == "https"),
             source,
             height: video["height"].as_u64().unwrap(),
-            fps: video["fps"].as_f64().unwrap_or(30.0).round() as u64,
+            width: video["width"].as_u64(),
+            frame_rate,
+            bitrate,
+            fps: frame_rate.unwrap_or(30.0).round() as u64,
             video: codec(&video["vcodec"]),
             audio: codec(&audio.unwrap_or(video)["acodec"]),
         });
@@ -133,14 +153,7 @@ pub(super) fn choose<'a>(
     caps: &Capabilities,
 ) -> Result<&'a Format> {
     let eligible = |f: &&Format| f.supported(caps);
-    let selected = if quality == "auto" || quality.ends_with("mbps") {
-        formats
-            .iter()
-            .rev()
-            .filter(eligible)
-            .find(|f| f.height <= 1080)
-            .or_else(|| formats.iter().find(eligible))
-    } else if quality == "original" {
+    let selected = if quality == "auto" || quality == "original" || quality.ends_with("mbps") {
         formats.iter().rev().find(eligible)
     } else {
         formats
@@ -159,7 +172,27 @@ pub(super) fn choose<'a>(
                 })
             })
     };
-    selected.ok_or_else(|| ApiError::conflict("This resolution is not available for this player"))
+    selected
+        .or_else(|| {
+            // If no original rendition is compatible, retain the requested provider
+            // quality and let the shared planner convert only incompatible tracks.
+            if !caps.hls {
+                return None;
+            }
+            if quality == "auto" || quality == "original" || quality.ends_with("mbps") {
+                formats.last()
+            } else {
+                formats
+                    .iter()
+                    .rev()
+                    .find(|f| f.quality() == quality)
+                    .or_else(|| {
+                        thelxinoe_playback::resolution(quality)
+                            .and_then(|h| formats.iter().rev().find(|f| f.height <= u64::from(h)))
+                    })
+            }
+        })
+        .ok_or_else(|| ApiError::conflict("This resolution is not available for this player"))
 }
 
 /// Segment start times of an HLS media playlist.
@@ -239,7 +272,7 @@ mod tests {
         caps.video.push("vp9".into());
         assert_eq!(choices(&formats, &caps)[0]["value"], "2160p60");
         assert_eq!(choose(&formats, "2160p60", &caps).unwrap().height, 2160);
-        assert_eq!(choose(&formats, "auto", &caps).unwrap().height, 1080);
+        assert_eq!(choose(&formats, "auto", &caps).unwrap().height, 2160);
     }
     #[test]
     fn hls_playlists_provide_segment_starts() {

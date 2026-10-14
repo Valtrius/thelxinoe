@@ -8,7 +8,12 @@
   import ProgressBar from './ui/ProgressBar.svelte';
   import { onMount, tick, untrack } from 'svelte';
   import AttentionDot from './ui/AttentionDot.svelte';
-  import { attention, attentionDescription } from './attention';
+  import {
+    attention,
+    attentionDescription,
+    refreshAttention,
+  } from './attention';
+  import { activity as runningActivity, startActivity } from './activity';
   import { api, ApiError, desktop } from './api';
   import { followLink } from './navigation';
   import Button from './ui/Button.svelte';
@@ -574,20 +579,30 @@
     connection: ServiceConnection,
     action: ConnectionAction,
   ) {
-    ++connectionLoad;
-    const updated = await api<ServiceConnection>(
-      '/admin/service-connections',
-      'POST',
-      {
-        source_id: connection.source_id,
-        target_id: connection.target_id,
-        action,
-      },
-    );
-    ++connectionLoad;
-    connections = connections.map((item) =>
-      item.id === updated.id ? updated : item,
-    );
+    const finish = startActivity({
+      target: 'services',
+      resource: connection.source_kind,
+      message: `${action === 'disconnect' ? 'Disconnecting' : 'Connecting'} ${connection.target_name}`,
+    });
+    try {
+      ++connectionLoad;
+      const updated = await api<ServiceConnection>(
+        '/admin/service-connections',
+        'POST',
+        {
+          source_id: connection.source_id,
+          target_id: connection.target_id,
+          action,
+        },
+      );
+      ++connectionLoad;
+      connections = connections.map((item) =>
+        item.id === updated.id ? updated : item,
+      );
+    } finally {
+      await refreshAttention();
+      finish();
+    }
   }
   async function work(
     action: () => Promise<void>,
@@ -602,6 +617,11 @@
     )
       return;
     pendingActions[kind] = true;
+    const finish = startActivity({
+      target: 'services',
+      resource: kind === 'general' ? null : kind,
+      message: `${kind === 'general' ? 'Media services' : (definitions.find((item) => item.kind === kind)?.label ?? kind)} action in progress`,
+    });
     feedback[kind] = '';
     try {
       await action();
@@ -610,6 +630,8 @@
       feedback[kind] = String(error);
     } finally {
       pendingActions[kind] = false;
+      await refreshAttention();
+      finish();
     }
   }
   async function connectExternal(definition: Definition, unverified = false) {
@@ -894,10 +916,18 @@
             (item) =>
               item.target === 'services' && item.resource === service.kind,
           )}
+          activity={$runningActivity.filter(
+            (item) =>
+              item.target === 'services' && item.resource === service.kind,
+          )}
         />
         <span id={`service-attention-${service.kind}`} class="sr-only"
           >{attentionDescription(
             $attention.filter(
+              (item) =>
+                item.target === 'services' && item.resource === service.kind,
+            ),
+            $runningActivity.filter(
               (item) =>
                 item.target === 'services' && item.resource === service.kind,
             ),

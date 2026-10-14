@@ -1,5 +1,6 @@
 import { request } from '@playwright/test';
 import { writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { launchBrowser } from './ci-browser.mjs';
 import assert from 'node:assert/strict';
 import { waitForServerTools } from './ci-readiness.mjs';
@@ -78,6 +79,28 @@ try {
     );
   const first = await play(direct);
   assert.equal(first.mode, 'direct');
+  const unchanged = await play(direct, '720p');
+  assert.equal(
+    unchanged.mode,
+    'direct',
+    'A resolution ceiling above the source must preserve the original',
+  );
+  await call(`/playback/${unchanged.id}/progress`, 'POST', {
+    sequence: 0,
+    position: 0,
+    state: 'stopped',
+  });
+  const withinLimit = await play(direct, '2mbps');
+  assert.equal(
+    withinLimit.mode,
+    'direct',
+    'A source already below the bitrate limit must remain original',
+  );
+  await call(`/playback/${withinLimit.id}/progress`, 'POST', {
+    sequence: 0,
+    position: 0,
+    state: 'stopped',
+  });
   const ranged = await api.get(first.url, {
     headers: { Range: 'bytes=0-1023' },
   });
@@ -161,10 +184,20 @@ try {
   for (const [item, mode, quality] of [
     [remux, 'remux', 'auto'],
     [transcode, 'transcode', 'auto'],
-    [direct, 'transcode', '2mbps'],
+    [direct, 'transcode', '144p'],
+    [items.find((i) => i.title === 'Audio Only'), 'transcode', 'auto'],
   ]) {
+    assert.ok(item);
     const session = await play(item, quality);
     assert.equal(session.mode, mode);
+    if (item.title === 'Audio Only') {
+      assert.equal(session.encoding.video, false);
+      assert.equal(session.encoding.audio, true);
+      assert.match(session.conversion_reason, /audio/i);
+    } else if (item.title === 'Transcode') {
+      assert.equal(session.encoding.video, true);
+      assert.equal(session.encoding.audio, false);
+    }
     const playlist = await api.get(session.url);
     assert.equal(playlist.status(), 200);
     const body = await playlist.text();
@@ -176,6 +209,44 @@ try {
     );
     assert.equal(data.status(), 200);
     assert.ok((await data.body()).length > 1000);
+    if (item.title === 'Audio Only') {
+      const path = '.local/playback-audio-only.ts';
+      writeFileSync(path, await data.body());
+      const hashes = (file) =>
+        execFileSync(
+          'ffmpeg',
+          ['-v', 'error', '-i', file, '-map', '0:v:0', '-f', 'framemd5', '-'],
+          { encoding: 'utf8', windowsHide: true },
+        )
+          .split('\n')
+          .filter((line) => line && !line.startsWith('#'))
+          .map((line) => line.split(',').at(-1).trim());
+      const original = hashes(
+        '.local/fixtures/playback/movies/Audio Only (2020).mkv',
+      );
+      const delivered = hashes(path);
+      assert.ok(
+        delivered.length > 12,
+        'The copied video must contain decoded frames',
+      );
+      assert.deepEqual(
+        delivered,
+        original.slice(0, delivered.length),
+        'Audio conversion must leave every delivered video frame unchanged',
+      );
+      writeFileSync(
+        '.local/playback-preserved-video.json',
+        JSON.stringify(
+          {
+            decoded_frames: delivered.length,
+            identical_original_frames: true,
+            hashes: delivered,
+          },
+          null,
+          2,
+        ),
+      );
+    }
     await call(`/playback/${session.id}/progress`, 'POST', {
       sequence: 0,
       position: 2,
@@ -196,7 +267,7 @@ try {
       `HTTPS ${mode} (${quality}), segment delivery, seek and stop checks passed.`,
     );
   }
-  for (const title of ['Remux', 'Transcode']) {
+  for (const title of ['Remux', 'Transcode', 'Audio Only']) {
     await page
       .getByRole('button', { name: `${title} 2020`, exact: true })
       .click();
@@ -213,6 +284,16 @@ try {
       {},
       { timeout: 30000 },
     );
+    if (title === 'Audio Only') {
+      assert.match(
+        await page.locator('.playback-mode').textContent(),
+        /Audio converted/,
+      );
+      await page.screenshot({
+        path: '.local/playback-audio-only.png',
+        fullPage: true,
+      });
+    }
     await page
       .getByLabel('Playback position', { exact: true })
       .evaluate((input) => {
@@ -399,6 +480,11 @@ try {
         direct_browser: true,
         hls_remux: true,
         hls_transcode: true,
+        original_resolution_ceiling: true,
+        original_bitrate_ceiling: true,
+        audio_only_conversion: true,
+        original_video_frames_preserved: true,
+        video_only_conversion: true,
         seek: true,
         subtitles: true,
         multi_user: true,

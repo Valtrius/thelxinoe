@@ -12,6 +12,7 @@
   import { choiceIndex } from './media-state';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
+  import { LoaderCircle } from '@lucide/svelte';
 
   let { choice, closed } = $props<{
     choice: MediaChoice;
@@ -20,6 +21,7 @@
   let musicState = $state<MusicState | null>(null),
     error = $state(''),
     busy = $state(true),
+    waitingTools = $state(false),
     streaming = $state(false);
   let streamChoice = $state<MediaChoice | null>(null);
   let queue = $state<GaplessQueue>();
@@ -39,6 +41,7 @@
     queue = undefined;
     musicState = null;
     busy = true;
+    waitingTools = false;
     error = '';
     streaming = false;
     streamChoice = null;
@@ -62,6 +65,9 @@
             streaming = true;
           } else error = String(e);
         }
+      },
+      (value) => {
+        if (generation === revision) waitingTools = value;
       },
     );
     queue = ownedQueue;
@@ -95,6 +101,7 @@
     choice={streamChoice}
     {closed}
     ended={nextStream}
+    music
   />{:else}<Panel aria-label="Music player">
     <SectionHeading>
       <h2>{musicState?.title ?? choice.title}</h2>
@@ -103,7 +110,12 @@
       >
     </SectionHeading>
     {#if error}<Notice variant="error" role="alert">{error}</Notice
-      >{/if}{#if busy}<p role="status">Preparing music…</p>{/if}
+      >{/if}{#if busy}<p role="status" class="flex items-center gap-2">
+        <LoaderCircle
+          size={24}
+          class="animate-spin text-accent motion-reduce:animate-none"
+        />{waitingTools ? 'Waiting for playback tools…' : 'Preparing music…'}
+      </p>{/if}
     {#if musicState}<div class="flex flex-wrap items-center gap-[15px]">
         <FormField class="min-w-45 flex-1"
           >Volume<input

@@ -2,11 +2,12 @@ import { expect } from '@playwright/test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { docker, fixture } from './service-access-fixture.mjs';
 import { imageManifest } from './ci-images.mjs';
+import { budgets, waitForState } from './ci-readiness.mjs';
 
 const output = 'test-results/service-safety';
 const seerrOnly = process.argv.includes('--seerr-only');
 mkdirSync(output, { recursive: true });
-const result = { passed: false, scenarios: [] };
+const result = { passed: false, scenarios: [], restores: [] };
 const f = await fixture({
   separateMovies: true,
   moviesDirectory: 'shared/movies',
@@ -34,6 +35,32 @@ function controller(path, method = 'GET', body) {
     status: Number(response.slice(split + 1)),
     body: response.slice(0, split),
   };
+}
+async function restoreBackup(id, input) {
+  await waitForState(
+    'Backup restore accepted',
+    () => {
+      try {
+        const response = controller(`/backups/${id}/restore`, 'POST', input);
+        result.restores.push({ id, ...response });
+        if (
+          response.status !== 200 &&
+          !(
+            response.status === 409 &&
+            response.body === 'Another Docker operation is active'
+          )
+        )
+          throw Error(
+            `Restore rejected (${response.status}): ${response.body}`,
+          );
+        return response;
+      } catch (error) {
+        throw Object.assign(error, { fatal: true });
+      }
+    },
+    (response) => response.status === 200,
+    { timeout: budgets.startup },
+  );
 }
 async function scenario(name, run) {
   if (seerrOnly && !name.startsWith('Seerr')) return;
@@ -203,12 +230,8 @@ try {
         '-c',
         'printf latest > /media/movies/safety-media',
       );
-      expect(
-        controller(`/backups/${id}/restore`, 'POST', {
-          passphrase,
-          components: [provision],
-        }).status,
-      ).toBe(200);
+      // Restore retries while another Docker operation finishes.
+      await restoreBackup(id, { passphrase, components: [provision] });
       await expect.poll(stage, { timeout: 180000 }).toBe('restored');
       expect(await marker()).toBe('before');
       expect(
@@ -219,16 +242,20 @@ try {
         docker('exec', await replacement(), 'ls', '-A', '/config'),
       ).not.toContain('.thelxinoe-restore');
       // Decrypted archives and recovery captures are plaintext; only the journal stays.
-      expect(
-        f.compose(
-          'exec',
-          '-T',
-          'controller',
-          'ls',
-          '-A',
-          `/var/lib/thelxinoe/deployment/backups/${id}`,
-        ),
-      ).toBe('operation.json');
+      await expect
+        .poll(
+          () =>
+            f.compose(
+              'exec',
+              '-T',
+              'controller',
+              'ls',
+              '-A',
+              `/var/lib/thelxinoe/deployment/backups/${id}`,
+            ),
+          { timeout: budgets.stateCopy },
+        )
+        .toBe('operation.json');
       // Backups and restores never touch the retained original's appdata.
       expect(f.appdataDigest(attached.appdata)).toBe(original);
       await healthy();
