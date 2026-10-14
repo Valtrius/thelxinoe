@@ -72,6 +72,115 @@ async fn call(
 const DEVICE: &str = "MediaBrowser Client=\"Test%20client\", Device=\"Living room, TV\", DeviceId=\"tv-one\", Version=\"1\"";
 
 #[tokio::test]
+async fn twitch_community_rating_sorts_by_viewers_and_describes_the_stream() {
+    let (_temp, state, _) = fixture().await;
+    state.db.write("test.fixture", |db| {
+        for (channel, name, viewers) in [("a", "Alpha", 12_345), ("b", "Bravo", 1_250), ("c", "Charlie", 12_345), ("z", "Zulu", 20)] {
+            db.execute("INSERT INTO twitch_streams(user_id,channel_id,login,display_name,title,category,viewers,started_at,snapshot,active) VALUES('alice',?1,?1,?2,'Building a factory','Satisfactory',?3,'2026-10-14T10:00:00Z','s',1)",rusqlite::params![channel,name,viewers])?;
+        }
+        Ok(())
+    }).await.unwrap();
+    let (status, login) = call(
+        &state,
+        "/Users/AuthenticateByName",
+        "POST",
+        json!({"Username":"alice","Pw":"a long test-only password"}),
+        &[("Authorization", DEVICE)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let auth = [("X-Emby-Token", login["AccessToken"].as_str().unwrap())];
+    let (_, views) = call(&state, "/UserViews", "GET", Value::Null, &auth).await;
+    let root = views["Items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["Name"] == "Twitch")
+        .unwrap()["Id"]
+        .as_str()
+        .unwrap();
+    for (sort, direction, expected) in [
+        (
+            "CommunityRating",
+            "Descending",
+            ["Alpha", "Charlie", "Bravo", "Zulu"],
+        ),
+        (
+            "CommunityRating",
+            "Ascending",
+            ["Zulu", "Bravo", "Alpha", "Charlie"],
+        ),
+        (
+            "SortName",
+            "Ascending",
+            ["Alpha", "Bravo", "Charlie", "Zulu"],
+        ),
+    ] {
+        let mut names = Vec::new();
+        for start in [0, 2] {
+            let (status, page) = call(
+                &state,
+                &format!("/Items?ParentId={root}&IncludeItemTypes=Video&SortBy={sort}&SortOrder={direction}&StartIndex={start}&Limit=2"),
+                "GET",
+                Value::Null,
+                &auth,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{page}");
+            assert_eq!(page["TotalRecordCount"], 4);
+            for item in page["Items"].as_array().unwrap() {
+                if item["Name"] == "Alpha" {
+                    assert_eq!(
+                        item["Overview"],
+                        "12.3k viewers · Satisfactory · Building a factory"
+                    );
+                }
+                if item["Name"] == "Bravo" {
+                    assert_eq!(
+                        item["Overview"],
+                        "1.3k viewers · Satisfactory · Building a factory"
+                    );
+                }
+                names.push(item["Name"].as_str().unwrap().to_owned());
+            }
+        }
+        assert_eq!(names, expected, "{sort} {direction}");
+    }
+    for (viewers, compact) in [
+        (0, "0"),
+        (999, "999"),
+        (1_000, "1k"),
+        (999_950, "1m"),
+        (1_000_000, "1m"),
+    ] {
+        state
+            .db
+            .write("test.fixture", move |db| {
+                db.execute(
+                    "UPDATE twitch_streams SET viewers=?1 WHERE user_id='alice' AND channel_id='a'",
+                    [viewers],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let (status, page) = call(
+            &state,
+            &format!("/Items?ParentId={root}&SearchTerm=Alpha"),
+            "GET",
+            Value::Null,
+            &auth,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            page["Items"][0]["Overview"],
+            format!("{compact} viewers · Satisfactory · Building a factory")
+        );
+    }
+}
+
+#[tokio::test]
 async fn online_libraries_and_watchlists_are_private_stable_and_use_existing_settings() {
     let (_temp, state, first_party) = fixture().await;
     state.db.write("test.fixture", |db| {

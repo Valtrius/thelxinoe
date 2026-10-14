@@ -22,6 +22,29 @@ pub const ROOTS: [(&str, &str, &str); 3] = [
     ("d7df0f21-caa6-45a0-9798-267150600002", "twitch", "Twitch"),
     ("d7df0f21-caa6-45a0-9798-267150600003", "kick", "Kick"),
 ];
+
+fn format_viewers(viewers: i64) -> String {
+    if viewers < 1_000 {
+        return viewers.to_string();
+    }
+    let viewers = viewers as u64;
+    let suffixes = ["k", "m", "b", "t"];
+    let mut unit = 0;
+    let mut divisor = 1_000;
+    let mut tenths = (viewers + divisor / 20) / (divisor / 10);
+    while tenths >= 10_000 && unit < suffixes.len() - 1 {
+        divisor *= 1_000;
+        unit += 1;
+        tenths = (viewers + divisor / 20) / (divisor / 10);
+    }
+    let suffix = suffixes[unit];
+    if tenths.is_multiple_of(10) {
+        format!("{}{suffix}", tenths / 10)
+    } else {
+        format!("{}.{}{suffix}", tenths / 10, tenths % 10)
+    }
+}
+
 pub async fn views(state: &AppState) -> Result<Vec<Value>> {
     let mut items = Vec::new();
     for (id, provider, name) in ROOTS {

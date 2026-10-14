@@ -69,12 +69,19 @@ pub(super) async fn browse(
         for (key,column) in [("isfavorite","favorite"),("isplayed","played")] {if let Some(value)=q.get(key) {filter.push(format!("{column}={}",i32::from(value.eq_ignore_ascii_case("true"))));}}
         for flag in q.get("filters").map(String::as_str).unwrap_or("").to_ascii_lowercase().split(',') {match flag {"isfavorite"=>filter.push("favorite=1".into()),"isplayed"=>filter.push("played=1".into()),"isunplayed"=>filter.push("played=0".into()),"isresumable"=>filter.push("live=0 AND position>0 AND position<duration*0.9".into()),_=>{}}}
         let list_sort=list_id.map(|list|db.query_row("SELECT sort_mode,sort_direction FROM youtube_watchlists WHERE user_id=?1 AND id=?2",params![user,list],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))).transpose()?;
-        let order=if list_sort.as_ref().is_some_and(|s|s.0=="date"){"created".into()}else if let Some(list)=list_id {format!("(SELECT manual_position FROM youtube_watchlist_items i WHERE i.user_id=?1 AND i.watchlist_id={list} AND i.video_id=provider_id)")} else if q.get("sortby").is_some_and(|s|s.to_ascii_lowercase().contains("date")) {"created".into()} else {"name COLLATE NOCASE".into()};
+        let order=if list_sort.as_ref().is_some_and(|s|s.0=="date"){"created".into()}else if let Some(list)=list_id {format!("(SELECT manual_position FROM youtube_watchlist_items i WHERE i.user_id=?1 AND i.watchlist_id={list} AND i.video_id=provider_id)")} else if provider==Some("twitch") && q.get("sortby").is_some_and(|s|s.split(',').any(|key|key.trim().eq_ignore_ascii_case("CommunityRating"))) {"viewers".into()} else if q.get("sortby").is_some_and(|s|s.to_ascii_lowercase().contains("date")) {"created".into()} else {"name COLLATE NOCASE".into()};
         let descending=if let Some(sort)=list_sort{sort.1=="desc"}else{q.get("sortorder").is_some_and(|s|s.eq_ignore_ascii_case("Descending"))};
         let direction=if descending{"DESC"}else{"ASC"};
         let clause=if filter.is_empty(){"1".into()}else{filter.join(" AND ")};
         let total=db.query_row(&format!("{SELECT} SELECT COUNT(*) FROM entries WHERE {clause}"),rusqlite::params_from_iter(&args),|r|r.get::<_,i64>(0).map(|v|v as usize))?;
-        let records=db.prepare(&format!("{SELECT} SELECT kind,provider_id,name,overview,duration,live,image,position,played,favorite,created FROM entries WHERE {clause} ORDER BY {order} {direction},provider_id LIMIT {limit} OFFSET {start}"))?.query_map(rusqlite::params_from_iter(&args),|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,json!({"Name":r.get::<_,String>(2)?,"Overview":r.get::<_,String>(3)?,"RunTimeTicks":catalog::ticks(r.get::<_,f64>(4)?),"IsLive":r.get::<_,bool>(5)?,"DateCreated":r.get::<_,Option<String>>(10)?,"UserData":{"PlaybackPositionTicks":catalog::ticks(r.get::<_,f64>(7)?),"Played":r.get::<_,bool>(8)?,"PlayCount":i32::from(r.get::<_,bool>(8)?),"IsFavorite":r.get::<_,bool>(9)?}}),r.get::<_,String>(6)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let records=db.prepare(&format!("{SELECT} SELECT kind,provider_id,name,overview,duration,live,image,position,played,favorite,created,viewers FROM entries WHERE {clause} ORDER BY {order} {direction},provider_id LIMIT {limit} OFFSET {start}"))?.query_map(rusqlite::params_from_iter(&args),|r| {
+            let overview = r.get::<_,String>(3)?;
+            let overview = match r.get::<_,Option<i64>>(11)? {
+                Some(viewers) => format!("{} viewers · {overview}", format_viewers(viewers)),
+                None => overview,
+            };
+            Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,json!({"Name":r.get::<_,String>(2)?,"Overview":overview,"RunTimeTicks":catalog::ticks(r.get::<_,f64>(4)?),"IsLive":r.get::<_,bool>(5)?,"DateCreated":r.get::<_,Option<String>>(10)?,"UserData":{"PlaybackPositionTicks":catalog::ticks(r.get::<_,f64>(7)?),"Played":r.get::<_,bool>(8)?,"PlayCount":i32::from(r.get::<_,bool>(8)?),"IsFavorite":r.get::<_,bool>(9)?}}),r.get::<_,String>(6)?))
+        })?.collect::<rusqlite::Result<Vec<_>>>()?;
         let mut items=Vec::new();
         for (kind,key,mut dto,image) in records {
             let id=mapped(db,&user,&kind,&key)?;
@@ -184,7 +191,7 @@ pub(super) const SELECT: &str = "WITH entries AS (
 
  SELECT 'youtube' kind,v.video_id provider_id,v.title name,v.channel_title overview,COALESCE(v.duration,0) duration,v.broadcast='live' live,
 
- 'https://i.ytimg.com/vi/'||v.video_id||'/mqdefault.jpg' image,COALESCE(s.position,0) position,COALESCE(s.watched,0) played,COALESCE(s.pinned,0) favorite,strftime('%Y-%m-%dT%H:%M:%SZ',v.published_at,'unixepoch') created
+ 'https://i.ytimg.com/vi/'||v.video_id||'/mqdefault.jpg' image,COALESCE(s.position,0) position,COALESCE(s.watched,0) played,COALESCE(s.pinned,0) favorite,strftime('%Y-%m-%dT%H:%M:%SZ',v.published_at,'unixepoch') created,NULL viewers
 
  FROM youtube_videos v LEFT JOIN youtube_video_state s ON s.user_id=v.user_id AND s.video_id=v.video_id
 
@@ -194,13 +201,13 @@ pub(super) const SELECT: &str = "WITH entries AS (
 
  UNION ALL
 
- SELECT 'twitch',t.channel_id,t.display_name,t.title||' · '||t.category,0,1,'https://static-cdn.jtvnw.net/previews-ttv/live_user_'||t.login||'-640x360.jpg',0,0,COALESCE(c.favorite,0),t.started_at
+ SELECT 'twitch',t.channel_id,t.display_name,t.category||' · '||t.title,0,1,'https://static-cdn.jtvnw.net/previews-ttv/live_user_'||t.login||'-640x360.jpg',0,0,COALESCE(c.favorite,0),t.started_at,t.viewers
 
  FROM twitch_streams t LEFT JOIN compat_online_items c ON c.user_id=t.user_id AND c.twitch_channel_id=t.channel_id WHERE t.user_id=?1 AND t.active=1
 
  UNION ALL
 
- SELECT 'kick',k.slug,COALESCE(NULLIF(k.display_name,''),k.slug),k.title||' · '||k.category,0,1,COALESCE(k.thumbnail_url,k.profile_image_url,''),0,0,COALESCE(c.favorite,0),k.started_at
+ SELECT 'kick',k.slug,COALESCE(NULLIF(k.display_name,''),k.slug),k.title||' · '||k.category,0,1,COALESCE(k.thumbnail_url,k.profile_image_url,''),0,0,COALESCE(c.favorite,0),k.started_at,NULL
 
  FROM kick_channels k LEFT JOIN compat_online_items c ON c.user_id=k.user_id AND c.kick_slug=k.slug WHERE k.user_id=?1 AND k.live=1
 
