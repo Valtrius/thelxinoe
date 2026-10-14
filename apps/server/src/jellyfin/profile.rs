@@ -194,7 +194,20 @@ fn constraints(
     }
     true
 }
-fn hls(profile: &Value, kind: &str, video: &str, audio: &str, values: &Properties) -> bool {
+fn hls(
+    profile: &Value,
+    kind: &str,
+    video: &str,
+    audio: &str,
+    values: &Properties,
+    container: &str,
+) -> bool {
+    if container == "ts"
+        && !video.is_empty()
+        && !["h264", "hevc", "mpeg2video", "mpeg4", "vc1"].contains(&video)
+    {
+        return false;
+    }
     profile["TranscodingProfiles"]
         .as_array()
         .into_iter()
@@ -204,7 +217,7 @@ fn hls(profile: &Value, kind: &str, video: &str, audio: &str, values: &Propertie
                 && p["Protocol"]
                     .as_str()
                     .is_some_and(|v| v.eq_ignore_ascii_case("hls"))
-                && matches(&p["Container"], "ts")
+                && matches(&p["Container"], container)
                 && matches(&p["VideoCodec"], video)
                 && matches(&p["AudioCodec"], audio)
                 && p["Conditions"]
@@ -230,6 +243,59 @@ pub fn negotiate(
     direct: bool,
     remux: bool,
     video_bitrate: u32,
+) -> Capabilities {
+    negotiate_for_container(
+        source,
+        audio_index,
+        profile,
+        direct,
+        remux,
+        video_bitrate,
+        "ts",
+    )
+}
+pub fn negotiate_online(
+    source: &Source,
+    audio_index: Option<i64>,
+    profile: &Value,
+    direct: bool,
+    remux: bool,
+    video_bitrate: u32,
+) -> Capabilities {
+    let candidates = ["mp4", "ts"].map(|container| {
+        negotiate_for_container(
+            source,
+            audio_index,
+            profile,
+            direct,
+            remux,
+            video_bitrate,
+            container,
+        )
+    });
+    let score = |caps: &Capabilities| {
+        thelxinoe_playback::decision(
+            source,
+            &thelxinoe_playback::Options {
+                quality: "auto".into(),
+                audio: audio_index,
+                subtitle: None,
+                capabilities: caps.clone(),
+            },
+        )
+        .map(|d| u8::from(d.encoding.video) * 2 + u8::from(d.encoding.audio))
+        .unwrap_or(u8::MAX)
+    };
+    candidates.into_iter().min_by_key(score).unwrap()
+}
+fn negotiate_for_container(
+    source: &Source,
+    audio_index: Option<i64>,
+    profile: &Value,
+    direct: bool,
+    remux: bool,
+    video_bitrate: u32,
+    output_container: &str,
 ) -> Capabilities {
     let video = source.video_codec().unwrap_or("");
     let audio = stream(source, "audio", audio_index)
@@ -257,8 +323,8 @@ pub fn negotiate(
             });
     let allow_remux = remux;
     let remux = remux
-        && hls(profile, kind, video, audio, &values)
-        && constraints(profile, "ts", video, audio, &values);
+        && hls(profile, kind, video, audio, &values, output_container)
+        && constraints(profile, output_container, video, audio, &values);
     let mut conversion = None;
     let mut converted = values.clone();
     for (key, value) in [
@@ -346,8 +412,8 @@ pub fn negotiate(
                 ("Constrained Baseline", "baseline"),
             ] {
                 converted.insert("VideoProfile".into(), name.into());
-                if hls(profile, kind, "h264", "aac", &converted)
-                    && constraints(profile, "ts", "h264", "aac", &converted)
+                if hls(profile, kind, "h264", "aac", &converted, output_container)
+                    && constraints(profile, output_container, "h264", "aac", &converted)
                 {
                     conversion = Some(Conversion {
                         width,
@@ -367,8 +433,8 @@ pub fn negotiate(
         }
     }
     let can_convert = if video.is_empty() {
-        hls(profile, kind, "", "aac", &converted)
-            && constraints(profile, "ts", "", "aac", &converted)
+        hls(profile, kind, "", "aac", &converted, output_container)
+            && constraints(profile, output_container, "", "aac", &converted)
     } else {
         conversion.is_some()
     };
@@ -387,8 +453,15 @@ pub fn negotiate(
     }
     let copy_video = allow_remux
         && !video.is_empty()
-        && hls(profile, kind, video, "aac", &audio_converted)
-        && constraints(profile, "ts", video, "aac", &audio_converted);
+        && hls(
+            profile,
+            kind,
+            video,
+            "aac",
+            &audio_converted,
+            output_container,
+        )
+        && constraints(profile, output_container, video, "aac", &audio_converted);
     let mut video_converted = converted.clone();
     for key in [
         "AudioChannels",
@@ -412,15 +485,17 @@ pub fn negotiate(
             if video.is_empty() { "" } else { "h264" },
             audio,
             &video_converted,
+            output_container,
         )
         && constraints(
             profile,
-            "ts",
+            output_container,
             if video.is_empty() { "" } else { "h264" },
             audio,
             &video_converted,
         );
     Capabilities {
+        hls_container: Some(output_container.into()),
         containers: if direct { vec![container] } else { vec![] },
         video: if direct || remux || copy_video {
             vec![video.into()]

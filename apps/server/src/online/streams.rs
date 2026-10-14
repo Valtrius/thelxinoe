@@ -1,8 +1,14 @@
 #[path = "../storage/online/streams.rs"]
 mod storage;
 
+#[cfg(test)]
+#[path = "../../tests/product/online_quality.rs"]
+mod compatibility_tests;
 #[path = "stream_formats.rs"]
 mod formats;
+#[cfg(test)]
+#[path = "../../../../tests/helpers/tool-runtime.rs"]
+mod tool_runtime;
 
 use super::{downloads, extract, live};
 use crate::{
@@ -63,14 +69,38 @@ pub(crate) async fn negotiate_source(
     video: &str,
     codecs: &[String],
     max_bitrate: Option<i64>,
+    selected: Option<&Value>,
     negotiate: impl Fn(&Source) -> thelxinoe_playback::Capabilities,
 ) -> Result<(Source, thelxinoe_playback::Capabilities, Option<String>)> {
-    let prepared = prepare(state, video).await?;
+    let mut prepared = prepare(state, video).await?;
+    let matches = |format: &&formats::Format| {
+        selected.is_none_or(|selected| {
+            format.quality() == selected["quality"]
+                && format.video == selected["video"]
+                && format.audio == selected["audio"]
+        })
+    };
+    if selected.is_some() {
+        let format = prepared
+            .formats
+            .iter()
+            .rev()
+            .find(matches)
+            .ok_or_else(ApiError::not_found)?;
+        if prepared.source.video != format.source.video
+            || prepared.source.audio != format.source.audio
+        {
+            prepared.probe = inspect_codecs(state, &format.source).await?;
+        }
+        prepared.source = format.source.clone();
+        prepared.quality = Some(format.quality());
+    }
     let mut partial = None;
     for format in prepared
         .formats
         .iter()
         .rev()
+        .filter(matches)
         .filter(|format| codecs.iter().any(|codec| codec == &format.video))
     {
         let mut candidate = prepared.clone();
@@ -110,7 +140,27 @@ pub(crate) async fn negotiate_source(
     }
     let source = prepared.media();
     let capabilities = negotiate(&source);
-    Ok((source, capabilities, None))
+    Ok((source, capabilities, prepared.quality))
+}
+pub(crate) async fn variants(state: &AppState, p: &Principal, video: &str) -> Result<Vec<Value>> {
+    if live::domain(video) {
+        live::authorize(state, p, video).await?;
+    } else {
+        downloads::authorize(state, p, video).await?;
+    }
+    let prepared = prepare(state, video).await?;
+    let mut variants = Vec::new();
+    for format in prepared.formats.iter().rev() {
+        let variant = format.descriptor();
+        if !variants.iter().any(|v: &Value| {
+            v["quality"] == variant["quality"]
+                && v["video"] == variant["video"]
+                && v["audio"] == variant["audio"]
+        }) {
+            variants.push(variant);
+        }
+    }
+    Ok(variants)
 }
 
 async fn prepare(state: &AppState, video: &str) -> Result<Prepared> {
