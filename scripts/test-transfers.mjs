@@ -437,6 +437,19 @@ async function scenario(name, run) {
 
 async function pass(run) {
   f = await fixture({ scheme: 'http' });
+  // Originals run as other identities, so the media share is usable by all of them,
+  // as on a NAS. Folders an original creates later keep its own permissions.
+  f.compose(
+    'exec',
+    '-T',
+    '-u',
+    '0',
+    'server',
+    'chmod',
+    '-R',
+    'a+rwX',
+    '/media',
+  );
   try {
     await run();
   } finally {

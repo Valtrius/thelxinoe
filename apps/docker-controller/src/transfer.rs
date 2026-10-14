@@ -5,6 +5,7 @@
 use super::*;
 use crate::transfer_plan as plan;
 use reqwest::Method;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -53,6 +54,9 @@ pub(super) struct Review {
     recyclarr: Value,
     blockers: Vec<String>,
     evidence_revision: String,
+    /// One digest per reviewed component, to name what changed before a stale start.
+    #[serde(default)]
+    parts: BTreeMap<String, String>,
     pub revision: String,
     created_at: i64,
 }
@@ -205,6 +209,35 @@ pub(super) async fn check(
     Ok(Json(public_review(&review)))
 }
 
+/// Name the reviewed components that differ, for a stale start.
+fn changed_parts(
+    reviewed: &BTreeMap<String, String>,
+    current: &BTreeMap<String, String>,
+) -> String {
+    let label = |name: &str| match name {
+        "container" => "the original container's configuration",
+        "image" => "its image or version",
+        "storage" => "its storage or another container sharing it",
+        "identity" => "its runtime identity",
+        "network" => "its network aliases or published port",
+        "automation" => "Docker-visible automation or Compose ownership",
+        "settings" => "its application settings",
+        "recyclarr" => "Recyclarr's targets",
+        "blockers" => "the problems the review found",
+        _ => "the deployment",
+    };
+    let changed: Vec<&str> = current
+        .iter()
+        .filter(|(name, value)| reviewed.get(*name) != Some(value))
+        .map(|(name, _)| label(name))
+        .collect();
+    if changed.is_empty() {
+        "the deployment".into()
+    } else {
+        changed.join(", ")
+    }
+}
+
 /// Read-only review of the source. Every unsupported feature becomes a concrete blocker.
 async fn inspect(d: &Deployment, input: &ReviewInput, key: String) -> Result<Review> {
     let kind = input.kind.as_str();
@@ -277,7 +310,12 @@ async fn inspect(d: &Deployment, input: &ReviewInput, key: String) -> Result<Rev
         .take(500)
     {
         let id = row["Id"].as_str().ok_or_else(unavailable)?;
+        // This deployment's transfer workers only ever mount a source read-only.
+        let worker = row["Labels"]["app.thelxinoe.transfer"].is_string()
+            && row["Labels"]["app.thelxinoe.managed-id"].is_null()
+            && row["Labels"]["app.thelxinoe.deployment"] == d.id.as_str();
         if id != input.container_id
+            && !worker
             && let Ok(other) = engine(&format!("/containers/{id}/json")).await
         {
             others.push(other);
@@ -468,6 +506,26 @@ async fn inspect(d: &Deployment, input: &ReviewInput, key: String) -> Result<Rev
         }
     }
     let evidence_revision = digest(&json!([automation, compose, layout]));
+    let parts: BTreeMap<String, String> = [
+        ("container", digest(&policy::fingerprint(&raw))),
+        (
+            "image",
+            digest(&json!([source_image, decision, target_version])),
+        ),
+        ("storage", digest(&json!(layout))),
+        (
+            "identity",
+            digest(&json!([source_identity, (target.uid, target.gid)])),
+        ),
+        ("network", digest(&json!([aliases, published]))),
+        ("automation", evidence_revision.clone()),
+        ("settings", digest(&transformations)),
+        ("recyclarr", digest(&recyclarr_targets)),
+        ("blockers", digest(&json!(blockers))),
+    ]
+    .into_iter()
+    .map(|(name, value)| (name.to_owned(), value))
+    .collect();
     let revision = digest(&json!([
         policy::fingerprint(&raw),
         source_image,
@@ -510,6 +568,7 @@ async fn inspect(d: &Deployment, input: &ReviewInput, key: String) -> Result<Rev
         recyclarr: recyclarr_targets,
         blockers,
         evidence_revision,
+        parts,
         revision,
         created_at: thelxinoe_core::now(),
     })
@@ -921,10 +980,16 @@ pub(super) async fn start(
         reviewed.id.clone(),
     )
     .await?;
-    if current.revision != reviewed.revision || current.engine != reviewed.engine {
+    if current.engine != reviewed.engine {
         return Err(stale(
-            "The reviewed deployment or its automation evidence changed; review the transfer again",
+            "The Docker engine changed since the review; review the transfer again",
         ));
+    }
+    if current.revision != reviewed.revision {
+        return Err(stale(format!(
+            "The reviewed deployment changed ({}); review the transfer again",
+            changed_parts(&reviewed.parts, &current.parts)
+        )));
     }
     let now = thelxinoe_core::now();
     let mut t = Transfer {
@@ -2370,6 +2435,21 @@ pub(super) async fn list(State(runtime): State<Runtime>) -> Result<Json<Value>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stale_start_names_the_changed_review_components() {
+        let reviewed: BTreeMap<String, String> = [("container", "a"), ("blockers", "b")]
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect();
+        let mut current = reviewed.clone();
+        current.insert("blockers".into(), "c".into());
+        assert_eq!(
+            changed_parts(&reviewed, &current),
+            "the problems the review found"
+        );
+        assert_eq!(changed_parts(&reviewed, &reviewed), "the deployment");
+    }
 
     #[test]
     fn restricted_hosts_keep_their_names_and_admit_the_replacement() {
