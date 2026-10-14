@@ -14,7 +14,7 @@ use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 use std::{collections::HashMap, time::Duration};
 use thelxinoe_core::{Principal, now};
-use thelxinoe_playback::{Options, RemoteSource};
+use thelxinoe_playback::{Decision, Options, RemoteSource, Source};
 use tokio::sync::Mutex;
 
 #[derive(Default)]
@@ -32,6 +32,85 @@ struct Prepared {
     formats: Vec<formats::Format>,
     remux: bool,
     quality: Option<String>,
+    probe: Value,
+    decision: Option<Decision>,
+    options: Option<Options>,
+}
+impl Prepared {
+    fn media(&self) -> Source {
+        let mut probe = self.probe.clone();
+        probe["format"]["duration"] = json!(self.duration.to_string());
+        Source {
+            id: String::new(),
+            media_id: String::new(),
+            generation: String::new(),
+            edition: "public".into(),
+            path: if self.source.live {
+                "public.ts"
+            } else {
+                "public.mp4"
+            }
+            .into(),
+            root: std::path::PathBuf::new(),
+            size: 0,
+            modified: String::new(),
+            probe,
+        }
+    }
+}
+pub(crate) async fn negotiate_source(
+    state: &AppState,
+    video: &str,
+    codecs: &[String],
+    max_bitrate: Option<i64>,
+    negotiate: impl Fn(&Source) -> thelxinoe_playback::Capabilities,
+) -> Result<(Source, thelxinoe_playback::Capabilities, Option<String>)> {
+    let prepared = prepare(state, video).await?;
+    let mut partial = None;
+    for format in prepared
+        .formats
+        .iter()
+        .rev()
+        .filter(|format| codecs.iter().any(|codec| codec == &format.video))
+    {
+        let mut candidate = prepared.clone();
+        if candidate.source.video != format.source.video
+            || candidate.source.audio != format.source.audio
+        {
+            candidate.probe = inspect_codecs(state, &format.source).await?;
+        }
+        candidate.source = format.source.clone();
+        if max_bitrate.is_some_and(|max| {
+            candidate.probe["format"]["bit_rate"]
+                .as_str()
+                .and_then(|v| v.parse::<i64>().ok())
+                .is_none_or(|rate| rate <= 0 || rate > max)
+        }) {
+            continue;
+        }
+        let source = candidate.media();
+        let capabilities = negotiate(&source);
+        let options = Options {
+            quality: "auto".into(),
+            audio: None,
+            subtitle: None,
+            capabilities: capabilities.clone(),
+        };
+        if let Ok(decision) = thelxinoe_playback::decision(&source, &options) {
+            if !decision.encoding.video && !decision.encoding.audio {
+                return Ok((source, capabilities, Some(format.quality())));
+            }
+            if !decision.encoding.video && partial.is_none() {
+                partial = Some((source, capabilities, Some(format.quality())));
+            }
+        }
+    }
+    if let Some(partial) = partial {
+        return Ok(partial);
+    }
+    let source = prepared.media();
+    let capabilities = negotiate(&source);
+    Ok((source, capabilities, None))
 }
 
 async fn prepare(state: &AppState, video: &str) -> Result<Prepared> {
@@ -43,25 +122,25 @@ async fn prepare(state: &AppState, video: &str) -> Result<Prepared> {
         }
     }
     let prepared = if live::domain(video) {
-        Prepared {
-            source: live::extract(state, video).await?,
-            duration: 0.0,
-            expires: now() + 60,
-            native: false,
-            formats: Vec::new(),
-            remux: false,
-            quality: None,
-        }
+        let mut selected = select(&live::extract(state, video).await?, None)?;
+        selected.expires = now() + 60;
+        selected.probe = inspect_codecs(state, &selected.source).await?;
+        selected
     } else {
-        let (metadata, family) = extract::metadata(state, video).await?;
-        let proxy = state
-            .online
-            .network
-            .egress
-            .proxy(family)
-            .await
-            .map_err(|_| ApiError::conflict("Could not prepare the public video connection"))?;
-        select(&metadata, Some(proxy))?
+        extract::with_metadata(state, video, |metadata, family| async move {
+            let proxy = state
+                .online
+                .network
+                .egress
+                .proxy(family)
+                .await
+                .map_err(|_| ApiError::conflict("Could not prepare the public video connection"))?;
+            let mut selected = select(&metadata, Some(proxy))?;
+            selected.probe = inspect_codecs(state, &selected.source).await?;
+            Ok(selected)
+        })
+        .await?
+        .0
     };
     let mut cached = state.online.streams.prepared.lock().await;
     if cached.len() >= 64 {
@@ -69,6 +148,24 @@ async fn prepare(state: &AppState, video: &str) -> Result<Prepared> {
     }
     cached.insert(video.into(), prepared.clone());
     Ok(prepared)
+}
+async fn inspect_codecs(state: &AppState, source: &RemoteSource) -> Result<Value> {
+    crate::tools::require(state, &["ffmpeg"]).await?;
+    source
+        .probe(&state.tools.runtime.media()?)
+        .await
+        .map_err(|error| {
+            if error.is::<thelxinoe_playback::MediaAccessDenied>() {
+                ApiError(
+                    axum::http::StatusCode::CONFLICT,
+                    "network_blocked",
+                    "The media provider denied access from this server's network; try again later"
+                        .into(),
+                )
+            } else {
+                ApiError::conflict("Could not inspect public media codecs")
+            }
+        })
 }
 fn select(metadata: &Value, proxy: Option<String>) -> Result<Prepared> {
     let live = metadata["is_live"].as_bool().unwrap_or(false);
@@ -86,6 +183,9 @@ fn select(metadata: &Value, proxy: Option<String>) -> Result<Prepared> {
         formats,
         remux: false,
         quality: None,
+        probe: json!({}),
+        decision: None,
+        options: None,
     })
 }
 
@@ -100,8 +200,93 @@ pub(crate) async fn info(state: &AppState, p: &Principal, video: &str) -> Result
     let id = video.to_owned();
     let position = storage::info(owner, id, &state.db).await?;
     Ok(
-        json!({"sources":[{"id":video,"edition":"public","duration":prepared.duration,"video":true,"tracks":[],"probe":{},"size":0}],"progress":[{"edition":"public","position":position,"duration":prepared.duration}],"watched":false,"live":prepared.source.live}),
+        json!({"sources":[{"id":video,"edition":"public","duration":prepared.duration,"video":true,"tracks":[],"probe":prepared.probe,"size":0}],"progress":[{"edition":"public","position":position,"duration":prepared.duration}],"watched":false,"live":prepared.source.live}),
     )
+}
+
+async fn select_for_player(
+    state: &AppState,
+    mut prepared: Prepared,
+    options: &Options,
+) -> Result<Prepared> {
+    prepared.quality = None;
+    if options.quality.ends_with("mbps") {
+        let max = thelxinoe_playback::bitrate(&options.quality)?.unwrap();
+        for format in prepared
+            .formats
+            .iter()
+            .rev()
+            .filter(|format| format.supported(&options.capabilities))
+        {
+            let probe = if prepared.source.video == format.source.video
+                && prepared.source.audio == format.source.audio
+            {
+                prepared.probe.clone()
+            } else {
+                inspect_codecs(state, &format.source).await?
+            };
+            if probe["format"]["bit_rate"]
+                .as_str()
+                .and_then(|v| v.parse::<u32>().ok())
+                .is_some_and(|rate| rate > 0 && rate <= max)
+            {
+                prepared.source = format.source.clone();
+                prepared.native = format.native;
+                prepared.quality = Some(format.quality());
+                prepared.probe = probe;
+                break;
+            }
+        }
+    }
+    if !prepared.formats.is_empty() {
+        let format = if options.quality.ends_with("mbps") && prepared.quality.is_some() {
+            prepared
+                .formats
+                .iter()
+                .find(|f| {
+                    f.source.video == prepared.source.video
+                        && f.source.audio == prepared.source.audio
+                })
+                .unwrap()
+        } else {
+            formats::choose(&prepared.formats, &options.quality, &options.capabilities)?
+        };
+        if prepared.source.video != format.source.video
+            || prepared.source.audio != format.source.audio
+        {
+            prepared.probe = inspect_codecs(state, &format.source).await?;
+        }
+        prepared.source = format.source.clone();
+        prepared.native = format.native;
+        prepared.quality = Some(format.quality());
+    }
+    Ok(prepared)
+}
+async fn prepare_for_player(state: &AppState, video: &str, options: &Options) -> Result<Prepared> {
+    let prepared = prepare(state, video).await?;
+    match select_for_player(state, prepared, options).await {
+        Err(error) if error.1 == "network_blocked" && !live::domain(video) => {
+            // A cached signature or a different rendition can fail after metadata inspection.
+            state.online.streams.prepared.lock().await.remove(video);
+            Ok(
+                extract::with_metadata(state, video, |metadata, family| async move {
+                    let proxy = state
+                        .online
+                        .network
+                        .egress
+                        .proxy(family)
+                        .await
+                        .map_err(|_| {
+                            ApiError::conflict("Could not prepare the public video connection")
+                        })?;
+                    select_for_player(state, select(&metadata, Some(proxy))?, options).await
+                })
+                .await?
+                .0,
+            )
+        }
+        result => result,
+    }
 }
 
 pub(crate) async fn create_with_delivery(
@@ -117,14 +302,6 @@ pub(crate) async fn create_with_delivery(
     } else {
         downloads::authorize(state, p, video).await?;
     }
-    if !options.capabilities.hls
-        || !options.capabilities.video.iter().any(|v| v == "h264")
-        || !options.capabilities.audio.iter().any(|v| v == "aac")
-    {
-        return Err(ApiError::conflict(
-            "Streaming requires HLS with H.264 and AAC support",
-        ));
-    }
     if options.subtitle.as_deref().is_some_and(|s| s != "off") || options.audio.is_some() {
         return Err(ApiError::bad(
             "Track selection is not available for this public stream",
@@ -138,33 +315,42 @@ pub(crate) async fn create_with_delivery(
     } else {
         None
     };
-    let mut prepared = prepare(state, video).await?;
+    let mut prepared = prepare_for_player(state, video, &options).await?;
     let qualities = formats::choices(&prepared.formats, &options.capabilities);
-    if !prepared.formats.is_empty() {
-        let format = formats::choose(&prepared.formats, &options.quality, &options.capabilities)?;
-        prepared.source = format.source.clone();
-        prepared.native = format.native;
-        prepared.quality = Some(format.quality());
-        prepared.remux = !vod && !format.source.live;
+    let mut input = options.clone();
+    // Provider resolution choices select an existing rendition; only a bitrate
+    // ceiling that the selected rendition exceeds needs local conversion.
+    if input.quality.ends_with('p') || prepared.quality.as_deref() == Some(input.quality.as_str()) {
+        input.quality = "auto".into();
     }
-    let native = prepared.native && options.capabilities.native_remote && !vod;
+    if !(prepared.native && options.capabilities.native_remote && !vod) {
+        input.capabilities.containers.clear();
+    }
+    let mut decision = thelxinoe_playback::decision(&prepared.media(), &input)
+        .map_err(|e| ApiError::bad(e.to_string()))?;
+    let policy = state.transcoding.read().await;
+    policy.check(decision.encoding)?;
+    let native = prepared.native
+        && options.capabilities.native_remote
+        && !vod
+        && !decision.encoding.video
+        && !decision.encoding.audio;
+    if native {
+        decision.mode = "direct";
+    }
+    prepared.remux = !decision.encoding.video && !decision.encoding.audio && !native;
+    prepared.decision = Some(decision.clone());
+    prepared.options = Some(input.clone());
     if !native {
         crate::tools::require(state, &["ffmpeg"]).await?;
     }
     let sid = thelxinoe_core::id();
     let _lifecycle = state.playback_lifecycle.write(&[&sid]).await;
-    let mode = if native {
-        "direct"
-    } else if prepared.remux {
-        "remux"
-    } else {
-        "transcode"
-    };
+    let mode = decision.mode;
     let key = sid.clone();
     let owner = p.user.id.clone();
     let auth = p.session_id.clone();
     let video = video.to_owned();
-    let input = options.clone();
     let duration = prepared.duration;
     let live = prepared.source.live;
     let start = storage::create_with_delivery_write_twitch_streams(
@@ -176,18 +362,31 @@ pub(crate) async fn create_with_delivery(
             owner,
             auth,
             video,
-            input,
+            input: options.clone(),
             duration,
             live,
             position,
         },
     )
     .await?;
-    if !native && prepared.remux {
+    if !native && !decision.encoding.video && !live {
         let selected = formats::choose(&prepared.formats, &options.quality, &options.capabilities)?;
-        if let Some(source) = segmented(state, &prepared.formats, selected, start).await {
-            prepared.source = source;
-            prepared.native = false;
+        if let Some(source) = segmented(state, &prepared.formats, selected, start, vod).await {
+            if source.video == prepared.source.video && source.audio == prepared.source.audio {
+                prepared.source = source;
+            } else {
+                match inspect_codecs(state, &source).await {
+                    Ok(probe) => {
+                        prepared.probe = probe;
+                        prepared.source = source;
+                        prepared.native = false;
+                    }
+                    // Keep the verified file rendition when its segmented alternative is denied.
+                    Err(error) => {
+                        tracing::debug!(code = error.1, "Keeping verified public stream input")
+                    }
+                }
+            }
         }
     }
     state
@@ -200,14 +399,55 @@ pub(crate) async fn create_with_delivery(
     let prepared_pipeline = if native {
         Ok((String::new(), 0.0))
     } else if vod && !live {
-        state
+        let result = state
             .playback
-            .start_remote_vod(&sid, &prepared.source, prepared.duration, &options)
-            .await
+            .start_remote_vod(&sid, &prepared.source, &prepared.media(), &input, &decision)
+            .await;
+        if result.as_ref().is_err_and(|error| {
+            error
+                .chain()
+                .any(|cause| cause.to_string() == "Source keyframe index is unavailable")
+        }) && !decision.encoding.video
+            && input.quality != "original"
+            && input.capabilities.allow_conversion != Some(false)
+            && input.capabilities.conversion.is_some()
+        {
+            if let Err(error) = policy.check(thelxinoe_playback::Encoding {
+                video: true,
+                audio: decision.encoding.audio,
+            }) {
+                state.playback.stop(&sid).await;
+                state.online.streams.sessions.lock().await.remove(&sid);
+                storage::create_with_delivery_write_playback_sessions(sid.clone(), &state.db)
+                    .await?;
+                return Err(error);
+            }
+            decision.encoding.video = true;
+            decision.mode = "transcode";
+            decision.conversion_reason =
+                Some("The source has no usable index for seekable original playback".into());
+            prepared.quality = None;
+            prepared.remux = false;
+            prepared.decision = Some(decision.clone());
+            state
+                .online
+                .streams
+                .sessions
+                .lock()
+                .await
+                .insert(sid.clone(), prepared.clone());
+            storage::playback_mode(&state.db, sid.clone(), decision.mode.into()).await?;
+            state
+                .playback
+                .start_remote_vod(&sid, &prepared.source, &prepared.media(), &input, &decision)
+                .await
+        } else {
+            result
+        }
     } else {
         state
             .playback
-            .start_remote(&sid, &prepared.source, &options, mode, start)
+            .start_remote(&sid, &prepared.source, &input, &decision, start)
             .await
     };
     let (revision, offset) = match prepared_pipeline {
@@ -238,7 +478,7 @@ pub(crate) async fn create_with_delivery(
     let external_audio = (native && prepared.source.audio.is_some())
         .then(|| format!("/api/v1/playback/{sid}/remote/audio?grant={grant}"));
     Ok(
-        json!({"id":sid,"url":url,"external_audio":external_audio,"grant":grant,"mode":mode,"position":start,"duration":prepared.duration,"timeline_start":offset,"video":true,"live":live,"tracks":[],"subtitles":[],"selected_subtitle":null,"options":options,"qualities":qualities,"quality":prepared.quality,"probe":{},"replay_gain":"off"}),
+        json!({"id":sid,"url":url,"external_audio":external_audio,"grant":grant,"mode":decision.mode,"encoding":decision.encoding,"conversion_reason":decision.conversion_reason,"position":start,"duration":prepared.duration,"timeline_start":offset,"video":true,"live":live,"tracks":[],"subtitles":[],"selected_subtitle":null,"options":options,"qualities":qualities,"quality":prepared.quality,"probe":prepared.probe,"replay_gain":"off"}),
     )
 }
 /// YouTube's segmented formats fill a browser's remux buffer much faster than
@@ -249,9 +489,10 @@ async fn segmented(
     formats: &[formats::Format],
     selected: &formats::Format,
     position: f64,
+    index: bool,
 ) -> Option<RemoteSource> {
     let mut source = formats::segmented(formats, selected)?.source.clone();
-    if position > 0.0 {
+    if position > 0.0 || index {
         source.segments = segments(state, &source).await?;
     }
     Some(source)
@@ -306,6 +547,7 @@ pub(crate) async fn seek(
     id: &str,
     options: &Options,
     position: f64,
+    policy: &crate::transcoding::Policy,
 ) -> Result<(String, f64)> {
     let source = state
         .online
@@ -319,11 +561,17 @@ pub(crate) async fn seek(
     if source.source.live {
         return Err(ApiError::bad("Seeking is not available for live streams"));
     }
+    let decision = source
+        .decision
+        .as_ref()
+        .ok_or_else(|| ApiError::conflict("Stream expired"))?;
+    policy.check(decision.encoding)?;
     let input = if source.remux && !source.formats.is_empty() {
         let selected = formats::choose(&source.formats, &options.quality, &options.capabilities)?;
-        match segmented(state, &source.formats, selected, position).await {
-            Some(segmented) => segmented,
+        match segmented(state, &source.formats, selected, position, false).await {
+            Some(segmented) if inspect_codecs(state, &segmented).await.is_ok() => segmented,
             None => selected.source.clone(),
+            Some(_) => selected.source.clone(),
         }
     } else {
         source.source.clone()
@@ -333,8 +581,8 @@ pub(crate) async fn seek(
         .start_remote(
             id,
             &input,
-            options,
-            if source.remux { "remux" } else { "transcode" },
+            source.options.as_ref().unwrap_or(options),
+            decision,
             position,
         )
         .await
@@ -342,6 +590,10 @@ pub(crate) async fn seek(
             ApiError::conflict("Could not seek the public stream; reopen it to refresh its address")
         })
 }
+
+#[cfg(all(test, unix))]
+#[path = "../../tests/product/online_transcoding.rs"]
+mod transcoding_tests;
 pub(crate) async fn sessions(state: &AppState) -> Vec<String> {
     state
         .online

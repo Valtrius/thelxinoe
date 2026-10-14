@@ -1,6 +1,8 @@
 //! A complete VOD timeline for clients that seek by requesting HLS segments.
 //! Segments are generated on demand and may be evicted and regenerated.
-use crate::{CleanupReason, Options, RemoteSource, RunHandle, Source, StoppedRun, conversion_args};
+use crate::{
+    CleanupReason, Decision, Encoding, Options, RemoteSource, RunHandle, Source, StoppedRun,
+};
 use anyhow::{Context, Result, bail};
 use std::{
     collections::HashMap,
@@ -23,7 +25,7 @@ struct Run {
     source: Source,
     remote: Option<RemoteSource>,
     options: Options,
-    mode: String,
+    encoding: Encoding,
     boundaries: Vec<f64>,
     video_start: f64,
     gate: Mutex<Option<RemoteWork>>,
@@ -70,39 +72,54 @@ impl VodCache {
         options: &Options,
         mode: &str,
     ) -> Result<String> {
-        self.start_input(id, source, options, mode, None).await
+        self.start_input(
+            id,
+            source,
+            options,
+            Encoding::for_mode(source, options, mode)?,
+            None,
+        )
+        .await
     }
     pub async fn start_remote(
         &self,
         id: &str,
         remote: &RemoteSource,
-        duration: f64,
+        source: &Source,
         options: &Options,
+        decision: &Decision,
     ) -> Result<String> {
         remote.validate()?;
         if remote.live {
             bail!("A live stream has no VOD timeline");
         }
-        let source = Source {
-            id: id.into(),
-            media_id: id.into(),
-            generation: id.into(),
-            edition: "public".into(),
-            path: PathBuf::new(),
-            root: PathBuf::new(),
-            size: 0,
-            modified: String::new(),
-            probe: serde_json::json!({"format":{"duration":duration.to_string()},"streams":[{"codec_type":"video","codec_name":"h264"},{"codec_type":"audio","codec_name":"aac"}]}),
-        };
-        self.start_input(id, &source, options, "transcode", Some(remote.clone()))
-            .await
+        let mut source = source.clone();
+        if !remote.segments.is_empty()
+            && let Some(start) = source.probe["streams"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|s| s["codec_type"] == "video")
+                .and_then(|s| s["start_time"].as_str())
+                .map(str::to_owned)
+        {
+            source.probe["format"]["start_time"] = serde_json::json!(start);
+        }
+        self.start_input(
+            id,
+            &source,
+            options,
+            decision.encoding,
+            Some(remote.clone()),
+        )
+        .await
     }
     async fn start_input(
         &self,
         id: &str,
         source: &Source,
         options: &Options,
-        mode: &str,
+        encoding: Encoding,
         remote: Option<RemoteSource>,
     ) -> Result<String> {
         if remote.is_none() {
@@ -118,13 +135,15 @@ impl VodCache {
         // Remote windows prepare adjacent segments over the same connection.
         // Six-second segments also keep conversion overhead bounded on TVs.
         let segment = 6.0;
-        let (boundaries, video_start) = if mode == "remux" && source.video_codec().is_some() {
+        let (boundaries, video_start) = if !encoding.video && source.video_codec().is_some() {
             let _slot = self
                 .slots
                 .clone()
                 .try_acquire_owned()
                 .context("All conversion slots are busy")?;
-            keyframes(source, &tools).await?
+            keyframes(source, &tools, remote.as_ref())
+                .await
+                .context("Source keyframe index is unavailable")?
         } else {
             (
                 (0..(duration / segment).ceil() as usize)
@@ -176,7 +195,7 @@ impl VodCache {
                 source: source.clone(),
                 remote,
                 options: options.clone(),
-                mode: mode.into(),
+                encoding,
                 boundaries,
                 video_start,
                 gate: Mutex::new(None),
@@ -220,13 +239,15 @@ impl VodCache {
         if tokio::fs::try_exists(&path).await? {
             return Ok(Some(path));
         }
-        if run.remote.is_some() {
+        if run.remote.is_some() && run.encoding.video {
             return self
                 .remote_file(&run, index, path, &mut gate)
                 .await
                 .map(Some);
         }
-        run.source.validate().await?;
+        if run.remote.is_none() {
+            run.source.validate().await?;
+        }
         if fs2::available_space(&run.directory)? < 512 * 1024 * 1024 {
             bail!("Insufficient conversion cache space");
         }
@@ -238,7 +259,7 @@ impl VodCache {
         let temp = run.directory.join(format!("{name}.tmp"));
         let start = run.boundaries[index];
         let duration = run.boundaries[index + 1] - start;
-        let remux_video = run.mode == "remux" && run.source.video_codec().is_some();
+        let remux_video = !run.encoding.video && run.source.video_codec().is_some();
         let mut command = Command::new(&run.tools.ffmpeg.path);
         command.args([
             "-hide_banner",
@@ -250,10 +271,24 @@ impl VodCache {
             "+genpts",
         ]);
         // Some AVI indexes skip the first GOP even for an explicit -ss 0.
-        if start > 0.0 {
+        if start > 0.0 && run.remote.is_none() {
             command.args(["-ss", &start.to_string()]);
         }
-        command.arg("-i").arg(&run.source.path);
+        if let Some(remote) = &run.remote {
+            command.env_remove("FFREPORT");
+            for address in std::iter::once(&remote.video).chain(remote.audio.iter()) {
+                command
+                    .args(remote.network_args())
+                    .args(["-rw_timeout", "15000000"]);
+                if start > 0.0 {
+                    command.args(["-ss", &start.to_string()]);
+                }
+                command.args(["-i", address]);
+            }
+        } else {
+            command.arg("-i").arg(&run.source.path);
+        }
+        command.args(run.encoding.args(&run.options)?);
         if remux_video {
             command.arg("-copyts");
         } else if index + 2 < run.boundaries.len() {
@@ -266,12 +301,14 @@ impl VodCache {
         }
         command
             .arg("-map")
-            .arg(
+            .arg(if run.remote.as_ref().is_some_and(|r| r.audio.is_some()) {
+                "1:a:0".into()
+            } else {
                 run.options
                     .audio
                     .map(|n| format!("0:{n}"))
-                    .unwrap_or_else(|| "0:a:0?".into()),
-            )
+                    .unwrap_or_else(|| "0:a:0?".into())
+            })
             .args(["-sn", "-dn", "-map_metadata", "-1"]);
         if remux_video {
             let origin = run.source.probe["format"]["start_time"]
@@ -284,8 +321,6 @@ impl VodCache {
             clean_work(&run.directory).await?;
             command
                 .args([
-                    "-c",
-                    "copy",
                     "-to",
                     &(origin + start + duration + 0.1).to_string(),
                     "-f",
@@ -308,10 +343,6 @@ impl VodCache {
                     "disabled",
                 ])
                 .arg(run.directory.join("work-%03d.ts"));
-        } else if run.mode == "remux" {
-            command.args(["-c:a", "copy"]);
-        } else {
-            command.args(conversion_args(&run.options)?);
         }
         if !remux_video {
             command
@@ -399,6 +430,14 @@ impl VodCache {
             })
             .collect()
     }
+    pub async fn encoding(&self, handle: &RunHandle) -> Option<Encoding> {
+        self.runs
+            .lock()
+            .await
+            .get(&handle.session)
+            .filter(|run| run.revision == handle.revision)
+            .map(|run| run.encoding)
+    }
     pub async fn stop_revision(&self, handle: &RunHandle) -> bool {
         let run = {
             let mut runs = self.runs.lock().await;
@@ -482,7 +521,7 @@ impl VodCache {
                 "-map_metadata",
                 "-1",
             ]);
-            command.args(conversion_args(&run.options)?);
+            command.args(run.encoding.args(&run.options)?);
             command
                 .args([
                     "-force_key_frames",
@@ -633,8 +672,39 @@ async fn trim(directory: &Path, current: &Path) -> Result<()> {
     }
     Ok(())
 }
-async fn keyframes(source: &Source, tools: &MediaTools) -> Result<(Vec<f64>, f64)> {
+async fn keyframes(
+    source: &Source,
+    tools: &MediaTools,
+    remote: Option<&RemoteSource>,
+) -> Result<(Vec<f64>, f64)> {
+    if let Some(remote) = remote.filter(|remote| !remote.segments.is_empty()) {
+        let mut boundaries = remote
+            .segments
+            .iter()
+            .copied()
+            .filter(|time| *time >= 0.0 && *time < source.duration())
+            .collect::<Vec<_>>();
+        boundaries.push(source.duration());
+        if boundaries.first() != Some(&0.0)
+            || boundaries
+                .windows(2)
+                .any(|pair| !pair[0].is_finite() || pair[1] <= pair[0] || pair[1] - pair[0] > 30.0)
+        {
+            bail!("Cannot verify the provider's segment index");
+        }
+        let origin = source.probe["format"]["start_time"]
+            .as_str()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.0);
+        return Ok((boundaries, origin));
+    }
     let mut command = Command::new(&tools.ffprobe.path);
+    command.env_remove("FFREPORT");
+    if let Some(remote) = remote {
+        command
+            .args(remote.network_args())
+            .args(["-rw_timeout", "15000000"]);
+    }
     command
         .args([
             "-v",
@@ -651,7 +721,10 @@ async fn keyframes(source: &Source, tools: &MediaTools) -> Result<(Vec<f64>, f64
             "-of",
             "json",
         ])
-        .arg(&source.path)
+        .arg(remote.map_or_else(
+            || source.path.to_string_lossy().into_owned(),
+            |r| r.video.clone(),
+        ))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

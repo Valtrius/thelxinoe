@@ -411,6 +411,14 @@
             >{String(error)}</Notice
           >{/await}</Panel
       >
+      {#await settingsPages.ServerTranscodingSettings()}<ContentSkeleton
+          label="Loading transcoding settings"
+          variant="settings"
+        />{:then { default: ServerTranscodingSettings }}<ServerTranscodingSettings
+          revision={preferencesRevision}
+        />{:catch error}<Notice variant="error" role="alert"
+          >{String(error)}</Notice
+        >{/await}
       <Panel class="settings-wide"
         >{#await settingsPages.ServerTools()}<ContentSkeleton
             label="Loading settings"

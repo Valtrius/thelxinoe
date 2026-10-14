@@ -23,6 +23,9 @@ export const settingsPages = {
   PlaybackSettings: cached(() => import('./PlaybackSettings.svelte')),
   SegmentSettings: cached(() => import('./SegmentSettings.svelte')),
   ServerDisplayDefaults: cached(() => import('./ServerDisplayDefaults.svelte')),
+  ServerTranscodingSettings: cached(
+    () => import('./ServerTranscodingSettings.svelte'),
+  ),
   AdminOperations: cached(() => import('./AdminOperations.svelte')),
   BackupSettings: cached(() => import('./BackupSettings.svelte')),
   ProductVersion: cached(() => import('./ProductVersion.svelte')),
@@ -74,6 +77,7 @@ const settingsModules: Record<SettingsSection, (keyof typeof settingsPages)[]> =
     connection: ['DesktopUpdatePreferences'],
     server: [
       'ServerDisplayDefaults',
+      'ServerTranscodingSettings',
       'ProductVersion',
       'ProductUpdatePreferences',
       'ServerTools',

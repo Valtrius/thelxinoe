@@ -13,10 +13,11 @@ function ffmpeg(args) {
   if (result.status !== 0)
     throw new Error('Playback fixture generation failed');
 }
-for (const [name, codec, extra] of [
+for (const [name, codec, extra, audio = 'aac'] of [
   ['Direct (2020).mp4', 'libx264', ['-movflags', '+faststart']],
   ['Remux (2020).mkv', 'libx264', []],
   ['Transcode (2020).avi', 'mpeg4', []],
+  ['Audio Only (2020).mkv', 'libx264', [], 'ac3'],
   ['Edition (2020) {edition-Theatrical}.mp4', 'libx264', []],
   ['Edition (2020) {edition-Extended}.mp4', 'libx264', []],
 ])
@@ -38,7 +39,7 @@ for (const [name, codec, extra] of [
     '-pix_fmt',
     'yuv420p',
     '-c:a',
-    'aac',
+    audio,
     ...extra,
     resolve(root, 'movies', name),
   ]);

@@ -144,35 +144,51 @@ pub(super) async fn create_user(
     }).await
 }
 
-pub(super) async fn settings(db: &Database) -> anyhow::Result<(String, String)> {
-    db.read("accounts.settings", |db| {
-        let setting = |key: &str, default: &str| -> anyhow::Result<String> {
-            Ok(db
-                .query_row("SELECT value FROM settings WHERE key=?1", [key], |r| {
-                    r.get::<_, String>(0)
-                })
-                .optional()?
-                .unwrap_or_else(|| default.into()))
-        };
-        Ok((setting("timezone", "UTC")?, setting("time_format", "24h")?))
+fn settings_view(db: &rusqlite::Connection) -> anyhow::Result<SettingsView> {
+    let setting = |key: &str, default: &str| -> anyhow::Result<String> {
+        Ok(db
+            .query_row("SELECT value FROM settings WHERE key=?1", [key], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()?
+            .unwrap_or_else(|| default.into()))
+    };
+    Ok(SettingsView {
+        timezone: setting("timezone", "UTC")?,
+        time_format: setting("time_format", "24h")?,
+        transcoding: crate::transcoding::Policy {
+            video_transcoding: setting("video_transcoding", "true")? == "true",
+            audio_transcoding: setting("audio_transcoding", "true")? == "true",
+        },
     })
-    .await
+}
+pub(super) async fn settings(db: &Database) -> anyhow::Result<SettingsView> {
+    db.read("accounts.settings", settings_view).await
 }
 
 pub(super) async fn save_settings(
     db: &Database,
     settings: Settings,
     p: thelxinoe_core::Principal,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<Option<SettingsView>> {
     db.write("accounts.save_settings", move |db|{
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        tx.execute("INSERT INTO settings VALUES ('timezone',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[settings.timezone])?;
+        let authorized=tx.query_row("SELECT EXISTS(SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.id=?1 AND s.user_id=?2 AND s.expires_at>?3 AND u.role='admin')",params![p.session_id,p.user.id,now()],|r|r.get::<_,bool>(0))?;
+        if !authorized {return Ok(None);}
+        if let Some(timezone)=settings.timezone {
+            tx.execute("INSERT INTO settings VALUES ('timezone',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[timezone])?;
+        }
         if let Some(format)=settings.time_format {
             tx.execute("INSERT INTO settings VALUES ('time_format',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[format])?;
         }
-        let current=tx.query_row("SELECT value FROM settings WHERE key='time_format'",[],|r|r.get::<_,String>(0)).optional()?.unwrap_or("24h".into());
+        for (key, value) in [("video_transcoding", settings.video_transcoding), ("audio_transcoding", settings.audio_transcoding)] {
+            if let Some(value) = value {
+                tx.execute("INSERT INTO settings VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,value.to_string()])?;
+            }
+        }
+        let current=settings_view(&tx)?;
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'settings.update','server',?2)",params![p.user.id,now()])?;
         tx.commit()?;
-        Ok(current)
+        Ok(Some(current))
     }).await
 }

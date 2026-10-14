@@ -14,7 +14,7 @@ import { freezeClock } from './helpers/clock';
 // Exercise the real player with decoded media and a controlled server boundary.
 // This suite starts its own Vite server and never touches an account or deployment.
 const title = 'A journey through the mountains';
-let mp4: Buffer, segment: Buffer;
+let mp4: Buffer, segment: Buffer, shortSegment: Buffer;
 test.beforeAll(() => {
   const directory = mkdtempSync(join(tmpdir(), 'thelxinoe-player-'));
   const file = join(directory, 'fixture.mp4');
@@ -72,6 +72,23 @@ test.beforeAll(() => {
     ],
     { input: mp4, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
   );
+  shortSegment = execFileSync(
+    'ffmpeg',
+    [
+      '-v',
+      'error',
+      '-i',
+      'pipe:0',
+      '-t',
+      '4',
+      '-c',
+      'copy',
+      '-f',
+      'mpegts',
+      'pipe:1',
+    ],
+    { input: mp4, windowsHide: true },
+  );
   mkdirSync('.local/player-ui', { recursive: true });
 });
 test.afterEach(async ({ page }) => {
@@ -97,6 +114,9 @@ async function fixture(
     playerHeight?: number | null;
     subtitles?: boolean;
     qualities?: { value: string; label: string }[];
+    autoQuality?: string;
+    local?: boolean;
+    stalled?: boolean;
     tools?: 'metadata' | 'playback';
     music?: boolean;
     native?: boolean;
@@ -129,6 +149,7 @@ async function fixture(
     toolsPreparing: !!options.tools,
     toolsFailed: false,
     resolvePreparing: false,
+    autoQuality: options.autoQuality ?? '1080p',
   };
   page.on('pageerror', (error) => state.errors.push(error.message));
   const videos = Array.from({ length: 80 }, (_, i) => ({
@@ -340,8 +361,11 @@ async function fixture(
         json: {
           id: 'fixture',
           qualities: options.qualities,
-          quality:
-            input.options.quality === 'auto' ? '1080p' : input.options.quality,
+          quality: options.local
+            ? undefined
+            : input.options.quality === 'auto'
+              ? state.autoQuality
+              : input.options.quality,
           mode: options.mode ?? 'direct',
           live: options.live ?? false,
           url:
@@ -366,7 +390,9 @@ async function fixture(
           selected_subtitle: 'off',
           options: input.options,
           probe: {
-            streams: [{ codec_type: 'video', avg_frame_rate: '12/1' }],
+            streams: [
+              { codec_type: 'video', height: 540, avg_frame_rate: '12/1' },
+            ],
           },
           replay_gain: 'off',
         },
@@ -410,11 +436,17 @@ async function fixture(
       if (url.pathname.endsWith('.m3u8'))
         return route.fulfill({
           contentType: 'application/vnd.apple.mpegurl',
-          body: '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:60\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:60,\nsegment.ts\n#EXT-X-ENDLIST\n',
+          body: options.stalled
+            ? '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:4,\nsegment.ts\n'
+            : '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:60\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:60,\nsegment.ts\n#EXT-X-ENDLIST\n',
         });
       return route.fulfill({
         contentType: url.pathname.endsWith('.ts') ? 'video/mp2t' : 'video/mp4',
-        body: url.pathname.endsWith('.ts') ? segment : mp4,
+        body: url.pathname.endsWith('.ts')
+          ? options.stalled
+            ? shortSegment
+            : segment
+          : mp4,
       });
     },
   );
@@ -1215,7 +1247,7 @@ test('controls hide, recover with keyboard, retain volume, seek, and stay inside
   await page.getByRole('button', { name: 'Quality', exact: true }).click();
   await expect(page.getByRole('menu', { name: 'Quality' })).toBeVisible();
   await page
-    .getByRole('menuitemradio', { name: 'Original', exact: true })
+    .getByRole('menuitemradio', { name: 'Original (540p)', exact: true })
     .click();
   await expect.poll(() => state.starts.length).toBe(2);
   expect(state.starts[1].options.quality).toBe('original');
@@ -1224,7 +1256,7 @@ test('controls hide, recover with keyboard, retain volume, seek, and stay inside
   await expect(volume).toHaveValue('0.23');
   await page.getByRole('button', { name: 'Quality', exact: true }).click();
   await expect(
-    page.getByRole('menuitemradio', { name: 'Original', exact: true }),
+    page.getByRole('menuitemradio', { name: 'Original (540p)', exact: true }),
   ).toHaveAttribute('aria-checked', 'true');
   await page.screenshot({ path: '.local/player-ui/settings.png' });
   await page.keyboard.press('Escape');
@@ -2037,5 +2069,117 @@ test('buffered HLS resumes without rebuilding its pipeline and quality changes p
     .poll(() => page.locator('video').evaluate((video) => video.currentTime))
     .toBeGreaterThan(before + 0.2);
   expect(state.seeks).toEqual([]);
+  expect(state.errors).toEqual([]);
+});
+
+test('An online stream that stops supplying media offers recovery', async ({
+  page,
+}, testInfo) => {
+  test.setTimeout(65000);
+  await fixture(page, { mode: 'remux', stalled: true });
+  await decoded(page);
+  await expect(
+    page.getByRole('button', { name: 'Retry playback' }),
+  ).toBeVisible({ timeout: 50000 });
+  await expect(page.getByRole('alert')).toContainText(
+    'stopped supplying media',
+  );
+  await testInfo.attach('stalled-stream', {
+    body: await page.screenshot({
+      path: '.local/player-ui/stalled-stream.png',
+    }),
+    contentType: 'image/png',
+  });
+});
+
+test('Original playback shows its decoded resolution', async ({
+  page,
+}, testInfo) => {
+  await fixture(page, { local: true });
+  await decoded(page);
+  const quality = page.getByRole('button', { name: 'Quality', exact: true });
+  await expect(page.locator('.playback-mode')).toHaveText('540p · Original');
+  await quality.click();
+  await expect(
+    page.getByRole('menuitemradio', { name: 'Auto (540p)', exact: true }),
+  ).toHaveAttribute('aria-checked', 'true');
+  await page
+    .getByRole('menuitemradio', { name: 'Original (540p)', exact: true })
+    .click();
+  await expect(page.locator('.playback-mode')).toHaveText('540p · Original');
+  await expect(quality).toBeEnabled();
+  await quality.click();
+  await expect(
+    page.getByRole('menuitemradio', { name: 'Auto', exact: true }),
+  ).toHaveAttribute('aria-checked', 'false');
+  await testInfo.attach('original-resolution', {
+    body: await page.screenshot({
+      path: '.local/player-ui/original-resolution.png',
+    }),
+    contentType: 'image/png',
+  });
+});
+
+test('Auto shows the delivered resolution only when selected', async ({
+  page,
+}, testInfo) => {
+  const state = await fixture(page, {
+    live: true,
+    mode: 'remux',
+    autoQuality: '1080p60',
+    qualities: [
+      { value: '1080p60', label: '1080p60' },
+      { value: '720p60', label: '720p60' },
+      { value: '480p', label: '480p' },
+    ],
+  });
+  await decoded(page);
+  const quality = page.getByRole('button', { name: 'Quality', exact: true });
+  await expect(page.locator('.playback-mode')).toHaveText('1080p60 · Remuxed');
+  await quality.click();
+  await expect(
+    page.getByRole('menuitemradio', { name: 'Auto (1080p60)', exact: true }),
+  ).toHaveAttribute('aria-checked', 'true');
+  await page
+    .getByRole('menuitemradio', { name: '720p60', exact: true })
+    .click();
+  await expect(page.locator('.playback-mode')).toHaveText('720p60 · Remuxed');
+  await expect(quality).toBeEnabled();
+  await quality.click();
+  await expect(
+    page.getByRole('menuitemradio', { name: 'Auto', exact: true }),
+  ).toHaveAttribute('aria-checked', 'false');
+  await expect(
+    page.getByRole('menuitemradio', { name: '720p60', exact: true }),
+  ).toHaveAttribute('aria-checked', 'true');
+  await expect(page.getByRole('menu', { name: 'Quality' })).not.toContainText(
+    'Auto (',
+  );
+  await testInfo.attach('manual-quality-menu', {
+    body: await page.screenshot({
+      path: '.local/player-ui/manual-quality-menu.png',
+    }),
+    contentType: 'image/png',
+  });
+  state.autoQuality = '480p';
+  await page.getByRole('menuitemradio', { name: 'Auto', exact: true }).click();
+  await expect(page.locator('.playback-mode')).toHaveText('480p · Remuxed');
+  await expect(quality).toBeEnabled();
+  await expect(quality).toHaveAttribute('title', 'Quality: Auto (480p)');
+  await quality.click();
+  await expect(
+    page.getByRole('menuitemradio', { name: 'Auto (480p)', exact: true }),
+  ).toHaveAttribute('aria-checked', 'true');
+  await testInfo.attach('automatic-quality-menu', {
+    body: await page.screenshot({
+      path: '.local/player-ui/automatic-quality-menu.png',
+    }),
+    contentType: 'image/png',
+  });
+  expect(state.starts.map((start) => start.options.quality)).toEqual([
+    'auto',
+    '720p60',
+    'auto',
+  ]);
   expect(state.errors).toEqual([]);
 });

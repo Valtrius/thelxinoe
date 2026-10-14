@@ -18,8 +18,16 @@ for line in sys.stdin:
             raise ValueError("Invalid channel")
         domain = "www.twitch.tv" if provider == "twitch" else "kick.com"
         streams = session.streams(f"https://{domain}/{channel}")
-        selected = next(streams[k] for k in ["1080p", "1080p60", "720p", "720p60", "480p", "best"] if k in streams)
-        result = {"url": selected.to_url()}
+        formats = []
+        for name, stream in streams.items():
+            match = re.fullmatch(r"(\d+)p(\d+)?", name)
+            if match:
+                formats.append({"height": int(match[1]), "fps": int(match[2] or 30), "url": stream.to_url(), "protocol": "m3u8_native", "vcodec": "h264", "acodec": "aac", "ext": "mp4"})
+        if not formats and "best" in streams:
+            formats.append({"height": 1080, "fps": 30, "url": streams["best"].to_url(), "protocol": "m3u8_native", "vcodec": "h264", "acodec": "aac", "ext": "mp4"})
+        if not formats:
+            raise ValueError("No public formats")
+        result = {"is_live": True, "formats": formats}
     except Exception:
         result = {"error": "Public stream extraction failed"}
     print(json.dumps(result, separators=(",", ":")), flush=True)

@@ -54,6 +54,19 @@
   const playerId = $props.id();
   const canResize = $derived(resizable && !compactViewport.current);
   let videoAspectRatio = $state(16 / 9);
+  let videoHeight = $state(0);
+  const deliveredQuality = $derived.by(() => {
+    if (!active?.video) return undefined;
+    if (active.quality) return active.quality;
+    const stream = active.probe.streams?.find((s) => s.codec_type === 'video');
+    const height = videoHeight || stream?.height;
+    const fps =
+      parseFrameRate(stream?.avg_frame_rate) ??
+      parseFrameRate(stream?.r_frame_rate);
+    return height
+      ? `${height}p${fps && fps > 30 ? Math.round(fps) : ''}`
+      : undefined;
+  });
   let resizedHeight = $state<number | null>(null);
   let viewportHeight = $state(window.innerHeight);
   const minimumHeight = 210;
@@ -268,6 +281,7 @@
   // The previous shape is kept while the next item loads; audio-only streams
   // have no dimensions and use the default video shape.
   function updateAspectRatio() {
+    videoHeight = player.videoHeight;
     videoAspectRatio =
       player.videoWidth > 0 && player.videoHeight > 0
         ? player.videoWidth / player.videoHeight
@@ -467,6 +481,30 @@
     }
   }
   let activity = new PlaybackActivity();
+  let stalledSince: number | undefined;
+  let lastPlaybackTime = 0;
+  const stallTimer = setInterval(() => {
+    if (
+      !active ||
+      busy ||
+      !buffering ||
+      player.paused ||
+      error ||
+      player.ended
+    ) {
+      stalledSince = undefined;
+      lastPlaybackTime = player?.currentTime ?? 0;
+      return;
+    }
+    if (player.currentTime !== lastPlaybackTime) stalledSince = undefined;
+    lastPlaybackTime = player.currentTime;
+    stalledSince ??= performance.now();
+    if (performance.now() - stalledSince >= 30000) {
+      error =
+        'The stream stopped supplying media. Try seeking or reopening this item.';
+      player.pause();
+    }
+  }, 1000);
   let preparation = new AbortController();
   function waiting() {
     if (!active) return;
@@ -496,6 +534,7 @@
     await stop();
     if (revision !== generation) return;
     position = 0;
+    videoHeight = 0;
     const pending = {
       signal: preparation.signal,
       waiting: (value: boolean) => {
@@ -535,7 +574,10 @@
         quality,
         audio,
         subtitle: subtitle || null,
-        capabilities: capabilities(),
+        capabilities: capabilities(
+          info?.sources.find((s) => !choice.fileId || s.id === choice.fileId)
+            ?.probe,
+        ),
       },
       at,
       {
@@ -759,6 +801,7 @@
     preparation.abort();
     generation++;
     clearInterval(timer);
+    clearInterval(stallTimer);
     clearTimeout(hideTimer);
     clearSideTap();
     void stop();
@@ -1112,12 +1155,15 @@
         </span>
         {#if active}<span
             class="playback-mode text-[11px] text-[#acb4ba] player-small:hidden"
-            >{active.quality ??
-              (active.mode === 'direct'
-                ? 'Original file'
-                : active.mode === 'remux'
-                  ? 'Original codecs'
-                  : 'Converted')}{info?.watched ? ' · Watched' : ''}</span
+            title={active.conversion_reason ?? undefined}
+            >{deliveredQuality ? `${deliveredQuality} · ` : ''}{active.mode ===
+            'direct'
+              ? 'Original'
+              : active.mode === 'remux'
+                ? 'Remuxed'
+                : active.encoding?.video !== false
+                  ? 'Video converted'
+                  : 'Audio converted'}{info?.watched ? ' · Watched' : ''}</span
           >{/if}
       </div>
       <div class="control-spacer flex-1"></div>
@@ -1130,7 +1176,7 @@
         <PlayerOption
           label="Quality"
           value={quality}
-          options={qualityOptions(active, info)}
+          options={qualityOptions(active, info, quality, deliveredQuality)}
           disabled={busy || !active}
           open={optionMenu === 'quality'}
           setOpen={(open) => (optionMenu = open ? 'quality' : null)}

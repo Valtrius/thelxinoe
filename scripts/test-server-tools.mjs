@@ -88,7 +88,7 @@ async function api(
 ) {
   const response = await fetch(`${base}/api/v1${path}`, {
     method,
-    signal: AbortSignal.timeout(10000),
+    signal: AbortSignal.timeout(budgets.request),
     headers: {
       'Content-Type': 'application/json',
       'X-Thelxinoe-Client': '1',
@@ -752,7 +752,7 @@ http.server.ThreadingHTTPServer(('0.0.0.0',8080),Proxy).serve_forever()`;
         const playback = await api('/playback', 'POST', {
           media_id: media.id,
           options: {
-            quality: '720p',
+            quality: '144p',
             capabilities: {
               containers: [],
               video: ['h264'],
@@ -761,6 +761,7 @@ http.server.ThreadingHTTPServer(('0.0.0.0',8080),Proxy).serve_forever()`;
             },
           },
         });
+        assert.deepEqual(playback.encoding, { video: true, audio: false });
         const candidate = catalog.find((item) => item.tool === 'ffmpeg');
         candidate.source += '#qualification-build';
         candidate.id = identify(candidate);
@@ -784,6 +785,7 @@ http.server.ThreadingHTTPServer(('0.0.0.0',8080),Proxy).serve_forever()`;
         assert.equal(updated.job.stage, 'complete', updated.job.error);
         assert.equal(updated.installed.candidate_id, candidate.id);
         return {
+          encoding: playback.encoding,
           waiting: waiting.job.reason,
           previous: updated.previous,
           installed: updated.installed,

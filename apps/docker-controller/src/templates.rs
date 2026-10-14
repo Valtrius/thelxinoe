@@ -125,7 +125,7 @@ pub(crate) fn pinned_image(template: Template) -> crate::docker::Result<Option<S
         let curated = find(kind).ok_or_else(invalid)?;
         let reference = value.as_str().ok_or_else(invalid)?;
         let (repository, digest) = reference.split_once('@').ok_or_else(invalid)?;
-        if repository != curated.repository
+        if !sources(curated).iter().any(|source| source == repository)
             || !digest.starts_with("sha256:")
             || digest.len() != 71
             || !digest[7..].bytes().all(|b| b.is_ascii_hexdigit())

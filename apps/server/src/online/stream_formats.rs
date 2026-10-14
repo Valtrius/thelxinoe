@@ -133,14 +133,7 @@ pub(super) fn choose<'a>(
     caps: &Capabilities,
 ) -> Result<&'a Format> {
     let eligible = |f: &&Format| f.supported(caps);
-    let selected = if quality == "auto" || quality.ends_with("mbps") {
-        formats
-            .iter()
-            .rev()
-            .filter(eligible)
-            .find(|f| f.height <= 1080)
-            .or_else(|| formats.iter().find(eligible))
-    } else if quality == "original" {
+    let selected = if quality == "auto" || quality == "original" || quality.ends_with("mbps") {
         formats.iter().rev().find(eligible)
     } else {
         formats
@@ -159,7 +152,27 @@ pub(super) fn choose<'a>(
                 })
             })
     };
-    selected.ok_or_else(|| ApiError::conflict("This resolution is not available for this player"))
+    selected
+        .or_else(|| {
+            // If no original rendition is compatible, retain the requested provider
+            // quality and let the shared planner convert only incompatible tracks.
+            if !caps.hls {
+                return None;
+            }
+            if quality == "auto" || quality == "original" || quality.ends_with("mbps") {
+                formats.last()
+            } else {
+                formats
+                    .iter()
+                    .rev()
+                    .find(|f| f.quality() == quality)
+                    .or_else(|| {
+                        thelxinoe_playback::resolution(quality)
+                            .and_then(|h| formats.iter().rev().find(|f| f.height <= u64::from(h)))
+                    })
+            }
+        })
+        .ok_or_else(|| ApiError::conflict("This resolution is not available for this player"))
 }
 
 /// Segment start times of an HLS media playlist.
@@ -239,7 +252,7 @@ mod tests {
         caps.video.push("vp9".into());
         assert_eq!(choices(&formats, &caps)[0]["value"], "2160p60");
         assert_eq!(choose(&formats, "2160p60", &caps).unwrap().height, 2160);
-        assert_eq!(choose(&formats, "auto", &caps).unwrap().height, 1080);
+        assert_eq!(choose(&formats, "auto", &caps).unwrap().height, 2160);
     }
     #[test]
     fn hls_playlists_provide_segment_starts() {

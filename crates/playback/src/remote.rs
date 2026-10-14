@@ -1,6 +1,15 @@
 use anyhow::{Result, ensure};
 use std::net::Ipv4Addr;
 
+#[derive(Debug)]
+pub struct MediaAccessDenied;
+impl std::fmt::Display for MediaAccessDenied {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("The public media server denied access")
+    }
+}
+impl std::error::Error for MediaAccessDenied {}
+
 /// Public extractor addresses remain in server memory, never client responses.
 #[derive(Clone)]
 pub struct RemoteSource {
@@ -15,6 +24,81 @@ pub struct RemoteSource {
     pub segments: Vec<f64>,
 }
 impl RemoteSource {
+    pub async fn probe(&self, tools: &thelxinoe_tools::MediaTools) -> Result<serde_json::Value> {
+        use std::{process::Stdio, time::Duration};
+        use tokio::{io::AsyncReadExt, process::Command};
+        self.validate()?;
+        tools.ffprobe.verify_unchanged().await?;
+        let mut command = Command::new(&tools.ffprobe.path);
+        command.env_remove("FFREPORT").args(self.network_args()).args([
+            "-v", "error", "-rw_timeout", "15000000", "-show_entries",
+            "format=duration,start_time,bit_rate:stream=index,codec_type,codec_name,profile,level,pix_fmt,width,height,avg_frame_rate,start_time,sample_rate,channels,bit_rate,has_b_frames,color_transfer,field_order,sample_aspect_ratio",
+            "-of", "json", &self.video,
+        ]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+        #[cfg(windows)]
+        command.creation_flags(0x08000000);
+        let mut child = command.spawn()?;
+        let mut bytes = Vec::new();
+        let mut stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Missing media probe output"))?
+            .take(65537);
+        let mut stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Missing media probe diagnostics"))?;
+        let mut diagnostics = Vec::new();
+        let read_diagnostics = async {
+            let mut buffer = [0; 1024];
+            loop {
+                let count = stderr.read(&mut buffer).await?;
+                if count == 0 {
+                    break;
+                }
+                // Drain all stderr so a full pipe cannot stall the probe.
+                let keep = count.min(8192 - diagnostics.len());
+                diagnostics.extend_from_slice(&buffer[..keep]);
+            }
+            Ok::<_, std::io::Error>(())
+        };
+        tokio::time::timeout(Duration::from_secs(20), async {
+            tokio::try_join!(stdout.read_to_end(&mut bytes), read_diagnostics)
+        })
+        .await??;
+        let status = tokio::time::timeout(Duration::from_secs(2), child.wait()).await??;
+        if !status.success() && String::from_utf8_lossy(&diagnostics).contains("403 Forbidden") {
+            return Err(MediaAccessDenied.into());
+        }
+        ensure!(
+            bytes.len() <= 65536 && status.success(),
+            "Could not inspect public media codecs"
+        );
+        let mut probe: serde_json::Value = serde_json::from_slice(&bytes)?;
+        if let Some(audio) = &self.audio {
+            let source = Self {
+                video: audio.clone(),
+                audio: None,
+                ..self.clone()
+            };
+            // Separate inputs have their own stream indexes; normalize them to the combined source.
+            let other = Box::pin(source.probe(tools)).await?;
+            let streams = probe["streams"]
+                .as_array_mut()
+                .ok_or_else(|| anyhow::anyhow!("Missing media streams"))?;
+            for mut stream in other["streams"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|s| s["codec_type"] == "audio")
+                .cloned()
+            {
+                stream["index"] = serde_json::json!(streams.len());
+                streams.push(stream);
+            }
+        }
+        Ok(probe)
+    }
     /// Where a seek to `position` starts without probing: just before the
     /// leading keyframe of its HLS segment, absorbing playlist rounding.
     pub fn segment_start(&self, position: f64) -> Option<f64> {

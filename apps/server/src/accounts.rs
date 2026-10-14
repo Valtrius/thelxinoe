@@ -329,15 +329,29 @@ pub async fn create_user(
 }
 pub async fn settings(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
-    let (timezone, time_format) = storage::settings(&state.db).await?;
+    let _policy = state.transcoding.read().await;
+    let value = storage::settings(&state.db).await?;
     Ok(Json(
-        json!({"timezone":timezone,"time_format":time_format,"public_url":state.config.public_url.as_ref().map(ToString::to_string),"trusted_proxies":state.config.trusted_proxies.iter().map(ToString::to_string).collect::<Vec<_>>()}),
+        json!({"timezone":value.timezone,"time_format":value.time_format,"video_transcoding":value.transcoding.video_transcoding,"audio_transcoding":value.transcoding.audio_transcoding,"public_url":state.config.public_url.as_ref().map(ToString::to_string),"trusted_proxies":state.config.trusted_proxies.iter().map(ToString::to_string).collect::<Vec<_>>()}),
     ))
 }
-#[derive(Deserialize)]
-pub struct Settings {
+pub(crate) struct SettingsView {
     timezone: String,
+    time_format: String,
+    transcoding: crate::transcoding::Policy,
+}
+pub(crate) async fn transcoding_policy(
+    db: &thelxinoe_database::Database,
+) -> anyhow::Result<crate::transcoding::Policy> {
+    Ok(storage::settings(db).await?.transcoding)
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Settings {
+    timezone: Option<String>,
     time_format: Option<String>,
+    video_transcoding: Option<bool>,
+    audio_transcoding: Option<bool>,
 }
 pub async fn save_settings(
     State(state): State<AppState>,
@@ -345,26 +359,39 @@ pub async fn save_settings(
     Json(settings): Json<Settings>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
-    settings
-        .timezone
-        .parse::<chrono_tz::Tz>()
-        .map_err(|_| ApiError::bad("Unknown timezone"))?;
+    if let Some(timezone) = &settings.timezone {
+        timezone
+            .parse::<chrono_tz::Tz>()
+            .map_err(|_| ApiError::bad("Unknown timezone"))?;
+    }
     if let Some(format) = &settings.time_format
         && !matches!(format.as_str(), "12h" | "24h")
     {
         return Err(ApiError::bad("Unknown time format"));
     }
-    let timezone = settings.timezone.clone();
-    let time_format = settings.time_format.clone();
-    let effective_time_format = storage::save_settings(&state.db, settings, p).await?;
+    // Serialize policy edits with playback preparation and lazy VOD encoding.
+    let mut policy = state.transcoding.write().await;
+    let value = storage::save_settings(&state.db, settings, p)
+        .await?
+        .ok_or_else(ApiError::forbidden)?;
+    *policy = value.transcoding;
+    for run in state.playback.runs().await {
+        if let Some(encoding) = state.playback.encoding(&run).await
+            && policy.check(encoding).is_err()
+        {
+            let _lifecycle = state.playback_lifecycle.write(&[&run.session]).await;
+            state.playback.stop_revision(&run).await;
+            crate::playback::fail(&state, &run.session).await?;
+        }
+    }
     state
         .emit(
             None,
             "server.settings.changed",
-            json!({"timezone":timezone,"time_format":effective_time_format}),
+            json!({"timezone":value.timezone,"time_format":value.time_format,"video_transcoding":policy.video_transcoding,"audio_transcoding":policy.audio_transcoding}),
         )
         .await?;
     Ok(Json(
-        json!({"ok":true,"timezone":timezone,"time_format":time_format.unwrap_or(effective_time_format)}),
+        json!({"ok":true,"timezone":value.timezone,"time_format":value.time_format,"video_transcoding":policy.video_transcoding,"audio_transcoding":policy.audio_transcoding}),
     ))
 }

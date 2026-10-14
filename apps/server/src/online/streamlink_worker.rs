@@ -39,7 +39,7 @@ impl Pool {
         }
     }
 
-    pub async fn resolve(&self, state: &AppState, provider: &str, channel: &str) -> Result<String> {
+    pub async fn resolve(&self, state: &AppState, provider: &str, channel: &str) -> Result<Value> {
         let package = state.tools.runtime.package("streamlink")?;
         let mut slot = if let Some(slot) = self
             .workers
@@ -77,10 +77,11 @@ impl Pool {
         match result {
             Ok(Ok(value)) => {
                 *slot = Some(worker);
-                value["url"]
-                    .as_str()
-                    .map(str::to_owned)
-                    .context("Public stream extraction failed")
+                ensure!(
+                    value["formats"].is_array(),
+                    "Public stream extraction failed"
+                );
+                Ok(value)
             }
             _ => {
                 worker.stop().await;

@@ -51,7 +51,7 @@ pub(super) async fn create_with_delivery_write_twitch_streams(
         if let Some(title)=live_title {
             anyhow::ensure!(tx.query_row("SELECT EXISTS(SELECT 1 FROM twitch_streams WHERE user_id=?1 AND 'twitch:'||channel_id=?2 AND active=1) OR EXISTS(SELECT 1 FROM kick_channels WHERE user_id=?1 AND 'kick:'||slug=?2)",params![owner,video],|r|r.get::<_,bool>(0))?,"Channel was removed before playback");
             tx.execute("INSERT INTO live_media VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET title=excluded.title",params![video,title])?;
-            tx.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,generation,edition,state,mode,options,duration,position,created_at,updated_at,live_media_id,streaming) VALUES (?1,?2,?3,?1,'live','ready','transcode',?4,0,0,?5,?5,?6,1)",params![key,owner,auth,serde_json::to_string(&input)?,now(),video])?;
+            tx.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,generation,edition,state,mode,options,duration,position,created_at,updated_at,live_media_id,streaming) VALUES (?1,?2,?3,?1,'live','ready',?7,?4,0,0,?5,?5,?6,1)",params![key,owner,auth,serde_json::to_string(&input)?,now(),video,mode])?;
             tx.commit()?;return Ok(0.0)
         }
         anyhow::ensure!(tx.query_row("SELECT EXISTS(SELECT 1 FROM youtube_videos WHERE user_id=?1 AND video_id=?2)",params![owner,video],|r|r.get::<_,bool>(0))?,"Video was removed before playback");
@@ -77,6 +77,17 @@ pub(super) async fn create_with_delivery_write_playback_sessions(
             Ok(())
         },
     )
+    .await
+}
+
+pub(super) async fn playback_mode(db: &Database, id: String, mode: String) -> anyhow::Result<()> {
+    db.write("online.streams.playback_mode", move |db| {
+        db.execute(
+            "UPDATE playback_sessions SET mode=?2 WHERE id=?1 AND state='ready'",
+            params![id, mode],
+        )?;
+        Ok(())
+    })
     .await
 }
 
