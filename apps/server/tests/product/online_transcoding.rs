@@ -11,8 +11,6 @@ use tokio::{
     process::Command,
 };
 use tower::ServiceExt;
-#[path = "../../../../tests/helpers/tool-runtime.rs"]
-mod tool_runtime;
 
 async fn command(program: &str, args: &[&str]) -> Vec<u8> {
     let result = tokio::time::timeout(
@@ -43,14 +41,21 @@ async fn delivered(state: &AppState, url: &str) -> Vec<u8> {
         "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
     ));
     let response = crate::router(state.clone()).oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    response
+    let status = response.status();
+    let bytes = response
         .into_body()
         .collect()
         .await
         .unwrap()
         .to_bytes()
-        .to_vec()
+        .to_vec();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{url}: {}",
+        String::from_utf8_lossy(&bytes)
+    );
+    bytes
 }
 fn hashes(bytes: &[u8]) -> Vec<String> {
     String::from_utf8_lossy(bytes)
@@ -394,6 +399,122 @@ async fn server_policy_allows_existing_provider_resolutions_without_encoding() {
             assert!(state.playback.runs().await.is_empty());
         }
     }
+    assert_eq!(
+        call(
+            &state,
+            "/api/v1/admin/settings",
+            "PUT",
+            json!({"video_transcoding":true,"audio_transcoding":true}),
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let mut prepared = select(&json!({"duration":8.0,"formats":[{"vcodec":"h264","acodec":"aac","height":180,"fps":24,"protocol":"https","ext":"mp4","url":"https://fixture.googlevideo.com/180.mp4"}]}), Some(proxy["proxy"].as_str().unwrap().into())).unwrap();
+    prepared.probe = prepared
+        .source
+        .probe(&state.tools.runtime.media().unwrap())
+        .await
+        .unwrap();
+    state
+        .online
+        .streams
+        .prepared
+        .lock()
+        .await
+        .insert("abcdefghijk".into(), prepared);
+    let input = json!({"media_id":"youtube:abcdefghijk","position":0,"options":{"quality":"180p","capabilities":{"containers":[],"video":[],"audio":["aac"],"hls":true,"hls_container":"mp4","allow_conversion":true,"conversion":{"width":160,"height":90,"frame_rate":24.0,"profile":"high","level":41}}}});
+    let session = crate::playback::create_with_delivery(
+        &state,
+        &principal,
+        serde_json::from_value(input).unwrap(),
+        true,
+    )
+    .await
+    .unwrap();
+    assert_eq!(session["encoding"], json!({"video":true,"audio":false}));
+    let url = session["url"].as_str().unwrap();
+    let playlist = String::from_utf8(delivered(&state, url).await).unwrap();
+    let base = url.rsplit_once('/').unwrap().0;
+    let mut init = Vec::new();
+    let mut segments = 0;
+    for line in playlist.lines() {
+        if line.starts_with("#EXT-X-MAP:URI=") {
+            init = delivered(
+                &state,
+                &format!("{base}/{}", line.split('"').nth(1).unwrap()),
+            )
+            .await;
+        } else if line.starts_with("segment-") {
+            let mut bytes = init.clone();
+            bytes.extend(delivered(&state, &format!("{base}/{line}")).await);
+            let output = root.join("converted.mp4");
+            tokio::fs::write(&output, bytes).await.unwrap();
+            let probe: Value = serde_json::from_slice(
+                &command(
+                    "ffprobe",
+                    &[
+                        "-v",
+                        "error",
+                        "-show_streams",
+                        "-of",
+                        "json",
+                        output.to_str().unwrap(),
+                    ],
+                )
+                .await,
+            )
+            .unwrap();
+            assert!(
+                probe["streams"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|stream| stream["codec_name"] == "h264" && stream["height"] == 90)
+            );
+            command(
+                "ffmpeg",
+                &[
+                    "-v",
+                    "error",
+                    "-i",
+                    output.to_str().unwrap(),
+                    "-f",
+                    "null",
+                    "-",
+                ],
+            )
+            .await;
+            segments += 1;
+        }
+    }
+    assert_eq!(segments, 2);
+    evidence.push(json!({"conversion":session["encoding"],"hls_container":"mp4","decoded_segments":segments,"prefetched_initializations":true}));
+    assert_eq!(
+        call(
+            &state,
+            &format!("/api/v1/playback/{}", session["id"].as_str().unwrap()),
+            "DELETE",
+            json!({}),
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &state,
+            "/api/v1/admin/settings",
+            "PUT",
+            json!({"video_transcoding":false,"audio_transcoding":false}),
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
     let reopened = AppState::open(state.config.as_ref().clone()).await.unwrap();
     let persisted = call(
         &reopened,

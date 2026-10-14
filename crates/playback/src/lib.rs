@@ -26,6 +26,8 @@ pub struct Capabilities {
     #[serde(default)]
     pub native_remote: bool,
     #[serde(default)]
+    pub hls_container: Option<String>,
+    #[serde(default)]
     pub conversion: Option<Conversion>,
     #[serde(default)]
     pub supported_media: Option<Vec<String>>,

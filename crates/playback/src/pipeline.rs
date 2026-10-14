@@ -243,8 +243,15 @@ impl Pipelines {
                 &format!("expr:gte(t,n_forced*{segment_seconds})"),
             ]);
         }
-        let fragmented = (online && !encoding.video && !encoding.audio)
-            || options.capabilities.supported_media.is_some();
+        let fragmented = options
+            .capabilities
+            .hls_container
+            .as_deref()
+            .map(|c| c == "mp4")
+            .unwrap_or(
+                (online && !encoding.video && !encoding.audio)
+                    || options.capabilities.supported_media.is_some(),
+            );
         if fragmented {
             let copied_aac = !encoding.audio
                 && match &input {
@@ -372,6 +379,11 @@ impl Pipelines {
                 && ((name.ends_with(".ts") && name.len() == 17)
                     || (name.ends_with(".m4s") && name.len() == 18))
                 && name[8..14].bytes().all(|v| v.is_ascii_digit()));
+        let valid = valid
+            || (name.starts_with("init-")
+                && name.ends_with(".mp4")
+                && name.len() == 15
+                && name[5..11].bytes().all(|v| v.is_ascii_digit()));
         if !valid {
             return Ok(None);
         }

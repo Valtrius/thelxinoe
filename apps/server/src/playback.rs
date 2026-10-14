@@ -395,8 +395,11 @@ pub async fn hls(
             .map(|line| {
                 if line.starts_with("segment-") {
                     format!("{line}?grant={}", grant.grant)
-                } else if line == "#EXT-X-MAP:URI=\"init.mp4\"" {
-                    format!("#EXT-X-MAP:URI=\"init.mp4?grant={}\"", grant.grant)
+                } else if let Some(name) = line
+                    .strip_prefix("#EXT-X-MAP:URI=\"")
+                    .and_then(|s| s.strip_suffix('"'))
+                {
+                    format!("#EXT-X-MAP:URI=\"{name}?grant={}\"", grant.grant)
                 } else {
                     line.into()
                 }

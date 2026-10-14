@@ -564,8 +564,14 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
                 }
                 let mut item = catalog::browse(&state, &p, &query, Some(tail[0])).await?;
                 if item["IsFolder"] == false {
-                    item["MediaSources"] =
-                        json!(playback::sources_for(&state, &p, &canonical(tail[0])).await?);
+                    match playback::sources_for(&state, &p, &canonical(tail[0])).await {
+                        Ok(sources) => item["MediaSources"] = json!(sources),
+                        Err(error)
+                            if item["LocationType"] == "Remote"
+                                && [StatusCode::CONFLICT, StatusCode::SERVICE_UNAVAILABLE]
+                                    .contains(&error.0) => {}
+                        Err(error) => return Err(error),
+                    }
                 }
                 return Ok(axum::Json(item).into_response());
             }

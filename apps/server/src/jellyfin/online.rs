@@ -411,7 +411,55 @@ pub async fn sources(state: &AppState, p: &Principal, item: &Identity) -> Result
     let dto = browse(state, p, &Query::new(), Some(&item.id))
         .await?
         .ok_or_else(ApiError::not_found)?;
-    Ok(vec![source_dto(&dto)])
+    if item.kind == "youtube" {
+        crate::online::downloads::authorize(state, p, &item.key).await?;
+        match crate::online::downloads::source(state, &item.key).await {
+            Ok(source) => return Ok(vec![super::playback::source_dto(&source).await?]),
+            Err(error) if error.0 == axum::http::StatusCode::CONFLICT => {}
+            Err(error) => return Err(error),
+        }
+    }
+    let key = if item.kind == "youtube" {
+        item.key.clone()
+    } else {
+        item.media()
+    };
+    Ok(crate::online::streams::variants(state, p, &key)
+        .await?
+        .iter()
+        .map(|variant| variant_dto(&dto, item, variant))
+        .collect())
+}
+fn variant_id(item: &Identity, variant: &Value) -> String {
+    let digest = thelxinoe_auth::digest(&format!(
+        "{}:{}:{}:{}",
+        item.id, variant["quality"], variant["video"], variant["audio"]
+    ));
+    uuid::Uuid::parse_str(&digest[..32]).unwrap().to_string()
+}
+fn variant_dto(dto: &Value, item: &Identity, variant: &Value) -> Value {
+    let mut source = source_dto(dto);
+    source["Id"] = json!(variant_id(item, variant));
+    source["Name"] = json!(format!(
+        "{} · {}",
+        variant["quality"].as_str().unwrap_or_default(),
+        variant["video"]
+            .as_str()
+            .unwrap_or_default()
+            .to_ascii_uppercase()
+    ));
+    source["Bitrate"] = variant["bitrate"].clone();
+    for (name, key) in [
+        ("Codec", "video"),
+        ("Width", "width"),
+        ("Height", "height"),
+        ("AverageFrameRate", "fps"),
+        ("RealFrameRate", "fps"),
+    ] {
+        source["MediaStreams"][0][name] = variant[key].clone();
+    }
+    source["MediaStreams"][1]["Codec"] = variant["audio"].clone();
+    source
 }
 fn source_dto(dto: &Value) -> Value {
     let mut source = json!({"Id":dto["Id"],"Name":"Public stream","Protocol":"Http","Type":"Default","IsRemote":true,"Container":"hls","RunTimeTicks":dto["RunTimeTicks"],"Bitrate":8192000,"IsInfiniteStream":dto["IsLive"],"SupportsTranscoding":true,"TranscodingSubProtocol":"hls","DefaultAudioStreamIndex":1,"DefaultSubtitleStreamIndex":-1,"MediaStreams":[{"Type":"Video","Index":0,"Codec":"h264","IsDefault":true},{"Type":"Audio","Index":1,"Codec":"aac","Channels":2,"SampleRate":48000,"IsDefault":true}],"MediaAttachments":[],"Formats":[]});
@@ -483,15 +531,23 @@ pub async fn playback_info(
     } else {
         crate::online::live::authorize(state, p, &media).await?;
     }
-    if file.as_ref().is_some_and(|f| f != &item.id) {
-        return Err(ApiError::not_found());
-    }
     let source_key = if item.kind == "youtube" {
         item.key.as_str()
     } else {
         media.as_str()
     };
     let profile = &input["DeviceProfile"];
+    let variants = crate::online::streams::variants(state, p, source_key).await?;
+    let selected = file
+        .as_ref()
+        .filter(|id| *id != &item.id)
+        .map(|id| {
+            variants
+                .iter()
+                .find(|variant| variant_id(item, variant) == *id)
+                .ok_or_else(ApiError::not_found)
+        })
+        .transpose()?;
     let codecs: Vec<String> = profile["TranscodingProfiles"]
         .as_array()
         .into_iter()
@@ -515,6 +571,9 @@ pub async fn playback_info(
     let max = [
         input["MaxStreamingBitrate"].as_i64(),
         profile["MaxStreamingBitrate"].as_i64(),
+        query
+            .get("maxstreamingbitrate")
+            .and_then(|v| v.parse().ok()),
     ]
     .into_iter()
     .flatten()
@@ -529,8 +588,9 @@ pub async fn playback_info(
             &codecs
         },
         max,
+        selected,
         |source| {
-            super::profile::negotiate(
+            super::profile::negotiate_online(
                 source,
                 None,
                 profile,
@@ -559,7 +619,7 @@ pub async fn playback_info(
     } else {
         rendition.as_deref().unwrap_or("auto")
     };
-    let mut capabilities = super::profile::negotiate(
+    let mut capabilities = super::profile::negotiate_online(
         &source,
         None,
         profile,
@@ -579,7 +639,18 @@ pub async fn playback_info(
         subtitle: Some("off".into()),
         capabilities,
     };
-    let mut dto = sources(state, p, item).await?.remove(0);
+    let delivered = selected
+        .or_else(|| {
+            variants.iter().find(|variant| {
+                Some(variant["quality"].as_str().unwrap_or_default()) == rendition.as_deref()
+                    && variant["video"] == source.video_codec().unwrap_or_default()
+            })
+        })
+        .unwrap_or(&variants[0]);
+    let item_dto = browse(state, p, &Query::new(), Some(&item.id))
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    let mut dto = variant_dto(&item_dto, item, delivered);
     let playback = crate::playback::create_with_delivery(
         state,
         p,
@@ -597,14 +668,19 @@ pub async fn playback_info(
     let key = sid.clone();
     storage::playback_info(key, &state.db).await?;
     dto["TranscodingUrl"] = playback["url"].clone();
-    dto["TranscodingContainer"] = json!("ts");
+    dto["TranscodingContainer"] = playback["options"]["capabilities"]["hls_container"]
+        .as_str()
+        .map(|c| json!(c))
+        .unwrap_or(json!("ts"));
     dto["ETag"] = playback["grant"].clone();
     dto["RunTimeTicks"] = json!(catalog::ticks(playback["duration"].as_f64().unwrap_or(0.0)));
     dto["IsInfiniteStream"] = playback["live"].clone();
     dto["MediaStreams"] = json!(playback["probe"]["streams"].as_array().into_iter().flatten().filter(|stream| ["video", "audio"].contains(&stream["codec_type"].as_str().unwrap_or(""))).map(|stream| {
         let video = stream["codec_type"] == "video";
         let encoded = playback["encoding"][if video { "video" } else { "audio" }] == true;
-        json!({"Type": if video { "Video" } else { "Audio" }, "Index": stream["index"], "Codec": if encoded { json!(if video { "h264" } else { "aac" }) } else { stream["codec_name"].clone() }, "IsDefault": true, "Width": stream["width"], "Height": stream["height"], "Channels": if encoded && !video { json!(2) } else { stream["channels"].clone() }, "SampleRate": stream["sample_rate"]})
+        let conversion=&playback["options"]["capabilities"]["conversion"];
+        let rate=stream["avg_frame_rate"].as_str().and_then(|s|s.split_once('/')).and_then(|(a,b)|Some(a.parse::<f64>().ok()?/b.parse::<f64>().ok()?)).filter(|r|r.is_finite());
+        json!({"Type": if video { "Video" } else { "Audio" }, "Index": stream["index"], "Codec": if encoded { json!(if video { "h264" } else { "aac" }) } else { stream["codec_name"].clone() }, "IsDefault": true, "Width": if encoded && video {conversion["width"].clone()}else{stream["width"].clone()}, "Height": if encoded && video {conversion["height"].clone()}else{stream["height"].clone()},"AverageFrameRate":if encoded && video {conversion["frame_rate"].clone()}else{json!(rate)},"RealFrameRate":if encoded && video {conversion["frame_rate"].clone()}else{json!(rate)}, "Channels": if encoded && !video { json!(2) } else { stream["channels"].clone() }, "SampleRate": stream["sample_rate"]})
     }).collect::<Vec<_>>());
     Ok(json!({"MediaSources":[dto],"PlaySessionId":sid}))
 }
