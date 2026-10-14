@@ -252,6 +252,11 @@ pub async fn playlists(
     };
     let search = q.get("searchterm").cloned();
     let media = q.get("mediatypes").cloned();
+    let library_media = match q.get("parentid").map(|parent| canonical(parent)).as_deref() {
+        Some(PLAYLIST_VIEW) => Some("Audio"),
+        Some(super::online::WATCHLIST_VIEW) => Some("Video"),
+        _ => None,
+    };
     let order = if q
         .get("sortby")
         .is_some_and(|v| v.to_ascii_lowercase().contains("date"))
@@ -279,6 +284,7 @@ pub async fn playlists(
             limit,
             search,
             media,
+            library_media,
             order,
             direction,
         },

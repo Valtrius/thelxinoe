@@ -22,6 +22,7 @@ pub const ROOTS: [(&str, &str, &str); 3] = [
     ("d7df0f21-caa6-45a0-9798-267150600002", "twitch", "Twitch"),
     ("d7df0f21-caa6-45a0-9798-267150600003", "kick", "Kick"),
 ];
+pub const WATCHLIST_VIEW: &str = "d7df0f21-caa6-45a0-9798-267150600004";
 
 fn format_viewers(viewers: i64) -> String {
     if viewers < 1_000 {
@@ -50,6 +51,9 @@ pub async fn views(state: &AppState) -> Result<Vec<Value>> {
     for (id, provider, name) in ROOTS {
         if crate::online::availability::enabled(state, provider).await? {
             items.push(json!({"Id":id,"DisplayPreferencesId":id,"Name":name,"Type":"CollectionFolder","CollectionType":"homevideos","IsFolder":true,"ServerId":state.server_id.as_str(),"ImageTags":{}}));
+            if provider == "youtube" {
+                items.push(json!({"Id":WATCHLIST_VIEW,"DisplayPreferencesId":WATCHLIST_VIEW,"Name":"Watchlists","Type":"CollectionFolder","CollectionType":"homevideos","IsFolder":true,"LocationType":"Remote","ServerId":state.server_id.as_str(),"ImageTags":{}}));
+            }
         }
     }
     Ok(items)
@@ -138,14 +142,55 @@ pub async fn browse(
     if let Some(provider) = provider {
         crate::online::availability::require_enabled(state, provider).await?;
     }
-    let list = if let Some(parent) = &parent {
+    let watchlist_view = parent.as_deref() == Some(WATCHLIST_VIEW);
+    let list = if watchlist_view {
+        crate::online::availability::require_enabled(state, "youtube").await?;
+        ensure_lists(state, p).await?;
+        let lists = storage::watchlists(p.user.id.clone(), &state.db).await?;
+        if let [list] = lists.as_slice() {
+            Some(list.clone())
+        } else {
+            let recursive = query
+                .get("recursive")
+                .is_some_and(|v| v.eq_ignore_ascii_case("true"));
+            let folders = query
+                .get("isfolder")
+                .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+                || query.get("includeitemtypes").is_some_and(|types| {
+                    !types.split(',').any(|t| t.eq_ignore_ascii_case("Video"))
+                });
+            if !recursive || folders {
+                let start = query
+                    .get("startindex")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0);
+                if query.get("includeitemtypes").is_some_and(|types| {
+                    !types.split(',').any(|t| t.eq_ignore_ascii_case("Playlist"))
+                }) || query.get("excludeitemtypes").is_some_and(|types| {
+                    types.split(',').any(|t| t.eq_ignore_ascii_case("Playlist"))
+                }) || query
+                    .get("isfolder")
+                    .is_some_and(|v| v.eq_ignore_ascii_case("false"))
+                {
+                    return Ok(Some(catalog::result(Vec::new(), 0, start)));
+                }
+                return Ok(Some(catalog::playlists(state, p, None, query).await?));
+            }
+            None
+        }
+    } else if let Some(parent) = &parent {
         resolve(state, p, parent)
             .await?
             .filter(|i| i.kind == "watchlist")
     } else {
         None
     };
-    if single.is_none() && parent.is_some() && provider.is_none() && list.is_none() {
+    if single.is_none()
+        && parent.is_some()
+        && provider.is_none()
+        && list.is_none()
+        && !watchlist_view
+    {
         return Ok(None);
     }
     let video_only = query
@@ -165,6 +210,7 @@ pub async fn browse(
     if single.is_none()
         && provider.is_none()
         && list.is_none()
+        && !watchlist_view
         && !video_only
         && mapped_ids.is_empty()
     {
@@ -198,6 +244,7 @@ pub async fn browse(
             provider,
             mapped_ids,
             list_id,
+            watchlists_only: watchlist_view && list_id.is_none(),
             q,
             user,
             server,

@@ -72,6 +72,276 @@ async fn call(
 const DEVICE: &str = "MediaBrowser Client=\"Test%20client\", Device=\"Living room, TV\", DeviceId=\"tv-one\", Version=\"1\"";
 
 #[tokio::test]
+async fn watchlist_library_skips_a_single_list_and_restores_folders_per_user() {
+    let (_temp, state, token) = fixture().await;
+    let bearer = format!("Bearer {token}");
+    let web = [("Authorization", bearer.as_str())];
+    let (status, lists) = call(
+        &state,
+        "/api/v1/online/youtube/watchlists",
+        "GET",
+        Value::Null,
+        &web,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let default_list = lists[0]["id"].as_i64().unwrap();
+    state.db.write("test.fixture", move |db| {
+        for (video, title, published) in [("aaaaaaaaaaa", "Alpha", 100), ("bbbbbbbbbbb", "Bravo", 200), ("ccccccccccc", "Feed only", 300)] {
+            db.execute("INSERT INTO youtube_videos(user_id,video_id,channel_id,title,privacy,duration,published_at) VALUES('alice',?1,'channel',?2,'public',120,?3)", rusqlite::params![video,title,published])?;
+        }
+        db.execute("INSERT INTO youtube_subscriptions(user_id,channel_id,title,snapshot,active) VALUES('alice','channel','Channel','s',1)", [])?;
+        for (video, position) in [("bbbbbbbbbbb", 0), ("aaaaaaaaaaa", 1)] {
+            db.execute("INSERT INTO youtube_watchlist_items(user_id,watchlist_id,video_id,manual_position,added_at) VALUES('alice',?1,?2,?3,1)", rusqlite::params![default_list,video,position])?;
+        }
+        db.execute("INSERT INTO playlists(id,owner_id,name,created_at,updated_at) VALUES('mix','alice','Music mix',1,1)", [])?;
+        Ok(())
+    }).await.unwrap();
+    let mut tokens = Vec::new();
+    for user in ["alice", "bob"] {
+        let (status, login) = call(
+            &state,
+            "/Users/AuthenticateByName",
+            "POST",
+            json!({"Username":user,"Pw":"a long test-only password"}),
+            &[("Authorization", DEVICE)],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        tokens.push(login["AccessToken"].as_str().unwrap().to_owned());
+    }
+    let alice = [("X-Emby-Token", tokens[0].as_str())];
+    let bob = [("X-Emby-Token", tokens[1].as_str())];
+    let (_, views) = call(&state, "/UserViews", "GET", Value::Null, &alice).await;
+    let roots = views["Items"].as_array().unwrap();
+    let root = roots
+        .iter()
+        .find(|item| item["Name"] == "Watchlists")
+        .expect("YouTube watchlists have their own library")
+        .clone();
+    let root_id = root["Id"].as_str().unwrap();
+    for path in [
+        format!("/Items/{root_id}"),
+        format!("/Users/alice/Items/{root_id}"),
+    ] {
+        let (status, item) = call(&state, &path, "GET", Value::Null, &alice).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(item, root);
+        assert_eq!(item["DisplayPreferencesId"], root_id);
+    }
+    let path = format!("/Items?ParentId={root_id}");
+    let (status, single) = call(&state, &path, "GET", Value::Null, &alice).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(single["TotalRecordCount"], 2);
+    assert_eq!(single["Items"][0]["Name"], "Bravo");
+    assert_eq!(single["Items"][1]["Name"], "Alpha");
+    assert!(
+        single["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["Type"] == "Video" && item["IsFolder"] == false)
+    );
+    let video_id = single["Items"][0]["Id"].as_str().unwrap();
+    let music_root = roots
+        .iter()
+        .find(|item| item["Name"] == "Playlists")
+        .unwrap()["Id"]
+        .as_str()
+        .unwrap();
+    let (_, music) = call(
+        &state,
+        &format!("/Items?ParentId={music_root}"),
+        "GET",
+        Value::Null,
+        &alice,
+    )
+    .await;
+    assert_eq!(music["TotalRecordCount"], 1);
+    assert_eq!(music["Items"][0]["Name"], "Music mix");
+    let (_, page) = call(
+        &state,
+        &format!("{path}&StartIndex=1&Limit=1&IncludeItemTypes=Video"),
+        "GET",
+        Value::Null,
+        &alice,
+    )
+    .await;
+    assert_eq!(page["TotalRecordCount"], 2);
+    assert_eq!(page["StartIndex"], 1);
+    assert_eq!(page["Items"].as_array().unwrap().len(), 1);
+    assert_eq!(page["Items"][0]["Name"], "Alpha");
+    for filter in [
+        "SearchTerm=Feed",
+        "IsFolder=true",
+        "IncludeItemTypes=Playlist",
+        "MediaTypes=Audio",
+    ] {
+        let (_, empty) = call(
+            &state,
+            &format!("{path}&{filter}"),
+            "GET",
+            Value::Null,
+            &alice,
+        )
+        .await;
+        assert_eq!(empty["TotalRecordCount"], 0, "{filter}: {empty}");
+    }
+    let (_, empty) = call(&state, &path, "GET", Value::Null, &bob).await;
+    assert_eq!(empty["TotalRecordCount"], 0);
+    let (_, other_list) = call(
+        &state,
+        "/Playlists",
+        "POST",
+        json!({"Name":"Second list","Ids":[video_id]}),
+        &alice,
+    )
+    .await;
+    let second_id = other_list["Id"].as_str().unwrap();
+    let (_, multiple) = call(&state, &path, "GET", Value::Null, &alice).await;
+    assert_eq!(multiple["TotalRecordCount"], 2);
+    assert!(
+        multiple["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["Type"] == "Playlist" && item["IsFolder"] == true)
+    );
+    assert!(
+        multiple["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["Id"] == second_id)
+    );
+    let (_, opened) = call(
+        &state,
+        &format!("/Items?ParentId={second_id}"),
+        "GET",
+        Value::Null,
+        &alice,
+    )
+    .await;
+    assert_eq!(opened["Items"][0]["Id"], video_id);
+    assert_eq!(
+        call(
+            &state,
+            &format!("/Items/{second_id}"),
+            "GET",
+            Value::Null,
+            &bob
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(&state, &path, "GET", Value::Null, &bob).await.1["TotalRecordCount"],
+        0
+    );
+    let (_, recursive) = call(
+        &state,
+        &format!("{path}&Recursive=true&IncludeItemTypes=Video"),
+        "GET",
+        Value::Null,
+        &alice,
+    )
+    .await;
+    assert_eq!(recursive["TotalRecordCount"], 2);
+    assert!(
+        recursive["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["Type"] == "Video")
+    );
+    assert_eq!(
+        call(
+            &state,
+            &format!("{path}&IncludeItemTypes=Video"),
+            "GET",
+            Value::Null,
+            &alice
+        )
+        .await
+        .1["TotalRecordCount"],
+        0
+    );
+    let (_, web_lists) = call(
+        &state,
+        "/api/v1/online/youtube/watchlists",
+        "GET",
+        Value::Null,
+        &web,
+    )
+    .await;
+    let second = web_lists
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["name"] == "Second list")
+        .unwrap()["id"]
+        .as_i64()
+        .unwrap();
+    assert_eq!(
+        call(
+            &state,
+            &format!("/api/v1/online/youtube/watchlists/{second}"),
+            "DELETE",
+            Value::Null,
+            &web
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let (_, restored) = call(&state, &path, "GET", Value::Null, &alice).await;
+    assert_eq!(restored["Items"][0]["Id"], video_id);
+    assert_eq!(restored["TotalRecordCount"], 2);
+    let (_, refreshed) = call(&state, "/UserViews", "GET", Value::Null, &alice).await;
+    assert!(
+        refreshed["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == &root)
+    );
+    state
+        .db
+        .write("test.fixture", |db| {
+            db.execute(
+                "INSERT INTO settings(key,value) VALUES('online.youtube.enabled','false')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let (_, disabled) = call(&state, "/UserViews", "GET", Value::Null, &alice).await;
+    assert!(
+        !disabled["Items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["Id"] == root_id)
+    );
+    assert_eq!(
+        call(&state, &path, "GET", Value::Null, &alice).await.0,
+        StatusCode::NOT_FOUND
+    );
+    let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local");
+    std::fs::create_dir_all(&evidence).unwrap();
+    std::fs::write(evidence.join("jellyfin-watchlists-result.json"), serde_json::to_vec_pretty(&json!({
+        "singleWatchlist": {"videos": single["Items"].as_array().unwrap().iter().map(|item| &item["Name"]).collect::<Vec<_>>(), "total": single["TotalRecordCount"]},
+        "multipleWatchlists": {"lists": multiple["Items"].as_array().unwrap().iter().map(|item| &item["Name"]).collect::<Vec<_>>(), "total": multiple["TotalRecordCount"]},
+        "musicPlaylists": music["TotalRecordCount"],
+        "recursiveVideos": recursive["TotalRecordCount"],
+        "restoredVideos": restored["TotalRecordCount"],
+        "perUserIsolation": true, "stableLibraryAndVideoIds": true, "providerDisableHonored": true
+    })).unwrap()).unwrap();
+}
+
+#[tokio::test]
 async fn twitch_community_rating_sorts_by_viewers_and_describes_the_stream() {
     let (_temp, state, _) = fixture().await;
     state.db.write("test.fixture", |db| {

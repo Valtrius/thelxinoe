@@ -27,11 +27,20 @@ pub(super) async fn ensure_lists(user: String, db: &Database) -> anyhow::Result<
     .await
 }
 
+pub(super) async fn watchlists(user: String, db: &Database) -> anyhow::Result<Vec<Identity>> {
+    db.read("jellyfin.online.watchlists", move |db| {
+        Ok(db.prepare("SELECT c.id,CAST(w.id AS TEXT) FROM youtube_watchlists w JOIN compat_online_items c ON c.user_id=w.user_id AND c.watchlist_id=w.id WHERE w.user_id=?1 ORDER BY w.id")?
+            .query_map([user], |r| Ok(Identity { id:r.get(0)?, kind:"watchlist".into(), key:r.get(1)? }))?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    }).await
+}
+
 pub(super) struct BrowseQuery {
     pub(super) single: Option<Identity>,
     pub(super) provider: Option<&'static str>,
     pub(super) mapped_ids: Vec<Identity>,
     pub(super) list_id: Option<i64>,
+    pub(super) watchlists_only: bool,
     pub(super) q: std::collections::BTreeMap<String, String>,
     pub(super) user: String,
     pub(super) server: String,
@@ -48,6 +57,7 @@ pub(super) async fn browse(
         provider,
         mapped_ids,
         list_id,
+        watchlists_only,
         q,
         user,
         server,
@@ -63,8 +73,9 @@ pub(super) async fn browse(
         if let Some(provider)=provider {filter.push(format!("kind={}",bind(provider.into())));}
         if let Some(single)=single {filter.push(format!("kind={} AND provider_id={}",bind(single.kind),bind(single.key)));}
         if let Some(list)=list_id {filter.push(format!("kind='youtube' AND provider_id IN (SELECT video_id FROM youtube_watchlist_items WHERE user_id=?1 AND watchlist_id={list})"));}
+        if watchlists_only {filter.push("kind='youtube' AND provider_id IN (SELECT video_id FROM youtube_watchlist_items WHERE user_id=?1)".into());}
         if q.contains_key("ids") {let keys=mapped_ids.iter().map(Identity::media).collect::<Vec<_>>();filter.push(format!("kind||':'||provider_id IN (SELECT value FROM json_each({}))",bind(json!(keys).to_string())));}
-        if q.get("includeitemtypes").is_some_and(|v| !v.split(',').any(|t|t.eq_ignore_ascii_case("Video"))) || q.get("excludeitemtypes").is_some_and(|v|v.split(',').any(|t|t.eq_ignore_ascii_case("Video"))) || q.get("isfolder").is_some_and(|v|v=="true") {filter.push("0".into());}
+        if q.get("includeitemtypes").is_some_and(|v| !v.split(',').any(|t|t.eq_ignore_ascii_case("Video"))) || q.get("excludeitemtypes").is_some_and(|v|v.split(',').any(|t|t.eq_ignore_ascii_case("Video"))) || q.get("isfolder").is_some_and(|v|v.eq_ignore_ascii_case("true")) || q.get("mediatypes").is_some_and(|v| !v.split(',').any(|t|t.eq_ignore_ascii_case("Video"))) {filter.push("0".into());}
         if let Some(search)=q.get("searchterm") {filter.push(format!("instr(lower(name||' '||overview),lower({}))>0",bind(search.clone())));}
         for (key,column) in [("isfavorite","favorite"),("isplayed","played")] {if let Some(value)=q.get(key) {filter.push(format!("{column}={}",i32::from(value.eq_ignore_ascii_case("true"))));}}
         for flag in q.get("filters").map(String::as_str).unwrap_or("").to_ascii_lowercase().split(',') {match flag {"isfavorite"=>filter.push("favorite=1".into()),"isplayed"=>filter.push("played=1".into()),"isunplayed"=>filter.push("played=0".into()),"isresumable"=>filter.push("live=0 AND position>0 AND position<duration*0.9".into()),_=>{}}}
