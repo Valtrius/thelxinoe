@@ -171,11 +171,39 @@ async function populate(sources) {
       }),
     );
     const files = `moviefile?movieId=${movie.id}`;
+    // On a busy runner that refresh can wait in Radarr's queue for minutes, so ask it to
+    // rescan the folder while waiting; a real import failure is reported with its commands.
+    let requested = Date.now();
     await expect
-      .poll(async () => (await radarr.direct(files)).length, {
-        timeout: 90000,
-      })
-      .toBeGreaterThan(0);
+      .poll(
+        async () => {
+          const found = (await radarr.direct(files)).length;
+          if (!found && Date.now() - requested > 30000) {
+            requested = Date.now();
+            await radarr.direct('command', 'POST', {
+              name: 'RescanMovie',
+              movieId: movie.id,
+            });
+          }
+          return found;
+        },
+        { timeout: 240000, intervals: [1000, 2000, 5000] },
+      )
+      .toBeGreaterThan(0)
+      .catch(async (error) => {
+        const commands = await radarr.direct('command').catch(() => []);
+        throw Error(
+          `Radarr didn't import the seeded movie file: ${JSON.stringify(
+            commands.slice(-8).map(({ name, status, result, message }) => ({
+              name,
+              status,
+              result,
+              message,
+            })),
+          )}`,
+          { cause: error },
+        );
+      });
     Object.assign(records.radarr, {
       rootfolder: pick([root], ['id', 'path']),
       customformat: pick([format], ['id', 'name']),
