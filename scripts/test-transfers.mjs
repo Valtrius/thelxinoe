@@ -953,6 +953,14 @@ try {
               ],
             },
           );
+          const hookMode = docker(
+            'exec',
+            source.container,
+            'stat',
+            '-c',
+            '%a',
+            '/custom/hook.sh',
+          );
           const { view, review } = await f.transfer(source.id);
           expect(review.review.plan.target.supplementary).toEqual(
             expect.arrayContaining([
@@ -975,7 +983,9 @@ try {
               '-c',
               'stat -c %a /custom/hook.sh && cat /custom/hook.sh /custom/certs/ca.pem',
             ),
-          ).toBe('755\n#!/bin/sh\necho transferred-hook\nfixture certificate');
+          ).toBe(
+            `${hookMode}\n#!/bin/sh\necho transferred-hook\nfixture certificate`,
+          );
           // The replacement reads managed copies, never the external originals.
           const mounts = inspect(replacement.container_id).Mounts.filter(
             (mount) => mount.Destination.startsWith('/custom'),

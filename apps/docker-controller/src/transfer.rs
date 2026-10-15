@@ -1534,14 +1534,16 @@ async fn prepare(
     d: &Deployment,
     t: &mut Transfer,
     appdata_host: &str,
+    appdata_local: &std::path::Path,
     mode: &str,
 ) -> Result<Value> {
-    prepare_with(d, t, appdata_host, mode, vec![]).await
+    prepare_with(d, t, appdata_host, appdata_local, mode, vec![]).await
 }
 async fn prepare_with(
     d: &Deployment,
     t: &mut Transfer,
     appdata_host: &str,
+    appdata_local: &std::path::Path,
     mode: &str,
     env: Vec<String>,
 ) -> Result<Value> {
@@ -1551,6 +1553,14 @@ async fn prepare_with(
         t.review.transformations
     ));
     for index in 0..t.review.layout.supplementary.len() {
+        persisted(
+            std::fs::create_dir_all(
+                appdata_local
+                    .join(".thelxinoe-supplementary")
+                    .join(index.to_string()),
+            )
+            .map_err(Into::into),
+        )?;
         let leaf = format!("{appdata_host}/.thelxinoe-supplementary/{index}");
         copy(
             d,
@@ -1638,7 +1648,14 @@ async fn validate(d: &Deployment, t: &mut Transfer) -> Result<()> {
     }
     t.source_state = Some(before.clone());
     write(t)?;
-    prepare(d, t, &appdata, "validation").await?;
+    prepare(
+        d,
+        t,
+        &appdata,
+        &directory(&t.id).join("validation/appdata"),
+        "validation",
+    )
+    .await?;
     // Imported-file representations keep validation from mistaking missing media for deletions.
     let media = host(d, &t.id, "validation/media");
     persisted(
@@ -1833,6 +1850,7 @@ async fn validate_recyclarr(d: &Deployment, t: &mut Transfer) -> Result<()> {
         d,
         t,
         &appdata,
+        &directory(&t.id).join("validation/appdata"),
         "validation",
         vec![
             format!("THELXINOE_TRANSFER_FIXTURE_KEY={secret}"),
@@ -1920,7 +1938,7 @@ async fn build(d: &Deployment, t: &mut Transfer) -> Result<()> {
         appdata.clone(),
     )
     .await?;
-    let prepared = prepare(d, t, &appdata, "production").await?;
+    let prepared = prepare(d, t, &appdata, &local, "production").await?;
     let produced = tree_digest(
         d,
         t,
