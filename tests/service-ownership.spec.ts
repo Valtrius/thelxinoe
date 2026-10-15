@@ -394,6 +394,16 @@ test('a Connected service is validation-only and its transfer is guided step by 
     .getByRole('button', { name: 'Remove the stopped original container' })
     .click();
   await expect.poll(() => posts).toContain('original/remove');
+  await dialog
+    .getByRole('button', { name: 'Open Prowlarr', exact: true })
+    .click();
+  await expect(dialog).toHaveCount(0);
+  await expect(
+    page
+      .getByRole('navigation', { name: 'Select service' })
+      .getByRole('link', { name: 'Prowlarr', exact: true }),
+  ).toHaveAttribute('aria-current', 'true');
+  await capture(page, testInfo, 'completed-transfer-service-opened');
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });

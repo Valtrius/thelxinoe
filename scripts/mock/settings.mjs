@@ -1,5 +1,5 @@
 import { admin, definitions, label, now } from './data.mjs';
-import { stagesApi } from './transfers.mjs';
+import { checkConnection, connectionFailure, stagesApi } from './transfers.mjs';
 
 export function settingsSeed() {
   const services = definitions
@@ -779,11 +779,13 @@ export async function settingsApi(s, c) {
 
 export async function servicesApi(s, c) {
   const { path, method, body, json, fail } = c;
-  const staged = stagesApi(s, c);
+  const staged = await stagesApi(s, c);
   if (staged) return staged;
   if (path === '/admin/managers' || path === '/admin/support') {
     const manager = path.endsWith('managers');
     if (method === 'POST') {
+      const error = await connectionFailure(s, body.kind);
+      if (error) return fail(422, error);
       const role = manager ? 'manager' : 'support';
       const item = {
         ...body,
@@ -854,11 +856,32 @@ export async function servicesApi(s, c) {
           item.target_id === body.target_id,
       );
       if (!connection) return fail(404, 'Connection not found');
+      const config = s.scenarios?.services[connection.source_kind];
+      if (['unavailable', 'pending', 'cleanup'].includes(config?.linkState))
+        return json(connection);
+      if (
+        config?.linkState === 'conflict' &&
+        body.action !== 'import' &&
+        body.action !== 'disconnect'
+      )
+        return fail(
+          409,
+          'Import the existing record or remove it in the service first.',
+        );
       connection.enabled = body.action !== 'disconnect';
       connection.state = connection.enabled ? 'connected' : 'available';
+      connection.error = null;
+      connection.candidate = null;
+      connection.cleanup_pending = false;
       return json(connection);
     }
-    return json({ items: s.connections });
+    return json({
+      items: s.connections.filter((link) =>
+        [link.source_id, link.target_id].every((id) =>
+          s.services.some((service) => service.id === id),
+        ),
+      ),
+    });
   }
   if (path.startsWith('/admin/service-connections/')) {
     const id = path.split('/').at(-1);
@@ -913,9 +936,14 @@ export async function servicesApi(s, c) {
       service.native_url = body.url ?? body.native_url;
       return json({ saved: true });
     }
-    if (action === 'connection/test') return json({ healthy: true });
+    if (action === 'connection/test')
+      return checkConnection(s, c, service, false);
     if (action === 'connection') {
-      if (method === 'PUT') Object.assign(service, body);
+      if (method === 'PUT') {
+        const error = await connectionFailure(s, service.kind);
+        if (error) return fail(422, error);
+        Object.assign(service, body, { error: null, checked_at: now() });
+      }
       return json({ username: 'preview', ...service });
     }
     if (action === 'quality-profiles') {

@@ -7,6 +7,7 @@ import { createMockState, installMockApi } from './mock/api.mjs';
 import { prepareSample, samplePath } from './mock/playback.mjs';
 import { mockUiPlugin } from './mock/build.mjs';
 import { freePort } from './ci-resources.mjs';
+import { controlScenario, scenarioView } from './mock/scenarios.mjs';
 
 const requireFrontend = createRequire(
   new URL('../frontend/package.json', import.meta.url),
@@ -133,6 +134,27 @@ const server = await preview({
             return res.end();
           }
           if (req.url?.startsWith('/__mock/')) {
+            if (req.url === '/__mock/services') {
+              try {
+                if (req.method === 'POST') {
+                  let raw = '';
+                  for await (const chunk of req) raw += chunk;
+                  controlScenario(state, JSON.parse(raw));
+                  events.emit('services.changed', {});
+                } else if (req.method !== 'GET') {
+                  res.writeHead(405);
+                  return res.end();
+                }
+                res.writeHead(200, {
+                  'Content-Type': 'application/json',
+                  'Cache-Control': 'no-store',
+                });
+                return res.end(JSON.stringify(scenarioView(state)));
+              } catch (error) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ error: error.message }));
+              }
+            }
             if (req.url === '/__mock/reset' && req.method === 'POST') {
               state = createMockState();
               unhandled.length = 0;
@@ -212,7 +234,7 @@ const server = await preview({
                   contentType,
                   headers = {},
                 }) {
-                  if (status >= 400)
+                  if (status >= 400 && !headers['x-thelxinoe-mock-error'])
                     unhandled.push(
                       `${req.method} ${req.url}: ${json?.error?.message ?? status}`,
                     );

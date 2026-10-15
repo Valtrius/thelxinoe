@@ -1,4 +1,5 @@
 import { label, now } from './data.mjs';
+import { serverActionDelay } from './timing.mjs';
 
 // Preview-only model of the two service stages and the guided ownership transfer.
 const steps = [
@@ -90,7 +91,7 @@ function review(kind, service) {
       changes: [
         {
           area: 'ports',
-          before: '0.0.0.0:7878 → 7878/tcp',
+          before: `0.0.0.0:${service.port} → ${service.port}/tcp`,
           after: 'Not published',
           reason:
             'Managed services publish only on this host’s loopback address',
@@ -138,107 +139,346 @@ function review(kind, service) {
   };
 }
 
-function view(t) {
-  const elapsed = Math.floor((Date.now() - (t.started ?? Date.now())) / 1500);
-  if (['queued', 'running', 'committed'].includes(t.state)) {
-    const index = Math.min(elapsed, running.length);
-    if (index >= running.length) {
-      t.state = 'complete';
-      t.step = 'complete';
-      t.complete?.();
-    } else {
-      t.step = running[index];
-      t.state = index >= 4 ? 'committed' : 'running';
-      t.progress =
-        t.step === 'copy'
-          ? {
-              phase: 'copying',
-              bytes: 48_000_000 * (elapsed + 1),
-              entries: 310,
-            }
-          : { phase: t.step };
-    }
+function own(s, t) {
+  let owned = s.stack.find((item) => item.kind === t.kind);
+  if (!owned) {
+    owned = {
+      id: t.id,
+      kind: t.kind,
+      name: label(t.kind),
+      registered: true,
+      phase: 'active',
+      image: t.review.plan.target.image,
+      drift: false,
+      running: true,
+      existence: 'present',
+      status: 'running',
+      inspection_error: null,
+      can_recreate: true,
+      can_retire: true,
+      can_remove: true,
+      error: null,
+      transfer_pending: true,
+      provision: {
+        id: t.id,
+        kind: t.kind,
+        state: 'complete',
+        host_port: null,
+        container_id: `replacement-${t.kind}`,
+        service_id: t.service_id,
+        error: null,
+        origin: 'transferred',
+        transfer_id: t.id,
+      },
+    };
+    s.stack.push(owned);
   }
+  owned.provision.hold = t.state === 'complete' ? null : 'transfer';
+  owned.transfer_pending = t.state !== 'complete';
+  const service = s.services.find((item) => item.id === t.service_id);
+  if (service) service.container_id = owned.provision.container_id;
+  t.replacement_id = owned.provision.container_id;
+}
+
+function returnOriginal(s, t) {
+  s.stack = s.stack.filter((item) => item.kind !== t.kind);
+  const service = s.services.find((item) => item.id === t.service_id);
+  if (service) {
+    service.container_id = t.review.plan.source.container_id;
+    service.error = null;
+  }
+  t.state = 'returned';
+  t.error = null;
+  t.progress = null;
+}
+
+export function createTransfer(s, service) {
+  s.transfers ??= {};
+  const t = {
+    id: `transfer-${service.kind}`,
+    kind: service.kind,
+    service_id: service.id,
+    state: 'review',
+    step: 'review',
+    review: review(service.kind, service),
+    review_revision: `revision-${service.kind}`,
+    choices: {},
+    recovery: {},
+    progress: null,
+    error: null,
+    replacement_id: null,
+    updated: Date.now(),
+    setup: [],
+  };
+  t.review.links = s.connections
+    .filter(
+      (item) => item.source_id === service.id || item.target_id === service.id,
+    )
+    .map((item) => ({
+      kind: item.kind,
+      peer: label(
+        item.source_id === service.id ? item.target_kind : item.source_kind,
+      ),
+      peer_kind:
+        item.source_id === service.id ? item.target_kind : item.source_kind,
+      direction: item.source_id === service.id ? 'outgoing' : 'incoming',
+      action: 'connect_after_completion',
+    }));
+  s.transfers[t.id] = t;
+  return t;
+}
+
+export function setTransferStep(s, t, step) {
+  t.step = step;
+  t.state = running.indexOf(step) >= 4 ? 'committed' : 'running';
+  t.progress =
+    step === 'copy'
+      ? { phase: 'copying', bytes: 48 * 1024 ** 2, entries: 310 }
+      : { phase: step };
+  if (running.indexOf(step) >= 3) t.boundary_at ??= now();
+  if (running.indexOf(step) >= 4) own(s, t);
+  if (step === 'complete') {
+    t.state = 'complete';
+    t.progress = null;
+    own(s, t);
+  }
+  const outcome = s.scenarios?.services[t.kind]?.outcome;
+  if (
+    (outcome === 'before' && step === 'validate') ||
+    (['after', 'unavailable'].includes(outcome) && step === 'checks')
+  ) {
+    t.state = 'failed';
+    t.error =
+      step === 'validate'
+        ? 'The disposable copy failed validation. The original is preserved.'
+        : 'Required check failed: Authenticated API readiness';
+  }
+  t.updated = Date.now();
+}
+
+export function advanceTransfer(s, t) {
+  if (t.state === 'recovery') {
+    const action = t.recovery.command.action;
+    t.recovery.command.outcome = 'applied';
+    if (action === 'return_original') returnOriginal(s, t);
+    else if (action === 'suspend') t.state = 'suspended';
+    else {
+      t.error = null;
+      setTransferStep(s, t, 'setup');
+    }
+    t.updated = Date.now();
+  } else if (['queued', 'running', 'committed'].includes(t.state)) {
+    setTransferStep(
+      s,
+      t,
+      running[Math.min(running.indexOf(t.step) + 1, running.length - 1)],
+    );
+  }
+}
+
+export function syncTransfers(s) {
+  for (const t of Object.values(s.transfers ?? {})) {
+    if (s.scenarios?.services[t.kind]?.paused) continue;
+    let elapsed = Math.min(
+      8,
+      Math.floor((Date.now() - t.updated) / serverActionDelay),
+    );
+    while (
+      elapsed-- > 0 &&
+      ['queued', 'running', 'committed', 'recovery'].includes(t.state)
+    )
+      advanceTransfer(s, t);
+  }
+}
+
+export function transferView(t) {
   const current = steps.findIndex(([key]) => key === t.step);
   return {
     ...t,
-    started: undefined,
-    complete: undefined,
+    updated: undefined,
     steps: steps.map(([key, text, actor], index) => ({
       key,
       label: text,
       actor,
-      // Services without reviewed setup actions skip that step.
       status:
-        key === 'setup' && !t.review.setup_actions.length
-          ? 'skipped'
-          : t.state === 'complete'
-            ? 'complete'
-            : t.state === 'review'
-              ? index === 0
-                ? 'complete'
-                : index < 4
-                  ? 'awaiting_input'
-                  : 'pending'
-              : index < current
-                ? 'complete'
-                : index === current
-                  ? 'running'
-                  : 'pending',
+        t.state === 'complete'
+          ? 'complete'
+          : t.state === 'review'
+            ? index === 0
+              ? t.review.blockers.length
+                ? 'blocked'
+                : 'complete'
+              : index < 4
+                ? 'awaiting_input'
+                : 'pending'
+            : index < current
+              ? 'complete'
+              : index === current
+                ? ['failed', 'suspended'].includes(t.state)
+                  ? 'failed'
+                  : 'running'
+                : 'pending',
     })),
     checks:
-      t.state === 'complete'
+      t.state === 'complete' || t.step === 'checks'
         ? t.review.checks.map((check) => ({
             ...check,
-            status: check.required ? 'passed' : 'pending',
+            status:
+              t.state === 'failed' && check.id === 'api_ready'
+                ? 'failed'
+                : check.required
+                  ? 'passed'
+                  : 'pending',
             detail: check.required
               ? null
               : 'Connects automatically after completion when both services are ready',
           }))
         : [],
     actions: {
-      approve: t.state === 'review',
+      approve: t.state === 'review' && !t.review.blockers.length,
       cancel: t.state === 'review' || t.state === 'queued',
-      retry: false,
-      restore: false,
-      recovery: false,
+      retry: ['failed', 'suspended'].includes(t.state),
+      restore: t.state === 'failed' && !t.boundary_at,
+      recovery: ['failed', 'suspended'].includes(t.state) && !!t.boundary_at,
       remove_original: t.state === 'complete' && !t.original_removed,
-      continue_in_background: ['queued', 'running', 'committed'].includes(
-        t.state,
-      ),
+      continue_in_background: [
+        'queued',
+        'running',
+        'committed',
+        'recovery',
+      ].includes(t.state),
     },
     controller:
       t.state === 'review'
         ? null
         : {
             stage: t.state,
-            boundary_at: current >= 7 ? now() : null,
+            boundary_at: t.boundary_at ?? null,
             completed: t.state === 'complete',
             source: {
-              stopped: current >= 4,
-              restart_disabled: current >= 4,
+              stopped: current >= 4 && t.state !== 'returned',
+              restart_disabled: current >= 4 && t.state !== 'returned',
               removed: !!t.original_removed,
             },
+            command:
+              t.state === 'recovery'
+                ? {
+                    operation: `recovery-${t.id}`,
+                    phase:
+                      t.recovery.command.action === 'return_original'
+                        ? 'starting-original'
+                        : 'starting',
+                    state: 'running',
+                  }
+                : null,
           },
   };
 }
 
-export function stagesApi(s, c) {
+export async function connectionFailure(s, kind) {
+  const config = s.scenarios?.services[kind];
+  const result = config?.result;
+  return result === 'credentials'
+    ? 'Invalid API key or login credentials.'
+    : result === 'unreachable'
+      ? 'The service could not be reached.'
+      : null;
+}
+
+export async function checkConnection(s, c, service, save = true) {
+  const error = await connectionFailure(s, service.kind);
+  if (save) {
+    service.error = error;
+    service.checked_at = now();
+  }
+  c.emit('services.changed', {});
+  return error
+    ? c.fail(422, error)
+    : c.json({ healthy: true, version: service.version });
+}
+
+function recoveryPlan(s, t) {
+  const missing = s.scenarios?.services[t.kind]?.outcome === 'unavailable';
+  return {
+    revision: `recovery-${t.id}`,
+    evidence: {
+      boundary_at: t.boundary_at,
+      images: {
+        source: t.review.plan.source.image,
+        replacement: t.review.plan.target.image,
+      },
+      versions: {
+        source: t.review.plan.source.version,
+        replacement: t.review.plan.target.version,
+      },
+      containers: {
+        replacement: { present: true, running: true },
+        original: { present: !missing, running: false, unchanged: !missing },
+      },
+      effects: {
+        known: [{ effect: 'application settings changed', count: 1 }],
+        uncertain: ['Downloads grabbed after activation are not tracked'],
+      },
+    },
+    options: [
+      {
+        action: 'repair',
+        label: 'Repair and continue',
+        available: !missing,
+        unavailable: missing
+          ? 'The original container is missing; its state cannot be verified'
+          : null,
+        description: 'Repair the replacement and run setup and checks again',
+        requires: ['automation'],
+      },
+      {
+        action: 'restore_snapshot',
+        label: 'Restore the transfer snapshot',
+        available: !missing,
+        unavailable: missing
+          ? 'The original container is missing; recovery evidence is incomplete'
+          : null,
+        description:
+          'Create a new candidate from the preserved transfer snapshot',
+        requires: ['state_loss', 'reconciliation'],
+      },
+      {
+        action: 'return_original',
+        label: 'Return to the original',
+        available: !missing,
+        unavailable: missing ? 'The original container is missing' : null,
+        description: 'Stop the replacement and start the unchanged original',
+        requires: ['state_loss', 'reconciliation'],
+      },
+      {
+        action: 'suspend',
+        label: 'Suspend for manual resolution',
+        available: true,
+        description: 'Keep normal operations held for manual resolution',
+      },
+    ],
+    cannot_undo: ['Indexer searches already sent'],
+    transfer_written: [],
+    peer_note: '',
+  };
+}
+
+export async function stagesApi(s, c) {
   const { path, method, body, json, fail } = c;
   s.transfers ??= {};
+  syncTransfers(s);
   if (path === '/admin/services' && method === 'GET') {
-    const kinds = [
-      'seerr',
-      'recyclarr',
-      'radarr',
-      'sonarr',
-      'lidarr',
-      'bazarr',
-      'prowlarr',
-      'nzbget',
-    ];
     return json({
-      items: kinds.map((kind) => {
+      items: [
+        'seerr',
+        'recyclarr',
+        'radarr',
+        'sonarr',
+        'lidarr',
+        'bazarr',
+        'prowlarr',
+        'nzbget',
+      ].map((kind) => {
         const service = s.services.find((item) => item.kind === kind);
         const owned = s.stack.find((item) => item.kind === kind);
         const transfer = Object.values(s.transfers).find(
@@ -251,11 +491,11 @@ export function stagesApi(s, c) {
         const draft = Object.values(s.transfers).find(
           (item) => item.kind === kind && item.state === 'review',
         );
-        const stage = owned ? 'owned' : service ? 'connected' : 'none';
+        const hold = owned && transfer ? 'transfer' : null;
         return {
           kind,
-          stage,
-          hold: transfer && owned ? 'transfer' : null,
+          stage: owned ? 'owned' : service ? 'connected' : 'none',
+          hold,
           agreed: true,
           draft_review: draft?.id ?? null,
           actions: [],
@@ -267,23 +507,17 @@ export function stagesApi(s, c) {
                 engine: 'preview-engine',
                 version: service.version ?? '',
                 verified: !service.error,
-                operational: !!owned,
+                operational: !!owned && !transfer,
                 checked_at: service.checked_at ?? now(),
                 error: service.error ?? null,
               }
             : null,
-          ownership: owned
-            ? {
-                ...owned.provision,
-                hold: transfer ? 'transfer' : null,
-                transfer_id: owned.provision.transfer_id ?? null,
-              }
-            : null,
+          ownership: owned ? { ...owned.provision, hold } : null,
           operation: transfer
             ? {
                 type: 'transfer',
                 id: transfer.id,
-                state: view(transfer).state,
+                state: transfer.state,
                 step: transfer.step,
                 error: transfer.error,
               }
@@ -299,8 +533,7 @@ export function stagesApi(s, c) {
     const [, id, action] = serviceAction;
     const service = s.services.find((item) => item.id === id);
     if (!service) return fail(404, 'Service not found');
-    if (action === 'test')
-      return json({ healthy: true, version: service.version });
+    if (action === 'test') return checkConnection(s, c, service);
     if (action === 'forget') {
       s.services = s.services.filter((item) => item !== service);
       return json({ forgotten: true });
@@ -308,98 +541,72 @@ export function stagesApi(s, c) {
     const existing = Object.values(s.transfers).find(
       (item) =>
         item.kind === service.kind &&
-        !['complete', 'cancelled', 'returned'].includes(item.state),
+        !['complete', 'returned', 'cancelled'].includes(item.state),
     );
-    if (existing) return json(view(existing));
-    const id2 = `transfer-${service.kind}`;
-    s.transfers[id2] = {
-      id: id2,
-      kind: service.kind,
-      service_id: service.id,
-      state: 'review',
-      step: 'review',
-      review: review(service.kind, service),
-      review_revision: `revision-${service.kind}`,
-      choices: {},
-      setup: [],
-      recovery: {},
-      progress: null,
-      error: null,
-      replacement_id: null,
-    };
-    return json(view(s.transfers[id2]));
+    return json(transferView(existing ?? createTransfer(s, service)));
   }
   if (path === '/admin/transfers' && method === 'GET')
-    return json({
-      items: Object.values(s.transfers).map((item) => view(item)),
-    });
+    return json({ items: Object.values(s.transfers).map(transferView) });
   const transfer = path.match(/^\/admin\/transfers\/([^/]+)(?:\/(.*))?$/);
   if (transfer) {
     const t = s.transfers[transfer[1]];
     if (!t) return fail(404, 'Transfer not found');
     const action = transfer[2];
-    if (!action) return json(view(t));
-    if (action === 'choices') {
+    if (!action && method === 'GET') return json(transferView(t));
+    if (action === 'choices' && t.state === 'review') {
       t.choices = { compose_mode: body.compose_mode };
       t.review_revision = `revision-${t.kind}-${body.compose_mode}`;
-      return json(view(t));
-    }
-    if (action === 'approve') {
+    } else if (action === 'approve' && t.state === 'review') {
       if (body.review_revision !== t.review_revision)
         return fail(
           409,
           'The review changed; check it again before confirming',
         );
-      t.state = 'queued';
-      t.step = 'stop';
-      t.started = Date.now();
-      t.complete = () => {
-        const service = s.services.find((item) => item.id === t.service_id);
-        if (!service) return;
-        s.stack = s.stack.filter((item) => item.kind !== t.kind);
-        s.stack.push({
-          id: t.id,
-          kind: t.kind,
-          name: label(t.kind),
-          registered: true,
-          phase: 'active',
-          image: t.review.plan.target.image,
-          drift: false,
-          running: true,
-          existence: 'present',
-          status: 'running',
-          inspection_error: null,
-          can_recreate: false,
-          can_retire: false,
-          can_remove: false,
-          error: null,
-          transfer_pending: false,
-          origin: 'transferred',
-          provision: {
-            id: t.id,
-            kind: t.kind,
-            state: 'complete',
-            host_port: null,
-            container_id: `replacement-${t.kind}`,
-            service_id: t.service_id,
-            error: null,
-            origin: 'transferred',
-            hold: null,
-            transfer_id: t.id,
-          },
-        });
-      };
-      return json(view(t));
-    }
-    if (action === 'cancel') {
+      if (!body.confirm || t.review.blockers.length)
+        return fail(409, 'Review the transfer prerequisites first');
+      setTransferStep(s, t, 'stop');
+    } else if (action === 'cancel' && ['review', 'queued'].includes(t.state))
       t.state = 'cancelled';
-      return json(view(t));
-    }
-    if (action === 'original/remove') {
+    else if (action === 'original/remove' && t.state === 'complete')
       t.original_removed = true;
-      return json(view(t));
-    }
-    return fail(409, 'This preview transfer has no failure to recover');
+    else if (action === 'retry' && ['failed', 'suspended'].includes(t.state)) {
+      if (s.scenarios?.services[t.kind])
+        s.scenarios.services[t.kind].outcome = 'success';
+      t.error = null;
+      setTransferStep(s, t, t.boundary_at ? 'setup' : 'validate');
+    } else if (action === 'restore' && t.state === 'failed' && !t.boundary_at)
+      returnOriginal(s, t);
+    else if (
+      action === 'recovery' &&
+      ['failed', 'suspended'].includes(t.state) &&
+      t.boundary_at
+    ) {
+      const plan = recoveryPlan(s, t);
+      if (method === 'GET') return json(plan);
+      const option = plan.options.find((item) => item.action === body.action);
+      if (
+        body.revision !== plan.revision ||
+        !option?.available ||
+        option.requires?.some((key) => !body.approval?.[key])
+      )
+        return fail(
+          409,
+          'Recovery requires a current plan and every acknowledgement',
+        );
+      t.state = 'recovery';
+      t.recovery = {
+        command: { operation: `recovery-${t.id}`, action: body.action },
+      };
+      t.updated = Date.now();
+      if (s.scenarios?.services[t.kind] && body.action !== 'suspend')
+        s.scenarios.services[t.kind].outcome = 'success';
+    } else
+      return fail(
+        409,
+        'This action is not available at the current transfer step',
+      );
+    c.emit('services.changed', {});
+    return json(transferView(t));
   }
   if (path === '/admin/recyclarr/connection' && method === 'POST')
     return json({ id: 'connected-recyclarr', healthy: true, version: '8.7.2' });

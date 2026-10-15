@@ -15,6 +15,7 @@
   import Notice from '../ui/Notice.svelte';
   import ProgressBar from '../ui/ProgressBar.svelte';
   import Switch from '../ui/Switch.svelte';
+  import { stepHighlight } from '../ui/workflow-motion';
   import type {
     TransferDeclarations,
     TransferRecovery,
@@ -41,8 +42,11 @@
   let operation = $state<TransferView | null>(null);
   let loadError = $state('');
   let actionError = $state('');
-  let busy = $state(false);
+  let pendingAction = $state('');
+  const busy = $derived(!!pendingAction);
+  let loadRequest = 0;
   let viewing = $state<string | null>(null);
+  let stepContent = $state<HTMLElement>();
   let reviewed = $state(false);
   let recovery = $state<TransferRecovery | null>(null);
   let recoveryAction = $state('');
@@ -68,15 +72,23 @@
   );
   const plan = $derived(operation?.review.plan);
   const current = $derived(
-    operation?.steps.find((step) =>
-      ['running', 'awaiting_input', 'blocked', 'failed'].includes(step.status),
-    ) ?? operation?.steps.at(-1),
+    operation?.steps.find((step) => step.key === operation?.step) ??
+      operation?.steps.find((step) =>
+        ['running', 'awaiting_input', 'blocked', 'failed'].includes(
+          step.status,
+        ),
+      ) ??
+      operation?.steps.at(-1),
   );
   const shown = $derived(
     (viewing && operation?.steps.find((step) => step.key === viewing)) ||
       current,
   );
+  const shownKey = $derived(shown?.key);
   const blockers = $derived(operation?.review.blockers ?? []);
+  $effect(() => {
+    if (shownKey) stepContent?.scrollTo({ top: 0, behavior: 'instant' });
+  });
   const dockerAccess = $derived(
     plan?.automation.filter((item) => item.kind === 'docker_access') ?? [],
   );
@@ -99,23 +111,37 @@
             declarations.unrelated_services_acknowledged))),
   );
 
+  function acceptOperation(next: TransferView) {
+    if (
+      operation &&
+      (operation.id !== next.id ||
+        operation.step !== next.step ||
+        operation.state !== next.state)
+    )
+      viewing = null;
+    operation = next;
+    transferId = next.id;
+  }
   async function load() {
+    const request = ++loadRequest;
     try {
-      operation = transferId
+      const next = transferId
         ? await api<TransferView>(`/admin/transfers/${transferId}`)
         : await api<TransferView>(
             `/admin/services/${serviceId}/transfer`,
             'POST',
           );
-      transferId = operation.id;
+      if (request !== loadRequest) return;
+      acceptOperation(next);
       loadError = '';
     } catch (error) {
-      loadError = String(error);
+      if (request === loadRequest) loadError = String(error);
     }
   }
-  async function act(work: () => Promise<void>) {
+  async function act(action: string, work: () => Promise<void>) {
     if (busy) return;
-    busy = true;
+    pendingAction = action;
+    loadRequest++;
     actionError = '';
     try {
       await work();
@@ -128,7 +154,7 @@
       if (error instanceof ApiError && error.code === 'revision_changed')
         await load();
     } finally {
-      busy = false;
+      pendingAction = '';
     }
   }
   function post(path: string, body: unknown = {}) {
@@ -137,24 +163,24 @@
       'POST',
       body,
     ).then((view) => {
-      operation = view;
+      acceptOperation(view);
     });
   }
   async function reviewAgain() {
     reviewed = false;
     viewing = null;
-    operation = await api<TransferView>(
-      `/admin/services/${serviceId}/transfer`,
-      'POST',
+    acceptOperation(
+      await api<TransferView>(`/admin/services/${serviceId}/transfer`, 'POST'),
     );
-    transferId = operation.id;
   }
   async function chooseCompose(mode: 'scoped' | 'project') {
     reviewed = false;
-    operation = await api<TransferView>(
-      `/admin/transfers/${operation!.id}/choices`,
-      'PUT',
-      { compose_mode: mode },
+    acceptOperation(
+      await api<TransferView>(
+        `/admin/transfers/${operation!.id}/choices`,
+        'PUT',
+        { compose_mode: mode },
+      ),
     );
   }
   async function loadRecovery() {
@@ -176,11 +202,18 @@
 
   onMount(() => {
     void load();
+    let polling = false;
     // Durable state drives the modal; closing it never stops the work.
     const timer = setInterval(() => {
-      if (active && !busy && !document.hidden) void load();
+      if (active && !busy && !polling && !document.hidden) {
+        polling = true;
+        void load().finally(() => (polling = false));
+      }
     }, 2000);
-    return () => clearInterval(timer);
+    return () => {
+      loadRequest++;
+      clearInterval(timer);
+    };
   });
 
   function bytes(value?: number) {
@@ -266,8 +299,11 @@
   {#if loadError}
     <Notice variant="error" role="alert"
       >{loadError}
-      <Button size="sm" variant="secondary" onclick={() => void load()}
-        >Retry</Button
+      <Button
+        size="sm"
+        variant="secondary"
+        loading={pendingAction === 'load'}
+        onclick={() => void act('load', load)}>Retry</Button
       ></Notice
     >
   {:else if !operation || !plan}
@@ -280,15 +316,25 @@
     </div>
   {:else}
     <div
-      class="grid gap-5 @container/transfer compact:grid-cols-1 grid-cols-[minmax(12rem,15rem)_minmax(0,1fr)]"
+      class="grid gap-5 @container/transfer grid-cols-[minmax(12rem,15rem)_minmax(0,1fr)] compact:flex compact:min-h-0 compact:flex-1 compact:flex-col compact:overflow-hidden"
     >
-      <nav aria-label="Ownership transfer steps">
-        <ol class="grid gap-0.5 text-[11px]">
+      <nav
+        aria-label="Ownership transfer steps"
+        class="relative isolate self-start compact:h-43 compact:w-full compact:shrink-0 compact:overflow-y-auto compact:overscroll-contain compact:scroll-smooth motion-reduce:scroll-auto compact:[scrollbar-gutter:stable]"
+      >
+        <div
+          aria-hidden="true"
+          data-transfer-highlight
+          class="pointer-events-none absolute inset-x-0 top-0 border-l-2 border-accent bg-accent-soft"
+          use:stepHighlight={shownKey}
+        ></div>
+        <ol class="relative grid gap-0.5 text-[11px]">
           {#each operation.steps as step, index (step.key)}
             <li>
               <button
                 type="button"
-                class="flex w-full items-center gap-2 border-l-2 px-2 py-1.5 text-left aria-[current=step]:bg-accent-soft data-[status=complete]:border-success data-[status=failed]:border-danger data-[status=blocked]:border-warning data-[status=running]:border-accent data-[status=awaiting_input]:border-accent data-[status=pending]:border-line data-[status=skipped]:border-line focus-visible:outline-2 focus-visible:outline-accent"
+                class="flex w-full items-center gap-2 border-l-2 px-2 py-1.5 text-left compact:min-h-14 data-[status=complete]:border-success data-[status=failed]:border-danger data-[status=blocked]:border-warning data-[status=running]:border-accent data-[status=awaiting_input]:border-accent data-[status=pending]:border-line data-[status=skipped]:border-line focus-visible:outline-2 focus-visible:outline-accent"
+                data-transfer-step={step.key}
                 data-status={step.status}
                 aria-current={shown?.key === step.key ? 'step' : undefined}
                 aria-label={`${index + 1}. ${step.label}: ${statusText[step.status]}, ${step.actor === 'user' ? 'your action' : 'done by Thelxinoe'}`}
@@ -343,7 +389,8 @@
       </nav>
 
       <section
-        class="min-w-0 text-[11px] leading-[1.55]"
+        bind:this={stepContent}
+        class="min-w-0 text-[11px] leading-[1.55] compact:min-h-0 compact:flex-1 compact:overflow-y-auto compact:overscroll-contain compact:[scrollbar-gutter:stable]"
         aria-live="polite"
         aria-label={shown?.label ?? 'Transfer'}
       >
@@ -369,15 +416,17 @@
             <Button
               size="form"
               onclick={() => {
-                onClose();
                 openService?.();
+                onClose();
               }}>Open {label}</Button
             >
             {#if operation.actions.remove_original}<Button
                 size="form"
                 variant="secondary"
                 disabled={busy}
-                onclick={() => void act(() => post('/original/remove'))}
+                loading={pendingAction === 'remove-original'}
+                onclick={() =>
+                  void act('remove-original', () => post('/original/remove'))}
                 >Remove the stopped original container</Button
               >{/if}
           </div>
@@ -399,7 +448,9 @@
               size="form"
               variant="secondary"
               disabled={busy}
-              onclick={() => void act(reviewAgain)}>Review again</Button
+              loading={pendingAction === 'review'}
+              onclick={() => void act('review', reviewAgain)}
+              >Review again</Button
             >
           {:else}
             <p>
@@ -448,8 +499,9 @@
             <Button
               size="form"
               disabled={busy || !reviewed || !declared || !!blockers.length}
+              loading={pendingAction === 'approve'}
               onclick={() =>
-                void act(() =>
+                void act('approve', () =>
                   post('/approve', {
                     review_revision: operation!.review_revision,
                     confirm: true,
@@ -487,7 +539,8 @@
             size="form"
             variant="secondary"
             disabled={busy}
-            onclick={() => void act(reviewAgain)}>Review again</Button
+            loading={pendingAction === 'review'}
+            onclick={() => void act('review', reviewAgain)}>Review again</Button
           >
         {:else}
           {@render progressStep()}
@@ -715,7 +768,9 @@
               : 'secondary'}
             aria-pressed={operation!.choices.compose_mode === 'scoped'}
             disabled={busy}
-            onclick={() => void act(() => chooseCompose('scoped'))}
+            loading={pendingAction === 'compose-scoped'}
+            onclick={() =>
+              void act('compose-scoped', () => chooseCompose('scoped'))}
             >Detach only this service</Button
           >
           <Button
@@ -725,7 +780,9 @@
               : 'secondary'}
             aria-pressed={operation!.choices.compose_mode === 'project'}
             disabled={busy}
-            onclick={() => void act(() => chooseCompose('project'))}
+            loading={pendingAction === 'compose-project'}
+            onclick={() =>
+              void act('compose-project', () => chooseCompose('project'))}
             >Retire the whole project's automation</Button
           >
         </div>
@@ -846,7 +903,8 @@
         size="form"
         variant="secondary"
         disabled={busy}
-        onclick={() => void act(() => post('/cancel'))}
+        loading={pendingAction === 'cancel'}
+        onclick={() => void act('cancel', () => post('/cancel'))}
         >Cancel transfer (nothing has changed yet)</Button
       >{/if}
   </div>
@@ -892,21 +950,25 @@
     {#if operation!.actions.retry}<Button
         size="form"
         disabled={busy}
-        onclick={() => void act(() => post('/retry'))}
+        loading={pendingAction === 'retry'}
+        onclick={() => void act('retry', () => post('/retry'))}
         >Retry setup and checks</Button
       >{/if}
     {#if operation!.actions.restore}<Button
         size="form"
         variant="secondary"
         disabled={busy}
-        onclick={() => void act(() => post('/restore'))}
+        loading={pendingAction === 'restore'}
+        onclick={() => void act('restore', () => post('/restore'))}
         >Restore original</Button
       >{/if}
     {#if operation!.actions.recovery && !recovery}<Button
         size="form"
         variant="secondary"
         disabled={busy}
-        onclick={() => void act(loadRecovery)}>Review recovery options</Button
+        loading={pendingAction === 'recovery-review'}
+        onclick={() => void act('recovery-review', loadRecovery)}
+        >Review recovery options</Button
       >{/if}
   </div>
   {#if recovery}
@@ -988,6 +1050,7 @@
       <div>
         <Button
           size="form"
+          loading={pendingAction === 'recovery-apply'}
           disabled={busy ||
             !recoveryAction ||
             (
@@ -996,7 +1059,7 @@
               )?.requires ?? []
             ).some((requirement) => !approvals[requirement])}
           onclick={() =>
-            void act(async () => {
+            void act('recovery-apply', async () => {
               await post('/recovery', {
                 action: recoveryAction,
                 revision: recovery!.revision,
