@@ -345,7 +345,7 @@ async fn watchlist_library_skips_a_single_list_and_restores_folders_per_user() {
 async fn twitch_community_rating_sorts_by_viewers_and_describes_the_stream() {
     let (_temp, state, _) = fixture().await;
     state.db.write("test.fixture", |db| {
-        for (channel, name, viewers) in [("a", "Alpha", 12_345), ("b", "Bravo", 1_250), ("c", "Charlie", 12_345), ("z", "Zulu", 20)] {
+        for (channel, name, viewers) in [("a", "Charlie", 12_345), ("b", "Bravo", 1_250), ("c", "Alpha", 12_345), ("z", "Zulu", 20)] {
             db.execute("INSERT INTO twitch_streams(user_id,channel_id,login,display_name,title,category,viewers,started_at,snapshot,active) VALUES('alice',?1,?1,?2,'Building a factory','Satisfactory',?3,'2026-10-14T10:00:00Z','s',1)",rusqlite::params![channel,name,viewers])?;
         }
         Ok(())
@@ -373,12 +373,42 @@ async fn twitch_community_rating_sorts_by_viewers_and_describes_the_stream() {
         (
             "CommunityRating",
             "Descending",
-            ["Alpha", "Charlie", "Bravo", "Zulu"],
+            ["Charlie", "Alpha", "Bravo", "Zulu"],
         ),
         (
             "CommunityRating",
             "Ascending",
+            ["Zulu", "Bravo", "Charlie", "Alpha"],
+        ),
+        (
+            "CommunityRating,SortName",
+            "Descending,Ascending",
+            ["Alpha", "Charlie", "Bravo", "Zulu"],
+        ),
+        (
+            "CommunityRating,SortName",
+            "Ascending,Ascending",
             ["Zulu", "Bravo", "Alpha", "Charlie"],
+        ),
+        (
+            "CommunityRating,SortName",
+            "Descending&SortOrder=Ascending",
+            ["Alpha", "Charlie", "Bravo", "Zulu"],
+        ),
+        (
+            "CommunityRating,SortName",
+            "Descending",
+            ["Charlie", "Alpha", "Bravo", "Zulu"],
+        ),
+        (
+            "CommunityRating,SortName",
+            "Ascending",
+            ["Zulu", "Bravo", "Alpha", "Charlie"],
+        ),
+        (
+            "SortName,CommunityRating",
+            "Ascending,Descending",
+            ["Alpha", "Bravo", "Charlie", "Zulu"],
         ),
         (
             "SortName",
@@ -427,7 +457,7 @@ async fn twitch_community_rating_sorts_by_viewers_and_describes_the_stream() {
             .db
             .write("test.fixture", move |db| {
                 db.execute(
-                    "UPDATE twitch_streams SET viewers=?1 WHERE user_id='alice' AND channel_id='a'",
+                    "UPDATE twitch_streams SET viewers=?1 WHERE user_id='alice' AND channel_id='c'",
                     [viewers],
                 )?;
                 Ok(())
