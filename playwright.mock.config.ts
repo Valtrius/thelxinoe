@@ -7,6 +7,8 @@ export default defineConfig({
   testDir: 'tests',
   testMatch: [
     'mock-preview.spec.ts',
+    'mock-service-scenarios.spec.ts',
+    'mock-ownership-motion.spec.ts',
     'mobile-media.spec.ts',
     'mobile-player.spec.ts',
   ],

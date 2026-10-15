@@ -10,6 +10,8 @@ import {
 import { mediaApi, onlineApi } from './media.mjs';
 import { servicesApi, settingsApi, settingsSeed } from './settings.mjs';
 import { playbackApi } from './playback.mjs';
+import { scenarioSeed, serviceAttention } from './scenarios.mjs';
+import { waitForServerAction } from './timing.mjs';
 
 export function createMockState() {
   const library = librarySeed();
@@ -66,6 +68,7 @@ export function createMockState() {
     }));
   return {
     ...settingsSeed(),
+    scenarios: scenarioSeed(),
     signedIn: true,
     sequence: 100,
     library,
@@ -240,10 +243,15 @@ export async function installMockApi(page, currentState, events) {
         return true;
       },
       async fail(status, message) {
-        await route.fulfill({ status, json: { error: { message } } });
+        await route.fulfill({
+          status,
+          json: { error: { message } },
+          headers: { 'x-thelxinoe-mock-error': 'handled' },
+        });
         return true;
       },
     };
+    await waitForServerAction(s, c);
     if (path === '/health') return c.json({ api_version: 1 });
     if (path === '/setup') return c.json({ setup_required: false });
     if (path === '/timezones')
@@ -292,7 +300,7 @@ export async function installMockApi(page, currentState, events) {
     }
     if (path === '/auth/oidc/start')
       return c.json({ url: `${url.origin}/__mock/auth` });
-    if (path === '/me/attention') return c.json({ items: [] });
+    if (path === '/me/attention') return c.json(serviceAttention(s));
     for (const handler of [
       settingsApi,
       servicesApi,
