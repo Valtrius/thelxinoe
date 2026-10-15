@@ -104,6 +104,7 @@
 </script>
 
 <div
+  data-page-scale
   class="relative z-30 mr-3 grid shrink-0 auto-cols-max grid-flow-col grid-cols-[minmax(0,1fr)] items-center gap-1.5 pb-2"
 >
   <span

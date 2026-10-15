@@ -956,6 +956,7 @@
   {/each}
   <article
     class="service-detail settings-grid"
+    data-page-region="service"
     aria-label={`${definition.label} service`}
   >
     <aside
@@ -1785,7 +1786,10 @@
             {#if policy?.checked_at}<p class="my-2 text-xs text-muted">
                 Last check: {new Date(policy.checked_at * 1000).toLocaleString(
                   undefined,
-                  { timeZone: timezone, hour12: timeFormat === '12h' },
+                  {
+                    timeZone: timezone,
+                    hour12: timeFormat === '12h',
+                  },
                 )}
               </p>{/if}
             {#if policy?.error}<Notice

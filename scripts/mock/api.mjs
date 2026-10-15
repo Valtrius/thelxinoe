@@ -206,20 +206,22 @@ export async function installMockApi(page, currentState, events) {
                   ? 'account.profile.changed'
                   : path.startsWith('/playlists')
                     ? 'playlists.changed'
-                    : path.startsWith('/catalog') ||
-                        path.startsWith('/admin/media')
-                      ? 'catalog.changed'
-                      : path.startsWith('/admin/jobs')
-                        ? 'jobs.changed'
-                        : path.startsWith('/admin/product-update')
-                          ? 'product.changed'
-                          : path.startsWith('/admin/online')
-                            ? 'online.configuration.changed'
-                            : path.startsWith('/online/youtube/')
-                              ? 'youtube.changed'
-                              : path.startsWith('/online/')
-                                ? 'online.account.changed'
-                                : null;
+                    : /^\/catalog\/[^/]+\/state$/.test(path)
+                      ? 'media-state.changed'
+                      : path.startsWith('/catalog') ||
+                          path.startsWith('/admin/media')
+                        ? 'catalog.changed'
+                        : path.startsWith('/admin/jobs')
+                          ? 'jobs.changed'
+                          : path.startsWith('/admin/product-update')
+                            ? 'product.changed'
+                            : path.startsWith('/admin/online')
+                              ? 'online.configuration.changed'
+                              : path.startsWith('/online/youtube/')
+                                ? 'youtube.changed'
+                                : path.startsWith('/online/')
+                                  ? 'online.account.changed'
+                                  : null;
           if (path === '/me/preferences') s.users[0].timezone = value.timezone;
           if (change)
             events.emit(change, change === 'preferences.changed' ? value : {});

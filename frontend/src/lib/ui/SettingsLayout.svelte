@@ -251,6 +251,7 @@
   </nav>
   <div
     class="settings-content @container/settings min-w-0 flex-1 compact:w-full"
+    data-page-region="settings"
     data-sidebar-resize="xy-pos"
     data-sidebar-resize-origin
   >

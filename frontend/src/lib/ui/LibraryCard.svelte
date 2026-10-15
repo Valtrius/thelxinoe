@@ -6,6 +6,8 @@
   import PlatformIcon from './PlatformIcon.svelte';
   import { attentionDescription, type AttentionItem } from '../attention';
   import type { ActivityItem } from '../activity';
+  import { appearance } from '../appearance';
+  import { mediaCardMotionClass, mediaCardThumbnailClass } from './styles';
   let {
     item,
     open,
@@ -28,6 +30,7 @@
       available?: boolean;
       position?: number;
       duration?: number;
+      watched?: boolean;
     };
     keyPrefix?: string;
     open: () => void;
@@ -41,6 +44,11 @@
   }>();
   const music = $derived(['artist', 'album', 'track'].includes(item.kind));
   const wide = $derived(landscape || item.kind === 'episode');
+  const faded = $derived(
+    $appearance.fade_watched &&
+      item.watched &&
+      ['movie', 'show', 'season', 'episode'].includes(item.kind),
+  );
   const cardId = $props.id();
   const description = $derived(
     attentionError || attentionDescription(attention, activity),
@@ -51,7 +59,7 @@
 </script>
 
 <article
-  class="media-tile library-tile group/library-card relative h-full min-w-0 border border-line bg-surface shadow-card transition-[border-color,opacity,translate] duration-200 hover:-translate-y-0.5 hover:border-line-strong"
+  class={`media-tile library-tile group/library-card group/media-card relative h-full min-w-0 border border-line bg-surface shadow-card hover:border-line-strong ${mediaCardMotionClass} ${faded ? 'opacity-55 focus-within:opacity-100 hover:opacity-100' : 'opacity-100'}`}
   data-layout-key={`${keyPrefix}:${item.id}`}
   data-sidebar-resize="xy"
 >
@@ -89,7 +97,7 @@
         (attention.length ? 'Your requested media is available' : undefined)}
     >
       {#if item.artwork_url && !imageFailed}<img
-          class="absolute size-full object-cover"
+          class={`absolute size-full object-cover ${mediaCardThumbnailClass}`}
           src={`${serverUrl()}${item.artwork_url}`}
           alt=""
           loading="lazy"

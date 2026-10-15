@@ -2,6 +2,10 @@
   import type { Snippet } from 'svelte';
   import { elapsedTime, formatViewers, liveNow } from '../../utils';
   import LiveCardBadge from './LiveCardBadge.svelte';
+  import {
+    mediaCardMotionClass,
+    mediaCardThumbnailClass,
+  } from '../../../ui/styles';
 
   let {
     platform,
@@ -48,7 +52,7 @@
   data-channel-slug={channelSlug}
   data-stream-id={streamId}
   data-playing={isPlaying}
-  class={`group relative flex h-full flex-col overflow-hidden border bg-surface shadow-card transition-[border-color,transform] ${isBusy ? (platform === 'kick' ? 'border-[#53fc18]' : 'border-accent') : 'border-line hover:-translate-y-0.5 hover:border-line-strong'}`}
+  class={`group group/media-card relative flex h-full flex-col overflow-hidden border bg-surface shadow-card ${mediaCardMotionClass} ${isBusy ? (platform === 'kick' ? 'border-[#53fc18]' : 'border-accent') : 'border-line hover:border-line-strong'}`}
 >
   {#if isPlaying}
     <span
@@ -68,7 +72,7 @@
     >
       {#if thumbnailUrl}
         <img
-          class="size-full object-cover transition-transform duration-300 group-hover:scale-102"
+          class={`size-full object-cover ${mediaCardThumbnailClass}`}
           src={thumbnailUrl}
           alt=""
           loading="lazy"

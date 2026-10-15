@@ -16,6 +16,7 @@
   import { SvelteURL } from 'svelte/reactivity';
   import { players, preloadPage } from './lib/pages';
   import FeatureOutlet from './lib/FeatureOutlet.svelte';
+  import { PageTransition, pageIdentity } from './lib/page-transition';
   import {
     allowedRoute,
     readRoute,
@@ -48,6 +49,8 @@
   import { prefersReducedMotion } from './lib/layout-animation';
   import { get } from 'svelte/store';
   const mediaMotion = createLayoutMotion();
+  const pageTransition = new PageTransition();
+  let pendingRoute: AppRoute | undefined;
   function zoomWheel(node: HTMLElement) {
     const wheel = createCardGridWheelHandler({
       anchorAttribute: 'data-layout-key',
@@ -380,6 +383,8 @@
           const root = (event.payload as { root_id?: string }).root_id;
           if (root) delete scans[root];
         }
+        if (['media-state.changed', 'playback.changed'].includes(event.kind))
+          catalogRevision++;
         if (event.kind === 'catalog.scan.progress') {
           const scan = event.payload as {
             root_id: string;
@@ -434,6 +439,8 @@
     });
   }
   function teardownSession() {
+    pageTransition.cancel();
+    pendingRoute = undefined;
     stopScrollRestoration();
     cancelVerification();
     invalidateSession();
@@ -468,7 +475,7 @@
   ) {
     if (!user) return;
     const next = allowedRoute(destination, user, desktop, $providers);
-    if (routeHref(next) === routeHref(route)) return;
+    if (routeHref(next) === routeHref(pendingRoute ?? route)) return;
     stopScrollRestoration();
     const scroll = workspace?.scrollTop ?? 0;
     const preserveSettingsScroll =
@@ -476,7 +483,6 @@
       next.section === 'Settings' &&
       !next.workflow;
     history.replaceState({ ...history.state, scroll }, '', location.href);
-    route = next;
     writeLocation(
       next,
       replace,
@@ -486,11 +492,52 @@
       mobileNavOpen = false;
       unsavedChanges = false;
       error = '';
-      void restoreWorkspace(
-        preserveSettingsScroll ? scroll : 0,
-        !preserveSettingsScroll,
-      );
     }
+    showRoute(
+      next,
+      preserveWorkspace || preserveSettingsScroll ? scroll : 0,
+      !preserveWorkspace && !preserveSettingsScroll,
+      !preserveWorkspace,
+    );
+  }
+  function showRoute(
+    next: AppRoute,
+    scroll: number,
+    focus: boolean,
+    animate = true,
+  ) {
+    stopScrollRestoration();
+    const changesPage = pageIdentity(next) !== pageIdentity(route);
+    pendingRoute = next;
+    if (!animate || !changesPage || !navigationReady) {
+      pageTransition.cancel();
+      route = next;
+      pendingRoute = undefined;
+      if (animate) void restoreWorkspace(scroll, focus);
+      return;
+    }
+    const preloaded = preloadPage(next).catch(() => {});
+    void pageTransition
+      .change(
+        async () => {
+          route = next;
+          await preloaded;
+          await tick();
+          syncMediaLayouts();
+        },
+        () => restoreWorkspace(scroll, focus),
+        route.section === 'Settings' && next.section === 'Settings'
+          ? route.settings === 'services' && next.settings === 'services'
+            ? 'service'
+            : 'settings'
+          : undefined,
+      )
+      .then((completed) => {
+        if (completed && pendingRoute === next) pendingRoute = undefined;
+      })
+      .catch((caught) => {
+        error = String(caught);
+      });
   }
   function updateFilters(destination: AppRoute, replace = true) {
     go(destination, replace, true);
@@ -648,14 +695,15 @@
         return;
       }
       if (!user) return;
-      route = allowedRoute(
+      const next = allowedRoute(
         readRoute(new URL(location.href), route),
         user,
         desktop,
         $providers,
       );
       mobileNavOpen = false;
-      void restoreWorkspace(history.state?.scroll ?? 0, true);
+      if (routeHref(next) !== routeHref(pendingRoute ?? route))
+        showRoute(next, history.state?.scroll ?? 0, true);
     };
     const sessionExpired = () => teardownSession();
     const cancelledEdits = () => {
@@ -921,32 +969,51 @@
                 >{String(error)}</Notice
               >{/await}
           </div>{/if}
-        <FeatureOutlet
-          {route}
-          {user}
-          {timeFormat}
-          {mediaRevision}
-          {catalogRevision}
-          {accountRevision}
-          {preferencesRevision}
-          {settingsRevision}
-          {scans}
-          {playing}
-          play={playMedia}
-          navigate={(name) => void navigate(name)}
-          {openSettings}
-          {go}
-          {updateFilters}
-          sessionEnded={teardownSession}
-          {switchServer}
-          displayChanged={(zone, format) => {
-            timeFormat = format;
-            if (user) user = { ...user, timezone: zone };
-          }}
-          profileChanged={(id, avatar) => {
-            if (user?.id === id) user = { ...user, avatar };
-          }}
-        />
+        <div
+          class="min-w-0"
+          class:h-full={section === 'YouTube'}
+          data-page-content
+          use:pageTransition.connect
+        >
+          <FeatureOutlet
+            {route}
+            {user}
+            {timeFormat}
+            {mediaRevision}
+            {catalogRevision}
+            {accountRevision}
+            {preferencesRevision}
+            {settingsRevision}
+            {scans}
+            {playing}
+            play={playMedia}
+            navigate={(name) => void navigate(name)}
+            {openSettings}
+            go={(destination, replace) => {
+              if (
+                !pendingRoute ||
+                pageIdentity(pendingRoute) === pageIdentity(route)
+              )
+                go(destination, replace);
+            }}
+            updateFilters={(destination, replace) => {
+              if (
+                !pendingRoute ||
+                pageIdentity(pendingRoute) === pageIdentity(route)
+              )
+                updateFilters(destination, replace);
+            }}
+            sessionEnded={teardownSession}
+            {switchServer}
+            displayChanged={(zone, format) => {
+              timeFormat = format;
+              if (user) user = { ...user, timezone: zone };
+            }}
+            profileChanged={(id, avatar) => {
+              if (user?.id === id) user = { ...user, avatar };
+            }}
+          />
+        </div>
       </div>
     </main>
   </div>

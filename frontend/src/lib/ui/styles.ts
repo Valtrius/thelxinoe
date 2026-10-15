@@ -1,4 +1,10 @@
 // Repeated layouts shared by library, account and administration views.
+export const mediaCardMotionClass =
+  'transition-[border-color,opacity,translate] duration-200 hover:-translate-y-0.5';
+
+export const mediaCardThumbnailClass =
+  'transition-transform duration-300 group-hover/media-card:scale-102';
+
 export const panelClass =
   'panel mb-5 min-w-0 rounded-none border border-line bg-surface p-6 shadow-none compact:p-4 settings-panel:mb-0 settings-panel:border-0 settings-panel:border-t settings-panel:border-line settings-panel:bg-transparent settings-panel:p-0 settings-panel:pt-5 settings-panel:compact:p-0 settings-panel:compact:pt-5';
 

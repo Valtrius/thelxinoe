@@ -821,8 +821,12 @@ for (const manualScroll of [false, true]) {
       .getByRole('link', { name: 'Devices', exact: true })
       .click();
     await expect(
-      page.getByRole('status', { name: 'Loading devices', exact: true }),
-    ).toBeVisible();
+      page.locator('[role="status"][aria-label="Loading devices"]'),
+    ).toBeAttached();
+    await expect(page.locator('[data-page-region="settings"]')).toHaveCSS(
+      'opacity',
+      '0',
+    );
     await expect.poll(scroll).toBeLessThan(80);
     let expected = 80;
     if (manualScroll) {
@@ -881,7 +885,7 @@ test('rapid settings switches keep the latest scroll while a section first loads
   await nav.getByRole('link', { name: 'Devices', exact: true }).click();
   chunks.release();
   await expect(
-    page.getByRole('heading', { name: 'Connect a TV' }),
+    page.getByRole('heading', { name: 'Connect a TV', includeHidden: true }),
   ).toBeAttached();
   devices.release();
   await expect(page.getByText('Browser 39', { exact: true })).toBeAttached();

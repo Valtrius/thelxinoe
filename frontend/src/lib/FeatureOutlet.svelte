@@ -143,25 +143,28 @@
       />
     {:catch error}{@render failed(error)}{/await}
   {:else if ['Movies', 'Shows', 'Music'].includes(route.section)}
-    {#await pages.library()}{@render loading()}{:then { default: LibraryView }}
-      <LibraryView
-        domain={route.section}
-        admin={user.role === 'admin'}
-        revision={catalogRevision}
-        {scans}
-        userId={user.id}
-        timezone={user.timezone}
-        {timeFormat}
-        focusId={route.item}
-        ancestors={route.ancestors}
-        searchQuery={route.query}
-        collectionId={route.collection}
-        filtersChanged={(query, collection) =>
-          updateFilters({ ...route, query, collection })}
-        selectedChanged={(item, ancestors) => go({ ...route, item, ancestors })}
-        {play}
-      />
-    {:catch error}{@render failed(error)}{/await}
+    {#key route.section}
+      {#await pages.library()}{@render loading()}{:then { default: LibraryView }}
+        <LibraryView
+          domain={route.section}
+          admin={user.role === 'admin'}
+          revision={catalogRevision}
+          {scans}
+          userId={user.id}
+          timezone={user.timezone}
+          {timeFormat}
+          focusId={route.item}
+          ancestors={route.ancestors}
+          searchQuery={route.query}
+          collectionId={route.collection}
+          filtersChanged={(query, collection) =>
+            updateFilters({ ...route, query, collection })}
+          selectedChanged={(item, ancestors) =>
+            go({ ...route, item, ancestors })}
+          {play}
+        />
+      {:catch error}{@render failed(error)}{/await}
+    {/key}
   {:else if route.section === 'Playlists'}
     {#await pages.playlists()}{@render loading()}{:then { default: Playlists }}
       <Playlists
