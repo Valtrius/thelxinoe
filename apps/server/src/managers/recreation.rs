@@ -13,7 +13,7 @@ pub(super) struct Attached {
     pub(super) url_base: String,
     pub(super) media_source: String,
     pub(super) credential: Vec<u8>,
-    /// Installed and adopted services keep the identity their controller records.
+    /// Owned services keep the identity their controller records.
     pub(super) owned: bool,
 }
 
@@ -89,13 +89,13 @@ pub(super) async fn follow(state: &AppState, id: &str, missing: &str) -> Result<
     } else {
         serde_json::from_slice(&plaintext).map_err(|_| unavailable())?
     };
-    let c = Connection {
+    let c = Connection::validation(
         state,
         base,
-        url_base: record.url_base.clone(),
-        key: credentials.secret.clone(),
-        kind: record.kind.clone(),
-    };
+        record.url_base.clone(),
+        credentials.secret.clone(),
+        record.kind.clone(),
+    );
     if manager {
         let status = c.get("system/status").await?;
         access::check_reported_base(&record.kind, &record.url_base, &status)?;

@@ -10,6 +10,7 @@ async fn queued(input: Value) -> (tempfile::TempDir, AppState, String, thelxinoe
         db.execute("UPDATE users SET role='admin' WHERE id IN ('alice','bob')", [])?;
         db.execute("INSERT INTO stack_provisions(id,kind,actor_id,state,created_at,updated_at) VALUES ('recyclarr','recyclarr','alice','complete',1,1)", [])?;
         db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('radarr','Radarr','radarr','aaaaaaaaaaaa',7878,'generation',X'01','/media','1',1)", [])?;
+        crate::test_support::own(db)?;
         Ok(())
     }).await.unwrap();
     storage::installed(&state.db, "recyclarr".into(), "alice".into())

@@ -2,11 +2,12 @@
 use super::*;
 
 fn available(db: &rusqlite::Connection) -> anyhow::Result<Vec<Destination>> {
+    // Native access is an Owned capability; Connected and held services stay API-validation only.
     let services = db.prepare("SELECT s.id,s.kind,s.container_id,s.port,s.url_base,s.access_revision,s.media_source
-        FROM (SELECT id,kind,container_id,port,url_base,access_revision,media_source FROM manager_services WHERE enabled=1
-              UNION ALL SELECT id,kind,container_id,port,url_base,access_revision,media_source FROM support_services WHERE kind IN ('prowlarr','bazarr','nzbget')) s
-        LEFT JOIN stack_provisions p ON p.kind=s.kind
-        WHERE p.id IS NULL OR ((p.state='complete' OR p.origin='adopted') AND p.service_id=s.id AND p.container_id=s.container_id)")?
+        FROM (SELECT id,kind,container_id,port,url_base,access_revision,media_source FROM manager_services WHERE enabled=1 AND operational=1
+              UNION ALL SELECT id,kind,container_id,port,url_base,access_revision,media_source FROM support_services WHERE kind IN ('prowlarr','bazarr','nzbget') AND operational=1) s
+        JOIN stack_provisions p ON p.service_id=s.id AND p.kind=s.kind
+        WHERE p.state='complete' AND p.hold IS NULL AND p.container_id=s.container_id")?
         .query_map([], |r| Ok(Destination {
             id:r.get(0)?, kind:r.get(1)?, container:r.get(2)?, port:r.get(3)?,
             url_base:r.get(4)?, access_revision:r.get(5)?, media_source:r.get(6)?

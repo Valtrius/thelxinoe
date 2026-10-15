@@ -6,6 +6,7 @@ import { composeFixture, fixtureId, freePort } from './ci-resources.mjs';
 import { randomUUID } from 'node:crypto';
 import { waitForProxy } from './service-access-fixture.mjs';
 import {
+  budgets,
   requestBudget,
   waitForProvision,
   waitForJob,
@@ -18,7 +19,7 @@ import {
 } from './recyclarr-configuration-fixture.mjs';
 
 const project = fixtureId('recyclarr');
-const adoptionOnly = process.argv.includes('--adoption-only');
+const transferOnly = process.argv.includes('--transfer-only');
 const profilesOnly = process.argv.includes('--profiles-only');
 const configurationOnly = process.argv.includes('--configuration-only');
 const editorOnly = process.argv.includes('--editor-only');
@@ -70,8 +71,8 @@ const evidence = {
       ? 'configuration'
       : profilesOnly
         ? 'profiles'
-        : adoptionOnly
-          ? 'adoption'
+        : transferOnly
+          ? 'transfer'
           : 'complete',
   started: new Date().toISOString(),
   finished: null,
@@ -98,8 +99,8 @@ async function request(
   data,
   timeout = requestBudget(path),
 ) {
-  // Restore verifies a full archive, and both adoption endpoints copy appdata
-  // before responding (even when rejecting a stale or unsupported review).
+  // Restore verifies a full archive, and validating an existing job inspects its
+  // configuration in an isolated worker before responding.
   const copiesState = requestBudget(path) > requestBudget('/setup');
   const started = Date.now();
   let status = null;
@@ -394,7 +395,7 @@ scenario: try {
     JSON.parse(docker('inspect', services.recyclarr.container_id))[0].State
       .Status,
   ).toBe('created');
-  if (!adoptionOnly && !profilesOnly && !editorOnly) {
+  if (!transferOnly && !profilesOnly && !editorOnly) {
     await expect
       .poll(
         async () => {
@@ -554,7 +555,7 @@ scenario: try {
   record(
     'The full official catalog and profile scores sync idempotently while preserving defaults; concurrent manual requests deduplicate; internal preview is read-only',
   );
-  if (!adoptionOnly) {
+  if (!transferOnly) {
     await exerciseConfiguration({
       api,
       request,
@@ -1574,15 +1575,21 @@ scenario: try {
     `${volume}:/config`,
     evidence.image,
   );
-  const autoRemoveReview = await request(
-    '/admin/recyclarr/adopt/preview',
-    'POST',
-    { container_id: autoRemove },
-  );
-  expect(autoRemoveReview.status()).toBe(409);
-  expect(await autoRemoveReview.text()).toContain('Auto-remove');
-  expect(JSON.parse(docker('inspect', autoRemove))[0].State.Running).toBe(true);
+  const running = (container) =>
+    JSON.parse(docker('inspect', container))[0].State.Running;
+  const review = async (id) =>
+    api(`/admin/services/${id}/transfer`, 'POST', undefined, budgets.stateCopy);
+  const autoConnected = await api('/admin/recyclarr/connection', 'POST', {
+    container_id: autoRemove,
+  });
+  // It also shares the other original's volume, so the review lists every blocker.
+  expect(autoConnected.healthy).toBe(false);
+  const autoReview = await review(autoConnected.id);
+  expect(autoReview.review.blockers.join(' ')).toContain('auto-remove');
+  await api(`/admin/transfers/${autoReview.id}/cancel`, 'POST');
+  expect(running(autoRemove)).toBe(true);
   docker('stop', autoRemove);
+  await api(`/admin/services/${autoConnected.id}/forget`, 'POST');
   record(
     'Auto-remove ownership transfer is rejected before stopping its source',
   );
@@ -1590,47 +1597,69 @@ scenario: try {
     originalYaml,
     'resource_providers: [{name: custom, type: trash-guides, path: /custom}]',
   );
-  const unsupported = await request('/admin/recyclarr/adopt/preview', 'POST', {
+  // Connecting validates the job read-only; nothing runs and the schedule is untouched.
+  const connected = await api('/admin/recyclarr/connection', 'POST', {
     container_id: external,
   });
-  expect(unsupported.status()).toBe(409);
-  expect(JSON.parse(docker('inspect', external))[0].State.Running).toBe(true);
+  const unsupported = await review(connected.id);
+  expect(unsupported.review.blockers.length).toBeGreaterThan(0);
+  await api(`/admin/transfers/${unsupported.id}/cancel`, 'POST');
+  expect(running(external)).toBe(true);
   externalConfig(originalYaml);
-  const stale = await api('/admin/recyclarr/adopt/preview', 'POST', {
-    container_id: external,
+  const declarations = {
+    cron: true,
+    systemd: true,
+    ci_cd: true,
+    configuration_management: true,
+    manual_compose: true,
+    unobservable_automation: true,
+  };
+  const wait = async (id) => {
+    let view;
+    await expect
+      .poll(
+        async () => {
+          view = await api(`/admin/transfers/${id}`);
+          return view.state;
+        },
+        { timeout: budgets.provision * 2, intervals: [2000] },
+      )
+      .toMatch(/^(complete|failed|suspended|returned|cancelled)$/);
+    return view;
+  };
+  const stale = await review(connected.id);
+  expect(stale.review.blockers).toEqual([]);
+  externalConfig(`${originalYaml}
+# changed after review
+`);
+  await api(`/admin/transfers/${stale.id}/approve`, 'POST', {
+    review_revision: stale.review_revision,
+    confirm: true,
+    declarations,
   });
-  externalConfig(`${originalYaml}\n# changed after review\n`);
-  const rejected = await request('/admin/recyclarr/adopt', 'POST', {
-    review_id: stale.review_id,
-    container_id: external,
-    released_compose: true,
-  });
-  expect(rejected.status()).toBe(409);
-  expect(JSON.parse(docker('inspect', external))[0].State.Running).toBe(true);
+  // The changed configuration returns the operation before the original stops.
+  const returned = await wait(stale.id);
+  expect(returned.state).toBe('returned');
+  expect(running(external)).toBe(true);
   externalConfig(originalYaml);
-  const review = await api('/admin/recyclarr/adopt/preview', 'POST', {
-    container_id: external,
-  });
+  const reviewed = await review(connected.id);
   for (const key of keys)
-    expect(JSON.stringify(review).includes(key)).toBe(false);
-  const adopted = await api('/admin/recyclarr/adopt', 'POST', {
-    review_id: review.review_id,
-    container_id: external,
-    released_compose: true,
+    expect(JSON.stringify(reviewed).includes(key)).toBe(false);
+  expect(reviewed.review.blockers).toEqual([]);
+  await api(`/admin/transfers/${reviewed.id}/approve`, 'POST', {
+    review_revision: reviewed.review_revision,
+    confirm: true,
+    declarations,
   });
-  const adoptedStack = (
-    await waitForProvision(
-      (timeout) => api('/admin/stack', 'GET', undefined, timeout),
-      adopted.id,
-      'Recyclarr adoption',
-    )
-  ).stack;
+  const transferred = await wait(reviewed.id);
+  expect(transferred.state, transferred.error ?? '').toBe('complete');
+  const ownedStack = await api('/admin/stack');
   services.recyclarr = {
-    ...adoptedStack.items.find((p) => p.id === adopted.id),
-    ...adoptedStack.provisions.find((p) => p.id === adopted.id),
+    ...ownedStack.items.find((p) => p.kind === 'recyclarr'),
+    ...ownedStack.provisions.find((p) => p.kind === 'recyclarr'),
   };
   expect((await settings()).settings.paused).toBe(true);
-  expect(JSON.parse(docker('inspect', external))[0].State.Running).toBe(false);
+  expect(running(external)).toBe(false);
   expect(
     JSON.parse(docker('inspect', external))[0].HostConfig.RestartPolicy.Name,
   ).toBe('no');
@@ -1639,14 +1668,34 @@ scenario: try {
     '-T',
     'controller',
     'cat',
-    `/var/lib/thelxinoe/deployment/services/${adopted.id}/appdata/recyclarr.yml`,
+    `/var/lib/thelxinoe/deployment/services/${services.recyclarr.id}/appdata/recyclarr.yml`,
   );
   for (const key of keys) expect(managedYaml.includes(key)).toBe(false);
   await waitRun((await api('/admin/recyclarr/sync', 'POST', {})).id);
   for (const kind of ['radarr', 'sonarr'])
     expect(await snapshot(kind)).toEqual(evidence.snapshots[`${kind}-applied`]);
   record(
-    'Unsupported or stale adoption preserves the original; reviewed transfer stops cron, copies and scrubs appdata, starts paused and retains mappings',
+    'Unsupported or stale transfers preserve the original; a reviewed transfer stops cron, copies and scrubs appdata, starts paused and retains mappings',
+  );
+  // A transferred definition is reverified like an installed one after recreation.
+  docker('rm', '-f', services.recyclarr.container_id);
+  await api(`/admin/stack/${services.recyclarr.id}/action`, 'POST', {
+    action: 'recreate',
+  });
+  await expect
+    .poll(
+      async () => {
+        const provision = (await api('/admin/stack')).provisions.find(
+          (item) => item.id === services.recyclarr.id,
+        );
+        return `${provision?.origin}:${provision?.state}:${provision?.hold}`;
+      },
+      { timeout: 45000 },
+    )
+    .toBe('transferred:complete:null');
+  expect((await settings()).settings.paused).toBe(true);
+  record(
+    'A recreated transferred job definition is reverified and keeps its paused schedule',
   );
   await api(`/admin/stack/${services.recyclarr.id}/action`, 'POST', {
     action: 'remove',

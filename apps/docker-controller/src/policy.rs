@@ -113,7 +113,7 @@ pub fn media_source(container: &Value) -> Result<&str, &'static str> {
         })
     }) {
         return Err(
-            "Fresh installations require one shared writable mount at /media; additional media mounts can be used with connected or adopted services",
+            "Fresh installations require one shared writable mount at /media; additional media mounts can be used by Connected and transferred services",
         );
     }
     Ok(source)
@@ -129,7 +129,7 @@ fn normalized(path: &str) -> Option<std::path::PathBuf> {
     })
 }
 /// Trusted deployment volumes may live under Docker's state directory.
-/// This check only excludes media overlap; adoption uses the stricter policy.
+/// This check only excludes media overlap; transfers use the stricter policy.
 pub fn media_disjoint(state: &str, media: &str) -> bool {
     match (normalized(state), normalized(media)) {
         (Some(state), Some(media)) => !state.starts_with(&media) && !media.starts_with(&state),
@@ -147,7 +147,7 @@ pub fn host_time_zone(source: &str) -> bool {
     matches!(source, "/etc/localtime" | "/etc/timezone")
         || std::path::Path::new(source).starts_with("/usr/share/zoneinfo")
 }
-/// Why a host folder other than `/config` can't stay mounted in an adopted service.
+/// Why a host folder other than `/config` can't stay mounted in a transferred service.
 pub fn foreign_source_problem(source: &str, deployment: &str) -> Option<&'static str> {
     let Some(path) = normalized(source) else {
         return Some("uses an unsupported host path");
@@ -195,130 +195,6 @@ fn system_path(path: &std::path::Path) -> bool {
     .iter()
     .any(|root| path.starts_with(root))
 }
-pub fn validate_adoption(
-    container: &Value,
-    image: &Value,
-    t: Template,
-    network: &str,
-    media_source: &str,
-    released_compose: bool,
-) -> Result<(), &'static str> {
-    if image["Architecture"] != "amd64" || image["Os"] != "linux" {
-        return Err("Adoption requires the supported Linux x86-64 image");
-    }
-    transfer_owner(container, released_compose)?;
-    // Callers report `adoption_image` first, with the offending image named.
-    adoption_image(container, image, t)
-        .map_err(|_| "Transfer requires the service's official image on a stable tag")?;
-    let host = &container["HostConfig"];
-    if host["AutoRemove"] == true {
-        return Err("Auto-remove containers cannot be retained for ownership transfer");
-    }
-    if host["Privileged"] == true || host["ReadonlyRootfs"] == true {
-        return Err("Unsupported privilege or filesystem configuration");
-    }
-    for key in [
-        "CapAdd",
-        "Devices",
-        "DeviceRequests",
-        "ExtraHosts",
-        "Dns",
-        "Sysctls",
-        "GroupAdd",
-        "Tmpfs",
-        "PidMode",
-        "UsernsMode",
-        "UTSMode",
-    ] {
-        if !empty(&host[key]) {
-            return Err("Unsupported host access in the existing container");
-        }
-    }
-    if !matches!(host["IpcMode"].as_str(), None | Some("") | Some("private")) {
-        return Err("Shared IPC is not supported");
-    }
-    if host["SecurityOpt"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .any(|value| value != "no-new-privileges:true" && value != "no-new-privileges")
-    {
-        return Err("Custom security profiles are not supported for adoption");
-    }
-    let expected_hostname = container["Id"].as_str().and_then(|id| id.get(..12));
-    if container["Config"]["Hostname"].as_str() != expected_hostname {
-        return Err("Custom container hostnames are not supported for adoption");
-    }
-    let networks = container["NetworkSettings"]["Networks"]
-        .as_object()
-        .ok_or("Missing network evidence")?;
-    if networks.len() != 1 || !networks.contains_key(network) {
-        return Err("Adoption requires only the Thelxinoe media network");
-    }
-    let config = &container["Config"];
-    for key in ["Cmd", "Entrypoint", "User", "WorkingDir", "Healthcheck"] {
-        if t.kind == "recyclarr" && key == "User" {
-            crate::identity::Identity::from_user(config)
-                .map_err(|_| "Recyclarr requires a numeric non-root user")?;
-            continue;
-        }
-        if !same_default(&config[key], &image["Config"][key]) {
-            return Err("Custom commands, users or health checks are not supported");
-        }
-    }
-    let defaults = image["Config"]["Env"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    for value in config["Env"]
-        .as_array()
-        .ok_or("Missing environment evidence")?
-    {
-        let value = value.as_str().ok_or("Invalid environment entry")?;
-        if defaults.iter().any(|d| d.as_str() == Some(value)) {
-            continue;
-        }
-        let (key, value) = value.split_once('=').ok_or("Invalid environment entry")?;
-        if !(matches!(key, "PUID" | "PGID" | "TZ" | "UMASK")
-            || (t.kind == "recyclarr" && key == "CRON_SCHEDULE"))
-            || value.len() > 100
-            || value.contains(['\n', '\r'])
-        {
-            return Err("Unsupported application environment overrides");
-        }
-        if matches!(key, "PUID" | "PGID")
-            && !value
-                .parse::<u32>()
-                .is_ok_and(|id| id > 0 && id < i32::MAX as u32)
-        {
-            return Err("Adoption requires non-root numeric PUID and PGID values");
-        }
-    }
-    let mounts = container["Mounts"]
-        .as_array()
-        .ok_or("Missing mount evidence")?;
-    if mounts.len() != if t.media { 2 } else { 1 } {
-        return Err("Adoption supports only /config and the shared /media bind mount");
-    }
-    for mount in mounts {
-        if mount["Type"] != "bind" || mount["RW"] != true {
-            return Err("Adoption requires writable bind mounts");
-        }
-        match mount["Destination"].as_str() {
-            Some("/media") if t.media && mount["Source"] == media_source => {}
-            Some("/config")
-                if mount["Source"]
-                    .as_str()
-                    .is_some_and(|source| appdata_isolated(source, media_source)) => {}
-            _ => {
-                return Err(
-                    "Media mount must use the same host source and /media path as Thelxinoe",
-                );
-            }
-        }
-    }
-    Ok(())
-}
 pub fn transfer_owner(container: &Value, released_compose: bool) -> Result<(), &'static str> {
     let mut standalone = container.clone();
     if let Some(labels) = standalone["Config"]["Labels"].as_object_mut() {
@@ -337,8 +213,8 @@ pub fn transfer_owner(container: &Value, released_compose: bool) -> Result<(), &
     }
     Ok(())
 }
-/// Keep the exact installed stable upstream image: ownership transfer is not an upgrade.
-pub fn adoption_image(
+/// The source's exact stable upstream image; qualification decides whether a transfer keeps it.
+pub fn source_image(
     container: &Value,
     image: &Value,
     t: Template,
@@ -429,11 +305,6 @@ pub fn host_path(value: &str) -> Option<std::path::PathBuf> {
             )
         }))
     .then_some(path)
-}
-/// Identifies one reviewed configuration, so acceptance can't apply a later change.
-pub fn configuration_revision(fingerprint: &Value) -> String {
-    use sha2::{Digest, Sha256};
-    format!("{:x}", Sha256::digest(fingerprint.to_string()))
 }
 /// Fields of the configuration as `docker inspect` names them, for review.
 fn inspect_path(path: &str) -> String {
@@ -602,7 +473,7 @@ mod tests {
         assert!(!appdata_isolated("/srv/state/../../etc/service", "/media"));
     }
     #[test]
-    fn existing_media_and_time_zone_mounts_stay_adoptable_without_host_system_access() {
+    fn existing_media_and_time_zone_mounts_stay_transferable_without_host_system_access() {
         let deployment = "/var/lib/docker/volumes/thelxinoe_deployment/_data";
         for source in ["/data", "/media", "/mnt/user/data", r"C:\Media"] {
             assert_eq!(foreign_source_problem(source, deployment), None, "{source}");
@@ -674,10 +545,7 @@ mod tests {
             digest.as_str(),
         ] {
             let container = json!({"Config":{"Image":reference}});
-            assert_eq!(
-                adoption_image(&container, &image, template).unwrap(),
-                digest
-            );
+            assert_eq!(source_image(&container, &image, template).unwrap(), digest);
         }
         for reference in [
             "untrusted/radarr:latest",
@@ -685,11 +553,11 @@ mod tests {
             "linuxserver/radarr:6.2.0-beta",
         ] {
             assert!(
-                adoption_image(&json!({"Config":{"Image":reference}}), &image, template).is_err()
+                source_image(&json!({"Config":{"Image":reference}}), &image, template).is_err()
             );
         }
         assert!(
-            adoption_image(
+            source_image(
                 &json!({"Config":{"Image":"linuxserver/radarr:latest"}}),
                 &json!({"RepoDigests":[]}),
                 template
@@ -712,7 +580,7 @@ mod tests {
         ] {
             let pinned = format!("{published}@{digest}");
             assert_eq!(
-                adoption_image(
+                source_image(
                     &json!({"Config":{"Image":reference}}),
                     &json!({"RepoDigests":[pinned]}),
                     template
@@ -728,11 +596,11 @@ mod tests {
             "ghcr.io/seerr-team/seerr:sha-939000f",
             "ghcr.io/seerr-team/seerr:preview-music-support",
         ] {
-            let error = adoption_image(&json!({"Config":{"Image":reference}}), &image, template)
-                .unwrap_err();
+            let error =
+                source_image(&json!({"Config":{"Image":reference}}), &image, template).unwrap_err();
             assert!(error.contains("stable image tag"), "{reference}: {error}");
         }
-        let error = adoption_image(
+        let error = source_image(
             &json!({"Config":{"Image":"fallenbagel/jellyseerr:latest"}}),
             &image,
             template,

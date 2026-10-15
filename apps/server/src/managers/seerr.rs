@@ -48,6 +48,9 @@ async fn call(
     body: Option<Value>,
     user: Option<i64>,
 ) -> Result<Value> {
+    if method != reqwest::Method::GET {
+        c.authorize().await?;
+    }
     let mut url = format!("{}/api/v1/{path}", c.base);
     if !query.is_empty() {
         url.push('?');
@@ -688,8 +691,12 @@ async fn bootstrap_endpoint(
     }
 }
 
-pub(super) async fn initialize(state: &AppState) -> Result<()> {
-    let (service, c) = connection(state).await?;
+/// Apply the managed request and authentication model to the Seerr being set up or
+/// transferred. Runs only under that service's setup or transfer authority.
+pub(super) async fn initialize(state: &AppState, service: &str) -> Result<()> {
+    let service = service.to_owned();
+    let remote = support::load(state, &service).await?;
+    let c = support::connect(state, &remote).await?;
     let _guard = state.managers.guard.service("seerr").await;
     if c.get("auth/me").await.is_err() {
         let token = thelxinoe_auth::token();
@@ -697,7 +704,6 @@ pub(super) async fn initialize(state: &AppState) -> Result<()> {
             .await?;
         let own = std::env::var("HOSTNAME").map_err(|_| unavailable())?;
         let server = docker(state, &format!("containers/{own}")).await?;
-        let remote = support::load(state, &service).await?;
         let remote = docker(state, &format!("containers/{}", remote.container)).await?;
         let hostname = server["networks"]
             .as_array()
@@ -730,6 +736,32 @@ pub(super) async fn initialize(state: &AppState) -> Result<()> {
     drop(_guard);
     state.managers.connection_wake.notify_one();
     Ok(())
+}
+
+/// Provision and read back the approving administrator's Seerr identity during a transfer.
+pub(super) async fn administrator(
+    state: &AppState,
+    service: &str,
+    principal: &Principal,
+) -> Result<i64> {
+    let remote = support::load(state, service).await?;
+    let c = support::connect(state, &remote).await?;
+    let id = user_locked(&c, principal).await?;
+    let read = call(
+        &c,
+        reqwest::Method::GET,
+        &format!("user/{id}"),
+        &[],
+        None,
+        None,
+    )
+    .await?;
+    if read["id"] != id || read["email"] != format!("{}@thelxinoe.invalid", principal.user.id) {
+        return Err(ApiError::conflict(
+            "Seerr did not read back the administrator identity",
+        ));
+    }
+    Ok(id)
 }
 
 async fn sync(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
@@ -860,6 +892,7 @@ mod tests {
             state.db.write("test.seerr", move |db| {
                 db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at,defaults) VALUES ('radarr','Radarr','radarr',?1,?2,'g',?3,?4,'1',1,'{\"quality_profile\":1,\"root_folder\":\"/media/movies\",\"monitored\":true}')",params![container,port,manager_key,media_source])?;
                 db.execute("INSERT INTO support_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('seerr','Seerr','seerr',?1,?2,'g',?3,'','1',1)",params![container,port,seerr_key])?;
+                crate::test_support::own(db)?;
                 db.execute("UPDATE users SET role='admin' WHERE id='alice'",[])?;
                 Ok(())
             }).await.unwrap();

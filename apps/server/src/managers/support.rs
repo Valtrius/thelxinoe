@@ -24,27 +24,52 @@ pub(super) struct Support {
     pub(super) url_base: String,
     pub(super) access_revision: String,
     media_source: String,
+    generation: String,
+    scope: ownership::Scope,
     pub(super) credentials: Credentials,
 }
+/// An operational Owned support service, or the service a running setup or transfer coordinates.
 pub(super) async fn load(state: &AppState, key: &str) -> Result<Support> {
-    let key = key.to_owned();
-    let row = storage::load(key, &state.db)
+    let mut service = load_any(state, key).await?;
+    match ownership::authority_for(key) {
+        Some(scope) => service.scope = scope,
+        None if service.scope != ownership::Scope::Operational => {
+            return Err(ownership::held(&service.kind));
+        }
+        None => {}
+    }
+    Ok(service)
+}
+/// Any saved support connection, for read-only health and identity validation.
+pub(super) async fn load_connected(state: &AppState, key: &str) -> Result<Support> {
+    let mut service = load_any(state, key).await?;
+    service.scope = ownership::Scope::Validation;
+    Ok(service)
+}
+async fn load_any(state: &AppState, key: &str) -> Result<Support> {
+    let row = storage::load(key.to_owned(), &state.db)
         .await?
         .ok_or_else(ApiError::not_found)?;
     let credentials = serde_json::from_slice(
         &state
             .secrets
-            .decrypt(&format!("support:{}", row.0), &row.5)?,
+            .decrypt(&format!("support:{}", row.id), &row.credential)?,
     )
     .map_err(|_| unavailable())?;
     Ok(Support {
-        id: row.0,
-        kind: row.1,
-        container: row.2,
-        port: row.3,
-        url_base: row.6,
-        access_revision: row.7,
-        media_source: row.4,
+        id: row.id,
+        kind: row.kind,
+        container: row.container,
+        port: row.port,
+        url_base: row.url_base,
+        access_revision: row.access_revision,
+        media_source: row.media_source,
+        generation: row.generation,
+        scope: if row.operational {
+            ownership::Scope::Operational
+        } else {
+            ownership::Scope::Validation
+        },
         credentials,
     })
 }
@@ -63,8 +88,9 @@ async fn login(
         "password": service.credentials.secret,
     })))
 }
+/// Read-only: Connected services may be checked before a transfer stops them.
 pub(super) async fn ensure_idle(state: &AppState, key: &str) -> Result<()> {
-    let s = load(state, key).await?;
+    let s = load_connected(state, key).await?;
     let c = connect(state, &s).await?;
     let idle = match s.kind.as_str() {
         "nzbget" => {
@@ -121,6 +147,12 @@ pub(super) async fn connect<'a>(state: &'a AppState, s: &Support) -> Result<Conn
         url_base: s.url_base.clone(),
         key: s.credentials.secret.clone(),
         kind: s.kind.clone(),
+        grant: ownership::Grant {
+            scope: s.scope.clone(),
+            service: s.id.clone(),
+            generation: s.generation.clone(),
+            container: s.container.clone(),
+        },
     })
 }
 pub(super) async fn api_evidence(
@@ -158,6 +190,10 @@ pub(super) async fn rpc(
     method: &str,
     params: Value,
 ) -> Result<Value> {
+    // JSON-RPC uses POST for reads too; only the method decides whether NZBGet changes.
+    if !ownership::nzbget_read_only(method) {
+        c.authorize().await?;
+    }
     let response = c
         .state
         .managers
@@ -225,6 +261,9 @@ struct Register {
     allow_unverified: bool,
     #[serde(skip)]
     container_name: String,
+    /// Set only by an installation registering its own new container under its setup hold.
+    #[serde(skip)]
+    setup: Option<String>,
 }
 async fn register(
     State(state): State<AppState>,
@@ -271,13 +310,13 @@ async fn register_with_actor(
     access::validate_base(&input.kind, &input.url_base)?;
     let (base, media_source) =
         api_evidence(&state, &input.container_id, input.port, &input.kind).await?;
-    let c = Connection {
-        state: &state,
-        base,
-        url_base: input.url_base.clone(),
-        key: input.credentials.secret.clone(),
-        kind: input.kind.clone(),
-    };
+    let c = Connection::validation(
+        &state,
+        base.clone(),
+        input.url_base.clone(),
+        input.credentials.secret.clone(),
+        input.kind.clone(),
+    );
     let observed = docker(&state, &format!("containers/{}", input.container_id)).await?;
     input.container_name = observed["name"]
         .as_str()
@@ -304,19 +343,26 @@ async fn register_with_actor(
         &format!("support:{key}"),
         &serde_json::to_vec(&input.credentials).map_err(|_| unavailable())?,
     )?;
-    let allowed = storage::register_with_actor_write_stack_provisions(
+    let registration = Registration {
+        key,
+        credential: secret,
         media_source,
         version,
-        key,
-        secret,
+        engine: observed["engine"].as_str().unwrap_or_default().to_owned(),
+        evidence: connection_evidence(&observed, &base),
+        verified: observed["running"] == true,
+        setup: input.setup.clone(),
+    };
+    let allowed = storage::register_with_actor_write_stack_provisions(
         &state.db,
+        registration,
         input,
         actor_id,
     )
     .await?;
     if !allowed {
         return Err(ApiError::conflict(format!(
-            "Thelxinoe is installing or managing another {service} container; finish or remove that installation first"
+            "Thelxinoe is installing, transferring or managing another {service}; finish or remove that installation first"
         )));
     }
     Ok(Json(json!({"id":returned})))
@@ -325,6 +371,32 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<
     security::require(&state, &headers, Capability::ManageServer).await?;
     let rows = storage::list(&state.db).await?;
     Ok(Json(json!({"items":rows})))
+}
+/// Read-only health and identity check of a saved connection, in any stage.
+pub(super) async fn test(state: &AppState, key: &str) -> Result<Value> {
+    let s = load_connected(state, key).await?;
+    let result = async {
+        let c = connect(state, &s).await?;
+        let version = version(&c, &s.credentials).await?;
+        if s.kind == "seerr" {
+            c.get("settings/main").await?;
+        } else if !thelxinoe_core::service_url_base(&s.kind).is_empty() {
+            access::check_connection(&c).await?;
+        }
+        Ok::<_, ApiError>(version)
+    }
+    .await;
+    let error = result.as_ref().err().map(|e| e.2.clone());
+    storage::test(
+        &state.db,
+        key.to_owned(),
+        s.container,
+        result.as_ref().ok().cloned(),
+        error,
+    )
+    .await?;
+    state.notify_attention();
+    Ok(json!({"healthy":true,"version":result?}))
 }
 fn text(value: &Value, secret: &str) -> String {
     let value = value.as_str().unwrap_or("");
@@ -590,12 +662,15 @@ async fn action(
     Ok(Json(json!({"accepted":true})))
 }
 
-pub(super) async fn provision(state: AppState, actor: String, input: Value) -> Result<Json<Value>> {
-    register_with_actor(
-        state,
-        serde_json::from_value(input)
-            .map_err(|_| ApiError::bad("Invalid managed service configuration"))?,
-        actor,
-    )
-    .await
+/// Register an installation's own new container under its setup hold.
+pub(super) async fn provision(
+    state: AppState,
+    actor: String,
+    setup: &str,
+    input: Value,
+) -> Result<Json<Value>> {
+    let mut input: Register = serde_json::from_value(input)
+        .map_err(|_| ApiError::bad("Invalid managed service configuration"))?;
+    input.setup = Some(setup.to_owned());
+    register_with_actor(state, input, actor).await
 }

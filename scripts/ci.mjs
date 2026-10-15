@@ -195,11 +195,8 @@ async function web() {
   ]);
 }
 
-async function containers() {
-  const project = fixtureId('catalog');
-  const playbackProject = fixtureId('playback');
-  process.env.COMPOSE_PROJECT_NAME = project;
-  ensurePlaywright();
+/** Stage pinned service images and build this revision's server and controller. */
+async function buildImages() {
   const images = fixtureImages();
   process.env.THELXINOE_SERVER_IMAGE = images.server;
   process.env.THELXINOE_CONTROLLER_IMAGE = images.controller;
@@ -234,6 +231,14 @@ async function containers() {
     },
     ['image-staging'],
   );
+  return images;
+}
+async function containers() {
+  const project = fixtureId('catalog');
+  const playbackProject = fixtureId('playback');
+  process.env.COMPOSE_PROJECT_NAME = project;
+  ensurePlaywright();
+  const images = await buildImages();
   await evidence.group(
     'server-tools',
     () =>
@@ -426,6 +431,17 @@ async function updatesServer() {
     ['browser-runtime'],
   );
 }
+// Real-container ownership transfers of every supported service and storage type.
+async function transfers() {
+  ensurePlaywright();
+  await buildImages();
+  await evidence.group(
+    'transfers',
+    () => node('scripts/test-transfers.mjs'),
+    ['container-build', 'browser-runtime'],
+    'test-results/transfers/result.json',
+  );
+}
 async function updatesDesktop() {
   if (!isWindows)
     throw new Error('Desktop update qualification requires Windows.');
@@ -439,6 +455,7 @@ const phaseFunctions = {
   server,
   web,
   containers,
+  transfers,
   desktop,
   'updates-server': updatesServer,
   'updates-desktop': updatesDesktop,
@@ -456,7 +473,7 @@ for (const phase of phases) {
   let browser, failure;
   const originalEndpoint = process.env.THELXINOE_CI_BROWSER_WS_ENDPOINT;
   try {
-    if (['containers', 'updates-server'].includes(phase)) {
+    if (['containers', 'transfers', 'updates-server'].includes(phase)) {
       const resources = process.env.THELXINOE_CI_RESOURCE_DIRECTORY;
       await evidence.group('browser-runtime', async () => {
         if (!originalEndpoint) {

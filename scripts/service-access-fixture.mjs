@@ -73,6 +73,7 @@ export async function fixture({
   let browser, context;
   const services = {};
   const attachedContainers = [];
+  const attachedVolumes = [];
   const sourceProjects = [];
   const secrets = new Set(['test-only long passphrase']);
   let closed = false;
@@ -304,6 +305,11 @@ export async function fixture({
       configDirectory,
       mediaMounts,
       autoRemove = false,
+      volume = false,
+      // LinuxServer PUID:PGID of the original; Seerr always runs as node.
+      identity = '10001:10001',
+      // Read-only supplementary files or folders: [{ source, destination }].
+      extraMounts = [],
     } = {},
   ) {
     const name = `${project}-attached-${kind}-${attachedContainers.length}`;
@@ -317,9 +323,15 @@ export async function fixture({
       prowlarr: 9696,
       bazarr: 6767,
       nzbget: 6789,
+      seerr: 5055,
     }[kind];
+    // Seerr's image runs as node (1000) and keeps its state in /app/config.
+    const seerr = kind === 'seerr';
+    const destination = seerr ? '/app/config' : '/config';
+    const owner = seerr ? '1000:1000' : identity;
+    const [puid, pgid] = owner.split(':');
     const port = await freePort();
-    const key = nzbgetWarnings ? '' : randomBytes(16).toString('hex');
+    let key = nzbgetWarnings ? '' : randomBytes(16).toString('hex');
     if (key) secrets.add(key);
     mkdirSync(directory, { recursive: true });
     if (kind === 'bazarr') {
@@ -345,6 +357,45 @@ export async function fixture({
       );
     attachedContainers.push(name);
     infrastructure.update({ containers: attachedContainers });
+    // Docker-volume appdata starts from the same seeded files as a bind.
+    const appdata = volume ? `${name}-config` : directory;
+    if (volume) {
+      attachedVolumes.push(appdata);
+      infrastructure.update({ volumes: attachedVolumes });
+      docker(
+        'volume',
+        'create',
+        '--label',
+        `io.thelxinoe.ci-run=${env.THELXINOE_CI_RUN_ID ?? project}`,
+        appdata,
+      );
+      docker(
+        'run',
+        '--rm',
+        '--network',
+        'none',
+        '-v',
+        `${directory}:/seed:ro`,
+        '-v',
+        `${appdata}:/config`,
+        fixtureImage('debian:bookworm-slim'),
+        'sh',
+        '-c',
+        `cp -a /seed/. /config/ && chown -R ${owner} /config`,
+      );
+    } else if (seerr)
+      docker(
+        'run',
+        '--rm',
+        '--network',
+        'none',
+        '-v',
+        `${directory}:/config`,
+        fixtureImage('debian:bookworm-slim'),
+        'chown',
+        owner,
+        '/config',
+      );
     let container;
     if (composeOwnership) {
       const sourceProject = fixtureId('source');
@@ -358,12 +409,12 @@ export async function fixture({
             [kind]: {
               image,
               container_name: name,
-              environment: { PUID: '10001', PGID: '10001' },
+              environment: { PUID: puid, PGID: pgid },
               labels: {
                 'io.thelxinoe.ci-run': process.env.THELXINOE_CI_RUN_ID,
               },
               volumes: [
-                `${directory}:/config`,
+                `${appdata}:/config`,
                 ...(existingLayout
                   ? [
                       `${mediaSource('movies')}:/movies`,
@@ -393,18 +444,15 @@ export async function fixture({
         name,
         '--network',
         `${project}_test`,
-        '-e',
-        'PUID=10001',
-        '-e',
-        'PGID=10001',
+        ...(seerr ? [] : ['-e', `PUID=${puid}`, '-e', `PGID=${pgid}`]),
         '-v',
-        `${directory}:/config`,
+        `${appdata}:${destination}`,
         ...(mediaMounts
           ? mediaMounts.flatMap(({ source, destination }) => [
               '-v',
               `${source}:${destination}`,
             ])
-          : kind === 'prowlarr'
+          : kind === 'prowlarr' || seerr
             ? []
             : existingLayout
               ? [
@@ -416,6 +464,10 @@ export async function fixture({
                   `${mediaSource('downloads')}:/downloads`,
                 ]
               : ['-v', `${mediaSource()}:/media`]),
+        ...extraMounts.flatMap(({ source, destination }) => [
+          '--mount',
+          `type=bind,source=${source},target=${destination},readonly`,
+        ]),
         '-p',
         `127.0.0.1:${port}:${internalPort}`,
         image,
@@ -438,7 +490,7 @@ export async function fixture({
         return body.result;
       }
       const response = await context.request.fetch(
-        `http://localhost:${port}${urlBase}/api/${kind === 'bazarr' ? '' : `v${['lidarr', 'prowlarr'].includes(kind) ? 1 : 3}/`}${path}`,
+        `http://localhost:${port}${urlBase}/api/${kind === 'bazarr' ? '' : `v${['lidarr', 'prowlarr', 'seerr'].includes(kind) ? 1 : 3}/`}${path}`,
         {
           method,
           data,
@@ -449,15 +501,71 @@ export async function fixture({
         },
       );
       if (!response.ok())
-        throw Error(`Attached ${kind}/${path}: HTTP ${response.status()}`);
+        throw Error(
+          `Attached ${kind}/${path}: HTTP ${response.status()} ${(await response.text()).slice(0, 400)}`,
+        );
       const text = await response.text();
       return text ? JSON.parse(text) : null;
     };
+    // An existing Seerr has an administrator; set one up through a fixture Jellyfin.
+    async function initializeSeerr() {
+      // Hostnames are DNS labels of at most 63 characters.
+      const peer = `${project}-jf-${attachedContainers.length}`;
+      attachedContainers.push(peer);
+      infrastructure.update({ containers: attachedContainers });
+      docker(
+        'run',
+        '-d',
+        '--label',
+        `io.thelxinoe.ci-run=${env.THELXINOE_CI_RUN_ID ?? project}`,
+        '--name',
+        peer,
+        '--network',
+        `${project}_test`,
+        '-v',
+        `${resolve('tests/seerr-jellyfin-peer.mjs')}:/peer.mjs:ro`,
+        fixtureImage('node:24-bookworm-slim'),
+        'node',
+        '/peer.mjs',
+      );
+      const seerrApi = (path, data) =>
+        context.request.post(`http://localhost:${port}/api/v1/${path}`, {
+          data,
+        });
+      await waitForState(
+        'Fixture Seerr administrator',
+        async () =>
+          (
+            await seerrApi('auth/jellyfin', {
+              hostname: peer,
+              port: 8096,
+              urlBase: '',
+              useSsl: false,
+              serverType: 2,
+              username: 'fixture-admin',
+              password: 'fixture-password',
+              email: 'fixture-admin@example.invalid',
+            })
+          ).status(),
+        (status) => status === 200,
+        { timeout: budgets.startup },
+      );
+      const initialized = await seerrApi('settings/initialize', {});
+      if (!initialized.ok())
+        throw Error(`Fixture Seerr setup: HTTP ${initialized.status()}`);
+    }
     async function register() {
       await waitForState(
         `Attached ${kind} startup`,
         async () => {
           if (kind === 'nzbget') return (await direct('version')) ? kind : '';
+          if (seerr) {
+            // Seerr generates its API key on first start.
+            if (!(await direct('status')).version) return '';
+            key = JSON.parse(readAppdata(appdata, 'settings.json')).main.apiKey;
+            secrets.add(key);
+            return kind;
+          }
           const status = await direct('system/status');
           const ready =
             kind === 'bazarr' && status.data.bazarr_version
@@ -471,7 +579,8 @@ export async function fixture({
         (value) => value === kind,
         { timeout: budgets.startup },
       );
-      const support = ['prowlarr', 'bazarr', 'nzbget'].includes(kind);
+      if (seerr) await initializeSeerr();
+      const support = ['prowlarr', 'bazarr', 'nzbget', 'seerr'].includes(kind);
       return api(support ? '/admin/support' : '/admin/managers', 'POST', {
         name: `Attached ${kind}`,
         kind,
@@ -491,10 +600,14 @@ export async function fixture({
     const registered = await register();
     return {
       id: registered.id,
+      kind,
+      name,
       container,
       direct,
       port,
       directory,
+      appdata,
+      key,
       // Simulate an external owner's config change and subsequent reconnection.
       async setBase(base) {
         if (!['radarr', 'sonarr', 'lidarr', 'prowlarr'].includes(kind))
@@ -582,7 +695,118 @@ export async function fixture({
         { timeout: 30000 },
       )
       .toBe(true);
+    ownPeer(registered.id);
     return registered;
+  }
+  // The peer imitates Radarr's API, so it can't be transferred from a curated image.
+  // Record it as an Owned installation directly; ownership itself is qualified by
+  // scripts/test-transfers.mjs against real containers.
+  function ownPeer(id) {
+    if (!/^[\w-]+$/.test(id)) throw Error('Unexpected peer identity');
+    compose(
+      'exec',
+      '-T',
+      'server',
+      'python',
+      '-c',
+      `import sqlite3; c=sqlite3.connect('/var/lib/thelxinoe/thelxinoe.sqlite3'); c.execute("INSERT INTO stack_provisions(id,kind,actor_id,state,container_id,service_id,origin,created_at,updated_at) SELECT 'peer-'||id,kind,(SELECT id FROM users WHERE username='admin'),'complete',container_id,id,'installed',1,1 FROM manager_services WHERE id='${id}'"); c.execute("UPDATE manager_services SET operational=1,verified=1 WHERE id='${id}'"); c.commit()`,
+    );
+  }
+  /** Review, confirm and wait for a guided ownership transfer of a Connected service. */
+  async function transfer(
+    serviceId,
+    {
+      composeMode = 'scoped',
+      declarations = {},
+      until = ['complete', 'failed', 'suspended', 'returned', 'cancelled'],
+      approve = true,
+    } = {},
+  ) {
+    let view = await api(`/admin/services/${serviceId}/transfer`, 'POST');
+    if (view.state !== 'review') return { view, review: view };
+    if (view.review.plan.compose)
+      view = await api(`/admin/transfers/${view.id}/choices`, 'PUT', {
+        compose_mode: composeMode,
+      });
+    const review = view;
+    if (!approve) return { view, review };
+    if (view.review.blockers.length)
+      throw Error(
+        `Transfer review is blocked: ${view.review.blockers.join('; ')}`,
+      );
+    await api(`/admin/transfers/${view.id}/approve`, 'POST', {
+      review_revision: view.review_revision,
+      confirm: true,
+      declarations: {
+        cron: true,
+        systemd: true,
+        ci_cd: true,
+        configuration_management: true,
+        manual_compose: true,
+        unobservable_automation: true,
+        scoped_removed_from_files: composeMode === 'scoped',
+        scoped_no_orphan_removal: composeMode === 'scoped',
+        scoped_no_restart: composeMode === 'scoped',
+        scoped_no_appdata_writes: composeMode === 'scoped',
+        project_retired: composeMode === 'project',
+        unrelated_services_acknowledged: composeMode === 'project',
+        ...declarations,
+      },
+    });
+    return { view: await waitTransfer(view.id, until), review };
+  }
+  async function waitTransfer(
+    id,
+    until = ['complete', 'failed', 'suspended', 'returned', 'cancelled'],
+    timeout = budgets.transfer,
+    reached = () => false,
+  ) {
+    return waitForState(
+      `Transfer ${id}`,
+      (requestTimeout) =>
+        api(
+          `/admin/transfers/${id}`,
+          'GET',
+          undefined,
+          context.request,
+          requestTimeout,
+        ),
+      (view) => until.includes(view.state) || reached(view),
+      { timeout, interval: 500 },
+    );
+  }
+  /** Read a file in a container's appdata without starting the service. */
+  function readAppdata(
+    appdata,
+    path,
+    image = fixtureImage('debian:bookworm-slim'),
+  ) {
+    return docker(
+      'run',
+      '--rm',
+      '--network',
+      'none',
+      '-v',
+      `${appdata}:/config:ro`,
+      image,
+      'cat',
+      `/config/${path}`,
+    );
+  }
+  /** A stable digest of every regular file's path, size and content under appdata. */
+  function appdataDigest(appdata) {
+    return docker(
+      'run',
+      '--rm',
+      '--network',
+      'none',
+      '-v',
+      `${appdata}:/config:ro`,
+      fixtureImage('debian:bookworm-slim'),
+      'sh',
+      '-c',
+      "cd /config && find . -type f -print0 | sort -z | xargs -0 -r sha256sum | sha256sum | cut -d' ' -f1",
+    );
   }
   function mediaSource(folder = '') {
     // Docker Desktop may spell the same Windows bind differently for Compose
@@ -697,6 +921,11 @@ export async function fixture({
       attach,
       peer,
       createMappingMovie,
+      transfer,
+      waitTransfer,
+      readAppdata,
+      appdataDigest,
+      mediaSource,
     };
   } catch (error) {
     const output = 'test-results/service-access';

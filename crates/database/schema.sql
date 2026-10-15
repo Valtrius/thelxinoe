@@ -565,6 +565,12 @@ CREATE TABLE manager_services (
     defaults TEXT NOT NULL DEFAULT '{}',
     version TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+    -- Normal workers use only Owned services whose setup finished without an operational hold.
+    -- Maintained with stack_provisions in the same transaction; Connected services stay 0.
+    operational INTEGER NOT NULL DEFAULT 0 CHECK(operational IN (0,1)),
+    engine TEXT NOT NULL DEFAULT '',
+    evidence TEXT NOT NULL DEFAULT '{}',
+    verified INTEGER NOT NULL DEFAULT 0 CHECK(verified IN (0,1)),
     checked_at INTEGER NOT NULL,
     error TEXT
 ) STRICT;
@@ -640,6 +646,24 @@ CREATE TABLE support_services (
     media_source TEXT NOT NULL,
     native_url TEXT NOT NULL DEFAULT '',
     version TEXT NOT NULL,
+    operational INTEGER NOT NULL DEFAULT 0 CHECK(operational IN (0,1)),
+    engine TEXT NOT NULL DEFAULT '',
+    evidence TEXT NOT NULL DEFAULT '{}',
+    verified INTEGER NOT NULL DEFAULT 0 CHECK(verified IN (0,1)),
+    checked_at INTEGER NOT NULL,
+    error TEXT
+) STRICT;
+
+-- Recyclarr has no HTTP API: its Connected stage is read-only job validation.
+CREATE TABLE recyclarr_connections (
+    id TEXT NOT NULL PRIMARY KEY,
+    container_id TEXT NOT NULL UNIQUE,
+    container_name TEXT NOT NULL DEFAULT '',
+    engine TEXT NOT NULL DEFAULT '',
+    version TEXT NOT NULL DEFAULT '',
+    access_revision TEXT NOT NULL,
+    evidence TEXT NOT NULL DEFAULT '{}',
+    verified INTEGER NOT NULL DEFAULT 0 CHECK(verified IN (0,1)),
     checked_at INTEGER NOT NULL,
     error TEXT
 ) STRICT;
@@ -661,12 +685,45 @@ CREATE TABLE stack_provisions (
     error TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    origin TEXT NOT NULL DEFAULT 'installed' CHECK(origin IN ('installed','adopted')),
-    original_url_base TEXT NOT NULL DEFAULT '',
-    integration_revision TEXT,
-    operation TEXT CHECK(operation IN ('release','remove','retire')),
+    -- Provenance only; it never restricts Owned capabilities.
+    origin TEXT NOT NULL DEFAULT 'installed' CHECK(origin IN ('installed','transferred')),
+    -- Normal operations wait while setup, a transfer or recovery holds the service.
+    hold TEXT CHECK(hold IN ('setup','transfer','recovery')),
+    transfer_id TEXT,
+    operation TEXT CHECK(operation IN ('remove','retire')),
     native_url TEXT NOT NULL DEFAULT ''
 ) STRICT;
+
+-- Durable ownership transfers. The controller journals Docker and file transitions;
+-- this record holds the reviewed plan, approval, checks, setup journal and recovery.
+CREATE TABLE service_transfers (
+    id TEXT NOT NULL PRIMARY KEY,
+    kind TEXT NOT NULL,
+    service_id TEXT NOT NULL,
+    actor_id TEXT NOT NULL REFERENCES users(id),
+    container_id TEXT NOT NULL,
+    engine TEXT NOT NULL,
+    connection_revision TEXT NOT NULL,
+    review_revision TEXT NOT NULL,
+    review TEXT NOT NULL,
+    choices TEXT NOT NULL DEFAULT '{}',
+    declarations TEXT NOT NULL DEFAULT '{}',
+    state TEXT NOT NULL CHECK(state IN ('review','queued','running','committed','failed','recovery','suspended','complete','cancelled','returned')),
+    step TEXT NOT NULL,
+    checks TEXT NOT NULL DEFAULT '[]',
+    setup TEXT NOT NULL DEFAULT '[]',
+    recovery TEXT NOT NULL DEFAULT '{}',
+    progress TEXT NOT NULL DEFAULT '{}',
+    replacement_id TEXT,
+    error TEXT,
+    approved_by TEXT REFERENCES users(id),
+    approved_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    completed_at INTEGER
+) STRICT;
+-- One unfinished transfer per service kind, whatever the client or tab.
+CREATE UNIQUE INDEX service_transfers_active ON service_transfers(kind) WHERE state NOT IN ('review','complete','cancelled','returned');
 
 CREATE TABLE recyclarr_settings (
     timezone TEXT NOT NULL,

@@ -59,6 +59,7 @@ test('Recyclarr installs with one click and no dialog', async ({
       finishInstall = resolve;
     });
     installed = true;
+    fixture.owned.add('recyclarr');
     await route.fulfill({ json: { id: 'managed-recyclarr' } });
   });
   await page.route('**/api/v1/admin/managers/containers', (route) =>
@@ -76,71 +77,54 @@ test('Recyclarr installs with one click and no dialog', async ({
       },
     }),
   );
-  await page.route('**/api/v1/admin/recyclarr/adopt/preview', (route) =>
-    route.fulfill({
+  const connections: unknown[] = [];
+  await page.route('**/api/v1/admin/recyclarr/connection', async (route) => {
+    connections.push(route.request().postDataJSON());
+    // Validation connects the job and reports what blocks a later transfer.
+    await route.fulfill({
       json: {
-        review_id: 'review-recyclarr',
-        targets: [
-          {
-            service_id: 'manager-radarr',
-            kind: 'radarr',
-            name: 'Radarr',
-            trash_id: 'guide-hd',
-            guide_name: 'WEB1080p',
-          },
-          {
-            service_id: 'manager-radarr',
-            kind: 'radarr',
-            name: 'Radarr',
-            trash_id: 'guide-4k',
-            guide_name: 'WEB2160p (Combined)',
-          },
-        ],
+        id: 'connected-recyclarr',
+        healthy: false,
+        version: '8.7.2',
+        error:
+          "Recyclarr synchronizes Radarr, which isn't an operational Owned service yet",
       },
-    }),
-  );
+    });
+  });
   await page.goto('/');
   await page
     .getByRole('navigation', { name: 'Select service' })
     .getByRole('link', { name: 'Recyclarr', exact: true })
     .click();
-  await page
-    .getByRole('button', { name: 'Import existing Recyclarr', exact: true })
-    .click();
-  const importDialog = page.getByRole('dialog', { name: 'Import Recyclarr' });
-  await importDialog
-    .getByRole('combobox', { name: 'Existing container' })
-    .selectOption('existing-recyclarr');
-  await importDialog
-    .getByRole('button', { name: 'Review import', exact: true })
-    .click();
+  const connect = page.getByRole('form', {
+    name: 'Connect existing Recyclarr',
+  });
   await expect(
-    importDialog.getByText('Radarr: WEB1080p', { exact: true }),
-  ).toBeVisible();
-  await expect(
-    importDialog.getByText('Radarr: WEB2160p (Combined)', { exact: true }),
-  ).toBeVisible();
-  await expect(
-    importDialog.getByRole('button', {
-      name: 'Transfer ownership',
-      exact: true,
-    }),
+    connect.getByRole('button', { name: 'Validate and connect' }),
   ).toBeDisabled();
+  await connect
+    .getByRole('combobox', { name: 'Container' })
+    .selectOption('existing-recyclarr');
+  await connect.getByRole('button', { name: 'Validate and connect' }).click();
+  await expect
+    .poll(() => connections)
+    .toEqual([{ container_id: 'existing-recyclarr' }]);
+  await expect(page.getByRole('alert')).toContainText(
+    "isn't an operational Owned service yet",
+  );
   for (const [width, height] of [
     [1440, 1000],
     [390, 844],
   ]) {
     await page.setViewportSize({ width, height });
-    const path = testInfo.outputPath(`recyclarr-import-${width}.png`);
+    const path = testInfo.outputPath(`recyclarr-connect-${width}.png`);
     await page.screenshot({ path });
-    await testInfo.attach(`recyclarr-import-${width}`, {
+    await testInfo.attach(`recyclarr-connect-${width}`, {
       path,
       contentType: 'image/png',
     });
   }
-  await importDialog
-    .getByRole('button', { name: 'Close', exact: true })
-    .click();
+  await page.setViewportSize({ width: 1440, height: 1000 });
   const install = page.getByRole('button', {
     name: 'Install Recyclarr',
     exact: true,
@@ -180,6 +164,7 @@ test('Recyclarr sync uses only button progress and retains failures', async ({
   const fixture = await installUiFixture(page, {
     role: 'admin',
     settingsSection: 'services',
+    owned: ['recyclarr'],
   });
   let state = 'queued';
   let run = '';

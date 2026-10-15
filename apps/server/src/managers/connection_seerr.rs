@@ -115,6 +115,9 @@ pub(super) async fn apply(
                     reach.reaches(host, port)
                 })
         }) {
+            link.candidate = Some(json!({"id":record["id"],"name":record["name"],
+                "address":format!("{}:{}",record["hostname"].as_str().unwrap_or_default(),record["port"]),
+                "hash":digest(&evidence(record))}));
             return Err(Failure::conflict(format!(
                 "Seerr already connects to {} as \"{}\" ({}:{}); review it in Seerr before adding another",
                 target.name,

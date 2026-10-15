@@ -9,7 +9,7 @@ use thelxinoe_core::{id, now};
 use thelxinoe_database::Database;
 
 pub(super) async fn services(db: &Database) -> anyhow::Result<Vec<Value>> {
-    db.read("managers.requests.services", |db|Ok(db.prepare("SELECT id,name,kind,defaults<>'{}' FROM manager_services WHERE enabled=1 ORDER BY kind,name")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"ready":r.get::<_,bool>(3)?})))?.collect::<rusqlite::Result<Vec<_>>>()?)).await
+    db.read("managers.requests.services", |db|Ok(db.prepare("SELECT id,name,kind,defaults<>'{}' FROM manager_services WHERE operational=1 ORDER BY kind,name")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"ready":r.get::<_,bool>(3)?})))?.collect::<rusqlite::Result<Vec<_>>>()?)).await
 }
 
 pub(super) async fn search(

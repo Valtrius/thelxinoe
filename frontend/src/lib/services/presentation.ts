@@ -1,4 +1,4 @@
-import type { Provision, StackService, Update } from './feature';
+import type { Provision, ServiceStage, StackService, Update } from './feature';
 
 export function isSetupActive(item: Provision | undefined) {
   return ['queued', 'installing', 'connecting', 'retiring'].includes(
@@ -27,30 +27,49 @@ export function activeServiceUpdate(updates: Update[]) {
     );
 }
 
+const transferStates: Record<string, { label: string; tone: string }> = {
+  queued: { label: 'Transfer queued', tone: 'busy' },
+  running: { label: 'Transferring', tone: 'busy' },
+  committed: { label: 'Owned · finishing transfer', tone: 'busy' },
+  recovery: { label: 'Recovering', tone: 'busy' },
+  failed: { label: 'Transfer needs attention', tone: 'bad' },
+  suspended: { label: 'Transfer suspended', tone: 'warn' },
+};
+
 export function serviceStatus({
   item,
   live,
   connected,
   update,
   unavailable,
+  stage,
 }: {
   item?: Provision;
   live?: StackService;
   connected?: { error?: string | null } | null;
   update?: Update;
   unavailable: boolean;
+  stage?: ServiceStage;
 }) {
   if (live?.registered === false)
     return { label: 'Setup mismatch', tone: 'warn' };
+  const transfer =
+    stage?.operation?.type === 'transfer'
+      ? transferStates[stage.operation.state]
+      : undefined;
+  if (transfer) return transfer;
+  // A Connected service is ready only after a successful read-only check.
+  if (stage?.stage === 'connected')
+    return stage.connection?.verified && !stage.connection.error
+      ? { label: 'Connected', tone: 'ok' }
+      : { label: 'Unverified', tone: 'warn' };
   if (isSetupActive(item))
     return {
       label:
         item?.state === 'connecting'
           ? 'Connecting API'
           : item?.state === 'retiring'
-            ? item.operation === 'release'
-              ? 'Release pending'
-              : 'Retiring'
+            ? 'Retiring'
             : 'Installing',
       tone: 'busy',
     };

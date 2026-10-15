@@ -5,7 +5,7 @@ pub(crate) async fn service(db: &Database) -> anyhow::Result<Option<String>> {
     db.read("seerr.service", |db| {
         Ok(db
             .query_row(
-                "SELECT id FROM support_services WHERE kind='seerr'",
+                "SELECT id FROM support_services WHERE kind='seerr' AND operational=1",
                 [],
                 |r| r.get(0),
             )
@@ -50,5 +50,5 @@ pub(super) async fn auto_approve(db: &Database, user: String) -> anyhow::Result<
     .await
 }
 pub(super) async fn managers(db: &Database) -> anyhow::Result<Vec<String>> {
-    db.read("seerr.managers", |db| Ok(db.prepare("SELECT id FROM manager_services WHERE enabled=1 AND kind IN ('radarr','sonarr') ORDER BY kind")?.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?)).await
+    db.read("seerr.managers", |db| Ok(db.prepare("SELECT id FROM manager_services WHERE operational=1 AND kind IN ('radarr','sonarr') ORDER BY kind")?.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?)).await
 }

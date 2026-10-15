@@ -6,7 +6,7 @@ const PREFIX: &str = "services.connection.";
 
 pub(super) async fn endpoints(db: &Database) -> anyhow::Result<Vec<Endpoint>> {
     db.read("managers.connections.endpoints",|db| {
-        Ok(db.prepare("SELECT id,name,kind,container_id,port FROM manager_services WHERE enabled=1 UNION ALL SELECT id,name,kind,container_id,port FROM support_services ORDER BY kind")?
+        Ok(db.prepare("SELECT id,name,kind,container_id,port FROM manager_services WHERE enabled=1 AND operational=1 UNION ALL SELECT id,name,kind,container_id,port FROM support_services WHERE operational=1 ORDER BY kind")?
             .query_map([],|r|Ok(Endpoint{id:r.get(0)?,name:r.get(1)?,kind:r.get(2)?,container:r.get(3)?,port:r.get(4)?}))?
             .collect::<rusqlite::Result<Vec<_>>>()?)
     }).await
@@ -86,10 +86,11 @@ pub(super) async fn configure(
     }).await
 }
 
-pub(super) async fn installed_pair(
+/// Both endpoints are operational Owned services, whether installed or transferred.
+pub(super) async fn owned_pair(
     db: &Database,
     source: String,
     target: String,
 ) -> anyhow::Result<bool> {
-    db.read("managers.connections.installed_pair", move |db| Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE service_id=?1 AND origin='installed' AND state='complete') AND EXISTS(SELECT 1 FROM stack_provisions WHERE service_id=?2 AND origin='installed' AND state='complete')", params![source,target], |r| r.get(0))?)).await
+    db.read("managers.connections.owned_pair", move |db| Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE service_id=?1 AND state='complete' AND hold IS NULL) AND EXISTS(SELECT 1 FROM stack_provisions WHERE service_id=?2 AND state='complete' AND hold IS NULL)", params![source,target], |r| r.get(0))?)).await
 }

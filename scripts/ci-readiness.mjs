@@ -6,9 +6,11 @@ export const budgets = {
   restart: 90000,
   provision: 300000,
   stateCopy: 300000,
+  transfer: 900000,
 };
 export const requestBudget = (path) =>
-  path.startsWith('/admin/recyclarr/adopt') ||
+  /^\/admin\/services\/[^/]+\/transfer$/.test(path) ||
+  path === '/admin/recyclarr/connection' ||
   path.startsWith('/admin/recyclarr/configuration') ||
   /^\/admin\/backups\/[^/]+\/restore$/.test(path)
     ? budgets.stateCopy

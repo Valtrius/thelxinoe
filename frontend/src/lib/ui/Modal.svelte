@@ -17,7 +17,7 @@
     busy?: boolean;
     onClose: () => void;
     children: Snippet;
-    size?: 'default' | 'editor';
+    size?: 'default' | 'editor' | 'workflow';
     expanded?: boolean;
     actions?: Snippet;
     closeLabel?: string;
@@ -42,7 +42,9 @@
   class="m-auto border border-line-strong bg-surface-strong text-foreground shadow-2xl backdrop:bg-black/65 backdrop:backdrop-blur-[2px] {size ===
   'editor'
     ? `h-[min(850px,calc(100dvh-2rem))] max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-7xl overflow-hidden p-0 open:flex open:flex-col compact:m-0 compact:h-dvh compact:max-h-dvh compact:w-full compact:max-w-none ${expanded ? 'm-0! h-dvh! max-h-dvh! w-full! max-w-none!' : ''}`
-    : 'max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-2xl overflow-y-auto p-5 compact:p-4'}"
+    : size === 'workflow'
+      ? 'max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-5xl overflow-y-auto p-5 compact:m-0 compact:h-dvh compact:max-h-dvh compact:w-full compact:max-w-none compact:p-4'
+      : 'max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-2xl overflow-y-auto p-5 compact:p-4'}"
   onkeydown={(event) => {
     if (event.key === 'Escape') event.stopPropagation();
   }}

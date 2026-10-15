@@ -42,6 +42,9 @@ pub(super) struct Link {
     recreate_missing: bool,
     #[serde(default)]
     retain_missing: bool,
+    /// An existing upstream record that already reaches the target, offered for import.
+    #[serde(default)]
+    candidate: Option<Value>,
     updated_at: i64,
 }
 
@@ -85,6 +88,7 @@ impl Link {
             prepared: false,
             recreate_missing: false,
             retain_missing: false,
+            candidate: None,
             updated_at: now(),
         }
     }
@@ -94,7 +98,8 @@ impl Link {
             "source_kind":source.map(|s|s.kind.as_str()).unwrap_or(&self.source_kind),"source_name":source.map(|s|s.name.as_str()).unwrap_or(&self.source_kind),
             "target_kind":target.map(|s|s.kind.as_str()).unwrap_or(&self.target_kind),"target_name":target.map(|s|s.name.as_str()).unwrap_or(&self.target_kind),
             "enabled":self.enabled,"state":self.state,"error":self.error,
-            "updated_at":self.updated_at,"next_attempt":self.next_attempt,"cleanup_pending":self.cleanup})
+            "updated_at":self.updated_at,"next_attempt":self.next_attempt,"cleanup_pending":self.cleanup,
+            "candidate":self.candidate.as_ref().map(|c| json!({"name":c["name"],"address":c["address"]}))})
     }
 }
 
@@ -153,8 +158,11 @@ async fn configure(
     Json(input): Json<Configure>,
 ) -> Result<Json<Value>> {
     let actor = security::require(&state, &headers, Capability::ManageServer).await?;
-    if !matches!(input.action.as_str(), "connect" | "disconnect" | "retry") {
-        return Err(ApiError::bad("Choose Connect, Disconnect or Retry"));
+    if !matches!(
+        input.action.as_str(),
+        "connect" | "disconnect" | "retry" | "import"
+    ) {
+        return Err(ApiError::bad("Choose Connect, Disconnect, Retry or Import"));
     }
     let key = link_id(&input.source_id, &input.target_id);
     let mutex = lock(&state, &key);
@@ -194,6 +202,23 @@ async fn configure(
             link.cleanup = false;
             link.state = "pending".into();
             link.recreate_missing = true;
+            link.retain_missing = false;
+        }
+        "import" => {
+            // Track the reviewed existing record; its settings must still match what was shown.
+            let candidate = link.candidate.take().ok_or_else(|| {
+                ApiError::conflict(
+                    "No existing record is waiting to be imported for this connection",
+                )
+            })?;
+            link.upstream_id = candidate["id"].as_i64();
+            link.applied_hash = candidate["hash"].as_str().map(str::to_owned);
+            link.pending_hash = None;
+            link.prepared = false;
+            link.enabled = true;
+            link.cleanup = false;
+            link.state = "pending".into();
+            link.recreate_missing = false;
             link.retain_missing = false;
         }
         "disconnect" => {
@@ -342,8 +367,7 @@ pub(super) async fn tick(state: &AppState) -> anyhow::Result<()> {
         for source in &endpoints {
             for target in &endpoints {
                 if kind(&source.kind, &target.kind).is_some()
-                    && storage::installed_pair(&state.db, source.id.clone(), target.id.clone())
-                        .await?
+                    && storage::owned_pair(&state.db, source.id.clone(), target.id.clone()).await?
                 {
                     let mut link = Link::new(source, target);
                     link.enabled = true;
@@ -380,6 +404,46 @@ pub(crate) async fn run(state: AppState) -> anyhow::Result<()> {
             _=tokio::time::sleep(std::time::Duration::from_secs(5))=>{},
         }
     }
+}
+
+/// Kinds of operational Owned services, for optional-link availability.
+pub(super) async fn owned_kinds(state: &AppState) -> anyhow::Result<Vec<String>> {
+    Ok(storage::endpoints(&state.db)
+        .await?
+        .into_iter()
+        .map(|e| e.kind)
+        .collect())
+}
+
+/// Links a transfer changes: new automatic links with Owned peers after completion, and
+/// saved disconnects that stay disconnected. Existing upstream records are imported only
+/// after their destination and settings are reviewed in Media services.
+pub(super) async fn transfer_links(
+    state: &AppState,
+    service: &str,
+    kind: &str,
+) -> anyhow::Result<Value> {
+    let peers = storage::endpoints(&state.db).await?;
+    let saved = storage::list(&state.db).await?;
+    let mut links = Vec::new();
+    for peer in &peers {
+        for (source, source_kind, target, target_kind) in [
+            (service, kind, peer.id.as_str(), peer.kind.as_str()),
+            (peer.id.as_str(), peer.kind.as_str(), service, kind),
+        ] {
+            let Some(link_kind) = self::kind(source_kind, target_kind) else {
+                continue;
+            };
+            let existing = saved.iter().find(|l| l.id == link_id(source, target));
+            let action = match existing {
+                Some(link) if !link.enabled && !link.cleanup => "stays_disconnected",
+                _ => "connect_after_completion",
+            };
+            links.push(json!({"kind":link_kind,"peer":peer.name,"peer_kind":peer.kind,"direction":if source == service {"outgoing"} else {"incoming"},
+                "action":action,"existing_records":"Matching records already in either service are offered for import after review instead of being overwritten"}));
+        }
+    }
+    Ok(json!(links))
 }
 
 pub(super) async fn request_target(

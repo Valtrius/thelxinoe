@@ -335,6 +335,7 @@ pub async fn run_jobs(state: AppState) -> anyhow::Result<()> {
 async fn run_service_job(state: AppState, job: thelxinoe_jobs::Job) -> anyhow::Result<()> {
     let result = match job.kind.as_str() {
         "stack.install" => managers::provision(&state, &job).await.map(|()| true),
+        "service.transfer" => managers::transfer(&state, &job).await,
         "recyclarr.sync" => managers::recyclarr::run_job(&state, &job).await,
         _ => managers::update_service(&state, &job).await,
     };

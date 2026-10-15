@@ -32,7 +32,7 @@ pub(super) async fn installed(
 pub(super) async fn provision(db: &Database) -> anyhow::Result<Option<String>> {
     db.read("recyclarr.provision", |c| {
         Ok(c.query_row(
-            "SELECT id FROM stack_provisions WHERE kind='recyclarr' AND state='complete'",
+            "SELECT id FROM stack_provisions WHERE kind='recyclarr' AND state='complete' AND hold IS NULL",
             [],
             |r| r.get(0),
         )
@@ -41,7 +41,7 @@ pub(super) async fn provision(db: &Database) -> anyhow::Result<Option<String>> {
     .await
 }
 pub(super) async fn owns(db: &Database, service: String) -> anyhow::Result<bool> {
-    db.read("recyclarr.owns",move |c| Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM recyclarr_targets t JOIN stack_provisions p ON p.id=t.provision_id JOIN recyclarr_settings r ON r.provision_id=p.id WHERE t.service_id=?1 AND p.state='complete' AND r.configuration_mode='defaults') OR EXISTS(SELECT 1 FROM recyclarr_settings r JOIN stack_provisions p ON p.id=r.provision_id, json_each(r.configured_profiles) profile WHERE p.state='complete' AND r.configuration_mode='customized' AND json_extract(profile.value,'$.service_id')=?1)",[service],|r|r.get(0))?)).await
+    db.read("recyclarr.owns",move |c| Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM recyclarr_targets t JOIN stack_provisions p ON p.id=t.provision_id JOIN recyclarr_settings r ON r.provision_id=p.id WHERE t.service_id=?1 AND p.state='complete' AND p.hold IS NULL AND r.configuration_mode='defaults') OR EXISTS(SELECT 1 FROM recyclarr_settings r JOIN stack_provisions p ON p.id=r.provision_id, json_each(r.configured_profiles) profile WHERE p.state='complete' AND p.hold IS NULL AND r.configuration_mode='customized' AND json_extract(profile.value,'$.service_id')=?1)",[service],|r|r.get(0))?)).await
 }
 fn enqueue(
     c: &rusqlite::Connection,
@@ -89,18 +89,18 @@ pub(super) async fn queue(
 pub(super) async fn tick(db: &Database) -> anyhow::Result<()> {
     db.write("recyclarr.tick", |c| {
         let tx=c.transaction()?;
-        let settings=tx.query_row("SELECT r.provision_id,r.actor_id,r.paused,r.hour,r.next_run,r.timezone FROM recyclarr_settings r JOIN stack_provisions p ON p.id=r.provision_id WHERE p.state='complete'",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,bool>(2)?,r.get::<_,u32>(3)?,r.get::<_,i64>(4)?,r.get::<_,String>(5)?))).optional()?;
+        let settings=tx.query_row("SELECT r.provision_id,r.actor_id,r.paused,r.hour,r.next_run,r.timezone FROM recyclarr_settings r JOIN stack_provisions p ON p.id=r.provision_id WHERE p.state='complete' AND p.hold IS NULL",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,bool>(2)?,r.get::<_,u32>(3)?,r.get::<_,i64>(4)?,r.get::<_,String>(5)?))).optional()?;
         if let Some((provision,actor,paused,hour,mut due,zone))=settings {
             let current_zone=crate::timezones::server_zone(&tx)?;
             if current_zone.name()!=zone { due=next(&tx,hour)?; tx.execute("UPDATE recyclarr_settings SET next_run=?1,timezone=?2 WHERE provision_id=?3",params![due,current_zone.name(),provision])?; }
-            let services=tx.prepare("SELECT id,kind FROM manager_services WHERE enabled=1 AND kind IN ('radarr','sonarr') AND EXISTS(SELECT 1 FROM recyclarr_settings WHERE provision_id=?1 AND configuration_mode='defaults')")?.query_map([&provision],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let services=tx.prepare("SELECT id,kind FROM manager_services WHERE operational=1 AND kind IN ('radarr','sonarr') AND EXISTS(SELECT 1 FROM recyclarr_settings WHERE provision_id=?1 AND configuration_mode='defaults')")?.query_map([&provision],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
             for (service,kind) in services {
                 let enrolled:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM recyclarr_targets WHERE service_id=?1)",[&service],|r|r.get(0))?;
                 if !enrolled {
                     tx.execute("INSERT INTO recyclarr_targets(service_id,provision_id,trash_id,revision) VALUES (?1,?2,?3,?4)",params![service,provision,if kind=="radarr" {"05fbf054ac8ad0303335026cc2632f1a"} else {"c4cadd6b35b95f62c3d47a408e53e2f7"},id()])?;
                 }
             }
-            let pending:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM recyclarr_targets t JOIN manager_services m ON m.id=t.service_id WHERE t.provision_id=?1 AND m.enabled=1 AND (t.applied_revision IS NULL OR t.applied_revision<>t.revision) AND t.error IS NULL AND EXISTS(SELECT 1 FROM recyclarr_settings WHERE provision_id=?1 AND configuration_mode='defaults')) OR EXISTS(SELECT 1 FROM recyclarr_settings WHERE provision_id=?1 AND configuration_revision IS NOT NULL AND configuration_revision IS NOT applied_configuration_revision AND configuration_error IS NULL)",[&provision],|r|r.get(0))?;
+            let pending:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM recyclarr_targets t JOIN manager_services m ON m.id=t.service_id WHERE t.provision_id=?1 AND m.operational=1 AND (t.applied_revision IS NULL OR t.applied_revision<>t.revision) AND t.error IS NULL AND EXISTS(SELECT 1 FROM recyclarr_settings WHERE provision_id=?1 AND configuration_mode='defaults')) OR EXISTS(SELECT 1 FROM recyclarr_settings WHERE provision_id=?1 AND configuration_revision IS NOT NULL AND configuration_revision IS NOT applied_configuration_revision AND configuration_error IS NULL)",[&provision],|r|r.get(0))?;
             if !paused && (pending || due<=now()) {
                 enqueue(&tx,&provision,&actor,false,true,json!({}))?;
                 if due<=now() { tx.execute("UPDATE recyclarr_settings SET next_run=?1 WHERE provision_id=?2",params![next(&tx,hour)?,provision])?; }
@@ -112,7 +112,7 @@ pub(super) async fn tick(db: &Database) -> anyhow::Result<()> {
 pub(super) async fn list(db: &Database) -> anyhow::Result<Value> {
     db.read("recyclarr.list", |c| {
         let settings=c.query_row("SELECT provision_id,paused,hour,next_run FROM recyclarr_settings",[],|r|Ok(json!({"provision_id":r.get::<_,String>(0)?,"paused":r.get::<_,bool>(1)?,"hour":r.get::<_,u32>(2)?,"next_run":r.get::<_,i64>(3)?}))).optional()?;
-        let targets=c.prepare("SELECT t.service_id,m.kind,m.name,t.trash_id,t.revision,t.profile_id,t.profile_name,t.applied_revision,t.error,t.quality_sizes,t.groups,t.overrides,t.reset_scores FROM recyclarr_targets t JOIN manager_services m ON m.id=t.service_id WHERE m.enabled=1 ORDER BY m.kind,m.name")?.query_map([],|r|Ok(json!({"service_id":r.get::<_,String>(0)?,"kind":r.get::<_,String>(1)?,"name":r.get::<_,String>(2)?,"trash_id":r.get::<_,String>(3)?,"revision":r.get::<_,String>(4)?,"profile_id":r.get::<_,Option<i64>>(5)?,"profile_name":r.get::<_,Option<String>>(6)?,"applied_revision":r.get::<_,Option<String>>(7)?,"error":r.get::<_,Option<String>>(8)?,"quality_sizes":r.get::<_,bool>(9)?,"groups":serde_json::from_str::<Value>(&r.get::<_,String>(10)?).unwrap_or_default(),"overrides":serde_json::from_str::<Value>(&r.get::<_,String>(11)?).unwrap_or_default(),"reset_scores":r.get::<_,bool>(12)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let targets=c.prepare("SELECT t.service_id,m.kind,m.name,t.trash_id,t.revision,t.profile_id,t.profile_name,t.applied_revision,t.error,t.quality_sizes,t.groups,t.overrides,t.reset_scores FROM recyclarr_targets t JOIN manager_services m ON m.id=t.service_id WHERE m.operational=1 ORDER BY m.kind,m.name")?.query_map([],|r|Ok(json!({"service_id":r.get::<_,String>(0)?,"kind":r.get::<_,String>(1)?,"name":r.get::<_,String>(2)?,"trash_id":r.get::<_,String>(3)?,"revision":r.get::<_,String>(4)?,"profile_id":r.get::<_,Option<i64>>(5)?,"profile_name":r.get::<_,Option<String>>(6)?,"applied_revision":r.get::<_,Option<String>>(7)?,"error":r.get::<_,Option<String>>(8)?,"quality_sizes":r.get::<_,bool>(9)?,"groups":serde_json::from_str::<Value>(&r.get::<_,String>(10)?).unwrap_or_default(),"overrides":serde_json::from_str::<Value>(&r.get::<_,String>(11)?).unwrap_or_default(),"reset_scores":r.get::<_,bool>(12)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let runs=c.prepare("SELECT id,state,created_at,updated_at,error FROM recyclarr_runs ORDER BY created_at DESC LIMIT 30")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"state":r.get::<_,String>(1)?,"created_at":r.get::<_,i64>(2)?,"updated_at":r.get::<_,i64>(3)?,"error":r.get::<_,Option<String>>(4)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(json!({"settings":settings,"targets":targets,"runs":runs,"timezone":crate::timezones::server_zone(c)?.name()}))
     }).await
@@ -164,8 +164,8 @@ pub(super) async fn paused(db: &Database, provision: String) -> anyhow::Result<b
 }
 pub(super) async fn targets(db: &Database, provision: String) -> anyhow::Result<Vec<Target>> {
     db.read("recyclarr.targets",move |c| {
-        let mut targets = c.prepare("SELECT t.service_id,m.kind,t.trash_id,t.revision,t.profile_id,t.quality_sizes,t.groups,t.overrides,t.reset_scores FROM recyclarr_targets t JOIN manager_services m ON m.id=t.service_id WHERE t.provision_id=?1 AND m.enabled=1 ORDER BY m.kind,m.id,t.trash_id")?.query_map([&provision],|r|Ok(Target {service_id:r.get(0)?,kind:r.get(1)?,trash_id:r.get(2)?,revision:r.get(3)?,profile_id:r.get(4)?,quality_sizes:r.get(5)?,groups:serde_json::from_str(&r.get::<_,String>(6)?).unwrap_or_default(),overrides:serde_json::from_str(&r.get::<_,String>(7)?).unwrap_or_default(),reset_scores:r.get(8)?}))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        for row in c.prepare("SELECT id,kind FROM manager_services WHERE enabled=1 AND kind IN ('radarr','sonarr') ORDER BY kind,id")?.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))? {
+        let mut targets = c.prepare("SELECT t.service_id,m.kind,t.trash_id,t.revision,t.profile_id,t.quality_sizes,t.groups,t.overrides,t.reset_scores FROM recyclarr_targets t JOIN manager_services m ON m.id=t.service_id WHERE t.provision_id=?1 AND m.operational=1 ORDER BY m.kind,m.id,t.trash_id")?.query_map([&provision],|r|Ok(Target {service_id:r.get(0)?,kind:r.get(1)?,trash_id:r.get(2)?,revision:r.get(3)?,profile_id:r.get(4)?,quality_sizes:r.get(5)?,groups:serde_json::from_str(&r.get::<_,String>(6)?).unwrap_or_default(),overrides:serde_json::from_str(&r.get::<_,String>(7)?).unwrap_or_default(),reset_scores:r.get(8)?}))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        for row in c.prepare("SELECT id,kind FROM manager_services WHERE operational=1 AND kind IN ('radarr','sonarr') ORDER BY kind,id")?.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))? {
             let (service,kind) = row?;
             // This read-only binding makes a newly connected manager available to
             // custom YAML. Defaults mode enrolls its catalog separately.
@@ -211,9 +211,9 @@ pub(super) async fn profiles(db: &Database, service: String) -> anyhow::Result<V
 
 pub(super) async fn required_profiles(db: &Database) -> anyhow::Result<Vec<Value>> {
     db.read("recyclarr.required_profiles", |c| {
-        let mut result = c.prepare("SELECT m.id,t.profile_name,t.trash_id FROM manager_services m JOIN recyclarr_targets t ON t.service_id=m.id AND t.profile_id=json_extract(m.defaults,'$.quality_profile') JOIN recyclarr_settings r ON r.provision_id=t.provision_id WHERE r.configuration_mode='defaults' AND m.enabled=1")?
+        let mut result = c.prepare("SELECT m.id,t.profile_name,t.trash_id FROM manager_services m JOIN recyclarr_targets t ON t.service_id=m.id AND t.profile_id=json_extract(m.defaults,'$.quality_profile') JOIN recyclarr_settings r ON r.provision_id=t.provision_id WHERE r.configuration_mode='defaults' AND m.operational=1")?
             .query_map([],|r|Ok(json!({"service_id":r.get::<_,String>(0)?,"name":r.get::<_,Option<String>>(1)?,"trash_id":r.get::<_,String>(2)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        result.extend(c.prepare("SELECT json_extract(j.value,'$.service_id'),json_extract(j.value,'$.name'),json_extract(j.value,'$.trash_id') FROM recyclarr_settings r, json_each(r.configured_profiles) j JOIN manager_services m ON m.id=json_extract(j.value,'$.service_id') AND json_extract(m.defaults,'$.quality_profile')=json_extract(j.value,'$.profile_id') WHERE r.configuration_mode='customized' AND m.enabled=1")?
+        result.extend(c.prepare("SELECT json_extract(j.value,'$.service_id'),json_extract(j.value,'$.name'),json_extract(j.value,'$.trash_id') FROM recyclarr_settings r, json_each(r.configured_profiles) j JOIN manager_services m ON m.id=json_extract(j.value,'$.service_id') AND json_extract(m.defaults,'$.quality_profile')=json_extract(j.value,'$.profile_id') WHERE r.configuration_mode='customized' AND m.operational=1")?
             .query_map([],|r|Ok(json!({"service_id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"trash_id":r.get::<_,Option<String>>(2)?})))?.collect::<rusqlite::Result<Vec<_>>>()?);
         Ok(result)
     }).await
@@ -341,7 +341,7 @@ pub(super) async fn applied(
 ) -> anyhow::Result<bool> {
     db.write("recyclarr.applied",move |c| {
         let tx=c.transaction()?;
-        let valid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM recyclarr_targets t JOIN manager_services m ON m.id=t.service_id WHERE t.service_id=?1 AND t.trash_id=?4 AND t.revision=?2 AND m.generation=?3 AND m.enabled=1)",params![target.service_id,target.revision,generation,target.trash_id],|r|r.get(0))?;
+        let valid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM recyclarr_targets t JOIN manager_services m ON m.id=t.service_id WHERE t.service_id=?1 AND t.trash_id=?4 AND t.revision=?2 AND m.generation=?3 AND m.operational=1)",params![target.service_id,target.revision,generation,target.trash_id],|r|r.get(0))?;
         if valid {
             let preferred=if target.kind=="radarr" {"05fbf054ac8ad0303335026cc2632f1a"} else {"c4cadd6b35b95f62c3d47a408e53e2f7"};
             tx.execute("UPDATE manager_services SET defaults=json_set(defaults,'$.quality_profile',?1) WHERE id=?2 AND json_extract(defaults,'$.quality_profile_trash_id')=?3",params![profile,target.service_id,target.trash_id])?;
@@ -383,27 +383,5 @@ pub(super) async fn retry(
         anyhow::ensure!(tx.execute("UPDATE jobs SET state='queued',available_at=?1,started_at=NULL WHERE id=?2 AND kind='recyclarr.sync' AND json_extract(payload,'$.id')=?3", params![now()+seconds,job,run])? == 1, "Recyclarr retry lost its job");
         tx.commit()?;
         Ok(true)
-    }).await
-}
-
-pub(super) async fn review(db: &Database, review: String, value: Value) -> anyhow::Result<()> {
-    db.write("recyclarr.review",move |c| { c.execute("INSERT INTO settings(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![format!("recyclarr.review.{review}"),value.to_string()])?; Ok(()) }).await
-}
-pub(super) async fn adopt(db: &Database, actor: String, input: Adoption) -> anyhow::Result<()> {
-    db.write("recyclarr.adopt",move |c| {
-        let tx=c.transaction()?;
-        anyhow::ensure!(!tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE kind='recyclarr')",[],|r|r.get::<_,bool>(0))?,"Recyclarr already installed");
-        let raw:String=tx.query_row("SELECT value FROM settings WHERE key=?1",[format!("recyclarr.review.{}",input.review_id)],|r|r.get(0))?;
-        let review:Value=serde_json::from_str(&raw)?;
-        anyhow::ensure!(review["container_id"]==input.container_id && review["actor_id"]==actor,"Review does not match this transfer");
-        anyhow::ensure!(now()-review["created_at"].as_i64().unwrap_or(0)<1800,"Review expired; review the transfer again");
-        tx.execute("INSERT INTO stack_provisions(id,kind,actor_id,state,container_id,origin,created_at,updated_at) VALUES (?1,'recyclarr',?2,'queued',?3,'adopted',?4,?4)",params![input.review_id,actor,input.container_id,now()])?;
-        tx.execute("INSERT INTO recyclarr_settings(provision_id,actor_id,paused,next_run,timezone) VALUES (?1,?2,1,?3,?4)",params![input.review_id,actor,next(&tx,4)?,crate::timezones::server_zone(&tx)?.name()])?;
-        for target in review["targets"].as_array().ok_or_else(||anyhow::anyhow!("Missing import targets"))? {
-            anyhow::ensure!(tx.query_row("SELECT EXISTS(SELECT 1 FROM manager_services WHERE id=?1 AND generation=?2 AND enabled=1)",params![target["service_id"].as_str(),target["generation"].as_str()],|r|r.get::<_,bool>(0))?,"Imported target changed; review the transfer again");
-            tx.execute("INSERT INTO recyclarr_targets(service_id,provision_id,trash_id,revision,quality_sizes,groups,reset_scores,overrides) VALUES (?1,?2,?3,?4,?5,?6,0,?7)",params![target["service_id"].as_str(),input.review_id,target["trash_id"].as_str(),id(),target["quality_sizes"].as_bool().unwrap_or(false),target["groups"].to_string(),target["overrides"].to_string()])?;
-        }
-        tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'stack.install',?2,?3,'queued',?4,?4)",params![id(),json!({"id":input.review_id}).to_string(),format!("stack:{}",input.review_id),now()])?;
-        tx.commit()?; Ok(())
     }).await
 }

@@ -976,15 +976,23 @@ pub(super) async fn qualify(
     outcome
 }
 
-pub(super) async fn review_config(d: &Deployment, review: &str, raw: &Value) -> Result<Value> {
+pub(super) async fn review_config(
+    d: &Deployment,
+    review: &str,
+    appdata: &crate::transfer_plan::Mount,
+) -> Result<Value> {
     let operation = thelxinoe_core::id();
-    let path = store::root().join("adoption-reviews").join(&operation);
+    let path = store::root().join("transfer-reviews").join(&operation);
     persisted(std::fs::create_dir_all(&path).map_err(Into::into))?;
-    let source = mount(raw, "/config")?["Source"]
-        .as_str()
-        .ok_or_else(unavailable)?;
-    let host = format!("{}/adoption-reviews/{operation}", d.appdata_source);
-    updates::copy_state(d, &operation, source, &host, false, "recyclarr-review").await?;
+    let host = format!("{}/transfer-reviews/{operation}", d.appdata_source);
+    updates::copy_mount(
+        d,
+        &operation,
+        json!({"Type":appdata.kind,"Source":appdata.source,"Target":"/source","ReadOnly":true}),
+        &host,
+        "recyclarr-review",
+    )
+    .await?;
     let outcome = (|| {
         let text = std::fs::read_to_string(path.join("recyclarr.yml"))
             .map_err(|_| conflict("A supported recyclarr.yml is required"))?;
@@ -1230,7 +1238,7 @@ pub(super) async fn review_config(d: &Deployment, review: &str, raw: &Value) -> 
             ));
         }
         let hash_path = store::root()
-            .join("adoption-reviews")
+            .join("transfer-reviews")
             .join(format!("{review}.config-hash"));
         let hash = digest(text.as_bytes());
         if hash_path.exists() {
@@ -1283,10 +1291,8 @@ pub(super) async fn import(
     if appdata(&key).join("state-bindings.json").exists() {
         return Ok(Json(json!({"accepted":true})));
     }
-    if s.kind != "recyclarr" || !adoption::pending(&s) {
-        return Err(conflict(
-            "Only a pending Recyclarr transfer can import state",
-        ));
+    if s.kind != "recyclarr" || s.hold.as_deref() != Some("transfer") {
+        return Err(conflict("Only a held Recyclarr transfer can import state"));
     }
     let config: Value = serde_yaml_ng::from_str(
         &std::fs::read_to_string(appdata(&key).join("recyclarr.yml")).map_err(|_| unavailable())?,
@@ -1322,4 +1328,103 @@ pub(super) async fn import(
         &bindings,
     ))?;
     Ok(Json(json!({"accepted":true})))
+}
+
+/// Qualify a transferred configuration offline: copied guide resources, loopback fixture
+/// targets in a namespace without routes, and no production credentials.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn qualify_transfer(
+    d: &Deployment,
+    operation: &str,
+    image: &str,
+    root: &FsPath,
+    host: &str,
+    fixtures: &[Value],
+    secret: &str,
+    identity: (u32, u32),
+) -> Result<Value> {
+    let user = format!("{}:{}", identity.0, identity.1);
+    if fixtures.is_empty() {
+        return Err(conflict(
+            "Recyclarr's configuration has no Radarr or Sonarr target to validate",
+        ));
+    }
+    let labels = json!({"app.thelxinoe.transfer":operation,"app.thelxinoe.deployment":d.id});
+    persisted(store::write(&root.join("key"), secret.as_bytes()))?;
+    persisted(
+        std::fs::set_permissions(root.join("key"), std::fs::Permissions::from_mode(0o644))
+            .map_err(Into::into),
+    )?;
+    let anchor = request(Method::POST, "/containers/create", Some(json!({"Image":updates::current_image().await?,
+        "Cmd":["recyclarr-fixture"],"Labels":labels,"Healthcheck":{"Test":["NONE"]},
+        "HostConfig":{"NetworkMode":"none","ReadonlyRootfs":true,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"]}})))
+    .await?["Id"].as_str().ok_or_else(unavailable)?.to_owned();
+    updates::start(&anchor).await?;
+    let outcome = async {
+        let mut logs = Vec::new();
+        for (index, fixture) in fixtures.iter().enumerate() {
+            let kind = fixture["kind"].as_str().ok_or_else(unavailable)?;
+            let port = fixture["port"].as_u64().ok_or_else(unavailable)?;
+            let folder = root.join(format!("fixture-{index}"));
+            persisted(std::fs::create_dir_all(&folder).map_err(Into::into))?;
+            let xml = format!("<Config><BindAddress>*</BindAddress><Port>{port}</Port><ApiKey>{secret}</ApiKey><AuthenticationMethod>External</AuthenticationMethod><AuthenticationRequired>Enabled</AuthenticationRequired><UpdateAutomatically>False</UpdateAutomatically></Config>");
+            persisted(store::write(&folder.join("config.xml"), xml.as_bytes()))?;
+            persisted(std::os::unix::fs::chown(folder.join("config.xml"), Some(1000), Some(1000)).map_err(Into::into))?;
+            let t = templates::find(kind).ok_or_else(unavailable)?;
+            let fixture_image = templates::pinned_image(t)?.unwrap_or_else(|| format!("{}@{}", t.repository, t.digest));
+            pull_image(&fixture_image).await?;
+            let target = request(Method::POST, "/containers/create", Some(json!({"Image":fixture_image,"Labels":labels,
+                "Env":["PUID=1000","PGID=1000"],"Healthcheck":{"Test":["NONE"]},
+                "HostConfig":{"NetworkMode":format!("container:{anchor}"),"Mounts":[{"Type":"bind","Source":format!("{host}/fixture-{index}"),"Target":"/config"}]}})))
+            .await?["Id"].as_str().ok_or_else(unavailable)?.to_owned();
+            updates::start(&target).await?;
+            let checker = request(Method::POST, "/containers/create", Some(json!({"Image":updates::current_image().await?,
+                "Cmd":["adapter-health",kind],"Env":[format!("THELXINOE_FIXTURE_PORT={port}")],"User":"1000:1000","Tty":true,"Labels":labels,
+                "Healthcheck":{"Test":["NONE"]},"HostConfig":{"NetworkMode":format!("container:{anchor}"),"ReadonlyRootfs":true,"CapDrop":["ALL"],
+                    "Mounts":[{"Type":"bind","Source":format!("{host}/fixture-{index}"),"Target":"/config","ReadOnly":true}]}})))
+            .await?["Id"].as_str().ok_or_else(unavailable)?.to_owned();
+            updates::start(&checker).await?;
+            updates::wait(&checker, 200).await?;
+            updates::remove(&checker).await?;
+        }
+        for preview in [true, false] {
+            let mut args = vec!["sync", "--log", "info"];
+            if preview {
+                args.push("--preview");
+            }
+            let candidate = request(Method::POST, "/containers/create", Some(json!({"Image":image,"User":user,"Cmd":args,"Tty":true,
+                "Env":["TERM=dumb"],"Labels":labels,"Healthcheck":{"Test":["NONE"]},
+                "HostConfig":{"NetworkMode":format!("container:{anchor}"),"ReadonlyRootfs":true,"Tmpfs":{"/tmp":"rw,nosuid,nodev,size=256m"},
+                    "CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],
+                    "Mounts":[{"Type":"bind","Source":format!("{host}/appdata"),"Target":"/config"}]}})))
+            .await?["Id"].as_str().ok_or_else(unavailable)?.to_owned();
+            updates::start(&candidate).await?;
+            let finished = updates::wait(&candidate, 300).await;
+            let log = output(&candidate).await.unwrap_or_default().replace(secret, "[redacted]");
+            updates::remove(&candidate).await?;
+            finished?;
+            if log.contains("[ERR]") {
+                let line = log.lines().find(|l| l.contains("[ERR]")).unwrap_or("").chars().take(300).collect::<String>();
+                return Err(conflict(format!("Recyclarr failed isolated synchronization against synthetic targets: {line}")));
+            }
+            logs.push(json!({"preview":preview,"lines":log.lines().count()}));
+        }
+        Ok::<_, crate::docker::Failure>(json!({"targets":fixtures.len(),"runs":logs}))
+    }
+    .await;
+    for row in engine("/containers/json?all=true")
+        .await?
+        .as_array()
+        .ok_or_else(unavailable)?
+    {
+        if row["Labels"]["app.thelxinoe.transfer"] == operation
+            && row["Id"] != anchor
+            && row["Labels"]["app.thelxinoe.managed-id"].is_null()
+        {
+            updates::remove(row["Id"].as_str().ok_or_else(unavailable)?).await?;
+        }
+    }
+    updates::remove(&anchor).await?;
+    let _ = std::fs::remove_file(root.join("key"));
+    outcome
 }

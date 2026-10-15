@@ -19,11 +19,13 @@ export async function installUiFixture(
       can_recreate: boolean;
     };
     managedNzbget?: boolean;
-    importedBackupAvailable?: boolean;
     managerKind?: 'radarr' | 'sonarr' | 'lidarr';
     managerDefaultsUnset?: boolean;
     serviceUpdateState?: string;
-    adoptedDrift?: boolean;
+    /** Registered services that stay Connected instead of Owned. */
+    connected?: string[];
+    /** Kinds a test mocks itself that Thelxinoe owns. */
+    owned?: string[];
   } = {},
 ) {
   const managerKind = options.managerKind ?? 'radarr';
@@ -70,6 +72,48 @@ export async function installUiFixture(
     fade_watched: true,
     thumbnail_fit: 'contain',
   };
+  // Installs keep a setup hold until their reviewed setup finishes.
+  const stackProvisions = () => {
+    const radarr = options.stackProvisionState ?? 'complete';
+    const nzbget = options.stackProvisionState ?? 'queued';
+    return [
+      {
+        id: 'managed-radarr',
+        kind: 'radarr',
+        state: radarr,
+        host_port: 17878,
+        container_id: 'container-radarr',
+        service_id: 'manager-radarr',
+        error: null,
+        native_url: '',
+        origin: 'installed',
+        hold: radarr === 'complete' ? null : 'setup',
+        transfer_id: null,
+      },
+      ...(options.managedNzbget
+        ? [
+            {
+              id: 'managed-nzbget',
+              kind: 'nzbget',
+              state: nzbget,
+              host_port: 16789,
+              container_id: null,
+              service_id: null,
+              error: null,
+              native_url: '',
+              origin: 'installed',
+              hold: nzbget === 'complete' ? null : 'setup',
+              transfer_id: null,
+            },
+          ]
+        : []),
+    ];
+  };
+  const owned = new Set(options.owned ?? []);
+  // Kinds a test has removed from its own service mocks.
+  const cleared = new Set<string>();
+  // Active transfer operations a test reports for a service kind.
+  const operations = new Map<string, Record<string, unknown>>();
   const writes: { path: string; method: string; body: unknown }[] = [];
   const errors: string[] = [];
   const unexpected: string[] = [];
@@ -367,75 +411,72 @@ export async function installUiFixture(
           history_time: 1789984800 - i,
         })),
       });
-    if (
-      path === '/admin/stack/adopt/preview' &&
-      request.postDataJSON()?.service_id === 'support-nzbget'
-    )
-      return json({
-        review_id: 'review-nzbget',
-        name: 'nzbget',
-        image: 'linuxserver/nzbget',
-        source_config: '/external/nzbget',
-        compose_project: null,
-        compose_service: null,
-        mode: 'in_place',
-        restart_required: false,
-        changes: [],
-        capabilities: {
-          lifecycle: { available: true, reason: null },
-          backup: {
-            available: options.importedBackupAvailable ?? true,
-            reason:
-              options.importedBackupAvailable === false
-                ? 'Backups need /config to be a host folder; it currently uses the Docker volume nzbget_config'
-                : null,
-          },
-          update: {
-            available: false,
-            reason: 'Faithful recreation is not available for this deployment',
-          },
-          release: { available: true, reason: null },
-        },
-        authentication: 'preserved',
-        integration_ready: true,
-        warnings: [
-          'The log file may grow indefinitely.',
-          'The native password is empty.',
-          'Outgoing TLS certificate verification is disabled.',
-        ],
-        automation: [
-          'watchtower updates containers automatically and could replace this one, after which Thelxinoe would lose track of it. Exclude this container from watchtower before taking ownership (label com.centurylinklabs.watchtower.enable=false).',
-        ],
-      });
-    if (path === '/admin/stack/adopt/preview')
-      return json({
-        review_id: 'review-prowlarr',
-        name: 'prowlarr',
-        image: 'linuxserver/prowlarr',
-        source_config: '/external/prowlarr',
-        compose_project: 'media',
-        compose_service: 'prowlarr',
-        mode: 'in_place',
-        restart_required: false,
-        changes: [],
-        capabilities: {
-          lifecycle: { available: true, reason: null },
-          backup: { available: true, reason: null },
-          update: {
-            available: false,
-            reason: 'Faithful recreation is not available for this deployment',
-          },
-          release: { available: true, reason: null },
-        },
-        authentication: 'preserved',
-        integration_ready: true,
-        warnings: [],
-      });
-    if (
-      path === '/admin/stack/adopt' ||
-      path === '/admin/stack/managed-radarr/action'
-    )
+    if (path === '/admin/stack/managed-radarr/action')
       return json({ queued: true });
+    if (path === '/admin/services') {
+      const registered: Record<string, { id: string; version: string }> = {
+        [managerKind]: { id: `manager-${managerKind}`, version: '6.0.0' },
+        prowlarr: { id: 'support-prowlarr', version: '2.0.0' },
+        nzbget: { id: 'support-nzbget', version: '25.0' },
+      };
+      const provisions = stackProvisions();
+      return json({
+        items: [
+          'seerr',
+          'recyclarr',
+          'radarr',
+          'sonarr',
+          'lidarr',
+          'bazarr',
+          'prowlarr',
+          'nzbget',
+        ].map((kind) => {
+          const service = cleared.has(kind) ? undefined : registered[kind];
+          const provision = cleared.has(kind)
+            ? undefined
+            : provisions.find((item) => item.kind === kind);
+          const connected = !!service && options.connected?.includes(kind);
+          const stage = connected
+            ? 'connected'
+            : service || provision || (owned.has(kind) && !cleared.has(kind))
+              ? 'owned'
+              : 'none';
+          const hold = stage === 'owned' ? (provision?.hold ?? null) : null;
+          return {
+            kind,
+            stage,
+            hold,
+            agreed: true,
+            draft_review: null,
+            actions: [],
+            connection: service
+              ? {
+                  id: service.id,
+                  container_id: `container-${kind}`.padEnd(64, '0'),
+                  container_name: kind,
+                  engine: 'fixture-engine',
+                  version: service.version,
+                  verified: true,
+                  operational: stage === 'owned' && !hold,
+                  checked_at: 1789984800,
+                  error: null,
+                }
+              : null,
+            ownership:
+              stage === 'owned'
+                ? {
+                    id: provision?.id ?? `transferred-${kind}`,
+                    state: provision?.state ?? 'complete',
+                    origin: provision ? 'installed' : 'transferred',
+                    hold,
+                    transfer_id: null,
+                  }
+                : null,
+            operation: operations.get(kind) ?? null,
+          };
+        }),
+      });
+    }
     if (path === '/admin/managers/containers')
       return json({
         items: [
@@ -486,9 +527,6 @@ export async function installUiFixture(
             error: null,
             transfer_pending: false,
             ...options.stackCapabilities,
-            ...(options.adoptedDrift
-              ? { drift: true, status: 'drifted', imported: true }
-              : {}),
           },
           {
             id: 'controller-bazarr',
@@ -506,34 +544,7 @@ export async function installUiFixture(
             transfer_pending: false,
           },
         ],
-        provisions: [
-          {
-            id: 'managed-radarr',
-            kind: 'radarr',
-            state: options.stackProvisionState ?? 'complete',
-            host_port: 17878,
-            container_id: 'container-radarr',
-            service_id: 'manager-radarr',
-            error: null,
-            native_url: '',
-            origin: 'installed',
-          },
-          ...(options.managedNzbget
-            ? [
-                {
-                  id: 'managed-nzbget',
-                  kind: 'nzbget',
-                  state: options.stackProvisionState ?? 'queued',
-                  host_port: 16789,
-                  container_id: null,
-                  service_id: null,
-                  error: null,
-                  native_url: '',
-                  origin: 'installed',
-                },
-              ]
-            : []),
-        ],
+        provisions: stackProvisions(),
       });
     if (path === '/admin/recyclarr/configuration') {
       const defaults = {
@@ -632,5 +643,5 @@ export async function installUiFixture(
       json: { error: { message: `Unexpected fixture request: ${path}` } },
     });
   });
-  return { writes, errors, unexpected };
+  return { writes, errors, unexpected, owned, cleared, operations };
 }

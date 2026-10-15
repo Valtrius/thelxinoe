@@ -152,6 +152,8 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
         1
     );
     let container = replacement;
+    // Requests and metadata use operational Owned services only.
+    crate::test_support::own_services(&state).await;
     let metadata = call(
         &state,
         "/api/v1/metadata/search?kind=movie&q=Public",
@@ -327,11 +329,7 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
         .unwrap()
         .get_mut(&format!("containers/{container}"))
         .unwrap()["mounts"][0]["source"] = json!("/physical");
-    let provision_container = container.clone();
-    state.db.write("test.fixture", move |db|{
-        db.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,container_id,created_at,updated_at) VALUES ('manager-provision','radarr','bob',7878,X'00','queued',?1,1,1)",[provision_container])?;
-        Ok(())
-    }).await.unwrap();
+    // An Owned service can't be replaced by a plain connection.
     let blocked = call(
         &state,
         "/api/v1/admin/managers",
@@ -341,26 +339,6 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
     )
     .await;
     assert_eq!(blocked.0, StatusCode::CONFLICT, "{}", blocked.2);
-    state
-        .db
-        .write("test.fixture", |db| {
-            db.execute(
-                "UPDATE stack_provisions SET state='connecting' WHERE id='manager-provision'",
-                [],
-            )?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-    let internal = call(
-        &state,
-        "/api/v1/admin/managers",
-        "POST",
-        json!({"name":"Managed","kind":"radarr","container_id":container,"port":port,"api_key":"fixture-manager-secret-key","url_base":"/services/radarr"}),
-        &bob,
-    )
-    .await;
-    assert_eq!(internal.0, StatusCode::OK, "{}", internal.2);
     server.abort();
 }
 
@@ -553,12 +531,18 @@ async fn support_services_are_admin_only_redacted_and_expose_only_allowed_comman
             .0,
         StatusCode::METHOD_NOT_ALLOWED
     );
+    // A Connected service never exposes credential copies or operations.
     let login = call(&state, &login_path, "POST", Value::Null, &admin).await;
-    assert_eq!(login.0, StatusCode::OK);
-    assert_eq!(
-        login.2,
-        json!({"username":"fixture","password":"private-test-secret"})
-    );
+    assert_eq!(login.0, StatusCode::CONFLICT, "{}", login.2);
+    let view = call(
+        &state,
+        &format!("/api/v1/admin/support/{key}"),
+        "GET",
+        Value::Null,
+        &admin,
+    )
+    .await;
+    assert_eq!(view.0, StatusCode::CONFLICT, "{}", view.2);
     let replacement = "e".repeat(64);
     state.managers.docker.lock().unwrap().insert(
         format!("containers/{replacement}"),
@@ -585,6 +569,13 @@ async fn support_services_are_admin_only_redacted_and_expose_only_allowed_comman
             .await
             .unwrap(),
         1
+    );
+    crate::test_support::own_services(&state).await;
+    let login = call(&state, &login_path, "POST", Value::Null, &admin).await;
+    assert_eq!(login.0, StatusCode::OK);
+    assert_eq!(
+        login.2,
+        json!({"username":"fixture","password":"private-test-secret"})
     );
     let path = format!("/api/v1/admin/support/{key}");
     assert_eq!(
@@ -634,11 +625,7 @@ async fn support_services_are_admin_only_redacted_and_expose_only_allowed_comman
         .await
         .unwrap();
     assert!(!String::from_utf8_lossy(&stored).contains("private-test-secret"));
-    let provision_container = replacement.clone();
-    state.db.write("test.fixture", move |db|{
-        db.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,container_id,created_at,updated_at) VALUES ('support-provision','nzbget','bob',6789,X'00','queued',?1,1,1)",[provision_container])?;
-        Ok(())
-    }).await.unwrap();
+    // An Owned service can't be replaced by a plain connection.
     let blocked = call(
         &state,
         "/api/v1/admin/support",
@@ -648,31 +635,11 @@ async fn support_services_are_admin_only_redacted_and_expose_only_allowed_comman
     )
     .await;
     assert_eq!(blocked.0, StatusCode::CONFLICT, "{}", blocked.2);
-    state
-        .db
-        .write("test.fixture", |db| {
-            db.execute(
-                "UPDATE stack_provisions SET state='connecting' WHERE id='support-provision'",
-                [],
-            )?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-    let internal = call(
-        &state,
-        "/api/v1/admin/support",
-        "POST",
-        json!({"name":"Managed downloader","kind":"nzbget","container_id":replacement,"port":port,"credentials":{"username":"fixture","secret":"private-test-secret"},"native_url":"http://localhost:6789"}),
-        &admin,
-    )
-    .await;
-    assert_eq!(internal.0, StatusCode::OK, "{}", internal.2);
     task.abort();
 }
 
 #[tokio::test]
-async fn nzbget_login_is_available_to_admins_while_provisioning() {
+async fn nzbget_login_is_available_to_admins_only_for_an_owned_service() {
     let (_temp, state, alice) = fixture().await;
     state
         .db
@@ -688,16 +655,12 @@ async fn nzbget_login_is_available_to_admins_while_provisioning() {
             .unwrap();
     let admin = format!("thelxinoe_session={token}");
     let key = "queued-nzbget";
-    let credential = state
-        .secrets
-        .encrypt(&format!("provision:{key}"), b"generated-private-password")
-        .unwrap();
     state
         .db
         .write("test.fixture", move |db| {
             db.execute(
-                "INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,created_at,updated_at) VALUES (?1,'nzbget','bob',16789,?2,'queued',1,1)",
-                rusqlite::params![key, credential],
+                "INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,hold,created_at,updated_at) VALUES (?1,'nzbget','bob',16789,X'00','queued','setup',1,1)",
+                [key],
             )?;
             Ok(())
         })
@@ -708,47 +671,40 @@ async fn nzbget_login_is_available_to_admins_while_provisioning() {
         call(&state, &path, "POST", Value::Null, &alice).await.0,
         StatusCode::FORBIDDEN
     );
-    let login = call(&state, &path, "POST", Value::Null, &admin).await;
-    assert_eq!(login.0, StatusCode::OK);
+    // An installation still being set up has no released service to log in to.
     assert_eq!(
-        login.2,
-        json!({"username":"thelxinoe","password":"generated-private-password"})
+        call(&state, &path, "POST", Value::Null, &admin).await.0,
+        StatusCode::NOT_FOUND
     );
-    let adopted = state
+    let credential = state
         .secrets
         .encrypt(
-            &format!("provision:{key}"),
+            "support:owned-nzbget",
             br#"{"username":"existing","secret":"existing-private-password"}"#,
         )
         .unwrap();
     state
         .db
         .write("test.fixture", move |db| {
-            db.execute(
-                "UPDATE stack_provisions SET origin='adopted',credential=?1 WHERE id=?2",
-                rusqlite::params![adopted, key],
-            )?;
+            db.execute("INSERT INTO support_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at,operational) VALUES ('owned-nzbget','NZBGet','nzbget','container',6789,'g',?1,'/media','1',1,1)", [credential])?;
+            db.execute("UPDATE stack_provisions SET state='complete',hold=NULL,service_id='owned-nzbget' WHERE id=?1", [key])?;
             Ok(())
         })
         .await
         .unwrap();
     let login = call(&state, &path, "POST", Value::Null, &admin).await;
-    assert_eq!(login.0, StatusCode::OK);
+    assert_eq!(login.0, StatusCode::OK, "{}", login.2);
     assert_eq!(
         login.2,
         json!({"username":"existing","password":"existing-private-password"})
     );
     let other_key = "queued-radarr";
-    let other_credential = state
-        .secrets
-        .encrypt(&format!("provision:{other_key}"), b"radarr-private-key")
-        .unwrap();
     state
         .db
         .write("test.fixture", move |db| {
             db.execute(
-                "INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,created_at,updated_at) VALUES (?1,'radarr','bob',17878,?2,'queued',1,1)",
-                rusqlite::params![other_key, other_credential],
+                "INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,created_at,updated_at) VALUES (?1,'radarr','bob',17878,X'00','queued',1,1)",
+                [other_key],
             )?;
             Ok(())
         })
@@ -788,15 +744,19 @@ async fn provisioning_is_admin_only_durable_and_never_puts_credentials_in_jobs()
         json!({"kind":"radarr","host_port":37878,"native_url":"https://radarr.example.test"});
     for (path, payload) in [
         (
-            "/api/v1/admin/stack/adopt/preview".to_owned(),
-            json!({"service_id":"fixture"}),
+            "/api/v1/admin/services/fixture/transfer".to_owned(),
+            json!({}),
         ),
         (
-            "/api/v1/admin/stack/adopt".to_owned(),
-            json!({"service_id":"fixture","review_id":id(),"released_compose":true}),
+            format!("/api/v1/admin/transfers/{}/approve", id()),
+            json!({"review_revision":"x","confirm":true,"declarations":{}}),
         ),
         (
-            format!("/api/v1/admin/stack/{}/restore-original", id()),
+            format!("/api/v1/admin/transfers/{}/restore", id()),
+            json!({}),
+        ),
+        (
+            "/api/v1/admin/services/fixture/forget".to_owned(),
             json!({}),
         ),
     ] {
@@ -914,7 +874,7 @@ async fn provisioning_is_admin_only_durable_and_never_puts_credentials_in_jobs()
         StatusCode::OK
     );
     let provision = key.clone();
-    state.db.write("test.fixture", move|db|{db.execute("UPDATE stack_provisions SET state='complete',service_id='fixture-integration' WHERE id=?1",[provision])?;Ok(())}).await.unwrap();
+    state.db.write("test.fixture", move|db|{db.execute("UPDATE stack_provisions SET state='complete',hold=NULL,service_id='fixture-integration' WHERE id=?1",[provision])?;Ok(())}).await.unwrap();
     let update_settings = call(
         &state,
         "/api/v1/admin/service-updates",

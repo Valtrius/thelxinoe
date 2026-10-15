@@ -204,6 +204,8 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
         );
         if tokio::time::Instant::now() >= next_health {
             crate::managers::operational_health(&state).await?;
+            // Read-only checks of Connected services keep their own longer interval.
+            let _ = crate::managers::connected_health(&state).await;
             let _ = crate::managers::observe_requests(&state).await;
             next_health = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
         }

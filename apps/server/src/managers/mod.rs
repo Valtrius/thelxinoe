@@ -12,6 +12,7 @@ mod failures;
 mod indexers;
 mod metadata;
 mod operations;
+mod ownership;
 mod quality;
 mod recreation;
 pub(crate) mod recyclarr;
@@ -21,8 +22,10 @@ mod seerr;
 pub(crate) use seerr::observe_requests;
 mod stack;
 mod support;
+mod transfers;
 pub(crate) use connections::run as run_connections;
 pub(crate) use support::operational_health;
+pub(crate) use transfers::{connected_health, run_job as transfer};
 mod updates;
 pub(crate) use retention::run as run_retention;
 pub(crate) use stack::controller as controller_request;
@@ -120,6 +123,7 @@ pub(crate) fn router() -> Router<AppState> {
         .merge(connections::router())
         .merge(connection_settings::router())
         .merge(stack::router())
+        .merge(transfers::router())
         .merge(updates::router())
         .merge(retention::router())
         .route("/api/v1/admin/managers/containers", get(containers))
@@ -338,12 +342,29 @@ struct Service {
     credential: Vec<u8>,
     media_source: String,
     defaults: Value,
+    scope: ownership::Scope,
 }
+/// An operational Owned manager, or the service a running setup or transfer coordinates.
 async fn service(state: &AppState, id: &str) -> Result<Service> {
-    let id = id.to_owned();
-    storage::service(id, &state.db)
+    let mut s = storage::service(id.to_owned(), &state.db)
         .await?
-        .ok_or_else(ApiError::not_found)
+        .ok_or_else(ApiError::not_found)?;
+    match ownership::authority_for(id) {
+        Some(scope) => s.scope = scope,
+        None if s.scope != ownership::Scope::Operational => {
+            return Err(ownership::held(&s.kind));
+        }
+        None => {}
+    }
+    Ok(s)
+}
+/// Any saved manager connection, for read-only health and identity validation.
+async fn connected(state: &AppState, id: &str) -> Result<Service> {
+    let mut s = storage::service(id.to_owned(), &state.db)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    s.scope = ownership::Scope::Validation;
+    Ok(s)
 }
 struct Connection<'a> {
     state: &'a AppState,
@@ -351,8 +372,31 @@ struct Connection<'a> {
     url_base: String,
     key: String,
     kind: String,
+    /// Authority for upstream mutations; reads are always permitted.
+    grant: ownership::Grant,
 }
 impl Connection<'_> {
+    /// A connection for read-only checks of a draft or unsaved configuration.
+    fn validation<'a>(
+        state: &'a AppState,
+        base: String,
+        url_base: String,
+        key: String,
+        kind: String,
+    ) -> Connection<'a> {
+        Connection {
+            state,
+            base,
+            url_base,
+            key,
+            kind,
+            grant: ownership::Grant::validation(),
+        }
+    }
+    /// Authorize one upstream mutation immediately before it is sent.
+    async fn authorize(&self) -> Result<()> {
+        ownership::authorize(self.state, &self.kind, &self.grant).await
+    }
     async fn open<'a>(state: &'a AppState, s: &Service) -> Result<Connection<'a>> {
         let (base, source) = match evidence(state, &s.container, s.port).await {
             Err(error) if error.1 == "container_missing" => {
@@ -379,6 +423,12 @@ impl Connection<'_> {
             url_base: s.url_base.clone(),
             key,
             kind: s.kind.clone(),
+            grant: ownership::Grant {
+                scope: s.scope.clone(),
+                service: s.id.clone(),
+                generation: s.generation.clone(),
+                container: s.container.clone(),
+            },
         })
     }
     fn version(&self) -> u8 {
@@ -395,6 +445,9 @@ impl Connection<'_> {
         query: &[(&str, String)],
         body: Option<Value>,
     ) -> Result<Value> {
+        if method != reqwest::Method::GET {
+            self.authorize().await?;
+        }
         let endpoint = if self.kind == "bazarr" {
             format!("{}/api/{path}", self.url_base)
         } else {
@@ -451,6 +504,9 @@ struct Register {
     allow_unverified: bool,
     #[serde(skip)]
     container_name: String,
+    /// Set only by an installation registering its own new container under its setup hold.
+    #[serde(skip)]
+    setup: Option<String>,
 }
 async fn register(
     State(state): State<AppState>,
@@ -480,13 +536,13 @@ async fn register_with_actor(
     let _guard = state.managers.guard.service(&input.kind).await;
     access::validate_base(&input.kind, &input.url_base)?;
     let (base, media_source) = evidence(&state, &input.container_id, input.port).await?;
-    let connection = Connection {
-        state: &state,
-        base,
-        url_base: input.url_base.clone(),
-        key: input.api_key.clone(),
-        kind: input.kind.clone(),
-    };
+    let connection = Connection::validation(
+        &state,
+        base.clone(),
+        input.url_base.clone(),
+        input.api_key.clone(),
+        input.kind.clone(),
+    );
     let observed = docker(&state, &format!("containers/{}", input.container_id)).await?;
     input.container_name = observed["name"]
         .as_str()
@@ -499,7 +555,14 @@ async fn register_with_actor(
         }
         json!({"appName":input.kind,"version":"Unverified", "urlBase":input.url_base})
     } else {
-        connection.get("system/status").await?
+        let status = connection.get("system/status").await?;
+        if !status["appName"]
+            .as_str()
+            .is_some_and(|n| n.eq_ignore_ascii_case(&input.kind))
+        {
+            return Err(failures::identity(&input.kind, &status["appName"]));
+        }
+        status
     };
     access::check_reported_base(&input.kind, &input.url_base, &status)?;
     let version = status["version"]
@@ -514,22 +577,47 @@ async fn register_with_actor(
     let credential = state
         .secrets
         .encrypt(&format!("manager:{key}"), input.api_key.as_bytes())?;
-    let allowed = storage::register_with_actor_write_stack_provisions(
-        media_source,
-        version,
+    let registration = Registration {
         key,
         credential,
+        media_source,
+        version,
+        engine: observed["engine"].as_str().unwrap_or_default().to_owned(),
+        evidence: connection_evidence(&observed, &base),
+        verified: observed["running"] == true,
+        setup: input.setup.clone(),
+    };
+    let allowed = storage::register_with_actor_write_stack_provisions(
         &state.db,
+        registration,
         input,
         actor_id,
     )
     .await?;
     if !allowed {
         return Err(ApiError::conflict(format!(
-            "Thelxinoe is installing or managing another {service} container; finish or remove that installation first"
+            "Thelxinoe is installing, transferring or managing another {service}; finish or remove that installation first"
         )));
     }
     Ok(Json(json!({"id":returned})))
+}
+/// A connection or setup registration, with read-only evidence for later review.
+pub(super) struct Registration {
+    key: String,
+    credential: Vec<u8>,
+    media_source: String,
+    version: String,
+    engine: String,
+    evidence: Value,
+    verified: bool,
+    /// The installation whose setup registers its own new container.
+    setup: Option<String>,
+}
+/// Docker routing and mount evidence for a connection; never environment, commands or secrets.
+fn connection_evidence(observed: &Value, route: &str) -> Value {
+    json!({"engine":observed["engine"],"container":{"id":observed["id"],"name":observed["name"],"image":observed["image"],"image_id":observed["image_id"]},
+        "route":route,"networks":observed["networks"],"mounts":observed["mounts"],"ports":observed["ports"],"network_mode":observed["network_mode"],
+        "restart_policy":observed["restart_policy"],"compose":{"project":observed["compose_project"],"service":observed["compose_service"]},"observed_at":now()})
 }
 async fn options(
     State(state): State<AppState>,
@@ -683,7 +771,13 @@ async fn test(
     Path(id): Path<String>,
 ) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
-    let s = service(&state, &id).await?;
+    Ok(Json(test_manager(&state, &id).await?))
+}
+/// Read-only health and identity check of a saved manager connection, in any stage.
+async fn test_manager(state: &AppState, id: &str) -> Result<Value> {
+    let state = state.clone();
+    let id = id.to_owned();
+    let s = connected(&state, &id).await?;
     let result = async {
         let c = Connection::open(&state, &s).await?;
         let v = c.get("system/status").await?;
@@ -693,13 +787,20 @@ async fn test(
         {
             return Err(failures::identity(&s.kind, &v["appName"]));
         }
+        access::check_reported_base(&s.kind, &s.url_base, &v)?;
         Ok::<_, ApiError>(v["version"].clone())
     }
     .await;
     let error = result.as_ref().err().map(|e| e.2.clone());
-    storage::test(&state.db, id, error).await?;
+    let version = result
+        .as_ref()
+        .ok()
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.is_empty() && v.len() < 100)
+        .map(str::to_owned);
+    storage::test(&state.db, id, s.container, version, error).await?;
     state.notify_attention();
-    Ok(Json(json!({"healthy":true,"version":result?})))
+    Ok(json!({"healthy":true,"version":result?}))
 }
 
 fn canonical_root(kind: &str) -> &'static str {
@@ -708,6 +809,11 @@ fn canonical_root(kind: &str) -> &'static str {
         "sonarr" => "/media/tv",
         _ => "/media/music",
     }
+}
+/// Owned, installed or transferred: either may receive Thelxinoe-managed settings.
+async fn owned_here(state: &AppState, key: &str) -> Result<bool> {
+    let key = key.to_owned();
+    Ok(storage::owned_here(key, &state.db).await?)
 }
 async fn installed_here(state: &AppState, key: &str) -> Result<bool> {
     let key = key.to_owned();

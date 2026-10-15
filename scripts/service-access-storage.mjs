@@ -21,33 +21,44 @@ export async function existingStorageAccess(
     );
     await attached.direct('rootfolder', 'POST', { path: '/movies' });
     const original = JSON.parse(docker('inspect', attached.container))[0];
-    const review = await f.api('/admin/stack/adopt/preview', 'POST', {
-      service_id: attached.id,
-    });
-    const adopted = await f.api('/admin/stack/adopt', 'POST', {
-      service_id: attached.id,
-      review_id: review.review_id,
-    });
-    await expect
-      .poll(
-        async () =>
-          (await f.stack()).provisions.find((row) => row.id === adopted.id)
-            ?.state,
-        { timeout: 90000 },
-      )
-      .toBe('complete');
-    const after = JSON.parse(docker('inspect', attached.container))[0];
-    expect(after.Id).toBe(original.Id);
-    expect(after.Config).toEqual(original.Config);
-    expect(after.HostConfig).toEqual(original.HostConfig);
-    expect(after.State.StartedAt).toBe(original.State.StartedAt);
+    // Existing /movies storage is kept in place by the Owned replacement.
+    const { view, review } = await f.transfer(attached.id);
+    expect(view.state, view.error ?? '').toBe('complete');
     expect(
-      (await attached.direct('rootfolder')).some(
-        (root) => root.path === '/movies',
+      review.review.plan.target.mounts.map((mount) => mount.destination),
+    ).toContain('/movies');
+    const retained = JSON.parse(docker('inspect', attached.container))[0];
+    expect(retained.State.Running).toBe(false);
+    const runtime = (await f.stack()).items.find(
+      (item) => item.kind === 'radarr',
+    );
+    const replacement = JSON.parse(docker('inspect', runtime.container_id))[0];
+    expect(
+      replacement.Mounts.find((mount) => mount.Destination === '/movies')
+        ?.Source,
+    ).toBe(
+      original.Mounts.find((mount) => mount.Destination === '/movies').Source,
+    );
+    const roots = JSON.parse(
+      docker(
+        'exec',
+        runtime.container_id,
+        'curl',
+        '-fsS',
+        '-H',
+        `X-Api-Key: ${attached.key}`,
+        'http://localhost:7878/services/radarr/api/v3/rootfolder',
       ),
-    ).toBe(true);
-    await f.api(`/admin/stack/${adopted.id}/action`, 'POST', {
-      action: 'release',
+    );
+    expect(roots.some((root) => root.path === '/movies')).toBe(true);
+    // Retire it so the media mapping below can use the API fixture peer.
+    const provision = (await f.api('/admin/services')).items.find(
+      (item) => item.kind === 'radarr',
+    ).ownership.id;
+    await f.api(`/admin/stack/${provision}/action`, 'POST', { action: 'stop' });
+    docker('rm', runtime.container_id);
+    await f.api(`/admin/stack/${provision}/action`, 'POST', {
+      action: 'retire',
     });
     const blocked = f.compose(
       'exec',
@@ -106,6 +117,10 @@ export async function existingStorageAccess(
     result.server = file.path;
     result.ownership = file.ownership;
     result.fresh_installation = 'blocked before creating a container';
+    result.transfer = {
+      checks: view.checks,
+      mounts: review.review.plan.target.mounts,
+    };
   } catch (error) {
     result.error = error.message;
     result.jobs = await f.api('/admin/jobs').catch(() => null);

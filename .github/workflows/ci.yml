@@ -107,6 +107,33 @@ jobs:
             .local/selected-audio.ts
             .local/ci-resources/
           include-hidden-files: true
+  transfers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run ci:transfers
+      - name: Clean owned test resources
+        if: always()
+        run: node scripts/ci-clean-resources.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: transfer-test-evidence
+          path: |
+            .local/ci-*.json
+            .local/ci-command.log
+            .local/ci-browser*.log
+            .local/transfer-qualification.json
+            test-results/transfers/
+            .local/ci-resources/
+          include-hidden-files: true
   desktop:
     runs-on: windows-2025
     timeout-minutes: 90

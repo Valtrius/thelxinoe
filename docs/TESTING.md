@@ -12,6 +12,7 @@ pnpm run ci:status # Latest local run: lane status and result paths
 pnpm run test:ui:layout
 pnpm run test:ui:player
 pnpm run test:service-access
+pnpm run ci:transfers # Real-container ownership transfers
 ```
 
 [Scripts](../package.json) and [CI runner](../scripts/ci.mjs) define the checks.
@@ -47,9 +48,27 @@ including successful runs. Open a report with, for example,
 even when a test fails. The standalone Docker scripts save their fixture
 results and screenshots under `.local/` as specified in each script.
 
+Ownership transfers are qualified against real containers by
+[`scripts/test-transfers.mjs`](../scripts/test-transfers.mjs) (`pnpm run ci:transfers`,
+or `pnpm run test:transfers` with `THELXINOE_SERVER_IMAGE` and
+`THELXINOE_CONTROLLER_IMAGE` set to built images). It starts every supported service
+from its pinned image with bind-mounted and Docker-volume configuration, populates
+records, connects it and takes ownership through the public API. It checks that the
+original stays stopped and unchanged, that record identities survive in the replacement
+and that the disposable validation copy reached none of the egress sentinels. It also
+covers a controller restart during a transfer and a stale review, recreation of
+transferred services, a return to the original followed by a new takeover, a snapshot
+restore interrupted by a controller restart and supplementary file mounts. Narrow a run with
+`--kinds=radarr,sonarr`, `--storage=bind` or `--scenarios=matrix` (also `interruption`,
+`recovery` and `storage`). Results are
+written to `test-results/transfers/result.json` and the qualification artifact
+`.local/transfer-qualification.json`. No other container may mount the fixture
+folders: the transfer review refuses a configuration with a second writer, so stop
+development containers that bind-mount the worktree first.
+
 Run `node scripts/test-container-identity.mjs` to build and verify default/custom
 UID/GID deployments with real Linux file permissions, managed-service updates,
-adoption, product validation and saved Compose recreation. It removes its
+a transfer from another identity, product validation and saved Compose recreation. It removes its
 disposable containers/volumes and writes `.local/container-identity-result.json`.
 Use `--built` with current `thelxinoe-service-{server,controller}:local` images.
 
@@ -86,7 +105,7 @@ node scripts/test-user-media.mjs
 
 | Area                              | Fixture / executable checks                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Shared mounts and managed stack   | [stack](../scripts/test-managed-stack.mjs), [wiring](../scripts/test-managed-wiring.mjs), [UI](../scripts/test-managed-ui.mjs), [storage and adoption](../scripts/service-access-ownership.mjs)                                                                                                                                                                                                                                                                                                        |
+| Shared mounts and managed stack   | [stack](../scripts/test-managed-stack.mjs), [wiring](../scripts/test-managed-wiring.mjs), [UI](../scripts/test-managed-ui.mjs), [stages and transfers](../scripts/service-access-ownership.mjs), [transfer matrix](../scripts/test-transfers.mjs)                                                                                                                                                                                                                                                      |
 | Acquisition and external services | [Compose](../compose.acquisition.test.yaml), [fixture generator](../scripts/acquisition-fixtures.mjs), [acquisition](../scripts/test-acquisition.mjs), [download setup](../scripts/configure-acquisition-downloads.mjs), [downloads/import](../scripts/test-acquisition-downloads.mjs), [files](../scripts/test-manager-files.mjs), [TV/music](../scripts/test-manager-tv-music.mjs), [support services](../scripts/test-support-services.mjs), [connections](../scripts/test-service-connections.mjs) |
 | Service updates                   | [preflights](../scripts/test-service-preflights.mjs), [commit](../scripts/test-service-update-commit.mjs), [rollback](../scripts/test-service-update-rollback.mjs), [deployment recreation](../scripts/test-container-identity.mjs), [local acceptance](../scripts/test-local-acceptance.mjs)                                                                                                                                                                                                          |
 | Retention and segments            | [retention](../scripts/test-retention.mjs), [segment fixtures](../scripts/generate-segment-fixtures.mjs), [segments](../scripts/test-segments.mjs), [native segments](../scripts/test-native-segments.mjs)                                                                                                                                                                                                                                                                                             |

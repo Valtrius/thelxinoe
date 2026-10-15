@@ -47,7 +47,7 @@ impl Identity {
                 .filter_map(|entry| entry.split_once('='))
                 .find_map(|(name, value)| (name == key).then_some(value))
                 // Curated LinuxServer entrypoints default each omitted ID to
-                // 911. Adopted services may rely on either or both defaults.
+                // 911. Existing services may rely on either or both defaults.
                 .unwrap_or("911")
         };
         Ok(Self {

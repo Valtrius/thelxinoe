@@ -4,11 +4,12 @@ export function ciPhases(platform = process.platform) {
         'server',
         'web',
         'containers',
+        'transfers',
         'desktop',
         'updates-server',
         'updates-desktop',
       ]
-    : ['server', 'web', 'containers', 'updates-server'];
+    : ['server', 'web', 'containers', 'transfers', 'updates-server'];
 }
 
 export function requestedPhases(requested, platform = process.platform) {

@@ -13,7 +13,7 @@ $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
 if ($PhaseList) { $Phases = $PhaseList.Split(',') }
 foreach ($phase in $Phases) {
-    if ($phase -notin @('server', 'web', 'containers', 'desktop', 'updates', 'updates-server', 'updates-desktop')) {
+    if ($phase -notin @('server', 'web', 'containers', 'transfers', 'desktop', 'updates', 'updates-server', 'updates-desktop')) {
         throw "Invalid CI phase: $phase"
     }
 }

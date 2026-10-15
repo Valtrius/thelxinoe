@@ -11,7 +11,10 @@
     state: string;
     error: string | null;
     cleanup_pending: boolean;
+    /** An existing upstream record that already reaches the target. */
+    candidate?: { name: string; address: string } | null;
   };
+  export type ConnectionAction = 'connect' | 'disconnect' | 'retry' | 'import';
 </script>
 
 <script lang="ts">
@@ -29,15 +32,12 @@
     busy: boolean;
     onaction: (
       connection: ServiceConnection,
-      action: 'connect' | 'disconnect' | 'retry',
+      action: ConnectionAction,
     ) => Promise<void>;
   } = $props();
   const pending = $state<Record<string, string>>({});
   const errors = $state<Record<string, string>>({});
-  async function run(
-    connection: ServiceConnection,
-    action: 'connect' | 'disconnect' | 'retry',
-  ) {
+  async function run(connection: ServiceConnection, action: ConnectionAction) {
     if (pending[connection.id]) return;
     pending[connection.id] = action;
     errors[connection.id] = '';
@@ -124,6 +124,14 @@
             {errors[connection.id]}
           </p>
         {/if}
+        {#if connection.candidate && connection.state === 'conflict'}
+          <p class="text-[11px] leading-[1.6] text-muted col-span-full m-0">
+            Existing record “{connection.candidate.name}” reaches
+            {connection.target_name} at {connection.candidate.address}. Import
+            it to let Thelxinoe manage that record, keeping its other settings,
+            or remove it in the service and retry.
+          </p>
+        {/if}
         {#if connection.enabled && connection.state === 'unavailable'}
           <p class="text-[11px] leading-[1.6] text-muted col-span-full m-0">
             Retries automatically when both services are available.
@@ -155,6 +163,16 @@
               disabled={busy || !!pending[connection.id]}
               loading={connecting}
               onclick={() => void run(connection, 'connect')}>Connect</Button
+            >
+          {/if}
+          {#if connection.candidate && connection.state === 'conflict'}
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={busy || !!pending[connection.id]}
+              loading={pending[connection.id] === 'import'}
+              onclick={() => void run(connection, 'import')}
+              >Import existing</Button
             >
           {/if}
           {#if ['unavailable', 'conflict'].includes(connection.state) && (connection.enabled || connection.cleanup_pending)}

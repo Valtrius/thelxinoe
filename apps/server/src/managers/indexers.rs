@@ -8,8 +8,9 @@ pub(super) fn router() -> Router<AppState> {
         .route("/api/v1/admin/support/{id}/indexers/test", post(test))
         .route("/api/v1/admin/support/{id}/indexers/fields", post(fields))
 }
+/// Thelxinoe-managed hosts only; existing entries are kept.
 pub(super) async fn ensure_hosts(state: &AppState, id: &str) -> Result<()> {
-    if !installed_here(state, id).await? {
+    if !owned_here(state, id).await? {
         return Ok(());
     }
     let c = connect(state, id).await?;
@@ -215,6 +216,7 @@ async fn submit(
         return Err(ApiError::bad("Choose an existing sync profile"));
     }
     let body = build(c.get("indexer/schema").await?, input)?;
+    c.authorize().await?;
     let response = c
         .state
         .managers

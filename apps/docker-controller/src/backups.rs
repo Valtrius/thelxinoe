@@ -19,10 +19,8 @@ struct Component {
     kind: String,
     #[serde(default)]
     name: String,
-    #[serde(default)]
-    imported: bool,
 }
-/// An imported deployment left running and out of the archive.
+/// A held service left running and out of the archive.
 #[derive(Clone, Serialize, Deserialize)]
 struct Exclusion {
     key: String,
@@ -116,7 +114,7 @@ fn public(r: &Record) -> Value {
     let components = r
         .contents
         .iter()
-        .map(|c| json!({"key":c.key,"kind":c.kind,"name":c.name,"imported":c.imported}))
+        .map(|c| json!({"key":c.key,"kind":c.kind,"name":c.name}))
         .collect::<Vec<_>>();
     json!({"id":r.id,"stage":r.stage,"created_at":r.created_at,"error":r.error,
         "archive":format!("{}.age",r.id),"automatic":r.automatic,
@@ -192,9 +190,7 @@ async fn inspect(d: &Deployment) -> Result<(Vec<Managed>, Vec<Component>, Vec<Ex
         .ok_or_else(|| conflict("Unsupported server state source"))?
         .to_string_lossy()
         .into_owned();
-    if !adoption::state_isolated(&source, &server, d)
-        || FsPath::new(&d.appdata_source).starts_with(&source)
-    {
+    if !state_isolated(&source, &server, d) || FsPath::new(&d.appdata_source).starts_with(&source) {
         return Err(conflict("Server state overlaps media or deployment state"));
     }
     let mut components = vec![Component {
@@ -208,7 +204,6 @@ async fn inspect(d: &Deployment) -> Result<(Vec<Managed>, Vec<Component>, Vec<Ex
             .unwrap_or_default()
             .trim_start_matches('/')
             .into(),
-        imported: false,
     }];
     let mut managed = services()?;
     managed.sort_by(|a, b| a.id.cmp(&b.id));
@@ -216,22 +211,21 @@ async fn inspect(d: &Deployment) -> Result<(Vec<Managed>, Vec<Component>, Vec<Ex
     let mut excluded = Vec::new();
     for service in &managed {
         let checked = async {
+            if service.hold.is_some() {
+                return Err(conflict("held"));
+            }
             if service.phase != "active" {
                 return Err(conflict("Finish service recovery before backing up"));
             }
             let raw = updates::verified(service, d).await?;
-            let source = adoption::backup_source(&raw, d)?;
+            let source = backup_source(&raw, d)?;
             Ok((raw, source))
         }
         .await;
         let (raw, source) = match checked {
             Ok(checked) => checked,
-            // Imported deployments keep their own storage. An unsupported layout or a
-            // changed or missing container leaves only that service out of the archive.
-            Err((status, reason))
-                if service.imported.is_some()
-                    && matches!(status, StatusCode::CONFLICT | StatusCode::NOT_FOUND) =>
-            {
+            // A transfer or recovery still owns this service's state; it stays out of the archive.
+            Err((_, reason)) if service.hold.is_some() => {
                 // It keeps running during the snapshot, so it must not write into captured state.
                 if let Ok(raw) = engine(&format!("/containers/{}/json", service.container)).await {
                     for m in raw["Mounts"].as_array().into_iter().flatten() {
@@ -246,12 +240,9 @@ async fn inspect(d: &Deployment) -> Result<(Vec<Managed>, Vec<Component>, Vec<Ex
                     key: service.id.clone(),
                     kind: service.kind.clone(),
                     name: service.name.clone(),
-                    reason: match reason.as_ref() {
-                        "Docker configuration drift blocks reconciliation" => {
-                            "Its Docker configuration changed after adoption; release and adopt it again to include it".into()
-                        }
-                        _ => reason.into_owned(),
-                    },
+                    reason: format!(
+                        "Its ownership transfer or recovery is still in progress ({reason})"
+                    ),
                 });
                 continue;
             }
@@ -269,7 +260,6 @@ async fn inspect(d: &Deployment) -> Result<(Vec<Managed>, Vec<Component>, Vec<Ex
             running: raw["State"]["Running"] == true,
             kind: service.kind.clone(),
             name: service.name.clone(),
-            imported: service.imported.is_some(),
         });
     }
     if components.iter().any(|c| {
@@ -542,7 +532,7 @@ pub(super) async fn create(
     });
     Ok(Json(response))
 }
-/// Without an explicit choice, imported deployments keep their live configuration.
+/// Without an explicit choice, the server and every recorded Owned service are restored.
 fn selection(manifest: &Manifest, services: &[Managed], chosen: Option<&[String]>) -> Vec<String> {
     if let Some(chosen) = chosen {
         return chosen.to_vec();
@@ -550,12 +540,7 @@ fn selection(manifest: &Manifest, services: &[Managed], chosen: Option<&[String]
     manifest
         .components
         .iter()
-        .filter(|c| {
-            c.key == "server"
-                || services
-                    .iter()
-                    .any(|s| s.id == c.key && s.imported.is_none())
-        })
+        .filter(|c| c.key == "server" || services.iter().any(|s| s.id == c.key && s.hold.is_none()))
         .map(|c| c.key.clone())
         .collect()
 }
@@ -675,8 +660,7 @@ pub(super) async fn restore(
                 .map(|c| {
                     let mut c = c.clone();
                     if let Some(s) = current_services.iter().find(|s| s.id == c.key) {
-                        (c.kind, c.name, c.imported) =
-                            (s.kind.clone(), s.name.clone(), s.imported.is_some());
+                        (c.kind, c.name) = (s.kind.clone(), s.name.clone());
                     } else if c.key == "server" {
                         c.kind = "server".into();
                     }
@@ -997,4 +981,78 @@ pub(super) async fn recover_interrupted() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn media_destination(destination: &str) -> bool {
+    ["/media", "/movies", "/tv", "/music", "/downloads", "/data"]
+        .iter()
+        .any(|root| destination == *root || destination.starts_with(&format!("{root}/")))
+}
+/// Media and download storage is shared with Thelxinoe rather than backed up per service.
+fn media_mount(m: &Value, d: &Deployment) -> bool {
+    m["Destination"].as_str().is_some_and(media_destination)
+        || m["Source"]
+            .as_str()
+            .is_some_and(|source| policy::overlapping(source, &d.media_source))
+}
+pub(super) fn state_isolated(source: &str, server: &Value, d: &Deployment) -> bool {
+    policy::media_disjoint(source, &d.media_source)
+        && server["Mounts"].as_array().is_some_and(|mounts| {
+            mounts.iter().all(|m| {
+                !m["Destination"].as_str().is_some_and(media_destination)
+                    || m["Source"]
+                        .as_str()
+                        .is_some_and(|media| policy::media_disjoint(source, media))
+            })
+        })
+}
+/// The managed configuration folder of an Owned service, when nothing else holds its state.
+pub(super) fn backup_source(raw: &Value, d: &Deployment) -> Result<String> {
+    if raw["HostConfig"]["AutoRemove"] == true {
+        return Err(conflict(
+            "Docker auto-remove is enabled for this container, so it can't be stopped for a consistent backup",
+        ));
+    }
+    let mounts = raw["Mounts"].as_array().ok_or_else(unavailable)?;
+    let config = mounts
+        .iter()
+        .find(|m| m["Destination"] == "/config")
+        .ok_or_else(|| conflict("Backups need the service configuration mounted at /config"))?;
+    if config["Type"] != "bind" || config["RW"] != true {
+        return Err(conflict(
+            "Backups need /config to be a writable managed folder",
+        ));
+    }
+    let source = config["Source"].as_str().ok_or_else(unavailable)?;
+    if !state_isolated(source, &d.server, d) {
+        return Err(conflict(format!(
+            "/config ({source}) overlaps media storage; keep the service configuration outside media folders so backups never copy media"
+        )));
+    }
+    let supplementary = format!("{}/.thelxinoe-supplementary/", source.trim_end_matches('/'));
+    for m in mounts
+        .iter()
+        .filter(|m| m["Destination"] != "/config" && m["Type"] != "tmpfs")
+    {
+        let destination = m["Destination"].as_str().ok_or_else(unavailable)?;
+        let other = m["Source"].as_str().unwrap_or_default();
+        // Supplementary files are read-only copies inside the backed-up configuration.
+        if m["RW"] == false && other.starts_with(&supplementary) {
+            continue;
+        }
+        if !policy::media_disjoint(source, other) {
+            return Err(conflict(format!(
+                "The {destination} mount overlaps /config ({source}); keep configuration and other storage in separate folders"
+            )));
+        }
+        if m["RW"] == true && !media_mount(m, d) {
+            return Err(conflict(format!(
+                "{destination} is writable and isn't a media or download folder, so backing up /config alone could miss service data stored there"
+            )));
+        }
+    }
+    Ok(policy::host_path(source)
+        .ok_or_else(|| conflict(format!("/config uses an unsupported host path ({source})")))?
+        .to_string_lossy()
+        .into_owned())
 }

@@ -232,10 +232,10 @@ async fn retried_automatic_backup_returns_the_original_operation() {
 }
 
 #[tokio::test]
-async fn backups_leave_unsupported_imported_services_running_and_restore_them_only_when_chosen() {
+async fn backups_leave_held_services_running_and_restore_every_owned_service_by_default() {
     const INSTALLED: &str = "44444444-4444-4444-4444-444444444444";
-    const KEPT: &str = "55555555-5555-5555-5555-555555555555";
-    const SKIPPED: &str = "66666666-6666-6666-6666-666666666666";
+    const TRANSFERRED: &str = "55555555-5555-5555-5555-555555555555";
+    const HELD: &str = "66666666-6666-6666-6666-666666666666";
     let fixture = Docker::new();
     fixture
         .scope(async {
@@ -245,36 +245,28 @@ async fn backups_leave_unsupported_imported_services_running_and_restore_them_on
                 .unwrap();
             store::write_json(&store::root().join("compose.override.yaml"), &json!({})).unwrap();
             updates::start("original").await.unwrap();
-            let capability = json!({"available":true,"reason":null});
-            let imported = json!({"engine":"engine","deployment":"deployment","storage":[],
-                "capabilities":{"lifecycle":capability,"backup":capability,"update":capability,
-                    "recreate":capability,"release":capability}});
-            for (key, container, kind, config, labels, import) in [
-                (INSTALLED, "installed", "prowlarr", json!({"Type":"bind","Source":fixture.root().join("installed"),"Destination":"/config","RW":true}),
-                    json!({"app.thelxinoe.deployment":"deployment","app.thelxinoe.managed-id":INSTALLED}), Value::Null),
-                (KEPT, "kept", "radarr", json!({"Type":"bind","Source":fixture.root().join("kept"),"Destination":"/config","RW":true}),
-                    json!({}), imported.clone()),
-                // A Docker volume can't be backed up, so this service stays out of every archive.
-                (SKIPPED, "skipped", "sonarr", json!({"Type":"volume","Name":"sonarr_config","Source":"/var/lib/docker/volumes/sonarr_config/_data","Destination":"/config","RW":true}),
-                    json!({}), imported.clone()),
+            for (key, container, kind, origin, hold) in [
+                (INSTALLED, "installed", "prowlarr", "installed", Value::Null),
+                (TRANSFERRED, "transferred", "radarr", "transferred", Value::Null),
+                // A transfer still holds this service, so it stays out of the archive.
+                (HELD, "held", "sonarr", "transferred", json!("transfer")),
             ] {
-                if config["Type"] == "bind" {
-                    let source = std::path::PathBuf::from(config["Source"].as_str().unwrap());
-                    std::fs::create_dir_all(&source).unwrap();
-                    std::fs::write(source.join("marker"), format!("{container}-before")).unwrap();
-                }
+                let source = fixture.root().join(container);
+                std::fs::create_dir_all(&source).unwrap();
+                std::fs::write(source.join("marker"), format!("{container}-before")).unwrap();
                 let raw = json!({"Id":container,"Name":format!("/{container}"),"Image":"sha256:image",
-                    "Config":{"Image":"image","Labels":labels},"HostConfig":{},"Mounts":[config],
+                    "Config":{"Image":"image","Labels":{"app.thelxinoe.deployment":"deployment","app.thelxinoe.managed-id":key}},
+                    "HostConfig":{},"Mounts":[{"Type":"bind","Source":source,"Destination":"/config","RW":true}],
                     "State":{"Running":true,"StartedAt":"2026-10-01T00:00:00Z"},
                     "NetworkSettings":{"Networks":{"media":{}}}});
                 fixture.insert(container, raw.clone());
                 let service: Managed = serde_json::from_value(json!({"id":key,"kind":kind,
                     "container":container,"name":container,"image":"image","phase":"active",
-                    "spec":{},"expected":policy::fingerprint(&raw),"imported":import})).unwrap();
+                    "spec":{},"expected":policy::fingerprint(&raw),"origin":origin,"hold":hold})).unwrap();
                 save(&service).unwrap();
             }
             std::fs::write(fixture.root().join("appdata/marker"), "server-before").unwrap();
-            let skipped_started = fixture.started_at("skipped");
+            let held_started = fixture.started_at("held");
             let passphrase = "partial backup regression passphrase";
             let created = create(
                 State(Runtime(Default::default())),
@@ -286,29 +278,22 @@ async fn backups_leave_unsupported_imported_services_running_and_restore_them_on
             .await
             .unwrap()
             .0;
-            assert_eq!(created["excluded"][0]["key"], SKIPPED);
+            assert_eq!(created["excluded"][0]["key"], HELD);
             assert!(
                 created["excluded"][0]["reason"]
                     .as_str()
                     .unwrap()
-                    .contains("Docker volume sonarr_config")
+                    .contains("ownership transfer or recovery")
             );
             let contents = |value: &Value| {
                 value["components"]
                     .as_array()
                     .unwrap()
                     .iter()
-                    .map(|c| (c["key"].as_str().unwrap().to_owned(), c["imported"] == true))
+                    .map(|c| c["key"].as_str().unwrap().to_owned())
                     .collect::<Vec<_>>()
             };
-            assert_eq!(
-                contents(&created),
-                [
-                    ("server".to_owned(), false),
-                    (INSTALLED.to_owned(), false),
-                    (KEPT.to_owned(), true)
-                ]
-            );
+            assert_eq!(contents(&created), ["server", INSTALLED, TRANSFERRED]);
             let key = created["id"].as_str().unwrap().to_owned();
             let finished = |stage: &'static str| {
                 let key = key.clone();
@@ -330,6 +315,7 @@ async fn backups_leave_unsupported_imported_services_running_and_restore_them_on
             };
             finished("complete").await;
             assert_eq!(fixture.copies(), 3);
+            assert!(fixture.running("held"));
             let restore_with = |components: Option<Vec<String>>| {
                 restore(
                     State(Runtime(Default::default())),
@@ -340,38 +326,36 @@ async fn backups_leave_unsupported_imported_services_running_and_restore_them_on
                     }),
                 )
             };
-            // Without a choice, the adopted service keeps running with its live configuration.
-            let kept_started = fixture.started_at("kept");
+            // Without a choice, every recorded Owned service is restored with the server.
+            let transferred_started = fixture.started_at("transferred");
             assert_eq!(
                 restore_with(None).await.unwrap().0["stage"],
                 "restore-queued"
             );
             finished("restored").await;
-            assert_eq!(fixture.copies(), 3 + 4);
-            assert_eq!(fixture.started_at("kept"), kept_started);
+            assert_eq!(fixture.copies(), 3 + 6);
+            assert_ne!(fixture.started_at("transferred"), transferred_started);
             assert_eq!(plaintext(&key), Vec::<String>::new());
             for (rejected, status) in [
                 (vec![], StatusCode::BAD_REQUEST),
-                (vec![KEPT.to_owned(), KEPT.to_owned()], StatusCode::BAD_REQUEST),
-                (vec![SKIPPED.to_owned()], StatusCode::CONFLICT),
+                (vec![TRANSFERRED.to_owned(), TRANSFERRED.to_owned()], StatusCode::BAD_REQUEST),
+                (vec![HELD.to_owned()], StatusCode::CONFLICT),
             ] {
                 assert_eq!(restore_with(Some(rejected)).await.unwrap_err().0, status);
             }
-            // The rejected selection was checked against the decrypted manifest.
             assert_eq!(plaintext(&key), Vec::<String>::new());
             // An explicit choice restores only that service; the server keeps running.
             let server_started = fixture.started_at("original");
             assert_eq!(
-                restore_with(Some(vec![KEPT.to_owned()])).await.unwrap().0["stage"],
+                restore_with(Some(vec![TRANSFERRED.to_owned()])).await.unwrap().0["stage"],
                 "restore-queued"
             );
             let r = finished("restored").await;
-            assert_eq!(fixture.copies(), 3 + 4 + 2);
-            assert_ne!(fixture.started_at("kept"), kept_started);
+            assert_eq!(fixture.copies(), 3 + 6 + 2);
             assert_eq!(fixture.started_at("original"), server_started);
             assert_eq!(contents(&public(&r)).len(), 3);
-            assert!(fixture.running("skipped"));
-            assert_eq!(fixture.started_at("skipped"), skipped_started);
+            assert!(fixture.running("held"));
+            assert_eq!(fixture.started_at("held"), held_started);
             assert_eq!(plaintext(&key), Vec::<String>::new());
         })
         .await;

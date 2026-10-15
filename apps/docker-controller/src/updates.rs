@@ -191,13 +191,9 @@ pub(super) async fn preflight(
     Json(input): Json<Preflight>,
 ) -> Result<Json<Value>> {
     id(&input.operation_id)?;
-    if load(&key)?
-        .imported
-        .as_ref()
-        .is_some_and(|v| !v.capabilities.update.available)
-    {
+    if load(&key)?.hold.is_some() {
         return Err(conflict(
-            "Faithful recreation and recovery are not available for this imported deployment",
+            "Updates wait until the service's ownership transfer or recovery completes",
         ));
     }
     if path(&input.operation_id).join("update.json").exists() {
@@ -343,7 +339,18 @@ pub(super) async fn copy_state(
     restore: bool,
     label: &str,
 ) -> Result<()> {
+    let source = json!({"Type":"bind","Source":source,"Target":"/source","ReadOnly":true});
     copy_state_inner(d, operation, source, destination, restore, label, None).await
+}
+/// Copy from an explicit bind or volume mount, read-only.
+pub(super) async fn copy_mount(
+    d: &Deployment,
+    operation: &str,
+    source: Value,
+    destination: &str,
+    label: &str,
+) -> Result<()> {
+    copy_state_inner(d, operation, source, destination, false, label, None).await
 }
 
 /// Server state, without what the server deletes at startup: an install it was
@@ -356,56 +363,30 @@ pub(super) async fn copy_server_state(
     label: &str,
 ) -> Result<()> {
     let disposable = Some(crate::state_copy::SERVER_DISPOSABLE);
+    let source = json!({"Type":"bind","Source":source,"Target":"/source","ReadOnly":true});
     copy_state_inner(d, operation, source, destination, false, label, disposable).await
-}
-
-pub(super) async fn copy_adoption(
-    d: &Deployment,
-    operation: &str,
-    source: &str,
-    destination: &str,
-) -> Result<()> {
-    copy_state_inner(d, operation, source, destination, false, "takeover", None).await
 }
 
 async fn copy_state_inner(
     d: &Deployment,
     operation: &str,
-    source: &str,
+    source: Value,
     destination: &str,
     restore: bool,
     label: &str,
     disposable: Option<&str>,
 ) -> Result<()> {
     let name = format!("thelxinoe-state-{}-{label}", &operation[..8]);
-    let command = if label == "takeover" {
-        let service = load(operation)?;
-        if service.kind != "recyclarr" {
-            return Err(conflict(
-                "Application adoption never copies or rewrites configuration",
-            ));
+    let command = vec![
+        if restore {
+            "snapshot-restore"
+        } else {
+            "snapshot-copy"
         }
-        vec!["recyclarr-import".to_owned()]
-    } else {
-        vec![
-            if restore {
-                "snapshot-restore"
-            } else {
-                "snapshot-copy"
-            }
-            .to_owned(),
-        ]
-    };
-    let mut spec = json!({"Image":current_image().await?,"Cmd":command,"Healthcheck":{"Test":["NONE"]},"Labels":{"app.thelxinoe.update":operation,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":"none","ReadonlyRootfs":true,"CapDrop":["ALL"],"CapAdd":["CHOWN","FOWNER","DAC_OVERRIDE"],"SecurityOpt":["no-new-privileges:true"],"Memory":536870912,"NanoCpus":1000000000u64,"PidsLimit":32,"Mounts":[{"Type":"bind","Source":source,"Target":"/source","ReadOnly":true},{"Type":"bind","Source":destination,"Target":"/destination"}]}});
-    if label == "takeover" && load(operation)?.kind == "recyclarr" {
-        let hash = std::fs::read_to_string(
-            store::root()
-                .join("adoption-reviews")
-                .join(format!("{operation}.config-hash")),
-        )
-        .map_err(|_| unavailable())?;
-        spec["Env"] = json!([format!("THELXINOE_RECYCLARR_IMPORT_HASH={hash}")]);
-    } else if let Some(rules) = disposable {
+        .to_owned(),
+    ];
+    let mut spec = json!({"Image":current_image().await?,"Cmd":command,"Healthcheck":{"Test":["NONE"]},"Labels":{"app.thelxinoe.update":operation,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":"none","ReadonlyRootfs":true,"CapDrop":["ALL"],"CapAdd":["CHOWN","FOWNER","DAC_OVERRIDE"],"SecurityOpt":["no-new-privileges:true"],"Memory":536870912,"NanoCpus":1000000000u64,"PidsLimit":32,"Mounts":[source,{"Type":"bind","Source":destination,"Target":"/destination"}]}});
+    if let Some(rules) = disposable {
         spec["Env"] = json!([format!("THELXINOE_SNAPSHOT_DISPOSABLE={rules}")]);
     }
     // The worker reports progress beside the controller's own deployment mount.
@@ -496,8 +477,8 @@ async fn snapshot(d: &Deployment, u: &Update, leaf: &str) -> Result<()> {
     let config = mount(&raw, "/config")?["Source"]
         .as_str()
         .ok_or_else(unavailable)?;
-    // Installed appdata is inside our dedicated deployment mount; adoption
-    // additionally excludes host system roots and media-overlapping trees.
+    // Owned appdata is inside the dedicated deployment mount; anything else must
+    // still exclude host system roots and media-overlapping trees.
     let installed = std::path::Path::new(config).starts_with(
         std::path::Path::new(&d.appdata_source)
             .join("services")

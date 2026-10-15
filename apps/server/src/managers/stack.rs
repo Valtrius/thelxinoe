@@ -1,4 +1,5 @@
 //! Server-owned provisioning jobs keep credentials out of job payloads and controller responses.
+//! Fresh installations enter the Owned stage directly and stay held until setup checks pass.
 
 #[path = "../storage/managers/stack.rs"]
 mod storage;
@@ -14,35 +15,9 @@ pub(super) fn router() -> Router<AppState> {
         .route("/api/v1/admin/stack/releases", get(releases))
         .route("/api/v1/admin/stack/install", post(install))
         .route("/api/v1/admin/stack/{id}/login", post(login))
-        .route("/api/v1/admin/stack/adopt", post(adopt))
-        .route("/api/v1/admin/stack/adopt/preview", post(adopt_preview))
-        .route(
-            "/api/v1/admin/stack/{id}/restore-original",
-            post(restore_original),
-        )
         .route("/api/v1/admin/stack/wire", post(wire))
         .route("/api/v1/admin/stack/{id}/action", post(action))
-        .route("/api/v1/admin/stack/{id}/drift", get(drift))
         .route("/api/v1/admin/stack/{id}/retry", post(retry))
-}
-/// What changed in an adopted container since ownership was taken, for review.
-async fn drift(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(key): Path<String>,
-) -> Result<Json<Value>> {
-    security::require(&state, &headers, Capability::ManageServer).await?;
-    if uuid::Uuid::parse_str(&key).is_err() {
-        return Err(ApiError::bad("Invalid managed service ID"));
-    }
-    if !storage::imported(&state.db, key.clone()).await? {
-        return Err(ApiError::conflict(
-            "Only adopted services accept a changed configuration",
-        ));
-    }
-    Ok(Json(
-        controller(&state, &format!("/{key}/drift"), None).await?,
-    ))
 }
 pub(crate) async fn controller(state: &AppState, path: &str, body: Option<Value>) -> Result<Value> {
     #[cfg(test)]
@@ -61,6 +36,21 @@ pub(crate) async fn controller(state: &AppState, path: &str, body: Option<Value>
         .unwrap()
         .get(&format!("stack{path}"))
     {
+        // Tests script a controller refusal as {"__error":[code,message]}.
+        if let Some([code, message]) = value["__error"].as_array().map(Vec::as_slice) {
+            let code = match code.as_str() {
+                Some("revision_changed") => "revision_changed",
+                Some("not_found") => "not_found",
+                Some("dependency_unavailable") => "dependency_unavailable",
+                Some("operation_contended") => "operation_contended",
+                _ => "conflict",
+            };
+            return Err(ApiError(
+                axum::http::StatusCode::CONFLICT,
+                code,
+                message.as_str().unwrap_or_default().into(),
+            ));
+        }
         return Ok(value.clone());
     }
     #[cfg(unix)]
@@ -105,6 +95,8 @@ pub(crate) async fn controller(state: &AppState, path: &str, body: Option<Value>
                 "operation_contended"
             } else if status == reqwest::StatusCode::PRECONDITION_FAILED {
                 "revision_changed"
+            } else if status == reqwest::StatusCode::NOT_FOUND {
+                "not_found"
             } else {
                 "conflict"
             };
@@ -140,11 +132,13 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<
         .ok_or_else(unavailable)?
         .clone();
     for item in value["items"].as_array_mut().ok_or_else(unavailable)? {
-        let registered = provisions
+        let provision = provisions
             .iter()
-            .any(|provision| provision["id"] == item["id"] && provision["kind"] == item["kind"]);
-        item["registered"] = json!(registered);
-        if !registered {
+            .find(|provision| provision["id"] == item["id"] && provision["kind"] == item["kind"]);
+        item["registered"] = json!(provision.is_some());
+        // Lifecycle and removal wait for setup, transfer or recovery holds.
+        let held = provision.is_none_or(|p| !p["hold"].is_null());
+        if held {
             item["can_recreate"] = json!(false);
             item["can_retire"] = json!(false);
             item["can_remove"] = json!(false);
@@ -152,44 +146,23 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<
     }
     Ok(Json(value))
 }
+/// NZBGet's control login, for Owned services whose normal operations are released.
 async fn login(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(key): Path<String>,
 ) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
-    let (kind, encrypted, origin, integration) = storage::login(key.clone(), &state.db)
+    let (kind, integration) = storage::login(key.clone(), &state.db)
         .await?
         .ok_or_else(ApiError::not_found)?;
     if kind != "nzbget" {
         return Err(ApiError::not_found());
     }
-    if let Some(integration) = integration {
-        let service = support::load(&state, &integration).await?;
-        return Ok(Json(
-            json!({"username":service.credentials.username,"password":service.credentials.secret}),
-        ));
-    }
-    let raw = String::from_utf8(
-        state
-            .secrets
-            .decrypt(&format!("provision:{key}"), &encrypted)?,
-    )
-    .map_err(|_| unavailable())?;
-    let credentials = if origin == "adopted" {
-        serde_json::from_str::<ProvisionCredentials>(&raw)
-            .map_err(|_| unavailable())?
-            .credentials
-    } else {
-        support::Credentials {
-            username: "thelxinoe".into(),
-            secret: raw,
-        }
-    };
-    Ok(Json(json!({
-        "username": credentials.username,
-        "password": credentials.secret,
-    })))
+    let service = support::load(&state, &integration).await?;
+    Ok(Json(
+        json!({"username":service.credentials.username,"password":service.credentials.secret}),
+    ))
 }
 #[derive(Deserialize)]
 struct Install {
@@ -236,7 +209,7 @@ async fn install(
     let inserted = storage::install(&state.db, input, p, key, credential).await?;
     if !inserted {
         return Err(ApiError::conflict(
-            "This service is already connected or managed",
+            "This service is already connected, being transferred or managed. Forget the connection or take ownership instead",
         ));
     }
     Ok(Json(json!({"id":returned,"state":"queued"})))
@@ -244,9 +217,6 @@ async fn install(
 #[derive(Deserialize)]
 struct Action {
     action: String,
-    /// The reviewed configuration an `accept_configuration` applies to.
-    #[serde(default)]
-    revision: Option<String>,
 }
 
 pub(super) fn confirmed_stopped(observed: &Value) -> Result<bool> {
@@ -273,79 +243,32 @@ async fn action(
     if uuid::Uuid::parse_str(&key).is_err()
         || !matches!(
             input.action.as_str(),
-            "start"
-                | "stop"
-                | "restart"
-                | "reconcile"
-                | "recreate"
-                | "retire"
-                | "remove"
-                | "release"
-                | "accept_configuration"
+            "start" | "stop" | "restart" | "reconcile" | "recreate" | "retire" | "remove"
         )
     {
         return Err(ApiError::bad("Invalid managed service action"));
     }
-    if input.action == "accept_configuration" {
-        if !input
-            .revision
-            .as_deref()
-            .is_some_and(|r| r.len() == 64 && r.bytes().all(|b| b.is_ascii_hexdigit()))
-        {
-            return Err(ApiError::bad("Review the changed configuration first"));
-        }
-        if !storage::imported(&state.db, key.clone()).await? {
-            return Err(ApiError::conflict(
-                "Only adopted services accept a changed configuration",
-            ));
-        }
-    }
-    if input.action == "release" {
-        if storage::released(&state.db, key.clone()).await? {
-            return Ok(Json(json!({"accepted":true,"released":true})));
-        }
-        if !storage::imported(&state.db, key.clone()).await? {
-            return Err(ApiError::conflict(
-                "Release ownership applies to imported deployments",
-            ));
-        }
-    }
-    let kind = storage::kind(&state.db, key.clone())
+    let owned = storage::owned(&state.db, key.clone())
         .await?
         .ok_or_else(|| ApiError::conflict("This saved installation has no matching server record. Restore the matching server profile before managing it."))?;
-    if kind != "recyclarr"
-        && matches!(input.action.as_str(), "remove" | "retire")
-        && storage::imported(&state.db, key.clone()).await?
-    {
-        return Err(ApiError::conflict(
-            "Use Release ownership to retain this imported deployment",
-        ));
-    }
-    let _lease = state.managers.maintenance(&state).await;
-    let _guard = state.managers.guard.service(&kind).await;
-    if input.action == "release" {
-        if storage::released(&state.db, key.clone()).await? {
-            return Ok(Json(json!({"accepted":true,"released":true})));
-        }
-
-        if !storage::begin_retirement(&state.db, key.clone(), input.action.clone()).await? {
+    // Transfers and their recovery use the guided ownership workflow; failed setup can be
+    // retired or removed, but normal lifecycle actions wait for the hold to be released.
+    match owned.hold.as_deref() {
+        Some("transfer" | "recovery") => {
             return Err(ApiError::conflict(
-                "Finish the current setup or update before releasing ownership",
+                "This service is held by its ownership transfer. Continue it or use its recovery options in Media services",
             ));
         }
-        let result = controller(
-            &state,
-            &format!("/{key}/action"),
-            Some(json!({"action":"release"})),
-        )
-        .await?;
-        if result["released"] != true {
-            return Err(ApiError::conflict("The controller did not confirm release"));
+        Some(_) if !matches!(input.action.as_str(), "retire" | "remove" | "reconcile") => {
+            return Err(ApiError::conflict(
+                "Finish setting up this service before managing its container",
+            ));
         }
-        storage::release(&state.db, key.clone(), p.user.id).await?;
-        state.emit(None, "stack.changed", json!({"id":key})).await?;
-        return Ok(Json(result));
+        _ => {}
     }
+    let kind = owned.kind;
+    let _lease = state.managers.maintenance(&state).await;
+    let _guard = state.managers.guard.service(&kind).await;
     if input.action == "remove" {
         let observed = controller(&state, "", None).await?;
         if observed["items"]
@@ -427,9 +350,7 @@ async fn action(
             .to_owned();
         let (kind, service) = storage::action_read_service(&state.db, c)
             .await?
-            .ok_or_else(|| {
-                ApiError::conflict("Connect the service API before checking its activity")
-            })?;
+            .ok_or_else(|| ApiError::conflict("Finish setting up the service API first"))?;
         if matches!(kind.as_str(), "radarr" | "sonarr" | "lidarr") {
             operations::ensure_idle(&state, &service).await?;
         } else {
@@ -439,7 +360,7 @@ async fn action(
     let result = controller(
         &state,
         &format!("/{key}/action"),
-        Some(json!({"action":input.action,"revision":input.revision})),
+        Some(json!({"action":input.action})),
     )
     .await?;
     if matches!(input.action.as_str(), "reconcile" | "recreate") {
@@ -474,22 +395,24 @@ async fn progress(
     Ok(())
 }
 
+/// Install or reverify an Owned service. It stays under its `setup` hold until the
+/// replacement's API is authenticated and every setup action finished.
 pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> anyhow::Result<()> {
     let key = job.payload["id"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing provision identity"))?
         .to_owned();
-    let lookup = key.clone();
-    let row = storage::provision_read_stack_provisions(lookup, &state.db).await?;
-    if row.4 == "complete" {
+    let row = storage::provision_read_stack_provisions(key.clone(), &state.db).await?;
+    if row.state == "complete" && row.hold.is_none() {
         return Ok(());
     }
-    if row.4 == "retiring" {
+    if row.state == "retiring" {
         anyhow::bail!("Installation is being retired");
     }
-    let actor = row.1.clone();
-    let admin = storage::provision_read_users(actor, &state.db).await?;
-    if !admin {
+    if row.hold.as_deref().is_some_and(|hold| hold != "setup") {
+        anyhow::bail!("This service is held by its ownership transfer");
+    }
+    if !storage::provision_read_users(row.actor.clone(), &state.db).await? {
         progress(
             state,
             &key,
@@ -501,30 +424,34 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
         .map_err(|e| anyhow::anyhow!("{}", e.2))?;
         anyhow::bail!("Provisioning administrator no longer has access");
     }
-    if row.7 == "adopted" && row.0 != "recyclarr" {
-        let _lease = state.managers.maintenance(state).await;
-        let _guard = state.managers.guard.service(&row.0).await;
-        let registered = async {
-            let result = controller(state, "/adopt", Some(json!({"operation_id":key,"kind":row.0,"container_id":row.5,"released_compose":job.payload["released_compose"] == true}))).await?;
-            let container = result["container_id"].as_str().ok_or_else(unavailable)?.to_owned();
-            storage::complete_adoption(&state.db, key.clone(), container).await?;
-            Ok::<_, ApiError>(())
-        }.await;
-        if let Err(error) = registered {
-            progress(state, &key, "blocked", None, Some(error.2.clone()))
-                .await
-                .map_err(|e| anyhow::anyhow!("{}", e.2))?;
-            anyhow::bail!("{}", error.2);
-        }
-        state.emit(None, "stack.changed", json!({"id":key})).await?;
-        return Ok(());
+    let result = setup(state, &key, &row).await;
+    if let Err(error) = result {
+        progress(state, &key, "blocked", None, Some(error.2.clone()))
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e.2))?;
+        anyhow::bail!("{}", error.2);
     }
-    let secret_input = if let Some(encrypted) = &row.3 {
+    // Setup completion and hold release are one durable event.
+    storage::complete_setup(&state.db, key.clone()).await?;
+    state.managers.connection_wake.notify_one();
+    state.emit(None, "stack.changed", json!({"id":key})).await?;
+    Ok(())
+}
+
+#[derive(Deserialize, Serialize)]
+pub(super) struct ProvisionCredentials {
+    #[serde(flatten)]
+    pub(super) credentials: support::Credentials,
+}
+
+async fn setup(state: &AppState, key: &str, row: &storage::Provision) -> Result<()> {
+    let secret_input = if let Some(encrypted) = &row.credential {
         String::from_utf8(
             state
                 .secrets
                 .decrypt(&format!("provision:{key}"), encrypted)?,
-        )?
+        )
+        .map_err(|_| unavailable())?
     } else {
         String::new()
     };
@@ -534,89 +461,161 @@ pub(crate) async fn provision(state: &AppState, job: &thelxinoe_jobs::Job) -> an
             username: "thelxinoe".into(),
             secret: secret_input,
         });
-    let secret = credentials.secret;
-    let result=async {
-  let templates=controller(state,"/templates",None).await?;let template=templates["items"].as_array().into_iter().flatten().find(|t|t["kind"]==row.0).cloned().ok_or_else(unavailable)?;
-  let current=controller(state,"",None).await?["items"].as_array().into_iter().flatten().find(|s|s["id"]==key).cloned();
-   let installed=if let Some(current)=current{
-    if row.7=="installed" && matches!(current["phase"].as_str(),Some("creating"|"recreating")) {
-        controller(state,&format!("/{key}/action"),Some(json!({"action":"reconcile"}))).await?
-    } else {
-        if (current["phase"]!="active" && !(row.7=="adopted" && current["phase"]=="connecting"))||current["drift"]==true{return Err(ApiError::conflict("Interrupted installation requires controller reconciliation"));}current
-    }
-   }else{
-   if row.4!="queued"{return Err(ApiError::conflict("Interrupted Docker submission requires review before retry"));}
-   progress(state,&key,"installing",None,None).await?;
-   if row.7=="adopted" {
-       let _lease=state.managers.maintenance(state).await;let _guard=state.managers.guard.service(&row.0).await;
-       let request=json!({"operation_id":key,"kind":row.0,"container_id":row.5,"released_compose":true});
-       controller(state,"/adopt",Some(request)).await?
-   } else {controller(state,"/install",Some(json!({"operation_id":key,"kind":row.0,"host_port":row.2,"username":"thelxinoe","secret":secret}))).await?}
-  };
-  let container=installed["container_id"].as_str().ok_or_else(unavailable)?.to_owned();progress(state,&key,"connecting",Some(container.clone()),None).await?;
-  if row.0 == "recyclarr" {
-    super::recyclarr::installed(state, &key, &row.1, row.7=="adopted").await?;
-    return Ok(());
-  }
-  if row.7=="adopted" {let service_id=row.6.clone().ok_or_else(unavailable)?;let container=container.clone();let kind=row.0.clone();storage::provision_write(service_id, container, kind, &state.db).await?;}
-  let mut last=None;let mut registered=None;
-   let service_name=if let Some(integration)=row.6.clone() {storage::provision_read_manager_services(integration, &state.db).await?}else{format!("Managed {}",row.0)};
-  for _ in 0..60 {
-   // Thelxinoe generated these credentials and starts the container itself.
-   let registration=if matches!(row.0.as_str(),"radarr"|"sonarr"|"lidarr") {super::register_with_actor(state.clone(),super::Register{name:service_name.clone(),kind:row.0.clone(),container_id:container.clone(),port:template["port"].as_u64().ok_or_else(unavailable)? as u16,api_key:secret.clone(),url_base:thelxinoe_core::service_url_base(&row.0).into(),allow_unverified:true,container_name:String::new()},row.1.clone()).await}
-   else {support::provision(state.clone(),row.1.clone(),json!({"name":service_name,"kind":row.0,"container_id":container,"port":template["port"],"credentials":{"username":credentials.username,"secret":secret},"native_url":row.8,"url_base":thelxinoe_core::service_url_base(&row.0),"allow_unverified":true})).await};
-   match registration {Ok(Json(value))=>{registered=Some(value);break;},Err(error)=>last=Some(error)};
-   tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-  }
-  let registered=registered.ok_or_else(||last.unwrap_or_else(unavailable))?;
-  let integration=registered["id"].as_str().ok_or_else(unavailable)?.to_owned();
-  let key=key.clone();storage::provision_write_stack_provisions(registered, key, &state.db).await?;
-  if row.7=="installed" && matches!(row.0.as_str(),"radarr"|"sonarr"|"lidarr") {
-    let _guard=state.managers.guard.service(&row.0).await;
-    let deadline=tokio::time::Instant::now()+std::time::Duration::from_secs(90);
-    loop {
-        let setup=async {
-            super::prepare_library(state,&super::service(state,&integration).await?).await?;
-            super::quality::ensure_defaults(state,&super::service(state,&integration).await?).await
-        }.await;
-        match setup {
-            Ok(())=>break,
-            Err(error) if error.1=="dependency_unavailable" && tokio::time::Instant::now()<deadline=> {
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let templates = controller(state, "/templates", None).await?;
+    let template = templates["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|t| t["kind"] == row.kind)
+        .cloned()
+        .ok_or_else(unavailable)?;
+    let current = controller(state, "", None).await?["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|s| s["id"] == key)
+        .cloned();
+    let installed = if let Some(current) = current {
+        if matches!(current["phase"].as_str(), Some("creating" | "recreating")) {
+            controller(
+                state,
+                &format!("/{key}/action"),
+                Some(json!({"action":"reconcile"})),
+            )
+            .await?
+        } else {
+            if current["phase"] != "active" || current["drift"] == true {
+                return Err(ApiError::conflict(
+                    "Interrupted installation requires controller reconciliation",
+                ));
             }
-            Err(error)=>return Err(error),
+            current
         }
+    } else {
+        if row.state != "queued" {
+            return Err(ApiError::conflict(
+                "Interrupted Docker submission requires review before retry",
+            ));
+        }
+        progress(state, key, "installing", None, None).await?;
+        controller(state,"/install",Some(json!({"operation_id":key,"kind":row.kind,"host_port":row.host_port,"username":"thelxinoe","secret":credentials.secret}))).await?
+    };
+    let container = installed["container_id"]
+        .as_str()
+        .ok_or_else(unavailable)?
+        .to_owned();
+    progress(state, key, "connecting", Some(container.clone()), None).await?;
+    if row.kind == "recyclarr" {
+        // A fresh job definition has no API; its schedule runs only after completion.
+        super::recyclarr::installed(state, key, &row.actor).await?;
+        return Ok(());
     }
-  }
-  if row.0=="seerr" && row.7=="installed" {super::seerr::initialize(state).await?;}
-  else if row.0=="prowlarr" {super::indexers::ensure_hosts(state,&integration).await?;}
-  Ok::<(),ApiError>(())
- }.await;
-    if let Err(error) = result {
-        progress(state, &key, "blocked", None, Some(error.2.clone()))
+    let service_name = match &row.service {
+        Some(integration) => {
+            storage::provision_read_manager_services(integration.clone(), &state.db).await?
+        }
+        None => format!("Managed {}", row.kind),
+    };
+    let port = template["port"].as_u64().ok_or_else(unavailable)? as u16;
+    let mut last = None;
+    let mut registered = None;
+    for _ in 0..60 {
+        // Thelxinoe generated or preserved these credentials and started the container itself.
+        let registration = if matches!(row.kind.as_str(), "radarr" | "sonarr" | "lidarr") {
+            super::register_with_actor(
+                state.clone(),
+                super::Register {
+                    name: service_name.clone(),
+                    kind: row.kind.clone(),
+                    container_id: container.clone(),
+                    port,
+                    api_key: credentials.secret.clone(),
+                    url_base: thelxinoe_core::service_url_base(&row.kind).into(),
+                    allow_unverified: false,
+                    container_name: String::new(),
+                    setup: Some(key.to_owned()),
+                },
+                row.actor.clone(),
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("{}", e.2))?;
-        anyhow::bail!("{}", error.2);
-    }
-    if row.7 == "adopted"
-        && let Err(error) = controller(
-            state,
-            &format!("/{key}/action"),
-            Some(json!({"action":"complete_adoption"})),
-        )
-        .await
-    {
-        progress(state, &key, "blocked", None, Some(error.2.clone()))
+        } else {
+            support::provision(
+                state.clone(),
+                row.actor.clone(),
+                key,
+                json!({"name":service_name,"kind":row.kind,"container_id":container,"port":port,
+                    "credentials":{"username":credentials.username,"secret":credentials.secret},
+                    "native_url":row.native_url,"url_base":thelxinoe_core::service_url_base(&row.kind)}),
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("{}", e.2))?;
-        anyhow::bail!("{}", error.2);
+        };
+        match registration {
+            Ok(Json(value)) => {
+                registered = Some(value);
+                break;
+            }
+            Err(error) => last = Some(error),
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
-    progress(state, &key, "complete", None, None)
-        .await
-        .map_err(|e| anyhow::anyhow!("{}", e.2))?;
-    state.managers.connection_wake.notify_one();
-    state.emit(None, "stack.changed", json!({"id":key})).await?;
-    Ok(())
+    let registered = registered.ok_or_else(|| last.unwrap_or_else(unavailable))?;
+    let integration = registered["id"]
+        .as_str()
+        .ok_or_else(unavailable)?
+        .to_owned();
+    storage::provision_write_stack_provisions(registered, key.to_owned(), &state.db).await?;
+    let authority = ownership::Authority {
+        service: integration.clone(),
+        scope: ownership::Scope::Setup {
+            provision: key.to_owned(),
+        },
+    };
+    let origin = row.origin.clone();
+    let kind = row.kind.clone();
+    ownership::with_authority(authority, async move {
+        if origin == "installed" && matches!(kind.as_str(), "radarr" | "sonarr" | "lidarr") {
+            let _guard = state.managers.guard.service(&kind).await;
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(90);
+            loop {
+                let setup = async {
+                    super::prepare_library(state, &super::service(state, &integration).await?)
+                        .await?;
+                    super::quality::ensure_defaults(
+                        state,
+                        &super::service(state, &integration).await?,
+                    )
+                    .await
+                }
+                .await;
+                match setup {
+                    Ok(()) => break,
+                    Err(error)
+                        if error.1 == "dependency_unavailable"
+                            && tokio::time::Instant::now() < deadline =>
+                    {
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        if kind == "seerr" && origin == "installed" {
+            super::seerr::initialize(state, &integration).await?;
+        } else if kind == "prowlarr" {
+            super::indexers::ensure_hosts(state, &integration).await?;
+        }
+        // Required check: authenticated API readiness of this exact container.
+        if matches!(kind.as_str(), "radarr" | "sonarr" | "lidarr") {
+            let s = super::service(state, &integration).await?;
+            access::check_connection(&Connection::open(state, &s).await?).await
+        } else {
+            let s = support::load(state, &integration).await?;
+            support::version(&support::connect(state, &s).await?, &s.credentials)
+                .await
+                .map(|_| ())
+        }
+    })
+    .await
 }
 
 async fn wire(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
@@ -624,243 +623,6 @@ async fn wire(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<
     Err(ApiError::conflict(
         "Compatible services connect automatically; manage individual connections in service settings",
     ))
-}
-
-#[derive(Deserialize)]
-struct AdoptPreview {
-    service_id: String,
-}
-
-#[derive(Deserialize, Serialize)]
-struct ProvisionCredentials {
-    #[serde(flatten)]
-    credentials: support::Credentials,
-}
-
-fn nzbget_value<'a>(config: &'a Value, key: &str) -> Result<&'a str> {
-    let rows = config.as_array().ok_or_else(unavailable)?;
-    let mut matching = rows.iter().filter(|row| {
-        row["Name"]
-            .as_str()
-            .is_some_and(|name| name.eq_ignore_ascii_case(key))
-    });
-    let value = matching
-        .next()
-        .and_then(|row| row["Value"].as_str())
-        .ok_or_else(unavailable)?;
-    if matching.next().is_some() {
-        return Err(ApiError::conflict("NZBGet returned duplicate settings"));
-    }
-    Ok(value)
-}
-async fn adopt_preview(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(input): Json<AdoptPreview>,
-) -> Result<Json<Value>> {
-    let actor = security::require(&state, &headers, Capability::ManageServer).await?;
-    let initial = storage::adopt_read_manager_services(&state.db, input.service_id.clone())
-        .await?
-        .ok_or_else(ApiError::not_found)?;
-    let _guard = state.managers.guard.service(&initial.kind).await;
-    if let Err(error) = docker(&state, &format!("containers/{}", initial.container)).await
-        && error.1 == "container_missing"
-    {
-        super::recreation::follow(&state, &input.service_id, &initial.container).await?;
-    }
-    let integration = storage::adopt_read_manager_services(&state.db, input.service_id.clone())
-        .await?
-        .ok_or_else(ApiError::not_found)?;
-    let kind = integration.kind.clone();
-    let container = integration.container.clone();
-    let mut review = controller(
-        &state,
-        "/adopt/preview",
-        Some(json!({"kind":kind,"container_id":container})),
-    )
-    .await?;
-    let observed = docker(&state, &format!("containers/{container}")).await?;
-    let access = if observed["running"] == true {
-        Some(adoption_access(&state, &input.service_id, &kind).await)
-    } else {
-        None
-    };
-    review["integration_ready"] = json!(access.as_ref().is_some_and(Result::is_ok));
-    review["integration_error"] = json!(access.and_then(Result::err).map(|e| e.2));
-    if kind == "nzbget"
-        && observed["running"] == true
-        && let Ok(service) = support::load(&state, &input.service_id).await
-        && let Ok(c) = support::connect(&state, &service).await
-        && let Ok(config) = support::rpc(&c, &service.credentials, "config", json!([])).await
-    {
-        let mut warnings = Vec::new();
-        if nzbget_value(&config, "WriteLog").is_ok_and(|v| v.eq_ignore_ascii_case("append")) {
-            warnings.push("The log file may grow indefinitely");
-        }
-        if nzbget_value(&config, "ControlPassword").is_ok_and(str::is_empty) {
-            warnings.push("NZBGet authentication has an empty password");
-        }
-        if nzbget_value(&config, "CertCheck").is_ok_and(|v| !v.eq_ignore_ascii_case("yes")) {
-            warnings.push("Outgoing TLS certificate verification is disabled");
-        }
-        review["warnings"] = json!(warnings);
-    }
-    let review_id = review["review_id"]
-        .as_str()
-        .ok_or_else(unavailable)?
-        .to_owned();
-    storage::save_review(
-        &state.db,
-        review_id,
-        input.service_id,
-        actor.user.id,
-        integration,
-    )
-    .await?;
-    Ok(Json(review))
-}
-
-async fn adoption_access(state: &AppState, key: &str, kind: &str) -> Result<()> {
-    if ["radarr", "sonarr", "lidarr"].contains(&kind) {
-        let service = service(state, key).await?;
-        let c = Connection::open(state, &service).await?;
-        access::check_connection(&c).await
-    } else {
-        let service = support::load(state, key).await?;
-        let c = support::connect(state, &service).await?;
-        if kind == "nzbget" {
-            let version = support::rpc(&c, &service.credentials, "version", json!([])).await?;
-            if !version.as_str().is_some_and(|v| !v.is_empty()) {
-                return Err(unavailable());
-            }
-            Ok(())
-        } else if kind == "seerr" {
-            support::version(&c, &service.credentials).await?;
-            c.get("settings/main").await?;
-            Ok(())
-        } else {
-            access::check_connection(&c).await
-        }
-    }
-}
-
-async fn restore_original(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(key): Path<String>,
-) -> Result<Json<Value>> {
-    let actor = security::require(&state, &headers, Capability::ManageServer).await?;
-    if uuid::Uuid::parse_str(&key).is_err() {
-        return Err(ApiError::bad("Invalid transfer identity"));
-    }
-    let kind = storage::kind(&state.db, key.clone())
-        .await?
-        .ok_or_else(ApiError::not_found)?;
-    let _lease = state.managers.maintenance(&state).await;
-    let _guard = state.managers.guard.service(&kind).await;
-    let lookup = key.clone();
-    let (kind, integration) = storage::restore_original_read_stack_provisions(&state.db, lookup)
-        .await?
-        .ok_or_else(|| {
-            ApiError::conflict("Only a finished, blocked transfer can restore the original")
-        })?;
-    if kind != "recyclarr" {
-        return Err(ApiError::conflict(
-            "In-place adoption retains the original container; use Release ownership to cancel management",
-        ));
-    }
-    let result = controller(
-        &state,
-        &format!("/{key}/action"),
-        Some(json!({"action":"restore_original"})),
-    )
-    .await?;
-    let container = result["container_id"]
-        .as_str()
-        .ok_or_else(unavailable)?
-        .to_owned();
-    storage::restore_original_write_jobs(&state.db, key, actor, kind, integration, container, None)
-        .await?;
-    state
-        .emit(None, "stack.changed", json!({"restored":true}))
-        .await?;
-    Ok(Json(result))
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Adopt {
-    service_id: String,
-    review_id: String,
-    #[serde(default)]
-    released_compose: bool,
-}
-async fn adopt(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(input): Json<Adopt>,
-) -> Result<Json<Value>> {
-    let p = security::require(&state, &headers, Capability::ManageServer).await?;
-    let initial = storage::adopt_read_manager_services(&state.db, input.service_id.clone())
-        .await?
-        .ok_or_else(ApiError::not_found)?;
-    let _guard = state.managers.guard.service(&initial.kind).await;
-    let item = storage::adopt_read_manager_services(&state.db, input.service_id.clone())
-        .await?
-        .ok_or_else(ApiError::not_found)?;
-    let credentials = if matches!(item.kind.as_str(), "radarr" | "sonarr" | "lidarr") {
-        let service = service(&state, &input.service_id).await?;
-        support::Credentials {
-            username: String::new(),
-            secret: String::from_utf8(
-                state
-                    .secrets
-                    .decrypt(&format!("manager:{}", service.id), &service.credential)?,
-            )
-            .map_err(|_| unavailable())?,
-        }
-    } else {
-        support::load(&state, &input.service_id).await?.credentials
-    };
-    if uuid::Uuid::parse_str(&input.review_id).is_err() {
-        return Err(ApiError::bad(
-            "Review this service before transferring ownership",
-        ));
-    }
-    let stored = ProvisionCredentials { credentials };
-    let request = json!({"operation_id":input.review_id,"kind":item.kind,"container_id":item.container,"released_compose":input.released_compose});
-    if storage::adoption_exists(&state.db, input.review_id.clone(), input.service_id.clone())
-        .await?
-    {
-        return Ok(Json(json!({"id":input.review_id,"state":"queued"})));
-    }
-    if !storage::review_matches(
-        &state.db,
-        input.review_id.clone(),
-        input.service_id.clone(),
-        p.user.id.clone(),
-        item.clone(),
-    )
-    .await?
-    {
-        return Err(ApiError::conflict(
-            "The connection changed after review; review ownership again",
-        ));
-    }
-    controller(&state, "/adopt/check", Some(request)).await?;
-    let key = input.review_id.clone();
-    let returned = key.clone();
-    let credential = state.secrets.encrypt(
-        &format!("provision:{key}"),
-        &serde_json::to_vec(&stored).map_err(|_| unavailable())?,
-    )?;
-    let inserted =
-        storage::adopt_write_stack_provisions(&state.db, input, p, item, key, credential).await?;
-    if !inserted {
-        return Err(ApiError::conflict(
-            "This service already has a provisioning record",
-        ));
-    }
-    Ok(Json(json!({"id":returned,"state":"queued"})))
 }
 
 async fn releases(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
@@ -885,7 +647,7 @@ async fn retry(
         .find(|s| s["id"] == key)
         && (!matches!(
             service["phase"].as_str(),
-            Some("active" | "connecting" | "creating" | "recreating")
+            Some("active" | "creating" | "recreating")
         ) || service["drift"] == true)
     {
         return Err(ApiError::conflict(
@@ -895,7 +657,7 @@ async fn retry(
     let changed = storage::retry(&state.db, key).await?;
     if !changed {
         return Err(ApiError::conflict(
-            "Only a finished, blocked provisioning attempt can be retried",
+            "Only a finished, blocked installation can be retried",
         ));
     }
     Ok(Json(json!({"queued":true})))

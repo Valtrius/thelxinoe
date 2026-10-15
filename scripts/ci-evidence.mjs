@@ -59,7 +59,9 @@ export function qualification(phases) {
           : null,
       docker:
         phases.some((phase) =>
-          ['server', 'containers', 'updates-server'].includes(phase),
+          ['server', 'containers', 'transfers', 'updates-server'].includes(
+            phase,
+          ),
         ) && !process.env.THELXINOE_CI_IN_VERIFY
           ? version('docker', ['version', '--format', '{{json .}}'])
           : null,

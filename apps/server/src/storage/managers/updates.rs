@@ -2,17 +2,6 @@
 use super::*;
 use thelxinoe_database::Database;
 
-pub(super) async fn imported(db: &Database, key: String) -> anyhow::Result<bool> {
-    db.read("managers.updates.imported", move |db| {
-        Ok(db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE id=?1 AND origin='adopted')",
-            [key],
-            |r| r.get(0),
-        )?)
-    })
-    .await
-}
-
 pub(super) async fn policy(
     db: &Database,
     key: String,
@@ -44,7 +33,7 @@ pub(super) async fn enqueue(
     actor: Option<String>,
 ) -> anyhow::Result<bool> {
     db.write("managers.updates.enqueue", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let available=tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE id=?1 AND state='complete' AND (service_id IS NOT NULL OR kind='recyclarr')) AND NOT EXISTS(SELECT 1 FROM service_updates WHERE service_id=?1 AND state IN ('queued','submitting','preparing','snapshotting','preflight','ready','queued-activate','activating','recovery-snapshot','isolated-live-validation','rollback-copying','rollback-activating','recovery-required','queued-recover'))",[&service],|r|r.get::<_,bool>(0))?;
+        let available=tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE id=?1 AND state='complete' AND hold IS NULL AND (service_id IS NOT NULL OR kind='recyclarr')) AND NOT EXISTS(SELECT 1 FROM service_updates WHERE service_id=?1 AND state IN ('queued','submitting','preparing','snapshotting','preflight','ready','queued-activate','activating','recovery-snapshot','isolated-live-validation','rollback-copying','rollback-activating','recovery-required','queued-recover'))",[&service],|r|r.get::<_,bool>(0))?;
         if !available{return Ok(false);}
         tx.execute("INSERT INTO service_updates(id,service_id,actor_id,state,created_at,updated_at,automatic,candidate) VALUES (?1,?2,?3,'queued',?4,?4,?5,(SELECT candidate FROM service_update_policy WHERE service_id=?2))",params![key,service,actor,now(),actor.is_none()])?;
         tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'service.update',?2,?3,'queued',?4,?4)",params![id(),json!({"id":key,"action":"preflight"}).to_string(),format!("update:{key}:preflight"),now()])?;
@@ -220,7 +209,7 @@ pub(super) async fn discovered_candidates(
     db: &Database,
 ) -> anyhow::Result<Vec<DiscoveredCandidate>> {
     db.read("managers.updates.discovered_candidates", |db| {
-        Ok(db.prepare("SELECT p.service_id,p.policy,p.window_start,p.window_end,p.candidate FROM service_update_policy p JOIN stack_provisions s ON s.id=p.service_id WHERE s.state='complete' AND p.candidate IS NOT NULL AND p.error IS NULL AND NOT EXISTS(SELECT 1 FROM service_updates u WHERE u.service_id=p.service_id AND (u.state NOT IN ('committed','rolled-back','blocked','runtime-failure') OR (u.automatic=1 AND u.candidate=p.candidate AND u.state IN ('blocked','rolled-back','runtime-failure'))))")?
+        Ok(db.prepare("SELECT p.service_id,p.policy,p.window_start,p.window_end,p.candidate FROM service_update_policy p JOIN stack_provisions s ON s.id=p.service_id WHERE s.state='complete' AND s.hold IS NULL AND p.candidate IS NOT NULL AND p.error IS NULL AND NOT EXISTS(SELECT 1 FROM service_updates u WHERE u.service_id=p.service_id AND (u.state NOT IN ('committed','rolled-back','blocked','runtime-failure') OR (u.automatic=1 AND u.candidate=p.candidate AND u.state IN ('blocked','rolled-back','runtime-failure'))))")?
             .query_map([], |row| Ok(DiscoveredCandidate {
                 service_id: row.get(0)?, policy: row.get(1)?, window_start: row.get(2)?, window_end: row.get(3)?, image: row.get(4)?,
             }))?.collect::<rusqlite::Result<Vec<_>>>()?)

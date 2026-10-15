@@ -868,7 +868,7 @@ try {
     },
   );
   await scenario(
-    'separate server media mounts preserve adoption and map existing media',
+    'separate server media mounts survive a transfer and map existing media',
     () => existingStorageAccess(output),
   );
   result.passed = true;
