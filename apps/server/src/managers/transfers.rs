@@ -897,7 +897,7 @@ pub(crate) async fn run_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
         "committed" => finish(state, &t).await,
         "recovery" => advance_recovery(state, &t)
             .await
-            .map(|progress| !matches!(progress, Recovery::Running)),
+            .map(|progress| matches!(progress, Recovery::Finished | Recovery::Refused(_))),
         _ => return Ok(true),
     };
     match outcome {
@@ -1558,9 +1558,11 @@ async fn recover(
 
 /// The last observed progress of a durable recovery command.
 enum Recovery {
-    /// The controller reported its outcome and this record shows it.
+    /// The controller reported an outcome that leaves no transfer work queued.
     Finished,
     Running,
+    /// Recovery applied, but commit, setup and checks still need the transfer job.
+    Continuing,
     /// The controller refused it before any effect; the transfer is where it was.
     Refused(ApiError),
 }
@@ -1615,10 +1617,7 @@ async fn advance_recovery(state: &AppState, t: &storage::Row) -> Result<Recovery
     }
     let observed = &status["command"];
     match observed["state"].as_str() {
-        Some("applied") => {
-            project_recovery(state, t, operation, &status).await?;
-            Ok(Recovery::Finished)
-        }
+        Some("applied") => project_recovery(state, t, operation, &status).await,
         Some("failed") => {
             storage::end_recovery(
                 &state.db,
@@ -1665,7 +1664,7 @@ async fn project_recovery(
     t: &storage::Row,
     operation: String,
     status: &Value,
-) -> Result<()> {
+) -> Result<Recovery> {
     let actor = t.recovery["command"]["by"].as_str().map(str::to_owned);
     match t.recovery["command"]["action"].as_str().unwrap_or_default() {
         "return_original" => {
@@ -1710,9 +1709,10 @@ async fn project_recovery(
                 },
             )
             .await?;
+            return Ok(Recovery::Continuing);
         }
     }
-    Ok(())
+    Ok(Recovery::Finished)
 }
 
 /// Remove the stopped original container after success; its appdata is never deleted.
