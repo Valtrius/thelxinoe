@@ -2,6 +2,7 @@
   import { tick } from 'svelte';
   import { flip } from 'svelte/animate';
   import { prefersReducedMotion } from 'svelte/motion';
+  import { animationDuration } from '../motion';
   import { GripVertical } from '@lucide/svelte';
   import Switch from './Switch.svelte';
 
@@ -217,7 +218,7 @@
         duration:
           prefersReducedMotion.current || (drag?.active && drag.id === item.id)
             ? 0
-            : 180,
+            : $animationDuration,
       }}
       class={[
         'relative flex min-h-10 items-center border',

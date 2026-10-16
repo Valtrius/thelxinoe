@@ -19,7 +19,7 @@
   aria-label={`View ${title(item)}`}
 >
   <div
-    class="relative aspect-2/3 overflow-hidden border border-line bg-surface-strong transition-[border-color,translate] duration-150 group-hover/poster:-translate-y-1 group-hover/poster:border-accent motion-reduce:transition-none"
+    class="relative aspect-2/3 overflow-hidden border border-line bg-surface-strong transition-[border-color,translate] duration-(--animation-duration) group-hover/poster:-translate-y-1 group-hover/poster:border-accent motion-reduce:transition-none"
   >
     {#if artwork(item.posterPath) && !failed}<img
         class="size-full object-cover"

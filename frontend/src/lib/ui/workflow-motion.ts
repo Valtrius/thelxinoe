@@ -1,5 +1,6 @@
 import { tick } from 'svelte';
 import { playAnimations } from '../layout-animation';
+import { scrollWithMotion } from '../motion';
 
 export function animateWorkflowDialog(
   dialog: HTMLDialogElement,
@@ -81,7 +82,7 @@ export function stepHighlight(node: HTMLElement, selected: string | undefined) {
   let positioned = false;
   let animation: Animation | undefined;
   let generation = 0;
-  const position = () => {
+  const position = (center = false) => {
     if (!key) return;
     const target = root.querySelector<HTMLElement>(
       `[data-transfer-step="${CSS.escape(key)}"]`,
@@ -125,31 +126,37 @@ export function stepHighlight(node: HTMLElement, selected: string | undefined) {
         );
     }
     positioned = true;
-    if (root.scrollHeight > root.clientHeight) {
-      root.scrollTo({
-        top: top - (root.clientHeight - bounds.height) / 2,
-        behavior: initial || reduced.matches ? 'instant' : 'smooth',
-      });
+    if ((initial || center) && root.scrollHeight > root.clientHeight) {
+      scrollWithMotion(
+        root,
+        {
+          top: top - (root.clientHeight - bounds.height) / 2,
+        },
+        !initial,
+      );
     }
   };
   const update = (next: string | undefined) => {
     key = next;
     const current = ++generation;
     void tick().then(() => {
-      if (generation === current) position();
+      if (generation === current) position(true);
     });
   };
-  const observer = new ResizeObserver(position);
+  const observer = new ResizeObserver(() => position());
   observer.observe(root);
   const reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
-  reduced.addEventListener('change', position);
+  const reposition = () => position(true);
+  reduced.addEventListener('change', reposition);
+  window.addEventListener('resize', reposition);
   update(selected);
   return {
     update,
     destroy() {
       generation++;
       observer.disconnect();
-      reduced.removeEventListener('change', position);
+      reduced.removeEventListener('change', reposition);
+      window.removeEventListener('resize', reposition);
       animation?.cancel();
     },
   };

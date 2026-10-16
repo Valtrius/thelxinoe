@@ -1,6 +1,7 @@
 <script lang="ts" generics="Value extends string">
   import { onMount, untrack, type Component } from 'svelte';
   import type { IconProps } from '@lucide/svelte';
+  import { playAnimations } from '../layout-animation';
 
   type Choice = {
     value: Value;
@@ -43,18 +44,19 @@
     };
     animation?.cancel();
     selection = { left: button.offsetLeft, width: button.offsetWidth };
-    if (
-      animate &&
-      from &&
-      !matchMedia('(prefers-reduced-motion: reduce)').matches
-    )
-      animation = highlight.animate(
-        [
-          from,
-          { translate: `${selection.left}px 0`, width: `${selection.width}px` },
-        ],
-        { duration: 200, easing: 'cubic-bezier(0.22,1,0.36,1)' },
-      );
+    if (animate && from)
+      [animation] = playAnimations([
+        {
+          element: highlight,
+          keyframes: [
+            from,
+            {
+              translate: `${selection.left}px 0`,
+              width: `${selection.width}px`,
+            },
+          ],
+        },
+      ]);
   }
   $effect(() => {
     void value;

@@ -46,11 +46,11 @@
       onchange={handleChange}
     />
     <span
-      class="pointer-events-none absolute inset-0 border border-line-strong bg-surface transition-colors duration-200 ease-out peer-checked:bg-accent-soft peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent motion-reduce:transition-none"
+      class="pointer-events-none absolute inset-0 border border-line-strong bg-surface transition-colors duration-(--animation-duration) ease-out peer-checked:bg-accent-soft peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent motion-reduce:transition-none"
       aria-hidden="true"
     ></span>
     <span
-      class={`pointer-events-none absolute bg-muted transition-[translate,background-color] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-[translate] peer-checked:bg-accent motion-reduce:transition-none ${knobClass}`}
+      class={`pointer-events-none absolute bg-muted transition-[translate,background-color] duration-(--animation-duration) ease-[cubic-bezier(0.22,1,0.36,1)] will-change-[translate] peer-checked:bg-accent motion-reduce:transition-none ${knobClass}`}
       aria-hidden="true"
     ></span>
   </span>

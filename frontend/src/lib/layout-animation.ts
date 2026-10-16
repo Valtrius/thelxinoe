@@ -1,5 +1,10 @@
+import { getAnimationDuration } from './motion';
+export { animationsDisabled } from './motion';
+
 export const layoutAnimationTiming = {
-  duration: 200,
+  get duration() {
+    return getAnimationDuration();
+  },
   easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
 } as const;
 
@@ -50,10 +55,6 @@ function trackAnimation(
   // Filling animations stay in effect after finishing and remain cancellable.
   if (fill !== 'forwards' && fill !== 'both')
     animation.addEventListener('finish', release);
-}
-
-export function prefersReducedMotion(): boolean {
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
 export function rectTransform(
@@ -163,9 +164,15 @@ export function playAnimations(
   plans: AnimationPlan[],
   timing: KeyframeAnimationOptions = layoutAnimationTiming,
 ): Animation[] {
-  if (prefersReducedMotion()) return [];
+  const duration = getAnimationDuration();
+  if (!duration) return [];
+  const groupTiming = { ...timing, duration };
   const animations = plans.map(({ element, keyframes, options, owner }) => {
-    const effectTiming = { ...timing, ...options };
+    const effectTiming = {
+      ...groupTiming,
+      ...options,
+      duration,
+    };
     const animation = element.animate(keyframes, effectTiming);
     trackAnimation(owner ?? element, animation, effectTiming.fill);
     return animation;

@@ -2,6 +2,7 @@
   import { onMount, type Snippet } from 'svelte';
   import { ChevronLeft, ChevronRight } from '@lucide/svelte';
   import Button from './Button.svelte';
+  import { scrollWithMotion } from '../motion';
 
   let { label, children } = $props<{ label: string; children: Snippet }>();
   let rail = $state<HTMLDivElement>();
@@ -27,12 +28,10 @@
     };
   });
   function scroll(direction: number) {
-    rail?.scrollBy({
-      left: direction * rail.clientWidth * 0.8,
-      behavior: matchMedia('(prefers-reduced-motion: reduce)').matches
-        ? 'instant'
-        : 'smooth',
-    });
+    if (rail)
+      scrollWithMotion(rail, {
+        left: rail.scrollLeft + direction * rail.clientWidth * 0.8,
+      });
   }
 </script>
 

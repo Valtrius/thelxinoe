@@ -64,7 +64,7 @@
   data-sidebar-resize="xy"
 >
   {#if play || details}<div
-      class="card-actions absolute top-2 right-2 z-2 flex gap-1 opacity-0 transition-opacity duration-150 group-hover/library-card:opacity-100 group-focus-within/library-card:opacity-100 compact:opacity-100"
+      class="card-actions absolute top-2 right-2 z-2 flex gap-1 opacity-0 transition-opacity duration-(--animation-duration) group-hover/library-card:opacity-100 group-focus-within/library-card:opacity-100 compact:opacity-100"
     >
       {#if play}<button
           class={actionClass}

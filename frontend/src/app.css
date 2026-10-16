@@ -1,6 +1,7 @@
 @import 'tailwindcss';
 
 @theme {
+  --default-transition-duration: var(--animation-duration);
   --animate-update-nudge: update-nudge 2.7s ease-in-out infinite;
   @keyframes update-nudge {
     0%,
@@ -82,6 +83,7 @@
 
 @layer base {
   :root {
+    --animation-duration: 0ms;
     color-scheme: light;
     --background: #edf1f3;
     --surface: rgba(255, 255, 255, 0.84);
@@ -212,13 +214,19 @@
   @apply [zoom:var(--media-card-inverse-scale,1)];
 }
 
-/* A non-zero duration here would give every element a transition on `all`,
-   so one inherited change would start thousands of transitions. */
+/* Activity loops keep their own cadence; progress transitions also remain
+   independent of the user's timing. System reduced motion disables both. */
+:root[data-motion='off'] *:not([data-motion-indicator]),
+:root[data-motion='off'] *:not([data-motion-indicator])::before,
+:root[data-motion='off'] *:not([data-motion-indicator])::after {
+  @apply scroll-auto! duration-0! delay-0!;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
-    @apply scroll-auto! duration-0! [animation-duration:0.01ms]! [animation-iteration-count:1]!;
+    @apply scroll-auto! duration-0! delay-0! animate-none!;
   }
 }
 

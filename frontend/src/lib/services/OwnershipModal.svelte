@@ -320,7 +320,7 @@
     >
       <nav
         aria-label="Ownership transfer steps"
-        class="relative isolate self-start compact:h-43 compact:w-full compact:shrink-0 compact:overflow-y-auto compact:overscroll-contain compact:scroll-smooth motion-reduce:scroll-auto compact:[scrollbar-gutter:stable]"
+        class="relative isolate self-start compact:h-43 compact:w-full compact:shrink-0 compact:overflow-y-auto compact:overscroll-contain compact:[scrollbar-gutter:stable]"
       >
         <div
           aria-hidden="true"

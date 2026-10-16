@@ -46,7 +46,7 @@
   import { syncMediaLayouts } from './lib/card-grid-zoom';
   import { createLayoutMotion, settleLayoutMotions } from './lib/layout-motion';
   import { createCardGridWheelHandler } from './lib/card-grid-wheel';
-  import { prefersReducedMotion } from './lib/layout-animation';
+  import { scrollWithMotion } from './lib/motion';
   import { get } from 'svelte/store';
   const mediaMotion = createLayoutMotion();
   const pageTransition = new PageTransition();
@@ -653,10 +653,7 @@
       playing = resolveYoutube ? { ...next, resolveYoutube: true } : next;
       if (!desktop) {
         await tick();
-        workspace?.scrollTo({
-          top: 0,
-          behavior: prefersReducedMotion() ? 'instant' : 'smooth',
-        });
+        if (workspace) scrollWithMotion(workspace, { top: 0 });
       }
     });
   }

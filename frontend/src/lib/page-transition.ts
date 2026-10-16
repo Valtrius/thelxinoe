@@ -2,7 +2,7 @@ import {
   cancelLayoutAnimations,
   layoutAnimationTiming,
   playAnimations,
-  prefersReducedMotion,
+  animationsDisabled,
   type AnimationPlan,
 } from './layout-animation';
 import { preparePage } from './page-readiness';
@@ -153,7 +153,7 @@ export class PageTransition {
         surface.dispatchEvent(
           new Event('thelxinoe-page-leave', { bubbles: true }),
         );
-        if (Number(from?.opacity ?? 1) > 0 && !prefersReducedMotion())
+        if (Number(from?.opacity ?? 1) > 0 && !animationsDisabled())
           await Promise.all(
             playAnimations(
               this.plans(surface, false, from),

@@ -23,6 +23,7 @@ pub(super) async fn update(
         if let Some(v) = change.sidebar_collapsed { value.sidebar_collapsed = v; }
         if let Some(v) = change.poster_columns { value.poster_columns = v; }
         if let Some(v) = change.video_columns { value.video_columns = v; }
+        if let Some(v) = change.animation_duration_ms { value.animation_duration_ms = v; }
         if let Some(v) = change.fade_watched { value.fade_watched = v; }
         if let Some(v) = change.thumbnail_fit { value.thumbnail_fit = v; }
         tx.execute("INSERT INTO ui_preferences VALUES (?1,?2) ON CONFLICT(user_id) DO UPDATE SET value=excluded.value", params![p.user.id, serde_json::to_string(&value)?])?;
