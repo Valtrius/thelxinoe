@@ -946,6 +946,10 @@ test('discover uses the same page width as details on a wide display', async ({
   await page.goto('/');
   const search = page.getByRole('search');
   await expect(search).toBeVisible();
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
   const discoverBounds = await search.boundingBox();
   await page
     .getByRole('button', { name: 'View Arrival', exact: true })
@@ -953,6 +957,10 @@ test('discover uses the same page width as details on a wide display', async ({
     .click();
   const hero = page.locator('article > div').first();
   await expect(hero).toBeVisible();
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
   const detailsBounds = await hero.boundingBox();
   expect(discoverBounds).not.toBeNull();
   expect(detailsBounds).not.toBeNull();
