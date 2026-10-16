@@ -1,14 +1,16 @@
 <script lang="ts">
   import FormField from './ui/FormField.svelte';
-  import { formControlClass } from './ui/styles';
+  import { cardBlockClass, formControlClass } from './ui/styles';
   import Switch from './ui/Switch.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
   import ProviderSetupInstructions from './providers/ProviderSetupInstructions.svelte';
   import Button from './ui/Button.svelte';
-  import Panel from './ui/Panel.svelte';
+  import SettingsCard from './ui/SettingsCard.svelte';
+  import SettingRow from './ui/SettingRow.svelte';
+  import StatusChip from './ui/StatusChip.svelte';
+  import CopyButton from './ui/CopyButton.svelte';
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
-  import { inlineFormClass } from './ui/styles';
   import ProviderIntegrationSwitch from './providers/ProviderIntegrationSwitch.svelte';
   import { providers } from './providers/availability';
   let { onConfigured }: { onConfigured?: () => void } = $props();
@@ -28,6 +30,7 @@
     quota: { used: number; blocked: boolean };
   };
   const familyLabels: Record<Family, string> = { ipv4: 'IPv4', ipv6: 'IPv6' };
+  const ids = $props.id();
   let config = $state<Configuration | null>(null),
     clientId = $state(''),
     clientSecret = $state(''),
@@ -89,71 +92,112 @@
   }
 </script>
 
-<Panel>
-  <h2>YouTube application</h2>
-  <ProviderIntegrationSwitch platform="youtube" />
-  {#if $providers.youtube}
-    <p class="text-muted">
-      Configure one Google Web application for this server. Each person connects
-      their own YouTube account. Replacing the application credentials requires
-      everyone to reconnect.
-    </p>
-    <ProviderSetupInstructions
-      platform="youtube"
-      redirectUri={config?.redirect_uri}
-    />
-    {#if config?.redirect_uri}
-      <FormField
-        >Authorized redirect URI<input
-          class={formControlClass}
-          readonly
-          value={config.redirect_uri}
-        /></FormField
+<SettingsCard
+  title="YouTube"
+  description={$providers.youtube
+    ? 'One Google Web application for this server. Each person connects their own YouTube account. Replacing the application credentials requires everyone to reconnect.'
+    : 'Turn the integration on to configure a Google application and let people connect YouTube.'}
+  autoSave={$providers.youtube && Boolean(config)}
+  saving={savingPreferences}
+>
+  {#snippet badge()}
+    {#if $providers.youtube && config}
+      <StatusChip tone={config.google_configured ? 'ok' : 'warn'}
+        >{config.google_configured
+          ? 'Configured'
+          : 'Not configured'}</StatusChip
       >
-    {:else}<p role="status">
+    {/if}
+  {/snippet}
+  {#snippet actions()}
+    <ProviderIntegrationSwitch platform="youtube" />
+  {/snippet}
+  {#if $providers.youtube}
+    <!-- The guide mounts once the configuration is known so it starts folded
+         for a configured application instead of folding after load. -->
+    {#if config}
+      <div class={cardBlockClass}>
+        <ProviderSetupInstructions
+          platform="youtube"
+          redirectUri={config.redirect_uri}
+          open={!config.google_configured}
+        />
+      </div>
+    {/if}
+    {#if config?.redirect_uri}
+      <SettingRow
+        label="Authorized redirect URI"
+        description="Add this exact URI to the Web application client in Google Cloud."
+        for={`${ids}-redirect`}
+      >
+        <div class="flex w-72 max-w-full items-center gap-2 compact:w-full">
+          <input
+            id={`${ids}-redirect`}
+            class="{formControlClass} font-mono text-[11px] text-muted"
+            readonly
+            value={config.redirect_uri}
+            onclick={(event) => event.currentTarget.select()}
+          /><CopyButton value={config.redirect_uri} label="Copy redirect URI" />
+        </div>
+      </SettingRow>
+    {:else}<p role="status" class="m-0 {cardBlockClass} text-xs text-muted">
         Set THELXINOE_PUBLIC_URL to this server's HTTPS origin in its
         environment and restart the server to get the redirect URI. Configure
         THELXINOE_TRUSTED_PROXIES for your HTTPS reverse proxy. HTTP localhost
         is supported for development.
       </p>{/if}
     <form
-      class={inlineFormClass}
+      class="{cardBlockClass} grid gap-3"
       onsubmit={(e) => {
         e.preventDefault();
         void save();
       }}
     >
-      <FormField
-        >Google client ID<input
-          class={formControlClass}
-          bind:value={clientId}
-          required
-          autocomplete="off"
-          placeholder={config?.google_configured
-            ? 'Configured — enter credentials to replace it'
-            : 'Web application client ID'}
-        /></FormField
+      <div>
+        <div class="text-[13px] leading-snug font-[550]">
+          Google credentials
+        </div>
+        <p class="mt-0.75 mb-0 text-xs text-muted">
+          Client ID and secret of the Web application client.
+        </p>
+      </div>
+      <div
+        class="grid max-w-[40rem] grid-cols-2 gap-3 compact:grid-cols-1 [&_label]:m-0"
       >
-      <FormField
-        >Google client secret<input
-          class={formControlClass}
-          type="password"
-          bind:value={clientSecret}
-          required
-          autocomplete="new-password"
-          placeholder="Enter with the client ID"
-        /></FormField
-      >
-      <Button
-        type="submit"
-        size="form"
-        disabled={busy || savingPreferences || !config}
-        >Apply Google application</Button
-      >
+        <FormField
+          >Google client ID<input
+            class={formControlClass}
+            bind:value={clientId}
+            required
+            autocomplete="off"
+            placeholder={config?.google_configured
+              ? 'Configured — enter credentials to replace it'
+              : 'Web application client ID'}
+          /></FormField
+        >
+        <FormField
+          >Google client secret<input
+            class={formControlClass}
+            type="password"
+            bind:value={clientSecret}
+            required
+            autocomplete="new-password"
+            placeholder="Enter with the client ID"
+          /></FormField
+        >
+      </div>
+      <div>
+        <Button
+          type="submit"
+          size="form"
+          disabled={busy || savingPreferences || !config}
+          >Apply Google application</Button
+        >
+      </div>
     </form>
     {#if config}<AutoSaveForm
         label="YouTube preferences"
-        class={inlineFormClass}
+        class="divide-y divide-line"
         bind:busy={savingPreferences}
         disabled={busy || !config}
         value={{
@@ -171,40 +215,47 @@
           config = await api<Configuration>('/admin/online');
         }}
       >
-        <FormField
-          >Daily API budget<input
+        <SettingRow
+          label="Daily API budget"
+          description={`${config.quota.used.toLocaleString()} API units used today. The shared budget resets at midnight Pacific time.${config.quota.blocked ? ' YouTube has paused requests for today.' : ''}`}
+          for={`${ids}-budget`}
+          control="field"
+        >
+          <input
+            id={`${ids}-budget`}
             class={formControlClass}
             type="number"
             bind:value={budget}
             min="1"
             max="10000000"
             required
-          /></FormField
+          />
+        </SettingRow>
+        <SettingRow
+          label="Public video network"
+          description={`Automatic switches to IPv6 when YouTube blocks the IPv4 address. ${networkSummary(config)}`}
+          for={`${ids}-network`}
+          control="field"
         >
-        <FormField
-          >Public video network<select
+          <select
+            id={`${ids}-network`}
             class={formControlClass}
             bind:value={network}
           >
             <option value="auto">Automatic</option>
             <option value="ipv4">IPv4 only</option>
             <option value="ipv6">IPv6 only</option>
-          </select></FormField
-        >
-        <Switch bind:checked={downloads}>Allow YouTube downloads</Switch>
+          </select>
+        </SettingRow>
+        <SettingRow label="Allow YouTube downloads" for={`${ids}-downloads`}>
+          <Switch id={`${ids}-downloads`} bind:checked={downloads} />
+        </SettingRow>
       </AutoSaveForm>{/if}
-    {#if config}<p class="text-muted">
-        {config.quota.used.toLocaleString()} API units used today. The shared budget
-        resets at midnight Pacific time.{config.quota.blocked
-          ? ' YouTube has paused requests for today.'
-          : ''}
-      </p>
-      <p class="text-muted">
-        YouTube can block a server's address with a bot check. Automatic starts
-        with IPv4 and switches to IPv6 when IPv4 is blocked. {networkSummary(
-          config,
-        )}
+    {#if message}<p
+        role="status"
+        class="m-0 {cardBlockClass} text-xs text-muted"
+      >
+        {message}
       </p>{/if}
-    {#if message}<p role="status">{message}</p>{/if}
   {/if}
-</Panel>
+</SettingsCard>

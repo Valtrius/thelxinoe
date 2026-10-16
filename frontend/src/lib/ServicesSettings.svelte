@@ -15,9 +15,8 @@
   } from './attention';
   import { activity as runningActivity, startActivity } from './activity';
   import { api, ApiError, desktop } from './api';
-  import { followLink } from './navigation';
+  import { followLink, routeHref, sectionRoute } from './navigation';
   import Button from './ui/Button.svelte';
-  import Panel from './ui/Panel.svelte';
   import ContentSkeleton from './ui/ContentSkeleton.svelte';
   import ConfirmDialog from './providers/components/ui/ConfirmDialog.svelte';
   import Switch from './ui/Switch.svelte';
@@ -59,11 +58,13 @@
     selected,
     workflow,
     onSelect,
+    openSettings,
   } = $props<{
     timeFormat?: '12h' | '24h';
     selected?: string;
     workflow?: 'setup' | 'updates';
     onSelect?: (kind: string) => void;
+    openSettings?: (name: string) => void;
   }>();
 
   import {
@@ -84,7 +85,6 @@
     type Update,
     type UpdateTarget,
     type ServerUpdatePolicy,
-    type ApprovalUser,
     type SetupDraft,
     type InstallDraft,
     type DefaultsDraft,
@@ -167,8 +167,7 @@
     provisions = $state<Provision[]>([]),
     policies = $state<UpdatePolicy[]>([]),
     updates = $state<Update[]>([]),
-    updateTargets = $state<UpdateTarget[]>([]),
-    approvalUsers = $state<ApprovalUser[]>([]);
+    updateTargets = $state<UpdateTarget[]>([]);
   let timezone = $state(''),
     serverPolicy = $state<ServerUpdatePolicy>({
       policy: 'automatic',
@@ -187,7 +186,6 @@
   const loadErrors = $state({
     managers: '',
     support: '',
-    approval: '',
     updates: '',
     containers: '',
     stack: '',
@@ -469,16 +467,6 @@
       loadErrors.support = String(error);
     }
   }
-  async function loadApprovalUsers() {
-    loadErrors.approval = '';
-    try {
-      approvalUsers = (
-        await api<{ items: ApprovalUser[] }>('/admin/acquisition/users')
-      ).items;
-    } catch (error) {
-      loadErrors.approval = String(error);
-    }
-  }
   async function loadContainers() {
     loadErrors.containers = '';
     try {
@@ -553,7 +541,6 @@
     await Promise.all([
       loadManagers(),
       loadSupport(),
-      loadApprovalUsers(),
       loadUpdateData(),
       loadStack(),
       loadStages(),
@@ -838,9 +825,9 @@
   });
 </script>
 
-<Panel
+<section
   aria-label="Media services"
-  class="services-panel col-span-full settings-panel:border-0 settings-panel:pt-0 settings-panel:compact:p-0"
+  class="services-panel col-span-full grid min-w-0 gap-5"
 >
   <ConfirmDialog
     open={removalKind !== null}
@@ -885,15 +872,16 @@
       openService={() => selectService(modal.kind)}
     />
   {/if}
+  <!-- One tab per service; the strip keeps every status visible at a glance. -->
   <nav
-    class="service-strip mb-7 grid grid-cols-2 gap-1.5 @min-[270px]/settings:grid-cols-4 @min-[1100px]/settings:grid-cols-8"
+    class="service-strip grid min-w-0 grid-cols-2 gap-px border border-line bg-line @min-[480px]/settings:grid-cols-4 @min-[900px]/settings:grid-cols-8"
     aria-label="Select service"
   >
     {#each definitions as service (service.kind)}
       {@const state = status(service.kind)}
       <a
         href={`#admin/services/${service.kind}`}
-        class="service-tab flex min-w-0 cursor-pointer flex-col items-center gap-1.5 border border-line bg-transparent px-1 py-3 text-center text-foreground hover:bg-surface-soft aria-[current=true]:border-accent aria-[current=true]:bg-accent-soft @min-[600px]/settings:flex-row @min-[600px]/settings:gap-2 @min-[600px]/settings:px-2.5 @min-[600px]/settings:text-left [&>img]:size-6.75 [&>img]:shrink-0 [&>img]:object-contain @max-[400px]/settings:[&>img]:size-5.75 [&_strong]:text-[11px] [&_strong]:font-[650]"
+        class="service-tab relative flex min-w-0 cursor-pointer items-center gap-2.5 bg-surface px-3 py-2.5 text-left text-foreground hover:bg-surface-soft aria-[current=true]:bg-accent-soft aria-[current=true]:text-accent aria-[current=true]:shadow-[inset_0_-2px_0_var(--accent)] [&>img]:size-6 [&>img]:shrink-0 [&>img]:object-contain [&_strong]:block [&_strong]:truncate [&_strong]:text-xs [&_strong]:font-[650]"
         aria-current={selectedKind === service.kind ? 'true' : undefined}
         aria-label={service.label}
         aria-describedby={`service-attention-${service.kind}`}
@@ -905,9 +893,9 @@
         }}
       >
         <img src={icons[service.kind]} alt="" />
-        <span class="min-w-0"
+        <span class="min-w-0 flex-1"
           ><strong>{service.label}</strong><StatusIndicator
-            class="service-status mt-1.5 justify-center @min-[600px]/settings:justify-start"
+            class="service-status mt-0.5"
             tone={state.tone}>{state.label}</StatusIndicator
           ></span
         >
@@ -941,6 +929,7 @@
       <Notice
         tone="danger"
         role="alert"
+        class="mb-0"
         aria-label={`${subsystem.label} load error`}
       >
         <strong>Failed to load {subsystem.label}</strong>
@@ -955,12 +944,13 @@
     {/if}
   {/each}
   <article
-    class="service-detail settings-grid"
+    class="service-detail grid min-w-0 gap-5"
     data-page-region="service"
     aria-label={`${definition.label} service`}
   >
+    <!-- Identity, status, actions and facts for the selected service. -->
     <aside
-      class="service-rail settings-section grid grid-cols-1 content-start"
+      class="service-rail panel settings-card min-w-0 border border-line bg-surface"
       aria-label="Service controls"
     >
       {#each [definition] as service (service.kind)}
@@ -978,26 +968,29 @@
         {@const operating = serviceOperationActive(service.kind)}
         <div
           class={[
-            'rail-identity min-w-0 flex flex-col',
+            'rail-identity flex min-w-0 flex-col gap-3 px-5.5 py-4 compact:px-4',
             !active && 'inactive invisible pointer-events-none compact:hidden',
           ]}
           inert={!active}
         >
           <div
-            class="rail-heading flex items-center gap-3 [&_img]:size-10.5 [&_img]:object-contain [&_span]:text-xs [&_span]:text-muted [&_h2]:mb-1 [&_h2]:text-xl"
+            class="rail-heading flex items-center gap-3.5 [&_img]:size-11 [&_img]:shrink-0 [&_img]:object-contain"
           >
             <img src={icons[service.kind]} alt="" />
-            <div>
-              <h2>{service.label}</h2>
-              <span>{service.description}</span>
+            <div class="min-w-0">
+              <h2 class="m-0 text-lg font-semibold tracking-[-0.01em]">
+                {service.label}
+              </h2>
+              <span class="block text-xs text-muted">{service.description}</span
+              >
             </div>
+            <StatusIndicator
+              class="service-status ml-auto shrink-0 text-[11px]"
+              tone={state.tone}>{state.label}</StatusIndicator
+            >
           </div>
-          <StatusIndicator
-            class="service-status mt-3.75 text-[11px]"
-            tone={state.tone}>{state.label}</StatusIndicator
-          >
           {#if url && attached}<div
-              class="service-url-line mt-3 flex min-h-4.5 min-w-0 items-center gap-1"
+              class="service-url-line flex min-h-4.5 min-w-0 items-center gap-1"
             >
               <NativeServiceLink
                 id={attached.id}
@@ -1051,7 +1044,7 @@
                 </div>
               {/if}
             </div>{/if}
-          <div class="rail-progress empty:hidden pt-3 text-xs text-muted">
+          <div class="rail-progress text-xs text-muted empty:hidden">
             {#if progress}<span>{progress}</span>
               <ProgressBar
                 class="activity-bar mt-1.75 h-0.75"
@@ -1066,7 +1059,7 @@
         </div>
         <div
           class={[
-            'rail-actions min-w-0 flex flex-wrap items-start gap-2 py-4 [&_button]:whitespace-normal',
+            'rail-actions flex min-w-0 flex-wrap items-center gap-2 border-t border-line px-5.5 py-3 compact:px-4 [&_button]:whitespace-normal',
             !active && 'inactive invisible pointer-events-none compact:hidden',
           ]}
           inert={!active}
@@ -1100,7 +1093,7 @@
               >
               <Button
                 size="form"
-                variant="secondary"
+                variant="ghost"
                 disabled={isBusy(service.kind)}
                 onclick={() => {
                   feedback[service.kind] = '';
@@ -1143,7 +1136,8 @@
             {#if canRetire(service.kind)}
               <Button
                 size="form"
-                variant="secondary"
+                variant="danger"
+                class="ml-auto"
                 disabled={isBusy(service.kind) || setupActive(service.kind)}
                 onclick={() =>
                   void work(() => stackAction(service.kind, 'retire'))}
@@ -1153,7 +1147,8 @@
             {#if provisioned && !provisioned.hold?.startsWith('transfer') && (runtimeService?.can_remove || (provisioned.state === 'retiring' && provisioned.operation === 'remove'))}
               <Button
                 size="form"
-                variant="secondary"
+                variant="danger"
+                class={canRetire(service.kind) ? '' : 'ml-auto'}
                 disabled={isBusy(service.kind, true)}
                 onclick={() => {
                   feedback[service.kind] = '';
@@ -1161,14 +1156,20 @@
                 }}>Remove service</Button
               >
             {/if}
+            {#if canRetire(service.kind)}
+              <p class="m-0 basis-full text-xs text-muted">
+                Retiring removes the installation and its API connection.
+                Appdata, request history, and media files are kept.
+              </p>
+            {/if}
             {#if !stageInfo || stageInfo.stage === 'none'}<span
-                class="text-xs text-muted">Choose how to connect.</span
+                class="text-xs text-muted">Choose how to connect below.</span
               >{/if}
           {/if}
         </div>
         <dl
           class={[
-            'rail-meta m-0 grid min-w-0 grid-cols-2 gap-x-4 gap-y-3 border-t border-line pt-4',
+            'rail-meta m-0 grid min-w-0 grid-cols-4 gap-x-4 gap-y-3 border-t border-line bg-surface-soft px-5.5 py-3 compact:grid-cols-2 compact:px-4',
             !active && 'inactive invisible pointer-events-none compact:hidden',
           ]}
           inert={!active}
@@ -1218,7 +1219,7 @@
     <div class="service-workspace contents [&_form>button]:w-fit">
       {#if live?.registered === false}
         <div
-          class="col-span-full mb-3 border-l-2 border-warning bg-surface px-3 py-2 text-xs leading-5"
+          class="col-span-full border-l-2 border-warning bg-surface px-3 py-2 text-xs leading-5"
           role="status"
           aria-label="Service setup mismatch"
         >
@@ -1228,7 +1229,7 @@
         </div>
       {/if}
       {#if item?.error || live?.inspection_error || live?.error || live?.drift}
-        <Notice class="col-span-full" tone="warning" role="status">
+        <Notice class="col-span-full mb-0" tone="warning" role="status">
           {#each [...new Set([item?.error, live?.inspection_error, live?.error].filter(Boolean))] as error (error)}<p
               class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
             >
@@ -1291,7 +1292,7 @@
           </dl>
         </section>
       {:else if selectedStage?.stage === 'owned' && selectedStage.hold && selectedStage.hold !== 'setup'}
-        <Notice class="col-span-full" tone="warning" role="status">
+        <Notice class="col-span-full mb-0" tone="warning" role="status">
           <strong>Owned, under an operational hold</strong>
           <p>
             Normal operations stay paused until its ownership transfer finishes
@@ -1305,6 +1306,9 @@
           aria-label="Service setup"
           data-service-workflow="setup"
         >
+          <h3 class="mb-3.25 text-[12px] font-[650]">
+            Set up {definition.label}
+          </h3>
           <div class="setup-forms grid gap-5.5">
             {#if definition.role === 'job'}<RecyclarrSetup
                 {containers}
@@ -1347,7 +1351,7 @@
                 >
               </form>{/if}
             {#if definition.role !== 'job'}<form
-                class="grid gap-3 border-t border-line pt-3 [&_label]:m-0"
+                class="grid gap-3 border-t border-line pt-4 [&_label]:m-0"
                 aria-label={`Connect existing ${definition.label}`}
                 onsubmit={(event) => {
                   event.preventDefault();
@@ -1466,13 +1470,7 @@
         {/if}
 
         {#if operational(selectedKind) && (definition.role === 'manager' || ['prowlarr', 'nzbget', 'bazarr'].includes(definition.kind))}
-          <div
-            class={[
-              'grid min-w-0 gap-7',
-              definition.kind === 'nzbget' &&
-                '@min-[1320px]/settings:col-span-2',
-            ]}
-          >
+          <div class="grid min-w-0 gap-5">
             {#if definition.role === 'manager' || definition.kind === 'prowlarr' || definition.kind === 'nzbget'}
               <section
                 class="work-section settings-section"
@@ -1610,6 +1608,7 @@
                       {/if}
                       <Switch
                         size="sm"
+                        class="mt-3"
                         checked={manager(selectedKind)?.retention_enabled ??
                           false}
                         disabled={busy}
@@ -1724,10 +1723,6 @@
               />{/if}
           </div>{/if}
       {/if}
-      {#if canRetire(selectedKind)}<Notice>
-          Retiring removes the installation and its API connection. Appdata,
-          request history, and media files are kept.
-        </Notice>{/if}
       {#if selectedKind === 'recyclarr' && item?.state === 'complete' && operational('recyclarr')}<RecyclarrSettings
         />{/if}
       {#if operational(selectedKind) && (connected || (definition.role === 'job' && live)) && !setupActive(selectedKind)}
@@ -1868,41 +1863,30 @@
             </p>{/if}
         </section>
       {/if}
+      {#if selectedKind === 'seerr' && operational('seerr')}
+        <!-- Per-person approval lives with the people it concerns. -->
+        <p
+          class="col-span-full m-0 text-xs text-muted"
+          data-service-note="approval"
+        >
+          Automatic request approval is set per person under
+          <a
+            class="text-foreground underline decoration-accent underline-offset-4"
+            href={routeHref(sectionRoute('Settings', 'people'))}
+            onclick={(event) => {
+              if (!openSettings || !followLink(event)) return;
+              event.preventDefault();
+              openSettings('people');
+            }}>People</a
+          >.
+        </p>
+      {/if}
     </div>
   </article>
-  {#if feedback.general || approvalUsers.length}<footer
-      class="services-footer mt-7 grid gap-5 border-t border-line pt-5"
+  {#if feedback.general}<p
+      class="my-0 wrap-anywhere text-[11px] leading-[1.6] text-muted"
+      role="status"
     >
-      {#if feedback.general}<p
-          class="my-2 wrap-anywhere text-[11px] leading-[1.6] text-muted"
-          role="status"
-        >
-          {feedback.general}
-        </p>{/if}
-      {#if approvalUsers.length}<section
-          aria-label="Automatic request approval"
-        >
-          <h3 class="mb-3.25 text-[12px] font-[650]">
-            Automatic request approval
-          </h3>
-          <div class="row-actions flex flex-wrap items-center gap-2">
-            {#each approvalUsers as user (user.id)}<Switch
-                size="sm"
-                checked={user.enabled}
-                disabled={pendingActions.general}
-                onCheckedChange={(enabled) =>
-                  void work(
-                    async () => {
-                      await api(`/admin/acquisition/users/${user.id}`, 'PUT', {
-                        enabled,
-                      });
-                      await loadApprovalUsers();
-                    },
-                    '',
-                    'general',
-                  )}>{user.username}</Switch
-              >{/each}
-          </div>
-        </section>{/if}
-    </footer>{/if}
-</Panel>
+      {feedback.general}
+    </p>{/if}
+</section>

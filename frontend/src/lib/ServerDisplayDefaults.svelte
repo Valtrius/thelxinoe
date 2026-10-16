@@ -5,18 +5,19 @@
   import { LatestRequest } from './latest-request';
   import { captureSession } from './session';
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
-  import FormField from './ui/FormField.svelte';
   import Notice from './ui/Notice.svelte';
   import Button from './ui/Button.svelte';
-  import Panel from './ui/Panel.svelte';
+  import SettingsCard from './ui/SettingsCard.svelte';
+  import SettingRow from './ui/SettingRow.svelte';
   import TimezoneSelect from './TimezoneSelect.svelte';
-  import { formControlClass, inlineFormClass } from './ui/styles';
+  import { cardBlockClass, formControlClass } from './ui/styles';
 
   let { revision = 0, changed } = $props<{
     revision?: number;
     changed: (timezone: string) => void;
   }>();
   type Defaults = { timezone: string; time_format: '12h' | '24h' };
+  const ids = $props.id();
   let confirmed = $state<Defaults | null>(null);
   let draft = $state<Defaults>({ timezone: 'UTC', time_format: '24h' });
   let error = $state(''),
@@ -75,40 +76,65 @@
   }
 </script>
 
-<Panel>
-  <h2>Display defaults</h2>
+<SettingsCard
+  id="server-display"
+  title="Display defaults"
+  description="Used by everyone who has not chosen their own timezone or time format."
+  autoSave
+  {saving}
+>
   {#if confirmed}
     <AutoSaveForm
       label="Server display defaults"
-      class={inlineFormClass}
+      class="divide-y divide-line"
       value={draft}
       baseline={confirmed}
       onsave={save}
       bind:busy={saving}
       onRevert={(previous) => (draft = previous)}
     >
-      <TimezoneSelect
+      <SettingRow
         label="Server default timezone"
-        bind:value={draft.timezone}
-      />
-      <FormField
-        >Server default time format<select
+        for={`${ids}-timezone`}
+        control="field"
+      >
+        <TimezoneSelect
+          id={`${ids}-timezone`}
+          label="Server default timezone"
+          bind:value={draft.timezone}
+        />
+      </SettingRow>
+      <SettingRow
+        label="Server default time format"
+        for={`${ids}-format`}
+        control="field"
+      >
+        <select
+          id={`${ids}-format`}
           class={formControlClass}
           bind:value={draft.time_format}
         >
           <option value="24h">24-hour</option><option value="12h"
             >12-hour</option
           >
-        </select></FormField
-      >
+        </select>
+      </SettingRow>
     </AutoSaveForm>
-  {:else if !error}<ContentSkeleton
-      label="Loading display defaults"
-      variant="settings"
-      count={2}
-    />{/if}
-  {#if error}<Notice role="alert" variant="error">{error}</Notice>
-    <Button variant="secondary" size="form" onclick={() => void load()}
-      >Retry display defaults</Button
-    >{/if}
-</Panel>
+  {:else if !error}
+    <div class={cardBlockClass}>
+      <ContentSkeleton
+        label="Loading display defaults"
+        variant="settings"
+        count={2}
+      />
+    </div>
+  {/if}
+  {#if error}
+    <div class="{cardBlockClass} grid justify-items-start gap-3">
+      <Notice role="alert" variant="error" class="mb-0">{error}</Notice>
+      <Button variant="secondary" size="form" onclick={() => void load()}
+        >Retry display defaults</Button
+      >
+    </div>
+  {/if}
+</SettingsCard>

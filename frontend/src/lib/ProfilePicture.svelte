@@ -1,7 +1,7 @@
 <script lang="ts">
   import Notice from './ui/Notice.svelte';
   import FormField from './ui/FormField.svelte';
-  import { formControlClass } from './ui/styles';
+  import { cardBlockClass, formControlClass } from './ui/styles';
   import { twMerge } from 'tailwind-merge';
   import { onDestroy } from 'svelte';
   import { api, type User } from './api';
@@ -9,6 +9,7 @@
   import Button from './ui/Button.svelte';
 
   import { Pencil } from '@lucide/svelte';
+  import { reveal } from './ui/reveal';
 
   let { user, changed } = $props<{
     user: User;
@@ -24,6 +25,7 @@
     busy = $state(false),
     saved = $state(false);
   let dismissEdit = $state(false);
+  let fileInput = $state<HTMLInputElement>();
   let sourceUrl = '',
     generation = 0;
   let drag:
@@ -131,9 +133,9 @@
 </script>
 
 <div class="min-w-0">
-  <div class="flex flex-wrap items-center gap-4">
+  <div class="flex flex-wrap items-center gap-4 px-5.5 py-3.25 compact:px-4">
     <FormField
-      class="group/avatar relative mb-0 grid size-16 shrink-0 cursor-pointer place-items-center overflow-hidden rounded-full border border-line bg-surface-soft text-2xl text-accent"
+      class="group/avatar relative mb-0 grid size-14 shrink-0 cursor-pointer place-items-center overflow-hidden rounded-full border border-line bg-surface-soft text-xl text-accent"
       onpointermove={() => (dismissEdit = false)}
     >
       {#if user.avatar}<img
@@ -149,9 +151,10 @@
             ? 'transition-none'
             : 'transition-opacity group-hover/avatar:opacity-100 group-has-[:focus-visible]/avatar:opacity-100',
         ]}
-        aria-hidden="true"><Pencil size={20} /></span
+        aria-hidden="true"><Pencil size={18} /></span
       >
       <input
+        bind:this={fileInput}
         class={twMerge(formControlClass, 'sr-only')}
         type="file"
         aria-label="Change profile picture"
@@ -170,16 +173,34 @@
         }}
       />
     </FormField>
-    {#if user.avatar}<Button
+    <div class="min-w-0 flex-1 basis-40">
+      <div class="text-[13px] leading-snug font-[550]">{user.username}</div>
+      <p class="mt-0.75 mb-0 text-xs text-muted">
+        {user.role === 'admin' ? 'Administrator' : 'User'} · JPEG, PNG, WebP or GIF
+        up to 15 MB
+      </p>
+    </div>
+    <div class="flex flex-wrap items-center gap-2">
+      <Button
         size="form"
         variant="secondary"
         disabled={busy}
-        onclick={() => void save(true)}>Remove picture</Button
-      >{/if}
+        onclick={() => fileInput?.click()}>Change picture</Button
+      >
+      {#if user.avatar}<Button
+          size="form"
+          variant="ghost"
+          disabled={busy}
+          onclick={() => void save(true)}>Remove picture</Button
+        >{/if}
+    </div>
   </div>
   {#if image}
-    <div class="mt-5 grid max-w-120 gap-4">
-      <p class="mb-0 text-muted">
+    <div
+      transition:reveal
+      class="grid max-w-120 gap-4 border-t border-line bg-surface-soft px-5.5 py-4 compact:px-4"
+    >
+      <p class="mb-0 text-xs text-muted">
         Drag the picture to reframe it, or use the arrow keys. Adjust the zoom
         and saved size below.
       </p>
@@ -288,6 +309,14 @@
       </div>
     </div>
   {/if}
-  {#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
-  {#if saved}<p role="status">Profile picture saved.</p>{/if}
+  {#if error || saved}
+    <div class={cardBlockClass}>
+      {#if error}<Notice role="alert" variant="error" class="mb-0"
+          >{error}</Notice
+        >{/if}
+      {#if saved}<p role="status" class="m-0 text-xs text-muted">
+          Profile picture saved.
+        </p>{/if}
+    </div>
+  {/if}
 </div>

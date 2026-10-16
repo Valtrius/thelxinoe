@@ -1,13 +1,15 @@
 <script lang="ts">
   import Notice from './ui/Notice.svelte';
-  import FormField from './ui/FormField.svelte';
-  import { formControlClass } from './ui/styles';
+  import { cardBlockClass, formControlClass } from './ui/styles';
   import { api } from './api';
   import { withVerification } from './authentication';
   import Button from './ui/Button.svelte';
-  import Panel from './ui/Panel.svelte';
-  import { inlineFormClass } from './ui/styles';
+  import SettingsCard from './ui/SettingsCard.svelte';
+  import SettingRow from './ui/SettingRow.svelte';
+  import { twMerge } from 'tailwind-merge';
+  import { reveal } from './ui/reveal';
   let { username } = $props<{ username: string }>();
+  const ids = $props.id();
   let code = $state('');
   let device = $state<{
     device: string;
@@ -54,19 +56,22 @@
   }
 </script>
 
-<Panel aria-label="Quick Connect">
-  <h2>Connect a TV</h2>
-  <p>Enter the Quick Connect code displayed by your media client.</p>
-  <form
-    class={inlineFormClass}
-    onsubmit={(event) => {
-      event.preventDefault();
-      void inspect();
-    }}
-  >
-    <FormField
-      >TV code<input
-        class={formControlClass}
+<SettingsCard
+  aria-label="Quick Connect"
+  title="Connect a TV"
+  description={`Enter the Quick Connect code displayed by your media client to sign it in as ${username}.`}
+>
+  <SettingRow label="TV code" for={`${ids}-code`}>
+    <form
+      class="flex flex-wrap items-center gap-2"
+      onsubmit={(event) => {
+        event.preventDefault();
+        void inspect();
+      }}
+    >
+      <input
+        id={`${ids}-code`}
+        class={twMerge(formControlClass, 'w-32 tracking-[0.2em]')}
         bind:value={code}
         oninput={() => {
           device = null;
@@ -76,20 +81,31 @@
         maxlength="6"
         inputmode="numeric"
         autocomplete="off"
+        placeholder="000000"
         required
-      /></FormField
-    >
-    <Button type="submit" variant="secondary" size="form" disabled={busy}
-      >Find device</Button
-    >
-  </form>
-  {#if device}<p>
-      Sign in to <strong>{device.device}</strong> using {device.client}
-      {device.version} as <strong>{username}</strong>.
-    </p>
-    <Button size="form" disabled={busy} onclick={() => void approve()}
-      >Connect this device</Button
-    >{/if}
-  {#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
-  {#if approved}<p role="status">Device approved. Continue on your TV.</p>{/if}
-</Panel>
+      />
+      <Button type="submit" variant="secondary" size="form" disabled={busy}
+        >Find device</Button
+      >
+    </form>
+  </SettingRow>
+  {#if device || error || approved}
+    <div class="{cardBlockClass} grid gap-3" transition:reveal>
+      {#if device}<p class="m-0 text-xs">
+          Sign in to <strong>{device.device}</strong> using {device.client}
+          {device.version} as <strong>{username}</strong>.
+        </p>
+        <div>
+          <Button size="form" disabled={busy} onclick={() => void approve()}
+            >Connect this device</Button
+          >
+        </div>{/if}
+      {#if error}<Notice role="alert" variant="error" class="mb-0"
+          >{error}</Notice
+        >{/if}
+      {#if approved}<p role="status" class="m-0 text-xs text-muted">
+          Device approved. Continue on your TV.
+        </p>{/if}
+    </div>
+  {/if}
+</SettingsCard>

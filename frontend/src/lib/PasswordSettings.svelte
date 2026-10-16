@@ -7,7 +7,7 @@
   import { errorMessage, withVerification } from './authentication';
   import { captureSession } from './session';
   import Button from './ui/Button.svelte';
-  import Panel from './ui/Panel.svelte';
+  import SettingsCard from './ui/SettingsCard.svelte';
 
   let {
     changed,
@@ -78,68 +78,79 @@
   }
 </script>
 
-<Panel>
-  <h2>{hasPassword ? 'Change password' : 'Set password'}</h2>
-  <p class="text-muted">
-    Choose a password with at least 8 characters. Your other devices will be
-    signed out; this device stays connected.
-  </p>
+<SettingsCard
+  title={hasPassword ? 'Change password' : 'Set password'}
+  description="Choose a password with at least 8 characters. Your other devices will be signed out; this device stays connected."
+  padded
+>
   <form
-    class="max-w-120"
+    class="grid max-w-[40rem] gap-4"
     onsubmit={(event) => {
       event.preventDefault();
       void save();
     }}
   >
-    {#if hasPassword && !totp && !fresh}<FormField
-        >Current password<input
+    <div class="grid grid-cols-2 gap-4 compact:grid-cols-1 [&_label]:m-0">
+      {#if hasPassword && !totp && !fresh}<FormField
+          >Current password<input
+            class={formControlClass}
+            type="password"
+            bind:value={current}
+            required
+            autocomplete="current-password"
+            disabled={busy}
+          /></FormField
+        >{/if}
+      <FormField
+        >New password<input
           class={formControlClass}
           type="password"
-          bind:value={current}
+          bind:value={password}
           required
-          autocomplete="current-password"
+          minlength="8"
+          autocomplete="new-password"
           disabled={busy}
         /></FormField
-      >{/if}
-    <FormField
-      >New password<input
-        class={formControlClass}
-        type="password"
-        bind:value={password}
-        required
-        minlength="8"
-        autocomplete="new-password"
-        disabled={busy}
-      /></FormField
-    >
-    <FormField
-      >Confirm new password<input
-        class={formControlClass}
-        type="password"
-        bind:value={confirmation}
-        required
-        minlength="8"
-        autocomplete="new-password"
-        disabled={busy}
-      /></FormField
-    >
-    {#if clients.length}<FormField
-        ><input
-          type="checkbox"
-          class={formControlClass}
-          bind:checked={revokeClients}
-          disabled={busy}
-        />Also revoke client passwords</FormField
       >
-      <p class="-mt-2 mb-4 text-xs text-muted">
-        Media apps signed in with {clients.map((c) => c.name).join(', ')} keep working
-        after a password change unless you revoke their client passwords. Revoked
-        apps need a new client password.
-      </p>{/if}
-    <Button type="submit" size="form" disabled={busy}>
-      {busy ? 'Changing password…' : 'Change password'}
-    </Button>
+      <FormField
+        >Confirm new password<input
+          class={formControlClass}
+          type="password"
+          bind:value={confirmation}
+          required
+          minlength="8"
+          autocomplete="new-password"
+          disabled={busy}
+        /></FormField
+      >
+    </div>
+    {#if clients.length}
+      <div class="grid gap-1.5">
+        <FormField class="mb-0"
+          ><input
+            type="checkbox"
+            class={formControlClass}
+            bind:checked={revokeClients}
+            disabled={busy}
+          />Also revoke client passwords</FormField
+        >
+        <p class="m-0 text-xs text-muted">
+          Media apps signed in with {clients.map((c) => c.name).join(', ')} keep working
+          after a password change unless you revoke their client passwords. Revoked
+          apps need a new client password.
+        </p>
+      </div>
+    {/if}
+    <div class="flex flex-wrap items-center gap-3">
+      <Button type="submit" size="form" disabled={busy}>
+        {busy ? 'Changing password…' : 'Change password'}
+      </Button>
+      {#if saved}<p role="status" class="m-0 text-xs text-muted">
+          {saved}
+        </p>{/if}
+    </div>
   </form>
-  {#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
-  {#if saved}<p role="status">{saved}</p>{/if}
-</Panel>
+  {#if error}<Notice role="alert" variant="error" class="mt-4 mb-0"
+      >{error}</Notice
+    >{/if}
+</SettingsCard>

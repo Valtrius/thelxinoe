@@ -1,14 +1,19 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { Laptop, Tv } from '@lucide/svelte';
   import { api } from './api';
   import { withVerification } from './authentication';
   import { captureSession } from './session';
-  import Panel from './ui/Panel.svelte';
+  import SettingsCard from './ui/SettingsCard.svelte';
+  import SettingRow from './ui/SettingRow.svelte';
   import Button from './ui/Button.svelte';
   import Notice from './ui/Notice.svelte';
   import FormField from './ui/FormField.svelte';
-  import { formControlClass, rowClass } from './ui/styles';
+  import { cardBlockClass, formControlClass } from './ui/styles';
+  import { twMerge } from 'tailwind-merge';
+  import { reveal } from './ui/reveal';
   type Device = { id: string; name: string; last_seen: number };
+  const ids = $props.id();
   let devices = $state<Device[]>([]),
     clients = $state<Device[]>([]),
     name = $state('');
@@ -44,11 +49,18 @@
   }
 </script>
 
-<Panel>
-  <h2>Remembered devices</h2>
-  {#each devices as device (device.id)}<div class={rowClass}>
-      <strong class="min-w-0 flex-1 truncate">{device.name}</strong><Button
-        variant="secondary"
+<SettingsCard
+  title="Remembered devices"
+  description="Devices you chose to remember at sign-in skip repeated verification."
+>
+  {#each devices as device (device.id)}
+    <SettingRow label={device.name}>
+      {#snippet lead()}
+        <Laptop size={16} class="shrink-0 text-muted" aria-hidden="true" />
+      {/snippet}
+      <Button
+        variant="ghost"
+        size="form"
         disabled={busy}
         aria-label={`Forget ${device.name}`}
         onclick={() =>
@@ -56,17 +68,23 @@
             await api(`/auth/devices/${device.id}`, 'DELETE');
           })}>Forget device</Button
       >
-    </div>{:else}<p class="text-muted">No remembered devices</p>{/each}
-</Panel>
-<Panel>
-  <h2>Client passwords</h2>
-  <p class="text-muted">
-    For compatible media clients. These passwords bypass TOTP and can only
-    access the Jellyfin-compatible API.
-  </p>
-  {#each clients as client (client.id)}<div class={rowClass}>
-      <strong class="min-w-0 flex-1 truncate">{client.name}</strong><Button
-        variant="secondary"
+    </SettingRow>
+  {:else}
+    <p class="m-0 {cardBlockClass} text-xs text-muted">No remembered devices</p>
+  {/each}
+</SettingsCard>
+<SettingsCard
+  title="Client passwords"
+  description="For compatible media clients. These passwords bypass TOTP and can only access the Jellyfin-compatible API."
+>
+  {#each clients as client (client.id)}
+    <SettingRow label={client.name}>
+      {#snippet lead()}
+        <Tv size={16} class="shrink-0 text-muted" aria-hidden="true" />
+      {/snippet}
+      <Button
+        variant="ghost"
+        size="form"
         disabled={busy}
         aria-label={`Revoke ${client.name}`}
         onclick={() =>
@@ -74,40 +92,71 @@
             await api(`/me/auth/client-passwords/${client.id}`, 'DELETE');
           })}>Revoke</Button
       >
-    </div>{/each}
-  <form
-    class="max-w-120"
-    onsubmit={(e) => {
-      e.preventDefault();
-      void act(async () => {
-        password = (
-          await api<{ password: string }>('/me/auth/client-passwords', 'POST', {
-            name,
-          })
-        ).password;
-        name = '';
-      });
-    }}
-  >
-    <FormField
-      >Client name<input
-        class={formControlClass}
+    </SettingRow>
+  {:else}
+    <p class="m-0 {cardBlockClass} text-xs text-muted">
+      No client passwords yet.
+    </p>
+  {/each}
+  {#if password}
+    <div
+      class="{cardBlockClass} grid max-w-120 gap-2 bg-surface-soft"
+      transition:reveal
+    >
+      <FormField class="mb-0"
+        >New client password<input
+          class={formControlClass}
+          value={password}
+          readonly
+        /></FormField
+      >
+      <p class="m-0 text-xs text-muted">
+        Copy this password now. It is shown once.
+      </p>
+      <div>
+        <Button variant="secondary" size="form" onclick={() => (password = '')}
+          >Done</Button
+        >
+      </div>
+    </div>
+  {/if}
+  {#if error}
+    <div class={cardBlockClass}>
+      <Notice role="alert" variant="error" class="mb-0">{error}</Notice>
+    </div>
+  {/if}
+  {#snippet footer()}
+    <form
+      class="flex flex-wrap items-end gap-2"
+      onsubmit={(e) => {
+        e.preventDefault();
+        void act(async () => {
+          password = (
+            await api<{ password: string }>(
+              '/me/auth/client-passwords',
+              'POST',
+              {
+                name,
+              },
+            )
+          ).password;
+          name = '';
+        });
+      }}
+    >
+      <label for={`${ids}-client`} class="sr-only">Client name</label>
+      <input
+        id={`${ids}-client`}
+        class={twMerge(formControlClass, 'w-56 compact:w-full')}
+        placeholder="Client name, for example Living room TV"
         bind:value={name}
         maxlength="100"
         required
         disabled={busy}
-      /></FormField
-    ><Button type="submit" disabled={busy}>Create client password</Button>
-  </form>
-  {#if password}<FormField
-      >New client password<input
-        class={formControlClass}
-        value={password}
-        readonly
-      /></FormField
-    >
-    <p class="text-muted">Copy this password now. It is shown once.</p>
-    <Button variant="secondary" onclick={() => (password = '')}>Done</Button
-    >{/if}
-</Panel>
-{#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
+      />
+      <Button type="submit" size="form" disabled={busy}
+        >Create client password</Button
+      >
+    </form>
+  {/snippet}
+</SettingsCard>

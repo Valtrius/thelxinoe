@@ -3,18 +3,24 @@
 
   type SwitchSize = 'default' | 'sm';
 
+  // Without children, name the switch with `id` (a SettingRow `for`) or
+  // `labelledby`.
   let {
     checked = $bindable(false),
     children,
     size = 'default',
     disabled = false,
+    id,
+    labelledby,
     class: className = '',
     onCheckedChange,
   }: {
     checked: boolean;
-    children: Snippet;
+    children?: Snippet;
     size?: SwitchSize;
     disabled?: boolean;
+    id?: string;
+    labelledby?: string;
     class?: string;
     onCheckedChange?: (checked: boolean) => void;
   } = $props();
@@ -41,6 +47,8 @@
       class="peer absolute inset-0 z-1 m-0 size-full cursor-inherit opacity-0"
       type="checkbox"
       role="switch"
+      {id}
+      aria-labelledby={labelledby}
       {checked}
       {disabled}
       onchange={handleChange}
@@ -54,5 +62,5 @@
       aria-hidden="true"
     ></span>
   </span>
-  <span>{@render children()}</span>
+  {#if children}<span>{@render children()}</span>{/if}
 </label>

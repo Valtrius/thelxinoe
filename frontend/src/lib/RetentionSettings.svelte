@@ -59,7 +59,7 @@
 
 {#if error}
   <div class="col-span-full flex flex-wrap items-center gap-3">
-    <p class="text-danger" role="alert">{error}</p>
+    <p class="m-0 text-xs text-danger" role="alert">{error}</p>
     <Button variant="secondary" size="form" disabled={loading} onclick={refresh}
       >Retry</Button
     >
@@ -72,12 +72,30 @@
     class="col-span-full"
   />
 {/if}
+{#if policies.some((policy) => policy.domain !== 'videos')}
+  <!-- Movies and TV seasons are symmetric, so they share a row. -->
+  <div class="settings-pair col-span-full">
+    {#each policies as policy, i (policy.domain)}
+      {#if policy.domain !== 'videos'}
+        <AutoDeletePolicy
+          bind:policy={policies[i]}
+          {users}
+          {usage}
+          onSave={(value) =>
+            api(`/admin/retention/policy/${policy.domain}`, 'POST', value)}
+        />
+      {/if}
+    {/each}
+  </div>
+{/if}
 {#each policies as policy, i (policy.domain)}
-  <AutoDeletePolicy
-    bind:policy={policies[i]}
-    {users}
-    {usage}
-    onSave={(value) =>
-      api(`/admin/retention/policy/${policy.domain}`, 'POST', value)}
-  />
+  {#if policy.domain === 'videos'}
+    <AutoDeletePolicy
+      bind:policy={policies[i]}
+      {users}
+      {usage}
+      onSave={(value) =>
+        api(`/admin/retention/policy/${policy.domain}`, 'POST', value)}
+    />
+  {/if}
 {/each}

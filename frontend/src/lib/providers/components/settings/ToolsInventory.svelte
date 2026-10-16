@@ -15,6 +15,7 @@
   } from '../../tools-presentation';
   import type { ToolsState } from '../../tools-state';
   import Button from '../../../ui/Button.svelte';
+  import { reveal } from '../../../ui/reveal';
   import ToolActionButton from './ToolActionButton.svelte';
   import AttentionDot from '../../../ui/AttentionDot.svelte';
   import { activity } from '../../../activity';
@@ -206,6 +207,7 @@
             <tr
               ><td colspan="5" class="border-b border-line bg-surface">
                 <section
+                  transition:reveal
                   id={'tool-panel-' + tool.id}
                   aria-labelledby={'tool-trigger-' + tool.id}
                   class="grid w-full max-w-4xl gap-4 px-3 py-4"

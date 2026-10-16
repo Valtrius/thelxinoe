@@ -17,10 +17,11 @@
   import type { StatisticsPlatform, StatisticsRange } from './statistics/types';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
+  import SettingsCard from './ui/SettingsCard.svelte';
   import ContentSkeleton from './ui/ContentSkeleton.svelte';
   import ExclusiveChoiceGroup from './ui/ExclusiveChoiceGroup.svelte';
   import FormField from './ui/FormField.svelte';
-  import { badgeClass, formControlClass } from './ui/styles';
+  import { badgeClass, cardBlockClass, formControlClass } from './ui/styles';
   let {
     user,
     audit = false,
@@ -203,157 +204,211 @@
   }
 </script>
 
-{#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
-<Panel class={audit ? 'settings-wide' : undefined}>
-  <SectionHeading>
-    <h2>
-      {audit ? 'Administrative activity' : 'Playback history'}
-    </h2>
-    <Button
-      variant="secondary"
-      size="form"
-      disabled={busy}
-      onclick={() => void load()}>Refresh</Button
+{#snippet auditTable()}
+  <!-- Below the compact breakpoint each entry stacks into two lines. -->
+  <table class="w-full border-collapse text-left text-xs compact:block">
+    <caption class="sr-only">Administrative activity</caption>
+    <thead
+      class="border-b border-line bg-surface-soft text-[0.62rem] text-muted compact:hidden"
     >
-  </SectionHeading>
-  {#if audit}<p class="text-muted">Times shown in {user.timezone}.</p>{/if}
-  {#if audit}
-    <div class="my-5 flex flex-wrap items-end gap-4">
-      {#if groups.length > 1}
-        <div
-          class="flex max-w-full min-w-0 flex-col gap-2 text-[11px] font-[550]"
-        >
-          <span aria-hidden="true">Category</span>
-          <div class="max-w-full overflow-x-auto">
-            <ExclusiveChoiceGroup
-              ariaLabel="Audit category"
-              value={auditGroup}
-              choices={[
-                { value: '', label: 'All' },
-                ...groups.map((group) => ({
-                  value: group.category,
-                  label: group.category,
-                })),
-              ]}
-              onChange={selectGroup}
-            />
-          </div>
-        </div>
-      {/if}
-      <FormField class="mb-0"
-        >User<select
-          aria-label="Audit user"
-          class={formControlClass}
-          bind:value={auditUser}
-        >
-          <option value="">All users</option>
-          {#each actors as actor (actor.id)}<option value={actor.id}
-              >{actor.username}</option
-            >{/each}
-        </select></FormField
-      >
-      <FormField class="mb-0"
-        >Action<select
-          aria-label="Audit action"
-          class={formControlClass}
-          bind:value={auditAction}
-        >
-          <option value="">All actions</option>
-          {#each auditActionGroups(actions, auditGroup) as group (group.category)}
-            <optgroup label={group.category}>
-              {#each group.options as option (option.value)}<option
-                  value={option.value}>{option.label}</option
-                >{/each}
-            </optgroup>
-          {/each}
-        </select></FormField
-      >
-    </div>
-  {/if}
-  {#if (result?.items.length ?? 0) > 0}
-    {#if audit}
-      <!-- Below the compact breakpoint each entry stacks into two lines. -->
-      <table class="w-full border-collapse text-left text-xs compact:block">
-        <caption class="sr-only">Administrative activity</caption>
-        <thead
-          class="border-b border-line bg-surface-soft text-[0.62rem] text-muted compact:hidden"
-        >
-          <tr>
-            <th scope="col" class="w-0 px-3 py-2 font-medium">Time</th>
-            <th scope="col" class="w-0 px-3 py-2 font-medium">User</th>
-            <th scope="col" class="w-0 px-3 py-2 font-medium">Event</th>
-            <th scope="col" class="px-3 py-2 font-medium">Target</th>
+      <tr>
+        <th scope="col" class="w-0 px-5.5 py-2 font-medium">Time</th>
+        <th scope="col" class="w-0 px-3 py-2 font-medium">User</th>
+        <th scope="col" class="w-0 px-3 py-2 font-medium">Event</th>
+        <th scope="col" class="px-3 py-2 font-medium">Target</th>
+      </tr>
+    </thead>
+    {#each days as day, index (day.key)}
+      {@const partial = index === days.length - 1 && !!result?.next_before}
+      <tbody class="compact:block">
+        <tr class="compact:block">
+          <th
+            scope="colgroup"
+            colspan="4"
+            class="bg-surface-strong px-5.5 py-1.5 text-[0.7rem] font-semibold tracking-normal text-foreground normal-case compact:block compact:px-4"
+          >
+            {day.label}<span class="ml-2 font-normal text-muted"
+              >{day.rows.length}{partial ? '+' : ''}
+              {day.rows.length === 1 && !partial ? 'event' : 'events'}</span
+            >
+          </th>
+        </tr>
+        {#each day.rows as row (`audit:${row.id}`)}
+          <tr
+            class="border-b border-line compact:grid compact:grid-cols-[auto_minmax(0,1fr)_auto] compact:items-center compact:gap-x-2 compact:gap-y-1 compact:px-4 compact:py-2"
+          >
+            <td
+              class="px-5.5 py-1.5 whitespace-nowrap tabular-nums compact:order-2 compact:border-0 compact:p-0 compact:text-muted"
+              title={stampFormat.format((row.created_at ?? 0) * 1000)}
+            >
+              {clockFormat.format((row.created_at ?? 0) * 1000)}
+            </td>
+            <td
+              class="px-3 py-1.5 whitespace-nowrap compact:order-3 compact:border-0 compact:p-0"
+            >
+              <span class="inline-flex items-center gap-2 align-middle">
+                <span
+                  aria-hidden="true"
+                  class={[
+                    'grid size-5 shrink-0 place-items-center border text-[0.625rem] font-semibold',
+                    row.actor
+                      ? 'border-line-strong bg-accent-soft text-accent'
+                      : 'border-dashed border-line text-muted',
+                  ]}
+                >
+                  {#if row.actor}{row.actor.charAt(0).toUpperCase()}
+                  {:else if row.actor_id}<UserX size={12} />
+                  {:else}<Cog size={12} />{/if}
+                </span>
+                <!-- No actor_id is a system event; an unmatched one was deleted. -->
+                <span class={row.actor ? undefined : 'text-muted italic'}
+                  >{row.actor ??
+                    (row.actor_id ? 'Deleted user' : 'System')}</span
+                >
+              </span>
+            </td>
+            <td
+              class="px-3 py-1.5 whitespace-nowrap compact:order-1 compact:col-span-2 compact:border-0 compact:p-0 compact:font-medium compact:whitespace-normal"
+              title={row.action}
+            >
+              {auditLabel(row.action ?? '')}<span
+                class="{badgeClass} ml-2 align-middle font-normal"
+                >{auditCategory(row.action ?? '')}</span
+              >
+            </td>
+            <td
+              class="px-3 py-1.5 font-mono text-[0.6875rem] text-muted wrap-anywhere compact:order-4 compact:col-span-2 compact:border-0 compact:p-0"
+            >
+              {row.target}
+            </td>
           </tr>
-        </thead>
-        {#each days as day, index (day.key)}
-          {@const partial = index === days.length - 1 && !!result?.next_before}
-          <tbody class="compact:block">
-            <tr class="compact:block">
-              <th
-                scope="colgroup"
-                colspan="4"
-                class="bg-surface-strong px-3 py-1.5 text-[0.7rem] font-semibold tracking-normal text-foreground normal-case compact:block"
-              >
-                {day.label}<span class="ml-2 font-normal text-muted"
-                  >{day.rows.length}{partial ? '+' : ''}
-                  {day.rows.length === 1 && !partial ? 'event' : 'events'}</span
-                >
-              </th>
-            </tr>
-            {#each day.rows as row (`audit:${row.id}`)}
-              <tr
-                class="border-b border-line compact:grid compact:grid-cols-[auto_minmax(0,1fr)_auto] compact:items-center compact:gap-x-2 compact:gap-y-1 compact:py-2"
-              >
-                <td
-                  class="px-3 py-1.5 whitespace-nowrap tabular-nums compact:order-2 compact:border-0 compact:p-0 compact:text-muted"
-                  title={stampFormat.format((row.created_at ?? 0) * 1000)}
-                >
-                  {clockFormat.format((row.created_at ?? 0) * 1000)}
-                </td>
-                <td
-                  class="px-3 py-1.5 whitespace-nowrap compact:order-3 compact:border-0 compact:p-0"
-                >
-                  <span class="inline-flex items-center gap-2 align-middle">
-                    <span
-                      aria-hidden="true"
-                      class={[
-                        'grid size-5 shrink-0 place-items-center border text-[0.625rem] font-semibold',
-                        row.actor
-                          ? 'border-line-strong bg-accent-soft text-accent'
-                          : 'border-dashed border-line text-muted',
-                      ]}
-                    >
-                      {#if row.actor}{row.actor.charAt(0).toUpperCase()}
-                      {:else if row.actor_id}<UserX size={12} />
-                      {:else}<Cog size={12} />{/if}
-                    </span>
-                    <!-- No actor_id is a system event; an unmatched one was deleted. -->
-                    <span class={row.actor ? undefined : 'text-muted italic'}
-                      >{row.actor ??
-                        (row.actor_id ? 'Deleted user' : 'System')}</span
-                    >
-                  </span>
-                </td>
-                <td
-                  class="px-3 py-1.5 whitespace-nowrap compact:order-1 compact:col-span-2 compact:border-0 compact:p-0 compact:font-medium compact:whitespace-normal"
-                  title={row.action}
-                >
-                  {auditLabel(row.action ?? '')}<span
-                    class="{badgeClass} ml-2 align-middle font-normal"
-                    >{auditCategory(row.action ?? '')}</span
-                  >
-                </td>
-                <td
-                  class="px-3 py-1.5 font-mono text-[0.6875rem] text-muted wrap-anywhere compact:order-4 compact:col-span-2 compact:border-0 compact:p-0"
-                >
-                  {row.target}
-                </td>
-              </tr>
-            {/each}
-          </tbody>
         {/each}
-      </table>
-    {:else}
+      </tbody>
+    {/each}
+  </table>
+{/snippet}
+
+{#snippet auditFilters()}
+  <div class="{cardBlockClass} flex flex-wrap items-end gap-4">
+    {#if groups.length > 1}
+      <div
+        class="flex max-w-full min-w-0 flex-col gap-2 text-[11px] font-[550]"
+      >
+        <span aria-hidden="true">Category</span>
+        <div class="max-w-full overflow-x-auto">
+          <ExclusiveChoiceGroup
+            ariaLabel="Audit category"
+            value={auditGroup}
+            choices={[
+              { value: '', label: 'All' },
+              ...groups.map((group) => ({
+                value: group.category,
+                label: group.category,
+              })),
+            ]}
+            onChange={selectGroup}
+          />
+        </div>
+      </div>
+    {/if}
+    <FormField class="mb-0 w-48"
+      >User<select
+        aria-label="Audit user"
+        class={formControlClass}
+        bind:value={auditUser}
+      >
+        <option value="">All users</option>
+        {#each actors as actor (actor.id)}<option value={actor.id}
+            >{actor.username}</option
+          >{/each}
+      </select></FormField
+    >
+    <FormField class="mb-0 w-56"
+      >Action<select
+        aria-label="Audit action"
+        class={formControlClass}
+        bind:value={auditAction}
+      >
+        <option value="">All actions</option>
+        {#each auditActionGroups(actions, auditGroup) as group (group.category)}
+          <optgroup label={group.category}>
+            {#each group.options as option (option.value)}<option
+                value={option.value}>{option.label}</option
+              >{/each}
+          </optgroup>
+        {/each}
+      </select></FormField
+    >
+  </div>
+{/snippet}
+
+{#snippet state()}
+  {#if (result?.items.length ?? 0) === 0}
+    {#if busy}
+      <div class={audit ? cardBlockClass : ''}>
+        <ContentSkeleton
+          label={audit
+            ? 'Loading administrative activity'
+            : 'Loading playback history'}
+        />
+      </div>
+    {:else if !error}
+      <p
+        class={['text-muted', audit && `m-0 ${cardBlockClass} text-xs`]}
+        role="status"
+      >
+        {audit && (auditUser || auditAction || auditGroup)
+          ? 'No activity matches these filters.'
+          : 'No activity in this view yet.'}
+      </p>
+    {/if}
+  {/if}
+{/snippet}
+
+{#if error}<Notice role="alert" variant="error" class={audit ? 'mb-0' : ''}
+    >{error}</Notice
+  >{/if}
+{#if audit}
+  <SettingsCard
+    title="Administrative activity"
+    description={`Who changed what, grouped by day. Times shown in ${user.timezone}.`}
+  >
+    {#snippet actions()}
+      <Button
+        variant="secondary"
+        size="form"
+        disabled={busy}
+        onclick={() => void load()}>Refresh</Button
+      >
+    {/snippet}
+    {@render auditFilters()}
+    {#if (result?.items.length ?? 0) > 0}
+      {@render auditTable()}
+    {/if}
+    {@render state()}
+    {#if result?.next_before}
+      <div class={cardBlockClass}>
+        <Button
+          variant="secondary"
+          size="form"
+          disabled={busy}
+          onclick={() => void load(audit, true)}>Load older activity</Button
+        >
+      </div>
+    {/if}
+  </SettingsCard>
+{:else}
+  <Panel>
+    <SectionHeading>
+      <h2>Playback history</h2>
+      <Button
+        variant="secondary"
+        size="form"
+        disabled={busy}
+        onclick={() => void load()}>Refresh</Button
+      >
+    </SectionHeading>
+    {#if (result?.items.length ?? 0) > 0}
       <div class="min-w-0 overflow-x-auto">
         <table class="w-full min-w-[56rem] border-collapse text-left text-xs">
           <caption class="sr-only">Playback history</caption>
@@ -408,23 +463,12 @@
         </table>
       </div>
     {/if}
-  {:else if busy}
-    <ContentSkeleton
-      label={audit
-        ? 'Loading administrative activity'
-        : 'Loading playback history'}
-    />
-  {:else if !error}
-    <p class="text-muted" role="status">
-      {audit && (auditUser || auditAction || auditGroup)
-        ? 'No activity matches these filters.'
-        : 'No activity in this view yet.'}
-    </p>
-  {/if}
-  {#if result?.next_before}<Button
-      variant="secondary"
-      size="form"
-      disabled={busy}
-      onclick={() => void load(audit, true)}>Load older activity</Button
-    >{/if}
-</Panel>
+    {@render state()}
+    {#if result?.next_before}<Button
+        variant="secondary"
+        size="form"
+        disabled={busy}
+        onclick={() => void load(audit, true)}>Load older activity</Button
+      >{/if}
+  </Panel>
+{/if}

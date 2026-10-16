@@ -4,9 +4,11 @@
   import History from './History.svelte';
   import { LatestRequest } from './latest-request';
   import Button from './ui/Button.svelte';
-  import FormField from './ui/FormField.svelte';
-  import Panel from './ui/Panel.svelte';
-  import { formControlClass } from './ui/styles';
+  import SettingsCard from './ui/SettingsCard.svelte';
+  import SettingRow from './ui/SettingRow.svelte';
+  import StatusChip from './ui/StatusChip.svelte';
+  import { cardBlockClass, formControlClass } from './ui/styles';
+  import { twMerge } from 'tailwind-merge';
 
   let { user, timeFormat }: { user: User; timeFormat: '12h' | '24h' } =
     $props();
@@ -20,6 +22,7 @@
     error: string | null;
     watched_users?: string[];
   };
+  const ids = $props.id();
   let view = $state('activity');
   let items = $state<Item[]>([]);
   let loaded = $state(false);
@@ -55,6 +58,14 @@
       blocked: 'Needs review',
       executing: 'Deleting',
     })[state] ?? state;
+  const stateTone = (state: string) =>
+    state === 'complete'
+      ? 'ok'
+      : state === 'blocked'
+        ? 'bad'
+        : state === 'executing'
+          ? 'info'
+          : 'neutral';
 
   async function refresh() {
     const current = requests.begin();
@@ -102,11 +113,12 @@
   });
 </script>
 
-<FormField class="settings-wide m-0">
-  Audit view
+<div class="col-span-full flex flex-wrap items-center gap-3">
+  <label for={`${ids}-view`} class="text-xs font-[550]">View</label>
   <select
+    id={`${ids}-view`}
     aria-label="Audit view"
-    class={formControlClass}
+    class={twMerge(formControlClass, 'h-8.5 w-64 py-1.5 text-xs')}
     bind:value={view}
     disabled={busy}
   >
@@ -114,61 +126,59 @@
     <option value="scheduled">Scheduled deletions</option>
     <option value="deletions">Deletion history</option>
   </select>
-</FormField>
+</div>
 {#if view === 'activity'}
   <History {user} {timeFormat} audit />
 {:else}
-  {#if error}<p class="settings-wide text-danger" role="alert">{error}</p>{/if}
-  <Panel
-    class="settings-wide grid gap-4"
+  {#if error}<p class="col-span-full m-0 text-xs text-danger" role="alert">
+      {error}
+    </p>{/if}
+  <SettingsCard
     aria-label={scheduled ? 'Scheduled deletions' : 'Deletion history'}
+    title={scheduled ? 'Scheduled deletions' : 'Deletion history'}
+    description={scheduled
+      ? 'Media waiting for its grace period to end. Keep cancels a deletion; Delete now skips the wait.'
+      : 'Outcomes of past automatic deletions.'}
   >
-    <h2 class="m-0">
-      {scheduled ? 'Scheduled deletions' : 'Deletion history'}
-      <span class="text-sm font-normal text-muted">{visible.length}</span>
-    </h2>
+    {#snippet actions()}
+      <span class="text-xs text-muted"
+        >{visible.length} {visible.length === 1 ? 'item' : 'items'}</span
+      >
+    {/snippet}
     {#if !loaded}
-      <p class="m-0 text-sm text-muted" role="status">
+      <p class="m-0 {cardBlockClass} text-xs text-muted" role="status">
         {error ? 'Deletions could not be loaded.' : 'Loading deletions…'}
       </p>
     {:else}
       {#each visible as item (item.id)}
-        <article
-          class="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4"
+        <SettingRow
+          label={item.title}
+          description={`${reason(item)} · Scheduled for ${date(item.due_at)}${item.error ? ` · ${item.error}` : ''}`}
         >
-          <div class="min-w-0 flex-1 basis-60">
-            <strong class="break-words">{item.title}</strong>
-            <p class="my-1 text-xs text-muted">
-              {reason(item)} · Scheduled for {date(item.due_at)}
-            </p>
-            {#if item.error}<p class="my-1 break-words text-xs text-muted">
-                {item.error}
-              </p>{/if}
-          </div>
           {#if scheduled}
-            <div class="flex flex-wrap gap-2">
-              <Button
-                variant="secondary"
-                size="form"
-                disabled={busy}
-                onclick={() => act(item, 'keep')}>Keep</Button
-              >
-              <Button
-                variant="danger"
-                size="form"
-                disabled={busy}
-                onclick={() => act(item, 'delete')}>Delete now</Button
-              >
-            </div>
+            <Button
+              variant="secondary"
+              size="form"
+              disabled={busy}
+              onclick={() => act(item, 'keep')}>Keep</Button
+            >
+            <Button
+              variant="danger"
+              size="form"
+              disabled={busy}
+              onclick={() => act(item, 'delete')}>Delete now</Button
+            >
           {:else}
-            <span class="text-xs text-muted">{stateLabel(item.state)}</span>
+            <StatusChip tone={stateTone(item.state)}
+              >{stateLabel(item.state)}</StatusChip
+            >
           {/if}
-        </article>
+        </SettingRow>
       {:else}
-        <p class="m-0 text-sm text-muted">
+        <p class="m-0 {cardBlockClass} text-xs text-muted">
           {scheduled ? 'No scheduled deletions.' : 'No deletion history.'}
         </p>
       {/each}
     {/if}
-  </Panel>
+  </SettingsCard>
 {/if}

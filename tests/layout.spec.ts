@@ -894,7 +894,7 @@ test('adaptive account panels remain bounded while navigation follows resizing',
   ).toHaveCount(0);
   await expect(page.locator('.settings-panels > .panel').first()).toHaveCSS(
     'padding',
-    '20px 0px 0px',
+    '0px',
   );
   for (const viewport of [
     { width: 960, height: 800 },
@@ -1462,12 +1462,6 @@ for (const scenario of [
     unaffectedVersion: '6.0.0',
   },
   {
-    endpoint: '/admin/acquisition/users',
-    label: 'Request approval settings',
-    unaffectedService: 'Radarr',
-    unaffectedVersion: '6.0.0',
-  },
-  {
     endpoint: '/admin/service-updates',
     label: 'Service updates',
     unaffectedService: 'Radarr',
@@ -1558,19 +1552,52 @@ for (const state of ['connecting', 'blocked']) {
   });
 }
 
-test('media services show request approval only for regular users', async ({
+test('people rows offer automatic request approval to listed users', async ({
   page,
 }) => {
   const fixture = await installUiFixture(page, {
     role: 'admin',
-    settingsSection: 'services',
-    approvalUsers: [{ id: 'member', username: 'Member', enabled: false }],
+    settingsSection: 'people',
+    approvalUsers: [
+      { id: 'layout-fixture', username: 'Layout viewer', enabled: false },
+    ],
   });
   await page.goto('/');
+  await page
+    .locator('.settings-content')
+    .getByRole('button', { name: 'Layout viewer' })
+    .click();
+  const toggle = page.getByRole('switch', {
+    name: 'Automatic request approval',
+  });
+  await expect(toggle).toBeVisible();
+  await expect(toggle).not.toBeChecked();
+  await toggle.check();
+  await expect(toggle).toBeChecked();
   await expect(
     page.getByRole('heading', { name: 'Automatic request approval' }),
-  ).toBeVisible();
-  await expect(page.getByRole('switch', { name: 'Member' })).toBeVisible();
+  ).toHaveCount(0);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('people rows hide automatic request approval for unlisted users', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'people',
+    approvalUsers: [],
+  });
+  await page.goto('/');
+  await page
+    .locator('.settings-content')
+    .getByRole('button', { name: 'Layout viewer' })
+    .click();
+  await expect(page.getByRole('button', { name: 'Save user' })).toBeVisible();
+  await expect(
+    page.getByRole('switch', { name: 'Automatic request approval' }),
+  ).toHaveCount(0);
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });
@@ -1703,7 +1730,7 @@ test('mobile settings show every category in a wrapping grid', async ({
     expect(bounds!.height).toBeLessThan(520);
     await expect(page.locator('.settings-panels > .panel').first()).toHaveCSS(
       'padding',
-      '20px 0px 0px',
+      '0px',
     );
     await nav
       .getByRole('link', { name: 'Audit', exact: true })

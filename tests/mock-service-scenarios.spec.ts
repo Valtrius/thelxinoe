@@ -342,12 +342,19 @@ test('link conflicts, retries and delayed disconnects update the real rows', asy
     .getByRole('button', { name: 'Apply controls', exact: true })
     .click();
   await expect(row.getByRole('status').first()).toHaveText('Connected');
+  // The floating scenario panel covers the row's buttons on a short page, so
+  // close it while driving the row directly.
+  await page
+    .getByRole('button', { name: 'Service scenarios', exact: true })
+    .click();
+  await expect(panel).toBeHidden();
   await row.getByRole('button', { name: 'Disconnect', exact: true }).click();
   await expect(row.getByRole('status').first()).toHaveText(
     'Available to connect',
   );
   await row.getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(row.getByRole('status').first()).toHaveText('Connected');
+  panel = await controls(page);
   await panel
     .getByLabel('Service link state', { exact: true })
     .selectOption('cleanup');

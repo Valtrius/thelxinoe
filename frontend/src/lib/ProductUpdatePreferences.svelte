@@ -3,6 +3,7 @@
   import { serverUpdates } from './server-updates';
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
   import ExclusiveChoiceGroup from './ui/ExclusiveChoiceGroup.svelte';
+  import SettingRow from './ui/SettingRow.svelte';
   import { formControlClass } from './ui/styles';
   let policy = $state('automatic'),
     start = $state(3),
@@ -22,7 +23,7 @@
 {#if initialized}
   <AutoSaveForm
     label="Server update settings"
-    class="flex flex-wrap items-center gap-x-3 gap-y-2"
+    class="divide-y divide-line"
     value={{ policy, window_start: start, window_end: end }}
     onRevert={(previous) => {
       policy = previous.policy;
@@ -33,45 +34,48 @@
       api('/admin/product-update/policy', 'POST', submitted)}
   >
     {#snippet children(save)}
-      <span class="text-xs text-muted">Updates</span>
-      <ExclusiveChoiceGroup
-        ariaLabel="Update policy"
-        value={policy}
-        choices={[
-          { value: 'notify', label: 'Notify' },
-          { value: 'automatic', label: 'Automatic' },
-        ]}
-        onChange={(value) => {
-          policy = value;
-          void save();
-        }}
-      />
+      <SettingRow
+        label="Server updates"
+        description="Notify shows a badge when a release is ready. Automatic installs it in the maintenance window."
+      >
+        <ExclusiveChoiceGroup
+          ariaLabel="Update policy"
+          value={policy}
+          choices={[
+            { value: 'notify', label: 'Notify' },
+            { value: 'automatic', label: 'Automatic' },
+          ]}
+          onChange={(value) => {
+            policy = value;
+            void save();
+          }}
+        />
+      </SettingRow>
       <!-- Automatic backups use this window even when updates only notify. -->
-      <div class="flex items-center gap-2 text-xs text-muted">
-        <label class="flex items-center gap-2"
-          >Maintenance from<input
-            aria-label="Maintenance starts"
-            class={[formControlClass, 'h-8! w-14! px-2! py-1!']}
-            type="number"
-            min="0"
-            max="23"
-            required
-            bind:value={start}
-          /></label
-        >
-        <label class="flex items-center gap-2"
-          >to<input
-            aria-label="Maintenance ends"
-            class={[formControlClass, 'h-8! w-14! px-2! py-1!']}
-            type="number"
-            min="0"
-            max="23"
-            required
-            bind:value={end}
-          /></label
-        >
-        <span>{$serverUpdates.status?.timezone ?? 'UTC'}</span>
-      </div>
+      <SettingRow
+        label="Maintenance window"
+        description={`Automatic updates and backups run between these hours, ${$serverUpdates.status?.timezone ?? 'UTC'}.`}
+      >
+        <input
+          aria-label="Maintenance starts"
+          class={[formControlClass, 'h-8.5! w-16! px-2! py-1! text-center']}
+          type="number"
+          min="0"
+          max="23"
+          required
+          bind:value={start}
+        />
+        <span class="text-xs text-muted">to</span>
+        <input
+          aria-label="Maintenance ends"
+          class={[formControlClass, 'h-8.5! w-16! px-2! py-1! text-center']}
+          type="number"
+          min="0"
+          max="23"
+          required
+          bind:value={end}
+        />
+      </SettingRow>
     {/snippet}
   </AutoSaveForm>
 {/if}

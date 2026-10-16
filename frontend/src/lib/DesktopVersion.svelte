@@ -3,6 +3,7 @@
   import { desktopUpdates, desktopUpdate } from './desktop-updates';
   import OrbitAction from './ui/OrbitAction.svelte';
   import VersionCard from './ui/VersionCard.svelte';
+  let { inline = false } = $props<{ inline?: boolean }>();
   let error = $state('');
   let starting = $state(false);
   const status = $derived($desktopUpdates);
@@ -69,7 +70,11 @@
   }
 </script>
 
-<VersionCard version={status?.installed ?? '—'} label="Desktop version">
+<VersionCard
+  version={status?.installed ?? '—'}
+  label="Desktop version"
+  {inline}
+>
   <OrbitAction
     label={busy
       ? view.title

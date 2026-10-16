@@ -242,7 +242,6 @@ export const stages: Record<string, string> = {
 export const loaderSubsystems = [
   { key: 'managers', label: 'Acquisition managers' },
   { key: 'support', label: 'Support services' },
-  { key: 'approval', label: 'Request approval settings' },
   { key: 'updates', label: 'Service updates' },
   { key: 'containers', label: 'Docker container discovery' },
   { key: 'stack', label: 'Managed service runtime' },
