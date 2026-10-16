@@ -27,6 +27,7 @@ async function post(
 }
 async function login(page: Page, username: string, value = password) {
   await page.goto('/#home');
+  await page.reload();
   await page.getByLabel('Username', { exact: true }).fill(username);
   await page.getByLabel('Password', { exact: true }).fill(value);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
@@ -261,6 +262,10 @@ test('real password, TOTP, passkey, remembered device, client access and adminis
     ).status(),
   ).toBe(403);
   await page.goto('/#settings/account');
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
   await page
     .getByLabel('New password', { exact: true })
     .fill('canceled password change');
@@ -375,6 +380,10 @@ test('real password, TOTP, passkey, remembered device, client access and adminis
   await expect(
     page.getByLabel('Current password', { exact: true }),
   ).not.toBeVisible();
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
   await page
     .getByLabel('New password', { exact: true })
     .fill('replacement fixture passphrase');

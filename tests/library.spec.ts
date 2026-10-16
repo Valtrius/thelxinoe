@@ -96,6 +96,10 @@ test('movie, multi-episode and tagged music scan into browsable libraries with s
       exact: true,
     }),
   ).toBeVisible();
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
   await page
     .getByLabel('Manual title', { exact: true })
     .fill('Corrected fixture');

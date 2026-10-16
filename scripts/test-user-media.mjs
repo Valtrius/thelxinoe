@@ -68,6 +68,10 @@ try {
   expect((await api(guest, `/catalog/${movie.id}/state`)).favorite).toBe(false);
   await page.getByRole('link', { name: 'Playlists', exact: true }).click();
   await page.getByRole('button', { name: 'New playlist', exact: true }).click();
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
   const name = `Shared music ${Date.now()}`;
   await page.getByLabel('Playlist name', { exact: true }).fill(name);
   await page.getByLabel('Find tracks', { exact: true }).fill('Gapless');
