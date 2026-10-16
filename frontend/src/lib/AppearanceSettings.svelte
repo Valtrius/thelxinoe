@@ -20,7 +20,7 @@
         type="range"
         min="0"
         max="500"
-        step="1"
+        step="10"
         value={$appearance.animation_duration_ms}
         aria-valuetext={$appearance.animation_duration_ms
           ? `${$appearance.animation_duration_ms} ms`

@@ -169,12 +169,12 @@ test('failed duration saves remain visible through initial loading and reconnect
       .click();
     await expect.poll(() => saved.theme).toBe('light');
     await expect(error).toBeVisible();
-    await slider.fill('137');
-    await expect.poll(() => saved.animation_duration_ms).toBe(137);
+    await slider.fill('130');
+    await expect.poll(() => saved.animation_duration_ms).toBe(130);
     await expect(error).toHaveCount(0);
     await page.reload();
     await ready(page);
-    await expect(slider).toHaveValue('137');
+    await expect(slider).toHaveValue('130');
     await page.screenshot({
       path: info.outputPath('corrected-save-after-reload.png'),
     });
@@ -214,10 +214,10 @@ test('a delayed reconnect read cannot overwrite a newer successful duration save
         response.url().endsWith('/me/appearance') &&
         response.request().method() === 'PATCH',
     );
-    await slider.fill('137');
+    await slider.fill('130');
     await committed;
     await page.evaluate(() => new Promise(requestAnimationFrame));
-    expect(saved.animation_duration_ms).toBe(137);
+    expect(saved.animation_duration_ms).toBe(130);
     const refreshed = page.waitForResponse(
       (response) =>
         response.url().endsWith('/me/appearance') &&
@@ -226,10 +226,10 @@ test('a delayed reconnect read cannot overwrite a newer successful duration save
     gate.release();
     await refreshed;
     await page.evaluate(() => new Promise(requestAnimationFrame));
-    await expect(slider).toHaveValue('137');
+    await expect(slider).toHaveValue('130');
     await expect(page.locator('html')).toHaveCSS(
       '--animation-duration',
-      '137ms',
+      '130ms',
     );
     await page.screenshot({
       path: info.outputPath('saved-choice-after-stale-reconnect.png'),
@@ -384,7 +384,7 @@ test('a failed initial preference load keeps interface motion off until the user
   await expect(
     page.getByText('Appearance preferences could not be loaded.').first(),
   ).toBeVisible();
-  await page.getByRole('slider', { name: 'Animation duration' }).fill('137');
+  await page.getByRole('slider', { name: 'Animation duration' }).fill('130');
   await expect(page.locator('html')).toHaveAttribute('data-motion', 'on');
   await expect
     .poll(
@@ -392,13 +392,13 @@ test('a failed initial preference load keeps interface motion off until the user
         (await (await page.request.get('/api/v1/me/appearance')).json())
           .animation_duration_ms,
     )
-    .toBe(137);
+    .toBe(130);
   await page.screenshot({
     path: info.outputPath('explicit-user-choice-after-load-failure.png'),
   });
 });
 
-for (const duration of [0, 137, 500]) {
+for (const duration of [0, 130, 500]) {
   test(`animation duration ${duration}ms persists and controls CSS, layouts, navigation and drawers`, async ({
     page,
   }, info) => {
@@ -406,6 +406,13 @@ for (const duration of [0, 137, 500]) {
     await ready(page);
     const slider = page.getByRole('slider', { name: 'Animation duration' });
     await expect(slider).toHaveValue('200');
+    if (duration === 130) {
+      await slider.press('ArrowRight');
+      await expect(slider).toHaveValue('210');
+      await expect(slider).toHaveAttribute('aria-valuetext', '210 ms');
+      await slider.press('ArrowLeft');
+      await expect(slider).toHaveValue('200');
+    }
     await slider.fill(String(duration));
     await expect(slider).toHaveValue(String(duration));
     await expect
