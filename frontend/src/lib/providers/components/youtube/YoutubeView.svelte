@@ -975,6 +975,7 @@
       class="relative min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto [overflow-anchor:none] [scrollbar-gutter:stable]"
       class:pr-3={!account}
       data-feed-content
+      data-page-scale
     >
       {#if !account}
         {#if authState.status === 'pending'}
@@ -1134,6 +1135,7 @@
     {#if account && !compactViewport.current}
       <div
         data-youtube-watchlist-frame
+        data-page-slide
         class={`relative z-20 shrink-0 self-start overflow-visible ${watchlistSidebarOpen ? '' : 'pointer-events-none'}`}
         aria-hidden={!watchlistSidebarOpen}
       >

@@ -4,6 +4,274 @@ test.beforeEach(async ({ request }) => {
   await request.post('/__mock/reset');
 });
 
+test.describe('media card motion', () => {
+  test('library and provider cards lift smoothly and zoom their artwork on hover', async ({
+    page,
+  }, info) => {
+    await page.goto('/#home');
+    const evidence = [];
+    for (const name of [
+      'Movies',
+      'Shows',
+      'Music',
+      'YouTube',
+      'Twitch',
+      'Kick',
+    ]) {
+      await page.getByRole('link', { name, exact: true }).click();
+      await expect(page.locator('[data-page-content]')).toHaveAttribute(
+        'data-page-phase',
+        'idle',
+      );
+      const card = page.locator('[data-card-grid] article').first();
+      await expect(card).toBeVisible();
+      await expect(card.locator('img').first()).toBeVisible();
+      await card.evaluate((element) => {
+        const samples: { lift: number; zoom: number }[] = [];
+        (window as unknown as { hoverSamples: typeof samples }).hoverSamples =
+          samples;
+        element.addEventListener(
+          'pointerenter',
+          () => {
+            const image = element.querySelector('img')!;
+            const sample = () => {
+              samples.push({
+                lift:
+                  Number.parseFloat(
+                    getComputedStyle(element).translate.split(' ')[1] ?? '0',
+                  ) || 0,
+                zoom: Number.parseFloat(getComputedStyle(image).scale) || 1,
+              });
+              if (samples.length < 30) requestAnimationFrame(sample);
+            };
+            requestAnimationFrame(sample);
+          },
+          { once: true },
+        );
+      });
+      await card.hover();
+      await expect
+        .poll(() =>
+          card.evaluate((element) =>
+            Number.parseFloat(
+              getComputedStyle(element.querySelector('img')!).scale,
+            ),
+          ),
+        )
+        .toBeCloseTo(1.02, 3);
+      await expect
+        .poll(() =>
+          card.evaluate((element) => getComputedStyle(element).translate),
+        )
+        .toBe('0px -2px');
+      const samples = await page.evaluate(
+        () =>
+          (
+            window as unknown as {
+              hoverSamples: { lift: number; zoom: number }[];
+            }
+          ).hoverSamples,
+      );
+      expect(
+        samples.some(({ lift }) => lift < -0.05 && lift > -1.95),
+        `${name} lift has intermediate frames`,
+      ).toBe(true);
+      expect(
+        samples.some(({ zoom }) => zoom > 1.001 && zoom < 1.019),
+        `${name} zoom has intermediate frames`,
+      ).toBe(true);
+      evidence.push({ name, samples });
+      await page.screenshot({
+        path: info.outputPath(`hover-${name.toLowerCase()}.png`),
+      });
+      await page.mouse.move(0, 0);
+      await expect
+        .poll(() =>
+          card.evaluate((element) => ({
+            lift:
+              Number.parseFloat(
+                getComputedStyle(element).translate.split(' ')[1] ?? '0',
+              ) || 0,
+            zoom:
+              Number.parseFloat(
+                getComputedStyle(element.querySelector('img')!).scale,
+              ) || 1,
+          })),
+        )
+        .toEqual({ lift: 0, zoom: 1 });
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+      await card.hover();
+      await expect
+        .poll(() =>
+          card.evaluate((element) => ({
+            lift:
+              Number.parseFloat(
+                getComputedStyle(element).translate.split(' ')[1] ?? '0',
+              ) || 0,
+            zoom:
+              Number.parseFloat(
+                getComputedStyle(element.querySelector('img')!).scale,
+              ) || 1,
+            animating: element
+              .getAnimations({ subtree: true })
+              .some((animation) => animation.playState === 'running'),
+          })),
+        )
+        .toEqual({ lift: -2, zoom: 1.02, animating: false });
+      await page.mouse.move(0, 0);
+      await page.emulateMedia({ reducedMotion: 'no-preference' });
+    }
+    await info.attach('hover-frames.json', {
+      body: JSON.stringify(evidence, null, 2),
+      contentType: 'application/json',
+    });
+  });
+
+  test('changing library sections never animates one collection into another', async ({
+    page,
+  }, info) => {
+    await page.goto('/#home');
+    await page.getByRole('link', { name: 'Movies', exact: true }).click();
+    await expect(page.locator('article.library-tile')).toHaveCount(24);
+    const evidence = [];
+    for (const name of [
+      'Shows',
+      'Music',
+      'Movies',
+      'Music',
+      'Shows',
+      'Movies',
+    ]) {
+      await page.evaluate(() => {
+        const samples: {
+          transform: string;
+          opacity: number;
+          key: string | null;
+        }[][] = [];
+        (
+          window as unknown as { collectionSamples: typeof samples }
+        ).collectionSamples = samples;
+        const sample = () => {
+          samples.push(
+            Array.from(
+              document.querySelectorAll('article.library-tile'),
+              (element) => ({
+                transform: getComputedStyle(element).transform,
+                opacity: Number(getComputedStyle(element).opacity),
+                key: element.getAttribute('data-layout-key'),
+              }),
+            ),
+          );
+          if (samples.length < 40) requestAnimationFrame(sample);
+        };
+        requestAnimationFrame(sample);
+      });
+      await page.getByRole('link', { name, exact: true }).click();
+      const kind =
+        name === 'Music' ? 'artist' : name === 'Shows' ? 'show' : 'movie';
+      await expect(
+        page.locator(`article[data-layout-key^="library:${kind}-"]`),
+      ).toHaveCount(24);
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              (window as unknown as { collectionSamples: unknown[] })
+                .collectionSamples.length,
+          ),
+        )
+        .toBe(40);
+      const samples = await page.evaluate(
+        () =>
+          (
+            window as unknown as {
+              collectionSamples: {
+                transform: string;
+                opacity: number;
+                key: string | null;
+              }[][];
+            }
+          ).collectionSamples,
+      );
+      evidence.push({ name, samples });
+      expect(
+        samples
+          .flat()
+          .filter(
+            (sample) => sample.transform !== 'none' || sample.opacity !== 1,
+          ),
+      ).toEqual([]);
+    }
+    await info.attach('collection-switch-frames.json', {
+      body: JSON.stringify(evidence, null, 2),
+      contentType: 'application/json',
+    });
+    await page.screenshot({
+      path: info.outputPath('library-section-switch.png'),
+    });
+  });
+
+  test('watched movies, episodes, seasons and completed shows follow the shared fade preference', async ({
+    page,
+  }, info) => {
+    await page.goto('/#home');
+    await page.getByRole('link', { name: 'Movies', exact: true }).click();
+    const movie = page.locator('article[data-layout-key="library:movie-0"]');
+    await movie.locator('.card-primary').click();
+    await page
+      .getByRole('button', { name: 'Mark watched', exact: true })
+      .click();
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await page.mouse.move(0, 0);
+    await expect(movie).toHaveCSS('opacity', '0.55');
+    await movie.hover();
+    await expect(movie).toHaveCSS('opacity', '1');
+    await page.mouse.move(0, 0);
+    await movie.locator('.card-primary').focus();
+    await expect(movie).toHaveCSS('opacity', '1');
+    await page.getByRole('link', { name: 'Shows', exact: true }).click();
+    for (let i = 0; i < 8; i++)
+      expect(
+        (
+          await page.request.put(`/api/v1/catalog/episode-${i}/state`, {
+            data: { watched: true },
+          })
+        ).ok(),
+      ).toBe(true);
+    const show = page.locator('article[data-layout-key="library:show-0"]');
+    await expect(show).toHaveCSS('opacity', '0.55');
+    await show.locator('.card-primary').click();
+    const season = page.locator('article[data-layout-key="library:season-0"]');
+    await expect(season).toHaveCSS('opacity', '0.55');
+    await season.locator('.card-primary').click();
+    const episode = page.locator(
+      'article[data-layout-key="library:episode-0"]',
+    );
+    await page.mouse.move(0, 0);
+    await expect(episode).toHaveCSS('opacity', '0.55');
+    await episode.locator('.card-primary').click();
+    await page
+      .getByRole('button', { name: 'Mark unwatched', exact: true })
+      .click();
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await page.mouse.move(0, 0);
+    await expect(episode).toHaveCSS('opacity', '1');
+    await page.getByRole('link', { name: 'Shows', exact: true }).click();
+    await expect(show).toHaveCSS('opacity', '1');
+    await page.getByRole('link', { name: 'Settings', exact: true }).click();
+    await page
+      .getByRole('switch', { name: 'Fade watched videos', exact: true })
+      .click();
+    await page.getByRole('link', { name: 'Movies', exact: true }).click();
+    await expect(movie).toHaveCSS('opacity', '1');
+    await page.reload();
+    await expect(movie).toHaveCSS('opacity', '1');
+    await page.screenshot({
+      path: info.outputPath('watched-movie-preference.png'),
+    });
+  });
+});
+
 test('mobile page headers show each page icon immediately before its name', async ({
   page,
 }, info) => {
@@ -356,6 +624,10 @@ test('library hierarchy, playlist and watchlist edits, online feeds and statisti
   }
   await page.goto('/#playlists');
   await page.getByRole('button', { name: 'New playlist', exact: true }).click();
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
   await page
     .getByRole('textbox', { name: 'Playlist name', exact: true })
     .fill('Preview tracks');

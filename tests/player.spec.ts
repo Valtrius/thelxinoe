@@ -1658,6 +1658,10 @@ test('the player and its controls follow sidebar resizing without clipping or st
   ] as const) {
     await page.setViewportSize({ width, height: 900 });
     await page.getByRole('link', { name: section, exact: true }).click();
+    await expect(page.locator('[data-page-content]')).toHaveAttribute(
+      'data-page-phase',
+      'idle',
+    );
     if (section === 'YouTube')
       await page
         .getByRole('button', { name: 'Open watchlists', exact: true })
@@ -1944,6 +1948,10 @@ test('YouTube scrolls beneath its toolbar and Kick uses page scrolling', async (
 }) => {
   const state = await fixture(page, { app: true });
   await page.getByRole('link', { name: 'YouTube', exact: true }).click();
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
   await expect(page.locator('[data-feed-content] [data-video-id]')).toHaveCount(
     80,
   );
@@ -1979,6 +1987,10 @@ test('YouTube scrolls beneath its toolbar and Kick uses page scrolling', async (
   ).toHaveCount(1);
   await page.screenshot({ path: '.local/player-ui/youtube-scroll.png' });
   await page.getByRole('link', { name: 'Kick', exact: true }).click();
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
   await expect
     .poll(() => workspace.evaluate((element) => element.scrollTop))
     .toBe(0);

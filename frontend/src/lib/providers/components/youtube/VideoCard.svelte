@@ -3,6 +3,10 @@
   import VideoActionsMenu from './VideoActionsMenu.svelte';
   import type { YoutubeVideoActions } from '../../youtube-video-actions';
   import { longPress } from '../../../long-press';
+  import {
+    mediaCardMotionClass,
+    mediaCardThumbnailClass,
+  } from '../../../ui/styles';
 
   import { youtubeVideoPresentation } from '../../youtube-video-presentation';
 
@@ -109,7 +113,7 @@
   }}
   data-video-id={video.videoId}
   data-playing={isPlaying}
-  class={`group relative flex h-full flex-col overflow-hidden border bg-surface shadow-card transition-[border-color,opacity,transform] touch:select-none touch:[-webkit-touch-callout:none] ${fadeWatchedCards && video.isWatched && !isBusy ? 'opacity-55 focus-within:opacity-100 hover:opacity-100' : 'opacity-100'} ${menuOpen || shortcutDeleteConfirming ? 'z-50' : ''} ${isBusy ? 'border-accent' : menuOpen || shortcutDeleteConfirming ? 'border-line-strong' : 'border-line hover:-translate-y-0.5 hover:border-line-strong'}`}
+  class={`group group/media-card relative flex h-full flex-col overflow-hidden border bg-surface shadow-card ${mediaCardMotionClass} touch:select-none touch:[-webkit-touch-callout:none] ${fadeWatchedCards && video.isWatched && !isBusy ? 'opacity-55 focus-within:opacity-100 hover:opacity-100' : 'opacity-100'} ${menuOpen || shortcutDeleteConfirming ? 'z-50' : ''} ${isBusy ? 'border-accent' : menuOpen || shortcutDeleteConfirming ? 'border-line-strong' : 'border-line hover:border-line-strong'}`}
 >
   {#if isPlaying}
     <span
@@ -145,7 +149,7 @@
   >
     {#if thumbnailUrl}
       <img
-        class="size-full object-contain"
+        class={`size-full object-contain ${mediaCardThumbnailClass}`}
         src={thumbnailUrl}
         alt=""
         loading="lazy"

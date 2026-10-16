@@ -112,14 +112,15 @@ pub(crate) async fn decorate_cards(
         return Ok(());
     }
     let ids = json!(ids).to_string();
-    let metadata = storage::decorate_cards(ids, &state.db).await?;
+    let metadata = storage::decorate_cards(ids, p.user.id.clone(), &state.db).await?;
     let grant = crate::grants::issue(state, p, "artwork", 300).await?;
     for item in items {
-        if let Some((year, art)) = item["id"].as_str().and_then(|id| metadata.get(id)) {
+        if let Some(presentation) = item["id"].as_str().and_then(|id| metadata.get(id)) {
             if item.get("year").is_none() {
-                item["year"] = json!(year);
+                item["year"] = json!(presentation.year);
             }
-            if let Some(id) = art {
+            item["watched"] = json!(presentation.watched);
+            if let Some(id) = &presentation.artwork_id {
                 item["artwork_url"] = json!(format!("/api/v1/catalog/{id}/artwork?grant={grant}"));
             }
         }
@@ -319,6 +320,79 @@ mod watch_tests {
 mod presentation_tests {
     use crate::test_support::{call, fixture};
     use serde_json::Value;
+    #[tokio::test]
+    async fn cards_expose_only_the_viewers_watched_state_and_completed_tv_containers() {
+        let (_temp, state, alice) = fixture().await;
+        state.db.write("test.fixture", |db| {
+            db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Library','shows','/media/shows')",[])?;
+            for (id,kind,parent) in [("movie","movie",None),("show","show",None),("season","season",Some("show")),("empty","season",Some("show")),("episode1","episode",Some("season")),("episode2","episode",Some("season"))] {
+                db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,created_at) VALUES (?1,'root',?2,?3,?1,?1,1)",rusqlite::params![id,kind,parent])?;
+            }
+            for media in ["movie", "episode1", "episode2"] {
+                db.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at,favorite) VALUES ('alice',?1,1,1,1)",[media])?;
+            }
+            Ok(())
+        }).await.unwrap();
+        let cards = call(&state, "/api/v1/catalog", "GET", Value::Null, &alice).await;
+        assert_eq!(cards.0, axum::http::StatusCode::OK);
+        for item in cards.2["items"].as_array().unwrap() {
+            assert_eq!(item["watched"], item["id"] != "empty", "{item}");
+        }
+        let home = call(&state, "/api/v1/me/home", "GET", Value::Null, &alice).await;
+        assert!(
+            home.2["favorites"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| item["watched"] == true)
+        );
+        let bob =
+            crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())
+                .await
+                .unwrap();
+        let bob_cards = call(
+            &state,
+            "/api/v1/catalog",
+            "GET",
+            Value::Null,
+            &format!("thelxinoe_session={bob}"),
+        )
+        .await;
+        assert!(
+            bob_cards.2["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| item["watched"] == false)
+        );
+        let changed = call(
+            &state,
+            "/api/v1/catalog/episode2/state",
+            "PUT",
+            serde_json::json!({"watched":false}),
+            &alice,
+        )
+        .await;
+        assert_eq!(changed.0, axum::http::StatusCode::OK);
+        for kind in ["show", "season"] {
+            let cards = call(
+                &state,
+                &format!("/api/v1/catalog?kind={kind}"),
+                "GET",
+                Value::Null,
+                &alice,
+            )
+            .await;
+            assert!(
+                cards.2["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|item| item["watched"] == false)
+            );
+        }
+    }
+
     #[tokio::test]
     async fn home_inherits_show_artwork_without_exposing_other_users_shelves() {
         let (_temp, state, alice) = fixture().await;

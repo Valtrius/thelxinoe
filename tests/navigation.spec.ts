@@ -718,6 +718,10 @@ for (const viewport of [
       const link = nav.getByRole('link', { name, exact: true });
       await link.click();
       await expect(page.locator('.settings-content > h1')).toHaveText(name);
+      await expect(page.locator('[data-page-content]')).toHaveAttribute(
+        'data-page-phase',
+        'idle',
+      );
       await expect.poll(scroll).toBe(position);
       await expect(link).toBeFocused();
     }
@@ -726,14 +730,32 @@ for (const viewport of [
       const link = services.getByRole('link', { name, exact: true });
       await link.click();
       await expect(link).toHaveAttribute('aria-current', 'true');
+      await expect(page.locator('[data-page-content]')).toHaveAttribute(
+        'data-page-phase',
+        'idle',
+      );
       await expect.poll(scroll).toBe(position);
       await expect(link).toBeFocused();
     }
     await page.goBack();
     await expect(page).toHaveURL(/#admin\/services\/nzbget$/);
+    await expect(
+      services.getByRole('link', { name: 'NZBGet', exact: true }),
+    ).toHaveAttribute('aria-current', 'true');
+    await expect(page.locator('[data-page-content]')).toHaveAttribute(
+      'data-page-phase',
+      'idle',
+    );
     await expect.poll(scroll).toBe(position);
     await page.goForward();
     await expect(page).toHaveURL(/#admin\/services\/seerr$/);
+    await expect(
+      services.getByRole('link', { name: 'Seerr', exact: true }),
+    ).toHaveAttribute('aria-current', 'true');
+    await expect(page.locator('[data-page-content]')).toHaveAttribute(
+      'data-page-phase',
+      'idle',
+    );
     await expect.poll(scroll).toBe(position);
     await testInfo.attach('settings-scroll', {
       body: JSON.stringify({
@@ -821,8 +843,12 @@ for (const manualScroll of [false, true]) {
       .getByRole('link', { name: 'Devices', exact: true })
       .click();
     await expect(
-      page.getByRole('status', { name: 'Loading devices', exact: true }),
-    ).toBeVisible();
+      page.locator('[role="status"][aria-label="Loading devices"]'),
+    ).toBeAttached();
+    await expect(page.locator('[data-page-region="settings"]')).toHaveCSS(
+      'opacity',
+      '0',
+    );
     await expect.poll(scroll).toBeLessThan(80);
     let expected = 80;
     if (manualScroll) {
@@ -881,7 +907,7 @@ test('rapid settings switches keep the latest scroll while a section first loads
   await nav.getByRole('link', { name: 'Devices', exact: true }).click();
   chunks.release();
   await expect(
-    page.getByRole('heading', { name: 'Connect a TV' }),
+    page.getByRole('heading', { name: 'Connect a TV', includeHidden: true }),
   ).toBeAttached();
   devices.release();
   await expect(page.getByText('Browser 39', { exact: true })).toBeAttached();

@@ -170,7 +170,6 @@ test('Recyclarr sync uses only button progress and retains failures', async ({
   let run = '';
   let syncs = 0;
   await page.clock.install({ time: new Date('2026-01-01T00:00:00Z') });
-  await page.clock.pauseAt(new Date('2026-01-01T01:00:00Z'));
   await page.route('**/api/v1/admin/stack', (route) =>
     route.fulfill({
       json: {
@@ -230,6 +229,11 @@ test('Recyclarr sync uses only button progress and retains failures', async ({
   });
   const sync = region.getByRole('button', { name: 'Sync now', exact: true });
   await expect(region.getByText('Defaults', { exact: true })).toBeVisible();
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
+  await page.clock.pauseAt(new Date('2026-01-01T01:00:00Z'));
   await sync.click();
   for (const progress of ['queued', 'running', 'retrying']) {
     state = progress;
@@ -942,6 +946,10 @@ test('discover uses the same page width as details on a wide display', async ({
   await page.goto('/');
   const search = page.getByRole('search');
   await expect(search).toBeVisible();
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
   const discoverBounds = await search.boundingBox();
   await page
     .getByRole('button', { name: 'View Arrival', exact: true })
@@ -949,6 +957,10 @@ test('discover uses the same page width as details on a wide display', async ({
     .click();
   const hero = page.locator('article > div').first();
   await expect(hero).toBeVisible();
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
   const detailsBounds = await hero.boundingBox();
   expect(discoverBounds).not.toBeNull();
   expect(detailsBounds).not.toBeNull();
@@ -1139,6 +1151,10 @@ test('service defaults save eagerly and roll back a rejected edit', async ({
     name: 'Monitor and search requests',
   });
   await expect(monitor).toBeChecked();
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
   await monitor.press('Space');
   await expect.poll(() => writes.length).toBe(1);
   await expect(monitor).not.toBeChecked();

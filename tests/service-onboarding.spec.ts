@@ -1,9 +1,8 @@
 import { expect, test, type Page } from '@playwright/test';
 import { installUiFixture } from './helpers/ui-fixture';
 
-async function installPausedClock(page: Page) {
+async function installClock(page: Page) {
   await page.clock.install({ time: new Date('2026-01-01T00:00:00Z') });
-  await page.clock.pauseAt(new Date('2026-01-01T01:00:00Z'));
 }
 
 for (const setup of [false, true]) {
@@ -111,7 +110,7 @@ test('installation keeps the workspace empty until the API is connected', async 
 test('connection actions spin locally, survive polling, and show errors in their row', async ({
   page,
 }, testInfo) => {
-  await installPausedClock(page);
+  await installClock(page);
   const fixture = await installUiFixture(page, {
     role: 'admin',
     settingsSection: 'services',
@@ -162,6 +161,11 @@ test('connection actions spin locally, survive polling, and show errors in their
     .getByRole('link', { name: 'Prowlarr', exact: true })
     .click();
   const row = page.getByLabel('Radarr connection', { exact: true });
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
+  await page.clock.pauseAt(new Date('2026-01-01T01:00:00Z'));
   await expect(row.getByText('Connected', { exact: true })).toBeVisible();
   await expect(
     page.getByText('Fixture indexer', { exact: true }),
@@ -287,7 +291,7 @@ for (const reducedMotion of ['no-preference', 'reduce'] as const) {
 test('saved Prowlarr indexers use the same one-second test feedback as setup', async ({
   page,
 }, testInfo) => {
-  await installPausedClock(page);
+  await installClock(page);
   const fixture = await installUiFixture(page, {
     role: 'admin',
     settingsSection: 'services',
@@ -315,6 +319,11 @@ test('saved Prowlarr indexers use the same one-second test feedback as setup', a
   const row = page
     .locator('.service-row')
     .filter({ hasText: 'Fixture indexer' });
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
+  await page.clock.pauseAt(new Date('2026-01-01T01:00:00Z'));
   const button = row.getByRole('button', { name: 'Test', exact: true });
   const bounds = await button.boundingBox();
   await button.click();
@@ -461,7 +470,7 @@ for (const reducedMotion of ['no-preference', 'reduce'] as const) {
 test('indexer test success briefly replaces the button without moving the form', async ({
   page,
 }, testInfo) => {
-  await installPausedClock(page);
+  await installClock(page);
   const fixture = await installUiFixture(page, {
     role: 'admin',
     settingsSection: 'services',
@@ -509,6 +518,11 @@ test('indexer test success briefly replaces the button without moving the form',
     .getByRole('navigation', { name: 'Select service' })
     .getByRole('link', { name: 'Prowlarr', exact: true })
     .click();
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
+  await page.clock.pauseAt(new Date('2026-01-01T01:00:00Z'));
   await page.getByRole('button', { name: 'Add indexer', exact: true }).click();
   await page.getByRole('button', { name: 'DrunkenSlug' }).click();
   const dialog = page.getByRole('dialog');

@@ -1,6 +1,6 @@
 <script lang="ts" generics="Value extends object">
   import Notice from './Notice.svelte';
-  import { onDestroy, untrack, type Snippet } from 'svelte';
+  import { onDestroy, onMount, untrack, type Snippet } from 'svelte';
   import { captureSession } from '../session';
 
   let {
@@ -35,11 +35,22 @@
     const next = baseline;
     if (next && !busy) untrack(() => (confirmed = copy(next)));
   });
-  onDestroy(() => {
-    active = false;
+  function discardPending() {
     if (pending && ownsSession())
       window.dispatchEvent(new Event('thelxinoe-unsaved-changes'));
     pending = undefined;
+  }
+  function leaving(event: Event) {
+    if (event.target instanceof Element && event.target.contains(form))
+      discardPending();
+  }
+  onMount(() => {
+    window.addEventListener('thelxinoe-page-leave', leaving);
+    return () => window.removeEventListener('thelxinoe-page-leave', leaving);
+  });
+  onDestroy(() => {
+    active = false;
+    discardPending();
   });
 
   export async function submit() {

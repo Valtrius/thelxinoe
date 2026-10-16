@@ -712,6 +712,10 @@ for (const intent of ['select', 'close', 'domain'] as const) {
         level: 2,
       }),
     ).toBeVisible();
+    await expect(page.locator('[data-page-content]')).toHaveAttribute(
+      'data-page-phase',
+      'idle',
+    );
     await expect.poll(() => Boolean(socket)).toBe(true);
     socket!.send(
       JSON.stringify({ id: 1, kind: 'catalog.changed', payload: {} }),
@@ -760,6 +764,7 @@ test('playlist opens follow selection and saving locks the whole draft without r
   const opened = responseGate(),
     saved = responseGate();
   let holdingOpen = true,
+    opening = false,
     saving = false;
   const playlists = ['A', 'B'].map((id) => ({
     id,
@@ -781,14 +786,24 @@ test('playlist opens follow selection and saving locks the whole draft without r
       await saved.promise;
       return route.fulfill({ json: { id } });
     }
-    if (id === 'A' && holdingOpen) await opened.promise;
+    if (id === 'A' && holdingOpen) {
+      opening = true;
+      await opened.promise;
+    }
     return route.fulfill({ json: playlists.find((p) => p.id === id) });
   });
   await page.goto('/');
   await page.getByRole('button', { name: 'Playlist A', exact: true }).click();
-  await page.getByRole('button', { name: 'Playlist B', exact: true }).click();
+  await expect.poll(() => opening).toBe(true);
+  await page.evaluate(() => {
+    location.hash = '#playlists/B';
+  });
   const name = page.getByLabel('Playlist name', { exact: true });
   await expect(name).toHaveValue('Playlist B');
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
   await name.fill('New B draft');
   const response = page.waitForResponse((response) =>
     response.url().endsWith('/playlists/A'),

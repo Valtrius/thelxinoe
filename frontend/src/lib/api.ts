@@ -1,6 +1,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { version as clientVersion } from '../../package.json';
 import { captureSession, invalidateSession } from './session';
+import { trackPageWork } from './page-readiness';
 export const desktop = typeof window !== 'undefined' && isTauri();
 let desktopServer = '';
 export async function initializeTransport() {
@@ -44,7 +45,14 @@ export class ApiError extends Error {
 export function serverUrl(): string {
   return desktop ? desktopServer : '';
 }
-export async function api<T>(
+export function api<T>(
+  path: string,
+  method = 'GET',
+  body?: unknown,
+): Promise<T> {
+  return trackPageWork(() => request<T>(path, method, body));
+}
+async function request<T>(
   path: string,
   method = 'GET',
   body?: unknown,

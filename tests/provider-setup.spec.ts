@@ -720,6 +720,10 @@ test('Kick toolbar tracks channels and links administrators to metadata settings
   });
   await setup.click();
   await expect(page).toHaveURL(/#admin\/providers$/);
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
   await page.getByLabel('Kick client ID').fill('fixture-kick');
   await page.getByLabel('Kick client secret').fill('fixture-secret');
   await page.getByRole('button', { name: 'Save Kick settings' }).click();
@@ -730,6 +734,10 @@ test('Kick toolbar tracks channels and links administrators to metadata settings
     .click();
   await expect(setup).toHaveCount(0);
   await expect(refresh).toBeEnabled();
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
   const refreshBounds = await refresh.boundingBox();
   expect(refreshBounds!.x).toBeGreaterThan(inputBounds!.x + inputBounds!.width);
   expect(Math.abs(inputBounds!.y - refreshBounds!.y)).toBeLessThan(2);

@@ -38,6 +38,7 @@
     kind: string;
     title: string;
     available: boolean;
+    watched?: boolean;
     artwork_url?: string;
     year?: number | null;
     show_title?: string;

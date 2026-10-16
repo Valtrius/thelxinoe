@@ -2,6 +2,21 @@ import { admin, art, iso, now, statistics } from './data.mjs';
 
 export async function mediaApi(s, c) {
   const { path, method, body, query, json, fail } = c;
+  const parents = new Map(s.library.map((item) => [item.id, item.parent_id]));
+  const card = (item) => {
+    const watched = (entry) => {
+      if (!['show', 'season'].includes(entry.kind))
+        return Boolean(s.mediaStates[entry.id]?.watched);
+      const episodes = s.library.filter(
+        (child) =>
+          child.kind === 'episode' &&
+          (child.parent_id === entry.id ||
+            parents.get(child.parent_id) === entry.id),
+      );
+      return episodes.length > 0 && episodes.every(watched);
+    };
+    return { ...item, watched: watched(item) };
+  };
   if (path === '/catalog') {
     let items = s.library.filter((item) =>
       query.has('parent')
@@ -16,7 +31,7 @@ export async function mediaApi(s, c) {
       items = items.filter(
         (_, index) => index % 3 === Number(query.get('collection').slice(-1)),
       );
-    return json({ items });
+    return json({ items: items.map(card) });
   }
   if (path === '/catalog/collections')
     return json({
@@ -144,7 +159,7 @@ export async function mediaApi(s, c) {
   }
   if (path === '/me/home') {
     const cards = (items) =>
-      items.map((item) => ({ ...item, last_played: now() - 3600 }));
+      items.map((item) => ({ ...card(item), last_played: now() - 3600 }));
     return json({
       continue_watching: cards(
         s.library.filter(

@@ -1,12 +1,16 @@
 import type { AppRoute, SettingsSection } from './navigation';
+import { trackPageWork } from './page-readiness';
 
 const cached = <T>(load: () => Promise<T>) => {
   let pending: Promise<T> | undefined;
   return () =>
-    (pending ??= load().catch((error: unknown) => {
-      pending = undefined;
-      throw error;
-    }));
+    trackPageWork(
+      () =>
+        (pending ??= load().catch((error: unknown) => {
+          pending = undefined;
+          throw error;
+        })),
+    );
 };
 export const pages = {
   home: cached(() => import('./Home.svelte')),

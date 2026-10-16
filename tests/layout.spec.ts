@@ -88,6 +88,10 @@ test('A stopped existing container connects only after skipping verification', a
     .getByRole('link', { name: 'Sonarr', exact: true })
     .click();
   const form = page.getByRole('form', { name: 'Connect existing Sonarr' });
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
   await form.getByLabel('Container').selectOption('container-radarr');
   await form.getByLabel('API key').fill('stopped-fixture-api-key');
   await form
@@ -1138,6 +1142,10 @@ test('media services preserve real controls across adaptive layouts', async ({
       fullPage: true,
     });
     await nav.getByRole('link', { name: 'Sonarr', exact: true }).click();
+    await expect(page.locator('[data-page-content]')).toHaveAttribute(
+      'data-page-phase',
+      'idle',
+    );
     const rail = await page.locator('.service-rail').boundingBox();
     const workspace = await page
       .getByRole('form', { name: 'Connect existing Sonarr' })
@@ -1261,6 +1269,10 @@ test('NZBGet URL has compact login and password copy buttons', async ({
   await page.goto('/');
   const services = page.getByRole('navigation', { name: 'Select service' });
   await services.getByRole('link', { name: 'NZBGet', exact: true }).click();
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
   const line = page.locator('.rail-identity:not(.inactive) .service-url-line');
   const url = line.getByRole('link', { name: 'Open NZBGet', exact: true });
   const copyLogin = line.getByRole('button', { name: 'Copy NZBGet login' });
