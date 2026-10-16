@@ -168,6 +168,7 @@ export function createMockState() {
       sidebar_collapsed: false,
       poster_columns: 6,
       video_columns: 6,
+      animation_duration_ms: 200,
       fade_watched: true,
       thumbnail_fit: 'contain',
     },

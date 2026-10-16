@@ -143,6 +143,7 @@
             r="12"
             stroke-linecap="round"
             pathLength="100"
+            data-motion-indicator
             stroke-dasharray={percent !== null
               ? `${percent} 100`
               : motion === 'available'

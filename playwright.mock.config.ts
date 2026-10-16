@@ -10,6 +10,7 @@ export default defineConfig({
     'mock-service-scenarios.spec.ts',
     'mock-ownership-motion.spec.ts',
     'page-transition.spec.ts',
+    'animation-duration.spec.ts',
     'mobile-media.spec.ts',
     'mobile-player.spec.ts',
   ],

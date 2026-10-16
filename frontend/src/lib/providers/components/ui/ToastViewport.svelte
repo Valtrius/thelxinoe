@@ -2,6 +2,7 @@
   import { CircleCheck, CircleX, Info, TriangleAlert, X } from '@lucide/svelte';
   import { dismissToast, toasts } from '../../toasts';
   import Button from '../../../ui/Button.svelte';
+  import ProgressBar from '../../../ui/ProgressBar.svelte';
 
   const toneClass: Record<string, string> = {
     info: 'text-accent border-line-strong',
@@ -63,14 +64,18 @@
           </div>
         {/if}
         {#if toast.progress}
-          <label class="mt-2 grid gap-1 text-xs text-muted">
+          <div class="mt-2 grid gap-1 text-xs text-muted">
             {toast.progress.label}
-            <progress
-              class="h-2 w-full accent-accent"
-              value={toast.progress.value}
-              max={toast.progress.max}
-            ></progress>
-          </label>
+            <ProgressBar
+              class="h-2 w-full"
+              label={toast.progress.label}
+              value={toast.progress.value === undefined ||
+              toast.progress.max <= 0
+                ? null
+                : (toast.progress.value / toast.progress.max) * 100}
+              indeterminate={toast.progress.value === undefined}
+            />
+          </div>
         {/if}
       </div>
       <button

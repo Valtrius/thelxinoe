@@ -3,7 +3,7 @@ import {
   layoutAnimationTiming,
   mediaZoom,
   playAnimations,
-  prefersReducedMotion,
+  animationsDisabled,
   rectTransform,
   transformKeyframes,
   type AnimationPlan,
@@ -14,7 +14,6 @@ import {
 export type { LayoutRect } from './layout-animation';
 
 export interface LayoutMotionOptions {
-  durationMs: number;
   easing: string;
   itemScale: number;
   animateWidth: boolean;
@@ -38,7 +37,6 @@ export interface LayoutSnapshot {
 }
 
 export const feedLayoutMotionOptions: Readonly<LayoutMotionOptions> = {
-  durationMs: layoutAnimationTiming.duration,
   easing: layoutAnimationTiming.easing,
   itemScale: 0.9,
   animateWidth: true,
@@ -143,7 +141,7 @@ export class LayoutMotionController {
     const elements = this.currentItems();
     const rootRect = root.getBoundingClientRect();
     const generation = ++this.generation;
-    if (!prefersReducedMotion()) {
+    if (!animationsDisabled()) {
       const rootZoom = mediaZoom(root);
       const zooms = new Map<HTMLElement, number>();
       const currentKeys = new Set<string>();
@@ -188,7 +186,6 @@ export class LayoutMotionController {
         ...this.removalPlans(snapshot, currentKeys, rootRect, rootZoom),
       );
       for (const animation of playAnimations(plans, {
-        duration: this.options.durationMs,
         easing: this.options.easing,
       }))
         this.activeAnimations.add(animation);

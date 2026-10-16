@@ -13,6 +13,59 @@ test.beforeEach(async ({ page }) => {
   ).toBeVisible();
 });
 
+test('animation timing accepts 0 to 500ms and partial appearance updates preserve it', async ({
+  page,
+}, info) => {
+  const evidence = [];
+  for (const animation_duration_ms of [0, 137, 500]) {
+    const response = await page.request.patch('/api/v1/me/appearance', {
+      headers: { 'X-Thelxinoe-Client': '1' },
+      data: { animation_duration_ms },
+    });
+    expect(response.ok()).toBe(true);
+    expect((await response.json()).animation_duration_ms).toBe(
+      animation_duration_ms,
+    );
+    evidence.push({ animation_duration_ms, status: response.status() });
+  }
+  for (const animation_duration_ms of [-1, 501, 1.5, '200']) {
+    const response = await page.request.patch('/api/v1/me/appearance', {
+      headers: { 'X-Thelxinoe-Client': '1' },
+      data: { animation_duration_ms },
+    });
+    expect(response.status()).toBeGreaterThanOrEqual(400);
+    expect(response.status()).toBeLessThan(500);
+    evidence.push({ animation_duration_ms, status: response.status() });
+  }
+  await page.request.patch('/api/v1/me/appearance', {
+    headers: { 'X-Thelxinoe-Client': '1' },
+    data: { theme: 'light' },
+  });
+  expect(
+    (await (await page.request.get('/api/v1/me/appearance')).json())
+      .animation_duration_ms,
+  ).toBe(500);
+  await page.getByRole('link', { name: 'Settings', exact: true }).click();
+  await expect(
+    page.getByRole('slider', { name: 'Animation duration' }),
+  ).toHaveValue('500');
+  await page.reload();
+  await expect(
+    page.getByRole('slider', { name: 'Animation duration' }),
+  ).toHaveValue('500');
+  await page.screenshot({
+    path: info.outputPath('saved-animation-duration.png'),
+  });
+  await info.attach('animation-api-validation.json', {
+    body: JSON.stringify(evidence, null, 2),
+    contentType: 'application/json',
+  });
+  await page.request.patch('/api/v1/me/appearance', {
+    headers: { 'X-Thelxinoe-Client': '1' },
+    data: { animation_duration_ms: 200 },
+  });
+});
+
 test('sidebar footer keeps its rows and animates profile controls', async ({
   page,
 }) => {

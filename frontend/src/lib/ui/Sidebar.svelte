@@ -113,7 +113,7 @@
           width="30"
           height="30"
         /><span
-          class="brand-label text-[11px] font-semibold tracking-[0.12em] uppercase transition-opacity duration-150 group-[.collapsed]/sidebar:opacity-0"
+          class="brand-label text-[11px] font-semibold tracking-[0.12em] uppercase transition-opacity duration-(--animation-duration) group-[.collapsed]/sidebar:opacity-0"
           >Thelxinoe</span
         ></a
       >
@@ -257,7 +257,7 @@
             />
           {:else}{user.username[0].toUpperCase()}{/if}
         </span><span
-          class="profile-label pointer-events-none absolute left-14.75 w-17.75 overflow-hidden text-[11px] whitespace-nowrap transition-opacity duration-150 group-[.collapsed]/sidebar:opacity-0"
+          class="profile-label pointer-events-none absolute left-14.75 w-17.75 overflow-hidden text-[11px] whitespace-nowrap transition-opacity duration-(--animation-duration) group-[.collapsed]/sidebar:opacity-0"
           ><strong class="block truncate">{user.username}</strong><small
             class="mt-0.5 text-[9px]"
             >{user.role === 'admin' ? 'Administrator' : 'Member'}</small

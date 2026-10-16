@@ -4,7 +4,7 @@ import {
   isVisible,
   mediaZoom,
   playAnimations,
-  prefersReducedMotion,
+  animationsDisabled,
   rectTransform,
   transformKeyframes,
   type AnimationPlan,
@@ -239,7 +239,7 @@ function mediaGapPlans(
 export function sidebarResizePlans(
   snapshots: SidebarSnapshot[],
 ): AnimationPlan[] {
-  if (prefersReducedMotion()) return [];
+  if (animationsDisabled()) return [];
   const finals = new Map(
     snapshots.map((snapshot) => [
       snapshot.element,
@@ -508,7 +508,7 @@ export function createSidebarMotion() {
       watchlist?: WatchlistChange,
     ) {
       const current = ++generation;
-      const snapshots = captureSidebarResize(root, !prefersReducedMotion());
+      const snapshots = captureSidebarResize(root, !animationsDisabled());
       if (watchlist) {
         watchlist.element.toggleAttribute('data-sidebar-exit', watchlist.exit);
         const snapshot = snapshots.find(

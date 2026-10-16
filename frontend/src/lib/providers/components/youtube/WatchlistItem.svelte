@@ -150,7 +150,7 @@
 <div
   use:longPress={() => (actionsOpen = true)}
   data-playing={isPlaying}
-  class={`group/watchlist-item relative flex cursor-default items-stretch border-b border-line transition-[opacity,background-color] duration-150 hover:z-20 touch:select-none touch:[-webkit-touch-callout:none] ${sortable ? (dragging ? 'bg-accent-soft opacity-35 select-none' : 'select-none hover:bg-surface-soft') : canPlay ? 'hover:bg-surface-soft' : ''}`}
+  class={`group/watchlist-item relative flex cursor-default items-stretch border-b border-line transition-[opacity,background-color] duration-(--animation-duration) hover:z-20 touch:select-none touch:[-webkit-touch-callout:none] ${sortable ? (dragging ? 'bg-accent-soft opacity-35 select-none' : 'select-none hover:bg-surface-soft') : canPlay ? 'hover:bg-surface-soft' : ''}`}
 >
   <div
     role="button"
@@ -222,7 +222,7 @@
         </p>
         {#if titleTruncated && !dragging}
           <div
-            class="pointer-events-none absolute -top-1.5 -right-1.5 -left-1.5 z-30 translate-y-0.5 border border-line-strong bg-surface-strong px-2 py-1.5 text-sm leading-5 font-medium opacity-0 shadow-[0_12px_30px_var(--shadow)] transition-[opacity,translate] delay-0 duration-150 ease-out group-hover/title:translate-y-0 group-hover/title:opacity-100 group-hover/title:delay-750 motion-reduce:transition-none"
+            class="pointer-events-none absolute -top-1.5 -right-1.5 -left-1.5 z-30 translate-y-0.5 border border-line-strong bg-surface-strong px-2 py-1.5 text-sm leading-5 font-medium opacity-0 shadow-[0_12px_30px_var(--shadow)] transition-[opacity,translate] delay-0 duration-(--animation-duration) ease-out group-hover/title:translate-y-0 group-hover/title:opacity-100 group-hover/title:delay-750 motion-reduce:transition-none"
             aria-hidden="true"
           >
             {video.title}

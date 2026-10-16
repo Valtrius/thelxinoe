@@ -40,6 +40,7 @@
     : undefined}
 >
   <span
+    data-motion-indicator
     class={twMerge(
       'block h-full bg-current',
       indeterminate

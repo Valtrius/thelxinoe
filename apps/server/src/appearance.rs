@@ -23,6 +23,7 @@ pub struct Appearance {
     sidebar_collapsed: bool,
     poster_columns: u8,
     video_columns: u8,
+    animation_duration_ms: u16,
     fade_watched: bool,
     thumbnail_fit: String,
 }
@@ -37,6 +38,7 @@ impl Default for Appearance {
             sidebar_collapsed: false,
             poster_columns: 6,
             video_columns: 6,
+            animation_duration_ms: 200,
             fade_watched: true,
             thumbnail_fit: "contain".into(),
         }
@@ -54,6 +56,7 @@ pub struct Change {
     sidebar_collapsed: Option<bool>,
     poster_columns: Option<u8>,
     video_columns: Option<u8>,
+    animation_duration_ms: Option<u16>,
     fade_watched: Option<bool>,
     thumbnail_fit: Option<String>,
 }
@@ -76,6 +79,11 @@ pub async fn update(
     Json(change): Json<Change>,
 ) -> Result<Json<Appearance>> {
     let p = security::principal(&state, &headers).await?;
+    if change.animation_duration_ms.is_some_and(|v| v > 500) {
+        return Err(ApiError::bad(
+            "Choose an animation duration from 0 to 500 ms",
+        ));
+    }
     if change
         .audio_volume
         .is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v))

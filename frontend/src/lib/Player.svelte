@@ -976,7 +976,7 @@
 
   <div
     class={[
-      'player-header absolute inset-x-0 top-0 z-[2] flex items-center gap-4 bg-[linear-gradient(#000b,transparent)] px-4 pt-3 pb-9 transition-opacity duration-[180ms] ease-[ease] motion-reduce:transition-none max-[600px]:px-2 max-[600px]:pt-2 max-[600px]:pb-7',
+      'player-header absolute inset-x-0 top-0 z-[2] flex items-center gap-4 bg-[linear-gradient(#000b,transparent)] px-4 pt-3 pb-9 transition-opacity duration-(--animation-duration) ease-[ease] motion-reduce:transition-none max-[600px]:px-2 max-[600px]:pt-2 max-[600px]:pb-7',
       !controlsShown && 'pointer-events-none opacity-0',
     ]}
   >
@@ -1067,7 +1067,7 @@
 
   <div
     class={[
-      'player-controls absolute inset-x-0 bottom-0 z-[2] bg-[linear-gradient(transparent,#000c)] px-4 pt-[30px] pb-2.5 transition-opacity duration-[180ms] ease-[ease] motion-reduce:transition-none max-[600px]:px-2 max-[600px]:pt-6 max-[600px]:pb-1.5',
+      'player-controls absolute inset-x-0 bottom-0 z-[2] bg-[linear-gradient(transparent,#000c)] px-4 pt-[30px] pb-2.5 transition-opacity duration-(--animation-duration) ease-[ease] motion-reduce:transition-none max-[600px]:px-2 max-[600px]:pt-6 max-[600px]:pb-1.5',
       !controlsShown && 'pointer-events-none opacity-0',
     ]}
   >

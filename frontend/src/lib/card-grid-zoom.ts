@@ -3,7 +3,7 @@ import {
   feedTransformPlans,
   hasTransform,
   playAnimations,
-  prefersReducedMotion,
+  animationsDisabled,
   rectTransform,
   transformKeyframes,
   type AnimationPlan,
@@ -124,7 +124,7 @@ function feedResizePlans(
   snapshot: PositionSnapshot | null,
   mode: 'scale' | 'width',
 ): AnimationPlan[] {
-  if (!snapshot || prefersReducedMotion()) return [];
+  if (!snapshot || animationsDisabled()) return [];
   const { element, rect } = snapshot;
   const final = element.getBoundingClientRect();
   if (final.width <= 0) return [];
@@ -320,7 +320,7 @@ export function scaleYoutubeMediaScope(
       gutter,
     );
     if (!metrics) return;
-    const motionEnabled = !prefersReducedMotion();
+    const motionEnabled = !animationsDisabled();
     const feedSnapshot =
       motionEnabled && !animateGrid && sidebarAnimation === 'scale' && feed
         ? { element: feed, rect: feed.getBoundingClientRect() }

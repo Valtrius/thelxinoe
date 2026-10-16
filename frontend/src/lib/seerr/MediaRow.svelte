@@ -1,6 +1,7 @@
 <script lang="ts">
   import { ChevronLeft, ChevronRight } from '@lucide/svelte';
   import Button from '../ui/Button.svelte';
+  import { scrollWithMotion } from '../motion';
   import PosterCard from './PosterCard.svelte';
   import type { Media } from './types';
   let { label, items, open } = $props<{
@@ -10,11 +11,8 @@
   }>();
   let rail: HTMLDivElement;
   function scroll(direction: number) {
-    rail.scrollBy({
-      left: direction * rail.clientWidth * 0.8,
-      behavior: matchMedia('(prefers-reduced-motion: reduce)').matches
-        ? 'instant'
-        : 'smooth',
+    scrollWithMotion(rail, {
+      left: rail.scrollLeft + direction * rail.clientWidth * 0.8,
     });
   }
 </script>
