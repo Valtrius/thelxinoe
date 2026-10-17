@@ -3,6 +3,7 @@
   import type { HTMLAttributes } from 'svelte/elements';
   import { Check, LoaderCircle } from '@lucide/svelte';
   import { twMerge } from 'tailwind-merge';
+  import { settingsCardFilter } from './settings-card-filter';
 
   // A settings card: header (title, description, status, actions), a body of
   // SettingRow children or padded content, and an optional footer bar.
@@ -35,9 +36,12 @@
     class?: string;
   } = $props();
   const hasHeader = $derived(Boolean(title || description || actions));
+  const filter = settingsCardFilter();
+  const filtered = $derived(Boolean(filter && title && !filter(title)));
 </script>
 
 <section
+  hidden={filtered}
   class={twMerge(
     'panel settings-card min-w-0 scroll-mt-14 border border-line bg-surface',
     tone === 'danger' && 'border-danger/40',

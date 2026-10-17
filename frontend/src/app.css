@@ -77,6 +77,17 @@
   @apply grid min-w-0 grid-cols-1 items-start gap-5 @min-[760px]/settings:grid-cols-2;
 }
 
+/* Search results hide the cards that did not match. A wrapper left without a
+   visible card collapses, and a pair left with one card spans the row. */
+@utility settings-results {
+  & > :has(.settings-card):not(:has(.settings-card:not([hidden]))) {
+    display: none;
+  }
+  & .settings-pair:has(> [hidden]) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* Work sections inside the media services page render as cards. */
 @utility settings-section {
   @apply min-w-0 border border-line bg-surface p-5.5 compact:p-4 [&_h3]:text-[15px]! [&_h3]:font-semibold! [&_h3]:tracking-[-0.01em];
