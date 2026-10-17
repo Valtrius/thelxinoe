@@ -107,7 +107,7 @@ impl Pool {
         };
         // The request owns the process until its response has been consumed.
         // Cancellation drops and kills it, including any Deno descendants.
-        let response = tokio::time::timeout(Duration::from_secs(120), async {
+        let response = tokio::time::timeout(super::extract::EXTRACTION, async {
             match worker.resolve(id, family).await {
                 Ok(response) => Ok(response),
                 Err(_) => {

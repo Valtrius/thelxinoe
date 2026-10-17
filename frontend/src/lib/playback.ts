@@ -118,7 +118,13 @@ export function capabilities(probe: Probe = {}) {
     ),
     vp8: ['vp8'],
     vp9: ['vp09.00.10.08', 'vp09.02.10.10'],
-    av1: ['av01.0.08M.08', 'av01.0.08M.10'],
+    // A browser can decode AV1 only up to a level; YouTube's 4K60 is 13.
+    av1: ['08', '10'].flatMap((depth) =>
+      Array.from(
+        { length: 20 },
+        (_, level) => `av01.0.${String(level).padStart(2, '0')}M.${depth}`,
+      ),
+    ),
     aac: ['mp4a.40.2', 'mp4a.40.5', 'mp4a.40.29', 'mp4a.40.4'],
     mp3: ['mp4a.6B'],
     flac: ['flac'],

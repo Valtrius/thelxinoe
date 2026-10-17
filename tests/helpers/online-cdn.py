@@ -14,11 +14,48 @@ import threading
 root = pathlib.Path(sys.argv[1])
 subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(root / "key.pem"), "-out", str(root / "cert.pem"), "-days", "1", "-subj", "/CN=fixture.googlevideo.com"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 class MediaHandler(http.server.SimpleHTTPRequestHandler):
+    """Serves single byte ranges, as the provider's CDN does."""
+    requests = []
+
     def do_GET(self):
-        if self.path.startswith('/denied.mp4'):
+        MediaHandler.requests.append({"path": self.path.split("?")[0], "range": self.headers.get("Range")})
+        if self.path.startswith('/denied'):
             self.send_error(403)
             return
-        super().do_GET()
+        path = pathlib.Path(self.translate_path(self.path))
+        value = self.headers.get("Range", "")
+        if not path.is_file() or not value.startswith("bytes="):
+            super().do_GET()
+            return
+        data = path.read_bytes()
+        first, last = value[6:].split("-")
+        first = int(first)
+        last = min(int(last) if last else len(data) - 1, len(data) - 1)
+        if first >= len(data):
+            self.send_response(416)
+            self.send_header("Content-Range", f"bytes */{len(data)}")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.send_response(206)
+        self.send_header("Content-Type", self.guess_type(str(path)))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Range", f"bytes {first}-{last}/{len(data)}")
+        self.send_header("Content-Length", str(last - first + 1))
+        self.end_headers()
+        self.wfile.write(data[first:last + 1])
+
+    def do_POST(self):
+        # The test reads and clears the CDN's request log.
+        body = json.dumps(MediaHandler.requests).encode()
+        MediaHandler.requests = []
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_args):
+        pass
 
 
 server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(MediaHandler, directory=str(root)))

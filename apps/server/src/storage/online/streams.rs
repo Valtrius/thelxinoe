@@ -80,17 +80,6 @@ pub(super) async fn create_with_delivery_write_playback_sessions(
     .await
 }
 
-pub(super) async fn playback_mode(db: &Database, id: String, mode: String) -> anyhow::Result<()> {
-    db.write("online.streams.playback_mode", move |db| {
-        db.execute(
-            "UPDATE playback_sessions SET mode=?2 WHERE id=?1 AND state='ready'",
-            params![id, mode],
-        )?;
-        Ok(())
-    })
-    .await
-}
-
 pub(super) async fn create_with_delivery_read_playback_sessions(
     key: String,
     db: &Database,

@@ -20,6 +20,9 @@ use axum::{
 use serde_json::{Value, json};
 use std::{ffi::OsString, future::Future, time::Duration};
 
+/// Extraction usually takes one to five seconds; a viewer will not wait minutes.
+pub(super) const EXTRACTION: Duration = Duration::from_secs(30);
+
 pub async fn inspect(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -66,11 +69,12 @@ where
     if !sync::identifier(id, 11) {
         return Err(ApiError::bad("Invalid YouTube video"));
     }
-    let _slot = state
-        .online
-        .extraction
-        .try_acquire()
-        .map_err(|_| ApiError::conflict("Both extraction slots are busy; try again shortly"))?;
+    // A short wait lets a playback request follow another extraction.
+    let _slot = tokio::time::timeout(Duration::from_secs(20), state.online.extraction.acquire())
+        .await
+        .ok()
+        .and_then(|permit| permit.ok())
+        .ok_or_else(|| ApiError::conflict("Both extraction slots are busy; try again shortly"))?;
     let bundle = tools::ready(state).await?;
     network::attempt(state, |family| {
         let bundle = &bundle;
@@ -112,7 +116,7 @@ async fn extract(
         state.tools.temporary()?,
         &bundle.yt_dlp.path,
         &args,
-        Duration::from_secs(120),
+        EXTRACTION,
         8 * 1024 * 1024,
     )
     .await

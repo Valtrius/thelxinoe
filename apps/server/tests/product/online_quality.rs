@@ -1,7 +1,7 @@
 use super::*;
 use axum::{
     body::Body,
-    http::{Request, StatusCode},
+    http::{Request, StatusCode, header},
 };
 use http_body_util::BodyExt;
 use openssl::{
@@ -26,15 +26,20 @@ async fn api(
     token: &str,
     path: &str,
     body: Option<Value>,
+    range: Option<&str>,
 ) -> (StatusCode, Vec<u8>) {
+    let mut request = Request::builder()
+        .uri(path)
+        .method(if body.is_some() { "POST" } else { "GET" })
+        .header("host", "media.test")
+        .header("x-emby-token", token)
+        .header("content-type", "application/json");
+    if let Some(range) = range {
+        request = request.header(header::RANGE, range);
+    }
     let response = crate::router(state.clone())
         .oneshot(
-            Request::builder()
-                .uri(path)
-                .method(if body.is_some() { "POST" } else { "GET" })
-                .header("host", "media.test")
-                .header("x-emby-token", token)
-                .header("content-type", "application/json")
+            request
                 .body(Body::from(body.map(|v| v.to_string()).unwrap_or_default()))
                 .unwrap(),
         )
@@ -67,6 +72,12 @@ fn run(args: &[&str]) -> Vec<u8> {
     );
     result.stdout
 }
+/// Fragmented MP4 shaped like YouTube's separate files: `ftyp`, `moov`, a
+/// `sidx` index, then keyframe-aligned fragments.
+const DASH: [&str; 2] = [
+    "-movflags",
+    "+frag_keyframe+empty_moov+default_base_moof+global_sidx",
+];
 fn fixture_media(
     directory: &Path,
     name: &str,
@@ -75,6 +86,20 @@ fn fixture_media(
     codec: &str,
 ) -> std::path::PathBuf {
     let path = directory.join(name);
+    let input = format!(
+        "color=c=blue:s={size}:r={rate},drawbox=x=10:y=10:w=96:h=96:color=white:t=fill:enable='gte(t,2)'"
+    );
+    let mut args = vec![
+        "-v", "error", "-y", "-f", "lavfi", "-i", &input, "-t", "3", "-c:v", codec, "-threads",
+        "2", "-g", rate, "-pix_fmt", "yuv420p", "-an",
+    ];
+    args.extend(DASH);
+    args.extend(["-f", "mp4", path.to_str().unwrap()]);
+    run(&args);
+    path
+}
+pub(super) fn fixture_audio(directory: &Path, seconds: &str) -> std::path::PathBuf {
+    let path = directory.join("audio.m4a");
     run(&[
         "-v",
         "error",
@@ -82,27 +107,18 @@ fn fixture_media(
         "-f",
         "lavfi",
         "-i",
-        &format!(
-            "color=c=blue:s={size}:r={rate},drawbox=x=10:y=10:w=96:h=96:color=white:t=fill:enable='gte(t,2)'"
-        ),
-        "-f",
-        "lavfi",
-        "-i",
         "sine=frequency=440:sample_rate=48000",
         "-t",
-        "3",
-        "-c:v",
-        codec,
-        "-threads",
-        "2",
-        "-g",
-        rate,
-        "-pix_fmt",
-        "yuv420p",
+        seconds,
         "-c:a",
         "aac",
+        "-vn",
+        "-frag_duration",
+        "1000000",
         "-movflags",
-        "+faststart",
+        "+empty_moov+default_base_moof+global_sidx",
+        "-f",
+        "mp4",
         path.to_str().unwrap(),
     ]);
     path
@@ -168,30 +184,34 @@ fn proxy(
                             .unwrap_or("")
                             .trim_start_matches('/');
                         let Some(bytes) = files.get(path) else { return };
-                        let start = request
-                            .lines()
-                            .find_map(|line| {
-                                line.strip_prefix("Range: bytes=")
-                                    .and_then(|s| s.split('-').next()?.parse::<usize>().ok())
-                            })
-                            .unwrap_or(0);
+                        let range = request.lines().find_map(|line| {
+                            let (start, end) = line
+                                .to_ascii_lowercase()
+                                .strip_prefix("range: bytes=")?
+                                .split_once('-')
+                                .map(|(a, b)| (a.to_owned(), b.to_owned()))?;
+                            Some((start.parse::<usize>().ok()?, end.parse::<usize>().ok()))
+                        });
+                        let (start, end) = range.map_or((0, bytes.len() - 1), |(start, end)| {
+                            (start, end.unwrap_or(bytes.len() - 1).min(bytes.len() - 1))
+                        });
                         if start >= bytes.len() {
                             return;
                         };
                         let response = format!(
                             "HTTP/1.1 {}\r\nContent-Type: video/mp4\r\nAccept-Ranges: bytes\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nConnection: close\r\n\r\n",
-                            if start > 0 {
+                            if range.is_some() {
                                 "206 Partial Content"
                             } else {
                                 "200 OK"
                             },
-                            bytes.len() - start,
+                            end + 1 - start,
                             start,
-                            bytes.len() - 1,
+                            end,
                             bytes.len()
                         );
                         let _ = stream.write_all(response.as_bytes());
-                        let _ = stream.write_all(&bytes[start..]);
+                        let _ = stream.write_all(&bytes[start..=end]);
                     });
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -239,6 +259,75 @@ fn hashes(path: &Path, track: &str) -> Vec<String> {
         .map(|p| p["data_hash"].as_str().unwrap().to_owned())
         .collect()
 }
+/// A playlist reference as a router path with its query.
+pub(super) fn resolve(base: &str, reference: &str) -> String {
+    let url = reqwest::Url::parse("http://media.test")
+        .unwrap()
+        .join(base)
+        .unwrap()
+        .join(reference)
+        .unwrap();
+    format!("{}?{}", url.path(), url.query().unwrap_or_default())
+}
+/// The bytes a client assembles from a byte-range media playlist.
+pub(super) async fn assemble(
+    get: &impl AsyncFn(&str, Option<&str>) -> (StatusCode, Vec<u8>),
+    playlist: &str,
+) -> (Vec<u8>, usize) {
+    let (status, body) = get(playlist, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8(body).unwrap();
+    assert!(text.contains("#EXT-X-PLAYLIST-TYPE:VOD") && text.ends_with("#EXT-X-ENDLIST\n"));
+    let mut bytes = Vec::new();
+    let mut range = None;
+    let mut fragments = 0;
+    for line in text.lines() {
+        if let Some(init) = line
+            .strip_prefix("#EXT-X-MAP:URI=\"")
+            .and_then(|s| s.strip_suffix('"'))
+        {
+            let (status, body) = get(&resolve(playlist, init), None).await;
+            assert_eq!(status, StatusCode::OK);
+            bytes.extend(body);
+        } else if let Some(value) = line.strip_prefix("#EXT-X-BYTERANGE:") {
+            let (size, offset) = value.split_once('@').unwrap();
+            let (size, offset) = (size.parse::<u64>().unwrap(), offset.parse::<u64>().unwrap());
+            range = Some(format!("bytes={offset}-{}", offset + size - 1));
+        } else if !line.starts_with('#') && !line.is_empty() {
+            let (status, body) = get(&resolve(playlist, line), range.take().as_deref()).await;
+            assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+            bytes.extend(body);
+            fragments += 1;
+        }
+    }
+    (bytes, fragments)
+}
+pub(super) fn identical(actual: &[u8], expected: &[u8]) {
+    let first = actual.iter().zip(expected).position(|(a, b)| a != b);
+    assert!(
+        actual == expected,
+        "{} and {} bytes differ from {first:?}",
+        actual.len(),
+        expected.len()
+    );
+}
+/// A fixture file's initialization segment and fragments: what a byte-range
+/// client receives. FFmpeg's trailing random-access box is not media.
+pub(super) fn without_index(file: &[u8]) -> Vec<u8> {
+    let mut offset = 0;
+    let mut indexed = false;
+    let mut output = Vec::new();
+    while offset + 8 <= file.len() {
+        let size = u32::from_be_bytes(file[offset..offset + 4].try_into().unwrap()) as usize;
+        let kind = &file[offset + 4..offset + 8];
+        indexed |= kind == b"sidx";
+        if !indexed || kind == b"moof" || kind == b"mdat" {
+            output.extend_from_slice(&file[offset..offset + size]);
+        }
+        offset += size;
+    }
+    output
+}
 
 #[tokio::test]
 async fn jellyfin_provider_qualities_preserve_8k_and_60fps_packets_and_enforce_client_limits() {
@@ -247,32 +336,28 @@ async fn jellyfin_provider_qualities_preserve_8k_and_60fps_packets_and_enforce_c
         .with_test_writer()
         .try_init();
     let (temp, state, _) = crate::test_support::fixture().await;
-    tool_runtime::install(&state.tools.runtime, &temp.path().join("state/tools"));
     let qhd = fixture_media(temp.path(), "qhd.mp4", "2560x1440", "60", "libx264");
     let eight = fixture_media(temp.path(), "8k.mp4", "7680x4320", "2", "libvpx-vp9");
+    let audio = fixture_audio(temp.path(), "3");
     let (proxy, task) = proxy(std::collections::HashMap::from([
         ("qhd.mp4".into(), std::fs::read(&qhd).unwrap()),
         ("8k.mp4".into(), std::fs::read(&eight).unwrap()),
+        ("audio.m4a".into(), std::fs::read(&audio).unwrap()),
     ]));
     let video = "quality0001";
     state.db.write("test.fixture",move|db|{db.execute("INSERT INTO youtube_subscriptions(user_id,channel_id,title,snapshot,active) VALUES ('alice','quality-channel','Quality channel','s',1)",[])?;db.execute("INSERT INTO youtube_videos(user_id,video_id,channel_id,title,privacy,duration) VALUES ('alice',?1,'quality-channel','Quality fixture','public',3)",[video])?;Ok(())}).await.unwrap();
     let metadata = json!({"duration":3,"is_live":false,"formats":[
-        {"format_id":"qhd","url":"https://r1.googlevideo.com/qhd.mp4","height":1440,"width":2560,"fps":60,"vcodec":"avc1.640033","acodec":"mp4a.40.2","protocol":"https","ext":"mp4","tbr":10000},
-        {"format_id":"eight","url":"https://r1.googlevideo.com/8k.mp4","height":4320,"width":7680,"fps":2,"vcodec":"vp09.00.60.08","acodec":"mp4a.40.2","protocol":"https","ext":"mp4","tbr":20000}
+        {"format_id":"140","url":"https://r1.googlevideo.com/audio.m4a","vcodec":"none","acodec":"mp4a.40.2","protocol":"https","ext":"m4a","abr":128,"asr":48000,"audio_channels":1},
+        {"format_id":"qhd","url":"https://r1.googlevideo.com/qhd.mp4","height":1440,"width":2560,"fps":60,"vcodec":"avc1.640032","acodec":"none","protocol":"https","ext":"mp4","tbr":10000},
+        {"format_id":"eight","url":"https://r1.googlevideo.com/8k.mp4","height":4320,"width":7680,"fps":2,"vcodec":"vp09.00.60.08","acodec":"none","protocol":"https","ext":"mp4","tbr":20000}
     ]});
-    let mut prepared = select(&metadata, Some(proxy)).unwrap();
-    prepared.probe = prepared
-        .source
-        .probe(&state.tools.runtime.media().unwrap())
-        .await
-        .unwrap();
     state
         .online
         .streams
         .prepared
         .lock()
         .await
-        .insert(video.into(), prepared);
+        .insert(video.into(), select(&metadata, Some(proxy)).unwrap());
     let token = crate::test_support::issue_session(
         &state.db,
         "alice".into(),
@@ -281,18 +366,13 @@ async fn jellyfin_provider_qualities_preserve_8k_and_60fps_packets_and_enforce_c
     )
     .await
     .unwrap();
-    let (status, bytes) = api(
-        &state,
-        &token,
-        "/Items?ParentId=d7df0f21-caa6-45a0-9798-267150600001",
-        None,
-    )
-    .await;
+    let get = async |path: &str, range: Option<&str>| api(&state, &token, path, None, range).await;
+    let (status, bytes) = get("/Items?ParentId=d7df0f21-caa6-45a0-9798-267150600001", None).await;
     assert_eq!(status, StatusCode::OK);
     let items: Value = serde_json::from_slice(&bytes).unwrap();
     let item = items["Items"][0]["Id"].as_str().unwrap();
     let path = format!("/Items/{item}/PlaybackInfo");
-    let (status, bytes) = api(&state, &token, &path, None).await;
+    let (status, bytes) = get(&path, None).await;
     assert_eq!(status, StatusCode::OK);
     let sources: Value = serde_json::from_slice(&bytes).unwrap();
     assert!(!String::from_utf8_lossy(&bytes).contains("googlevideo"));
@@ -307,7 +387,7 @@ async fn jellyfin_provider_qualities_preserve_8k_and_60fps_packets_and_enforce_c
     let profile = json!({"TranscodingProfiles":[{"Type":"Video","Protocol":"hls","Container":"mp4","VideoCodec":"h264,vp9","AudioCodec":"aac"}]});
     let mut evidence = Vec::new();
     for (selected, original) in [(Value::Null, &eight), (qhd_id.clone(), &qhd)] {
-        let (status,bytes)=api(&state,&token,&path,Some(json!({"MediaSourceId":selected,"DeviceProfile":profile,"EnableTranscoding":false,"EnableDirectStream":true}))).await;
+        let (status,bytes)=api(&state,&token,&path,Some(json!({"MediaSourceId":selected,"DeviceProfile":profile,"EnableTranscoding":false,"EnableDirectStream":true})),None).await;
         assert_eq!(
             status,
             StatusCode::OK,
@@ -330,83 +410,48 @@ async fn jellyfin_provider_qualities_preserve_8k_and_60fps_packets_and_enforce_c
             })
             .await
             .unwrap();
-        assert_eq!(mode, "remux");
-        let url = session["MediaSources"][0]["TranscodingUrl"]
-            .as_str()
-            .unwrap();
-        let (status, bytes) = api(&state, &token, url, None).await;
+        // Fragmented MP4 HLS clients receive the provider's own files.
+        assert_eq!(mode, "direct");
+        let source = &session["MediaSources"][0];
+        assert_eq!(source["TranscodingContainer"], "mp4");
+        let url = source["TranscodingUrl"].as_str().unwrap();
+        let (status, bytes) = get(url, None).await;
         assert_eq!(status, StatusCode::OK);
-        let playlist = String::from_utf8(bytes).unwrap();
-        assert!(playlist.contains("#EXT-X-ENDLIST"));
-        let parent = url.split('?').next().unwrap().rsplit_once('/').unwrap().0;
-        let query = url.split_once('?').unwrap().1;
-        let last = playlist
+        let master = String::from_utf8(bytes).unwrap();
+        assert!(master.contains("AUDIO=\"audio\""));
+        assert!(master.contains(if original == &eight {
+            "CODECS=\"vp09.00.60.08,mp4a.40.2\",RESOLUTION=7680x4320"
+        } else {
+            "CODECS=\"avc1.640032,mp4a.40.2\",RESOLUTION=2560x1440"
+        }));
+        let audio_uri = master
             .lines()
-            .rfind(|l| !l.starts_with('#') && !l.is_empty())
+            .find_map(|l| l.split("URI=\"").nth(1)?.strip_suffix('"'))
             .unwrap();
-        let (status, bytes) = api(&state, &token, &format!("{parent}/{last}"), None).await;
-        assert_eq!(
-            status,
-            StatusCode::OK,
-            "{}",
-            String::from_utf8_lossy(&bytes)
-        );
-        let mut init_bytes = Vec::new();
-        let mut video_packets = Vec::new();
-        let mut audio_packets = Vec::new();
-        let output = temp.path().join("delivered.mp4");
-        for line in playlist.lines() {
-            if line.starts_with("#EXT-X-MAP") {
-                let name = line.split('"').nth(1).unwrap();
-                let (status, bytes) = api(
-                    &state,
-                    &token,
-                    &format!(
-                        "{parent}/{name}{}",
-                        if name.contains('?') {
-                            String::new()
-                        } else {
-                            format!("?{query}")
-                        }
-                    ),
-                    None,
-                )
-                .await;
-                assert_eq!(status, StatusCode::OK);
-                init_bytes = bytes;
-            } else if !line.starts_with('#') && !line.is_empty() {
-                let (status, bytes) = api(
-                    &state,
-                    &token,
-                    &format!(
-                        "{parent}/{line}{}",
-                        if line.contains('?') {
-                            String::new()
-                        } else {
-                            format!("?{query}")
-                        }
-                    ),
-                    None,
-                )
-                .await;
-                assert_eq!(status, StatusCode::OK);
-                let mut combined = init_bytes.clone();
-                combined.extend(bytes);
-                std::fs::write(&output, combined).unwrap();
-                video_packets.extend(hashes(&output, "0:v:0"));
-                audio_packets.extend(hashes(&output, "0:a:0"));
-            }
+        let video_uri = master
+            .lines()
+            .find(|l| !l.starts_with('#') && !l.is_empty())
+            .unwrap();
+        let mut packets = json!({});
+        for (track, uri, file) in [("v", video_uri, original), ("a", audio_uri, &audio)] {
+            let (bytes, fragments) = assemble(&get, &resolve(url, uri)).await;
+            // The client receives the original file, byte for byte.
+            identical(&bytes, &without_index(&std::fs::read(file).unwrap()));
+            assert!(fragments >= 2);
+            let output = temp.path().join("delivered.mp4");
+            std::fs::write(&output, bytes).unwrap();
+            let delivered = hashes(&output, &format!("0:{track}:0"));
+            assert_eq!(delivered, hashes(file, &format!("0:{track}:0")));
+            packets[track] = json!(delivered.len());
         }
-        let original_video = hashes(original, "0:v:0");
-        let original_audio = hashes(original, "0:a:0");
-        assert_eq!(video_packets, original_video);
-        assert_eq!(audio_packets, original_audio);
-        evidence.push(json!({"source":session["MediaSources"][0],"mode":mode,"video_packets":video_packets,"original_packets":original_video,"audio_packets":audio_packets,"original_audio_packets":original_audio,"late_segment_first":true}));
+        assert!(state.playback.runs().await.is_empty());
+        evidence.push(json!({"source":source,"mode":mode,"packets":packets,"byte_identical":true}));
         let _ = api(
             &state,
             &token,
             "/Sessions/Playing/Stopped",
             Some(json!({"ItemId":item,"PlaySessionId":sid,"PositionTicks":0})),
+            None,
         )
         .await;
     }
@@ -417,6 +462,7 @@ async fn jellyfin_provider_qualities_preserve_8k_and_60fps_packets_and_enforce_c
         &token,
         &path,
         Some(json!({"DeviceProfile":limited,"EnableTranscoding":false})),
+        None,
     )
     .await;
     assert_eq!(
@@ -432,6 +478,7 @@ async fn jellyfin_provider_qualities_preserve_8k_and_60fps_packets_and_enforce_c
         &token,
         &path,
         Some(json!({"MediaSourceId":"https://other.test/video","DeviceProfile":profile})),
+        None,
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);

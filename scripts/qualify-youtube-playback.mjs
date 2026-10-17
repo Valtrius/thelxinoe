@@ -4,7 +4,6 @@ import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { setTimeout as delay } from 'node:timers/promises';
 
 const origin = process.env.THELXINOE_YOUTUBE_URL;
 const username = process.env.THELXINOE_YOUTUBE_USER;
@@ -57,6 +56,7 @@ try {
           (stream) => stream.codec_type === 'video',
         ),
       );
+      const started = performance.now();
       session = await call('/playback', 'POST', {
         media_id: `youtube:${id}`,
         position: 0,
@@ -72,84 +72,86 @@ try {
           },
         },
       });
-      assert.equal(session.mode, 'remux');
+      const prepared = Math.round(performance.now() - started);
+      // Browsers receive the provider's original files as byte-range HLS.
+      assert.equal(session.mode, 'direct');
       assert.deepEqual(session.encoding, { video: false, audio: false });
-      const bytes = [];
-      const seen = new Set();
+      const fetch = async (url, range) => {
+        const response = await api.get(url.toString(), {
+          headers: range ? { Range: range } : {},
+        });
+        assert.equal(response.status(), range ? 206 : 200);
+        return response.body();
+      };
+      const master = new URL(session.url, origin);
+      const variants = (await fetch(master)).toString();
       const target = Math.min(75, session.duration);
-      let seconds = 0,
-        initLoaded = false,
-        lastSegment = Date.now();
-      while (seconds < target) {
-        const playlist = await api.get(session.url);
-        assert.equal(playlist.status(), 200);
-        const manifest = await playlist.text();
-        const init = manifest.match(/#EXT-X-MAP:URI="([^"]+)"/);
-        if (init && !initLoaded) {
-          const response = await api.get(
-            new URL(init[1], new URL(session.url, origin)).toString(),
-          );
-          assert.equal(response.status(), 200);
-          bytes.push(await response.body());
-          initLoaded = true;
-        }
-        let duration = 0;
-        for (const line of manifest.split('\n')) {
-          if (line.startsWith('#EXTINF:'))
+      const tracks = {};
+      let firstMedia;
+      for (const [track, uri] of [
+        ['video', variants.split('\n').find((l) => l && !l.startsWith('#'))],
+        ['audio', /URI="([^"]+)"/.exec(variants)[1]],
+      ]) {
+        const address = new URL(uri, master);
+        const playlist = (await fetch(address)).toString();
+        assert.ok(playlist.includes('#EXT-X-ENDLIST'));
+        const bytes = [];
+        let seconds = 0,
+          duration = 0,
+          range;
+        for (const line of playlist.split('\n')) {
+          const init = /^#EXT-X-MAP:URI="([^"]+)"/.exec(line);
+          if (init) bytes.push(await fetch(new URL(init[1], address)));
+          else if (line.startsWith('#EXTINF:'))
             duration = Number(line.slice(8).split(',')[0]);
-          if (!line.startsWith('segment-') || seen.has(line)) continue;
-          const response = await api.get(
-            new URL(line, new URL(session.url, origin)).toString(),
-          );
-          assert.equal(response.status(), 200);
-          bytes.push(await response.body());
-          seen.add(line);
-          seconds += duration;
-          lastSegment = Date.now();
+          else if (line.startsWith('#EXT-X-BYTERANGE:')) {
+            const [size, offset] = line.slice(17).split('@').map(Number);
+            range = `bytes=${offset}-${offset + size - 1}`;
+          } else if (line && !line.startsWith('#')) {
+            if (seconds >= target) break;
+            bytes.push(await fetch(new URL(line, address), range));
+            firstMedia ??= Math.round(performance.now() - started);
+            seconds += duration;
+          }
         }
-        if (manifest.includes('#EXT-X-ENDLIST')) break;
         assert.ok(
-          Date.now() - lastSegment < 25000,
-          'The public stream stopped producing segments',
+          seconds >= target - 0.1,
+          `Only ${seconds} seconds of ${target} were delivered`,
         );
-        if (seconds < target) await delay(1000);
-      }
-      assert.ok(
-        seconds >= target - 0.1,
-        `Only ${seconds} seconds of ${target} were delivered`,
-      );
-      const delivered = `${dirname(output)}/youtube-${id}.mp4`;
-      writeFileSync(delivered, Buffer.concat(bytes));
-      const probe = JSON.parse(
+        const delivered = `${dirname(output)}/youtube-${id}-${track}.mp4`;
+        writeFileSync(delivered, Buffer.concat(bytes));
+        const probe = JSON.parse(
+          execFileSync(
+            'ffprobe',
+            [
+              '-v',
+              'error',
+              '-show_entries',
+              'stream=codec_name,codec_type,width,height',
+              '-of',
+              'json',
+              delivered,
+            ],
+            { encoding: 'utf8', windowsHide: true },
+          ),
+        );
         execFileSync(
-          'ffprobe',
-          [
-            '-v',
-            'error',
-            '-show_entries',
-            'stream=codec_name,codec_type,width,height',
-            '-of',
-            'json',
-            delivered,
-          ],
-          { encoding: 'utf8', windowsHide: true },
-        ),
-      );
-      assert.ok(probe.streams.some((stream) => stream.codec_name === 'h264'));
-      assert.ok(probe.streams.some((stream) => stream.codec_name === 'aac'));
-      execFileSync(
-        'ffmpeg',
-        ['-v', 'error', '-i', delivered, '-f', 'null', '-'],
-        { windowsHide: true },
-      );
+          'ffmpeg',
+          ['-v', 'error', '-i', delivered, '-f', 'null', '-'],
+          { windowsHide: true },
+        );
+        tracks[track] = { codecs: probe.streams, delivered_seconds: seconds };
+      }
+      assert.equal(tracks.video.codecs[0].codec_name, 'h264');
+      assert.equal(tracks.audio.codecs[0].codec_name, 'aac');
       evidence.push({
         video: id,
         mode: session.mode,
         quality: session.quality,
         encoding: session.encoding,
-        codecs: probe.streams,
-        segments: seen.size,
-        delivered_seconds: seconds,
+        prepare_ms: prepared,
+        first_media_ms: firstMedia,
+        tracks,
       });
     } finally {
       if (session) await api.delete(`/api/v1/playback/${session.id}`);

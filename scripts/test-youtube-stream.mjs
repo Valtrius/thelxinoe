@@ -50,12 +50,13 @@ try {
     .locator('video')
     .evaluate((v) => v.getVideoPlaybackQuality().totalVideoFrames);
   const seek = page.getByLabel('Playback position', { exact: true });
-  const seekResponse = page.waitForResponse(
-    (r) => r.url().includes('/seek') && r.request().method() === 'POST',
-  );
+  // Original files are complete timelines that the player seeks itself.
+  const serverSeeks = [];
+  page.on('request', (r) => {
+    if (r.url().includes('/seek') && r.method() === 'POST') serverSeeks.push(r);
+  });
   await seek.fill('10');
   await seek.dispatchEvent('change');
-  expect((await seekResponse).status()).toBe(200);
   await expect(
     page.getByRole('button', { name: 'Pause', exact: true }),
   ).toBeEnabled({ timeout: 30000 });
@@ -69,6 +70,7 @@ try {
     {},
     { timeout: 30000 },
   );
+  expect(serverSeeks).toEqual([]);
   await page.getByRole('button', { name: 'Close player', exact: true }).click();
   await expect
     .poll(
