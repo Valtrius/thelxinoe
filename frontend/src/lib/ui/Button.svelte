@@ -5,7 +5,7 @@
   import { tv, type VariantProps } from 'tailwind-variants';
 
   const styles = tv({
-    base: 'inline-flex items-center justify-center gap-2 border text-[0.68rem] font-semibold tracking-[0.08em] uppercase transition-colors disabled:pointer-events-none disabled:opacity-45',
+    base: 'inline-flex items-center justify-center gap-2 border text-xs font-semibold tracking-normal transition-colors disabled:pointer-events-none disabled:opacity-45',
     variants: {
       variant: {
         default:
@@ -20,7 +20,7 @@
       },
       size: {
         default: 'h-9 px-3.5',
-        sm: 'h-8 px-2.5 text-[0.62rem]',
+        sm: 'h-8 px-2.5 text-[0.7rem]',
         icon: 'size-9 p-0',
         form: 'min-h-8.5 px-3.25 py-2 disabled:pointer-events-auto disabled:opacity-46',
         'compact-icon':

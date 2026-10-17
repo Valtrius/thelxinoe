@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
+  import { Globe, Laptop, Smartphone } from '@lucide/svelte';
+  import { twMerge } from 'tailwind-merge';
   import DesktopVersion from '../DesktopVersion.svelte';
   import { settingsPages } from '../pages';
   import { api, desktop, serverUrl, type User, type Job } from '../api';
@@ -8,17 +10,21 @@
   import { LatestRequest } from '../latest-request';
   import type { AppRoute } from '../navigation';
   import { isServerUpdateInterruption } from '../server-updates';
+  import type { ApprovalUser } from '../services/feature';
   import SettingsLayout from '../ui/SettingsLayout.svelte';
+  import SettingsCard from '../ui/SettingsCard.svelte';
+  import SettingRow from '../ui/SettingRow.svelte';
+  import SettingsAnchors from '../ui/SettingsAnchors.svelte';
+  import StatusChip from '../ui/StatusChip.svelte';
   import Notice from '../ui/Notice.svelte';
   import FormField from '../ui/FormField.svelte';
   import {
+    cardBlockClass,
     formControlClass,
-    inlineFormClass,
-    rowClass,
-    statsClass,
+    statGridClass,
+    statTileClass,
   } from '../ui/styles';
   import Button from '../ui/Button.svelte';
-  import Panel from '../ui/Panel.svelte';
   import ContentSkeleton from '../ui/ContentSkeleton.svelte';
   import Skeleton from '../ui/Skeleton.svelte';
   import { Accordion } from 'bits-ui';
@@ -50,6 +56,7 @@
     profileChanged: (id: string, avatar: string | null) => void;
   }>();
   const settingsSection = $derived(route.settings);
+  const ids = $props.id();
   type Session = {
     id: string;
     name: string;
@@ -65,6 +72,10 @@
     newPassword = $state(''),
     newRole = $state<'admin' | 'user'>('user'),
     expandedUser = $state('');
+  // Who may request without review, keyed by user id. Only people the
+  // server lists get a toggle.
+  let approvals = $state<Record<string, boolean>>({}),
+    approvalError = $state('');
   let timezone = $state('UTC'),
     serverAddress = $state(untrack(serverUrl));
   let health = $state<{
@@ -81,6 +92,27 @@
     loadingSection === settingsSection && !loadedSections[settingsSection],
   );
   const ownsSession = captureSession();
+  const serverAnchors = [
+    { id: 'server-status', label: 'Status' },
+    { id: 'server-display', label: 'Display' },
+    { id: 'server-updates', label: 'Updates' },
+    { id: 'server-transcoding', label: 'Transcoding' },
+    { id: 'server-tools', label: 'Tools' },
+    { id: 'server-identity', label: 'Identity provider' },
+    { id: 'server-overview', label: 'Overview' },
+    { id: 'server-devices', label: 'Devices' },
+  ];
+  const transportIcon = (transport: string) =>
+    transport === 'desktop'
+      ? Laptop
+      : transport === 'mobile'
+        ? Smartphone
+        : Globe;
+  const seen = (session: Session) =>
+    new Date(session.last_seen * 1000).toLocaleString(undefined, {
+      timeZone: user.timezone,
+      hour12: timeFormat === '12h',
+    });
   onDestroy(() => requests.invalidate());
   $effect(() => {
     void settingsSection;
@@ -114,8 +146,23 @@
           currentSession = value.current;
         }
       } else if (settingsSection === 'people') {
-        const value = await api<{ items: User[] }>('/users');
-        if (current()) users = value.items;
+        const [people, approval] = await Promise.all([
+          api<{ items: User[] }>('/users'),
+          api<{ items: ApprovalUser[] }>('/admin/acquisition/users').then(
+            (value) => ({ items: value.items, error: '' }),
+            (caught: unknown) => ({
+              items: [] as ApprovalUser[],
+              error: String(caught),
+            }),
+          ),
+        ]);
+        if (current()) {
+          users = people.items;
+          approvals = Object.fromEntries(
+            approval.items.map((entry) => [entry.id, entry.enabled]),
+          );
+          approvalError = approval.error;
+        }
       } else if (settingsSection === 'jobs') {
         const value = await api<{ items: Job[] }>('/admin/jobs');
         if (current()) jobs = value.items;
@@ -152,14 +199,30 @@
   }
 </script>
 
-<SettingsLayout {user} active={settingsSection} {openSettings}>
-  {#if error}<Notice variant="error" role="alert">{error}</Notice>{/if}
+{#snippet loading(label: string)}
+  <ContentSkeleton {label} variant="settings" class="col-span-full" />
+{/snippet}
+{#snippet failed(caught: unknown)}
+  <Notice variant="error" role="alert" class="mb-0">{String(caught)}</Notice>
+{/snippet}
+{#snippet serverSubheader()}
+  <SettingsAnchors items={serverAnchors} />
+{/snippet}
+
+<SettingsLayout
+  {user}
+  active={settingsSection}
+  {openSettings}
+  subheader={settingsSection === 'server' && user.role === 'admin'
+    ? serverSubheader
+    : undefined}
+>
+  {#if error}<Notice variant="error" role="alert" class="mb-0">{error}</Notice
+    >{/if}
   {#if settingsSection === 'account'}
-    {#await settingsPages.UserPreferences()}<ContentSkeleton
-        label="Loading settings"
-        variant="settings"
-        class="col-span-full"
-      />{:then { default: UserPreferences }}<UserPreferences
+    {#await settingsPages.UserPreferences()}{@render loading(
+        'Loading settings',
+      )}{:then { default: UserPreferences }}<UserPreferences
         {user}
         revision={preferencesRevision}
         avatarChanged={(id, avatar) => {
@@ -168,125 +231,58 @@
         changed={(zone, format) => {
           displayChanged(zone, format);
         }}
-      />{:catch error}<Notice variant="error" role="alert"
-        >{String(error)}</Notice
-      >{/await}
-    {#await settingsPages.AuthSettings()}<ContentSkeleton
-        label="Loading settings"
-        variant="settings"
-        class="col-span-full"
-      />{:then { default: AuthSettings }}<AuthSettings />{:catch error}<Notice
-        variant="error"
-        role="alert">{String(error)}</Notice
-      >{/await}{/if}
-  {#if settingsSection === 'online'}{#await settingsPages.OnlineAccounts()}<ContentSkeleton
-        label="Loading settings"
-        variant="settings"
-        class="col-span-full"
-      />{:then { default: OnlineAccounts }}<OnlineAccounts
+      />{:catch caught}{@render failed(caught)}{/await}
+    {#await settingsPages.AuthSettings()}{@render loading(
+        'Loading settings',
+      )}{:then { default: AuthSettings }}<AuthSettings
+      />{:catch caught}{@render failed(caught)}{/await}{/if}
+  {#if settingsSection === 'online'}{#await settingsPages.OnlineAccounts()}{@render loading(
+        'Loading settings',
+      )}{:then { default: OnlineAccounts }}<OnlineAccounts
         revision={accountRevision}
         navigate={(name) => void navigate(name)}
         configureProviders={user.role === 'admin'
           ? () => openSettings('providers')
           : undefined}
-      />{:catch error}<Notice variant="error" role="alert"
-        >{String(error)}</Notice
-      >{/await}{/if}
-  {#if settingsSection === 'playback'}{#await settingsPages.PlaybackSettings()}<ContentSkeleton
-        label="Loading settings"
-        variant="settings"
-        class="col-span-full"
-      />{:then { default: PlaybackSettings }}<PlaybackSettings
-      />{:catch error}<Notice variant="error" role="alert"
-        >{String(error)}</Notice
-      >{/await}
-    {#await settingsPages.SegmentSettings()}<ContentSkeleton
-        label="Loading settings"
-        variant="settings"
-        class="col-span-full"
-      />{:then { default: SegmentSettings }}<SegmentSettings
-      />{:catch error}<Notice variant="error" role="alert"
-        >{String(error)}</Notice
-      >{/await}
+      />{:catch caught}{@render failed(caught)}{/await}{/if}
+  {#if settingsSection === 'playback'}{#await settingsPages.PlaybackSettings()}{@render loading(
+        'Loading settings',
+      )}{:then { default: PlaybackSettings }}<PlaybackSettings
+      />{:catch caught}{@render failed(caught)}{/await}
+    {#await settingsPages.SegmentSettings()}{@render loading(
+        'Loading settings',
+      )}{:then { default: SegmentSettings }}<SegmentSettings
+      />{:catch caught}{@render failed(caught)}{/await}
   {/if}
-  {#if settingsSection === 'devices'}{#await settingsPages.AuthDevices()}<ContentSkeleton
-        label="Loading settings"
-        variant="settings"
-        class="col-span-full"
-      />{:then { default: AuthDevices }}<AuthDevices />{:catch caught}<Notice
-        variant="error"
-        role="alert">{String(caught)}</Notice
-      >{/await}{#await settingsPages.QuickConnect()}<ContentSkeleton
-        label="Loading settings"
-        variant="settings"
-        class="col-span-full"
-      />{:then { default: QuickConnect }}<QuickConnect
-        username={user.username}
-      />{:catch error}<Notice variant="error" role="alert"
-        >{String(error)}</Notice
-      >{/await}{/if}
-  {#if desktop && settingsSection === 'mpv'}{#await settingsPages.MpvSettings()}<ContentSkeleton
-        label="Loading settings"
-        variant="settings"
-        class="col-span-full"
-      />{:then { default: MpvSettings }}<MpvSettings />{:catch error}<Notice
-        variant="error"
-        role="alert">{String(error)}</Notice
-      >{/await}{/if}
-  {#if desktop && settingsSection === 'connection'}<Panel>
-      <h2>Desktop</h2>
-      <div class={statsClass}>
-        <DesktopVersion />
-      </div>
-      {#await settingsPages.DesktopUpdatePreferences()}<ContentSkeleton
-          label="Loading settings"
-          variant="settings"
-          class="col-span-full"
-        />{:then { default: DesktopUpdatePreferences }}<DesktopUpdatePreferences
-        />{:catch error}<Notice variant="error" role="alert"
-          >{String(error)}</Notice
-        >{/await}
-      <form
-        class={inlineFormClass}
-        onsubmit={(e) => {
-          e.preventDefault();
-          void act(async () => {
-            await switchServer(serverAddress);
-          });
-        }}
-      >
-        <FormField
-          >Server address<input
-            class={formControlClass}
-            bind:value={serverAddress}
-            required
-          /></FormField
-        ><Button size="form" variant="secondary" type="submit" disabled={busy}
-          >Change server</Button
+  {#if settingsSection === 'devices'}
+    <SettingsCard
+      title="Your devices"
+      description="Browsers and desktops signed in to your account. Revoking this device signs you out."
+    >
+      {#if loadingData}<div class={cardBlockClass}>
+          <ContentSkeleton label="Loading devices" />
+        </div>{/if}
+      {#each sessions as session (session.id)}
+        {@const Icon = transportIcon(session.transport)}
+        <SettingRow
+          label={session.name}
+          description={`${session.transport} · ${seen(session)}`}
         >
-      </form>
-    </Panel>{/if}
-  {#if settingsSection === 'devices'}<Panel>
-      <h2>Your devices</h2>
-      <p class="text-muted">
-        Revoke access to a browser or desktop at any time.
-      </p>
-      {#if loadingData}<ContentSkeleton label="Loading devices" />{/if}
-      {#each sessions as session (session.id)}<div class={rowClass}>
-          <div>
-            <strong>{session.name}</strong><small
-              >{session.transport} · {new Date(
-                session.last_seen * 1000,
-              ).toLocaleString(undefined, {
-                timeZone: user.timezone,
-                hour12: timeFormat === '12h',
-              })}{session.id === currentSession ? ' · This device' : ''}</small
-            >
-          </div>
+          {#snippet lead()}
+            <Icon size={16} class="shrink-0 text-muted" aria-hidden="true" />
+          {/snippet}
+          {#snippet badge()}
+            {#if session.id === currentSession}<StatusChip
+                tone="info"
+                dot={false}>This device</StatusChip
+              >{/if}
+            {#if session.remembered}<StatusChip dot={false}
+                >Remembered</StatusChip
+              >{/if}
+          {/snippet}
           <Button
             size="form"
-            variant="secondary"
-            type="submit"
+            variant="ghost"
             disabled={busy}
             onclick={() =>
               act(async () => {
@@ -299,89 +295,143 @@
                 } else await loadSettings();
               })}>Revoke</Button
           >
-        </div>{/each}
-    </Panel>
+        </SettingRow>
+      {/each}
+    </SettingsCard>
+    {#await settingsPages.QuickConnect()}{@render loading(
+        'Loading settings',
+      )}{:then { default: QuickConnect }}<QuickConnect
+        username={user.username}
+      />{:catch caught}{@render failed(caught)}{/await}
+    {#await settingsPages.AuthDevices()}{@render loading(
+        'Loading settings',
+      )}{:then { default: AuthDevices }}<AuthDevices
+      />{:catch caught}{@render failed(caught)}{/await}
+  {/if}
+  {#if desktop && settingsSection === 'mpv'}
+    <SettingsCard
+      title="Player and tools"
+      description="Install, update and configure the desktop player and its helper tools."
+      padded
+    >
+      {#await settingsPages.MpvSettings()}{@render loading(
+          'Loading settings',
+        )}{:then { default: MpvSettings }}<MpvSettings
+        />{:catch caught}{@render failed(caught)}{/await}
+    </SettingsCard>
+  {/if}
+  {#if desktop && settingsSection === 'connection'}
+    <SettingsCard
+      title="Desktop"
+      description="The installed desktop build, how it updates and which server it talks to."
+    >
+      <SettingRow
+        label="Desktop version"
+        description="Use the status button to check for updates or install one."
+      >
+        <DesktopVersion inline />
+      </SettingRow>
+      {#await settingsPages.DesktopUpdatePreferences()}<div
+          class={cardBlockClass}
+        >
+          <ContentSkeleton
+            label="Loading settings"
+            variant="settings"
+            count={1}
+          />
+        </div>{:then { default: DesktopUpdatePreferences }}
+        <SettingRow
+          label="Desktop updates"
+          description="Notify shows an update when one is ready. Automatic installs it and restarts once playback stops."
+        >
+          <DesktopUpdatePreferences />
+        </SettingRow>
+      {:catch caught}<div class={cardBlockClass}>
+          {@render failed(caught)}
+        </div>{/await}
+      <SettingRow
+        label="Server address"
+        description="Switching servers signs you out of this one."
+        for={`${ids}-server`}
+      >
+        <form
+          class="flex flex-wrap items-center gap-2"
+          onsubmit={(e) => {
+            e.preventDefault();
+            void act(async () => {
+              await switchServer(serverAddress);
+            });
+          }}
+        >
+          <input
+            id={`${ids}-server`}
+            class={twMerge(formControlClass, 'w-72 compact:w-full')}
+            bind:value={serverAddress}
+            required
+          />
+          <Button size="form" variant="secondary" type="submit" disabled={busy}
+            >Change server</Button
+          >
+        </form>
+      </SettingRow>
+    </SettingsCard>
   {/if}
   {#if user.role === 'admin'}
-    {#if settingsSection === 'analysis'}{#await settingsPages.SegmentSettings()}<ContentSkeleton
-          label="Loading settings"
-          variant="settings"
-          class="col-span-full"
-        />{:then { default: SegmentSettings }}<SegmentSettings
+    {#if settingsSection === 'analysis'}{#await settingsPages.SegmentSettings()}{@render loading(
+          'Loading settings',
+        )}{:then { default: SegmentSettings }}<SegmentSettings
           admin
-        />{:catch error}<Notice variant="error" role="alert"
-          >{String(error)}</Notice
-        >{/await}{/if}
-    {#if settingsSection === 'backups'}{#await settingsPages.BackupSettings()}<ContentSkeleton
-          label="Loading settings"
-          variant="settings"
-          class="col-span-full"
-        />{:then { default: BackupSettings }}<BackupSettings
+        />{:catch caught}{@render failed(caught)}{/await}{/if}
+    {#if settingsSection === 'backups'}{#await settingsPages.BackupSettings()}{@render loading(
+          'Loading settings',
+        )}{:then { default: BackupSettings }}<BackupSettings
           {timezone}
           {timeFormat}
-        />{:catch error}<Notice variant="error" role="alert"
-          >{String(error)}</Notice
-        >{/await}{/if}
-    {#if settingsSection === 'providers'}{#await settingsPages.OnlineSettings()}<ContentSkeleton
-          label="Loading settings"
-          variant="settings"
-          class="col-span-full"
-        />{:then { default: OnlineSettings }}<OnlineSettings
-        />{:catch error}<Notice variant="error" role="alert"
-          >{String(error)}</Notice
-        >{/await}{/if}
-    {#if settingsSection === 'services'}{#await settingsPages.ServicesSettings()}<ContentSkeleton
-          label="Loading settings"
-          variant="settings"
-          class="col-span-full"
-        />{:then { default: ServicesSettings }}<ServicesSettings
+        />{:catch caught}{@render failed(caught)}{/await}{/if}
+    {#if settingsSection === 'providers'}{#await settingsPages.OnlineSettings()}{@render loading(
+          'Loading settings',
+        )}{:then { default: OnlineSettings }}<OnlineSettings
+        />{:catch caught}{@render failed(caught)}{/await}{/if}
+    {#if settingsSection === 'services'}{#await settingsPages.ServicesSettings()}{@render loading(
+          'Loading settings',
+        )}{:then { default: ServicesSettings }}<ServicesSettings
           {timeFormat}
           selected={route.service}
           workflow={route.workflow}
           onSelect={(service) => openSettings('services', service)}
-        />{:catch error}<Notice variant="error" role="alert"
-          >{String(error)}</Notice
-        >{/await}{/if}
-    {#if settingsSection === 'services'}{#await settingsPages.ManagerOwnership()}<ContentSkeleton
-          label="Loading settings"
-          variant="settings"
-          class="col-span-full"
-        />{:then { default: ManagerOwnership }}<ManagerOwnership
-        />{:catch error}<Notice variant="error" role="alert"
-          >{String(error)}</Notice
-        >{/await}{/if}
-    {#if settingsSection === 'retention'}{#await settingsPages.RetentionSettings()}<ContentSkeleton
-          label="Loading settings"
-          variant="settings"
-          class="col-span-full"
-        />{:then { default: RetentionSettings }}<RetentionSettings
-        />{:catch error}<Notice variant="error" role="alert"
-          >{String(error)}</Notice
-        >{/await}{/if}
-    {#if settingsSection === 'server'}<Panel>
-        <div class="flex items-center justify-between gap-3">
-          <h2>Server status</h2>
-        </div>
-        <div
-          class="grid divide-y divide-line [&>div]:py-3 [&_strong]:text-base [&_strong]:font-medium [&_small]:mt-1 [&_small]:block [&_small]:text-xs [&_small]:text-muted"
-        >
-          {#await settingsPages.ProductVersion()}<ContentSkeleton
-              label="Loading settings"
-              variant="settings"
-              class="col-span-full"
-            />{:then { default: ProductVersion }}<ProductVersion
-              installed={health?.version ?? '—'}
-            />{:catch error}<Notice variant="error" role="alert"
-              >{String(error)}</Notice
-            >{/await}
-          <div>
-            {#if loadingData}<Skeleton class="h-5 w-24" />{:else}<strong
+          openSettings={(name) => openSettings(name)}
+        />{:catch caught}{@render failed(caught)}{/await}{/if}
+    {#if settingsSection === 'retention'}{#await settingsPages.RetentionSettings()}{@render loading(
+          'Loading settings',
+        )}{:then { default: RetentionSettings }}<RetentionSettings
+        />{:catch caught}{@render failed(caught)}{/await}{/if}
+    {#if settingsSection === 'retention'}{#await settingsPages.ManagerOwnership()}{@render loading(
+          'Loading settings',
+        )}{:then { default: ManagerOwnership }}<ManagerOwnership
+        />{:catch caught}{@render failed(caught)}{/await}{/if}
+    {#if settingsSection === 'server'}
+      <SettingsCard
+        id="server-status"
+        aria-label="Server status"
+        title="Server status"
+        description="Installed version, update availability and controller health."
+      >
+        <div class={statGridClass}>
+          <div class={statTileClass}>
+            {#await settingsPages.ProductVersion()}<Skeleton
+                class="h-6 w-24"
+              />{:then { default: ProductVersion }}<ProductVersion
+                installed={health?.version ?? '—'}
+              />{:catch caught}{@render failed(caught)}{/await}
+          </div>
+          <div class={statTileClass}>
+            {#if loadingData}<Skeleton class="h-6 w-24" />{:else}<strong
                 >{health?.controller ? 'Connected' : 'Unavailable'}</strong
               >{/if}
             <small>Docker controller</small>
           </div>
-          <div>
-            {#if loadingData}<Skeleton class="h-5 w-24" />{:else}<strong
+          <div class={statTileClass}>
+            {#if loadingData}<Skeleton class="h-6 w-24" />{:else}<strong
                 >{health
                   ? `${(health.cache_free_bytes / 1024 ** 3).toFixed(1)} GB`
                   : '—'}</strong
@@ -389,69 +439,60 @@
             <small>Cache space available</small>
           </div>
         </div>
-      </Panel>
-      {#await settingsPages.ServerDisplayDefaults()}<ContentSkeleton
-          label="Loading settings"
-          variant="settings"
-          class="col-span-full"
-        />{:then { default: ServerDisplayDefaults }}<ServerDisplayDefaults
+      </SettingsCard>
+      {#await settingsPages.ServerDisplayDefaults()}{@render loading(
+          'Loading settings',
+        )}{:then { default: ServerDisplayDefaults }}<ServerDisplayDefaults
           revision={preferencesRevision}
           changed={(value) => (timezone = value)}
-        />{:catch error}<Notice variant="error" role="alert"
-          >{String(error)}</Notice
-        >{/await}
-      <Panel
-        ><h2>Server updates</h2>
-        {#await settingsPages.ProductUpdatePreferences()}<ContentSkeleton
-            label="Loading settings"
-            variant="settings"
-            class="col-span-full"
-          />{:then { default: ProductUpdatePreferences }}<ProductUpdatePreferences
-          />{:catch error}<Notice variant="error" role="alert"
-            >{String(error)}</Notice
-          >{/await}</Panel
+        />{:catch caught}{@render failed(caught)}{/await}
+      <SettingsCard
+        id="server-updates"
+        title="Updates and maintenance"
+        description="How server releases are installed and when scheduled work runs."
+        autoSave
       >
-      {#await settingsPages.ServerTranscodingSettings()}<ContentSkeleton
-          label="Loading transcoding settings"
-          variant="settings"
-        />{:then { default: ServerTranscodingSettings }}<ServerTranscodingSettings
+        {#await settingsPages.ProductUpdatePreferences()}<div
+            class={cardBlockClass}
+          >
+            <ContentSkeleton
+              label="Loading settings"
+              variant="settings"
+              count={2}
+            />
+          </div>{:then { default: ProductUpdatePreferences }}<ProductUpdatePreferences
+          />{:catch caught}<div class={cardBlockClass}>
+            {@render failed(caught)}
+          </div>{/await}
+      </SettingsCard>
+      {#await settingsPages.ServerTranscodingSettings()}{@render loading(
+          'Loading transcoding settings',
+        )}{:then { default: ServerTranscodingSettings }}<ServerTranscodingSettings
           revision={preferencesRevision}
-        />{:catch error}<Notice variant="error" role="alert"
-          >{String(error)}</Notice
-        >{/await}
-      <Panel class="settings-wide"
-        >{#await settingsPages.ServerTools()}<ContentSkeleton
-            label="Loading settings"
-            variant="settings"
-            class="col-span-full"
-          />{:then { default: ServerTools }}<ServerTools />{:catch error}<Notice
-            variant="error"
-            role="alert">{String(error)}</Notice
-          >{/await}</Panel
-      >
-      {#await settingsPages.OidcSettings()}<ContentSkeleton
-          label="Loading settings"
-          variant="settings"
-          class="col-span-full"
-        />{:then { default: OidcSettings }}<OidcSettings
-        />{:catch caught}<Notice variant="error" role="alert"
-          >{String(caught)}</Notice
-        >{/await}
-      {#await settingsPages.AdminOperations()}<ContentSkeleton
-          label="Loading settings"
-          variant="settings"
-          class="col-span-full"
-        />{:then { default: AdminOperations }}<AdminOperations
+        />{:catch caught}{@render failed(caught)}{/await}
+      {#await settingsPages.ServerTools()}{@render loading(
+          'Loading settings',
+        )}{:then { default: ServerTools }}<ServerTools
+        />{:catch caught}{@render failed(caught)}{/await}
+      {#await settingsPages.OidcSettings()}{@render loading(
+          'Loading settings',
+        )}{:then { default: OidcSettings }}<OidcSettings
+        />{:catch caught}{@render failed(caught)}{/await}
+      {#await settingsPages.AdminOperations()}{@render loading(
+          'Loading settings',
+        )}{:then { default: AdminOperations }}<AdminOperations
           {timezone}
           {timeFormat}
-        />{:catch error}<Notice variant="error" role="alert"
-          >{String(error)}</Notice
-        >{/await}
+        />{:catch caught}{@render failed(caught)}{/await}
     {/if}
-    {#if settingsSection === 'people'}<Panel>
-        <h2>Add user</h2>
+    {#if settingsSection === 'people'}
+      <SettingsCard
+        title="Add user"
+        description="New people sign in with a username and password. They can add passkeys or link an identity provider later."
+        padded
+      >
         <form
-          class={inlineFormClass}
+          class="flex flex-wrap items-end gap-3 compact:flex-col compact:items-stretch [&_label]:m-0 [&_label]:min-w-[min(180px,100%)] [&_label]:flex-1 compact:[&_label]:w-full"
           aria-label="Create user"
           onsubmit={(e) => {
             e.preventDefault();
@@ -482,41 +523,53 @@
             ></FormField
           ><Button size="form" type="submit" disabled={busy}>Add user</Button>
         </form>
-      </Panel>
-      <Panel class="settings-wide"
-        ><h2>User access</h2>
-        {#if loadingData}<ContentSkeleton label="Loading users" />{/if}
-        <Accordion.Root type="single" bind:value={expandedUser}>
-          {#each users as person (person.id)}{#await settingsPages.UserAdministration()}<ContentSkeleton
-                label="Loading settings"
-                variant="settings"
-                class="col-span-full"
-              />{:then { default: UserAdministration }}<UserAdministration
+      </SettingsCard>
+      <SettingsCard
+        title="User access"
+        description="Roles, automatic request approval, recovery links and account removal for everyone on this server."
+      >
+        {#if loadingData}<div class={cardBlockClass}>
+            <ContentSkeleton label="Loading users" />
+          </div>{/if}
+        {#if approvalError}<div class={cardBlockClass}>
+            <Notice
+              variant="error"
+              role="alert"
+              aria-label="Request approval settings load error"
+              class="mb-0"
+              >Failed to load request approval settings. {approvalError}</Notice
+            >
+          </div>{/if}
+        <Accordion.Root
+          type="single"
+          bind:value={expandedUser}
+          class="divide-y divide-line"
+        >
+          {#each users as person (person.id)}{#await settingsPages.UserAdministration()}<div
+                class={cardBlockClass}
+              >
+                <ContentSkeleton label="Loading settings" count={1} />
+              </div>{:then { default: UserAdministration }}<UserAdministration
                 {person}
+                approval={approvals[person.id]}
                 currentId={user.id}
                 changed={loadSettings}
                 close={() => (expandedUser = '')}
-              />{:catch error}<Notice variant="error" role="alert"
-                >{String(error)}</Notice
-              >{/await}{/each}
+              />{:catch caught}<div class={cardBlockClass}>
+                {@render failed(caught)}
+              </div>{/await}{/each}
         </Accordion.Root>
-      </Panel>
+      </SettingsCard>
     {/if}
-    {#if settingsSection === 'audit'}{#await settingsPages.AuditSettings()}<ContentSkeleton
-          label="Loading settings"
-          variant="settings"
-          class="col-span-full"
-        />{:then { default: AuditSettings }}<AuditSettings
+    {#if settingsSection === 'audit'}{#await settingsPages.AuditSettings()}{@render loading(
+          'Loading settings',
+        )}{:then { default: AuditSettings }}<AuditSettings
           {user}
           {timeFormat}
-        />{:catch error}<Notice variant="error" role="alert"
-          >{String(error)}</Notice
-        >{/await}{/if}
-    {#if settingsSection === 'jobs'}{#await settingsPages.ActivitySettings()}<ContentSkeleton
-          label="Loading settings"
-          variant="settings"
-          class="col-span-full"
-        />{:then { default: ActivitySettings }}<ActivitySettings
+        />{:catch caught}{@render failed(caught)}{/await}{/if}
+    {#if settingsSection === 'jobs'}{#await settingsPages.ActivitySettings()}{@render loading(
+          'Loading settings',
+        )}{:then { default: ActivitySettings }}<ActivitySettings
           {jobs}
           loading={loadingData}
           checkpoint={() =>
@@ -526,8 +579,6 @@
               });
               await loadSettings();
             })}
-        />{:catch error}<Notice variant="error" role="alert"
-          >{String(error)}</Notice
-        >{/await}{/if}
+        />{:catch caught}{@render failed(caught)}{/await}{/if}
   {/if}
 </SettingsLayout>

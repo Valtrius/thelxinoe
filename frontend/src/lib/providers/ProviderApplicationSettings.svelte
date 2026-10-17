@@ -2,8 +2,9 @@
   import { api } from '../api';
   import Button from '../ui/Button.svelte';
   import FormField from '../ui/FormField.svelte';
-  import Panel from '../ui/Panel.svelte';
-  import { formControlClass, inlineFormClass } from '../ui/styles';
+  import SettingsCard from '../ui/SettingsCard.svelte';
+  import StatusChip from '../ui/StatusChip.svelte';
+  import { cardBlockClass, formControlClass } from '../ui/styles';
   import ProviderSetupInstructions from './ProviderSetupInstructions.svelte';
   import ProviderIntegrationSwitch from './ProviderIntegrationSwitch.svelte';
   import { providers } from './availability';
@@ -19,7 +20,7 @@
     twitch: {
       name: 'Twitch',
       description:
-        'Configure a public Twitch application for device-code sign-in. Each person connects their own account. Replacing the client ID requires everyone to reconnect.',
+        'A public Twitch application for device-code sign-in. Each person connects their own account. Replacing the client ID requires everyone to reconnect.',
       placeholder: 'Public application client ID',
       replacement: 'Configured — enter an ID to replace it',
     },
@@ -32,7 +33,9 @@
     },
   };
   const definition = $derived(definitions[platform]);
-  let configured = $state(false),
+  // null until the server has answered, so the setup guide mounts in its
+  // final folded or open state instead of folding after load.
+  let configured = $state<boolean | null>(null),
     clientId = $state(''),
     clientSecret = $state(''),
     busy = $state(false),
@@ -42,7 +45,7 @@
   $effect(() => {
     const selected = platform;
     const revision = ++generation;
-    configured = false;
+    configured = null;
     clientId = clientSecret = message = '';
     busy = false;
     void api<{ configured: boolean }>(`/admin/online/${selected}`)
@@ -78,45 +81,73 @@
   }
 </script>
 
-<Panel>
-  <h2>{definition.name} application</h2>
-  <ProviderIntegrationSwitch {platform} />
+<SettingsCard
+  title={definition.name}
+  description={$providers[platform]
+    ? definition.description
+    : `Turn the integration on to configure a ${definition.name} application.`}
+>
+  {#snippet badge()}
+    {#if $providers[platform] && configured !== null}
+      <StatusChip tone={configured ? 'ok' : 'warn'}
+        >{configured ? 'Configured' : 'Not configured'}</StatusChip
+      >
+    {/if}
+  {/snippet}
+  {#snippet actions()}
+    <ProviderIntegrationSwitch {platform} />
+  {/snippet}
   {#if $providers[platform]}
-    <p>{definition.description}</p>
-    <ProviderSetupInstructions {platform} />
+    {#if configured !== null}
+      <div class={cardBlockClass}>
+        <ProviderSetupInstructions {platform} open={!configured} />
+      </div>
+    {/if}
     <form
-      class={inlineFormClass}
+      class="{cardBlockClass} grid gap-3"
       onsubmit={(event) => {
         event.preventDefault();
         void save();
       }}
     >
-      <FormField>
-        {definition.name} client ID<input
-          class={formControlClass}
-          bind:value={clientId}
-          required
-          autocomplete="off"
-          placeholder={configured
-            ? definition.replacement
-            : definition.placeholder}
-        />
-      </FormField>
-      {#if platform === 'kick'}
+      <div
+        class="grid max-w-[40rem] grid-cols-2 gap-3 compact:grid-cols-1 [&_label]:m-0"
+      >
         <FormField>
-          Kick client secret<input
+          {definition.name} client ID<input
             class={formControlClass}
-            type="password"
-            bind:value={clientSecret}
+            bind:value={clientId}
             required
-            autocomplete="new-password"
+            autocomplete="off"
+            placeholder={configured
+              ? definition.replacement
+              : definition.placeholder}
           />
         </FormField>
-      {/if}
-      <Button type="submit" size="form" disabled={busy}
-        >Save {definition.name} settings</Button
-      >
+        {#if platform === 'kick'}
+          <FormField>
+            Kick client secret<input
+              class={formControlClass}
+              type="password"
+              bind:value={clientSecret}
+              required
+              autocomplete="new-password"
+            />
+          </FormField>
+        {/if}
+      </div>
+      <div class="flex flex-wrap items-center gap-3">
+        <Button type="submit" size="form" disabled={busy}
+          >Save {definition.name} settings</Button
+        >
+        {#if message}<p role="status" class="m-0 text-xs text-muted">
+            {message}
+          </p>{/if}
+      </div>
     </form>
-    {#if message}<p role="status">{message}</p>{/if}
+  {:else if message}
+    <p role="status" class="m-0 {cardBlockClass} text-xs text-muted">
+      {message}
+    </p>
   {/if}
-</Panel>
+</SettingsCard>

@@ -21,7 +21,6 @@
     onsave={(value) => desktopUpdate('policy', value)}
   >
     {#snippet children(save)}
-      <span class="text-xs text-muted">Updates</span>
       <ExclusiveChoiceGroup
         ariaLabel="Desktop update policy"
         value={policy}

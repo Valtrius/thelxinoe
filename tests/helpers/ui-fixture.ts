@@ -288,6 +288,13 @@ export async function installUiFixture(
       return json({
         items: options.approvalUsers ?? [],
       });
+    if (path.startsWith('/admin/acquisition/users/') && method === 'PUT') {
+      const entry = (options.approvalUsers ?? []).find(
+        (candidate) => candidate.id === path.split('/').at(-1),
+      );
+      if (entry) entry.enabled = Boolean(body.enabled);
+      return json({ saved: true });
+    }
     if (path === '/admin/service-connections') return json({ items: [] });
     if (path === '/admin/managers')
       return json({

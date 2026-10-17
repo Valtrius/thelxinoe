@@ -433,7 +433,7 @@ test('every admin settings panel and service tab has populated mocks', async ({
     ['admin/server', '2026.09.30'],
     ['admin/analysis', 'Beyond the Horizon · First Contact'],
     ['admin/providers', 'Daily API budget'],
-    ['admin/services', 'Automatic request approval'],
+    ['admin/services', 'Seerr'],
     ['admin/retention', 'Video downloads'],
     ['admin/backups', 'thelxinoe-preview-0.tar.age'],
     ['admin/people', 'Alex'],

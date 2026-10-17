@@ -243,8 +243,10 @@
   }
 </script>
 
-<tr class="border-t border-line align-top">
-  <th scope="row" class="py-3 pr-3 text-left text-sm font-medium"
+<tr class="align-middle">
+  <th
+    scope="row"
+    class="text-left text-[13px] font-[550] tracking-normal text-foreground normal-case"
     ><span class="inline-flex items-center gap-2"
       >{name}<AttentionDot
         items={$attention.filter(
@@ -256,10 +258,10 @@
       /></span
     ></th
   >
-  <td class="py-3 pr-3 text-sm tabular-nums"
+  <td class="text-xs tabular-nums"
     >{item.installed?.version ?? 'Not installed'}</td
   >
-  <td class="py-3 pr-3">
+  <td>
     <Switch
       size="sm"
       checked={pinned}
@@ -271,7 +273,7 @@
       <span class="sr-only">Pin {name}</span>
     </Switch>
   </td>
-  <td class="py-2 pr-3">
+  <td>
     <AutoSaveForm
       bind:this={preferences}
       label={name + ' preferences'}
@@ -319,8 +321,8 @@
       {/snippet}
     </AutoSaveForm>
   </td>
-  <td class="w-16 py-2 text-xs">
-    <div class="flex items-center gap-1">
+  <td class="w-20 text-xs">
+    <div class="flex items-center justify-end gap-1">
       <OrbitAction
         label={view.label}
         title={view.title}

@@ -18,7 +18,10 @@
     serverUpdateAction,
     serverUpdates,
   } from './server-updates';
-  let { installed = '—' } = $props<{ installed?: string }>();
+  let { installed = '—', inline = false } = $props<{
+    installed?: string;
+    inline?: boolean;
+  }>();
   const status = $derived($serverUpdates.status);
   const request = $derived(status?.request);
   const operation = $derived(
@@ -208,7 +211,7 @@
   }
 </script>
 
-<VersionCard {version} label="Product version">
+<VersionCard {version} label="Product version" {inline}>
   <OrbitAction
     label={view.label ??
       (view.action ? 'Check for server updates' : view.title)}

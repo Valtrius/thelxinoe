@@ -30,14 +30,25 @@
     user,
     active = 'account',
     children,
+    subheader,
     openSettings,
   } = $props<{
     user: User;
     active?: string;
     children: Snippet;
+    subheader?: Snippet;
     openSettings: (name: string) => void;
   }>();
   let query = $state('');
+  let scroller = $state<HTMLElement>();
+  // The navigation and page header stay put; only the cards scroll. A new
+  // section starts at the top. The scroller is positioned so absolutely
+  // placed descendants (screen-reader text, badges) scroll with it instead
+  // of stretching the workspace behind it.
+  $effect(() => {
+    void active;
+    scroller?.scrollTo({ top: 0 });
+  });
   const personal = [
     {
       id: 'account',
@@ -105,14 +116,14 @@
       label: 'Media services',
       icon: Boxes,
       keywords:
-        'seerr recyclarr radarr sonarr lidarr bazarr prowlarr nzbget downloads requests profiles trash guides indexers updates ownership',
+        'seerr recyclarr radarr sonarr lidarr bazarr prowlarr nzbget downloads requests profiles trash guides indexers updates',
     },
     {
       id: 'retention',
       label: 'Auto-delete',
       icon: Hourglass,
       keywords:
-        'auto-delete retention watched deletion grace period movies tv seasons videos storage limit pins',
+        'auto-delete retention watched deletion grace period movies tv seasons videos storage limit pins library files ownership reconcile',
     },
     {
       id: 'backups',
@@ -125,7 +136,7 @@
       id: 'people',
       label: 'People',
       icon: UsersRound,
-      keywords: 'users permissions roles password',
+      keywords: 'users permissions roles password request approval seerr',
     },
     {
       id: 'jobs',
@@ -140,6 +151,31 @@
       keywords: 'administrative history actions users',
     },
   ];
+  // One line under the title explains what each page is for.
+  const descriptions: Record<string, string> = {
+    account:
+      'Your profile, display preferences, appearance and how you sign in.',
+    playback:
+      'Defaults for new playback sessions. Choices made inside the player override them for that title.',
+    online: 'Accounts connected to this server for YouTube, Twitch and Kick.',
+    devices: 'Browsers, desktops and media clients that can use your account.',
+    mpv: 'The desktop player, its bundled tools and their configuration.',
+    connection: 'This desktop app and the server it connects to.',
+    server: 'Health, defaults and maintenance for this Thelxinoe server.',
+    analysis: 'Finds intro and credit segments so viewers can skip them.',
+    providers:
+      'Server-wide applications that let people connect their own YouTube, Twitch and Kick accounts.',
+    services:
+      'Managed containers and connections for requests, downloads and library automation.',
+    retention:
+      'Free up space by removing media once the right people have watched it.',
+    backups:
+      'Encrypted archives of server state, credentials, deployment information and managed-service appdata.',
+    people: 'Accounts on this server and what they can do.',
+    jobs: 'Background jobs running on this server.',
+    audit:
+      'History of administrative actions and media deletions on this server.',
+  };
   const groups = $derived([
     {
       label: 'Personal',
@@ -159,6 +195,7 @@
     groups.flatMap((group) => group.items).find((item) => item.id === active)
       ?.label ?? 'Settings',
   );
+  const description = $derived(descriptions[active] ?? '');
   const filtered = $derived(
     groups.map((group) => ({
       ...group,
@@ -172,12 +209,12 @@
 </script>
 
 <div
-  class="settings-layout mx-auto flex min-h-full w-full max-w-520 items-start gap-8 px-8 py-7 narrow:gap-5 narrow:px-5 compact:flex-col compact:gap-6 compact:px-4 compact:py-4"
+  class="settings-layout mx-auto flex h-(--workspace-height) min-h-0 w-full max-w-520 items-start gap-8 px-8 pt-7 narrow:gap-5 narrow:px-5 compact:h-auto compact:min-h-full compact:flex-col compact:gap-6 compact:px-4 compact:py-4"
 >
   <nav
     aria-label="Settings navigation"
     data-sidebar-resize="xy-pos"
-    class="settings-navigation @container/settings-nav sticky top-0 z-1 max-h-[calc(var(--workspace-height)-2rem)] w-49 overflow-y-auto shrink-0 space-y-6 py-1 compact:static compact:max-h-none compact:w-full compact:overflow-visible compact:space-y-4"
+    class="settings-navigation @container/settings-nav max-h-full w-49 shrink-0 space-y-6 overflow-y-auto py-1 pb-7 compact:max-h-none compact:w-full compact:space-y-4 compact:overflow-visible compact:pb-0"
   >
     <label class="relative block">
       <span class="sr-only">Find a setting</span>
@@ -250,19 +287,30 @@
       </p>{/if}
   </nav>
   <div
-    class="settings-content @container/settings min-w-0 flex-1 compact:w-full"
+    class="settings-content @container/settings flex min-h-0 min-w-0 flex-1 flex-col self-stretch compact:w-full compact:self-auto"
     data-page-region="settings"
     data-sidebar-resize="xy-pos"
     data-sidebar-resize-origin
   >
-    <h1
-      class="mb-7 text-[25px] font-semibold tracking-tight compact:mb-5"
+    <header
+      class="settings-header mb-6 min-w-0 shrink-0 compact:mb-5"
       data-sidebar-resize="xy-pos"
     >
-      {title}
-    </h1>
-    <div class="settings-panels settings-grid">
-      {@render children()}
+      <h1 class="text-[25px] font-semibold tracking-tight">{title}</h1>
+      {#if description}
+        <p class="mt-1.5 mb-0 text-[13px] leading-relaxed text-muted">
+          {description}
+        </p>
+      {/if}
+    </header>
+    {#if subheader}<div class="shrink-0">{@render subheader()}</div>{/if}
+    <div
+      bind:this={scroller}
+      class="settings-scroll relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-7 [scrollbar-gutter:stable] compact:overflow-visible compact:pb-0"
+    >
+      <div class="settings-panels settings-grid">
+        {@render children()}
+      </div>
     </div>
   </div>
 </div>

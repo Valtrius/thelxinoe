@@ -693,7 +693,10 @@ for (const viewport of [
   { width: 1440, height: 700 },
   { width: 390, height: 844 },
 ]) {
-  test(`settings sections and service tabs keep workspace scroll at ${viewport.width}px`, async ({
+  // Wide layouts scroll only the settings column and open each section at its
+  // top. Compact layouts scroll the whole workspace and keep its position.
+  const compact = viewport.width <= 720;
+  test(`settings sections and service tabs keep their scroll at ${viewport.width}px`, async ({
     page,
   }, testInfo) => {
     await page.setViewportSize(viewport);
@@ -706,25 +709,28 @@ for (const viewport of [
       }),
     ).toBeVisible();
     const workspace = page.locator('.workspace-scroll');
+    const scroller = compact ? workspace : page.locator('.settings-scroll');
     const nav = page.getByRole('navigation', { name: 'Settings navigation' });
     const scroll = async () =>
-      workspace.evaluate((element) => element.scrollTop);
+      scroller.evaluate((element) => element.scrollTop);
     const position = 80;
-    await workspace.evaluate((element, top) => {
+    await scroller.evaluate((element, top) => {
       element.scrollTop = top;
     }, position);
     expect(await scroll()).toBe(position);
     for (const name of ['Devices', 'Account', 'Media services']) {
       const link = nav.getByRole('link', { name, exact: true });
       await link.click();
-      await expect(page.locator('.settings-content > h1')).toHaveText(name);
+      await expect(page.locator('.settings-header > h1')).toHaveText(name);
       await expect(page.locator('[data-page-content]')).toHaveAttribute(
         'data-page-phase',
         'idle',
       );
-      await expect.poll(scroll).toBe(position);
+      await expect.poll(scroll).toBe(compact ? position : 0);
       await expect(link).toBeFocused();
     }
+    // On wide layouts the service tabs lead the settings column, so clicking
+    // one brings the column to its top; history still keeps the position.
     const services = page.getByRole('navigation', { name: 'Select service' });
     for (const name of ['Radarr', 'Sonarr', 'NZBGet', 'Seerr']) {
       const link = services.getByRole('link', { name, exact: true });
@@ -734,8 +740,14 @@ for (const viewport of [
         'data-page-phase',
         'idle',
       );
-      await expect.poll(scroll).toBe(position);
+      await expect.poll(scroll).toBe(compact ? position : 0);
       await expect(link).toBeFocused();
+    }
+    if (!compact) {
+      await scroller.evaluate((element, top) => {
+        element.scrollTop = top;
+      }, position);
+      expect(await scroll()).toBe(position);
     }
     await page.goBack();
     await expect(page).toHaveURL(/#admin\/services\/nzbget$/);
@@ -757,6 +769,8 @@ for (const viewport of [
       'idle',
     );
     await expect.poll(scroll).toBe(position);
+    if (!compact)
+      expect(await workspace.evaluate((element) => element.scrollTop)).toBe(0);
     await testInfo.attach('settings-scroll', {
       body: JSON.stringify({
         viewport,
@@ -777,7 +791,10 @@ for (const viewport of [
 test('shorter settings sections clamp scroll to the available content', async ({
   page,
 }, testInfo) => {
-  await page.setViewportSize({ width: 1440, height: 700 });
+  // Only the compact layout scrolls the workspace and keeps its position
+  // across settings sections. Links are clicked in place: an actionable click
+  // would first scroll the stacked navigation back into view.
+  await page.setViewportSize({ width: 390, height: 844 });
   const fixture = await installUiFixture(page, {
     role: 'admin',
     settingsSection: 'devices',
@@ -792,7 +809,7 @@ test('shorter settings sections clamp scroll to the available content', async ({
   await page
     .getByRole('navigation', { name: 'Settings navigation' })
     .getByRole('link', { name: 'Online accounts', exact: true })
-    .click();
+    .dispatchEvent('click');
   await expect(
     page.getByRole('button', { name: 'Connect YouTube', exact: true }),
   ).toBeVisible();
@@ -822,7 +839,10 @@ for (const manualScroll of [false, true]) {
   test(`delayed settings loading ${manualScroll ? 'respects manual scrolling' : 'restores the retained scroll'}`, async ({
     page,
   }, testInfo) => {
-    await page.setViewportSize({ width: 1440, height: 700 });
+    // Only the compact layout scrolls the workspace and keeps its position
+    // across settings sections. Scroll past the stacked navigation so the
+    // loading section is shorter than the retained position.
+    await page.setViewportSize({ width: 390, height: 844 });
     const fixture = await installUiFixture(page, { role: 'admin' });
     const devices = responseGate();
     await page.route('**/api/v1/auth/sessions', async (route) => {
@@ -835,13 +855,15 @@ for (const manualScroll of [false, true]) {
     ).toBeVisible();
     const workspace = page.locator('.workspace-scroll');
     const scroll = () => workspace.evaluate((element) => element.scrollTop);
-    await workspace.evaluate((element) => {
-      element.scrollTop = 80;
-    });
+    const retained = 1200;
+    await workspace.evaluate((element, top) => {
+      element.scrollTop = top;
+    }, retained);
+    expect(await scroll()).toBe(retained);
     await page
       .getByRole('navigation', { name: 'Settings navigation' })
       .getByRole('link', { name: 'Devices', exact: true })
-      .click();
+      .dispatchEvent('click');
     await expect(
       page.locator('[role="status"][aria-label="Loading devices"]'),
     ).toBeAttached();
@@ -849,8 +871,8 @@ for (const manualScroll of [false, true]) {
       'opacity',
       '0',
     );
-    await expect.poll(scroll).toBeLessThan(80);
-    let expected = 80;
+    await expect.poll(scroll).toBeLessThan(retained);
+    let expected = retained;
     if (manualScroll) {
       const before = await scroll();
       await workspace.hover();
@@ -876,7 +898,9 @@ for (const manualScroll of [false, true]) {
 test('rapid settings switches keep the latest scroll while a section first loads', async ({
   page,
 }, testInfo) => {
-  await page.setViewportSize({ width: 1440, height: 700 });
+  // Only the compact layout scrolls the workspace and keeps its position
+  // across settings sections.
+  await page.setViewportSize({ width: 390, height: 844 });
   const fixture = await installUiFixture(page, { role: 'admin' });
   await page.goto('/');
   await expect(page.getByLabel('New password', { exact: true })).toBeVisible();
@@ -896,7 +920,7 @@ test('rapid settings switches keep the latest scroll while a section first loads
     element.scrollTop = 80;
   });
   await nav.getByRole('link', { name: 'Devices', exact: true }).click();
-  await expect(page.locator('.settings-content > h1')).toHaveText('Devices');
+  await expect(page.locator('.settings-header > h1')).toHaveText('Devices');
   await nav.getByRole('link', { name: 'Account', exact: true }).click();
   await expect(page.getByLabel('New password', { exact: true })).toBeVisible();
   await workspace.hover();

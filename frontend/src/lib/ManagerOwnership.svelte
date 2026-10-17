@@ -1,7 +1,9 @@
 <script lang="ts">
   import { api } from './api';
   import Button from './ui/Button.svelte';
-  import Panel from './ui/Panel.svelte';
+  import SettingsCard from './ui/SettingsCard.svelte';
+  import SettingRow from './ui/SettingRow.svelte';
+  import { cardBlockClass } from './ui/styles';
   type File = {
     id: string;
     path: string;
@@ -42,34 +44,49 @@
   }
 </script>
 
-<Panel class="settings-wide">
-  <h2>Media ownership and operations</h2>
-  <p>
-    Refresh ownership after a manager import or configuration change. Unresolved
-    files cannot be deleted.
-  </p>
-  <Button
-    variant="secondary"
-    size="form"
-    disabled={busy}
-    onclick={() => void refresh()}>Reconcile file ownership</Button
+<SettingsCard
+  title="Library files"
+  description="Auto-delete only removes files whose manager is known. Reconcile after a Radarr, Sonarr or Lidarr import or configuration change; unresolved files are never deleted."
+>
+  <SettingRow
+    label="Reconcile file ownership"
+    description="Re-reads which manager owns each library file and lists any recent media operations."
   >
-  {#if message}<p role="status">{message}</p>{/if}
-  {#each files as file (file.id)}<article>
-      <p>{file.path} · <strong>{file.ownership}</strong></p>
-      {#each file.bindings as binding (binding.service)}<p class="text-muted">
+    <Button
+      variant="secondary"
+      size="form"
+      disabled={busy}
+      onclick={() => void refresh()}>Reconcile file ownership</Button
+    >
+  </SettingRow>
+  {#if message}<p role="status" class="m-0 {cardBlockClass} text-xs text-muted">
+      {message}
+    </p>{/if}
+  {#each files as file (file.id)}
+    <div class="{cardBlockClass} text-xs">
+      <p class="m-0 wrap-anywhere">
+        {file.path} · <strong>{file.ownership}</strong>
+      </p>
+      {#each file.bindings as binding (binding.service)}<p
+          class="mt-1 mb-0 text-muted"
+        >
           {binding.service} · file {binding.file_id} · media {binding.entity_id}{binding
             .members.length
             ? ` · episode/track IDs ${binding.members.join(', ')}`
             : ''}
         </p>{/each}
-    </article>{/each}
-  {#if operations.length}<h3>Recent operations</h3>{/if}
-  {#each operations as operation (operation.id)}<article>
-      <p>
-        {operation.title} · {operation.action} · {operation.state} · {operation.files}
-        file(s)
-      </p>
-      {#if operation.error}<p>{operation.error}</p>{/if}
-    </article>{/each}
-</Panel>
+    </div>
+  {/each}
+  {#if operations.length}
+    <div class="{cardBlockClass} text-xs">
+      <h3 class="mb-2 text-xs font-semibold">Recent operations</h3>
+      {#each operations as operation (operation.id)}
+        <p class="mb-1 last:mb-0">
+          {operation.title} · {operation.action} · {operation.state} · {operation.files}
+          file(s){#if operation.error}
+            <span class="block text-danger">{operation.error}</span>{/if}
+        </p>
+      {/each}
+    </div>
+  {/if}
+</SettingsCard>

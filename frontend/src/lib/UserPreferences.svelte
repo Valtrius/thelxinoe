@@ -1,18 +1,17 @@
 <script lang="ts">
   import ContentSkeleton from './ui/ContentSkeleton.svelte';
   import Notice from './ui/Notice.svelte';
-  import FormField from './ui/FormField.svelte';
-  import { formControlClass } from './ui/styles';
+  import { cardBlockClass, formControlClass } from './ui/styles';
   import { api, type User } from './api';
   import TimezoneSelect from './TimezoneSelect.svelte';
   import { onDestroy, untrack } from 'svelte';
   import { captureSession } from './session';
   import { LatestRequest } from './latest-request';
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
-  import Panel from './ui/Panel.svelte';
+  import SettingsCard from './ui/SettingsCard.svelte';
+  import SettingRow from './ui/SettingRow.svelte';
   import ProfilePicture from './ProfilePicture.svelte';
   import AppearanceSettings from './AppearanceSettings.svelte';
-  import { inlineFormClass } from './ui/styles';
   let {
     user,
     changed,
@@ -33,6 +32,7 @@
     server_time_format: '12h' | '24h';
   };
   type Draft = { timezone: string; time_format: '' | '12h' | '24h' };
+  const ids = $props.id();
   const userId = $derived(user.id);
   let timezone = $state(''),
     serverTimezone = $state('UTC'),
@@ -108,46 +108,72 @@
   }
 </script>
 
-<Panel aria-label="Your display preferences">
-  <h2>Your display preferences</h2>
-  <div class="grid gap-6">
-    <ProfilePicture {user} changed={avatarChanged} />
-    {#if confirmed}<AutoSaveForm
-        label="Display preferences"
-        class={inlineFormClass}
-        onsave={save}
-        bind:busy={saving}
-        value={{ timezone, time_format: timeFormat }}
-        baseline={confirmed}
-        onRevert={(previous) => {
-          timezone = previous.timezone;
-          timeFormat = previous.time_format;
-        }}
+<SettingsCard
+  aria-label="Your display preferences"
+  title="Your display preferences"
+  description="Your picture, time display and how the app looks. Changes save automatically."
+  autoSave
+  {saving}
+>
+  <ProfilePicture {user} changed={avatarChanged} />
+  {#if confirmed}
+    <AutoSaveForm
+      label="Display preferences"
+      class="divide-y divide-line"
+      onsave={save}
+      bind:busy={saving}
+      value={{ timezone, time_format: timeFormat }}
+      baseline={confirmed}
+      onRevert={(previous) => {
+        timezone = previous.timezone;
+        timeFormat = previous.time_format;
+      }}
+    >
+      <SettingRow
+        label="Display timezone"
+        description="Used for every time shown in the app."
+        for={`${ids}-timezone`}
+        control="field"
       >
         <TimezoneSelect
+          id={`${ids}-timezone`}
           label="Display timezone"
           bind:value={timezone}
           defaultTimezone={serverTimezone}
         />
-        <FormField
-          >Display time format<select
-            class={formControlClass}
-            bind:value={timeFormat}
-            ><option value=""
-              >Use server default ({serverTimeFormat === '12h'
-                ? '12-hour'
-                : '24-hour'})</option
-            ><option value="24h">24-hour</option><option value="12h"
-              >12-hour</option
-            ></select
-          ></FormField
+      </SettingRow>
+      <SettingRow
+        label="Display time format"
+        for={`${ids}-format`}
+        control="field"
+      >
+        <select
+          id={`${ids}-format`}
+          class={formControlClass}
+          bind:value={timeFormat}
+          ><option value=""
+            >Use server default ({serverTimeFormat === '12h'
+              ? '12-hour'
+              : '24-hour'})</option
+          ><option value="24h">24-hour</option><option value="12h"
+            >12-hour</option
+          ></select
         >
-      </AutoSaveForm>{:else if !error}<ContentSkeleton
+      </SettingRow>
+    </AutoSaveForm>
+  {:else if !error}
+    <div class={cardBlockClass}>
+      <ContentSkeleton
         label="Loading display preferences"
         variant="settings"
         count={2}
-      />{/if}
-    {#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
-    <AppearanceSettings />
-  </div>
-</Panel>
+      />
+    </div>
+  {/if}
+  {#if error}
+    <div class={cardBlockClass}>
+      <Notice role="alert" variant="error" class="mb-0">{error}</Notice>
+    </div>
+  {/if}
+  <AppearanceSettings />
+</SettingsCard>

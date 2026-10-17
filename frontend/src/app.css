@@ -63,16 +63,23 @@
 @custom-variant settings-panel (&:where(.settings-grid > .panel));
 @custom-variant settings-control (&:where(.settings-content *));
 
+/* Settings stack one card per row in reading order; `settings-pair` is the
+   only two-up layout, reserved for symmetric sibling cards. */
 @utility settings-grid {
-  @apply grid min-w-0 grid-cols-1 items-start gap-x-8 gap-y-7 @min-[700px]/settings:grid-cols-2 @min-[1320px]/settings:grid-cols-3;
+  @apply grid min-w-0 grid-cols-1 items-start gap-5;
 }
 
 @utility settings-wide {
-  @apply col-span-full @min-[1320px]/settings:col-span-2;
+  @apply col-span-full;
 }
 
+@utility settings-pair {
+  @apply grid min-w-0 grid-cols-1 items-start gap-5 @min-[760px]/settings:grid-cols-2;
+}
+
+/* Work sections inside the media services page render as cards. */
 @utility settings-section {
-  @apply min-w-0 border-t border-line pt-5 [&_h3]:text-base [&_h3]:font-semibold;
+  @apply min-w-0 border border-line bg-surface p-5.5 compact:p-4 [&_h3]:text-[15px]! [&_h3]:font-semibold! [&_h3]:tracking-[-0.01em];
 }
 
 @property --feed-label-scale-x {

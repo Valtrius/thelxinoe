@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { KeyRound } from '@lucide/svelte';
   import { api, desktop } from './api';
   import {
     type AuthMethods,
@@ -16,11 +17,14 @@
   import { captureSession } from './session';
   import PasswordSettings from './PasswordSettings.svelte';
   import TotpEnrollment from './TotpEnrollment.svelte';
-  import Panel from './ui/Panel.svelte';
+  import SettingsCard from './ui/SettingsCard.svelte';
+  import SettingRow from './ui/SettingRow.svelte';
+  import StatusChip from './ui/StatusChip.svelte';
+  import ContentSkeleton from './ui/ContentSkeleton.svelte';
   import Button from './ui/Button.svelte';
-  import FormField from './ui/FormField.svelte';
   import Notice from './ui/Notice.svelte';
-  import { formControlClass, rowClass } from './ui/styles';
+  import { cardBlockClass, formControlClass } from './ui/styles';
+  import { twMerge } from 'tailwind-merge';
   let methods = $state<AuthMethods | null>(null),
     options = $state<AuthOptions | null>(null);
   let busy = $state(false),
@@ -68,89 +72,126 @@
   }
 </script>
 
-<Panel>
-  <h2>Sign-in methods</h2>
+<SettingsCard
+  title="Sign-in methods"
+  description="Keep at least one method active. The last remaining method cannot be removed."
+>
   {#if methods}
-    <div class={rowClass}>
-      <div class="min-w-0 flex-1">
-        <strong>Password</strong><span class="ml-3 text-muted"
-          >{methods.password ? 'Enabled' : 'Not set'}</span
+    <SettingRow
+      label="Password"
+      description={methods.password
+        ? 'Change it in the card below.'
+        : 'Set one in the card below to sign in with a username and password.'}
+    >
+      {#snippet badge()}
+        <StatusChip tone={methods?.password ? 'ok' : 'neutral'}
+          >{methods?.password ? 'Enabled' : 'Not set'}</StatusChip
         >
-      </div>
+      {/snippet}
       {#if methods.password}<Button
-          variant="secondary"
+          variant="ghost"
+          size="form"
           disabled={busy || !(methods.passkeys.length || methods.oidc)}
           onclick={() => act(() => remove('/me/auth/password'))}
           >Remove password</Button
         >{/if}
-    </div>
-    <div class={rowClass}>
-      <div class="min-w-0 flex-1">
-        <strong>Authenticator app</strong><span class="ml-3 text-muted"
-          >{methods.totp ? 'Enabled for password sign-in' : 'Not enabled'}</span
+    </SettingRow>
+    <SettingRow
+      label="Authenticator app"
+      description={!methods.totp && !methods.password
+        ? 'Set a password first. The authenticator app protects password sign-in.'
+        : 'One-time codes that protect password sign-in.'}
+    >
+      {#snippet badge()}
+        <StatusChip tone={methods?.totp ? 'ok' : 'neutral'}
+          >{methods?.totp ? 'Enabled' : 'Not enabled'}</StatusChip
         >
-        {#if !methods.totp && !methods.password}<small class="block text-muted"
-            >Set a password first. The authenticator app protects password
-            sign-in.</small
-          >{/if}
-      </div>
+      {/snippet}
       {#if methods.totp}<Button
-          variant="secondary"
+          variant="ghost"
+          size="form"
           disabled={busy}
           onclick={() => act(() => remove('/me/auth/totp'))}
           >Remove authenticator</Button
         >
       {:else}<Button
           variant="secondary"
+          size="form"
           disabled={busy || !methods.password}
           onclick={() =>
             act(async () => {
               enrollment = await api<TotpSetup>('/me/auth/totp/start', 'POST');
             })}>Set up authenticator</Button
         >{/if}
-    </div>
-    {#each methods.passkeys as passkey (passkey.id)}
-      <div class={rowClass}>
-        <strong class="min-w-0 flex-1 truncate">{passkey.name}</strong><Button
+    </SettingRow>
+    <SettingRow
+      label="Passkeys"
+      description={options && !options.passkeys
+        ? "Passkeys aren't available at this address. Browsers only allow them over HTTPS with a hostname, or on localhost."
+        : 'Sign in with your device’s fingerprint, face or PIN.'}
+    >
+      {#snippet badge()}
+        <StatusChip
+          tone={methods?.passkeys.length ? 'info' : 'neutral'}
+          dot={false}
+          >{methods?.passkeys.length
+            ? `${methods.passkeys.length} ${methods.passkeys.length === 1 ? 'passkey' : 'passkeys'}`
+            : 'None'}</StatusChip
+        >
+      {/snippet}
+      {#if options?.passkeys && !atCanonical}<Button
           variant="secondary"
+          size="form"
+          disabled={busy}
+          onclick={() => canonicalAccount()}>Manage passkeys in browser</Button
+        >{/if}
+    </SettingRow>
+    {#each methods.passkeys as passkey (passkey.id)}
+      <SettingRow sub label={passkey.name}>
+        {#snippet lead()}
+          <KeyRound size={15} class="shrink-0 text-muted" aria-hidden="true" />
+        {/snippet}
+        <Button
+          variant="ghost"
+          size="form"
           aria-label={`Remove passkey ${passkey.name}`}
           disabled={busy ||
-            (!methods.password &&
-              !methods.oidc &&
-              methods.passkeys.length === 1)}
+            (!methods?.password &&
+              !methods?.oidc &&
+              methods?.passkeys.length === 1)}
           onclick={() => act(() => remove(`/me/auth/passkeys/${passkey.id}`))}
           >Remove</Button
         >
-      </div>
+      </SettingRow>
     {/each}
-    {#if options?.passkeys}
-      {#if atCanonical}<div class="max-w-120 pt-3">
-          <FormField
-            >Passkey name<input
-              class={formControlClass}
-              bind:value={passkeyName}
-              placeholder="Passkey"
-              maxlength="100"
-              disabled={busy}
-            /></FormField
-          >
-        </div>{/if}
-      <div class="flex flex-wrap gap-2 py-3">
+    {#if options?.passkeys && atCanonical}
+      <SettingRow
+        sub
+        label="Add a passkey"
+        description="Name it after the device or security key you will use."
+      >
+        <input
+          class={twMerge(formControlClass, 'w-44 compact:w-full')}
+          aria-label="Passkey name"
+          bind:value={passkeyName}
+          placeholder="Passkey"
+          maxlength="100"
+          disabled={busy}
+        />
         <Button
           variant="secondary"
+          size="form"
           disabled={busy}
           onclick={() =>
-            !atCanonical
-              ? canonicalAccount()
-              : act(async () => {
-                  await registerPasskey(passkeyName || 'Passkey');
-                  passkeyName = '';
-                  notice = 'Passkey added';
-                })}
-          >{atCanonical ? 'Add passkey' : 'Manage passkeys in browser'}</Button
+            act(async () => {
+              await registerPasskey(passkeyName || 'Passkey');
+              passkeyName = '';
+              notice = 'Passkey added';
+            })}>Add passkey</Button
         >
-        {#if atCanonical && methods.passkeys.length}<Button
-            variant="secondary"
+        {#if methods.passkeys.length}<Button
+            variant="ghost"
+            size="form"
             disabled={busy}
             onclick={() =>
               act(async () => {
@@ -158,43 +199,53 @@
                 notice = 'Identity verified';
               }, false)}>Verify with passkey</Button
           >{/if}
-      </div>
-    {:else if options}
-      <p class="text-xs text-muted">
-        Passkeys aren't available at this address. Browsers only allow them over
-        HTTPS with a hostname, or on localhost.
-      </p>
+      </SettingRow>
     {/if}
     {#if options?.oidc}
-      <div class={rowClass}>
-        <div class="min-w-0 flex-1">
-          <strong>{options.oidc.label}</strong><span class="ml-3 text-muted"
-            >{methods.oidc ? 'Linked' : 'Not linked'}</span
+      <SettingRow
+        label={options.oidc.label}
+        description={options.oidc.available
+          ? 'Single sign-on through your identity provider.'
+          : 'Identity-provider sign-in needs this server to be reached over HTTPS.'}
+      >
+        {#snippet badge()}
+          <StatusChip tone={methods?.oidc ? 'ok' : 'neutral'}
+            >{methods?.oidc ? 'Linked' : 'Not linked'}</StatusChip
           >
-          {#if !options.oidc.available}<small class="block text-muted"
-              >Identity-provider sign-in needs this server to be reached over
-              HTTPS.</small
-            >{/if}
-        </div>
+        {/snippet}
         {#if methods.oidc}<Button
-            variant="secondary"
+            variant="ghost"
+            size="form"
             disabled={busy || (!methods.password && !methods.passkeys.length)}
             onclick={() => act(() => remove('/me/auth/oidc'))}
             >Unlink identity provider</Button
           >
         {:else}<Button
             variant="secondary"
+            size="form"
             disabled={busy || !options.oidc.available}
             onclick={() =>
               !atCanonical ? canonicalAccount() : act(() => oidcSignIn('link'))}
             >Link identity provider</Button
           >{/if}
-      </div>
+      </SettingRow>
     {/if}
+  {:else if !error}
+    <div class={cardBlockClass}>
+      <ContentSkeleton label="Loading sign-in methods" count={3} />
+    </div>
   {/if}
-  {#if error}<Notice role="alert" variant="error">{error}</Notice>{/if}
-  {#if notice}<p role="status">{notice}</p>{/if}
-</Panel>
+  {#if error || notice}
+    <div class={cardBlockClass}>
+      {#if error}<Notice role="alert" variant="error" class="mb-0"
+          >{error}</Notice
+        >{/if}
+      {#if notice}<p role="status" class="m-0 text-xs text-muted">
+          {notice}
+        </p>{/if}
+    </div>
+  {/if}
+</SettingsCard>
 {#if enrollment}<TotpEnrollment
     setup={enrollment}
     onClose={() => {

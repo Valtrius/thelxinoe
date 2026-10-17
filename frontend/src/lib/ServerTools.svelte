@@ -4,6 +4,9 @@
   import ServerToolRow from './ServerToolRow.svelte';
   import type { ServerToolStatus } from './server-tools';
   import ContentSkeleton from './ui/ContentSkeleton.svelte';
+  import SettingsCard from './ui/SettingsCard.svelte';
+  import Button from './ui/Button.svelte';
+  import { cardBlockClass, cardTableClass } from './ui/styles';
   let status = $state<ServerToolStatus | null>(null);
   let error = $state('');
   let checking = $state(false);
@@ -45,28 +48,37 @@
   });
 </script>
 
-<section aria-label="Server tools" class="min-w-0">
-  <div class="flex items-center justify-between gap-3">
-    <h2>Tools</h2>
-    <button
-      class="border border-line px-3 py-1.5 text-xs disabled:opacity-40"
+<SettingsCard
+  id="server-tools"
+  aria-label="Server tools"
+  title="Tools"
+  description="Bundled binaries used for downloads, streaming and media analysis."
+>
+  {#snippet actions()}
+    <Button
+      variant="secondary"
+      size="form"
       disabled={checking || status?.supported === false}
-      onclick={check}>Check for updates</button
+      onclick={check}>Check for updates</Button
     >
-  </div>
-  {#if status?.supported === false}<p class="mt-2 text-xs text-muted">
-      Managed tools require the Linux x86-64 server image.
-    </p>{/if}
-  {#if error}<p role="alert" class="mt-2 text-xs text-danger">{error}</p>{/if}
-  <div class="mt-2 overflow-x-auto">
-    <table class="w-full text-left" aria-label="Server tool versions">
-      <thead class="text-xs text-muted"
+  {/snippet}
+  {#if status?.supported === false || error}
+    <div class="{cardBlockClass} grid gap-2">
+      {#if status?.supported === false}<p class="m-0 text-xs text-muted">
+          Managed tools require the Linux x86-64 server image.
+        </p>{/if}
+      {#if error}<p role="alert" class="m-0 text-xs text-danger">
+          {error}
+        </p>{/if}
+    </div>
+  {/if}
+  <div class="overflow-x-auto">
+    <table class={cardTableClass} aria-label="Server tool versions">
+      <thead
         ><tr
-          ><th class="py-2 pr-3 font-normal">Tool</th><th
-            class="py-2 pr-3 font-normal">Installed</th
-          ><th class="py-2 pr-3 font-normal">Pinned</th><th
-            class="py-2 pr-3 font-normal">Updates</th
-          ><th class="py-2 font-normal">Status</th></tr
+          ><th>Tool</th><th>Installed</th><th>Pinned</th><th>Updates</th><th
+            class="text-right">Status</th
+          ></tr
         ></thead
       >
       <tbody
@@ -82,4 +94,4 @@
       >
     </table>
   </div>
-</section>
+</SettingsCard>

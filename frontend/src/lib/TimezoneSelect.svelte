@@ -6,13 +6,17 @@
   import { isServerUpdateInterruption } from './server-updates';
   import Button from './ui/Button.svelte';
 
+  // With `id`, only the select renders and the caller labels it (for example
+  // a SettingRow with `for`); otherwise the label wraps the select.
   let {
     label,
+    id,
     value = $bindable('UTC'),
     defaultTimezone,
     disabled = false,
   }: {
     label: string;
+    id?: string;
     value?: string;
     defaultTimezone?: string;
     disabled?: boolean;
@@ -46,24 +50,39 @@
   });
 </script>
 
-<FormField>
-  {label}
+{#snippet options()}
+  {#if defaultTimezone}
+    <option value="">Use server default ({defaultTimezone})</option>
+  {/if}
+  {#if !zones.length && value}
+    <option {value}>{value}</option>
+  {/if}
+  {#each zones as zone (zone)}
+    <option value={zone}>{zone}</option>
+  {/each}
+{/snippet}
+
+{#if id}
   <select
+    {id}
     class={formControlClass}
     bind:value
     disabled={disabled || loading || Boolean(error)}
   >
-    {#if defaultTimezone}
-      <option value="">Use server default ({defaultTimezone})</option>
-    {/if}
-    {#if !zones.length && value}
-      <option {value}>{value}</option>
-    {/if}
-    {#each zones as zone (zone)}
-      <option value={zone}>{zone}</option>
-    {/each}
+    {@render options()}
   </select>
-</FormField>
+{:else}
+  <FormField>
+    {label}
+    <select
+      class={formControlClass}
+      bind:value
+      disabled={disabled || loading || Boolean(error)}
+    >
+      {@render options()}
+    </select>
+  </FormField>
+{/if}
 {#if error}
   <p role="alert">Could not load timezones: {error}</p>
   <Button

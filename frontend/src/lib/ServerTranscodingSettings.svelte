@@ -5,13 +5,16 @@
   import { captureSession } from './session';
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
   import Switch from './ui/Switch.svelte';
-  import Panel from './ui/Panel.svelte';
+  import SettingsCard from './ui/SettingsCard.svelte';
+  import SettingRow from './ui/SettingRow.svelte';
   import Notice from './ui/Notice.svelte';
   import Button from './ui/Button.svelte';
   import ContentSkeleton from './ui/ContentSkeleton.svelte';
+  import { cardBlockClass } from './ui/styles';
 
   let { revision = 0 } = $props<{ revision?: number }>();
   type Policy = { video_transcoding: boolean; audio_transcoding: boolean };
+  const ids = $props.id();
   let confirmed = $state<Policy | null>(null);
   let draft = $state<Policy>({
     video_transcoding: true,
@@ -74,36 +77,45 @@
   }
 </script>
 
-<Panel>
-  <h2>Transcoding</h2>
+<SettingsCard
+  id="server-transcoding"
+  title="Transcoding"
+  description="Convert media on the fly when a device cannot play the original."
+  autoSave
+  {saving}
+>
   {#if confirmed}
     <AutoSaveForm
       label="Server transcoding settings"
-      class="grid justify-items-start gap-4"
+      class="divide-y divide-line"
       value={draft}
       baseline={confirmed}
       onsave={save}
       bind:busy={saving}
       onRevert={(previous) => (draft = previous)}
     >
-      <Switch bind:checked={draft.video_transcoding}
-        >Allow video transcoding</Switch
-      >
-      <Switch bind:checked={draft.audio_transcoding}
-        >Allow audio transcoding</Switch
-      >
+      <SettingRow label="Allow video transcoding" for={`${ids}-video`}>
+        <Switch id={`${ids}-video`} bind:checked={draft.video_transcoding} />
+      </SettingRow>
+      <SettingRow label="Allow audio transcoding" for={`${ids}-audio`}>
+        <Switch id={`${ids}-audio`} bind:checked={draft.audio_transcoding} />
+      </SettingRow>
     </AutoSaveForm>
   {:else if !error}
-    <ContentSkeleton
-      label="Loading transcoding settings"
-      variant="settings"
-      count={2}
-    />
+    <div class={cardBlockClass}>
+      <ContentSkeleton
+        label="Loading transcoding settings"
+        variant="settings"
+        count={2}
+      />
+    </div>
   {/if}
   {#if error}
-    <Notice role="alert" variant="error">{error}</Notice>
-    <Button variant="secondary" size="form" onclick={() => void load()}
-      >Retry transcoding settings</Button
-    >
+    <div class="{cardBlockClass} grid justify-items-start gap-3">
+      <Notice role="alert" variant="error" class="mb-0">{error}</Notice>
+      <Button variant="secondary" size="form" onclick={() => void load()}
+        >Retry transcoding settings</Button
+      >
+    </div>
   {/if}
-</Panel>
+</SettingsCard>

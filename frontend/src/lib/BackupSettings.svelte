@@ -1,6 +1,10 @@
 <script lang="ts">
   import FormField from './ui/FormField.svelte';
-  import { formControlClass } from './ui/styles';
+  import {
+    cardBlockClass,
+    cardTableClass,
+    formControlClass,
+  } from './ui/styles';
   import Switch from './ui/Switch.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
@@ -13,9 +17,11 @@
   import Button from './ui/Button.svelte';
   import ExclusiveChoiceGroup from './ui/ExclusiveChoiceGroup.svelte';
   import Notice from './ui/Notice.svelte';
-  import Panel from './ui/Panel.svelte';
-  import { rowClass } from './ui/styles';
+  import SettingsCard from './ui/SettingsCard.svelte';
+  import SettingRow from './ui/SettingRow.svelte';
+  import StatusChip from './ui/StatusChip.svelte';
   import { definitions } from './services/feature';
+  import { reveal } from './ui/reveal';
   let { timezone, timeFormat } = $props<{
     timezone: string;
     timeFormat: '12h' | '24h';
@@ -49,6 +55,14 @@
     failed: 'Failed',
     missed: 'Skipped',
   };
+  const runTones: Record<Run['state'], 'ok' | 'warn' | 'bad' | 'info'> = {
+    waiting: 'warn',
+    running: 'info',
+    complete: 'ok',
+    failed: 'bad',
+    missed: 'warn',
+  };
+  const ids = $props.id();
   let items = $state<Backup[]>([]),
     passphrase = $state(''),
     confirmation = $state(false),
@@ -67,7 +81,9 @@
     automaticPassphrase = $state(''),
     automaticConfirmation = $state(''),
     passphraseMessage = $state(''),
-    savingPassphrase = $state(false);
+    savingPassphrase = $state(false),
+    savingPolicy = $state(false),
+    replacingPassphrase = $state(false);
   const hour = (value: number) => `${String(value).padStart(2, '0')}:00`;
   const time = (seconds: number) =>
     new Date(seconds * 1000).toLocaleString(undefined, {
@@ -76,6 +92,12 @@
     });
   const restoring = $derived(items.find((item) => item.id === restoreId));
   const listed = $derived(restoring?.components ?? []);
+  const stageTone = (stage: string) =>
+    ['complete', 'restored', 'imported'].includes(stage)
+      ? 'ok'
+      : stage.includes('fail')
+        ? 'bad'
+        : 'info';
   function label(item: { kind: string; name: string }) {
     if (item.kind === 'server') return 'Thelxinoe server';
     return definitions.find((d) => d.kind === item.kind)?.label ?? item.kind;
@@ -129,6 +151,7 @@
       automaticPassphrase = '';
       automaticConfirmation = '';
       passphraseSaved = true;
+      replacingPassphrase = false;
       passphraseMessage = 'Passphrase saved.';
     } catch (e) {
       if (owns()) passphraseMessage = String(e);
@@ -173,20 +196,27 @@
   }
 </script>
 
-<Panel aria-label="Automatic backups">
-  <h2>Automatic backups</h2>
-  <p>
-    Automatic backups run once a day when the server maintenance window opens ({hour(
-      maintenance.start,
-    )}–{hour(maintenance.end)}
-    {timezone}), before automatic updates. They wait up to 30 minutes for
-    playback and background work to finish; updates continue if the backup fails
-    or is skipped. Change the window in Server settings.
-  </p>
+<SettingsCard
+  aria-label="Automatic backups"
+  title="Automatic backups"
+  description={`Run once a day when the maintenance window opens (${hour(maintenance.start)}–${hour(maintenance.end)} ${timezone}), before automatic updates. They wait up to 30 minutes for playback and background work; updates continue if the backup fails or is skipped. Change the window in Server settings.`}
+  autoSave
+  saving={savingPolicy}
+>
+  {#snippet badge()}
+    {#if initialized}
+      <StatusChip tone={mode === 'automatic' ? 'ok' : 'neutral'}
+        >{mode === 'automatic'
+          ? `Daily · ${hour(maintenance.start)}–${hour(maintenance.end)}`
+          : 'Manual'}</StatusChip
+      >
+    {/if}
+  {/snippet}
   {#if initialized}
     <AutoSaveForm
       label="Automatic backup settings"
-      class="flex flex-wrap items-center gap-x-3 gap-y-2"
+      class="divide-y divide-line"
+      bind:busy={savingPolicy}
       value={{ policy: mode, retain }}
       onRevert={(previous) => {
         mode = previous.policy;
@@ -195,180 +225,259 @@
       onsave={(submitted) => api('/admin/backups/policy', 'POST', submitted)}
     >
       {#snippet children(save)}
-        <ExclusiveChoiceGroup
-          ariaLabel="Backup policy"
-          value={mode}
-          choices={[
-            { value: 'automatic', label: 'Automatic' },
-            { value: 'manual', label: 'Manual' },
-          ]}
-          onChange={(value) => {
-            mode = value;
-            void save();
-          }}
-        />
+        <SettingRow
+          label="Schedule"
+          description="Automatic runs daily inside the maintenance window. Manual only keeps backups you start yourself."
+        >
+          <ExclusiveChoiceGroup
+            ariaLabel="Backup policy"
+            value={mode}
+            choices={[
+              { value: 'automatic', label: 'Automatic' },
+              { value: 'manual', label: 'Manual' },
+            ]}
+            onChange={(value) => {
+              mode = value;
+              void save();
+            }}
+          />
+        </SettingRow>
         {#if mode === 'automatic'}
-          <label class="flex items-center gap-2 text-xs text-muted"
-            >Keep<input
+          <SettingRow
+            label="Keep"
+            description="Older automatic archives are deleted after a newer automatic backup succeeds. Manual and imported archives are never deleted automatically."
+          >
+            <input
               aria-label="Automatic backups to keep"
-              class={[formControlClass, 'h-8! w-16! px-2! py-1!']}
+              class={[formControlClass, 'h-8.5! w-16! px-2! py-1! text-center']}
               type="number"
               min="1"
               max="365"
               required
               bind:value={retain}
-            />newest automatic archives</label
-          >
+            />
+            <span class="text-xs text-muted">newest automatic archives</span>
+          </SettingRow>
         {/if}
       {/snippet}
     </AutoSaveForm>
     {#if mode === 'automatic'}
-      <p>
-        Older automatic archives are deleted after a newer automatic backup
-        succeeds. Manual and imported archives are never deleted automatically.
-      </p>
-      {#if passphraseSaved}
-        <p>
-          A passphrase is saved for automatic backups. Replacing it only affects
-          later backups; existing archives keep the passphrase they were created
-          with.
-        </p>
-      {:else}
-        <Notice tone="warning"
-          ><p>Save a passphrase to start automatic backups.</p></Notice
-        >
-      {/if}
-      <form
-        aria-label="Automatic backup passphrase"
-        class="my-4 grid max-w-136 gap-3"
-        onsubmit={(event) => {
-          event.preventDefault();
-          void savePassphrase();
-        }}
+      <SettingRow
+        label="Passphrase"
+        description={passphraseSaved
+          ? 'Used for later automatic backups. Existing archives keep the passphrase they were created with.'
+          : 'Save a passphrase to start automatic backups.'}
       >
-        <FormField
-          >{passphraseSaved ? 'New passphrase' : 'Passphrase'}<input
-            class={formControlClass}
-            type="password"
-            autocomplete="new-password"
-            minlength="16"
-            bind:value={automaticPassphrase}
-          /></FormField
-        >
-        <FormField
-          >Confirm passphrase<input
-            class={formControlClass}
-            type="password"
-            autocomplete="new-password"
-            minlength="16"
-            bind:value={automaticConfirmation}
-          /></FormField
-        >
-        <div>
-          <Button
+        {#snippet badge()}
+          <StatusChip tone={passphraseSaved ? 'ok' : 'warn'}
+            >{passphraseSaved ? 'Set' : 'Not set'}</StatusChip
+          >
+        {/snippet}
+        {#if passphraseSaved}<Button
+            variant="secondary"
             size="form"
-            type="submit"
-            disabled={savingPassphrase ||
-              automaticPassphrase.length < 16 ||
-              automaticPassphrase !== automaticConfirmation}
-            >{passphraseSaved
-              ? 'Replace passphrase'
-              : 'Save passphrase'}</Button
+            onclick={() => (replacingPassphrase = !replacingPassphrase)}
+            >{replacingPassphrase
+              ? 'Keep current passphrase'
+              : 'Replace passphrase…'}</Button
+          >{/if}
+      </SettingRow>
+      {#if !passphraseSaved || replacingPassphrase}
+        <form
+          transition:reveal
+          aria-label="Automatic backup passphrase"
+          class="{cardBlockClass} grid gap-3 bg-surface-soft"
+          onsubmit={(event) => {
+            event.preventDefault();
+            void savePassphrase();
+          }}
+        >
+          <div
+            class="grid max-w-[36rem] grid-cols-2 gap-3 compact:grid-cols-1 [&_label]:m-0"
           >
-        </div>
-        {#if automaticConfirmation && automaticPassphrase !== automaticConfirmation}<p
-            class="text-muted"
+            <FormField
+              >{passphraseSaved ? 'New passphrase' : 'Passphrase'}<input
+                class={formControlClass}
+                type="password"
+                autocomplete="new-password"
+                minlength="16"
+                bind:value={automaticPassphrase}
+              /></FormField
+            >
+            <FormField
+              >Confirm passphrase<input
+                class={formControlClass}
+                type="password"
+                autocomplete="new-password"
+                minlength="16"
+                bind:value={automaticConfirmation}
+              /></FormField
+            >
+          </div>
+          <div class="flex flex-wrap items-center gap-3">
+            <Button
+              size="form"
+              type="submit"
+              disabled={savingPassphrase ||
+                automaticPassphrase.length < 16 ||
+                automaticPassphrase !== automaticConfirmation}
+              >{passphraseSaved
+                ? 'Replace passphrase'
+                : 'Save passphrase'}</Button
+            >
+            <span class="text-xs text-muted">At least 16 characters.</span>
+            {#if automaticConfirmation && automaticPassphrase !== automaticConfirmation}<span
+                class="text-xs text-muted"
+              >
+                The passphrases do not match.
+              </span>{/if}
+          </div>
+          {#if passphraseMessage}<p
+              role="status"
+              class="m-0 text-xs text-muted"
+            >
+              {passphraseMessage}
+            </p>{/if}
+        </form>
+      {:else if passphraseMessage}
+        <p role="status" class="m-0 {cardBlockClass} text-xs text-muted">
+          {passphraseMessage}
+        </p>
+      {/if}
+      {#if run}
+        <SettingRow
+          label="Last automatic backup"
+          description={`${time(run.updated_at)}${run.error ? ` · ${run.error}` : ''}`}
+        >
+          <StatusChip tone={runTones[run.state] ?? 'neutral'}
+            >{runLabels[run.state] ?? run.state}</StatusChip
           >
-            The passphrases do not match.
-          </p>{/if}
-        {#if passphraseMessage}<p role="status">{passphraseMessage}</p>{/if}
-      </form>
-      {#if run}<p>
-          <strong>Last automatic backup</strong>
-          <small class="block"
-            >{time(run.updated_at)} · {runLabels[run.state] ?? run.state}</small
-          >{#if run.error}<small class="block wrap-anywhere">{run.error}</small
-            >{/if}
-        </p>{/if}
+        </SettingRow>
+      {/if}
     {/if}
   {/if}
-</Panel>
-<Panel aria-label="Backups">
-  <h2>Backups and restore</h2>
-  <p>
-    Backups include server state, credentials, deployment information and
-    managed-service appdata. Media and cache are excluded. Services briefly stop
-    so their databases can be copied consistently. Services held by an ownership
-    transfer or recovery are left running and out of the archive, as are the
-    stopped originals a transfer retains.
-  </p>
-  <p>
-    Archives are encrypted with your passphrase and saved in {destination ||
-      'the controller deployment backup directory'}. Keep the passphrase
-    separately; Thelxinoe cannot recover it.
-  </p>
-  <FormField class="my-4 block max-w-136"
-    >Backup passphrase<input
+</SettingsCard>
+<SettingsCard aria-label="Backups" title="Create a backup">
+  {#snippet description()}
+    <p class="mt-1 mb-0 text-xs leading-relaxed text-muted">
+      Backups include server state, credentials, deployment information and
+      managed-service appdata. Media and cache are excluded. Services briefly
+      stop so their databases can be copied consistently. Services held by an
+      ownership transfer or recovery are left running and out of the archive, as
+      are the stopped originals a transfer retains.
+    </p>
+  {/snippet}
+  <SettingRow
+    label="Backup passphrase"
+    description="At least 16 characters. Keep it separately; Thelxinoe cannot recover it."
+    for={`${ids}-passphrase`}
+    control="field"
+  >
+    <input
+      id={`${ids}-passphrase`}
       class={formControlClass}
       type="password"
       autocomplete="new-password"
       minlength="16"
       bind:value={passphrase}
-    /></FormField
+    />
+  </SettingRow>
+  <SettingRow
+    label="I understand that services will temporarily stop."
+    for={`${ids}-confirm`}
   >
-  <Switch bind:checked={confirmation}
-    >I understand that services will temporarily stop.</Switch
-  >
-  <Button
-    size="form"
-    class="m-[0.3rem]"
-    disabled={busy || !confirmation || passphrase.length < 16}
-    onclick={() => void create()}>Create encrypted backup</Button
-  >
-  <Button
-    variant="secondary"
-    size="form"
-    class="m-[0.3rem]"
-    onclick={() => void load()}>Refresh backups</Button
-  >
-  {#if message}<p role="status">{message}</p>{/if}
-</Panel>
-<Panel class="settings-wide" aria-label="Backup archives">
-  <h2>Backup archives</h2>
-  {#each items as item (item.id)}<div class={rowClass}>
-      <div>
-        <strong class="inline-flex items-center gap-2"
-          >{time(item.created_at)} · {item.stage}{item.automatic
-            ? ' · automatic'
-            : ''}<AttentionDot
-            activity={$activity.filter(
-              (entry) =>
-                entry.target === 'backups' && entry.resource === item.id,
-            )}
-          /></strong
-        ><small class="block wrap-anywhere">{item.archive}</small
-        >{#if item.error}<p>{item.error}</p>{/if}
-        {#each item.excluded ?? [] as skipped (skipped.key)}<small
-            class="block text-muted"
-            >Not included: {label(skipped)}. {skipped.reason}</small
-          >{/each}
-      </div>
-      {#if ['complete', 'restored', 'restore-failed', 'imported'].includes(item.stage)}<Button
-          variant="secondary"
-          size="form"
-          class="m-[0.3rem]"
-          onclick={() => chooseRestore(item)}>Restore this backup</Button
-        >{/if}
-    </div>{:else}<p class="text-muted">No backups yet.</p>{/each}
-  {#if restoreId}<div class="border border-line p-4">
+    <Switch id={`${ids}-confirm`} bind:checked={confirmation} />
+  </SettingRow>
+  {#snippet footer()}
+    {#if message}<p role="status" class="m-0 text-xs text-muted">
+        {message}
+      </p>{:else}<span class="text-xs text-muted"
+        >Archives are saved in {destination ||
+          'the controller deployment backup directory'}.</span
+      >{/if}
+    <div class="ml-auto flex flex-wrap gap-2">
+      <Button variant="ghost" size="form" onclick={() => void load()}
+        >Refresh backups</Button
+      >
+      <Button
+        size="form"
+        disabled={busy || !confirmation || passphrase.length < 16}
+        onclick={() => void create()}>Create encrypted backup</Button
+      >
+    </div>
+  {/snippet}
+</SettingsCard>
+<SettingsCard aria-label="Backup archives" title="Backup archives">
+  {#snippet actions()}
+    <span class="text-xs text-muted"
+      >{items.length} {items.length === 1 ? 'archive' : 'archives'}</span
+    >
+  {/snippet}
+  {#if items.length}
+    <table class={cardTableClass}>
+      <thead
+        ><tr
+          ><th>Created</th><th>Type</th><th>Status</th><th>File</th><th
+            class="text-right"><span class="sr-only">Actions</span></th
+          ></tr
+        ></thead
+      >
+      <tbody>
+        {#each items as item (item.id)}
+          <tr>
+            <td class="whitespace-nowrap"
+              ><span class="inline-flex items-center gap-2 font-[550]"
+                >{time(item.created_at)}<AttentionDot
+                  activity={$activity.filter(
+                    (entry) =>
+                      entry.target === 'backups' && entry.resource === item.id,
+                  )}
+                /></span
+              ></td
+            >
+            <td class="whitespace-nowrap"
+              >{item.automatic ? 'Automatic' : 'Manual'}</td
+            >
+            <td
+              ><StatusChip tone={stageTone(item.stage)}>{item.stage}</StatusChip
+              ></td
+            >
+            <td class="min-w-0"
+              ><span
+                class="block font-mono text-[11px] wrap-anywhere text-muted"
+                >{item.archive}</span
+              >{#if item.error}<small class="mt-1 text-danger"
+                  >{item.error}</small
+                >{/if}{#each item.excluded ?? [] as skipped (skipped.key)}<small
+                  class="mt-1"
+                  >Not included: {label(skipped)}. {skipped.reason}</small
+                >{/each}</td
+            >
+            <td class="text-right whitespace-nowrap">
+              {#if ['complete', 'restored', 'restore-failed', 'imported'].includes(item.stage)}<Button
+                  variant="secondary"
+                  size="sm"
+                  onclick={() => chooseRestore(item)}
+                  >Restore this backup</Button
+                >{/if}
+            </td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  {:else}
+    <p class="m-0 {cardBlockClass} text-xs text-muted">No backups yet.</p>
+  {/if}
+  {#if restoreId}
+    <div class="{cardBlockClass} grid gap-3 bg-surface-soft">
       {#if listed.length}
-        <p>
+        <p class="m-0 text-xs text-muted">
           Choose what to restore. Chosen components stop and are replaced with
           the copy in this backup; changes since then are lost. Everything else
           keeps running unchanged. It does not undo changes to media or external
           services.
         </p>
-        <fieldset class="my-3 grid gap-2" aria-label="Components to restore">
+        <fieldset class="grid gap-2" aria-label="Components to restore">
           {#each listed as component (component.key)}
             <Switch
               checked={selected.includes(component.key)}
@@ -381,34 +490,45 @@
           {/each}
         </fieldset>
       {:else}
-        <p>
+        <p class="m-0 text-xs text-muted">
           Restoring replaces server state and Thelxinoe's Owned services with
           the selected backup. Changes since that backup will be lost. Services
           still held by an ownership transfer aren't in the backup. It does not
           undo changes to media or external services.
         </p>
       {/if}
-      <FormField class="my-4 block max-w-136"
+      <FormField class="mb-0 max-w-136"
         >Type RESTORE to confirm<input
           class={formControlClass}
           bind:value={restoreConfirmation}
           autocomplete="off"
         /></FormField
-      ><Button
-        variant="secondary"
-        size="form"
-        class="m-[0.3rem]"
-        disabled={busy ||
-          !confirmation ||
-          passphrase.length < 16 ||
-          restoreConfirmation !== 'RESTORE' ||
-          (listed.length > 0 && selected.length === 0)}
-        onclick={() => void create(true)}>Restore selected state</Button
-      ><Button
-        variant="secondary"
-        size="form"
-        class="m-[0.3rem]"
-        onclick={() => (restoreId = '')}>Cancel</Button
       >
-    </div>{/if}
-</Panel>
+      <div class="flex flex-wrap gap-2">
+        <Button
+          variant="danger"
+          size="form"
+          disabled={busy ||
+            !confirmation ||
+            passphrase.length < 16 ||
+            restoreConfirmation !== 'RESTORE' ||
+            (listed.length > 0 && selected.length === 0)}
+          onclick={() => void create(true)}>Restore selected state</Button
+        ><Button
+          variant="secondary"
+          size="form"
+          onclick={() => (restoreId = '')}>Cancel</Button
+        >
+      </div>
+      <p class="m-0 text-xs text-muted">
+        Enter the backup passphrase and confirm the service stop in the card
+        above before restoring.
+      </p>
+    </div>
+  {/if}
+  {#if message && !items.length}
+    <div class={cardBlockClass}>
+      <Notice role="status" class="mb-0">{message}</Notice>
+    </div>
+  {/if}
+</SettingsCard>

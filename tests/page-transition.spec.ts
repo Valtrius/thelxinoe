@@ -313,7 +313,7 @@ test('settings sections, service tabs and detail pages also transition without l
     ['Server', '2026.09.30'],
     ['Episode analysis', 'Beyond the Horizon · First Contact'],
     ['Provider applications', 'Daily API budget'],
-    ['Media services', 'Automatic request approval'],
+    ['Media services', 'Seerr'],
     ['Auto-delete', 'Video downloads'],
     ['Backups', 'thelxinoe-preview-0.tar.age'],
     ['People', 'Alex'],

@@ -97,13 +97,21 @@
   aria-label={`${label} connection settings`}
 >
   {#if !editing}
-    <Button
-      variant="secondary"
-      size="form"
-      disabled={disabled || busy}
-      loading={busy}
-      onclick={() => void open()}>Edit connection</Button
-    >
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div class="min-w-0">
+        <h3 class="m-0 text-xs font-semibold">API connection</h3>
+        <p class="mt-1 mb-0 text-xs text-muted">
+          The container, port and credentials Thelxinoe uses to reach {label}.
+        </p>
+      </div>
+      <Button
+        variant="secondary"
+        size="form"
+        disabled={disabled || busy}
+        loading={busy}
+        onclick={() => void open()}>Edit connection</Button
+      >
+    </div>
   {:else}
     <form
       class="grid gap-3 [&_label]:m-0"

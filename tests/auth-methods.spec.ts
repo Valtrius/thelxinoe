@@ -96,7 +96,7 @@ test('the sole administrator cannot recover their own account while events are c
     await page.request.get('/api/v1/auth/sessions')
   ).json();
   await page.goto('/#settings/people');
-  await page.getByRole('button', { name: /^admin\s+admin$/ }).click();
+  await page.getByRole('button', { name: /^admin\s+admin\s+You$/ }).click();
   await expect(
     page.getByRole('button', { name: 'Create recovery link', exact: true }),
   ).not.toBeVisible();
