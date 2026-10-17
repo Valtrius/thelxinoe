@@ -494,8 +494,12 @@ test('the preview switches between the admin and user views', async ({
   page,
 }, info) => {
   const errors: string[] = [];
+  // While the switch reloads, a request the previous page already sent can be
+  // answered for the new role; only those 403s are expected.
+  let switching = false;
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('response', (response) => {
+    if (switching && response.status() === 403) return;
     if (response.status() >= 400)
       errors.push(`${response.status()} ${response.url()}`);
   });
@@ -505,8 +509,10 @@ test('the preview switches between the admin and user views', async ({
   });
   async function view(name: 'Admin' | 'User') {
     const reloaded = page.waitForEvent('load');
+    switching = true;
     await views.getByRole('button', { name, exact: true }).click();
     await reloaded;
+    switching = false;
     await expect(
       views.getByRole('button', { name, exact: true }),
     ).toHaveAttribute('aria-pressed', 'true');

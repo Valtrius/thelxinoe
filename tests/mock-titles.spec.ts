@@ -20,7 +20,10 @@ function track(page: Page) {
   return errors;
 }
 
+// Leave the app before switching roles: a request it still sends would be
+// answered for the new role, such as a 403 for an administrator page.
 async function view(page: Page, role: 'admin' | 'user') {
+  await page.goto('about:blank');
   await page.request.post('/__mock/viewer', { data: { role } });
 }
 
@@ -81,7 +84,6 @@ test('posters and title pages show Radarr and Sonarr status in each role', async
 
   await view(page, 'user');
   await page.goto('/#library/movies');
-  await page.reload();
   await expect(card(page, 'movie-22').locator('[data-title-chip]')).toHaveText(
     'Not available',
   );
@@ -151,7 +153,7 @@ test('title menus keep administration actions behind the three dots', async ({
   await page.keyboard.press('Escape');
 
   await view(page, 'user');
-  await page.reload();
+  await page.goto('/#library/movies');
   menu = await cardMenu(page, 'movie-0', 'Beyond the Horizon');
   await expect(
     menu.getByRole('menuitem', { name: 'Mark watched' }),
@@ -247,7 +249,6 @@ test('requests open their title and keep secondary actions in a menu', async ({
 
   await view(page, 'user');
   await page.goto('/#requests');
-  await page.reload();
   const own = page.locator('article').filter({ hasText: 'Pending approval' });
   await expect(own.first()).toBeVisible();
   await expect(own.getByRole('button', { name: 'Approve' })).toHaveCount(0);
@@ -287,7 +288,6 @@ test('library folders live in server settings and scans start from the library m
 
   await view(page, 'user');
   await page.goto('/#library/shows');
-  await page.reload();
   await expect(
     page.getByRole('button', { name: 'Shows library actions' }),
   ).toHaveCount(0);
