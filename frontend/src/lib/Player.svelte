@@ -129,6 +129,10 @@
   let sideTap: { side: -1 | 1; time: number; seeking: boolean } | undefined;
   let tapSeek:
     { revision: number; target: number; resume: boolean } | undefined;
+  // The seek bar keeps the value under the pointer until it is released;
+  // playback updates would otherwise replace it and seek back on release.
+  // Releasing where the drag began fires no change event, so release clears it.
+  let scrub = $state<number | null>(null);
   // Touch cannot hover: a tap over hidden controls only reveals them, and the
   // :hover it leaves on a tapped control must not keep them shown.
   let touch = false,
@@ -516,6 +520,8 @@
     if (ahead < resumeBuffer && player.currentTime + ahead < end - 0.25) return;
     holding = false;
     void player.play().catch(() => {
+      // Another seek interrupted this request and resumes when it can.
+      if (holding) return;
       paused = true;
       ready();
     });
@@ -663,7 +669,9 @@
     const play = () => {
       if (active !== session) return;
       void player.play().catch(() => {
-        if (active === session) {
+        // A seek before playback starts interrupts this request; it resumes
+        // when the seek has enough media.
+        if (active === session && !holding) {
           paused = true;
           ready();
         }
@@ -1135,14 +1143,20 @@
         )}
         data-sidebar-resize="xy"
         aria-label="Playback position"
-        aria-valuetext={`${time(position)} of ${time(active?.duration ?? 0)}`}
+        aria-valuetext={`${time(scrub ?? position)} of ${time(active?.duration ?? 0)}`}
         type="range"
         min="0"
         max={active?.duration || 1}
         step="0.1"
-        value={position}
+        value={scrub ?? position}
         disabled={busy || !active}
-        onchange={(event) => void seek(Number(event.currentTarget.value))}
+        oninput={(event) => (scrub = Number(event.currentTarget.value))}
+        onchange={(event) => {
+          scrub = null;
+          void seek(Number(event.currentTarget.value));
+        }}
+        onpointerup={() => setTimeout(() => (scrub = null))}
+        onpointercancel={() => (scrub = null)}
       />
     {/if}
     <div
