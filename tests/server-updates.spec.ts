@@ -222,7 +222,7 @@ test('Orbit carries the full flow in one fixed, keyboard-accessible control', as
     { action: 'install', body: { version: '0.1.1' } },
   ]);
   await expect(
-    page.getByRole('heading', { name: 'Server updates' }),
+    page.getByRole('heading', { name: 'Updates and maintenance' }),
   ).toBeVisible();
   expect(flow.fixture.errors).toEqual([]);
   await testInfo.attach('accepted', {

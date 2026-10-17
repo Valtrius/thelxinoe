@@ -872,16 +872,17 @@
       openService={() => selectService(modal.kind)}
     />
   {/if}
-  <!-- One tab per service; the strip keeps every status visible at a glance. -->
+  <!-- One tab per service; the strip keeps every status visible at a glance.
+       Narrow containers stack each tab so all eight fit in two rows. -->
   <nav
-    class="service-strip grid min-w-0 grid-cols-2 gap-px border border-line bg-line @min-[480px]/settings:grid-cols-4 @min-[900px]/settings:grid-cols-8"
+    class="service-strip grid min-w-0 grid-cols-2 gap-px border border-line bg-line @min-[270px]/settings:grid-cols-4 @min-[900px]/settings:grid-cols-8"
     aria-label="Select service"
   >
     {#each definitions as service (service.kind)}
       {@const state = status(service.kind)}
       <a
         href={`#admin/services/${service.kind}`}
-        class="service-tab relative flex min-w-0 cursor-pointer items-center gap-2.5 bg-surface px-3 py-2.5 text-left text-foreground hover:bg-surface-soft aria-[current=true]:bg-accent-soft aria-[current=true]:text-accent aria-[current=true]:shadow-[inset_0_-2px_0_var(--accent)] [&>img]:size-6 [&>img]:shrink-0 [&>img]:object-contain [&_strong]:block [&_strong]:truncate [&_strong]:text-xs [&_strong]:font-[650]"
+        class="service-tab relative flex min-w-0 cursor-pointer flex-col items-center justify-center gap-1.5 bg-surface px-1 py-3 text-center text-foreground hover:bg-surface-soft aria-[current=true]:bg-accent-soft aria-[current=true]:text-accent aria-[current=true]:shadow-[inset_0_-2px_0_var(--accent)] @min-[480px]/settings:flex-row @min-[480px]/settings:justify-start @min-[480px]/settings:gap-2.5 @min-[480px]/settings:px-3 @min-[480px]/settings:py-2.5 @min-[480px]/settings:text-left [&>img]:size-6 [&>img]:shrink-0 [&>img]:object-contain [&_strong]:block [&_strong]:truncate [&_strong]:text-xs [&_strong]:font-[650]"
         aria-current={selectedKind === service.kind ? 'true' : undefined}
         aria-label={service.label}
         aria-describedby={`service-attention-${service.kind}`}
@@ -893,9 +894,9 @@
         }}
       >
         <img src={icons[service.kind]} alt="" />
-        <span class="min-w-0 flex-1"
+        <span class="max-w-full min-w-0 @min-[480px]/settings:flex-1"
           ><strong>{service.label}</strong><StatusIndicator
-            class="service-status mt-0.5"
+            class="service-status mt-0.5 justify-center @min-[480px]/settings:justify-start"
             tone={state.tone}>{state.label}</StatusIndicator
           ></span
         >

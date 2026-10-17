@@ -165,6 +165,9 @@ for (const width of [1280, 1760, 1920, 2560]) {
       ] as const) {
         expect(next[key]).toHaveLength(before[key].length);
         before[key].forEach((rect, index) => {
+          // Sidebar motion skips content scrolled out of view; it settles
+          // directly at its final layout.
+          if (rect.y >= 1080) return;
           expect(
             Math.abs(next[key][index].x - rect.x),
             `${key} ${index} X`,
@@ -928,16 +931,22 @@ test('long settings content scrolls while navigation stays reachable', async ({
   await expect(
     page.getByRole('heading', { name: 'Your devices', exact: true }),
   ).toBeVisible();
-  await page.locator('.workspace-scroll').evaluate((element) => {
+  // Only the settings column scrolls; the page header and navigation stay put.
+  const settings = page.locator('.settings-scroll');
+  const header = page.locator('.settings-header');
+  const before = await header.boundingBox();
+  await settings.evaluate((element) => {
     element.scrollTop = 450;
   });
   await expect
-    .poll(() =>
-      page
-        .locator('.workspace-scroll')
-        .evaluate((element) => element.scrollTop),
-    )
+    .poll(() => settings.evaluate((element) => element.scrollTop))
     .toBe(450);
+  expect(
+    await page
+      .locator('.workspace-scroll')
+      .evaluate((element) => element.scrollTop),
+  ).toBe(0);
+  expect(await header.boundingBox()).toEqual(before);
   await expectContainedNavigation(page);
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
@@ -993,7 +1002,10 @@ test('server settings contain display defaults and the version update icon', asy
     }),
   ).toHaveValue('24h');
   await expect(
-    page.getByRole('heading', { name: 'Server updates', exact: true }),
+    page.getByRole('heading', { name: 'Updates and maintenance', exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('group', { name: 'Update policy', exact: true }),
   ).toBeVisible();
   await expect(
     page.getByRole('button', { name: 'Check for server updates', exact: true }),
@@ -1079,7 +1091,7 @@ test('media services preserve real controls across adaptive layouts', async ({
   const nav = page.getByRole('navigation', { name: 'Select service' });
   const radarr = page.getByRole('article', { name: 'Radarr service' });
   await expect(
-    radarr.locator('.rail-identity:not(.inactive) > .service-status'),
+    radarr.locator('.rail-identity:not(.inactive) .service-status'),
   ).toHaveText('Running');
   await expect(
     radarr.getByRole('link', { name: /Open Radarr/ }),
@@ -1435,7 +1447,7 @@ for (const state of [
       ).toBeEnabled();
     const service = page.getByRole('article', { name: 'Radarr service' });
     await expect(
-      service.locator('.rail-identity:not(.inactive) > .service-status'),
+      service.locator('.rail-identity:not(.inactive) .service-status'),
     ).toHaveText('Running');
     if (state === 'blocked' || state === 'committed')
       await expect(
@@ -1525,7 +1537,7 @@ for (const state of ['connecting', 'blocked']) {
     await selectRadarr(page);
     const radarr = page.getByRole('article', { name: 'Radarr service' });
     await expect(
-      radarr.locator('.rail-identity:not(.inactive) > .service-status'),
+      radarr.locator('.rail-identity:not(.inactive) .service-status'),
     ).toHaveText(state === 'connecting' ? 'Connecting API' : 'Setup blocked');
     if (state === 'connecting') {
       await expect(

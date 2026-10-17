@@ -181,15 +181,15 @@ test('YouTube setup saves on the page and becomes a connection action', async ({
 }) => {
   const fixture = await providerFixture(page, 'YouTube');
   await page.goto('/');
-  await expect(page.getByLabel('Authorized redirect URI')).toHaveValue(
-    'https://media.test/api/v1/online/youtube/callback',
-  );
-  await expect(page.getByLabel('Application home page')).toHaveValue(
-    'https://media.test/about/index.html',
-  );
-  await expect(page.getByLabel('Application privacy policy link')).toHaveValue(
-    'https://media.test/about/privacy.html',
-  );
+  await expect(
+    page.getByLabel('Authorized redirect URI', { exact: true }),
+  ).toHaveValue('https://media.test/api/v1/online/youtube/callback');
+  await expect(
+    page.getByLabel('Application home page', { exact: true }),
+  ).toHaveValue('https://media.test/about/index.html');
+  await expect(
+    page.getByLabel('Application privacy policy link', { exact: true }),
+  ).toHaveValue('https://media.test/about/privacy.html');
   await expect(
     page.getByRole('link', { name: 'Open home page' }),
   ).toHaveAttribute('href', 'https://media.test/about/index.html');

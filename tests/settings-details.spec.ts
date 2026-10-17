@@ -197,7 +197,7 @@ test('auto-delete policies save on change and Audit owns scheduled deletions and
     queue.getByRole('button', { name: 'Cancel', exact: true }),
   ).toHaveCount(0);
   await queue
-    .locator('article')
+    .locator('.setting-row')
     .filter({ hasText: 'Shared video' })
     .getByRole('button', { name: 'Keep', exact: true })
     .click();
@@ -213,10 +213,10 @@ test('auto-delete policies save on change and Audit owns scheduled deletions and
     .selectOption('deletions');
   const history = page.getByRole('region', { name: 'Deletion history' });
   await expect(
-    history.locator('article').filter({ hasText: 'Shared video' }),
+    history.locator('.setting-row').filter({ hasText: 'Shared video' }),
   ).toContainText('Kept');
   await expect(
-    history.locator('article').filter({ hasText: 'Arrival' }),
+    history.locator('.setting-row').filter({ hasText: 'Arrival' }),
   ).toContainText('Deleted');
   await page.screenshot({
     path: testInfo.outputPath('audit-deletions.png'),
@@ -839,7 +839,7 @@ test('settings sections adapt without hiding controls or stretching fields', asy
       'Audit',
     ]) {
       await nav.getByRole('link', { name, exact: true }).click();
-      await expect(page.locator('.settings-content > h1')).toHaveText(name);
+      await expect(page.locator('.settings-header > h1')).toHaveText(name);
       await expect(
         page
           .locator(
@@ -874,7 +874,7 @@ test('settings sections adapt without hiding controls or stretching fields', asy
         fullPage: true,
       });
       if (viewport.width === 390) {
-        await page.locator('.settings-content > h1').scrollIntoViewIfNeeded();
+        await page.locator('.settings-header > h1').scrollIntoViewIfNeeded();
         await page.screenshot({
           path: testInfo.outputPath(
             `${name.toLowerCase().replaceAll(' ', '-')}-390-content.png`,
@@ -944,7 +944,7 @@ for (const admin of [false, true]) {
     if (admin) {
       await page.getByRole('link', { name: text }).click();
       await expect(
-        page.getByRole('heading', { name: 'YouTube application' }),
+        page.getByRole('heading', { name: 'YouTube', exact: true }),
       ).toBeVisible();
       await expect(
         page

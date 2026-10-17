@@ -70,7 +70,7 @@
       class={[
         'setting-control flex min-w-0 items-center justify-end gap-2 compact:flex-wrap compact:justify-start',
         control === 'field' &&
-          'w-72 max-w-full compact:w-full [&>input]:w-full [&>select]:w-full',
+          'w-72 max-w-full [&>input]:w-full [&>select]:w-full',
         control === 'block' && 'justify-start',
       ]}
     >

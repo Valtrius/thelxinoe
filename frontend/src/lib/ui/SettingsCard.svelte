@@ -52,14 +52,18 @@
       {#if lead}{@render lead()}{/if}
       <div class="min-w-0 flex-1 basis-60">
         {#if title}
-          <h2
-            class={[
-              'm-0 flex flex-wrap items-center gap-2.5 text-[15px] font-semibold tracking-[-0.01em]',
-              tone === 'danger' && 'text-danger',
-            ]}
-          >
-            {title}{#if badge}{@render badge()}{/if}
-          </h2>
+          <!-- The badge sits beside the heading so the card's name stays its title. -->
+          <div class="flex flex-wrap items-center gap-2.5">
+            <h2
+              class={[
+                'm-0 text-[15px] font-semibold tracking-[-0.01em]',
+                tone === 'danger' && 'text-danger',
+              ]}
+            >
+              {title}
+            </h2>
+            {#if badge}{@render badge()}{/if}
+          </div>
         {/if}
         {#if typeof description === 'string'}
           <p class="mt-1 mb-0 text-xs leading-relaxed text-muted">
