@@ -888,6 +888,85 @@ test('settings sections adapt without hiding controls or stretching fields', asy
   expect(fixture.unexpected).toEqual([]);
 });
 
+test('settings search shows the matching cards of every page, best match first', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, { role: 'admin' });
+  await page.goto('/');
+  const nav = page.getByRole('navigation', { name: 'Settings navigation' });
+  const search = page.getByRole('searchbox', { name: 'Find a setting' });
+  const title = page.locator('.settings-header > h1');
+  await expect(title).toHaveText('Account');
+
+  await search.fill('subtitles');
+  await expect(title).toHaveText('Search results');
+  const playback = page.getByRole('region', { name: 'Playback results' });
+  const services = page.getByRole('region', {
+    name: 'Media services results',
+  });
+  await expect(
+    playback.getByRole('heading', { name: 'Subtitles', exact: true }),
+  ).toBeVisible();
+  await expect(
+    playback.getByRole('combobox', { name: 'Subtitles', exact: true }),
+  ).toBeEnabled();
+  await expect(
+    page.getByRole('heading', { name: 'Video and audio' }),
+  ).toBeHidden();
+  await expect(
+    page.getByRole('heading', { name: 'Intro and credit skipping' }),
+  ).toBeHidden();
+  await expect(services.getByRole('link', { name: /^Bazarr/ })).toHaveAttribute(
+    'href',
+    '#admin/services/bazarr',
+  );
+  expect((await playback.boundingBox())!.y).toBeLessThan(
+    (await services.boundingBox())!.y,
+  );
+  await expect(nav.getByRole('link')).toHaveCount(2);
+  await expect(
+    nav.getByRole('link', { name: 'Playback', exact: true }),
+  ).toBeVisible();
+  await expect(
+    nav.getByRole('link', { name: 'Media services', exact: true }),
+  ).toBeVisible();
+  await testInfo.attach('settings-search-results', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+
+  await search.fill('zzzz');
+  await expect(
+    page.getByRole('status').filter({ hasText: 'No matching settings' }),
+  ).toBeVisible();
+  await search.press('Escape');
+  await expect(search).toHaveValue('');
+  await expect(title).toHaveText('Account');
+
+  await search.fill('subtitles');
+  await expect(search).toHaveAttribute(
+    'placeholder',
+    'Find a setting (Ctrl+K)',
+  );
+  await search.blur();
+  await page.keyboard.press('Control+K');
+  await expect(search).toBeFocused();
+  expect(
+    await search.evaluate((input: HTMLInputElement) => [
+      input.selectionStart,
+      input.selectionEnd,
+    ]),
+  ).toEqual([0, 'subtitles'.length]);
+  await playback.getByRole('link', { name: 'Playback', exact: true }).click();
+  await expect(title).toHaveText('Playback');
+  await expect(search).toHaveValue('');
+  await expect(
+    page.getByRole('heading', { name: 'Video and audio' }),
+  ).toBeVisible();
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 for (const admin of [false, true]) {
   test(`unconfigured online accounts show ${admin ? 'an administrator setup link' : 'guidance for members'}`, async ({
     page,

@@ -1,212 +1,89 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
-  import {
-    Activity,
-    AppWindow,
-    AudioLines,
-    ArchiveRestore,
-    Boxes,
-    Clapperboard,
-    Hourglass,
-    Laptop,
-    Link,
-    MonitorSmartphone,
-    Play,
-    ScrollText,
-    Search,
-    Server,
-    UserRound,
-    UsersRound,
-  } from '@lucide/svelte';
+  import { Search } from '@lucide/svelte';
   import NavigationItem from './NavigationItem.svelte';
-  import { desktop, type User } from '../api';
   import { followLink, routeHref, sectionRoute } from '../navigation';
   import AttentionDot from './AttentionDot.svelte';
   import { attention, attentionDescription } from '../attention';
   import { activity } from '../activity';
   import { formControlClass } from './styles';
-  import { providers } from '../providers/availability';
+  import type { SettingsGroup } from '../settings/sections';
+  import type { SettingsSearchResult } from '../settings/search';
   let {
-    user,
+    groups,
     active = 'account',
+    query = $bindable(''),
+    results,
     children,
     subheader,
     openSettings,
-  } = $props<{
-    user: User;
+  }: {
+    groups: SettingsGroup[];
     active?: string;
+    query?: string;
+    // Set while a search is showing results instead of the active page.
+    results?: SettingsSearchResult[];
     children: Snippet;
     subheader?: Snippet;
     openSettings: (name: string) => void;
-  }>();
-  let query = $state('');
-  let scroller = $state<HTMLElement>();
+  } = $props();
+  let scroller = $state<HTMLElement>(),
+    searchInput = $state<HTMLInputElement>();
+  // Ctrl+K jumps to the search from anywhere on the page, unless a dialog or
+  // fullscreen player is in front of it or the focused editor used the key.
+  function focusSearch(event: KeyboardEvent) {
+    if (
+      event.key.toLowerCase() !== 'k' ||
+      !event.ctrlKey ||
+      event.altKey ||
+      event.shiftKey ||
+      event.metaKey ||
+      event.isComposing ||
+      event.defaultPrevented ||
+      document.fullscreenElement ||
+      document.querySelector('dialog[open]')
+    )
+      return;
+    event.preventDefault();
+    searchInput?.focus();
+    searchInput?.select();
+  }
   // The navigation and page header stay put; only the cards scroll. A new
-  // section starts at the top. The scroller is positioned so absolutely
-  // placed descendants (screen-reader text, badges) scroll with it instead
-  // of stretching the workspace behind it.
+  // section or search starts at the top. The scroller is positioned so
+  // absolutely placed descendants (screen-reader text, badges) scroll with it
+  // instead of stretching the workspace behind it.
   $effect(() => {
     void active;
+    void results;
     scroller?.scrollTo({ top: 0 });
   });
-  const personal = [
-    {
-      id: 'account',
-      label: 'Account',
-      icon: UserRound,
-      keywords:
-        'profile picture avatar password display timezone time format workspace poster video density watched',
-    },
-    {
-      id: 'playback',
-      label: 'Playback',
-      icon: Play,
-      keywords:
-        'video quality audio language subtitles replaygain intro recap credits preview skipping',
-    },
-    {
-      id: 'online',
-      label: 'Online accounts',
-      icon: Link,
-      keywords: 'youtube twitch kick connect synchronization',
-    },
-    {
-      id: 'devices',
-      label: 'Devices',
-      icon: MonitorSmartphone,
-      keywords: 'quick connect sessions revoke access',
-    },
-  ];
-  const native = [
-    {
-      id: 'mpv',
-      label: 'MPV',
-      icon: Clapperboard,
-      keywords: 'player configuration shortcuts',
-    },
-    {
-      id: 'connection',
-      label: 'Desktop',
-      icon: Laptop,
-      keywords: 'server address desktop updates version',
-    },
-  ];
-  const admin = [
-    {
-      id: 'server',
-      label: 'Server',
-      icon: Server,
-      keywords:
-        'health storage cache docker tools updates maintenance window timezone time format diagnostics transcoding video audio',
-    },
-    {
-      id: 'analysis',
-      label: 'Episode analysis',
-      icon: AudioLines,
-      keywords: 'intro credits timestamps theintrodb detection',
-    },
-    {
-      id: 'providers',
-      label: 'Provider applications',
-      icon: AppWindow,
-      keywords: 'youtube twitch kick client secret oauth api quota downloads',
-    },
-    {
-      id: 'services',
-      label: 'Media services',
-      icon: Boxes,
-      keywords:
-        'seerr recyclarr radarr sonarr lidarr bazarr prowlarr nzbget downloads requests profiles trash guides indexers updates',
-    },
-    {
-      id: 'retention',
-      label: 'Auto-delete',
-      icon: Hourglass,
-      keywords:
-        'auto-delete retention watched deletion grace period movies tv seasons videos storage limit pins library files ownership reconcile',
-    },
-    {
-      id: 'backups',
-      label: 'Backups',
-      icon: ArchiveRestore,
-      keywords:
-        'restore encryption archives passphrase automatic schedule retention maintenance window',
-    },
-    {
-      id: 'people',
-      label: 'People',
-      icon: UsersRound,
-      keywords: 'users permissions roles password request approval seerr',
-    },
-    {
-      id: 'jobs',
-      label: 'Activity',
-      icon: Activity,
-      keywords: 'jobs background checkpoint failed running queued completed',
-    },
-    {
-      id: 'audit',
-      label: 'Audit',
-      icon: ScrollText,
-      keywords: 'administrative history actions users',
-    },
-  ];
-  // One line under the title explains what each page is for.
-  const descriptions: Record<string, string> = {
-    account:
-      'Your profile, display preferences, appearance and how you sign in.',
-    playback:
-      'Defaults for new playback sessions. Choices made inside the player override them for that title.',
-    online: 'Accounts connected to this server for YouTube, Twitch and Kick.',
-    devices: 'Browsers, desktops and media clients that can use your account.',
-    mpv: 'The desktop player, its bundled tools and their configuration.',
-    connection: 'This desktop app and the server it connects to.',
-    server: 'Health, defaults and maintenance for this Thelxinoe server.',
-    analysis: 'Finds intro and credit segments so viewers can skip them.',
-    providers:
-      'Server-wide applications that let people connect their own YouTube, Twitch and Kick accounts.',
-    services:
-      'Managed containers and connections for requests, downloads and library automation.',
-    retention:
-      'Free up space by removing media once the right people have watched it.',
-    backups:
-      'Encrypted archives of server state, credentials, deployment information and managed-service appdata.',
-    people: 'Accounts on this server and what they can do.',
-    jobs: 'Background jobs running on this server.',
-    audit:
-      'History of administrative actions and media deletions on this server.',
-  };
-  const groups = $derived([
-    {
-      label: 'Personal',
-      items: [
-        ...personal.filter(
-          (item) =>
-            item.id !== 'online' || Object.values($providers).some(Boolean),
-        ),
-        ...(desktop ? native : []),
-      ],
-    },
-    ...(user.role === 'admin'
-      ? [{ label: 'Administration', items: admin }]
-      : []),
-  ]);
-  const title = $derived(
-    groups.flatMap((group) => group.items).find((item) => item.id === active)
-      ?.label ?? 'Settings',
+  const page = $derived(
+    groups.flatMap((group) => group.items).find((item) => item.id === active),
   );
-  const description = $derived(descriptions[active] ?? '');
+  const title = $derived(
+    results ? 'Search results' : (page?.label ?? 'Settings'),
+  );
+  const description = $derived(
+    results
+      ? results.length
+        ? `Settings matching “${query.trim()}”, best match first.`
+        : ''
+      : (page?.description ?? ''),
+  );
+  // While searching, the navigation lists the pages with results.
   const filtered = $derived(
-    groups.map((group) => ({
-      ...group,
-      items: group.items.filter((item) =>
-        (item.label + ' ' + item.keywords)
-          .toLowerCase()
-          .includes(query.trim().toLowerCase()),
-      ),
-    })),
+    results
+      ? groups.map((group) => ({
+          ...group,
+          items: group.items.filter((item) =>
+            results.some((result) => result.page.id === item.id),
+          ),
+        }))
+      : groups,
   );
 </script>
+
+<svelte:window onkeydown={focusSearch} />
 
 <div
   class="settings-layout mx-auto flex h-(--workspace-height) min-h-0 w-full max-w-520 items-start gap-8 px-8 pt-7 narrow:gap-5 narrow:px-5 compact:h-auto compact:min-h-full compact:flex-col compact:gap-6 compact:px-4 compact:py-4"
@@ -224,10 +101,18 @@
         aria-hidden="true"
       />
       <input
+        bind:this={searchInput}
         type="search"
         class={[formControlClass, 'pl-8 text-xs']}
-        placeholder="Find a setting"
+        placeholder="Find a setting (Ctrl+K)"
+        aria-keyshortcuts="Control+K"
         bind:value={query}
+        onkeydown={(event) => {
+          if (event.key === 'Escape' && query) {
+            event.preventDefault();
+            query = '';
+          }
+        }}
       />
     </label>
     {#each filtered as group (group.label)}
@@ -248,7 +133,7 @@
                   $attention.filter((entry) => entry.target === item.id),
                   $activity.filter((entry) => entry.target === item.id),
                 )}
-                active={active === item.id}
+                active={!results && active === item.id}
                 href={routeHref(sectionRoute('Settings', item.id))}
                 onclick={(event) => {
                   if (!followLink(event)) return;
@@ -279,12 +164,6 @@
         </div>
       {/if}
     {/each}
-    {#if !filtered.some((group) => group.items.length)}<p
-        role="status"
-        class="text-xs text-muted"
-      >
-        No matching settings.
-      </p>{/if}
   </nav>
   <div
     class="settings-content @container/settings flex min-h-0 min-w-0 flex-1 flex-col self-stretch compact:w-full compact:self-auto"

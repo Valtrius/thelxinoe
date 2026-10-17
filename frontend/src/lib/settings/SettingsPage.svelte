@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
-  import { Globe, Laptop, Smartphone } from '@lucide/svelte';
+  import { Globe, Laptop, SearchX, Smartphone } from '@lucide/svelte';
   import { twMerge } from 'tailwind-merge';
   import DesktopVersion from '../DesktopVersion.svelte';
   import { settingsPages } from '../pages';
@@ -8,7 +8,7 @@
   import { captureSession } from '../session';
   import { withVerification } from '../authentication';
   import { LatestRequest } from '../latest-request';
-  import type { AppRoute } from '../navigation';
+  import type { AppRoute, SettingsSection } from '../navigation';
   import { isServerUpdateInterruption } from '../server-updates';
   import type { ApprovalUser } from '../services/feature';
   import SettingsLayout from '../ui/SettingsLayout.svelte';
@@ -20,6 +20,7 @@
   import FormField from '../ui/FormField.svelte';
   import {
     cardBlockClass,
+    emptyClass,
     formControlClass,
     statGridClass,
     statTileClass,
@@ -28,6 +29,10 @@
   import ContentSkeleton from '../ui/ContentSkeleton.svelte';
   import Skeleton from '../ui/Skeleton.svelte';
   import { Accordion } from 'bits-ui';
+  import { providers } from '../providers/availability';
+  import { settingsGroups } from './sections';
+  import { searchSettings } from './search';
+  import SettingsSearchGroup from './SettingsSearchGroup.svelte';
   let {
     user,
     route,
@@ -86,11 +91,45 @@
   let busy = $state(false),
     error = $state('');
   const requests = new LatestRequest();
-  let loadingSection = $state<string | null>(null);
-  const loadedSections = $state<Record<string, boolean>>({});
-  const loadingData = $derived(
-    loadingSection === settingsSection && !loadedSections[settingsSection],
+  let query = $state(''),
+    term = $state('');
+  // Search once typing pauses so each keystroke does not mount and load pages.
+  $effect(() => {
+    const next = query.trim();
+    if (next.length < 2) {
+      term = '';
+      return;
+    }
+    const timer = setTimeout(() => (term = next), 150);
+    return () => clearTimeout(timer);
+  });
+  // Opening another page, including from a link inside a result, ends the search.
+  $effect(() => {
+    void settingsSection;
+    untrack(() => (query = ''));
+  });
+  const groups = $derived(settingsGroups(user, $providers));
+  const results = $derived(
+    term
+      ? searchSettings(
+          term,
+          groups.flatMap((group) => group.items),
+        )
+      : undefined,
   );
+  // The services page links from search results instead of rendering in them.
+  const shownSections = $derived<SettingsSection[]>(
+    results
+      ? results
+          .filter((result) => !result.links)
+          .map((result) => result.page.id)
+      : [settingsSection],
+  );
+  const shownKey = $derived(shownSections.join(' '));
+  let loadingSections = $state<SettingsSection[]>([]);
+  const loadedSections = $state<Record<string, boolean>>({});
+  const loadingData = (section: SettingsSection) =>
+    loadingSections.includes(section) && !loadedSections[section];
   const ownsSession = captureSession();
   const serverAnchors = [
     { id: 'server-status', label: 'Status' },
@@ -115,7 +154,7 @@
     });
   onDestroy(() => requests.invalidate());
   $effect(() => {
-    void settingsSection;
+    void shownKey;
     void revision;
     untrack(() => void loadSettings());
   });
@@ -133,54 +172,59 @@
   }
   async function loadSettings() {
     const current = requests.begin();
-    const section = settingsSection;
-    loadingSection = section;
+    const sections = shownSections;
+    loadingSections = sections;
     error = '';
     try {
-      if (settingsSection === 'devices') {
-        const value = await api<{ items: Session[]; current: string }>(
-          '/auth/sessions',
-        );
-        if (current()) {
-          sessions = value.items;
-          currentSession = value.current;
-        }
-      } else if (settingsSection === 'people') {
-        const [people, approval] = await Promise.all([
-          api<{ items: User[] }>('/users'),
-          api<{ items: ApprovalUser[] }>('/admin/acquisition/users').then(
-            (value) => ({ items: value.items, error: '' }),
-            (caught: unknown) => ({
-              items: [] as ApprovalUser[],
-              error: String(caught),
-            }),
-          ),
-        ]);
-        if (current()) {
-          users = people.items;
-          approvals = Object.fromEntries(
-            approval.items.map((entry) => [entry.id, entry.enabled]),
-          );
-          approvalError = approval.error;
-        }
-      } else if (settingsSection === 'jobs') {
-        const value = await api<{ items: Job[] }>('/admin/jobs');
-        if (current()) jobs = value.items;
-      } else if (settingsSection === 'server') {
-        const value = await api<NonNullable<typeof health>>('/admin/health');
-        if (current()) health = value;
-      } else if (settingsSection === 'backups') {
-        const value = await api<{ timezone: string }>('/admin/settings');
-        if (current()) timezone = value.timezone;
-      }
+      await Promise.all(
+        sections.map((section) => loadSection(section, current)),
+      );
     } catch (caught) {
       if (current() && !isServerUpdateInterruption(caught))
         error = String(caught);
     } finally {
       if (current()) {
-        loadedSections[section] = true;
-        loadingSection = null;
+        for (const section of sections) loadedSections[section] = true;
+        loadingSections = [];
       }
+    }
+  }
+  async function loadSection(section: SettingsSection, current: () => boolean) {
+    if (section === 'devices') {
+      const value = await api<{ items: Session[]; current: string }>(
+        '/auth/sessions',
+      );
+      if (current()) {
+        sessions = value.items;
+        currentSession = value.current;
+      }
+    } else if (section === 'people') {
+      const [people, approval] = await Promise.all([
+        api<{ items: User[] }>('/users'),
+        api<{ items: ApprovalUser[] }>('/admin/acquisition/users').then(
+          (value) => ({ items: value.items, error: '' }),
+          (caught: unknown) => ({
+            items: [] as ApprovalUser[],
+            error: String(caught),
+          }),
+        ),
+      ]);
+      if (current()) {
+        users = people.items;
+        approvals = Object.fromEntries(
+          approval.items.map((entry) => [entry.id, entry.enabled]),
+        );
+        approvalError = approval.error;
+      }
+    } else if (section === 'jobs') {
+      const value = await api<{ items: Job[] }>('/admin/jobs');
+      if (current()) jobs = value.items;
+    } else if (section === 'server') {
+      const value = await api<NonNullable<typeof health>>('/admin/health');
+      if (current()) health = value;
+    } else if (section === 'backups') {
+      const value = await api<{ timezone: string }>('/admin/settings');
+      if (current()) timezone = value.timezone;
     }
   }
   async function createUser() {
@@ -209,17 +253,8 @@
   <SettingsAnchors items={serverAnchors} />
 {/snippet}
 
-<SettingsLayout
-  {user}
-  active={settingsSection}
-  {openSettings}
-  subheader={settingsSection === 'server' && user.role === 'admin'
-    ? serverSubheader
-    : undefined}
->
-  {#if error}<Notice variant="error" role="alert" class="mb-0">{error}</Notice
-    >{/if}
-  {#if settingsSection === 'account'}
+{#snippet content(section: SettingsSection)}
+  {#if section === 'account'}
     {#await settingsPages.UserPreferences()}{@render loading(
         'Loading settings',
       )}{:then { default: UserPreferences }}<UserPreferences
@@ -236,7 +271,7 @@
         'Loading settings',
       )}{:then { default: AuthSettings }}<AuthSettings
       />{:catch caught}{@render failed(caught)}{/await}{/if}
-  {#if settingsSection === 'online'}{#await settingsPages.OnlineAccounts()}{@render loading(
+  {#if section === 'online'}{#await settingsPages.OnlineAccounts()}{@render loading(
         'Loading settings',
       )}{:then { default: OnlineAccounts }}<OnlineAccounts
         revision={accountRevision}
@@ -245,7 +280,7 @@
           ? () => openSettings('providers')
           : undefined}
       />{:catch caught}{@render failed(caught)}{/await}{/if}
-  {#if settingsSection === 'playback'}{#await settingsPages.PlaybackSettings()}{@render loading(
+  {#if section === 'playback'}{#await settingsPages.PlaybackSettings()}{@render loading(
         'Loading settings',
       )}{:then { default: PlaybackSettings }}<PlaybackSettings
       />{:catch caught}{@render failed(caught)}{/await}
@@ -254,12 +289,12 @@
       )}{:then { default: SegmentSettings }}<SegmentSettings
       />{:catch caught}{@render failed(caught)}{/await}
   {/if}
-  {#if settingsSection === 'devices'}
+  {#if section === 'devices'}
     <SettingsCard
       title="Your devices"
       description="Browsers and desktops signed in to your account. Revoking this device signs you out."
     >
-      {#if loadingData}<div class={cardBlockClass}>
+      {#if loadingData('devices')}<div class={cardBlockClass}>
           <ContentSkeleton label="Loading devices" />
         </div>{/if}
       {#each sessions as session (session.id)}
@@ -308,7 +343,7 @@
       )}{:then { default: AuthDevices }}<AuthDevices
       />{:catch caught}{@render failed(caught)}{/await}
   {/if}
-  {#if desktop && settingsSection === 'mpv'}
+  {#if desktop && section === 'mpv'}
     <SettingsCard
       title="Player and tools"
       description="Install, update and configure the desktop player and its helper tools."
@@ -320,7 +355,7 @@
         />{:catch caught}{@render failed(caught)}{/await}
     </SettingsCard>
   {/if}
-  {#if desktop && settingsSection === 'connection'}
+  {#if desktop && section === 'connection'}
     <SettingsCard
       title="Desktop"
       description="The installed desktop build, how it updates and which server it talks to."
@@ -377,22 +412,22 @@
     </SettingsCard>
   {/if}
   {#if user.role === 'admin'}
-    {#if settingsSection === 'analysis'}{#await settingsPages.SegmentSettings()}{@render loading(
+    {#if section === 'analysis'}{#await settingsPages.SegmentSettings()}{@render loading(
           'Loading settings',
         )}{:then { default: SegmentSettings }}<SegmentSettings
           admin
         />{:catch caught}{@render failed(caught)}{/await}{/if}
-    {#if settingsSection === 'backups'}{#await settingsPages.BackupSettings()}{@render loading(
+    {#if section === 'backups'}{#await settingsPages.BackupSettings()}{@render loading(
           'Loading settings',
         )}{:then { default: BackupSettings }}<BackupSettings
           {timezone}
           {timeFormat}
         />{:catch caught}{@render failed(caught)}{/await}{/if}
-    {#if settingsSection === 'providers'}{#await settingsPages.OnlineSettings()}{@render loading(
+    {#if section === 'providers'}{#await settingsPages.OnlineSettings()}{@render loading(
           'Loading settings',
         )}{:then { default: OnlineSettings }}<OnlineSettings
         />{:catch caught}{@render failed(caught)}{/await}{/if}
-    {#if settingsSection === 'services'}{#await settingsPages.ServicesSettings()}{@render loading(
+    {#if section === 'services'}{#await settingsPages.ServicesSettings()}{@render loading(
           'Loading settings',
         )}{:then { default: ServicesSettings }}<ServicesSettings
           {timeFormat}
@@ -401,15 +436,15 @@
           onSelect={(service) => openSettings('services', service)}
           openSettings={(name) => openSettings(name)}
         />{:catch caught}{@render failed(caught)}{/await}{/if}
-    {#if settingsSection === 'retention'}{#await settingsPages.RetentionSettings()}{@render loading(
+    {#if section === 'retention'}{#await settingsPages.RetentionSettings()}{@render loading(
           'Loading settings',
         )}{:then { default: RetentionSettings }}<RetentionSettings
         />{:catch caught}{@render failed(caught)}{/await}{/if}
-    {#if settingsSection === 'retention'}{#await settingsPages.ManagerOwnership()}{@render loading(
+    {#if section === 'retention'}{#await settingsPages.ManagerOwnership()}{@render loading(
           'Loading settings',
         )}{:then { default: ManagerOwnership }}<ManagerOwnership
         />{:catch caught}{@render failed(caught)}{/await}{/if}
-    {#if settingsSection === 'server'}
+    {#if section === 'server'}
       <SettingsCard
         id="server-status"
         aria-label="Server status"
@@ -425,13 +460,17 @@
               />{:catch caught}{@render failed(caught)}{/await}
           </div>
           <div class={statTileClass}>
-            {#if loadingData}<Skeleton class="h-6 w-24" />{:else}<strong
+            {#if loadingData('server')}<Skeleton
+                class="h-6 w-24"
+              />{:else}<strong
                 >{health?.controller ? 'Connected' : 'Unavailable'}</strong
               >{/if}
             <small>Docker controller</small>
           </div>
           <div class={statTileClass}>
-            {#if loadingData}<Skeleton class="h-6 w-24" />{:else}<strong
+            {#if loadingData('server')}<Skeleton
+                class="h-6 w-24"
+              />{:else}<strong
                 >{health
                   ? `${(health.cache_free_bytes / 1024 ** 3).toFixed(1)} GB`
                   : '—'}</strong
@@ -485,7 +524,7 @@
           {timeFormat}
         />{:catch caught}{@render failed(caught)}{/await}
     {/if}
-    {#if settingsSection === 'people'}
+    {#if section === 'people'}
       <SettingsCard
         title="Add user"
         description="New people sign in with a username and password. They can add passkeys or link an identity provider later."
@@ -528,7 +567,7 @@
         title="User access"
         description="Roles, automatic request approval, recovery links and account removal for everyone on this server."
       >
-        {#if loadingData}<div class={cardBlockClass}>
+        {#if loadingData('people')}<div class={cardBlockClass}>
             <ContentSkeleton label="Loading users" />
           </div>{/if}
         {#if approvalError}<div class={cardBlockClass}>
@@ -561,17 +600,17 @@
         </Accordion.Root>
       </SettingsCard>
     {/if}
-    {#if settingsSection === 'audit'}{#await settingsPages.AuditSettings()}{@render loading(
+    {#if section === 'audit'}{#await settingsPages.AuditSettings()}{@render loading(
           'Loading settings',
         )}{:then { default: AuditSettings }}<AuditSettings
           {user}
           {timeFormat}
         />{:catch caught}{@render failed(caught)}{/await}{/if}
-    {#if settingsSection === 'jobs'}{#await settingsPages.ActivitySettings()}{@render loading(
+    {#if section === 'jobs'}{#await settingsPages.ActivitySettings()}{@render loading(
           'Loading settings',
         )}{:then { default: ActivitySettings }}<ActivitySettings
           {jobs}
-          loading={loadingData}
+          loading={loadingData('jobs')}
           checkpoint={() =>
             act(async () => {
               await api('/admin/jobs', 'POST', {
@@ -580,5 +619,40 @@
               await loadSettings();
             })}
         />{:catch caught}{@render failed(caught)}{/await}{/if}
+  {/if}
+{/snippet}
+
+<SettingsLayout
+  {groups}
+  active={settingsSection}
+  bind:query
+  {results}
+  {openSettings}
+  subheader={!results && settingsSection === 'server' && user.role === 'admin'
+    ? serverSubheader
+    : undefined}
+>
+  {#if error}<Notice variant="error" role="alert" class="mb-0">{error}</Notice
+    >{/if}
+  {#if results}
+    {#each results as result (result.page.id)}
+      <SettingsSearchGroup
+        {result}
+        open={(section, service) => {
+          query = '';
+          openSettings(section, service);
+        }}>{@render content(result.page.id)}</SettingsSearchGroup
+      >
+    {:else}
+      <div role="status" class={[emptyClass, 'col-span-full']}>
+        <SearchX size={28} strokeWidth={1.6} aria-hidden="true" />
+        <h2 class="m-0 text-[15px] font-semibold">No matching settings</h2>
+        <p class="mt-1.5 mb-0">
+          Nothing matches “{term}”. Try a page name or a setting label.
+        </p>
+      </div>
+    {/each}
+  {:else}
+    {@render content(settingsSection)}
   {/if}
 </SettingsLayout>
