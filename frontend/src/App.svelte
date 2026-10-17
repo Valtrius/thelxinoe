@@ -15,6 +15,7 @@
   import { onMount, tick } from 'svelte';
   import { SvelteURL } from 'svelte/reactivity';
   import { players, preloadPage } from './lib/pages';
+  import { playerFrameReveal } from './lib/player-reveal';
   import FeatureOutlet from './lib/FeatureOutlet.svelte';
   import { PageTransition, pageIdentity } from './lib/page-transition';
   import {
@@ -949,6 +950,7 @@
               >{String(error)}</Notice
             >{/await}{:else if playing}<div
             use:pinnedPlayer
+            transition:playerFrameReveal
             class={[
               'player-frame compact:fixed compact:inset-x-0 compact:top-0 compact:z-70 compact:m-0',
               providerPage

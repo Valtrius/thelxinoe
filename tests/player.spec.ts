@@ -1821,6 +1821,63 @@ test('pausing while a seek waits for media keeps playback paused', async ({
   expect(state.errors).toEqual([]);
 });
 
+test('the seek bar keeps a held position while playback continues and seeks there on release', async ({
+  page,
+}) => {
+  const state = await fixture(page, { indexed: true });
+  await decoded(page);
+  const video = page.locator('video');
+  const slider = page.getByRole('slider', { name: 'Playback position' });
+  const box = (await slider.boundingBox())!;
+  // Hovering reveals the controls and confirms the slider receives the press.
+  await slider.hover({
+    position: { x: box.width * 0.75, y: box.height / 2 },
+  });
+  await page.mouse.down();
+  const held = Number(await slider.inputValue());
+  expect(held).toBeGreaterThan(30);
+  // Playback keeps updating its position while the pointer stays down.
+  const before = await video.evaluate((v: HTMLVideoElement) => v.currentTime);
+  await expect
+    .poll(() => video.evaluate((v: HTMLVideoElement) => v.currentTime))
+    .toBeGreaterThan(before + 0.75);
+  expect(Number(await slider.inputValue())).toBe(held);
+  await page.mouse.up();
+  await expect
+    .poll(() => video.evaluate((v: HTMLVideoElement) => v.currentTime))
+    .toBeGreaterThanOrEqual(held);
+  await decoded(page);
+  expect(state.seeks).toEqual([]);
+  expect(state.errors).toEqual([]);
+});
+
+test('a seek before playback starts keeps the pause control while it waits', async ({
+  page,
+}) => {
+  const state = await fixture(page, { indexed: true, hold: true });
+  state.held.test = (track) => track === 'video';
+  state.metadata.release();
+  state.preparation.release();
+  state.media.release();
+  const video = page.locator('video');
+  const slider = page.getByRole('slider', { name: 'Playback position' });
+  await expect(slider).toBeEnabled();
+  // Autoplay has been requested but has no media yet.
+  await expect(video).toHaveJSProperty('paused', false);
+  await slider.fill('45');
+  await expect(page.getByRole('status')).toContainText('Buffering');
+  await page.waitForTimeout(500);
+  await expect(
+    page.getByRole('button', { name: 'Pause', exact: true }),
+  ).toBeVisible();
+  state.held.release();
+  await expect
+    .poll(() => video.evaluate((v: HTMLVideoElement) => v.currentTime))
+    .toBeGreaterThan(45.5);
+  await expect(page.getByRole('status')).toHaveCount(0);
+  expect(state.errors).toEqual([]);
+});
+
 test('transcoded seeking uses the server timeline and live playback omits seeking', async ({
   page,
 }) => {

@@ -1,6 +1,5 @@
 <script lang="ts">
   import Button from './ui/Button.svelte';
-  import { formControlClass } from './ui/styles';
   import { twMerge } from 'tailwind-merge';
   import { onDestroy, onMount, tick, untrack } from 'svelte';
   import { PlaybackActivity } from './playback-activity';
@@ -21,7 +20,7 @@
   } from '@lucide/svelte';
   import SegmentSkip from './SegmentSkip.svelte';
   import PlayerOption from './PlayerOption.svelte';
-  import { playerReveal } from './player-reveal';
+  import { playerHandleReveal, playerReveal } from './player-reveal';
   import { api } from './api';
   import { appearance, updateAppearance, videoMuted } from './appearance';
   import { compactViewport, touchDevice } from './responsive';
@@ -129,6 +128,10 @@
   let sideTap: { side: -1 | 1; time: number; seeking: boolean } | undefined;
   let tapSeek:
     { revision: number; target: number; resume: boolean } | undefined;
+  // The seek bar keeps the value under the pointer until it is released;
+  // playback updates would otherwise replace it and seek back on release.
+  // Releasing where the drag began fires no change event, so release clears it.
+  let scrub = $state<number | null>(null);
   // Touch cannot hover: a tap over hidden controls only reveals them, and the
   // :hover it leaves on a tapped control must not keep them shown.
   let touch = false,
@@ -502,6 +505,16 @@
         return player.buffered.end(index) - at;
     return 0;
   }
+  // The seek bar shows how far media is buffered from the playhead.
+  let bufferedTo = $state(0);
+  function updateBuffered() {
+    if (active && player)
+      bufferedTo = player.currentTime + bufferedAhead() + active.timeline_start;
+  }
+  function fraction(at: number) {
+    const duration = active?.duration ?? 0;
+    return duration > 0 ? Math.max(0, Math.min(1, at / duration)) : 0;
+  }
   function hold() {
     holding = true;
     buffering = true;
@@ -516,6 +529,8 @@
     if (ahead < resumeBuffer && player.currentTime + ahead < end - 0.25) return;
     holding = false;
     void player.play().catch(() => {
+      // Another seek interrupted this request and resumes when it can.
+      if (holding) return;
       paused = true;
       ready();
     });
@@ -663,7 +678,9 @@
     const play = () => {
       if (active !== session) return;
       void player.play().catch(() => {
-        if (active === session) {
+        // A seek before playback starts interrupts this request; it resumes
+        // when the seek has enough media.
+        if (active === session && !holding) {
           paused = true;
           ready();
         }
@@ -711,7 +728,10 @@
       hls.loadSource(mediaUrl(url));
       hls.attachMedia(player);
       if (autoplay) hls.on(Hls.Events.MANIFEST_PARSED, play);
-      hls.on(Hls.Events.FRAG_BUFFERED, release);
+      hls.on(Hls.Events.FRAG_BUFFERED, () => {
+        updateBuffered();
+        release();
+      });
       hls.on(Hls.Events.ERROR, (_, data) => {
         if (data.fatal && active === session) {
           error = 'Playback interrupted. Try seeking or reopening this item.';
@@ -745,6 +765,7 @@
     active = null;
     paused = true;
     holding = false;
+    bufferedTo = 0;
     hls?.destroy();
     hls = undefined;
     if (player) {
@@ -834,6 +855,7 @@
         active.live ? Number.POSITIVE_INFINITY : active.duration,
         player.currentTime + active.timeline_start,
       );
+    updateBuffered();
   }
   async function end() {
     activity.setActive(false);
@@ -944,7 +966,7 @@
     player?.pause();
   }}
   class={twMerge([
-    'player relative isolate aspect-video min-h-[210px] w-full overflow-hidden bg-[#090b0c] text-[#f5f6f7] [color-scheme:dark] @container/player compact:min-h-0 compact:max-h-none fullscreen:m-0 fullscreen:aspect-auto fullscreen:h-full fullscreen:max-h-none fullscreen:w-full',
+    'player relative isolate aspect-video min-h-[210px] theme-dark w-full overflow-hidden bg-black text-foreground @container/player compact:min-h-0 compact:max-h-none fullscreen:m-0 fullscreen:aspect-auto fullscreen:h-full fullscreen:max-h-none fullscreen:w-full',
     resizable ? 'm-0' : 'mb-7',
     fullscreen && 'outline-none',
     !controlsShown && 'controls-hidden cursor-none',
@@ -993,6 +1015,7 @@
     playsinline
     onclick={tapVideo}
     ontimeupdate={update}
+    onprogress={updateBuffered}
     onloadstart={waiting}
     onwaiting={waiting}
     onseeking={waiting}
@@ -1032,12 +1055,12 @@
 
   <div
     class={[
-      'player-header absolute inset-x-0 top-0 z-[2] flex items-center gap-4 bg-[linear-gradient(#000b,transparent)] px-4 pt-3 pb-9 transition-opacity duration-(--animation-duration) ease-[ease] motion-reduce:transition-none max-[600px]:px-2 max-[600px]:pt-2 max-[600px]:pb-7',
+      'player-header absolute inset-x-0 top-0 z-[2] flex items-center gap-4 bg-[linear-gradient(color-mix(in_srgb,var(--background)_40%,transparent),color-mix(in_srgb,var(--background)_10%,transparent)_60%,transparent)] px-4 pt-3 pb-9 transition-opacity duration-(--animation-duration) ease-[ease] motion-reduce:transition-none max-[600px]:px-2 max-[600px]:pt-2 max-[600px]:pb-7',
       !controlsShown && 'pointer-events-none opacity-0',
     ]}
   >
     <h2
-      class="m-0 min-w-0 flex-1 overflow-hidden text-[15px] font-[550] text-ellipsis whitespace-nowrap [text-shadow:0_1px_4px_#000] max-[600px]:text-[13px]"
+      class="m-0 min-w-0 flex-1 overflow-hidden text-[15px] font-[550] text-ellipsis whitespace-nowrap [text-shadow:0_0_2px_var(--background),0_0_6px_var(--background)] max-[600px]:text-[13px]"
       data-sidebar-resize="xy-pos"
       title={choice.title}
     >
@@ -1073,7 +1096,7 @@
         {error}
       </p>
       <button
-        class="retry-button focus-visible:outline-2 focus-visible:outline-offset-2 pointer-events-auto border border-[#ffffff50] bg-[#15191be6] px-3 py-1.5 text-inherit"
+        class="retry-button focus-visible:outline-2 focus-visible:outline-offset-2 pointer-events-auto border border-line-strong bg-surface-strong px-3 py-1.5 text-foreground [text-shadow:none]"
         data-sidebar-resize="xy-pos"
         onclick={() => void open(choice)}>Retry playback</button
       >
@@ -1123,26 +1146,31 @@
 
   <div
     class={[
-      'player-controls absolute inset-x-0 bottom-0 z-[2] bg-[linear-gradient(transparent,#000c)] px-4 pt-[30px] pb-2.5 transition-opacity duration-(--animation-duration) ease-[ease] motion-reduce:transition-none max-[600px]:px-2 max-[600px]:pt-6 max-[600px]:pb-1.5',
+      'player-controls absolute inset-x-0 bottom-0 z-[2] bg-[linear-gradient(transparent,color-mix(in_srgb,var(--background)_12%,transparent)_40%,color-mix(in_srgb,var(--background)_45%,transparent))] px-4 pt-[30px] pb-2.5 transition-opacity duration-(--animation-duration) ease-[ease] motion-reduce:transition-none max-[600px]:px-2 max-[600px]:pt-6 max-[600px]:pb-1.5',
       !controlsShown && 'pointer-events-none opacity-0',
     ]}
   >
     {#if !active?.live}
       <input
-        class={twMerge(
-          formControlClass,
-          'seek focus-visible:outline-2 focus-visible:outline-offset-2 block h-4 w-full cursor-pointer border-0 bg-transparent p-0 accent-accent',
-        )}
+        class="seek player-range w-full focus-visible:outline-2 focus-visible:outline-offset-2"
+        style:--range-fill={fraction(scrub ?? position)}
+        style:--range-buffer={fraction(bufferedTo)}
         data-sidebar-resize="xy"
         aria-label="Playback position"
-        aria-valuetext={`${time(position)} of ${time(active?.duration ?? 0)}`}
+        aria-valuetext={`${time(scrub ?? position)} of ${time(active?.duration ?? 0)}`}
         type="range"
         min="0"
         max={active?.duration || 1}
         step="0.1"
-        value={position}
+        value={scrub ?? position}
         disabled={busy || !active}
-        onchange={(event) => void seek(Number(event.currentTarget.value))}
+        oninput={(event) => (scrub = Number(event.currentTarget.value))}
+        onchange={(event) => {
+          scrub = null;
+          void seek(Number(event.currentTarget.value));
+        }}
+        onpointerup={() => setTimeout(() => (scrub = null))}
+        onpointercancel={() => (scrub = null)}
       />
     {/if}
     <div
@@ -1182,10 +1210,8 @@
               />{:else}<Volume2 size={20} />{/if}
           </Button>
           <input
-            class={twMerge(
-              formControlClass,
-              'player-volume-range focus-visible:outline-2 focus-visible:outline-offset-2 player-small:hidden block h-4 w-[76px] cursor-pointer border-0 bg-transparent p-0 accent-accent max-[600px]:w-10',
-            )}
+            class="player-volume-range player-range w-[76px] focus-visible:outline-2 focus-visible:outline-offset-2 player-small:hidden max-[600px]:w-10"
+            style:--range-fill={muted ? 0 : $appearance.audio_volume}
             aria-label="Playback volume"
             type="range"
             min="0"
@@ -1196,7 +1222,7 @@
           />
         </div>{/if}
       <div
-        class="playback-details ml-2 grid shrink-0 gap-0.5 max-[600px]:ml-1"
+        class="playback-details ml-2 grid shrink-0 gap-0.5 [text-shadow:0_0_2px_var(--background),0_0_6px_var(--background)] max-[600px]:ml-1"
         data-sidebar-resize="xy-pos"
       >
         <span
@@ -1210,7 +1236,7 @@
             )}{/if}
         </span>
         {#if active}<span
-            class="playback-mode text-[11px] text-[#acb4ba] player-small:hidden"
+            class="playback-mode text-[10px] font-[650] tracking-[0.12em] text-muted uppercase player-small:hidden"
             title={active.conversion_reason ?? undefined}
             >{deliveredQuality ? `${deliveredQuality} · ` : ''}{active.mode ===
             'direct'
@@ -1314,6 +1340,7 @@
     aria-valuenow={Math.round(playerHeight)}
     aria-valuetext={`${Math.round(playerHeight)} pixels`}
     title="Drag to resize; use arrow keys or double-click to reset"
+    transition:playerHandleReveal|global
     class="player-resize-handle group flex h-2 w-full touch-none cursor-row-resize items-center justify-center bg-surface hover:bg-accent-soft focus-visible:bg-accent-soft focus-visible:-outline-offset-2"
     onpointerdown={(event) => {
       if (event.button !== 0 || !event.isPrimary) return;

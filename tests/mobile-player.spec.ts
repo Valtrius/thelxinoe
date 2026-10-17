@@ -234,6 +234,67 @@ test('pinned playback on library pages fills the screen width from the top edge'
   await page.screenshot({ path: info.outputPath('library-pinned.png') });
 });
 
+for (const route of ['home', 'online/youtube'])
+  test(`the ${route} player reveals from the top edge and the page follows it without jumping`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto(`/#${route}`);
+    const play = page
+      .getByRole('button', { name: /^Play[: ]/ })
+      .filter({ visible: true })
+      .first();
+    // The first opening also loads the player's code.
+    await play.click();
+    const player = page.getByRole('region', { name: 'Media player' });
+    await expect(player).toHaveCSS('transform', 'none');
+    const edge = (await page.locator('.player-frame').boundingBox())!.y;
+    await page.evaluate(() => {
+      const samples: { open: boolean; top: number; edge?: number }[] = [];
+      Object.assign(window, { pageEdge: samples });
+      const sample = () => {
+        const content = document.querySelector('[data-page-content]');
+        const frame = document.querySelector('.player-frame');
+        if (content)
+          samples.push({
+            open: !!frame,
+            top: content.getBoundingClientRect().top,
+            edge: frame?.getBoundingClientRect().top,
+          });
+        requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    });
+    await page
+      .getByRole('button', { name: 'Close player', exact: true })
+      .click();
+    await expect(player).toHaveCount(0);
+    await page.waitForTimeout(200);
+    await play.click();
+    await expect(player).toHaveCSS('transform', 'none');
+    const samples = await page.evaluate(
+      () =>
+        (
+          window as unknown as {
+            pageEdge: { open: boolean; top: number; edge?: number }[];
+          }
+        ).pageEdge,
+    );
+    // The player slides out from and back into the top edge it rests against.
+    for (const sample of samples.filter((sample) => sample.open))
+      expect(Math.abs(sample.edge! - edge)).toBeLessThan(1);
+    const changes = samples.flatMap((sample, index) =>
+      index && sample.open !== samples[index - 1].open
+        ? [sample.top - samples[index - 1].top]
+        : [],
+    );
+    // Removing the closed player and adding the next one leave the page in place.
+    expect(changes).toHaveLength(2);
+    for (const change of changes) expect(Math.abs(change)).toBeLessThan(1);
+    const tops = samples.map((sample) => sample.top);
+    expect(Math.max(...tops) - Math.min(...tops)).toBeGreaterThan(300);
+  });
+
 test.describe('mobile player gestures', () => {
   test.use({
     hasTouch: true,

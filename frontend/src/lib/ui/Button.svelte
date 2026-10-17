@@ -16,7 +16,7 @@
           'border-transparent bg-transparent text-muted hover:bg-surface-soft hover:text-foreground',
         danger: 'border-danger/45 bg-danger/9 text-danger hover:bg-danger/16',
         player:
-          'border-0 bg-transparent text-inherit hover:bg-[#ffffff24] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent data-[state=open]:bg-[#ffffff24]',
+          'border-0 bg-transparent text-inherit [&_svg]:[filter:drop-shadow(0_0_1px_var(--background))_drop-shadow(0_0_4px_var(--background))] hover:bg-accent-soft hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent data-[state=open]:bg-accent-soft data-[state=open]:text-accent data-[state=open]:shadow-[inset_0_0_0_1px_var(--line-strong)]',
       },
       size: {
         default: 'h-9 px-3.5',
