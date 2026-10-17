@@ -21,7 +21,7 @@
   } from '@lucide/svelte';
   import SegmentSkip from './SegmentSkip.svelte';
   import PlayerOption from './PlayerOption.svelte';
-  import { playerReveal } from './player-reveal';
+  import { playerHandleReveal, playerReveal } from './player-reveal';
   import { api } from './api';
   import { appearance, updateAppearance, videoMuted } from './appearance';
   import { compactViewport, touchDevice } from './responsive';
@@ -1328,6 +1328,7 @@
     aria-valuenow={Math.round(playerHeight)}
     aria-valuetext={`${Math.round(playerHeight)} pixels`}
     title="Drag to resize; use arrow keys or double-click to reset"
+    transition:playerHandleReveal|global
     class="player-resize-handle group flex h-2 w-full touch-none cursor-row-resize items-center justify-center bg-surface hover:bg-accent-soft focus-visible:bg-accent-soft focus-visible:-outline-offset-2"
     onpointerdown={(event) => {
       if (event.button !== 0 || !event.isPrimary) return;
