@@ -62,6 +62,13 @@ fn retry_at(error: &anyhow::Error) -> Option<i64> {
         })
 }
 
+/// Name the helper that could not start, keeping the I/O error underneath so a
+/// temporary process limit is still retried by `retry_at`.
+fn start_failure(error: std::io::Error) -> anyhow::Error {
+    let message = format!("Could not start {PYTHON}: {error}");
+    anyhow::Error::new(error).context(message)
+}
+
 pub struct Manager {
     pub runtime: thelxinoe_tools::Runtime,
     root: PathBuf,
@@ -384,9 +391,7 @@ async fn invoke(
     command.wrap(KillOnDrop);
     #[cfg(unix)]
     command.wrap(ProcessGroup::leader());
-    let mut child = command
-        .spawn()
-        .map_err(|error| anyhow::anyhow!("Could not start {PYTHON}: {error}"))?;
+    let mut child = command.spawn().map_err(start_failure)?;
     if let Some(value) = input {
         child
             .stdin()

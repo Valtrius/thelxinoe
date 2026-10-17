@@ -3,6 +3,22 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
+#[test]
+fn a_helper_that_cannot_start_is_named_and_a_process_limit_is_retried() {
+    use std::io::{Error, ErrorKind};
+    let limited = super::start_failure(Error::from(ErrorKind::WouldBlock));
+    assert!(
+        limited
+            .to_string()
+            .starts_with(&format!("Could not start {}: ", super::PYTHON)),
+        "{limited}"
+    );
+    assert!(super::retry_at(&limited).is_some());
+    let missing = super::start_failure(Error::from(ErrorKind::NotFound));
+    assert!(missing.to_string().contains(super::PYTHON));
+    assert!(super::retry_at(&missing).is_none());
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn prepared_first_install_reports_running_while_verification_is_blocked() {
