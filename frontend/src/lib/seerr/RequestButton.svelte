@@ -11,12 +11,22 @@
     | { source: 'guide'; service_id: string; trash_id: string }
     | { source: 'custom'; service_id: string; profile_id: number };
   type Choice = { name: string; default: boolean; profile: ProfileRef };
-  let { mediaKind, id, disabled, busy, inactiveLabel, request } = $props<{
+  let {
+    mediaKind,
+    id,
+    disabled,
+    busy,
+    inactiveLabel,
+    request,
+    inline = false,
+  } = $props<{
     mediaKind: MediaKind;
     id: number;
     disabled: boolean;
     busy: boolean;
     inactiveLabel: string;
+    /** Inside a modal dialog, profiles must render in it to stay reachable. */
+    inline?: boolean;
     request: (profile?: ProfileRef) => void;
   }>();
   let items = $state<Choice[]>([]),
@@ -126,7 +136,7 @@
             class="border-l-0 px-2"><ChevronDown size={15} /></Button
           >{/snippet}
       </Popover.Trigger>
-      <Popover.Portal>
+      <Popover.Portal disabled={inline}>
         <Popover.Content
           align="end"
           sideOffset={4}

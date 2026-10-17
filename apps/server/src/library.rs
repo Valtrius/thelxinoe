@@ -94,15 +94,58 @@ pub async fn browse(
     Query(input): Query<Browse>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::Browse).await?;
+    // Wanted manager titles without a library item join top-level movie and show lists.
+    let wanted = input
+        .kind
+        .clone()
+        .filter(|kind| {
+            matches!(kind.as_str(), "movie" | "show")
+                && input.parent.is_none()
+                && input.collection.is_none()
+        })
+        .map(|kind| (kind, input.q.clone()));
     let mut items = storage::browse(&state.db, input).await?;
-    decorate_cards(&state, &p, &mut items.iter_mut().collect::<Vec<_>>()).await?;
+    // A full page is cut alphabetically; wanted titles past its last row wait too.
+    let last = (items.len() >= 500)
+        .then(|| items.last()?["title"].as_str().map(str::to_lowercase))
+        .flatten();
+    let grant = crate::grants::issue(&state, &p, "artwork", 300).await?;
+    decorate_cards_with(
+        &state,
+        &p,
+        &mut items.iter_mut().collect::<Vec<_>>(),
+        &grant,
+    )
+    .await?;
+    crate::managers::status::decorate(
+        &state,
+        &p,
+        &mut items.iter_mut().collect::<Vec<_>>(),
+        &grant,
+    )
+    .await?;
+    if let Some((kind, q)) = wanted {
+        items.extend(
+            crate::managers::status::virtual_titles(&state, &p, &kind, q.as_deref(), &grant)
+                .await?
+                .into_iter()
+                .filter(|item| {
+                    last.as_ref().is_none_or(|last| {
+                        item["title"].as_str().unwrap_or_default().to_lowercase() <= *last
+                    })
+                }),
+        );
+        // Stable, so real items keep their order when titles tie.
+        items.sort_by_cached_key(|item| item["title"].as_str().unwrap_or_default().to_lowercase());
+    }
     Ok(Json(json!({"items":items})))
 }
 /// Resolve cached art from the item, album or show in one bounded query.
-pub(crate) async fn decorate_cards(
+pub(crate) async fn decorate_cards_with(
     state: &AppState,
     p: &thelxinoe_core::Principal,
     items: &mut [&mut Value],
+    grant: &str,
 ) -> Result<()> {
     let ids = items
         .iter()
@@ -113,7 +156,6 @@ pub(crate) async fn decorate_cards(
     }
     let ids = json!(ids).to_string();
     let metadata = storage::decorate_cards(ids, p.user.id.clone(), &state.db).await?;
-    let grant = crate::grants::issue(state, p, "artwork", 300).await?;
     for item in items {
         if let Some(presentation) = item["id"].as_str().and_then(|id| metadata.get(id)) {
             if item.get("year").is_none() {
@@ -133,32 +175,22 @@ pub async fn detail(
     headers: HeaderMap,
     Path(media_id): Path<String>,
 ) -> Result<Json<Value>> {
-    security::require(&state, &headers, Capability::Browse).await?;
-    let result = storage::detail(&state.db, media_id).await?;
-    Ok(Json(result.ok_or_else(ApiError::not_found)?))
-}
-pub async fn overrides(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(media_id): Path<String>,
-    Json(value): Json<Value>,
-) -> Result<Json<Value>> {
-    let p = security::require(&state, &headers, Capability::ManageLibrary).await?;
-    let Some(fields) = value.as_object() else {
-        return Err(ApiError::bad("Expected metadata fields"));
-    };
-    if fields.iter().any(|(key, value)| match key.as_str() {
-        "title" | "overview" => !value.is_null() && value.as_str().is_none_or(|s| s.len() > 10_000),
-        "year" => !value.is_null() && !value.as_i64().is_some_and(|n| (1..=9999).contains(&n)),
-        _ => true,
-    }) {
-        return Err(ApiError::bad("Unsupported metadata override"));
+    let p = security::require(&state, &headers, Capability::Browse).await?;
+    let mut item = storage::detail(&state.db, media_id.clone())
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    let grant = crate::grants::issue(&state, &p, "artwork", 300).await?;
+    item["artwork_url"] = Value::Null;
+    decorate_cards_with(&state, &p, &mut [&mut item], &grant).await?;
+    crate::managers::status::detail(&state, &p, &mut item, &grant).await?;
+    // Keep protects files from deletion, which only administrators manage.
+    if p.user.role == thelxinoe_core::Role::Admin {
+        let protection = storage::keep(&state.db, media_id).await?;
+        item["keep"] = json!(protection.own);
+        item["kept_by"] = json!(protection.by);
+        item["kept_within"] = json!(protection.within);
     }
-    let updated = storage::overrides(&state.db, media_id, value, p).await?;
-    if updated == 0 {
-        return Err(ApiError::not_found());
-    }
-    Ok(Json(json!({"ok":true})))
+    Ok(Json(item))
 }
 /// A root is rescanned once its changes pause this long, so a burst becomes one scan. A
 /// file still being written is skipped by that scan and its next write triggers another.
@@ -391,6 +423,82 @@ mod presentation_tests {
                     .all(|item| item["watched"] == false)
             );
         }
+    }
+
+    #[tokio::test]
+    async fn watch_later_accepts_seasons_and_clears_once_everything_is_watched() {
+        let (_temp, state, alice) = fixture().await;
+        state.db.write("test.fixture", |db| {
+            db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Library','shows','/media/shows')",[])?;
+            for (id,kind,parent) in [("movie","movie",None),("show","show",None),("a","season",Some("show")),("b","season",Some("show")),("a1","episode",Some("a")),("a2","episode",Some("a")),("b1","episode",Some("b"))] {
+                db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,created_at) VALUES (?1,'root',?2,?3,?1,?1,1)",rusqlite::params![id,kind,parent])?;
+            }
+            // Specials never keep the whole series in Watch Later.
+            db.execute("INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,sort_number,created_at) VALUES ('sp','root','season','show','sp','Specials',0,1),('sp1','root','episode','sp','sp1','sp1',1,1)",[])?;
+            // Another user's list is never touched by Alice watching.
+            db.execute("INSERT INTO media_state(user_id,media_id,updated_at,watch_later) VALUES ('bob','show',1,1),('bob','a',1,1)",[])?;
+            Ok(())
+        }).await.unwrap();
+        let set = |media: &'static str, body: serde_json::Value| {
+            let (state, alice) = (state.clone(), alice.clone());
+            async move {
+                let response = call(
+                    &state,
+                    &format!("/api/v1/catalog/{media}/state"),
+                    "PUT",
+                    body,
+                    &alice,
+                )
+                .await;
+                assert_eq!(response.0, axum::http::StatusCode::OK, "{media}");
+                response.2
+            }
+        };
+        let later = |user: &'static str, media: &'static str| {
+            let state = state.clone();
+            async move {
+                state.db.read("test.later", move |db| Ok(db.query_row("SELECT COALESCE((SELECT watch_later FROM media_state WHERE user_id=?1 AND media_id=?2),0)",[user,media],|r| r.get::<_,bool>(0))?)).await.unwrap()
+            }
+        };
+        for media in ["movie", "show", "a", "b", "a1"] {
+            assert_eq!(
+                set(media, serde_json::json!({"watch_later":true})).await["watch_later"],
+                true
+            );
+        }
+        assert_eq!(
+            set("movie", serde_json::json!({"watched":true})).await["watch_later"],
+            false
+        );
+        // A watched title can be queued again to rewatch; only becoming watched clears it.
+        assert_eq!(
+            set("movie", serde_json::json!({"watch_later":true})).await["watch_later"],
+            true
+        );
+        assert_eq!(
+            set("movie", serde_json::json!({"favorite":true})).await["watch_later"],
+            true
+        );
+        set("a1", serde_json::json!({"watched":true})).await;
+        assert!(!later("alice", "a1").await);
+        assert!(later("alice", "a").await, "a2 is still unwatched");
+        set("a2", serde_json::json!({"watched":true})).await;
+        assert!(!later("alice", "a").await);
+        assert!(later("alice", "show").await, "b1 is still unwatched");
+        assert!(later("alice", "b").await);
+        // Playback and Jellyfin clients write watched rows directly.
+        state
+            .db
+            .write("test.watched", |db| {
+                db.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES ('alice','b1',1,2)",[])?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert!(!later("alice", "b").await);
+        assert!(!later("alice", "show").await);
+        assert!(later("bob", "show").await);
+        assert!(later("bob", "a").await);
     }
 
     #[tokio::test]

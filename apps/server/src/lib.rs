@@ -48,6 +48,9 @@ pub async fn run_service_connections(state: AppState) -> anyhow::Result<()> {
 pub async fn run_retention(state: AppState) -> anyhow::Result<()> {
     managers::run_retention(state).await
 }
+pub async fn run_title_status(state: AppState) -> anyhow::Result<()> {
+    managers::status::run(state).await
+}
 
 use crate::{config::Config, error::Result};
 use axum::{
@@ -276,10 +279,6 @@ pub fn router(state: AppState) -> Router {
             get(playback::subtitle),
         )
         .route("/api/v1/catalog/{id}/playback", get(playback::media_info))
-        .route(
-            "/api/v1/catalog/{id}/overrides",
-            axum::routing::put(library::overrides),
-        )
         .route(
             "/api/v1/admin/jobs",
             get(realtime::jobs).post(realtime::enqueue),

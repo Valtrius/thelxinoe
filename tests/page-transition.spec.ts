@@ -357,7 +357,14 @@ test('settings sections, service tabs and detail pages also transition without l
     .click();
   await ready(page);
   await expect(
-    page.getByRole('button', { name: 'Close', exact: true }),
+    page.getByRole('heading', {
+      level: 1,
+      name: 'Beyond the Horizon',
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Back to movies', exact: true }),
   ).toBeVisible();
   await page.screenshot({
     path: info.outputPath('transitioned-library-detail.png'),

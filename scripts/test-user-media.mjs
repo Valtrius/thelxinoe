@@ -59,8 +59,11 @@ try {
   await page.getByRole('button', { name: 'Favorite', exact: true }).click();
   await page.getByRole('button', { name: 'Watch Later', exact: true }).click();
   await expect(
-    page.getByRole('button', { name: 'Remove from Watch Later', exact: true }),
-  ).toBeVisible();
+    page.getByRole('button', { name: 'Watch Later', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true');
+  await expect(
+    page.getByRole('button', { name: 'Favorite', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true');
   await expect
     .poll(async () => await api(owner, `/catalog/${movie.id}/state`))
     .toMatchObject({ favorite: true, watch_later: true });

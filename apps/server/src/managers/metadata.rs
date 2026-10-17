@@ -413,10 +413,23 @@ async fn cache_manager_artwork(
     let Some(local) = local else {
         return Ok(path.is_file());
     };
-    if !local.starts_with('/') || local.starts_with("//") || local.contains("..") {
+    let Some(bytes) = fetch_image(state, connection, local).await? else {
         return Ok(path.is_file());
+    };
+    store_artwork(&dir, media_id, bytes).await?;
+    Ok(true)
+}
+
+/// A manager-local JPEG or PNG, fetched with the manager's key; never a remote URL.
+pub(super) async fn fetch_image(
+    state: &AppState,
+    connection: &Connection<'_>,
+    local: &str,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    if !local.starts_with('/') || local.starts_with("//") || local.contains("..") {
+        return Ok(None);
     }
-    let response = state
+    let mut response = state
         .managers
         .http
         .get(format!("{}{}", connection.base, local))
@@ -424,9 +437,8 @@ async fn cache_manager_artwork(
         .send()
         .await?;
     if !response.status().is_success() {
-        return Ok(path.is_file());
+        return Ok(None);
     }
-    let mut response = response;
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await? {
         if bytes.len() + chunk.len() > 10 * 1024 * 1024 {
@@ -435,19 +447,32 @@ async fn cache_manager_artwork(
         bytes.extend(chunk);
     }
     if !bytes.starts_with(&[0xff, 0xd8, 0xff]) && !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        return Ok(path.is_file());
+        return Ok(None);
     }
-    if fs2::available_space(&dir)? < 512 * 1024 * 1024 {
+    Ok(Some(bytes))
+}
+
+/// Replace one cached artwork file; `name` must already be a safe file name.
+pub(super) async fn store_artwork(
+    dir: &std::path::Path,
+    name: &str,
+    bytes: Vec<u8>,
+) -> anyhow::Result<()> {
+    if fs2::available_space(dir)? < 512 * 1024 * 1024 {
         bail!("Insufficient artwork cache space");
     }
-    let temp = dir.join(format!("{media_id}.tmp"));
+    let path = dir.join(name);
+    let temp = dir.join(format!("{name}.{}.tmp", id()));
     tokio::fs::write(&temp, bytes).await?;
     #[cfg(windows)]
     if path.exists() {
         tokio::fs::remove_file(&path).await?;
     }
-    tokio::fs::rename(temp, path).await?;
-    Ok(true)
+    if let Err(error) = tokio::fs::rename(&temp, path).await {
+        let _ = tokio::fs::remove_file(&temp).await;
+        return Err(error.into());
+    }
+    Ok(())
 }
 
 struct MetadataUpdate<'a> {
@@ -923,7 +948,14 @@ async fn artwork(
     if media_id.len() != 36 || !media_id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
         return Err(ApiError::not_found());
     }
-    let path = state.config.cache.join("artwork").join(media_id);
+    serve_artwork(state.config.cache.join("artwork").join(media_id), request).await
+}
+
+/// Serve one cached artwork file with its detected image type.
+pub(super) async fn serve_artwork(
+    path: std::path::PathBuf,
+    request: Request<Body>,
+) -> Result<Response> {
     let signature = tokio::fs::read(&path)
         .await
         .map_err(|_| ApiError::not_found())?;

@@ -16,6 +16,7 @@ export const pages = {
   home: cached(() => import('./Home.svelte')),
   discover: cached(() => import('./seerr/Discover.svelte')),
   library: cached(() => import('./LibraryView.svelte')),
+  title: cached(() => import('./title/TitlePage.svelte')),
   playlists: cached(() => import('./Playlists.svelte')),
   statistics: cached(() => import('./statistics/StatisticsView.svelte')),
   providers: cached(() => import('./providers/ProviderView.svelte')),
@@ -27,6 +28,7 @@ export const settingsPages = {
   PlaybackSettings: cached(() => import('./PlaybackSettings.svelte')),
   SegmentSettings: cached(() => import('./SegmentSettings.svelte')),
   ServerDisplayDefaults: cached(() => import('./ServerDisplayDefaults.svelte')),
+  LibraryFolders: cached(() => import('./LibraryFolders.svelte')),
   ServerTranscodingSettings: cached(
     () => import('./ServerTranscodingSettings.svelte'),
   ),
@@ -80,6 +82,7 @@ const settingsModules: Record<SettingsSection, (keyof typeof settingsPages)[]> =
     mpv: ['MpvSettings'],
     connection: ['DesktopUpdatePreferences'],
     server: [
+      'LibraryFolders',
       'ServerDisplayDefaults',
       'ServerTranscodingSettings',
       'ProductVersion',
@@ -104,6 +107,8 @@ export async function preloadPage(route: AppRoute) {
     ]);
   } else if (route.section === 'Home') await pages.home();
   else if (route.section === 'Discover') await pages.discover();
+  else if (['Movies', 'Shows'].includes(route.section) && route.item)
+    await pages.title();
   else if (['Movies', 'Shows', 'Music'].includes(route.section))
     await pages.library();
   else if (route.section === 'Playlists') await pages.playlists();
