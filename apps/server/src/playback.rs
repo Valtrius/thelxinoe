@@ -357,8 +357,7 @@ pub async fn remote(
     request: Request,
 ) -> Result<Response> {
     let (p, session) = from_grant(&state, &id, &grant.grant).await?;
-    if !session.streaming || session.mode != "direct" || !session.options.capabilities.native_remote
-    {
+    if !session.streaming || session.mode != "direct" {
         return Err(ApiError::not_found());
     }
     let video = session
@@ -378,6 +377,18 @@ pub async fn hls(
     let (_, session) = from_grant(&state, &id, &grant.grant).await?;
     if session.streaming {
         crate::online::streams::validate(&state, &id).await?;
+        if let Some(playlist) =
+            crate::online::streams::playlist(&state, &id, &revision, &name, &grant.grant).await
+        {
+            return Ok((
+                [
+                    (header::CONTENT_TYPE, "application/vnd.apple.mpegurl"),
+                    (header::CACHE_CONTROL, "private, no-store"),
+                ],
+                playlist,
+            )
+                .into_response());
+        }
     } else {
         current_source(&state, &session).await?;
     }
@@ -460,15 +471,10 @@ pub async fn seek(
     }
     let grant = grants::issue(&state, &p, &format!("playback:{id}"), 120).await?;
     let mut timeline_start = 0.0;
-    let url = if session.streaming && session.mode == "direct" {
-        crate::online::streams::validate(&state, &id).await?;
-        format!("/api/v1/playback/{id}/remote/video?grant={grant}")
-    } else if session.streaming {
-        let (revision, offset) =
-            crate::online::streams::seek(&state, &id, &session.options, input.position, &policy)
-                .await?;
+    let url = if session.streaming {
+        let (path, offset) = crate::online::streams::seek(&state, &id).await?;
         timeline_start = offset;
-        format!("/api/v1/playback/{id}/hls/{revision}/index.m3u8?grant={grant}")
+        format!("{path}?grant={grant}")
     } else if session.mode == "direct" {
         current_source(&state, &session).await?;
         format!("/api/v1/playback/{id}/stream?grant={grant}")

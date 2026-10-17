@@ -42,7 +42,6 @@ enum Input<'a> {
     Local(&'a Source),
     Remote {
         source: &'a RemoteSource,
-        position: f64,
         audio_codec: Option<&'a str>,
     },
 }
@@ -101,37 +100,28 @@ impl Pipelines {
         )
         .await
     }
+    /// A rolling HLS window of a live stream, from its current position.
     pub async fn start_remote(
         &self,
         id: &str,
         source: &RemoteSource,
         options: &Options,
         decision: &crate::Decision,
-        start: f64,
     ) -> Result<(String, f64)> {
         source.validate()?;
-        let tools = self.tools.media()?;
-        if !start.is_finite() || start < 0.0 {
-            bail!("Invalid stream position");
+        if !source.live {
+            bail!("Recorded online media plays from its original files");
         }
-        let timeline_start = if !decision.encoding.video && start > 0.0 {
-            match source.segment_start(start) {
-                Some(segment) => segment,
-                None => remote_keyframe_start(source, start, &tools).await?,
-            }
-        } else {
-            start
-        };
+        let tools = self.tools.media()?;
         self.start_input(
             id,
             Input::Remote {
                 source,
-                position: start,
                 audio_codec: decision.audio_codec.as_deref(),
             },
             options,
             decision.encoding,
-            if source.live { 0.0 } else { timeline_start },
+            0.0,
             tools,
         )
         .await
@@ -171,29 +161,17 @@ impl Pipelines {
         let segment_seconds = if online { "2" } else { "6" };
         tools.ffmpeg.verify_unchanged().await?;
         let mut command = Command::new(&tools.ffmpeg.path);
-        if let Input::Remote {
-            source, position, ..
-        } = &input
-        {
+        if let Input::Remote { source, .. } = &input {
             // FFREPORT may otherwise write signed upstream addresses to disk.
             command.env_remove("FFREPORT");
             command.args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y"]);
-            for (index, address) in std::iter::once(&source.video)
-                .chain(source.audio.iter())
-                .enumerate()
-            {
-                command
-                    .args(source.network_args())
-                    .args(["-rw_timeout", "15000000"]);
-                if !source.live {
-                    command.args(["-readrate", "1", "-readrate_initial_burst", "30"]);
-                    // Keep both tracks relative to the keyframe, including separate audio.
-                    if let Some((seek, offset)) = source.seek(index == 0, *position, timeline_start)
-                    {
-                        command.args(["-ss", &seek.to_string(), "-itsoffset", &offset.to_string()]);
-                    }
-                }
-                command.args(["-i", address]);
+            for address in std::iter::once(&source.video).chain(source.audio.iter()) {
+                command.args(source.network_args()).args([
+                    "-rw_timeout",
+                    "15000000",
+                    "-i",
+                    address,
+                ]);
             }
             command.args([
                 "-map",
@@ -205,9 +183,6 @@ impl Pipelines {
                     "0:a:0?"
                 },
             ]);
-            if source.drops_prior_packets() {
-                command.args(["-copypriorss", "0"]);
-            }
         } else if let Input::Local(source) = &input {
             command
                 .args([
@@ -529,43 +504,10 @@ impl Pipelines {
 }
 
 async fn keyframe_start(source: &Source, position: f64, tools: &MediaTools) -> Result<f64> {
-    probe_keyframe(&source.path.to_string_lossy(), position, None, tools).await
-}
-async fn remote_keyframe_start(
-    source: &RemoteSource,
-    position: f64,
-    tools: &MediaTools,
-) -> Result<f64> {
-    source.validate()?;
-    probe_keyframe(&source.video, position, Some(source), tools).await
-}
-async fn probe_keyframe(
-    input: &str,
-    position: f64,
-    source: Option<&RemoteSource>,
-    tools: &MediaTools,
-) -> Result<f64> {
     tools.ffprobe.verify_unchanged().await?;
-    let remote = source.is_some();
     let mut command = Command::new(&tools.ffprobe.path);
-    if let Some(source) = source {
-        command
-            .env_remove("FFREPORT")
-            .args(source.network_args())
-            .args(["-rw_timeout", "10000000"]);
-    }
-    if remote {
-        // The demuxer seeks to the preceding keyframe using the file index.
-        // Inspect packets there instead of downloading and decoding a minute.
-        command.args([
-            "-read_intervals",
-            &format!("{position}%+0.1"),
-            "-show_packets",
-            "-show_entries",
-            "packet=pts_time,flags",
-        ]);
-    } else {
-        command.args([
+    command
+        .args([
             "-skip_frame",
             "nokey",
             "-read_intervals",
@@ -573,11 +515,14 @@ async fn probe_keyframe(
             "-show_frames",
             "-show_entries",
             "frame=best_effort_timestamp_time",
-        ]);
-    }
-    command
-        .args(["-v", "error", "-select_streams", "v:0", "-of", "json"])
-        .arg(input)
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-of",
+            "json",
+        ])
+        .arg(&source.path)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);
@@ -588,22 +533,15 @@ async fn probe_keyframe(
         bail!("Unable to locate a safe keyframe for seeking");
     }
     let frames: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    frames[if remote { "packets" } else { "frames" }]
+    frames["frames"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|f| {
-            if remote && !f["flags"].as_str().is_some_and(|flags| flags.contains('K')) {
-                return None;
-            }
-            f[if remote {
-                "pts_time"
-            } else {
-                "best_effort_timestamp_time"
-            }]
-            .as_str()?
-            .parse::<f64>()
-            .ok()
+            f["best_effort_timestamp_time"]
+                .as_str()?
+                .parse::<f64>()
+                .ok()
         })
         .filter(|t| t.is_finite() && *t >= 0.0 && *t <= position + 0.001)
         .max_by(f64::total_cmp)

@@ -326,7 +326,11 @@
       pending.target = target;
       return;
     }
-    const request = { revision: generation, target, resume: !player.paused };
+    const request = {
+      revision: generation,
+      target,
+      resume: holding || !player.paused,
+    };
     tapSeek = request;
     try {
       while (tapSeek === request && request.revision === generation) {
@@ -470,6 +474,10 @@
     revealControls();
   }
   function ready() {
+    if (holding) {
+      release();
+      if (holding) return;
+    }
     if (
       active &&
       !player.seeking &&
@@ -480,15 +488,48 @@
         void report(player.paused ? 'paused' : 'playing');
     }
   }
+  // A seek into media that is not buffered yet waits for enough to continue,
+  // instead of resuming and stalling again at the end of a long fragment.
+  const resumeBuffer = 3;
+  let holding = false;
+  function bufferedAhead() {
+    const at = player.currentTime;
+    for (let index = 0; index < player.buffered.length; index++)
+      if (
+        player.buffered.start(index) <= at + 0.25 &&
+        at < player.buffered.end(index)
+      )
+        return player.buffered.end(index) - at;
+    return 0;
+  }
+  function hold() {
+    holding = true;
+    buffering = true;
+    player.pause();
+  }
+  function release() {
+    if (!holding || !player || player.seeking) return;
+    const ahead = bufferedAhead();
+    const end = Number.isFinite(player.duration)
+      ? player.duration
+      : Number.POSITIVE_INFINITY;
+    if (ahead < resumeBuffer && player.currentTime + ahead < end - 0.25) return;
+    holding = false;
+    void player.play().catch(() => {
+      paused = true;
+      ready();
+    });
+  }
   let activity = new PlaybackActivity();
   let stalledSince: number | undefined;
   let lastPlaybackTime = 0;
   const stallTimer = setInterval(() => {
+    release();
     if (
       !active ||
       busy ||
       !buffering ||
-      player.paused ||
+      (player.paused && !holding) ||
       error ||
       player.ended
     ) {
@@ -502,6 +543,7 @@
     if (performance.now() - stalledSince >= 30000) {
       error =
         'The stream stopped supplying media. Try seeking or reopening this item.';
+      holding = false;
       player.pause();
     }
   }, 1000);
@@ -645,8 +687,10 @@
     }
     hls?.destroy();
     hls = undefined;
+    // Online videos play their original files as HLS, even in direct mode.
+    const playlist = new URL(url, location.href).pathname.endsWith('.m3u8');
     if (
-      active.mode === 'direct' ||
+      !playlist ||
       (!Hls.isSupported() &&
         player.canPlayType('application/vnd.apple.mpegurl'))
     ) {
@@ -667,6 +711,7 @@
       hls.loadSource(mediaUrl(url));
       hls.attachMedia(player);
       if (autoplay) hls.on(Hls.Events.MANIFEST_PARSED, play);
+      hls.on(Hls.Events.FRAG_BUFFERED, release);
       hls.on(Hls.Events.ERROR, (_, data) => {
         if (data.fatal && active === session) {
           error = 'Playback interrupted. Try seeking or reopening this item.';
@@ -699,6 +744,7 @@
     const stopped = active ? report('stopped') : Promise.resolve();
     active = null;
     paused = true;
+    holding = false;
     hls?.destroy();
     hls = undefined;
     if (player) {
@@ -715,11 +761,12 @@
   }
   async function seek(at: number, resume?: boolean) {
     if (!active || active.live) return;
-    const shouldResume = resume ?? !player.paused;
+    const shouldResume = resume ?? (holding || !player.paused);
     if (active.mode === 'direct') {
       player.currentTime = at;
       position = at;
-      await report(player.paused ? 'paused' : 'playing');
+      if (shouldResume && hls && bufferedAhead() < resumeBuffer) hold();
+      await report(shouldResume ? 'playing' : 'paused');
       return;
     }
     if (busy) return;
@@ -750,7 +797,7 @@
   }
   async function changeOptions() {
     const at = position;
-    const autoplay = !player.paused;
+    const autoplay = holding || !player.paused;
     const revision = generation;
     busy = true;
     error = '';
@@ -808,6 +855,14 @@
   });
   async function toggle() {
     if (!active || busy) return;
+    if (holding) {
+      // Pausing while a seek waits for media keeps playback paused.
+      holding = false;
+      paused = true;
+      activity.setActive(false);
+      void report('paused');
+      return;
+    }
     const revision = generation;
     const session = active;
     if (active && !active.live && position >= active.duration - 0.1) {
@@ -952,6 +1007,7 @@
       ready();
     }}
     onpause={() => {
+      if (holding) return;
       activity.setActive(false);
       paused = true;
       void report('paused');

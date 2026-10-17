@@ -60,6 +60,7 @@ try {
         yt_dlp: tools.items.find((item) => item.id === 'yt-dlp')?.installed,
       };
       const mediaRequests = [];
+      let serverSeeks = 0;
       const request = (r) => {
         const path = new URL(r.url()).pathname;
         if (path.endsWith('/playback'))
@@ -67,10 +68,11 @@ try {
             start: performance.now(),
             name: r.method() === 'GET' ? 'info_ms' : 'prepare_ms',
           });
+        if (path.endsWith('/seek') && r.method() === 'POST') serverSeeks++;
       };
       const response = (r) => {
         const path = new URL(r.url()).pathname;
-        if (path.includes('/hls/'))
+        if (path.includes('/hls/') || path.includes('/remote/'))
           mediaRequests.push({
             file: path.split('/').at(-1),
             status: r.status(),
@@ -120,40 +122,34 @@ try {
         );
         row.sustained_playback_seconds = 10;
         if (repeat === 0) {
+          // Recorded videos are complete timelines: the player seeks itself.
           const seekStart = performance.now();
-          const seekResponse = page.waitForResponse(
-            (r) =>
-              new URL(r.url()).pathname.endsWith('/seek') &&
-              r.request().method() === 'POST',
-          );
           await page.locator('video').hover();
           const slider = page.getByLabel('Playback position', { exact: true });
           await slider.fill('60');
           await slider.dispatchEvent('change');
-          const seek = await seekResponse;
-          expect(seek.status()).toBe(200);
-          const data = await seek.json();
           await page.waitForFunction(
-            (offset) => {
+            () => {
               const v = document.querySelector('video');
               return (
                 v &&
                 v.readyState >= 2 &&
                 !v.seeking &&
                 !v.paused &&
-                v.currentTime + offset >= 60
+                v.currentTime >= 60
               );
             },
-            data.timeline_start,
-            { timeout: 30000 },
+            {},
+            { timeout: 30000, polling: 20 },
           );
           row.seek_ms = Math.round(performance.now() - seekStart);
+          row.server_seeks = serverSeeks;
           await page.waitForFunction(
-            (offset) => {
+            () => {
               const v = document.querySelector('video');
-              return v && !v.error && v.currentTime + offset >= 70;
+              return v && !v.error && v.currentTime >= 70;
             },
-            data.timeline_start,
+            {},
             { timeout: 25000 },
           );
           row.sustained_seek_seconds = 10;

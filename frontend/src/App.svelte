@@ -651,7 +651,9 @@
       const next = await persistQueue(choice);
       if (request !== playbackRequest || user?.id !== owner) return;
       playing = resolveYoutube ? { ...next, resolveYoutube: true } : next;
-      if (!desktop) {
+      // The page's own player opens above its content. Compact layouts pin it
+      // to the screen instead, so the page keeps its scroll position there.
+      if (!desktop && !(compact && next.kind !== 'track')) {
         await tick();
         if (workspace) scrollWithMotion(workspace, { top: 0 });
       }

@@ -6,11 +6,13 @@ mod storage;
 mod compatibility_tests;
 #[path = "stream_formats.rs"]
 mod formats;
+#[path = "stream_index.rs"]
+mod index;
 #[cfg(test)]
 #[path = "../../../../tests/helpers/tool-runtime.rs"]
 mod tool_runtime;
 
-use super::{downloads, extract, live};
+use super::{downloads, extract, live, network::Family};
 use crate::{
     AppState,
     error::{ApiError, Result},
@@ -18,15 +20,22 @@ use crate::{
 };
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, fmt::Write, sync::Arc, time::Duration};
 use thelxinoe_core::{Principal, now};
-use thelxinoe_playback::{Decision, Options, RemoteSource, Source};
+use thelxinoe_playback::{Options, RemoteSource, Source};
 use tokio::sync::Mutex;
+
+/// The revision of byte-range HLS playlists, which the server writes on request.
+const INDEXED: &str = "source";
 
 #[derive(Default)]
 pub(crate) struct Runtime {
     prepared: Mutex<HashMap<String, Prepared>>,
-    sessions: Mutex<HashMap<String, Prepared>>,
+    /// Concurrent requests for one video share its extraction.
+    pending: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// Fragment indexes by signed address, which changes with each extraction.
+    indexes: Mutex<HashMap<String, (i64, Arc<index::Index>)>>,
+    sessions: Mutex<HashMap<String, Session>>,
     pub(super) relay: super::relay::Relay,
 }
 #[derive(Clone)]
@@ -34,36 +43,84 @@ struct Prepared {
     source: RemoteSource,
     duration: f64,
     expires: i64,
-    native: bool,
     formats: Vec<formats::Format>,
-    remux: bool,
     quality: Option<String>,
     probe: Value,
-    decision: Option<Decision>,
-    options: Option<Options>,
 }
 impl Prepared {
     fn media(&self) -> Source {
-        let mut probe = self.probe.clone();
-        probe["format"]["duration"] = json!(self.duration.to_string());
-        Source {
-            id: String::new(),
-            media_id: String::new(),
-            generation: String::new(),
-            edition: "public".into(),
-            path: if self.source.live {
-                "public.ts"
-            } else {
-                "public.mp4"
-            }
-            .into(),
-            root: std::path::PathBuf::new(),
-            size: 0,
-            modified: String::new(),
-            probe,
-        }
+        media(&self.probe, self.duration, self.source.live)
     }
 }
+fn media(probe: &Value, duration: f64, live: bool) -> Source {
+    let mut probe = probe.clone();
+    probe["format"]["duration"] = json!(duration.to_string());
+    Source {
+        id: String::new(),
+        media_id: String::new(),
+        generation: String::new(),
+        edition: "public".into(),
+        path: if live { "public.ts" } else { "public.mp4" }.into(),
+        root: std::path::PathBuf::new(),
+        size: 0,
+        modified: String::new(),
+        probe,
+    }
+}
+#[derive(Clone)]
+struct Session {
+    source: RemoteSource,
+    /// The provider refuses its media before this time.
+    available_at: i64,
+    delivery: Delivery,
+    /// The client's playback address, without its grant.
+    path: String,
+}
+#[derive(Clone)]
+enum Delivery {
+    /// The client reads the original files through the relay.
+    Relay,
+    /// Byte-range HLS of the original files, read through the relay.
+    Indexed(Arc<Manifest>),
+    /// FFmpeg output: live streams, and recorded videos for clients without
+    /// fragmented MP4 HLS.
+    Pipeline,
+}
+struct Manifest {
+    video: Arc<index::Index>,
+    audio: Arc<index::Index>,
+    format: formats::Format,
+}
+impl Manifest {
+    fn master(&self, grant: &str) -> String {
+        let (video_peak, video_average) = self.video.bandwidth();
+        let (audio_peak, audio_average) = self.audio.bandwidth();
+        let format = &self.format;
+        let mut variant = format!(
+            "BANDWIDTH={},AVERAGE-BANDWIDTH={},CODECS=\"{},{}\"",
+            video_peak + audio_peak,
+            video_average + audio_average,
+            format.codecs[0],
+            format.codecs[1]
+        );
+        if let Some(width) = format.width {
+            let _ = write!(variant, ",RESOLUTION={width}x{}", format.height);
+        }
+        if let Some(rate) = format.frame_rate {
+            let _ = write!(variant, ",FRAME-RATE={rate:.3}");
+        }
+        format!(
+            "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",NAME=\"Original\",DEFAULT=YES,AUTOSELECT=YES,URI=\"audio.m3u8?grant={grant}\"\n#EXT-X-STREAM-INF:{variant},AUDIO=\"audio\"\nvideo.m3u8?grant={grant}\n"
+        )
+    }
+}
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    Relay,
+    Indexed,
+    Pipeline,
+}
+
 pub(crate) async fn negotiate_source(
     state: &AppState,
     video: &str,
@@ -72,13 +129,15 @@ pub(crate) async fn negotiate_source(
     selected: Option<&Value>,
     negotiate: impl Fn(&Source) -> thelxinoe_playback::Capabilities,
 ) -> Result<(Source, thelxinoe_playback::Capabilities, Option<String>)> {
-    let mut prepared = prepare(state, video).await?;
+    let prepared = prepare(state, video).await?;
+    let mut base = prepared.clone();
     let matches = |format: &&formats::Format| {
-        selected.is_none_or(|selected| {
-            format.quality() == selected["quality"]
-                && format.video == selected["video"]
-                && format.audio == selected["audio"]
-        })
+        (format.source.live || format.indexed)
+            && selected.is_none_or(|selected| {
+                format.quality() == selected["quality"]
+                    && format.video == selected["video"]
+                    && format.audio == selected["audio"]
+            })
     };
     if selected.is_some() {
         let format = prepared
@@ -87,13 +146,9 @@ pub(crate) async fn negotiate_source(
             .rev()
             .find(matches)
             .ok_or_else(ApiError::not_found)?;
-        if prepared.source.video != format.source.video
-            || prepared.source.audio != format.source.audio
-        {
-            prepared.probe = inspect_codecs(state, &format.source).await?;
-        }
-        prepared.source = format.source.clone();
-        prepared.quality = Some(format.quality());
+        base.probe = describe(state, &prepared, format).await?;
+        base.source = format.source.clone();
+        base.quality = Some(format.quality());
     }
     let mut partial = None;
     for format in prepared
@@ -103,12 +158,8 @@ pub(crate) async fn negotiate_source(
         .filter(matches)
         .filter(|format| codecs.iter().any(|codec| codec == &format.video))
     {
-        let mut candidate = prepared.clone();
-        if candidate.source.video != format.source.video
-            || candidate.source.audio != format.source.audio
-        {
-            candidate.probe = inspect_codecs(state, &format.source).await?;
-        }
+        let mut candidate = base.clone();
+        candidate.probe = describe(state, &prepared, format).await?;
         candidate.source = format.source.clone();
         if max_bitrate.is_some_and(|max| {
             candidate.probe["format"]["bit_rate"]
@@ -138,9 +189,26 @@ pub(crate) async fn negotiate_source(
     if let Some(partial) = partial {
         return Ok(partial);
     }
-    let source = prepared.media();
+    let source = base.media();
     let capabilities = negotiate(&source);
-    Ok((source, capabilities, prepared.quality))
+    Ok((source, capabilities, base.quality))
+}
+/// Recorded renditions are described by the provider's metadata; live
+/// playlists are inspected.
+async fn describe(
+    state: &AppState,
+    prepared: &Prepared,
+    format: &formats::Format,
+) -> Result<Value> {
+    if !format.source.live {
+        Ok(format.probe(prepared.duration))
+    } else if prepared.source.video == format.source.video
+        && prepared.source.audio == format.source.audio
+    {
+        Ok(prepared.probe.clone())
+    } else {
+        inspect_codecs(state, &format.source).await
+    }
 }
 pub(crate) async fn variants(state: &AppState, p: &Principal, video: &str) -> Result<Vec<Value>> {
     if live::domain(video) {
@@ -150,7 +218,13 @@ pub(crate) async fn variants(state: &AppState, p: &Principal, video: &str) -> Re
     }
     let prepared = prepare(state, video).await?;
     let mut variants = Vec::new();
-    for format in prepared.formats.iter().rev() {
+    // Recorded videos offer the renditions every delivery can play.
+    for format in prepared
+        .formats
+        .iter()
+        .rev()
+        .filter(|f| f.source.live || f.indexed)
+    {
         let variant = format.descriptor();
         if !variants.iter().any(|v: &Value| {
             v["quality"] == variant["quality"]
@@ -163,41 +237,76 @@ pub(crate) async fn variants(state: &AppState, p: &Principal, video: &str) -> Re
     Ok(variants)
 }
 
-async fn prepare(state: &AppState, video: &str) -> Result<Prepared> {
-    {
-        let mut cached = state.online.streams.prepared.lock().await;
-        cached.retain(|_, p| p.expires > now());
-        if let Some(value) = cached.get(video) {
-            return Ok(value.clone());
-        }
-    }
-    let prepared = if live::domain(video) {
-        let mut selected = select(&live::extract(state, video).await?, None)?;
-        selected.expires = now() + 60;
-        selected.probe = inspect_codecs(state, &selected.source).await?;
-        selected
-    } else {
-        extract::with_metadata(state, video, |metadata, family| async move {
-            let proxy = state
-                .online
-                .network
-                .egress
-                .proxy(family)
-                .await
-                .map_err(|_| ApiError::conflict("Could not prepare the public video connection"))?;
-            let mut selected = select(&metadata, Some(proxy))?;
-            selected.probe = inspect_codecs(state, &selected.source).await?;
-            Ok(selected)
-        })
-        .await?
-        .0
-    };
+async fn cached(state: &AppState, video: &str) -> Option<Prepared> {
+    let mut cached = state.online.streams.prepared.lock().await;
+    cached.retain(|_, p| p.expires > now());
+    cached.get(video).cloned()
+}
+async fn remember(state: &AppState, video: &str, prepared: &Prepared) {
     let mut cached = state.online.streams.prepared.lock().await;
     if cached.len() >= 64 {
         cached.clear();
     }
     cached.insert(video.into(), prepared.clone());
-    Ok(prepared)
+}
+async fn prepare(state: &AppState, video: &str) -> Result<Prepared> {
+    if let Some(prepared) = cached(state, video).await {
+        return Ok(prepared);
+    }
+    let turn = state
+        .online
+        .streams
+        .pending
+        .lock()
+        .unwrap()
+        .entry(video.into())
+        .or_default()
+        .clone();
+    let result = async {
+        let _turn = turn.lock().await;
+        if let Some(prepared) = cached(state, video).await {
+            return Ok(prepared);
+        }
+        let prepared = if live::domain(video) {
+            let mut selected = select(&live::extract(state, video).await?, None)?;
+            selected.probe = inspect_codecs(state, &selected.source).await?;
+            selected
+        } else {
+            extract::with_metadata(state, video, |metadata, family| async move {
+                let mut selected = select(&metadata, Some(proxy(state, family).await?))?;
+                if selected.source.live {
+                    selected.probe = inspect_codecs(state, &selected.source).await?;
+                }
+                Ok(selected)
+            })
+            .await?
+            .0
+        };
+        remember(state, video, &prepared).await;
+        Ok(prepared)
+    }
+    .await;
+    let mut pending = state.online.streams.pending.lock().unwrap();
+    if Arc::strong_count(&turn) <= 2 {
+        pending.remove(video);
+    }
+    result
+}
+async fn proxy(state: &AppState, family: Family) -> Result<String> {
+    state
+        .online
+        .network
+        .egress
+        .proxy(family)
+        .await
+        .map_err(|_| ApiError::conflict("Could not prepare the public video connection"))
+}
+fn denied() -> ApiError {
+    ApiError(
+        axum::http::StatusCode::CONFLICT,
+        "network_blocked",
+        "The media provider denied access from this server's network; try again later".into(),
+    )
 }
 async fn inspect_codecs(state: &AppState, source: &RemoteSource) -> Result<Value> {
     crate::tools::require(state, &["ffmpeg"]).await?;
@@ -206,16 +315,21 @@ async fn inspect_codecs(state: &AppState, source: &RemoteSource) -> Result<Value
         .await
         .map_err(|error| {
             if error.is::<thelxinoe_playback::MediaAccessDenied>() {
-                ApiError(
-                    axum::http::StatusCode::CONFLICT,
-                    "network_blocked",
-                    "The media provider denied access from this server's network; try again later"
-                        .into(),
-                )
+                denied()
             } else {
                 ApiError::conflict("Could not inspect public media codecs")
             }
         })
+}
+/// When a signed address expires, from its `expire` parameter.
+fn expiry(address: &str) -> Option<i64> {
+    reqwest::Url::parse(address)
+        .ok()?
+        .query_pairs()
+        .find(|(key, _)| key == "expire")?
+        .1
+        .parse()
+        .ok()
 }
 fn select(metadata: &Value, proxy: Option<String>) -> Result<Prepared> {
     let live = metadata["is_live"].as_bool().unwrap_or(false);
@@ -224,18 +338,29 @@ fn select(metadata: &Value, proxy: Option<String>) -> Result<Prepared> {
         return Err(ApiError::conflict("This video is not ready for playback"));
     }
     let formats = formats::extract(metadata, proxy)?;
-    let best = formats.last().unwrap();
+    let best = formats
+        .iter()
+        .rev()
+        .find(|f| f.indexed)
+        .unwrap_or(formats.last().unwrap());
+    let duration = if live { 0.0 } else { duration };
+    // Signed addresses last hours; reuse them until shortly before they expire.
+    let lifetime = if live {
+        60
+    } else {
+        expiry(&best.source.video).map_or(300, |at| (at - now() - 600).clamp(60, 3600))
+    };
     Ok(Prepared {
         source: best.source.clone(),
-        native: best.native,
-        duration: if live { 0.0 } else { duration },
-        expires: now() + 300,
+        duration,
+        expires: now() + lifetime,
+        probe: if live {
+            json!({})
+        } else {
+            best.probe(duration)
+        },
         formats,
-        remux: false,
         quality: None,
-        probe: json!({}),
-        decision: None,
-        options: None,
     })
 }
 
@@ -281,7 +406,6 @@ async fn select_for_player(
                 .is_some_and(|rate| rate > 0 && rate <= max)
             {
                 prepared.source = format.source.clone();
-                prepared.native = format.native;
                 prepared.quality = Some(format.quality());
                 prepared.probe = probe;
                 break;
@@ -307,36 +431,9 @@ async fn select_for_player(
             prepared.probe = inspect_codecs(state, &format.source).await?;
         }
         prepared.source = format.source.clone();
-        prepared.native = format.native;
         prepared.quality = Some(format.quality());
     }
     Ok(prepared)
-}
-async fn prepare_for_player(state: &AppState, video: &str, options: &Options) -> Result<Prepared> {
-    let prepared = prepare(state, video).await?;
-    match select_for_player(state, prepared, options).await {
-        Err(error) if error.1 == "network_blocked" && !live::domain(video) => {
-            // A cached signature or a different rendition can fail after metadata inspection.
-            state.online.streams.prepared.lock().await.remove(video);
-            Ok(
-                extract::with_metadata(state, video, |metadata, family| async move {
-                    let proxy = state
-                        .online
-                        .network
-                        .egress
-                        .proxy(family)
-                        .await
-                        .map_err(|_| {
-                            ApiError::conflict("Could not prepare the public video connection")
-                        })?;
-                    select_for_player(state, select(&metadata, Some(proxy))?, options).await
-                })
-                .await?
-                .0,
-            )
-        }
-        result => result,
-    }
 }
 
 pub(crate) async fn create_with_delivery(
@@ -347,11 +444,12 @@ pub(crate) async fn create_with_delivery(
     position: Option<f64>,
     vod: bool,
 ) -> Result<Value> {
-    if live::domain(video) {
-        live::authorize(state, p, video).await?;
+    let live_title = if live::domain(video) {
+        Some(live::authorize(state, p, video).await?.1)
     } else {
         downloads::authorize(state, p, video).await?;
-    }
+        None
+    };
     if options.subtitle.as_deref().is_some_and(|s| s != "off") || options.audio.is_some() {
         return Err(ApiError::bad(
             "Track selection is not available for this public stream",
@@ -360,219 +458,348 @@ pub(crate) async fn create_with_delivery(
     if position.is_some_and(|v| !v.is_finite() || v < 0.0) {
         return Err(ApiError::bad("Invalid stream position"));
     }
-    let live_title = if live::domain(video) {
-        Some(live::authorize(state, p, video).await?.1)
+    let prepared = prepare(state, video).await?;
+    if prepared.source.live {
+        create_live(state, p, video, live_title, prepared, options).await
     } else {
-        None
+        create_recorded(state, p, video, prepared, options, position, vod).await
+    }
+}
+/// Original renditions for a client, and how it receives the chosen one:
+/// separate files, byte-range HLS or, for players with neither, FFmpeg.
+fn plan(
+    prepared: &Prepared,
+    options: &Options,
+    vod: bool,
+) -> Result<(Kind, formats::Format, Vec<Value>)> {
+    let caps = &options.capabilities;
+    let relay: Vec<_> = prepared
+        .formats
+        .iter()
+        .filter(|f| caps.native_remote && !vod && f.native && f.supported(caps))
+        .collect();
+    let indexed: Vec<_> = prepared
+        .formats
+        .iter()
+        .filter(|f| f.indexed_for(caps))
+        .collect();
+    let (kind, eligible) = if !relay.is_empty() {
+        (Kind::Relay, relay)
+    } else if !indexed.is_empty() {
+        (Kind::Indexed, indexed)
+    } else if vod {
+        let files: Vec<_> = prepared
+            .formats
+            .iter()
+            .filter(|f| f.indexed)
+            .cloned()
+            .collect();
+        let format = formats::choose(&files, &options.quality, caps)?.clone();
+        let supported: Vec<_> = files.iter().filter(|f| f.supported(caps)).collect();
+        return Ok((Kind::Pipeline, format, formats::choices(supported)));
+    } else {
+        return Err(ApiError::conflict(
+            "This player cannot play any original format of this video",
+        ));
     };
-    let mut prepared = prepare_for_player(state, video, &options).await?;
-    let qualities = formats::choices(&prepared.formats, &options.capabilities);
+    let format = formats::pick(&eligible, &options.quality)?.clone();
+    Ok((kind, format, formats::choices(eligible)))
+}
+type Indexes = (Arc<index::Index>, Option<Arc<index::Index>>);
+async fn load_index(
+    state: &AppState,
+    address: &str,
+    source: &RemoteSource,
+) -> Result<Arc<index::Index>> {
+    {
+        let mut indexes = state.online.streams.indexes.lock().await;
+        indexes.retain(|_, (expires, _)| *expires > now());
+        if let Some((_, index)) = indexes.get(address) {
+            return Ok(index.clone());
+        }
+    }
+    let client = state.online.streams.relay.client(source.proxy.as_ref())?;
+    let value = Arc::new(index::load(&client, address).await.map_err(|error| {
+        if error.is::<index::Denied>() {
+            denied()
+        } else {
+            ApiError::conflict("Could not read the public video's index")
+        }
+    })?);
+    let mut indexes = state.online.streams.indexes.lock().await;
+    if indexes.len() >= 128 {
+        indexes.clear();
+    }
+    let expires = expiry(address).map_or(now() + 300, |at| at - 600);
+    indexes.insert(address.into(), (expires, value.clone()));
+    Ok(value)
+}
+async fn indexes(state: &AppState, format: &formats::Format, audio: bool) -> Result<Indexes> {
+    wait_until(format.available_at).await;
+    let source = &format.source;
+    let video = load_index(state, &source.video, source);
+    match source.audio.as_deref().filter(|_| audio) {
+        Some(address) => {
+            let (video, audio) = tokio::try_join!(video, load_index(state, address, source))?;
+            Ok((video, Some(audio)))
+        }
+        None => Ok((video.await?, None)),
+    }
+}
+/// Provider media requested before its availability time is refused.
+pub(super) async fn wait_until(at: i64) {
+    let wait = at - now();
+    if (1..=60).contains(&wait) {
+        tokio::time::sleep(Duration::from_secs(wait as u64)).await;
+    }
+}
+async fn create_recorded(
+    state: &AppState,
+    p: &Principal,
+    video: &str,
+    prepared: Prepared,
+    options: Options,
+    position: Option<f64>,
+    vod: bool,
+) -> Result<Value> {
+    let (mut kind, mut format, mut qualities) = plan(&prepared, &options, vod)?;
+    let mut prepared = prepared;
+    let indexes = if kind == Kind::Relay {
+        None
+    } else {
+        match indexes(state, &format, kind == Kind::Indexed).await {
+            Ok(value) => Some(value),
+            Err(error) if error.1 == "network_blocked" => {
+                // A cached signed address can be refused after extraction. Extract
+                // again, moving to the other address family if it is blocked.
+                state.online.streams.prepared.lock().await.remove(video);
+                let (fresh, _) = extract::with_metadata(state, video, |metadata, family| {
+                    let options = &options;
+                    async move {
+                        let prepared = select(&metadata, Some(proxy(state, family).await?))?;
+                        let (kind, format, qualities) = plan(&prepared, options, vod)?;
+                        let value = indexes(state, &format, kind == Kind::Indexed).await?;
+                        Ok((prepared, kind, format, qualities, value))
+                    }
+                })
+                .await?;
+                remember(state, video, &fresh.0).await;
+                (prepared, kind, format, qualities) = (fresh.0, fresh.1, fresh.2, fresh.3);
+                Some(fresh.4)
+            }
+            Err(error) => return Err(error),
+        }
+    };
+    let mut probe = format.probe(prepared.duration);
+    if let Some((video, _)) = &indexes {
+        let start = json!(format!("{:.6}", video.start));
+        probe["format"]["start_time"] = start.clone();
+        probe["streams"][0]["start_time"] = start;
+    }
     let mut input = options.clone();
     // Provider resolution choices select an existing rendition; only a bitrate
     // ceiling that the selected rendition exceeds needs local conversion.
-    if input.quality.ends_with('p') || prepared.quality.as_deref() == Some(input.quality.as_str()) {
+    if input.quality.ends_with('p') || format.quality() == input.quality {
         input.quality = "auto".into();
     }
-    if !(prepared.native && options.capabilities.native_remote && !vod) {
-        input.capabilities.containers.clear();
-    }
-    let mut decision = thelxinoe_playback::decision(&prepared.media(), &input)
-        .map_err(|e| ApiError::bad(e.to_string()))?;
-    let policy = state.transcoding.read().await;
-    policy.check(decision.encoding)?;
-    let native = prepared.native
-        && options.capabilities.native_remote
-        && !vod
-        && !decision.encoding.video
-        && !decision.encoding.audio;
-    if native {
-        decision.mode = "direct";
-    }
-    prepared.remux = !decision.encoding.video && !decision.encoding.audio && !native;
-    prepared.decision = Some(decision.clone());
-    prepared.options = Some(input.clone());
-    if !native {
+    input.capabilities.containers.clear();
+    let mut source = format.source.clone();
+    let decision = if kind == Kind::Pipeline {
+        // The provider's fragment index supplies the keyframes for seeking.
+        source.segments = indexes.as_ref().unwrap().0.starts();
+        let decision =
+            thelxinoe_playback::decision(&media(&probe, prepared.duration, false), &input)
+                .map_err(|e| ApiError::bad(e.to_string()))?;
+        state.transcoding.read().await.check(decision.encoding)?;
         crate::tools::require(state, &["ffmpeg"]).await?;
-    }
+        Some(decision)
+    } else {
+        None
+    };
+    let mode = decision.as_ref().map_or("direct", |d| d.mode);
     let sid = thelxinoe_core::id();
     let _lifecycle = state.playback_lifecycle.write(&[&sid]).await;
-    let mode = decision.mode;
-    let key = sid.clone();
-    let owner = p.user.id.clone();
-    let auth = p.session_id.clone();
-    let video = video.to_owned();
-    let duration = prepared.duration;
-    let live = prepared.source.live;
     let start = storage::create_with_delivery_write_twitch_streams(
         &state.db,
         storage::StreamSession {
-            live_title,
+            live_title: None,
             mode,
-            key,
-            owner,
-            auth,
-            video,
+            key: sid.clone(),
+            owner: p.user.id.clone(),
+            auth: p.session_id.clone(),
+            video: video.to_owned(),
             input: options.clone(),
-            duration,
-            live,
+            duration: prepared.duration,
+            live: false,
             position,
         },
     )
     .await?;
-    if !native && !decision.encoding.video && !live {
-        let selected = formats::choose(&prepared.formats, &options.quality, &options.capabilities)?;
-        if let Some(source) = segmented(state, &prepared.formats, selected, start, vod).await {
-            if source.video == prepared.source.video && source.audio == prepared.source.audio {
-                prepared.source = source;
-            } else {
-                match inspect_codecs(state, &source).await {
-                    Ok(probe) => {
-                        prepared.probe = probe;
-                        prepared.source = source;
-                        prepared.native = false;
-                    }
-                    // Keep the verified file rendition when its segmented alternative is denied.
-                    Err(error) => {
-                        tracing::debug!(code = error.1, "Keeping verified public stream input")
-                    }
-                }
-            }
-        }
-    }
+    let (delivery, path) = match (kind, indexes) {
+        (Kind::Relay, _) => (
+            Delivery::Relay,
+            format!("/api/v1/playback/{sid}/remote/video"),
+        ),
+        (Kind::Indexed, Some((video, Some(audio)))) => (
+            Delivery::Indexed(Arc::new(Manifest {
+                video,
+                audio,
+                format: format.clone(),
+            })),
+            format!("/api/v1/playback/{sid}/hls/{INDEXED}/index.m3u8"),
+        ),
+        _ => (Delivery::Pipeline, String::new()),
+    };
+    let mut session = Session {
+        source: source.clone(),
+        available_at: format.available_at,
+        delivery,
+        path,
+    };
     state
         .online
         .streams
         .sessions
         .lock()
         .await
-        .insert(sid.clone(), prepared.clone());
-    let prepared_pipeline = if native {
-        Ok((String::new(), 0.0))
-    } else if vod && !live {
-        let result = state
+        .insert(sid.clone(), session.clone());
+    if let Some(decision) = &decision {
+        let started = state
             .playback
-            .start_remote_vod(&sid, &prepared.source, &prepared.media(), &input, &decision)
+            .start_remote_vod(
+                &sid,
+                &source,
+                &media(&probe, prepared.duration, false),
+                &input,
+                decision,
+            )
             .await;
-        if result.as_ref().is_err_and(|error| {
-            error
-                .chain()
-                .any(|cause| cause.to_string() == "Source keyframe index is unavailable")
-        }) && !decision.encoding.video
-            && input.quality != "original"
-            && input.capabilities.allow_conversion != Some(false)
-            && input.capabilities.conversion.is_some()
-        {
-            if let Err(error) = policy.check(thelxinoe_playback::Encoding {
-                video: true,
-                audio: decision.encoding.audio,
-            }) {
-                state.playback.stop(&sid).await;
+        match started {
+            Ok((revision, _)) => {
+                session.path = format!("/api/v1/playback/{sid}/hls/{revision}/index.m3u8");
+                state
+                    .online
+                    .streams
+                    .sessions
+                    .lock()
+                    .await
+                    .insert(sid.clone(), session.clone());
+            }
+            Err(error) => {
+                tracing::warn!(reason = %error, "Public stream preparation failed");
                 state.online.streams.sessions.lock().await.remove(&sid);
                 storage::create_with_delivery_write_playback_sessions(sid.clone(), &state.db)
                     .await?;
-                return Err(error);
+                return Err(ApiError::conflict(
+                    "The server could not start the public stream; try again later",
+                ));
             }
-            decision.encoding.video = true;
-            decision.mode = "transcode";
-            decision.conversion_reason =
-                Some("The source has no usable index for seekable original playback".into());
-            prepared.quality = None;
-            prepared.remux = false;
-            prepared.decision = Some(decision.clone());
-            state
-                .online
-                .streams
-                .sessions
-                .lock()
-                .await
-                .insert(sid.clone(), prepared.clone());
-            storage::playback_mode(&state.db, sid.clone(), decision.mode.into()).await?;
-            state
-                .playback
-                .start_remote_vod(&sid, &prepared.source, &prepared.media(), &input, &decision)
-                .await
-        } else {
-            result
         }
-    } else {
-        state
-            .playback
-            .start_remote(&sid, &prepared.source, &input, &decision, start)
-            .await
-    };
-    let (revision, offset) = match prepared_pipeline {
-        Ok(value) => value,
-        Err(error) => {
-            tracing::warn!(reason = %error, "Public stream preparation failed");
-            state.online.streams.sessions.lock().await.remove(&sid);
-            let id = sid.clone();
-            storage::create_with_delivery_write_playback_sessions(id, &state.db).await?;
-            return Err(ApiError::conflict(
-                "The server could not start the public stream; try again later",
-            ));
-        }
-    };
-    let key = sid.clone();
-    let valid = storage::create_with_delivery_read_playback_sessions(key, &state.db).await?;
+    }
+    let valid =
+        storage::create_with_delivery_read_playback_sessions(sid.clone(), &state.db).await?;
     if !valid {
         state.playback.stop(&sid).await;
         state.online.streams.sessions.lock().await.remove(&sid);
         return Err(ApiError::not_found());
     }
     let grant = grants::issue(state, p, &format!("playback:{sid}"), 120).await?;
-    let url = if native {
-        format!("/api/v1/playback/{sid}/remote/video?grant={grant}")
-    } else {
-        format!("/api/v1/playback/{sid}/hls/{revision}/index.m3u8?grant={grant}")
-    };
-    let external_audio = (native && prepared.source.audio.is_some())
+    let external_audio = (kind == Kind::Relay && source.audio.is_some())
         .then(|| format!("/api/v1/playback/{sid}/remote/audio?grant={grant}"));
+    let encoding = decision.as_ref().map(|d| d.encoding).unwrap_or_default();
     Ok(
-        json!({"id":sid,"url":url,"external_audio":external_audio,"grant":grant,"mode":decision.mode,"encoding":decision.encoding,"conversion_reason":decision.conversion_reason,"position":start,"duration":prepared.duration,"timeline_start":offset,"video":true,"live":live,"tracks":[],"subtitles":[],"selected_subtitle":null,"options":options,"qualities":qualities,"quality":prepared.quality,"probe":prepared.probe,"replay_gain":"off"}),
+        json!({"id":sid,"url":format!("{}?grant={grant}",session.path),"external_audio":external_audio,"grant":grant,"mode":mode,"encoding":encoding,"conversion_reason":decision.as_ref().and_then(|d| d.conversion_reason.clone()),"position":start,"duration":prepared.duration,"timeline_start":0.0,"video":true,"live":false,"tracks":[],"subtitles":[],"selected_subtitle":null,"options":options,"qualities":qualities,"quality":(!encoding.video).then(|| format.quality()),"probe":probe,"replay_gain":"off"}),
     )
 }
-/// YouTube's segmented formats fill a browser's remux buffer much faster than
-/// an open-ended file request. Each segment opens with a keyframe, so its
-/// playlist provides seek points; without them, the file and its index remain.
-async fn segmented(
+async fn create_live(
     state: &AppState,
-    formats: &[formats::Format],
-    selected: &formats::Format,
-    position: f64,
-    index: bool,
-) -> Option<RemoteSource> {
-    let mut source = formats::segmented(formats, selected)?.source.clone();
-    if position > 0.0 || index {
-        source.segments = segments(state, &source).await?;
+    p: &Principal,
+    video: &str,
+    live_title: Option<String>,
+    prepared: Prepared,
+    options: Options,
+) -> Result<Value> {
+    let prepared = select_for_player(state, prepared, &options).await?;
+    let qualities = formats::choices(
+        prepared
+            .formats
+            .iter()
+            .filter(|f| f.supported(&options.capabilities)),
+    );
+    let mut input = options.clone();
+    if input.quality.ends_with('p') || prepared.quality.as_deref() == Some(input.quality.as_str()) {
+        input.quality = "auto".into();
     }
-    Some(source)
-}
-async fn segments(state: &AppState, source: &RemoteSource) -> Option<Vec<f64>> {
-    source.validate().ok()?;
-    let client = state
+    input.capabilities.containers.clear();
+    let decision = thelxinoe_playback::decision(&prepared.media(), &input)
+        .map_err(|e| ApiError::bad(e.to_string()))?;
+    state.transcoding.read().await.check(decision.encoding)?;
+    crate::tools::require(state, &["ffmpeg"]).await?;
+    let sid = thelxinoe_core::id();
+    let _lifecycle = state.playback_lifecycle.write(&[&sid]).await;
+    storage::create_with_delivery_write_twitch_streams(
+        &state.db,
+        storage::StreamSession {
+            live_title,
+            mode: decision.mode,
+            key: sid.clone(),
+            owner: p.user.id.clone(),
+            auth: p.session_id.clone(),
+            video: video.to_owned(),
+            input: options.clone(),
+            duration: 0.0,
+            live: true,
+            position: None,
+        },
+    )
+    .await?;
+    let mut session = Session {
+        source: prepared.source.clone(),
+        available_at: 0,
+        delivery: Delivery::Pipeline,
+        path: String::new(),
+    };
+    state
         .online
         .streams
-        .relay
-        .client(source.proxy.as_ref())
-        .ok()?;
-    let playlist = tokio::time::timeout(Duration::from_secs(5), async {
-        let mut response = client.get(&source.video).send().await.ok()?;
-        if !response.status().is_success() {
-            return None;
+        .sessions
+        .lock()
+        .await
+        .insert(sid.clone(), session.clone());
+    let revision = match state
+        .playback
+        .start_remote(&sid, &prepared.source, &input, &decision)
+        .await
+    {
+        Ok((revision, _)) => revision,
+        Err(error) => {
+            tracing::warn!(reason = %error, "Public stream preparation failed");
+            state.online.streams.sessions.lock().await.remove(&sid);
+            storage::create_with_delivery_write_playback_sessions(sid.clone(), &state.db).await?;
+            return Err(ApiError::conflict(
+                "The server could not start the public stream; try again later",
+            ));
         }
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await.ok()? {
-            // Signed segment addresses make long playlists several megabytes.
-            if bytes.len() + chunk.len() > 16 * 1024 * 1024 {
-                return None;
-            }
-            bytes.extend(chunk);
-        }
-        String::from_utf8(bytes).ok()
-    })
-    .await
-    .ok()??;
-    formats::segment_starts(&playlist)
+    };
+    session.path = format!("/api/v1/playback/{sid}/hls/{revision}/index.m3u8");
+    state
+        .online
+        .streams
+        .sessions
+        .lock()
+        .await
+        .insert(sid.clone(), session.clone());
+    let valid =
+        storage::create_with_delivery_read_playback_sessions(sid.clone(), &state.db).await?;
+    if !valid {
+        state.playback.stop(&sid).await;
+        state.online.streams.sessions.lock().await.remove(&sid);
+        return Err(ApiError::not_found());
+    }
+    let grant = grants::issue(state, p, &format!("playback:{sid}"), 120).await?;
+    Ok(
+        json!({"id":sid,"url":format!("{}?grant={grant}",session.path),"external_audio":null,"grant":grant,"mode":decision.mode,"encoding":decision.encoding,"conversion_reason":decision.conversion_reason,"position":0.0,"duration":0.0,"timeline_start":0.0,"video":true,"live":true,"tracks":[],"subtitles":[],"selected_subtitle":null,"options":options,"qualities":qualities,"quality":prepared.quality,"probe":prepared.probe,"replay_gain":"off"}),
+    )
 }
 pub(crate) async fn validate(state: &AppState, id: &str) -> Result<()> {
     if !state.online.streams.sessions.lock().await.contains_key(id) {
@@ -580,7 +807,8 @@ pub(crate) async fn validate(state: &AppState, id: &str) -> Result<()> {
     }
     Ok(())
 }
-pub(super) async fn remote_source(state: &AppState, id: &str) -> Result<RemoteSource> {
+/// The original files of a relayed session, and when they become available.
+pub(super) async fn remote_source(state: &AppState, id: &str) -> Result<(RemoteSource, i64)> {
     state
         .online
         .streams
@@ -588,18 +816,60 @@ pub(super) async fn remote_source(state: &AppState, id: &str) -> Result<RemoteSo
         .lock()
         .await
         .get(id)
-        .filter(|p| p.native)
-        .map(|p| p.source.clone())
+        .filter(|s| matches!(s.delivery, Delivery::Relay | Delivery::Indexed(_)))
+        .map(|s| (s.source.clone(), s.available_at))
         .ok_or_else(ApiError::not_found)
 }
-pub(crate) async fn seek(
+async fn manifest(state: &AppState, id: &str) -> Option<Arc<Manifest>> {
+    match &state.online.streams.sessions.lock().await.get(id)?.delivery {
+        Delivery::Indexed(manifest) => Some(manifest.clone()),
+        _ => None,
+    }
+}
+/// A byte-range HLS playlist of an indexed session. Fragments and
+/// initialization segments resolve to the session's relay.
+pub(crate) async fn playlist(
     state: &AppState,
     id: &str,
-    options: &Options,
-    position: f64,
-    policy: &crate::transcoding::Policy,
-) -> Result<(String, f64)> {
-    let source = state
+    revision: &str,
+    name: &str,
+    grant: &str,
+) -> Option<String> {
+    if revision != INDEXED {
+        return None;
+    }
+    let manifest = manifest(state, id).await?;
+    let media = |track: &str, index: &index::Index| {
+        index.playlist(
+            &format!("../../remote/{track}?grant={grant}"),
+            &format!("../../remote/{track}-init?grant={grant}"),
+        )
+    };
+    match name {
+        "index.m3u8" => Some(manifest.master(grant)),
+        "video.m3u8" => Some(media("video", &manifest.video)),
+        "audio.m3u8" => Some(media("audio", &manifest.audio)),
+        _ => None,
+    }
+}
+/// An indexed track's initialization segment, read with its index.
+pub(super) async fn initialization(
+    state: &AppState,
+    id: &str,
+    track: &str,
+) -> Option<(&'static str, axum::body::Bytes)> {
+    let manifest = manifest(state, id).await?;
+    let (kind, index) = match track {
+        "video" => ("video/mp4", &manifest.video),
+        "audio" => ("audio/mp4", &manifest.audio),
+        _ => return None,
+    };
+    Some((kind, axum::body::Bytes::copy_from_slice(&index.init)))
+}
+/// Recorded videos are complete timelines that clients seek within, so a
+/// seek only renews the session's address.
+pub(crate) async fn seek(state: &AppState, id: &str) -> Result<(String, f64)> {
+    let session = state
         .online
         .streams
         .sessions
@@ -608,37 +878,10 @@ pub(crate) async fn seek(
         .get(id)
         .cloned()
         .ok_or_else(|| ApiError::conflict("Stream expired; start playback again"))?;
-    if source.source.live {
+    if session.source.live {
         return Err(ApiError::bad("Seeking is not available for live streams"));
     }
-    let decision = source
-        .decision
-        .as_ref()
-        .ok_or_else(|| ApiError::conflict("Stream expired"))?;
-    policy.check(decision.encoding)?;
-    let input = if source.remux && !source.formats.is_empty() {
-        let selected = formats::choose(&source.formats, &options.quality, &options.capabilities)?;
-        match segmented(state, &source.formats, selected, position, false).await {
-            Some(segmented) if inspect_codecs(state, &segmented).await.is_ok() => segmented,
-            None => selected.source.clone(),
-            Some(_) => selected.source.clone(),
-        }
-    } else {
-        source.source.clone()
-    };
-    state
-        .playback
-        .start_remote(
-            id,
-            &input,
-            source.options.as_ref().unwrap_or(options),
-            decision,
-            position,
-        )
-        .await
-        .map_err(|_| {
-            ApiError::conflict("Could not seek the public stream; reopen it to refresh its address")
-        })
+    Ok((session.path, 0.0))
 }
 
 #[cfg(all(test, unix))]
@@ -670,6 +913,13 @@ pub(crate) async fn maintain(state: &AppState, candidates: &[String], active: &[
         .lock()
         .await
         .retain(|_, p| p.expires > now());
+    state
+        .online
+        .streams
+        .indexes
+        .lock()
+        .await
+        .retain(|_, (expires, _)| *expires > now());
 }
 
 #[cfg(test)]
@@ -685,22 +935,40 @@ mod tests {
         let vod = select(&metadata(false), None).unwrap();
         assert_eq!(vod.duration, 100.0);
         assert!(vod.source.audio.is_some());
-        assert!(vod.native);
-        assert!(!select(&metadata(true), None).unwrap().native);
-        assert_eq!(select(&metadata(true), None).unwrap().duration, 0.0);
+        assert!(vod.formats[0].native && vod.formats[0].indexed);
+        assert_eq!(vod.probe["streams"][0]["height"], 1080);
+        assert!(!vod.probe.to_string().contains("googlevideo"));
+        let live = select(&metadata(true), None).unwrap();
+        assert!(!live.formats[0].native && !live.formats[0].indexed);
+        assert_eq!(live.duration, 0.0);
         let mut live = metadata(true);
         live["formats"][1]["acodec"] = Value::Null;
         live["formats"][1]["protocol"] = json!("m3u8_native");
         assert!(select(&live, None).unwrap().source.audio.is_some());
-        let mut manifest = metadata(false);
-        manifest["formats"][0]["protocol"] = json!("m3u8_native");
-        assert!(!select(&manifest, None).unwrap().native);
-        let mut audio_manifest = metadata(false);
-        audio_manifest["formats"][1]["protocol"] = json!("m3u8_native");
-        assert!(!select(&audio_manifest, None).unwrap().native);
+        // Recorded videos play from their separate files, never a playlist.
+        for track in [0, 1] {
+            let mut playlist = metadata(false);
+            playlist["formats"][track]["protocol"] = json!("m3u8_native");
+            assert!(select(&playlist, None).is_err());
+        }
         let mut malformed = metadata(false);
         malformed["formats"][0]["url"] = json!("https://localhost/private");
         assert!(select(&malformed, None).is_err());
+    }
+    #[test]
+    fn signed_addresses_are_reused_until_shortly_before_they_expire() {
+        let mut metadata = metadata(false);
+        metadata["formats"][0]["url"] = json!(format!(
+            "https://r1.googlevideo.com/video?expire={}&signature=private",
+            now() + 6 * 3600
+        ));
+        assert!(select(&metadata, None).unwrap().expires >= now() + 3599);
+        metadata["formats"][0]["url"] = json!(format!(
+            "https://r1.googlevideo.com/video?expire={}",
+            now() + 900
+        ));
+        let expires = select(&metadata, None).unwrap().expires;
+        assert!((now() + 250..=now() + 300).contains(&expires));
     }
     #[tokio::test]
     async fn native_files_keep_sources_private_and_enforce_playback_grants() {
@@ -743,19 +1011,22 @@ mod tests {
         );
         let id = data["id"].as_str().unwrap();
         let grant = data["grant"].as_str().unwrap();
-        // A valid session still cannot select an arbitrary upstream address.
-        assert_eq!(
-            call(
-                &state,
-                &format!("/api/v1/playback/{id}/remote/other?grant={grant}"),
-                "GET",
-                json!({}),
-                &cookie
-            )
-            .await
-            .0,
-            StatusCode::NOT_FOUND
-        );
+        // A valid session still cannot select an arbitrary upstream address,
+        // and relayed files have no in-memory initialization segment.
+        for track in ["other", "video-init"] {
+            assert_eq!(
+                call(
+                    &state,
+                    &format!("/api/v1/playback/{id}/remote/{track}?grant={grant}"),
+                    "GET",
+                    json!({}),
+                    &cookie
+                )
+                .await
+                .0,
+                StatusCode::NOT_FOUND
+            );
+        }
         assert_eq!(
             call(
                 &state,
@@ -848,6 +1119,35 @@ mod tests {
             .0,
             StatusCode::NOT_FOUND
         );
+    }
+    #[tokio::test]
+    async fn concurrent_requests_share_one_extraction() {
+        let (_temp, state, _) = fixture().await;
+        let gate = state
+            .online
+            .streams
+            .pending
+            .lock()
+            .unwrap()
+            .entry("abcdefghijk".into())
+            .or_default()
+            .clone();
+        let held = gate.lock_owned().await;
+        let waiting = tokio::spawn({
+            let state = state.clone();
+            async move { prepare(&state, "abcdefghijk").await.map(|p| p.duration) }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        // The first request's result reaches every request waiting for it.
+        remember(
+            &state,
+            "abcdefghijk",
+            &select(&metadata(false), None).unwrap(),
+        )
+        .await;
+        drop(held);
+        assert_eq!(waiting.await.unwrap().unwrap(), 100.0);
+        assert!(state.online.streams.pending.lock().unwrap().is_empty());
     }
     #[tokio::test]
     async fn cached_public_stream_still_requires_user_visibility_and_live_does_not_mark_watched() {

@@ -15,9 +15,119 @@ import { freezeClock } from './helpers/clock';
 // This suite starts its own Vite server and never touches an account or deployment.
 const title = 'A journey through the mountains';
 let mp4: Buffer, segment: Buffer, shortSegment: Buffer;
+// Separate video and audio files shaped like YouTube's: an initialization
+// segment, a `sidx` fragment index, then keyframe-aligned fragments.
+let original: Record<'video' | 'audio', Buffer>;
+function fragmentIndex(file: Buffer) {
+  for (let offset = 0; offset < file.length;) {
+    const size = file.readUInt32BE(offset);
+    if (file.toString('latin1', offset + 4, offset + 8) !== 'sidx') {
+      offset += size;
+      continue;
+    }
+    // Version 1 widens the earliest presentation time and first offset.
+    const wide = file[offset + 8] !== 0;
+    const timescale = file.readUInt32BE(offset + 16);
+    const first = wide
+      ? Number(file.readBigUInt64BE(offset + 28))
+      : file.readUInt32BE(offset + 24);
+    const references = offset + (wide ? 36 : 28);
+    const count = file.readUInt16BE(references + 2);
+    let start = offset + size + first;
+    const fragments = Array.from({ length: count }, (_, index) => {
+      const at = references + 4 + index * 12;
+      const fragment = {
+        offset: start,
+        size: file.readUInt32BE(at) & 0x7fffffff,
+        duration: file.readUInt32BE(at + 4) / timescale,
+      };
+      start += fragment.size;
+      return fragment;
+    });
+    return { init: file.subarray(0, offset), fragments };
+  }
+  throw new Error('Missing fragment index');
+}
+/** The server's byte-range playlist for one track of an indexed session. */
+function indexedPlaylist(track: 'video' | 'audio') {
+  const { fragments } = fragmentIndex(original[track]);
+  return [
+    '#EXTM3U',
+    '#EXT-X-VERSION:7',
+    '#EXT-X-PLAYLIST-TYPE:VOD',
+    `#EXT-X-TARGETDURATION:${Math.ceil(Math.max(...fragments.map((f) => f.duration)))}`,
+    '#EXT-X-MEDIA-SEQUENCE:0',
+    '#EXT-X-INDEPENDENT-SEGMENTS',
+    `#EXT-X-MAP:URI="../../remote/${track}-init?grant=fixture"`,
+    ...fragments.flatMap((f) => [
+      `#EXTINF:${f.duration.toFixed(6)},`,
+      `#EXT-X-BYTERANGE:${f.size}@${f.offset}`,
+      `../../remote/${track}?grant=fixture`,
+    ]),
+    '#EXT-X-ENDLIST',
+    '',
+  ].join('\n');
+}
 test.beforeAll(() => {
   const directory = mkdtempSync(join(tmpdir(), 'thelxinoe-player-'));
   const file = join(directory, 'fixture.mp4');
+  const fragmented = [
+    '-movflags',
+    '+frag_keyframe+empty_moov+default_base_moof+global_sidx',
+  ];
+  for (const [name, args] of [
+    [
+      'video.mp4',
+      [
+        '-f',
+        'lavfi',
+        '-i',
+        'testsrc2=size=960x540:rate=12',
+        '-t',
+        '60',
+        '-c:v',
+        'libx264',
+        '-preset',
+        'ultrafast',
+        '-g',
+        '24',
+        '-pix_fmt',
+        'yuv420p',
+        '-an',
+        ...fragmented,
+      ],
+    ],
+    [
+      'audio.m4a',
+      [
+        '-f',
+        'lavfi',
+        '-i',
+        'sine=frequency=440:sample_rate=48000',
+        '-t',
+        '60',
+        '-c:a',
+        'aac',
+        '-vn',
+        '-frag_duration',
+        '4000000',
+        '-movflags',
+        '+empty_moov+default_base_moof+global_sidx',
+      ],
+    ],
+  ] as const) {
+    const output = join(directory, name);
+    execFileSync(
+      'ffmpeg',
+      ['-hide_banner', '-loglevel', 'error', ...args, '-f', 'mp4', output],
+      { windowsHide: true },
+    );
+    original = {
+      ...original,
+      [name.startsWith('video') ? 'video' : 'audio']: readFileSync(output),
+    };
+    unlinkSync(output);
+  }
   try {
     execFileSync(
       'ffmpeg',
@@ -122,6 +232,7 @@ async function fixture(
     native?: boolean;
     nativeTools?: boolean;
     nativeRestore?: boolean;
+    indexed?: boolean;
   } = {},
 ) {
   const metadata = gate(!!options.hold),
@@ -137,6 +248,12 @@ async function fixture(
       options: { quality: string };
     }[],
     seeks: [] as number[],
+    ranges: [] as string[],
+    // Byte ranges of the indexed media that wait for a release.
+    held: {
+      test: (() => false) as (track: string, offset: number) => boolean,
+      ...gate(true),
+    },
     progress: [] as {
       state: string;
       position: number;
@@ -368,8 +485,9 @@ async function fixture(
               : input.options.quality,
           mode: options.mode ?? 'direct',
           live: options.live ?? false,
-          url:
-            options.mode === 'remux'
+          url: options.indexed
+            ? '/api/v1/playback/fixture/hls/source/index.m3u8?grant=fixture'
+            : options.mode === 'remux'
               ? '/fixture/index.m3u8'
               : '/fixture/video.mp4',
           position: input.position ?? 0,
@@ -408,6 +526,52 @@ async function fixture(
           position,
         },
       });
+    }
+    const indexed =
+      /\/playback\/fixture\/(?:hls\/source\/(index|video|audio)\.m3u8|remote\/(video|audio)(-init)?)$/.exec(
+        path,
+      );
+    if (options.indexed && indexed) {
+      const [, playlist, track, init] = indexed;
+      const type = 'application/vnd.apple.mpegurl';
+      if (playlist === 'index') {
+        // The codec string the provider declares for its file.
+        const avc = original.video.indexOf('avcC') + 5;
+        const codec = original.video
+          .subarray(avc, avc + 3)
+          .toString('hex')
+          .toUpperCase();
+        return route.fulfill({
+          contentType: type,
+          body: `#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Original",DEFAULT=YES,AUTOSELECT=YES,URI="audio.m3u8?grant=fixture"\n#EXT-X-STREAM-INF:BANDWIDTH=1500000,CODECS="avc1.${codec},mp4a.40.2",RESOLUTION=960x540,FRAME-RATE=12.000,AUDIO="audio"\nvideo.m3u8?grant=fixture\n`,
+        });
+      }
+      if (playlist)
+        return route.fulfill({
+          contentType: type,
+          body: indexedPlaylist(playlist as 'video' | 'audio'),
+        });
+      const file = original[track as 'video' | 'audio'];
+      const contentType = track === 'video' ? 'video/mp4' : 'audio/mp4';
+      if (init)
+        return route.fulfill({ contentType, body: fragmentIndex(file).init });
+      const [, from, to] = /^bytes=(\d+)-(\d+)$/.exec(
+        route.request().headers().range ?? '',
+      )!;
+      state.ranges.push(`${track}:${from}`);
+      if (state.held.test(track, Number(from))) await state.held.promise;
+      // A held request may have been abandoned by a seek meanwhile.
+      return route
+        .fulfill({
+          status: 206,
+          contentType,
+          headers: {
+            'Accept-Ranges': 'bytes',
+            'Content-Range': `bytes ${from}-${to}/${file.length}`,
+          },
+          body: file.subarray(Number(from), Number(to) + 1),
+        })
+        .catch(() => {});
     }
     if (path.endsWith('/progress'))
       state.progress.push(route.request().postDataJSON());
@@ -1550,6 +1714,111 @@ test.describe('touch video playback', () => {
     await expect(video).toHaveJSProperty('paused', false);
     expect(state.errors).toEqual([]);
   });
+});
+
+test('online originals play as byte-range HLS and seek within the client', async ({
+  page,
+}) => {
+  const state = await fixture(page, { indexed: true });
+  await decoded(page);
+  expect(state.ranges.some((range) => range.startsWith('audio:'))).toBe(true);
+  const position = page.getByRole('slider', { name: 'Playback position' });
+  await position.fill('42');
+  await expect
+    .poll(async () => Number(await position.inputValue()))
+    .toBeGreaterThanOrEqual(42);
+  await decoded(page);
+  // Only the fragment containing the target is requested; the server never restarts.
+  let start = 0;
+  const target = fragmentIndex(original.video).fragments.find((fragment) => {
+    start += fragment.duration;
+    return start > 42;
+  })!;
+  expect(state.ranges).toContain(`video:${target.offset}`);
+  expect(state.seeks).toEqual([]);
+  expect(state.starts).toHaveLength(1);
+  expect(state.errors).toEqual([]);
+});
+
+test('a seek near the end of an unbuffered fragment waits for the next one before resuming', async ({
+  page,
+}) => {
+  const state = await fixture(page, { indexed: true, hold: true });
+  const { fragments } = fragmentIndex(original.video);
+  // Two-second fragments: the target is 0.5 s before the end of the one at 40 s.
+  const starts = fragments.map((_, index) =>
+    fragments.slice(0, index).reduce((sum, f) => sum + f.duration, 0),
+  );
+  const target = fragments.findIndex((_, index) => starts[index] >= 40);
+  const seekTo = starts[target + 1] - 0.5;
+  // Initial buffering stops at 20 s; only the target fragment is delivered.
+  state.held.test = (track, offset) =>
+    track === 'video' &&
+    offset >= fragments[10].offset &&
+    offset !== fragments[target].offset;
+  state.metadata.release();
+  state.preparation.release();
+  state.media.release();
+  await decoded(page);
+  const video = page.locator('video');
+  await page
+    .getByRole('slider', { name: 'Playback position' })
+    .fill(String(seekTo));
+  await expect
+    .poll(() =>
+      video.evaluate(
+        (v: HTMLVideoElement, at) =>
+          Array.from({ length: v.buffered.length }).some(
+            (_, i) => v.buffered.start(i) <= at && at < v.buffered.end(i),
+          ),
+        seekTo,
+      ),
+    )
+    .toBe(true);
+  // With half a second buffered, playback waits instead of starting and stalling.
+  await page.waitForTimeout(1500);
+  expect(
+    await video.evaluate((v: HTMLVideoElement) => v.currentTime),
+  ).toBeCloseTo(seekTo, 1);
+  await expect(page.getByRole('status')).toContainText('Buffering');
+  await expect(
+    page.getByRole('button', { name: 'Pause', exact: true }),
+  ).toBeVisible();
+  state.held.release();
+  await expect
+    .poll(() => video.evaluate((v: HTMLVideoElement) => v.currentTime))
+    .toBeGreaterThan(seekTo + 1);
+  await expect(page.getByRole('status')).toHaveCount(0);
+  expect(state.seeks).toEqual([]);
+  expect(state.errors).toEqual([]);
+});
+
+test('pausing while a seek waits for media keeps playback paused', async ({
+  page,
+}) => {
+  const state = await fixture(page, { indexed: true, hold: true });
+  const { fragments } = fragmentIndex(original.video);
+  state.held.test = (track, offset) =>
+    track === 'video' && offset >= fragments[10].offset;
+  state.metadata.release();
+  state.preparation.release();
+  state.media.release();
+  await decoded(page);
+  await page.getByRole('slider', { name: 'Playback position' }).fill('45');
+  await expect(page.getByRole('status')).toContainText('Buffering');
+  await page.getByRole('button', { name: 'Pause', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'Play', exact: true }),
+  ).toBeVisible();
+  state.held.release();
+  await expect(page.getByRole('status')).toHaveCount(0);
+  await page.waitForTimeout(500);
+  const video = page.locator('video');
+  await expect(video).toHaveJSProperty('paused', true);
+  expect(
+    await video.evaluate((v: HTMLVideoElement) => v.currentTime),
+  ).toBeCloseTo(45, 0);
+  expect(state.errors).toEqual([]);
 });
 
 test('transcoded seeking uses the server timeline and live playback omits seeking', async ({
