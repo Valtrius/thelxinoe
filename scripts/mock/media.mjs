@@ -1,4 +1,4 @@
-import { admin, art, iso, now, statistics } from './data.mjs';
+import { admin, art, iso, now, statistics, viewer } from './data.mjs';
 
 export async function mediaApi(s, c) {
   const { path, method, body, query, json, fail } = c;
@@ -198,8 +198,8 @@ export async function mediaApi(s, c) {
           kind: item.kind,
           title: item.title,
           edition: '',
-          user_id: admin.id,
-          username: admin.username,
+          user_id: viewer(s).id,
+          username: viewer(s).username,
           device: i % 2 ? 'Living room' : 'Chrome',
           started_at: now() - (i + 1) * 3600,
           updated_at: now() - i * 3600,
@@ -218,8 +218,8 @@ export async function mediaApi(s, c) {
         id,
         name: body.name,
         description: body.description ?? '',
-        owner_id: admin.id,
-        owner: admin.username,
+        owner_id: viewer(s).id,
+        owner: viewer(s).username,
         revision: 1,
         favorite: false,
         items: (body.items ?? [])
@@ -269,7 +269,10 @@ export async function mediaApi(s, c) {
         status: 2,
         createdAt: iso(),
         type: media.mediaType,
-        requestedBy: { id: 1, username: admin.username },
+        requestedBy: {
+          id: s.users.indexOf(viewer(s)) + 1,
+          username: viewer(s).username,
+        },
         seasons: (body.seasons ?? []).map((seasonNumber) => ({
           seasonNumber,
           status: 2,
@@ -285,9 +288,15 @@ export async function mediaApi(s, c) {
       c.emit('request.changed', { id: request.id });
       return json(request);
     }
+    const results =
+      viewer(s).role === 'admin'
+        ? s.requests
+        : s.requests.filter(
+            (item) => item.requestedBy.username === viewer(s).username,
+          );
     return json({
-      pageInfo: { pages: 1, page: 1, results: s.requests.length, pageSize: 20 },
-      results: s.requests,
+      pageInfo: { pages: 1, page: 1, results: results.length, pageSize: 20 },
+      results,
     });
   }
   const request = path.match(

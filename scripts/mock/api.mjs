@@ -4,8 +4,10 @@ import {
   discoverSeed,
   iso,
   librarySeed,
+  member,
   now,
   videoSeed,
+  viewer,
 } from './data.mjs';
 import { mediaApi, onlineApi } from './media.mjs';
 import { servicesApi, settingsApi, settingsSeed } from './settings.mjs';
@@ -27,7 +29,7 @@ export function createMockState() {
       type: media.mediaType,
       requestedBy: {
         id: i % 2 ? 2 : 1,
-        username: i % 2 ? 'Alex' : admin.username,
+        username: i % 2 ? member.username : admin.username,
       },
       seasons: media.mediaType === 'tv' ? [{ seasonNumber: 1, status: 2 }] : [],
       media: {
@@ -70,6 +72,7 @@ export function createMockState() {
     ...settingsSeed(),
     scenarios: scenarioSeed(),
     signedIn: true,
+    viewer: 'admin',
     sequence: 100,
     library,
     discover,
@@ -78,12 +81,7 @@ export function createMockState() {
     videoTemplate: structuredClone(videos[5]),
     users: [
       { ...admin },
-      {
-        id: 'user-alex',
-        username: 'Alex',
-        role: 'user',
-        timezone: 'Europe/Paris',
-      },
+      { ...member },
       { id: 'user-robin', username: 'Robin', role: 'user', timezone: 'UTC' },
     ],
     mediaStates: Object.fromEntries(
@@ -223,7 +221,7 @@ export async function installMockApi(page, currentState, events) {
                                 : path.startsWith('/online/')
                                   ? 'online.account.changed'
                                   : null;
-          if (path === '/me/preferences') s.users[0].timezone = value.timezone;
+          if (path === '/me/preferences') viewer(s).timezone = value.timezone;
           if (change)
             events.emit(change, change === 'preferences.changed' ? value : {});
           if (
@@ -237,8 +235,8 @@ export async function installMockApi(page, currentState, events) {
                 ? `${path.split('/')[2]}.update`
                 : `${path.split('/')[1]}.update`,
               target: path,
-              actor: admin.username,
-              actor_id: admin.id,
+              actor: viewer(s).username,
+              actor_id: viewer(s).id,
               created_at: now(),
             });
         }
@@ -278,11 +276,11 @@ export async function installMockApi(page, currentState, events) {
       });
     if (path === '/auth/me')
       return s.signedIn
-        ? c.json({ user: s.users[0] })
+        ? c.json({ user: viewer(s) })
         : c.fail(401, 'Sign in required');
     if (path === '/auth/login') {
       s.signedIn = true;
-      return c.json({ user: s.users[0] });
+      return c.json({ user: viewer(s) });
     }
     if (path === '/auth/logout') {
       s.signedIn = false;
@@ -299,11 +297,21 @@ export async function installMockApi(page, currentState, events) {
       });
     if (path === '/auth/passkey/finish') {
       s.signedIn = true;
-      return c.json({ user: s.users[0], verified: true });
+      return c.json({ user: viewer(s), verified: true });
     }
     if (path === '/auth/oidc/start')
       return c.json({ url: `${url.origin}/__mock/auth` });
-    if (path === '/me/attention') return c.json(serviceAttention(s));
+    if (
+      viewer(s).role !== 'admin' &&
+      (path.startsWith('/admin/') || /^\/users(\/|$)/.test(path))
+    )
+      return c.fail(403, 'This action requires additional permissions');
+    if (path === '/me/attention')
+      return c.json(
+        viewer(s).role === 'admin'
+          ? serviceAttention(s)
+          : { items: [], activity: [] },
+      );
     for (const handler of [
       settingsApi,
       servicesApi,

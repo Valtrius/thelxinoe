@@ -1,4 +1,4 @@
-import { admin, definitions, label, now } from './data.mjs';
+import { admin, definitions, label, now, viewer } from './data.mjs';
 import { checkConnection, connectionFailure, stagesApi } from './transfers.mjs';
 
 export function settingsSeed() {
@@ -743,7 +743,7 @@ export async function settingsApi(s, c) {
       secret: 'JBSWY3DPEHPK3PXP',
       uri: `otpauth://totp/Preview:admin?secret=JBSWY3DPEHPK3PXP&issuer=Preview`,
       issuer: 'Preview',
-      account: admin.username,
+      account: viewer(s).username,
       digits: 6,
       period: 30,
       algorithm: 'SHA1',
@@ -762,9 +762,10 @@ export async function settingsApi(s, c) {
     return json({ deleted: true });
   }
   if (path === '/me/avatar') {
-    s.users[0].avatar = body.image ?? null;
-    c.emit('user.changed', s.users[0]);
-    return json({ avatar: s.users[0].avatar });
+    const user = viewer(s);
+    user.avatar = body.image ?? null;
+    c.emit('user.changed', user);
+    return json({ avatar: user.avatar });
   }
   if (path === '/admin/auth/oidc') {
     if (method === 'DELETE') s.oidc.provider = null;

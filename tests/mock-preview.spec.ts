@@ -484,6 +484,76 @@ test('every admin settings panel and service tab has populated mocks', async ({
   expect((await diagnostic.json()).unhandled).toEqual([]);
 });
 
+test('the preview switches between the admin and user views', async ({
+  page,
+}, info) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('response', (response) => {
+    if (response.status() >= 400)
+      errors.push(`${response.status()} ${response.url()}`);
+  });
+  const views = page.getByRole('group', { name: 'Preview view' });
+  const settings = page.getByRole('navigation', {
+    name: 'Settings navigation',
+  });
+  async function view(name: 'Admin' | 'User') {
+    const reloaded = page.waitForEvent('load');
+    await views.getByRole('button', { name, exact: true }).click();
+    await reloaded;
+    await expect(
+      views.getByRole('button', { name, exact: true }),
+    ).toHaveAttribute('aria-pressed', 'true');
+  }
+
+  await page.goto('/#settings/account');
+  await expect(
+    views.getByRole('button', { name: 'Admin', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true');
+  await expect(settings.getByText('Administration')).toBeVisible();
+
+  await view('User');
+  await expect(page.getByText('Member', { exact: true })).toBeVisible();
+  await expect(settings.getByText('Personal')).toBeVisible();
+  await expect(settings.getByText('Administration')).toHaveCount(0);
+  expect((await page.request.get('/api/v1/admin/settings')).status()).toBe(403);
+  await page.goto('/#admin/server');
+  await expect(
+    page.getByRole('heading', { name: 'Account', level: 1 }),
+  ).toBeVisible();
+  for (const route of [
+    'home',
+    'discover',
+    'statistics',
+    'settings/playback',
+    'settings/online',
+    'settings/devices',
+  ]) {
+    await page.goto(`/#${route}`);
+    await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
+  }
+  await page.goto('/#discover');
+  await page.getByRole('button', { name: 'My requests', exact: true }).click();
+  await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
+  const requests = await (
+    await page.request.get('/api/v1/seerr/requests')
+  ).json();
+  expect(requests.results.length).toBeGreaterThan(0);
+  for (const request of requests.results)
+    expect(request.requestedBy.username).toBe('Alex');
+  await page.screenshot({
+    path: info.outputPath('user-view-requests.png'),
+    fullPage: true,
+  });
+
+  await view('Admin');
+  await page.goto('/#settings/account');
+  await expect(settings.getByText('Administration')).toBeVisible();
+  expect(errors).toEqual([]);
+  const diagnostic = await page.request.get('/__mock/diagnostics');
+  expect((await diagnostic.json()).unhandled).toEqual([]);
+});
+
 test('mock settings, service controls and playback retain changes', async ({
   page,
 }, info) => {

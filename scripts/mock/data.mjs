@@ -10,6 +10,17 @@ export const admin = {
   role: 'admin',
   timezone: 'Europe/Paris',
 };
+export const member = {
+  id: 'user-alex',
+  username: 'Alex',
+  role: 'user',
+  timezone: 'Europe/Paris',
+};
+// The preview signs in as the administrator or as a regular member.
+export const viewer = (s) =>
+  s.users.find(
+    (user) => user.id === (s.viewer === 'user' ? member.id : admin.id),
+  ) ?? s.users[0];
 
 export function librarySeed() {
   const items = [];
