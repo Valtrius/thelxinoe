@@ -9,6 +9,11 @@ async fn prepared_first_install_reports_running_while_verification_is_blocked() 
     use sha2::{Digest, Sha256};
     use std::{collections::BTreeMap, os::unix::fs::PermissionsExt};
 
+    assert!(
+        std::path::Path::new(super::PYTHON).is_file(),
+        "Package operations run {}; scripts/Dockerfile.verify links it to the system Python",
+        super::PYTHON
+    );
     let (_temp, state, cookie) = crate::test_support::fixture().await;
     state
         .db
@@ -92,10 +97,16 @@ async fn prepared_first_install_reports_running_while_verification_is_blocked() 
         .find(|job| job.id == id)
         .unwrap();
     let worker_state = state.clone();
-    let worker = tokio::spawn(async move { super::operation(&worker_state, &job).await });
+    let mut worker = tokio::spawn(async move { super::operation(&worker_state, &job).await });
     tokio::time::timeout(Duration::from_secs(20), async {
         while !entered.exists() {
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            // An operation that fails first reports why instead of timing out.
+            tokio::select! {
+                result = &mut worker => panic!(
+                    "The operation ended before verification started: {result:?}"
+                ),
+                () = tokio::time::sleep(Duration::from_millis(20)) => {}
+            }
         }
     })
     .await

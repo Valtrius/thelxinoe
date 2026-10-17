@@ -384,7 +384,9 @@ async fn invoke(
     command.wrap(KillOnDrop);
     #[cfg(unix)]
     command.wrap(ProcessGroup::leader());
-    let mut child = command.spawn()?;
+    let mut child = command
+        .spawn()
+        .map_err(|error| anyhow::anyhow!("Could not start {PYTHON}: {error}"))?;
     if let Some(value) = input {
         child
             .stdin()
