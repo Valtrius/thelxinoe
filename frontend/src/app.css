@@ -93,6 +93,54 @@
   @apply min-w-0 border border-line bg-surface p-5.5 compact:p-4 [&_h3]:text-[15px]! [&_h3]:font-semibold! [&_h3]:tracking-[-0.01em];
 }
 
+/* Player sliders: a slim track drawn from --range-fill and the optional
+   --range-buffer fractions, under a square thumb ringed with the background.
+   The spans end at the thumb's centre, which travels inset by half its width. */
+@utility player-range {
+  --range-thumb: 10px;
+  --range-at: calc(
+    var(--range-thumb) / 2 + (100% - var(--range-thumb)) * var(--range-fill, 0)
+  );
+  --range-buffered: calc(
+    var(--range-thumb) / 2 + (100% - var(--range-thumb)) *
+      max(var(--range-fill, 0), var(--range-buffer, 0))
+  );
+  --range-track: linear-gradient(
+    to right,
+    var(--accent) 0 var(--range-at),
+    color-mix(in srgb, var(--foreground) 42%, transparent) 0
+      var(--range-buffered),
+    color-mix(in srgb, var(--foreground) 22%, transparent) 0
+  );
+  @apply block h-4 cursor-pointer appearance-none border-0 bg-transparent p-0;
+  &::-webkit-slider-runnable-track {
+    height: 3px;
+    background: var(--range-track);
+  }
+  &::-moz-range-track {
+    height: 3px;
+    background: var(--range-track);
+  }
+  &::-webkit-slider-thumb {
+    appearance: none;
+    width: var(--range-thumb);
+    height: var(--range-thumb);
+    margin-top: calc((3px - var(--range-thumb)) / 2);
+    border: 0;
+    border-radius: 0;
+    background: var(--accent);
+    box-shadow: 0 0 0 2px var(--background);
+  }
+  &::-moz-range-thumb {
+    width: var(--range-thumb);
+    height: var(--range-thumb);
+    border: 0;
+    border-radius: 0;
+    background: var(--accent);
+    box-shadow: 0 0 0 2px var(--background);
+  }
+}
+
 @property --feed-label-scale-x {
   syntax: '<number>';
   inherits: false;
@@ -129,7 +177,9 @@
     text-rendering: optimizeLegibility;
   }
 
-  :root[data-theme='dark'] {
+  /* `theme-dark` keeps a subtree, such as the video player, dark in any theme. */
+  :root[data-theme='dark'],
+  .theme-dark {
     color-scheme: dark;
     --background: #05070b;
     --surface: rgba(13, 18, 24, 0.86);
