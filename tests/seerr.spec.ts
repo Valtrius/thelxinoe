@@ -706,10 +706,8 @@ test('existing series keep their profile and a failed profile lookup leaves the 
   });
 });
 
-test('a trailer resolves an uncached video and plays in the shared player without leaving details', async ({
-  page,
-}) => {
-  const fixture = await discoverFixture(page);
+/** Resolves the fixture trailer, held until released, and plays a decoded video. */
+async function trailerPlayback(page: Page) {
   const calls: string[] = [];
   let release!: () => void;
   const held = new Promise<void>((resolve) => {
@@ -787,6 +785,14 @@ test('a trailer resolves an uncached video and plays in the shared player withou
   await page.route('**/fixture/trailer.mp4', (route) =>
     route.fulfill({ contentType: 'video/mp4', body: video }),
   );
+  return { calls, release };
+}
+
+test('a trailer resolves an uncached video and plays in the shared player without leaving details', async ({
+  page,
+}) => {
+  const fixture = await discoverFixture(page);
+  const { calls, release } = await trailerPlayback(page);
   await page.goto('/#discover/movie/11');
   await page.getByRole('link', { name: 'Watch trailer' }).press('Enter');
   await expect.poll(() => calls).toEqual(['resolve']);
@@ -805,6 +811,46 @@ test('a trailer resolves an uncached video and plays in the shared player withou
   ).toBeVisible();
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
+});
+
+test.describe('mobile trailers', () => {
+  test.use({ hasTouch: true, viewport: { width: 375, height: 667 } });
+
+  test('a trailer opens in the pinned player without scrolling the details back to the top', async ({
+    page,
+  }) => {
+    const fixture = await discoverFixture(page);
+    const { release } = await trailerPlayback(page);
+    release();
+    await page.goto('/#discover/movie/11');
+    const trailer = page.getByRole('link', { name: 'Watch trailer' });
+    await expect(trailer).toBeVisible();
+    const workspace = page.locator('[data-feed-scroll]');
+    const scrolled = await workspace.evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+      return element.scrollTop;
+    });
+    expect(scrolled).toBeGreaterThan(0);
+    const before = (await trailer.boundingBox())!.y;
+    await trailer.tap();
+    await expect
+      .poll(() =>
+        page.locator('video').evaluate((element) => element.currentTime),
+      )
+      .toBeGreaterThan(0.2);
+    const player = page.getByRole('region', { name: 'Media player' });
+    await expect(player).toHaveCSS('transform', 'none');
+    // The pinned player pushes the page down while the page keeps its scroll.
+    expect(
+      await workspace.evaluate((element) => element.scrollTop),
+    ).toBeCloseTo(scrolled, 0);
+    const height = (await player.boundingBox())!.height;
+    await expect
+      .poll(async () => (await trailer.boundingBox())!.y - before)
+      .toBeCloseTo(height, 0);
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.unexpected).toEqual([]);
+  });
 });
 
 test('desktop trailers resolve through the server and launch MPV with the same video choice', async ({
