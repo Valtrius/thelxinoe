@@ -32,7 +32,6 @@
   import { showToast, clearToasts } from './toasts';
   import Notice from '../ui/Notice.svelte';
   import MediaSkeleton from '../ui/MediaSkeleton.svelte';
-  import ToastViewport from './components/ui/ToastViewport.svelte';
 
   let {
     platform,
@@ -440,5 +439,4 @@
         >{String(error)}</Notice
       >{/await}
   {/if}
-  <ToastViewport />
 </div>

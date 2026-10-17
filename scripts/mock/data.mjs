@@ -16,6 +16,21 @@ export const member = {
   role: 'user',
   timezone: 'Europe/Paris',
 };
+// Keep on an item, its season or series, or anything inside it protects its files.
+export function protection(library, item) {
+  const byId = new Map(library.map((entry) => [entry.id, entry]));
+  let by = null;
+  for (let at = byId.get(item.parent_id); at; at = byId.get(at.parent_id))
+    if (at.keep) {
+      by = at.kind;
+      break;
+    }
+  const inside = (entry) =>
+    entry.parent_id &&
+    (entry.parent_id === item.id || inside(byId.get(entry.parent_id) ?? {}));
+  const within = library.filter((entry) => entry.keep && inside(entry)).length;
+  return { own: Boolean(item.keep), by, within };
+}
 // The preview signs in as the administrator or as a regular member.
 export const viewer = (s) =>
   s.users.find(
@@ -49,17 +64,26 @@ export function librarySeed() {
     return item;
   }
   for (let i = 0; i < 24; i++) {
-    add('movie', i, { position: i < 3 ? 1200 + i * 900 : 0 });
+    const movie = add('movie', i, { position: i < 3 ? 1200 + i * 900 : 0 });
+    // Seerr lists these as available; the rest are unmatched local files.
+    if (i % 6 === 1 || i >= 22) movie.metadata.tmdb_id = 11 + i;
+    // Radarr still wants the last two; one is no longer monitored.
+    if (i >= 22)
+      Object.assign(movie, { available: false, monitored: i === 22 });
     const show = add('show', i);
+    if (i % 6 === 1) show.metadata.tmdb_id = 22 + i;
+    show.metadata.tvdb_id = 7000 + i;
     const artist = add('artist', i);
     for (let season = 1; season <= 2; season++) {
       const parent = add('season', i * 2 + season - 1, {
         title: `Season ${season}`,
         parent_id: show.id,
+        sort_number: season,
         metadata: { season_number: season },
       });
       for (let episode = 1; episode <= 4; episode++) {
         add('episode', i * 8 + (season - 1) * 4 + episode - 1, {
+          sort_number: episode,
           title: `${show.title} · ${['First Contact', 'The Crossing', 'The Signal', 'Homeward'][episode - 1]}`,
           parent_id: parent.id,
           show_title: show.title,
@@ -97,7 +121,8 @@ export function librarySeed() {
   return items;
 }
 
-export function discoverSeed() {
+// `extra` adds the Radarr and Sonarr titles that only exist upstream so far.
+export function discoverSeed(extra = []) {
   const items = [];
   for (const kind of ['movie', 'tv'])
     for (let i = 0; i < 24; i++) {
@@ -170,6 +195,17 @@ export function discoverSeed() {
         },
       });
     }
+  for (const entry of extra)
+    items.push({
+      ...items.find((item) => item.mediaType === entry.kind),
+      id: entry.id,
+      ...(entry.kind === 'movie'
+        ? { title: entry.title, releaseDate: entry.date }
+        : { name: entry.title, firstAirDate: entry.date }),
+      posterPath: art(entry.kind === 'movie' ? 'movie' : 'show', entry.art),
+      backdropPath: art('video', entry.art),
+      mediaInfo: { status: 3, seasons: [], requests: [] },
+    });
   return items;
 }
 

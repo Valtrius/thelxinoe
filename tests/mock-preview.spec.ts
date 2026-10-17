@@ -132,7 +132,8 @@ test.describe('media card motion', () => {
   }, info) => {
     await page.goto('/#home');
     await page.getByRole('link', { name: 'Movies', exact: true }).click();
-    await expect(page.locator('article.library-tile')).toHaveCount(24);
+    // 24 library movies and 4 Radarr titles that have no files yet.
+    await expect(page.locator('article.library-tile')).toHaveCount(28);
     const evidence = [];
     for (const name of [
       'Shows',
@@ -211,17 +212,23 @@ test.describe('media card motion', () => {
     });
   });
 
-  test('watched movies, episodes, seasons and completed shows follow the shared fade preference', async ({
+  test('watched movies, episodes and completed shows follow the shared fade preference', async ({
     page,
   }, info) => {
     await page.goto('/#home');
     await page.getByRole('link', { name: 'Movies', exact: true }).click();
     const movie = page.locator('article[data-layout-key="library:movie-0"]');
-    await movie.locator('.card-primary').click();
-    await page
-      .getByRole('button', { name: 'Mark watched', exact: true })
+    await movie.hover();
+    await movie
+      .getByRole('button', {
+        name: 'More actions for Beyond the Horizon',
+        exact: true,
+      })
       .click();
-    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await page.getByRole('menuitem', { name: 'Mark watched' }).click();
+    await expect(page.getByRole('menu')).toHaveCount(0);
+    // The menu returns focus to its trigger, and focused cards never fade.
+    await page.evaluate(() => (document.activeElement as HTMLElement).blur());
     await page.mouse.move(0, 0);
     await expect(movie).toHaveCSS('opacity', '0.55');
     await movie.hover();
@@ -241,21 +248,13 @@ test.describe('media card motion', () => {
     const show = page.locator('article[data-layout-key="library:show-0"]');
     await expect(show).toHaveCSS('opacity', '0.55');
     await show.locator('.card-primary').click();
-    const season = page.locator('article[data-layout-key="library:season-0"]');
-    await expect(season).toHaveCSS('opacity', '0.55');
-    await season.locator('.card-primary').click();
-    const episode = page.locator(
-      'article[data-layout-key="library:episode-0"]',
-    );
-    await page.mouse.move(0, 0);
-    await expect(episode).toHaveCSS('opacity', '0.55');
-    await episode.locator('.card-primary').click();
-    await page
-      .getByRole('button', { name: 'Mark unwatched', exact: true })
-      .click();
-    await page.getByRole('button', { name: 'Close', exact: true }).click();
-    await page.mouse.move(0, 0);
-    await expect(episode).toHaveCSS('opacity', '1');
+    const episode = page.getByRole('button', {
+      name: 'Watched: First Contact',
+      exact: true,
+    });
+    await expect(episode).toHaveAttribute('aria-pressed', 'true');
+    await episode.click();
+    await expect(episode).toHaveAttribute('aria-pressed', 'false');
     await page.getByRole('link', { name: 'Shows', exact: true }).click();
     await expect(show).toHaveCSS('opacity', '1');
     await page.getByRole('link', { name: 'Settings', exact: true }).click();
@@ -396,13 +395,20 @@ test('mock Home, Discover and request details work without external services', a
     page.getByRole('heading', { name: 'Northern Lights', exact: true }),
   ).toBeVisible();
   await page.screenshot({ path: info.outputPath('tv.png'), fullPage: true });
+  await page.getByRole('button', { name: 'Request', exact: true }).click();
+  const seasons = page.getByRole('dialog', { name: 'Request seasons' });
+  await expect(
+    seasons.getByRole('checkbox', { name: /Season 1/ }),
+  ).toBeDisabled();
+  await expect(
+    seasons.getByRole('checkbox', { name: /Season 2/ }),
+  ).toBeChecked();
+  await seasons.getByRole('button', { name: 'Request', exact: true }).click();
+  await expect(seasons).toHaveCount(0);
+  await expect(page.getByRole('status')).toHaveText('Request submitted.');
   await expect(
     page.getByRole('button', { name: 'Request', exact: true }),
-  ).toBeEnabled();
-  await expect(page.getByRole('checkbox', { name: /Season 1/ })).toBeDisabled();
-  await page.getByRole('button', { name: 'Request', exact: true }).click();
-  await expect(page.getByRole('checkbox', { name: /Season 2/ })).toBeDisabled();
-  await expect(page.getByRole('checkbox', { name: /Season 3/ })).toBeDisabled();
+  ).toHaveCount(0);
   await page.goto('/#requests');
   await expect(
     page.getByText('Beyond the Horizon', { exact: true }).first(),
@@ -638,9 +644,7 @@ test('mock settings, service controls and playback retain changes', async ({
     .getByRole('button', { name: 'Close YAML editor', exact: true })
     .click();
   await page.goto('/#library/movies/movie-0');
-  await page
-    .getByRole('button', { name: 'Play Theatrical', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Play', exact: true }).click();
   await expect
     .poll(() =>
       page

@@ -1,8 +1,57 @@
-import { admin, art, iso, now, statistics, viewer } from './data.mjs';
+import {
+  admin,
+  art,
+  iso,
+  now,
+  protection,
+  statistics,
+  viewer,
+} from './data.mjs';
+import { statusOf, virtualCards } from './titles.mjs';
 
 export async function mediaApi(s, c) {
   const { path, method, body, query, json, fail } = c;
+  // Watching a title clears it from Watch Later, and finishing every episode
+  // clears its season and series.
+  const clearWatchLater = (item) => {
+    const watched = (id) => Boolean(s.mediaStates[id]?.watched);
+    const done = (parent) =>
+      s.library
+        .filter(
+          (child) =>
+            child.kind === 'episode' &&
+            (child.parent_id === parent ||
+              s.library.find((season) => season.id === child.parent_id)
+                ?.parent_id === parent),
+        )
+        .every((child) => watched(child.id));
+    const clear = (id) => {
+      if (s.mediaStates[id]) s.mediaStates[id].watch_later = false;
+    };
+    clear(item.id);
+    if (item.kind !== 'episode') return;
+    const season = s.library.find((entry) => entry.id === item.parent_id);
+    if (season && done(season.id)) clear(season.id);
+    if (season?.parent_id && done(season.parent_id)) clear(season.parent_id);
+  };
   const parents = new Map(s.library.map((item) => [item.id, item.parent_id]));
+  // Radarr and Sonarr fanart: seasons and episodes use their series'. Every
+  // third title has none, as unmatched files don't.
+  const backdrop = (entry) => {
+    const owner =
+      entry.kind === 'season'
+        ? parents.get(entry.id)
+        : entry.kind === 'episode'
+          ? parents.get(parents.get(entry.id))
+          : ['movie', 'show'].includes(entry.kind)
+            ? entry.id
+            : null;
+    const index = Number(owner?.split('-')[1]);
+    const title = s.library.find((entry) => entry.id === owner);
+    // Unmatched movies have no Radarr fanart.
+    if (title?.kind === 'movie' && !title.metadata?.tmdb_id) return null;
+    return owner && index % 3 !== 2 ? art('video', index + 3) : null;
+  };
   const card = (item) => {
     const watched = (entry) => {
       if (!['show', 'season'].includes(entry.kind))
@@ -15,7 +64,12 @@ export async function mediaApi(s, c) {
       );
       return episodes.length > 0 && episodes.every(watched);
     };
-    return { ...item, watched: watched(item) };
+    return {
+      ...item,
+      watched: watched(item),
+      status: statusOf(s, item),
+      backdrop_url: backdrop(item),
+    };
   };
   if (path === '/catalog') {
     let items = s.library.filter((item) =>
@@ -31,7 +85,16 @@ export async function mediaApi(s, c) {
       items = items.filter(
         (_, index) => index % 3 === Number(query.get('collection').slice(-1)),
       );
-    return json({ items: items.map(card) });
+    const top =
+      !query.has('parent') &&
+      !query.get('collection') &&
+      ['movie', 'show'].includes(query.get('kind'));
+    return json({
+      items: [
+        ...items.map(card),
+        ...(top ? virtualCards(s, query.get('kind'), query.get('q')) : []),
+      ],
+    });
   }
   if (path === '/catalog/collections')
     return json({
@@ -39,6 +102,11 @@ export async function mediaApi(s, c) {
         (name, i) => ({ id: `collection-${i}`, name, count: 8 }),
       ),
     });
+  s.scannedAt ??= {
+    movies: now() - 3600,
+    shows: now() - 3600,
+    music: now() - 3600,
+  };
   if (path === '/catalog/roots')
     return json({
       media_mount: '/media',
@@ -47,12 +115,18 @@ export async function mediaApi(s, c) {
         name: kind,
         kind,
         path: `/media/${kind}`,
-        last_scan: now() - 3600,
+        last_scan: s.scannedAt[kind],
         scan_error: null,
       })),
     });
-  if (/^\/catalog\/roots\/[^/]+\/scan$/.test(path))
-    return json({ id: 'mock-scan', queued: true });
+  const scan = path.match(/^\/catalog\/roots\/root-([^/]+)\/scan$/);
+  if (scan) {
+    setTimeout(() => {
+      s.scannedAt[scan[1]] = now();
+      c.emit('catalog.changed', { root_id: `root-${scan[1]}` });
+    }, 1500);
+    return json({ job_id: 'mock-scan' });
+  }
   const catalog = path.match(/^\/catalog\/([^/]+)(?:\/(.*))?$/);
   if (catalog) {
     const item = s.library.find((item) => item.id === catalog[1]);
@@ -64,7 +138,17 @@ export async function mediaApi(s, c) {
         watch_later: false,
         watched: false,
       };
-      if (method === 'PUT') Object.assign(s.mediaStates[item.id], body);
+      if (method === 'PUT') {
+        if (
+          ('watched' in body &&
+            !['movie', 'episode', 'track'].includes(item.kind)) ||
+          ('watch_later' in body &&
+            !['movie', 'show', 'season', 'episode'].includes(item.kind))
+        )
+          return fail(400, 'This state is not supported for this media type');
+        Object.assign(s.mediaStates[item.id], body);
+        if (body.watched) clearWatchLater(item);
+      }
       return json(s.mediaStates[item.id]);
     }
     if (action === 'segments') {
@@ -120,21 +204,25 @@ export async function mediaApi(s, c) {
     }
     if (['analyze', 'analysis', 'refresh', 'match'].includes(action))
       return json({ queued: true });
-    if (['metadata', 'overrides'].includes(action)) {
-      item.overrides = { ...body };
-      if (body.title) item.title = body.title;
-      if (body.overview) item.overview = body.overview;
-      if (body.year) item.year = body.year;
-      return json({ saved: true });
-    }
-    if (!action)
+    if (!action) {
+      const shown = { ...item };
+      delete shown.keep;
       return json({
-        ...item,
+        ...shown,
+        status: statusOf(s, item),
+        backdrop_url: backdrop(item),
+        ...(viewer(s).role === 'admin'
+          ? (({ own, by, within }) => ({
+              keep: own,
+              kept_by: by,
+              kept_within: within,
+            }))(protection(s.library, item))
+          : {}),
         files: [
           {
             id: item.fileId,
             edition: item.kind === 'movie' ? 'Theatrical' : '',
-            present: true,
+            present: item.available !== false,
             path: `/media/${item.kind}/${item.title}.mp4`,
             probe: {
               format: { duration: String(item.duration) },
@@ -156,6 +244,7 @@ export async function mediaApi(s, c) {
         ],
         local_trailers: [],
       });
+    }
   }
   if (path === '/me/home') {
     const cards = (items) =>

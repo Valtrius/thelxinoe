@@ -217,9 +217,7 @@ test('pinned playback on library pages fills the screen width from the top edge'
 }, info) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/#library/movies/movie-0');
-  await page
-    .getByRole('button', { name: 'Play Theatrical', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Play', exact: true }).click();
   const player = page.getByRole('region', { name: 'Media player' });
   await expect(player).toHaveCSS('transform', 'none');
   await expect.poll(async () => (await player.boundingBox())!.x).toBe(0);

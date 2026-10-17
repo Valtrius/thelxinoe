@@ -189,7 +189,6 @@ CREATE TABLE media (
     sort_number INTEGER,
     year INTEGER,
     metadata TEXT NOT NULL DEFAULT '{}',
-    overrides TEXT NOT NULL DEFAULT '{}',
     created_at INTEGER NOT NULL,
     UNIQUE(root_id,kind,evidence_key)
 ) STRICT;
@@ -1090,7 +1089,7 @@ CREATE INDEX playback_history_user_platform_time
 
 CREATE VIEW media_cards AS
 SELECT m.id,m.kind,
-    COALESCE(json_extract(m.overrides,'$.title'),json_extract(m.metadata,'$.title'),json_extract(m.metadata,'$.name'),m.title) AS title,
+    COALESCE(json_extract(m.metadata,'$.title'),json_extract(m.metadata,'$.name'),m.title) AS title,
     m.parent_id,m.sort_number,m.year,
     EXISTS(SELECT 1 FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1) AS available
 FROM media m;
@@ -1158,6 +1157,34 @@ END;
 
 CREATE TRIGGER statistics_media_watched_update AFTER UPDATE OF watched ON media_state BEGIN
     UPDATE playback_statistics SET completed=NEW.watched WHERE user_id=NEW.user_id AND media_id=NEW.media_id;
+END;
+
+-- Watch Later holds what a user still means to watch, whichever client marks it watched:
+-- watching an item removes it, and watching every episode removes its season and show
+-- (Specials aside, as Next up skips them too).
+-- Only the transition to watched clears, so a watched title can be queued to watch again.
+CREATE TRIGGER watch_later_watched_insert AFTER INSERT ON media_state WHEN NEW.watched=1 BEGIN
+    UPDATE media_state SET watch_later=0 WHERE user_id=NEW.user_id AND media_id=NEW.media_id AND watch_later=1;
+    UPDATE media_state SET watch_later=0 WHERE user_id=NEW.user_id AND watch_later=1
+        AND media_id=(SELECT parent_id FROM media WHERE id=NEW.media_id AND kind='episode')
+        AND NOT EXISTS(SELECT 1 FROM media e WHERE e.parent_id=media_state.media_id AND e.kind='episode'
+            AND NOT EXISTS(SELECT 1 FROM media_state w WHERE w.user_id=NEW.user_id AND w.media_id=e.id AND w.watched=1));
+    UPDATE media_state SET watch_later=0 WHERE user_id=NEW.user_id AND watch_later=1
+        AND media_id=(SELECT s.parent_id FROM media e JOIN media s ON s.id=e.parent_id WHERE e.id=NEW.media_id AND e.kind='episode' AND s.kind='season')
+        AND NOT EXISTS(SELECT 1 FROM media s JOIN media e ON e.parent_id=s.id WHERE s.parent_id=media_state.media_id AND s.kind='season' AND IFNULL(s.sort_number,1)<>0 AND e.kind='episode'
+            AND NOT EXISTS(SELECT 1 FROM media_state w WHERE w.user_id=NEW.user_id AND w.media_id=e.id AND w.watched=1));
+END;
+
+CREATE TRIGGER watch_later_watched_update AFTER UPDATE OF watched ON media_state WHEN NEW.watched=1 AND OLD.watched=0 BEGIN
+    UPDATE media_state SET watch_later=0 WHERE user_id=NEW.user_id AND media_id=NEW.media_id AND watch_later=1;
+    UPDATE media_state SET watch_later=0 WHERE user_id=NEW.user_id AND watch_later=1
+        AND media_id=(SELECT parent_id FROM media WHERE id=NEW.media_id AND kind='episode')
+        AND NOT EXISTS(SELECT 1 FROM media e WHERE e.parent_id=media_state.media_id AND e.kind='episode'
+            AND NOT EXISTS(SELECT 1 FROM media_state w WHERE w.user_id=NEW.user_id AND w.media_id=e.id AND w.watched=1));
+    UPDATE media_state SET watch_later=0 WHERE user_id=NEW.user_id AND watch_later=1
+        AND media_id=(SELECT s.parent_id FROM media e JOIN media s ON s.id=e.parent_id WHERE e.id=NEW.media_id AND e.kind='episode' AND s.kind='season')
+        AND NOT EXISTS(SELECT 1 FROM media s JOIN media e ON e.parent_id=s.id WHERE s.parent_id=media_state.media_id AND s.kind='season' AND IFNULL(s.sort_number,1)<>0 AND e.kind='episode'
+            AND NOT EXISTS(SELECT 1 FROM media_state w WHERE w.user_id=NEW.user_id AND w.media_id=e.id AND w.watched=1));
 END;
 
 CREATE TRIGGER statistics_youtube_watched_insert AFTER INSERT ON youtube_state BEGIN

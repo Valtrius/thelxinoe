@@ -100,20 +100,9 @@ try {
   );
   const page = await context.newPage();
   await page.goto(origin);
-  await page.getByRole('link', { name: 'Shows', exact: true }).first().click();
-  await page
-    .locator('button.media-card')
-    .filter({ hasText: 'Segment Fixture' })
-    .click();
-  const season = await api(`/catalog/${episodes[0].parent_id}`);
-  await page
-    .locator('button.media-card')
-    .filter({ hasText: season.title })
-    .click();
-  await page
-    .locator('button.media-card')
-    .filter({ hasText: episodes[0].title })
-    .click();
+  // An episode link opens its series page on that season and episode.
+  await page.goto(`${origin}/#library/shows/${episodes[0].id}`);
+  const row = page.locator(`[data-episode="${episodes[0].id}"]`);
   const intro = results[0].items.find((s) => s.kind === 'Intro');
   for (const mode of ['Ask', 'Auto', 'Ignore']) {
     await api(`/catalog/${episodes[0].id}/state`, 'PUT', { watched: false });
@@ -123,7 +112,7 @@ try {
       Credits: 'Ask',
       Preview: 'Ask',
     });
-    await page.getByRole('button', { name: 'Play media', exact: true }).click();
+    await row.getByRole('button', { name: /^Play episode / }).click();
     await expect
       .poll(() => page.locator('video').evaluate((v) => v.readyState))
       .toBeGreaterThanOrEqual(2);
@@ -155,8 +144,9 @@ try {
       .getByRole('button', { name: 'Close player', exact: true })
       .click();
   }
-  const editor = page.locator('details.segments');
-  await editor.locator('summary').click();
+  await row.getByRole('button', { name: /^More actions for / }).click();
+  await page.getByRole('menuitem', { name: 'Edit timestamps…' }).click();
+  const editor = page.getByRole('dialog').locator('details');
   await editor.getByLabel('Start', { exact: true }).first().fill('2');
   await editor.getByLabel('End', { exact: true }).first().fill('8');
   await editor

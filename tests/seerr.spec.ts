@@ -822,9 +822,24 @@ test.describe('mobile trailers', () => {
     const fixture = await discoverFixture(page);
     const { release } = await trailerPlayback(page);
     release();
+    // Recommendations make the details taller than the phone screen.
+    await page.route('**/api/v1/seerr/movie/11/recommendations', (route) =>
+      route.fulfill({
+        json: results(
+          Array.from({ length: 6 }, (_, i) => ({
+            ...movie,
+            id: 100 + i,
+            title: `Related ${i}`,
+          })),
+        ),
+      }),
+    );
     await page.goto('/#discover/movie/11');
     const trailer = page.getByRole('link', { name: 'Watch trailer' });
     await expect(trailer).toBeVisible();
+    await expect(
+      page.getByRole('heading', { name: 'Recommendations' }),
+    ).toBeVisible();
     const workspace = page.locator('[data-feed-scroll]');
     const scrolled = await workspace.evaluate((element) => {
       element.scrollTop = element.scrollHeight;
@@ -1023,9 +1038,13 @@ test('season requests exclude available seasons and preserve explicit selection 
   await expect(
     page.getByRole('heading', { name: 'Severance', exact: true }),
   ).toBeVisible();
-  await expect(page.getByRole('checkbox', { name: /Season 1/ })).toBeDisabled();
-  await page.getByRole('checkbox', { name: /Season 3/ }).uncheck();
   await page.getByRole('button', { name: 'Request', exact: true }).click();
+  const seasons = page.getByRole('dialog', { name: 'Request seasons' });
+  await expect(
+    seasons.getByRole('checkbox', { name: /Season 1/ }),
+  ).toBeDisabled();
+  await seasons.getByRole('checkbox', { name: /Season 3/ }).uncheck();
+  await seasons.getByRole('button', { name: 'Request', exact: true }).click();
   await expect(page.getByText('Request sent for approval.')).toBeVisible();
   expect(fixture.requests).toEqual([
     { media_type: 'tv', media_id: 22, seasons: [2] },
@@ -1079,8 +1098,9 @@ test('regular users see their requests without administrator approval controls',
   await expect(
     page.getByRole('button', { name: 'Approve', exact: true }),
   ).toHaveCount(0);
+  await page.getByRole('button', { name: 'More actions for Arrival' }).click();
   await expect(
-    page.getByRole('button', { name: 'Cancel', exact: true }),
+    page.getByRole('menuitem', { name: 'Cancel request', exact: true }),
   ).toBeVisible();
   expect(fixture.errors).toEqual([]);
 });

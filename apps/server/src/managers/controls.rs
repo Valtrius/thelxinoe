@@ -167,6 +167,7 @@ async fn grab(
     )
     .await?;
     storage::grab(&state.db, key, p).await?;
+    super::status::refresh_soon(&state);
     Ok(Json(json!({"submitted":true})))
 }
 #[derive(Deserialize)]
@@ -193,6 +194,7 @@ async fn monitor(
     )
     .await?;
     storage::monitor(&state.db, key, p).await?;
+    super::status::refresh_soon(&state);
     Ok(Json(json!({"saved":true})))
 }
 

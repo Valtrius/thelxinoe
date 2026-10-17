@@ -703,15 +703,11 @@ for (const intent of ['select', 'close', 'domain'] as const) {
     });
     await page.goto('/');
     await page
-      .getByRole('button', { name: 'Details Fixture movie 0', exact: true })
+      .locator('article[data-layout-key="library:movie-0"] .card-primary')
       .click();
-    await expect(
-      page.getByRole('heading', {
-        name: 'Fixture movie 0',
-        exact: true,
-        level: 2,
-      }),
-    ).toBeVisible();
+    const heading = (title: string) =>
+      page.getByRole('heading', { name: title, exact: true, level: 1 });
+    await expect(heading('Fixture movie 0')).toBeVisible();
     await expect(page.locator('[data-page-content]')).toHaveAttribute(
       'data-page-phase',
       'idle',
@@ -722,32 +718,22 @@ for (const intent of ['select', 'close', 'domain'] as const) {
     );
     await expect.poll(() => calls).toBe(2);
     if (intent === 'select')
-      await page
-        .getByRole('button', { name: 'Details Fixture movie 1', exact: true })
-        .click();
+      await page.evaluate(() => {
+        location.hash = '#library/movies/movie-1';
+      });
     else if (intent === 'close')
-      await page.getByRole('button', { name: 'Close', exact: true }).click();
+      await page
+        .getByRole('button', { name: 'Back to movies', exact: true })
+        .click();
     else await page.getByRole('link', { name: 'Shows', exact: true }).click();
     const response = page.waitForResponse((response) =>
       response.url().endsWith('/catalog/movie-0'),
     );
     held.release();
     await response;
-    await expect(
-      page.getByRole('heading', {
-        name: 'Fixture movie 0',
-        exact: true,
-        level: 2,
-      }),
-    ).toHaveCount(0);
     if (intent === 'select')
-      await expect(
-        page.getByRole('heading', {
-          name: 'Fixture movie 1',
-          exact: true,
-          level: 2,
-        }),
-      ).toBeVisible();
+      await expect(heading('Fixture movie 1')).toBeVisible();
+    await expect(heading('Fixture movie 0')).toHaveCount(0);
     expect(fixture.errors).toEqual([]);
     expect(fixture.unexpected).toEqual([]);
     await testInfo.attach('catalog-selection', {

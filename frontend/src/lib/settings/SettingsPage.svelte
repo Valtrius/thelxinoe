@@ -40,6 +40,8 @@
     preferencesRevision,
     accountRevision,
     revision,
+    catalogRevision = 0,
+    scans = {},
     navigate,
     openSettings,
     sessionEnded,
@@ -53,6 +55,8 @@
     preferencesRevision: number;
     accountRevision: number;
     revision: number;
+    catalogRevision?: number;
+    scans?: Record<string, { completed: number; total: number }>;
     navigate: (name: string) => void;
     openSettings: (name: string, service?: string) => void;
     sessionEnded: () => void;
@@ -133,6 +137,7 @@
   const ownsSession = captureSession();
   const serverAnchors = [
     { id: 'server-status', label: 'Status' },
+    { id: 'server-library', label: 'Library' },
     { id: 'server-display', label: 'Display' },
     { id: 'server-updates', label: 'Updates' },
     { id: 'server-transcoding', label: 'Transcoding' },
@@ -479,6 +484,14 @@
           </div>
         </div>
       </SettingsCard>
+      {#await settingsPages.LibraryFolders()}{@render loading(
+          'Loading settings',
+        )}{:then { default: LibraryFolders }}<LibraryFolders
+          timezone={user.timezone}
+          {timeFormat}
+          revision={catalogRevision}
+          {scans}
+        />{:catch caught}{@render failed(caught)}{/await}
       {#await settingsPages.ServerDisplayDefaults()}{@render loading(
           'Loading settings',
         )}{:then { default: ServerDisplayDefaults }}<ServerDisplayDefaults

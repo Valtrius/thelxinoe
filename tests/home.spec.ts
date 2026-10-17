@@ -404,6 +404,13 @@ test('Home and Discover preserve default, saved and detail-link navigation', asy
   await expect(page.locator('.page-header h1')).toHaveText('Discover');
   await page.getByRole('link', { name: 'Thelxinoe home' }).click();
   await expect(page.locator('.page-header h1')).toHaveText('Home');
+  // Title pages read Seerr's status before its details.
+  await page.route('**/api/v1/seerr/status', (route) =>
+    route.fulfill({ json: { configured: true, ready: true } }),
+  );
+  await page.route('**/api/v1/seerr/discover/**', (route) =>
+    route.fulfill({ json: { results: [], page: 1, totalPages: 1 } }),
+  );
   await page.goto('/?section=Movies#discover/movie/11');
   await expect(page.locator('.page-header h1')).toHaveText('Discover');
   await expect(page.getByText('Linked movie', { exact: true })).toBeVisible();

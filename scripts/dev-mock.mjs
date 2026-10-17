@@ -155,6 +155,22 @@ const server = await preview({
                 return res.end(JSON.stringify({ error: error.message }));
               }
             }
+            if (req.url === '/__mock/titles' && req.method === 'POST') {
+              let raw = '';
+              for await (const chunk of req) raw += chunk;
+              const { tmdb, progress } = JSON.parse(raw || '{}');
+              const movie = state.titles.movies.find(
+                (entry) => entry.tmdb === tmdb,
+              );
+              if (!movie) {
+                res.writeHead(404);
+                return res.end();
+              }
+              movie.progress = progress;
+              events.emit('catalog.status.changed', {});
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              return res.end(JSON.stringify({ saved: true }));
+            }
             if (req.url === '/__mock/viewer') {
               if (req.method === 'POST') {
                 let raw = '';

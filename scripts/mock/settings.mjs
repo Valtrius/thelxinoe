@@ -1,4 +1,4 @@
-import { admin, definitions, label, now, viewer } from './data.mjs';
+import { admin, definitions, label, now, protection, viewer } from './data.mjs';
 import { checkConnection, connectionFailure, stagesApi } from './transfers.mjs';
 
 export function settingsSeed() {
@@ -1136,9 +1136,22 @@ export async function servicesApi(s, c) {
     const operation = s.operations[mediaOperation[1]];
     if (!operation) return fail(404, 'Operation not found');
     const item = s.library.find((item) => item.id === operation.media_id);
-    if (item && operation.action === 'delete') item.available = false;
-    if (item && operation.action !== 'delete')
-      item.monitored = operation.action === 'monitor';
+    if (item) {
+      const kept = protection(s.library, item);
+      if (kept.own || kept.by || kept.within)
+        return fail(
+          409,
+          'Media is protected by Keep or has an active playback session',
+        );
+    }
+    const within = (entry) =>
+      entry === item ||
+      (entry?.parent_id &&
+        within(s.library.find((parent) => parent.id === entry.parent_id)));
+    for (const entry of item ? s.library.filter(within) : []) {
+      if (operation.action === 'delete') entry.available = false;
+      entry.monitored = operation.action === 'monitor';
+    }
     operation.state = 'complete';
     return json({ complete: true });
   }

@@ -8,6 +8,7 @@ export default defineConfig({
   testMatch: [
     'mock-preview.spec.ts',
     'mock-service-scenarios.spec.ts',
+    'mock-titles.spec.ts',
     'mock-ownership-motion.spec.ts',
     'page-transition.spec.ts',
     'animation-duration.spec.ts',

@@ -10,6 +10,7 @@ import {
   viewer,
 } from './data.mjs';
 import { mediaApi, onlineApi } from './media.mjs';
+import { titleDiscover, titleSeed, titlesApi } from './titles.mjs';
 import { servicesApi, settingsApi, settingsSeed } from './settings.mjs';
 import { playbackApi } from './playback.mjs';
 import { scenarioSeed, serviceAttention } from './scenarios.mjs';
@@ -17,7 +18,8 @@ import { waitForServerAction } from './timing.mjs';
 
 export function createMockState() {
   const library = librarySeed();
-  const discover = discoverSeed();
+  const titles = titleSeed();
+  const discover = discoverSeed(titleDiscover(titles));
   const videos = videoSeed();
   const requests = discover
     .filter((m) => [2, 3].includes(m.mediaInfo.status))
@@ -71,6 +73,7 @@ export function createMockState() {
   return {
     ...settingsSeed(),
     scenarios: scenarioSeed(),
+    titles,
     signedIn: true,
     viewer: 'admin',
     sequence: 100,
@@ -207,20 +210,22 @@ export async function installMockApi(page, currentState, events) {
                     ? 'playlists.changed'
                     : /^\/catalog\/[^/]+\/state$/.test(path)
                       ? 'media-state.changed'
-                      : path.startsWith('/catalog') ||
-                          path.startsWith('/admin/media')
-                        ? 'catalog.changed'
-                        : path.startsWith('/admin/jobs')
-                          ? 'jobs.changed'
-                          : path.startsWith('/admin/product-update')
-                            ? 'product.changed'
-                            : path.startsWith('/admin/online')
-                              ? 'online.configuration.changed'
-                              : path.startsWith('/online/youtube/')
-                                ? 'youtube.changed'
-                                : path.startsWith('/online/')
-                                  ? 'online.account.changed'
-                                  : null;
+                      : /^\/catalog\/roots\/[^/]+\/scan$/.test(path)
+                        ? null
+                        : path.startsWith('/catalog') ||
+                            path.startsWith('/admin/media')
+                          ? 'catalog.changed'
+                          : path.startsWith('/admin/jobs')
+                            ? 'jobs.changed'
+                            : path.startsWith('/admin/product-update')
+                              ? 'product.changed'
+                              : path.startsWith('/admin/online')
+                                ? 'online.configuration.changed'
+                                : path.startsWith('/online/youtube/')
+                                  ? 'youtube.changed'
+                                  : path.startsWith('/online/')
+                                    ? 'online.account.changed'
+                                    : null;
           if (path === '/me/preferences') viewer(s).timezone = value.timezone;
           if (change)
             events.emit(change, change === 'preferences.changed' ? value : {});
@@ -316,6 +321,7 @@ export async function installMockApi(page, currentState, events) {
       settingsApi,
       servicesApi,
       playbackApi,
+      titlesApi,
       mediaApi,
       onlineApi,
     ])

@@ -88,11 +88,16 @@ test('movie, multi-episode and tagged music scan into browsable libraries with s
   await expect(
     page.getByRole('button', { name: 'Thelxinoe Fixture 2020' }),
   ).toBeVisible();
+  const cleared = await api.put(`/api/v1/catalog/${movieId}/state`, {
+    headers,
+    data: { watch_later: false },
+  });
+  expect(cleared.status()).toBe(200);
   await page.getByRole('button', { name: 'Thelxinoe Fixture 2020' }).click();
   await expect(
     page.getByRole('heading', {
       name: 'Thelxinoe Fixture',
-      level: 2,
+      level: 1,
       exact: true,
     }),
   ).toBeVisible();
@@ -100,38 +105,34 @@ test('movie, multi-episode and tagged music scan into browsable libraries with s
     'data-page-phase',
     'idle',
   );
-  await page
-    .getByLabel('Manual title', { exact: true })
-    .fill('Corrected fixture');
-  await page
-    .getByLabel('Manual overview', { exact: true })
-    .fill('A persistent manual correction');
-  await page
-    .getByRole('button', { name: 'Save corrections', exact: true })
-    .click();
   await expect(
-    page.getByRole('heading', {
-      name: 'Corrected fixture',
-      level: 2,
-      exact: true,
-    }),
+    page.getByRole('button', { name: 'Play', exact: true }),
   ).toBeVisible();
-  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  const later = page.getByRole('button', { name: 'Watch Later', exact: true });
+  await later.click();
+  await expect(later).toHaveAttribute('aria-pressed', 'true');
+  await page.reload();
+  await expect(
+    page.getByRole('button', { name: 'Watch Later', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true');
   await page
-    .getByRole('button', { name: 'Corrected fixture 2020', exact: true })
-    .click();
-  await expect(page.getByLabel('Manual overview', { exact: true })).toHaveValue(
-    'A persistent manual correction',
-  );
-  await page
-    .getByRole('button', { name: 'Clear corrections', exact: true })
+    .getByRole('button', { name: 'Back to movies', exact: true })
     .click();
   await expect(
-    page.getByRole('heading', {
-      name: 'Thelxinoe Fixture',
-      level: 2,
-      exact: true,
-    }),
+    page.getByRole('button', { name: 'Thelxinoe Fixture 2020' }),
+  ).toBeVisible();
+  const show = (await (await api.get('/api/v1/catalog?kind=show')).json())
+    .items[0];
+  const seasons = (
+    await (await api.get(`/api/v1/catalog/${show.id}/seasons`)).json()
+  ).seasons as { number: number; episodes: { id: string | null }[] }[];
+  expect(
+    seasons.flatMap((season) => season.episodes).filter((e) => e.id),
+  ).toHaveLength(3);
+  await page.goto(`/#library/shows/${show.id}`);
+  await expect(page.getByRole('tablist', { name: 'Seasons' })).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: /^Play episode / }).first(),
   ).toBeVisible();
   await page.screenshot({ path: '.local/library.png', fullPage: true });
   // Change files on Linux so this checks the real watcher on Docker Desktop too.

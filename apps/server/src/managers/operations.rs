@@ -422,6 +422,8 @@ pub(super) async fn execute_locked(
         "uncertain"
     };
     storage::finish_operation(media, action, error, status, &state.db, key, actor).await?;
+    // Monitoring and files may have changed upstream even when the operation failed.
+    super::status::refresh_soon(state);
     result?;
     Ok(Json(json!({"state":"complete"})))
 }

@@ -89,7 +89,10 @@ pub async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<J
         .filter_map(Value::as_array_mut)
         .flat_map(|items| items.iter_mut())
         .collect::<Vec<_>>();
-    crate::library::decorate_cards(&state, &p, &mut items).await?;
+    let grant = crate::grants::issue(&state, &p, "artwork", 300).await?;
+    crate::library::decorate_cards_with(&state, &p, &mut items, &grant).await?;
+    // Home shelves are landscape: cards prefer their title's backdrop over a poster.
+    crate::managers::status::decorate(&state, &p, &mut items, &grant).await?;
     Ok(Json(home))
 }
 pub(crate) async fn home_for(state: &AppState, principal: &Principal) -> Result<Value> {
