@@ -10,7 +10,7 @@ async fn changed(app: &AppHandle, _state: &DesktopTools) {
 }
 #[tauri::command]
 pub async fn tools_get(state: State<'_, DesktopTools>) -> AppResult<ToolsSnapshot> {
-    let mut snapshot = state.tools.snapshot(&Default::default())?;
+    let mut snapshot = state.manager()?.snapshot(&Default::default())?;
     snapshot
         .tools
         .retain(|tool| ToolId::DESKTOP.contains(&tool.id));
@@ -29,14 +29,14 @@ pub async fn tools_check(
         ));
     }
     let settings = crate::models::AppSettings::default();
-    state.tools.invalidate_tool_diagnostic(tool);
-    state.tools.diagnostic(tool, &settings).await;
+    state.manager()?.invalidate_tool_diagnostic(tool);
+    state.manager()?.diagnostic(tool, &settings).await;
     changed(&app, &state).await;
     Ok(())
 }
 #[tauri::command]
 pub async fn tools_updates(state: State<'_, DesktopTools>) -> AppResult<Vec<ToolUpdate>> {
-    Ok(state.tools.available_updates(&Default::default()))
+    Ok(state.manager()?.available_updates(&Default::default()))
 }
 #[tauri::command]
 pub async fn tools_update(
@@ -44,7 +44,10 @@ pub async fn tools_update(
     state: State<'_, DesktopTools>,
     package_id: String,
 ) -> AppResult<()> {
-    let result = state.tools.update(&package_id, &Default::default()).await;
+    let result = state
+        .manager()?
+        .update(&package_id, &Default::default())
+        .await;
     changed(&app, &state).await;
     result
 }
@@ -55,13 +58,13 @@ pub async fn tools_set_preference(
     tool: ToolId,
     preference: ToolPreference,
 ) -> AppResult<()> {
-    state.tools.set_preference(tool, preference).await?;
+    state.manager()?.set_preference(tool, preference).await?;
     changed(&app, &state).await;
     Ok(())
 }
 #[tauri::command]
 pub async fn tools_refresh(app: AppHandle, state: State<'_, DesktopTools>) -> AppResult<()> {
-    let result = state.tools.refresh_catalog().await;
+    let result = state.manager()?.refresh_catalog().await;
     changed(&app, &state).await;
     result
 }
@@ -71,7 +74,10 @@ pub async fn tools_install(
     state: State<'_, DesktopTools>,
     package_id: String,
 ) -> AppResult<()> {
-    let result = state.tools.install(&package_id, &Default::default()).await;
+    let result = state
+        .manager()?
+        .install(&package_id, &Default::default())
+        .await;
     changed(&app, &state).await;
     result
 }
@@ -82,9 +88,9 @@ pub async fn tools_activate(
     tool: ToolId,
     package_id: String,
 ) -> AppResult<()> {
-    state.tools.activate(tool, &package_id).await?;
+    state.manager()?.activate(tool, &package_id).await?;
     if !tool.plugin() {
-        state.tools.diagnostic(tool, &Default::default()).await;
+        state.manager()?.diagnostic(tool, &Default::default()).await;
     }
     changed(&app, &state).await;
     Ok(())
@@ -95,9 +101,9 @@ pub async fn tools_rollback(
     state: State<'_, DesktopTools>,
     tool: ToolId,
 ) -> AppResult<()> {
-    state.tools.rollback(tool).await?;
+    state.manager()?.rollback(tool).await?;
     if !tool.plugin() {
-        state.tools.diagnostic(tool, &Default::default()).await;
+        state.manager()?.diagnostic(tool, &Default::default()).await;
     }
     changed(&app, &state).await;
     Ok(())
@@ -108,7 +114,7 @@ pub async fn tools_remove(
     state: State<'_, DesktopTools>,
     package_id: String,
 ) -> AppResult<()> {
-    state.tools.remove(&package_id).await?;
+    state.manager()?.remove(&package_id).await?;
     changed(&app, &state).await;
     Ok(())
 }
@@ -118,15 +124,18 @@ pub async fn tools_repair(
     state: State<'_, DesktopTools>,
     package_id: String,
 ) -> AppResult<()> {
-    let result = state.tools.repair(&package_id).await;
+    let result = state.manager()?.repair(&package_id).await;
     if result.is_ok() {
-        let snapshot = state.tools.snapshot(&Default::default())?;
+        let snapshot = state.manager()?.snapshot(&Default::default())?;
         if let Some(tool) = snapshot.tools.iter().find(|tool| {
             !tool.id.plugin()
                 && tool.preference.source == super::models::ToolSource::Managed
                 && tool.preference.active.as_deref() == Some(&package_id)
         }) {
-            state.tools.diagnostic(tool.id, &Default::default()).await;
+            state
+                .manager()?
+                .diagnostic(tool.id, &Default::default())
+                .await;
         }
     }
     changed(&app, &state).await;
@@ -138,20 +147,20 @@ pub async fn mpv_set_preferences(
     state: State<'_, DesktopTools>,
     preferences: MpvPreferences,
 ) -> AppResult<()> {
-    state.tools.set_mpv_preferences(preferences).await?;
+    state.manager()?.set_mpv_preferences(preferences).await?;
     changed(&app, &state).await;
     Ok(())
 }
 #[tauri::command]
 pub async fn mpv_config_files(state: State<'_, DesktopTools>) -> AppResult<Vec<String>> {
-    state.tools.config_files()
+    state.manager()?.config_files()
 }
 #[tauri::command]
 pub async fn mpv_config_read(
     state: State<'_, DesktopTools>,
     name: String,
 ) -> AppResult<ConfigDocument> {
-    state.tools.config_document(&name)
+    state.manager()?.config_document(&name)
 }
 #[tauri::command]
 pub async fn mpv_config_save(
@@ -161,7 +170,7 @@ pub async fn mpv_config_save(
     revision: String,
 ) -> AppResult<ConfigDocument> {
     state
-        .tools
+        .manager()?
         .save_config_document(&name, &text, &revision, &Default::default())
         .await
 }
@@ -172,7 +181,7 @@ pub async fn mpv_config_restore(
     revision: String,
 ) -> AppResult<ConfigDocument> {
     state
-        .tools
+        .manager()?
         .restore_config_document(&name, &revision, &Default::default())
         .await
 }
@@ -182,18 +191,18 @@ pub async fn mpv_config_import(
     state: State<'_, DesktopTools>,
     directory: String,
 ) -> AppResult<()> {
-    state.tools.import_config(&directory).await?;
+    state.manager()?.import_config(&directory).await?;
     changed(&app, &state).await;
     Ok(())
 }
 #[tauri::command]
 pub async fn mpv_plugin_import(state: State<'_, DesktopTools>, path: String) -> AppResult<()> {
-    state.tools.import_plugin(&path).await
+    state.manager()?.import_plugin(&path).await
 }
 
 #[tauri::command]
 pub async fn mpv_open_configuration_directory(state: State<'_, DesktopTools>) -> AppResult<()> {
-    let directory = state.tools.mpv_configuration_directory()?;
+    let directory = state.manager()?.mpv_configuration_directory()?;
     tokio::task::spawn_blocking(move || open::that_detached(directory))
         .await
         .map_err(|error| crate::error::AppError::internal(error.to_string()))?
@@ -201,7 +210,7 @@ pub async fn mpv_open_configuration_directory(state: State<'_, DesktopTools>) ->
 }
 #[tauri::command]
 pub async fn mpv_options(state: State<'_, DesktopTools>) -> AppResult<MpvSchema> {
-    state.tools.mpv_schema(&Default::default()).await
+    state.manager()?.mpv_schema(&Default::default()).await
 }
 #[tauri::command]
 pub async fn mpv_test_configuration(
@@ -209,7 +218,7 @@ pub async fn mpv_test_configuration(
     clean: bool,
 ) -> AppResult<String> {
     state
-        .tools
+        .manager()?
         .test_mpv_configuration(&Default::default(), clean)
         .await
 }

@@ -1,5 +1,6 @@
 -- The complete schema for a fresh Thelxinoe database.
--- Database::open creates this in one transaction. There are no upgrade scripts.
+-- Database::open creates this in one transaction. Released schemas are frozen in
+-- schemas/<version>.sql; later changes need a new version and a migration.
 -- Times are UTC Unix seconds unless a column explicitly names another unit.
 -- History/statistics deliberately retain identity snapshots after media removal.
 -- Provider metadata is private per user; downloaded public bytes are shared.

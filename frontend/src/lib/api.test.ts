@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, Events } from './api';
+import { version as clientVersion } from '../../package.json';
+import { ApiError, Events, clientApi, missingWebCode } from './api';
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
@@ -60,5 +61,29 @@ describe('server transport', () => {
     const error = new ApiError(409, 'conflict', 'Radarr rejected the API key');
     expect(String(error)).toBe('Radarr rejected the API key');
     expect(error.code).toBe('conflict');
+  });
+  it('sends its API version and reports newer web code after a missing chunk', async () => {
+    const target = new EventTarget();
+    vi.stubGlobal('window', target);
+    const updates: string[] = [];
+    target.addEventListener('thelxinoe-web-code-missing', (event) =>
+      updates.push((event as CustomEvent<string>).detail),
+    );
+    let served = clientVersion;
+    const fetch = vi.fn().mockImplementation(async () => ({
+      ok: true,
+      json: async () => ({ version: served }),
+    }));
+    vi.stubGlobal('fetch', fetch);
+    await missingWebCode();
+    expect(updates).toEqual([]);
+    expect(fetch.mock.calls[0][1].headers['X-Thelxinoe-API']).toBe(
+      String(clientApi),
+    );
+    served = '99.0.0';
+    // Several pages failing together ask the server once.
+    await Promise.all([missingWebCode(), missingWebCode()]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(updates).toEqual(['99.0.0']);
   });
 });

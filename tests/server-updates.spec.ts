@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { current, next } from './helpers/versions';
 import { installUiFixture } from './helpers/ui-fixture';
 import type { ServerUpdateStatus } from '../frontend/src/lib/server-updates';
 
@@ -7,7 +8,7 @@ async function setup(
   options: { desktop?: boolean; loseInstallResponse?: boolean } = {},
 ) {
   if (options.desktop)
-    await page.addInitScript(() => {
+    await page.addInitScript((version) => {
       const bridge = window as unknown as {
         isTauri: boolean;
         __TAURI_INTERNALS__: unknown;
@@ -36,10 +37,10 @@ async function setup(
           if (command === 'mpv_state')
             return { status: 'stopped', media_id: '' };
           if (command === 'tools_get') return { tools: [], mpv: {} };
-          if (command === 'plugin:app|version') return '0.1.0';
+          if (command === 'plugin:app|version') return version;
           if (command === 'desktop_update_status')
             return {
-              installed: '0.1.0',
+              installed: version,
               phase: 'idle',
               policy: 'notify',
               release: null,
@@ -52,17 +53,17 @@ async function setup(
           return false;
         },
       };
-    });
+    }, current);
   const fixture = await installUiFixture(page, {
     role: 'admin',
     settingsSection: 'server',
   });
   const status: ServerUpdateStatus = {
-    version: '0.1.0',
+    version: current,
     timezone: 'UTC',
     configured: true,
     policy: { policy: 'notify', window_start: 3, window_end: 5 },
-    release: { version: '0.1.1', notes: 'Local candidate' },
+    release: { version: next, notes: 'Local candidate' },
     observation: { checked_at: 1, error: null },
     controller: { items: [] },
   };
@@ -76,8 +77,8 @@ async function setup(
       if (action === 'install')
         status.request = {
           id: 'update',
-          version: '0.1.1',
-          previous_version: '0.1.0',
+          version: next,
+          previous_version: current,
           state: 'pending',
           error: null,
         };
@@ -98,7 +99,7 @@ async function setup(
   const version = page.getByLabel('Product version', { exact: true });
   await expect(
     version.getByRole('button', {
-      name: 'Update server to 0.1.1',
+      name: `Update server to ${next}`,
       exact: true,
     }),
   ).toBeVisible();
@@ -110,8 +111,8 @@ async function setup(
     status.controller.items = [
       {
         id: 'update',
-        version: '0.1.1',
-        previous_version: '0.1.0',
+        version: next,
+        previous_version: current,
         stage,
         error: null,
         snapshot_ready: true,
@@ -143,7 +144,7 @@ test('desktop reconciles a lost install acceptance response through pending and 
       reloads++;
   });
   await flow.version
-    .getByRole('button', { name: 'Update server to 0.1.1', exact: true })
+    .getByRole('button', { name: `Update server to ${next}`, exact: true })
     .click();
   await expect(flow.version.getByRole('button').first()).toHaveAccessibleName(
     'Waiting for the server to be idle',
@@ -153,13 +154,15 @@ test('desktop reconciles a lost install acceptance response through pending and 
   await expect(flow.version.getByRole('button').first()).toHaveAccessibleName(
     'Downloading server update',
   );
-  flow.status.version = '0.1.1';
+  flow.status.version = next;
   flow.status.release = null;
   flow.status.request!.state = 'completed';
   flow.stage('committed');
   await flow.refresh();
-  await expect(flow.version.getByRole('status')).toHaveText('Updated to 0.1.1');
-  await expect(flow.version.locator('strong')).toHaveText('0.1.1');
+  await expect(flow.version.getByRole('status')).toHaveText(
+    `Updated to ${next}`,
+  );
+  await expect(flow.version.locator('strong')).toHaveText(next);
   await expect(flow.version).not.toContainText('Update could not complete');
   expect(reloads).toBe(0);
   expect(flow.fixture.errors).toEqual([]);
@@ -193,33 +196,33 @@ test('Orbit carries the full flow in one fixed, keyboard-accessible control', as
     ['snapshotting', 'Saving a recovery copy'],
     ['validating', 'Checking the update'],
     ['ready', 'Waiting for the server to be idle'],
-    ['preparing-activation', 'Installing 0.1.1'],
+    ['preparing-activation', `Installing ${next}`],
   ]) {
     flow.stage(stage);
     await flow.refresh();
     await expect(button).toHaveAccessibleName(title);
     await expect(button).toHaveAttribute('aria-disabled', 'true');
     await button.dispatchEvent('click');
-    await expect(version.locator('strong')).toHaveText('0.1.0');
+    await expect(version.locator('strong')).toHaveText(current);
     expect(await version.locator('strong').boundingBox()).toEqual(before);
   }
   // A reachable candidate is not accepted until controller health checks finish.
-  flow.status.version = '0.1.1';
+  flow.status.version = next;
   flow.status.controller = { items: [], error: 'Controller unavailable' };
   await flow.refresh();
   await expect(button).toHaveAccessibleName('Reconnecting to the server');
-  await expect(version.locator('strong')).toHaveText('0.1.0');
+  await expect(version.locator('strong')).toHaveText(current);
   delete flow.status.controller.error;
   flow.stage('activating');
   await flow.refresh();
-  await expect(version.locator('strong')).toHaveText('0.1.0');
+  await expect(version.locator('strong')).toHaveText(current);
   flow.status.release = null;
   flow.stage('committed');
   await flow.refresh();
-  await expect(version.locator('strong')).toHaveText('0.1.1');
-  await expect(version.getByRole('status')).toHaveText('Updated to 0.1.1');
+  await expect(version.locator('strong')).toHaveText(next);
+  await expect(version.getByRole('status')).toHaveText(`Updated to ${next}`);
   expect(flow.commands).toEqual([
-    { action: 'install', body: { version: '0.1.1' } },
+    { action: 'install', body: { version: next } },
   ]);
   await expect(
     page.getByRole('heading', { name: 'Updates and maintenance' }),
@@ -289,7 +292,7 @@ test('server settings keep their layout through update states and maintenance re
   });
   await page.route('**/api/v1/auth/event-ticket', (route) =>
     route.fulfill({
-      json: { ticket: 'layout', cursor: 0, epoch: 'layout', version: '0.1.0' },
+      json: { ticket: 'layout', cursor: 0, epoch: 'layout', version: current },
     }),
   );
   await page.reload();
@@ -366,7 +369,7 @@ test('Orbit survives lost connections, checks without reinstalling, and retries 
   flow.stage('recovered');
   await flow.refresh();
   await expect(button).toHaveAccessibleName('Retry server update');
-  await expect(flow.version.locator('strong')).toHaveText('0.1.0');
+  await expect(flow.version.locator('strong')).toHaveText(current);
   await testInfo.attach('recovered', {
     body: await page.screenshot(),
     contentType: 'image/png',
@@ -451,17 +454,19 @@ test('download tracks bytes without pinning its tooltip, and controller reconnec
   });
   delete flow.status.controller.error;
   flow.stage('committed');
-  flow.status.version = '0.1.1';
+  flow.status.version = next;
   flow.status.release = null;
   await flow.refresh();
-  await expect(flow.version.getByRole('status')).toHaveText('Updated to 0.1.1');
+  await expect(flow.version.getByRole('status')).toHaveText(
+    `Updated to ${next}`,
+  );
   await flow.version
     .getByRole('button', { name: 'Rollback', exact: true })
     .click();
   const modal = page.getByRole('dialog');
-  await expect(modal).toContainText('Rollback to 0.1.0');
+  await expect(modal).toContainText(`Rollback to ${current}`);
   await expect(
-    modal.getByRole('button', { name: 'Restore 0.1.0', exact: true }),
+    modal.getByRole('button', { name: `Restore ${current}`, exact: true }),
   ).toBeDisabled();
   await modal.getByLabel('Type RESTORE to continue').fill('RESTORE');
   await testInfo.attach('rollback', {
@@ -486,7 +491,7 @@ test('download tracks bytes without pinning its tooltip, and controller reconnec
     },
   );
   const restoreButton = modal.getByRole('button', {
-    name: 'Restore 0.1.0',
+    name: `Restore ${current}`,
     exact: true,
   });
   await restoreButton.click();
@@ -518,13 +523,15 @@ test('web clients reload accepted updates and rollbacks without a popup', async 
     if (request.isNavigationRequest() && request.frame() === page.mainFrame())
       reloads++;
   });
-  flow.status.version = '0.1.1';
+  flow.status.version = next;
   flow.status.release = null;
   flow.stage('activating');
-  await page.evaluate(() =>
-    window.dispatchEvent(
-      new CustomEvent('thelxinoe-web-update', { detail: '0.1.1' }),
-    ),
+  await page.evaluate(
+    (version) =>
+      window.dispatchEvent(
+        new CustomEvent('thelxinoe-web-update', { detail: version }),
+      ),
+    next,
   );
   await page.clock.fastForward(6000);
   expect(reloads).toBe(0);
@@ -532,16 +539,18 @@ test('web clients reload accepted updates and rollbacks without a popup', async 
   flow.stage('committed');
   await page.clock.fastForward(3000);
   await expect.poll(() => reloads).toBe(1);
-  await expect(flow.version.locator('strong')).toHaveText('0.1.1');
-  flow.status.version = '0.1.0';
+  await expect(flow.version.locator('strong')).toHaveText(next);
+  flow.status.version = current;
   flow.stage('restored');
-  await page.evaluate(() =>
-    window.dispatchEvent(
-      new CustomEvent('thelxinoe-web-update', { detail: '0.1.0' }),
-    ),
+  await page.evaluate(
+    (version) =>
+      window.dispatchEvent(
+        new CustomEvent('thelxinoe-web-update', { detail: version }),
+      ),
+    current,
   );
   await expect.poll(() => reloads).toBe(2);
-  await expect(flow.version.locator('strong')).toHaveText('0.1.0');
+  await expect(flow.version.locator('strong')).toHaveText(current);
   await testInfo.attach('restored-web', {
     body: await page.screenshot(),
     contentType: 'image/png',

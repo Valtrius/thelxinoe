@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test';
+import { current } from './versions';
 import type { RecyclarrConfiguration } from '../../frontend/src/lib/services/recyclarr-configuration';
 
 // All requests stay in the browser. This fixture never uses a server account.
@@ -52,7 +53,7 @@ export async function installUiFixture(
     audio_transcoding: true,
   };
   let productUpdate = {
-    version: '0.1.0',
+    version: current,
     timezone: 'UTC',
     configured: false,
     policy: { policy: 'automatic', window_start: 3, window_end: 5 },
@@ -246,7 +247,7 @@ export async function installUiFixture(
       });
     if (path === '/admin/health')
       return json({
-        version: '0.1.0',
+        version: current,
         controller: true,
         cache_free_bytes: 1024 ** 3,
       });

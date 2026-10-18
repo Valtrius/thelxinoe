@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { current } from './helpers/versions';
 import { installUiFixture } from './helpers/ui-fixture';
 
 test('activity arcs follow operation lifetime, scope, severity and reduced motion across navigation', async ({
@@ -508,7 +509,7 @@ test('menu dots track live severity while pages are closed and survive sidebar c
   });
   await page.route('**/api/v1/auth/event-ticket', (route) =>
     route.fulfill({
-      json: { ticket: 'layout', cursor: 0, epoch: 'layout', version: '0.1.0' },
+      json: { ticket: 'layout', cursor: 0, epoch: 'layout', version: current },
     }),
   );
   await page.goto('/');

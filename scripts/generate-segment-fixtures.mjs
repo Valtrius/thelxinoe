@@ -60,7 +60,7 @@ for (const episode of [1, 2]) {
         `${root}:/fixtures:rw`,
         '-v',
         `${audioRoot}:/audio:ro`,
-        'thelxinoe-server:0.1.0',
+        'thelxinoe-server:0.0.1',
         '-nostdin',
         '-hide_banner',
         '-loglevel',

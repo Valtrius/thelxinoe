@@ -421,6 +421,8 @@ async fn bootstrap() -> Result<Deployment> {
     Ok(d)
 }
 pub fn router() -> Router {
+    let runtime = Runtime(Default::default());
+    tokio::spawn(product::adopt_recreated(runtime.clone()));
     Router::new()
         .route(
             "/stack/templates",
@@ -478,7 +480,7 @@ pub fn router() -> Router {
             get(recyclarr::result),
         )
         .route("/stack/{id}/recyclarr/import", post(recyclarr::import))
-        .with_state(Runtime(Default::default()))
+        .with_state(runtime)
 }
 async fn list(State(runtime): State<Runtime>) -> Result<Json<Value>> {
     let d = if store::root().join("desired-state.json").exists() {

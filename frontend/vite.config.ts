@@ -3,8 +3,10 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import tailwind from '@tailwindcss/vite';
 import { fileURLToPath } from 'node:url';
 import { offlinePage } from './offline-page.mjs';
+import { apiVersion } from './api-version.mjs';
 export default defineConfig({
   plugins: [svelte(), tailwind(), offlinePage()],
+  define: { __THELXINOE_API_VERSION__: JSON.stringify(apiVersion()) },
   build: {
     rolldownOptions: {
       input: {

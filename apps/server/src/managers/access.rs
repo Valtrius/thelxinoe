@@ -390,24 +390,37 @@ pub(crate) async fn fallback(State(state): State<AppState>, request: Request) ->
 }
 
 async fn web_files(root: &std::path::Path, mut request: Request) -> Response {
-    let unversioned = !request.uri().path().starts_with("/assets/");
-    if unversioned {
+    let versioned = request.uri().path().starts_with("/assets/");
+    let mut response = if versioned {
+        // Asset names carry a content hash. A chunk missing after an update is
+        // a plain uncached 404, never index.html served in its place.
+        ServeDir::new(root)
+            .oneshot(request)
+            .await
+            .unwrap()
+            .into_response()
+    } else {
         // A rollback can install an older index.html. Its modification time
         // must not validate cached HTML that names a newer release's assets.
         request.headers_mut().remove(header::IF_MODIFIED_SINCE);
         request.headers_mut().remove(header::IF_NONE_MATCH);
-    }
-    let mut response = ServeDir::new(root)
-        .not_found_service(ServeFile::new(root.join("index.html")))
-        .oneshot(request)
-        .await
-        .unwrap()
-        .into_response();
-    if unversioned {
-        response
-            .headers_mut()
-            .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
-    }
+        ServeDir::new(root)
+            .not_found_service(ServeFile::new(root.join("index.html")))
+            .oneshot(request)
+            .await
+            .unwrap()
+            .into_response()
+    };
+    let cache = if versioned
+        && (response.status().is_success() || response.status() == StatusCode::NOT_MODIFIED)
+    {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-store"
+    };
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, cache.parse().unwrap());
     response
 }
 
@@ -615,5 +628,47 @@ mod web_cache_tests {
             .unwrap();
         let response = web_files(directory.path(), request).await;
         assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "public, max-age=31536000, immutable"
+        );
+    }
+
+    #[tokio::test]
+    async fn hashed_assets_are_immutable_and_missing_ones_are_not_the_app() {
+        let directory = tempfile::tempdir().unwrap();
+        let html = "<script src='/assets/base.js'></script>";
+        std::fs::write(directory.path().join("index.html"), html).unwrap();
+        std::fs::create_dir(directory.path().join("assets")).unwrap();
+        std::fs::write(directory.path().join("assets/base.js"), "// base").unwrap();
+        let get = |path: &'static str| {
+            web_files(
+                directory.path(),
+                Request::builder().uri(path).body(Body::empty()).unwrap(),
+            )
+        };
+        let response = get("/assets/base.js").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "public, max-age=31536000, immutable"
+        );
+        // A previous release's chunk must fail as a module, not load the app.
+        let response = get("/assets/Home-previous.js").await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert!(
+            to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        // Other unknown paths still fall back to the current app shell.
+        let response = get("/library/missing").await;
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(
+            to_bytes(response.into_body(), 4096).await.unwrap().as_ref(),
+            html.as_bytes()
+        );
     }
 }

@@ -347,7 +347,8 @@ test('episode analysis saves responsive toggles, reverts a failed edit and persi
   await expect(local).not.toBeChecked();
   await expect(external).toBeChecked();
   fail = true;
-  await local.check();
+  // The failed save can revert the switch before check() could see it change.
+  await local.click();
   await expect(page.getByRole('alert')).toContainText(
     'Analysis settings unavailable',
   );
@@ -1090,7 +1091,11 @@ test('administrator setup is centered and accepts an eight-character password', 
   await page.getByRole('button', { name: 'Create your server' }).click();
   await expect
     .poll(() => submitted)
-    .toEqual({ username: 'admin', password: '12345678' });
+    .toEqual({
+      username: 'admin',
+      password: '12345678',
+      timezone: expect.any(String),
+    });
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });

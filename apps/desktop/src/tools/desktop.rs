@@ -2,11 +2,32 @@ use super::*;
 use tauri::{Emitter, Manager};
 
 pub struct DesktopTools {
-    pub tools: Arc<ToolManager>,
+    tools: AppResult<Arc<ToolManager>>,
 }
 
-pub fn initialize(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let data = app.path().app_local_data_dir()?;
+impl DesktopTools {
+    pub fn manager(&self) -> AppResult<&Arc<ToolManager>> {
+        self.tools.as_ref().map_err(Clone::clone)
+    }
+    /// Unavailable tools have no writes to drain.
+    pub async fn restart_guard(
+        &self,
+    ) -> Option<(
+        tokio::sync::MutexGuard<'_, ()>,
+        tokio::sync::MutexGuard<'_, ()>,
+    )> {
+        match &self.tools {
+            Ok(tools) => Some(tools.restart_guard().await),
+            Err(_) => None,
+        }
+    }
+}
+
+fn open(app: &tauri::App) -> AppResult<Arc<ToolManager>> {
+    let data = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| AppError::internal(e.to_string()))?;
     let handle = app.handle().clone();
     let manager = Arc::new(ToolManager::new(
         data.join("tools"),
@@ -15,8 +36,33 @@ pub fn initialize(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         })),
     )?);
     tauri::async_runtime::block_on(manager.migrate_legacy(&data.join("mpv")))?;
+    Ok(manager)
+}
+
+/// Only another running instance is fatal; it keeps the tools and desktop updates.
+/// Any other failure leaves playback and tools unavailable, while the rest of the
+/// app and desktop updates keep running so a fixed release can be installed.
+pub fn initialize(app: &tauri::App) -> AppResult<()> {
+    let manager = match open(app) {
+        Ok(manager) => manager,
+        Err(error) if error.code == "tools_in_use" => return Err(error),
+        Err(error) => {
+            tracing::error!(%error, technical = %error.technical, "Desktop tools could not start");
+            app.manage(DesktopTools {
+                tools: Err(AppError::configuration(
+                    "tools_unavailable",
+                    format!(
+                        "Player and tools could not start: {}. Restart Thelxinoe or install a desktop update.",
+                        error.technical.trim_end_matches('.')
+                    ),
+                    "Restart Thelxinoe or install a desktop update.",
+                )),
+            });
+            return Ok(());
+        }
+    };
     app.manage(DesktopTools {
-        tools: manager.clone(),
+        tools: Ok(manager.clone()),
     });
     let handle = app.handle().clone();
     let cleanup = manager.clone();

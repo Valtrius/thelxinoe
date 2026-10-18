@@ -135,6 +135,7 @@
     initializeTransport,
     changeServer,
     serverUrl,
+    clientApi,
   } from './lib/api';
   let loading = $state(true),
     setup = $state(false),
@@ -230,8 +231,8 @@
     }>('/health');
     if (
       !Number.isInteger(contract.api_version) ||
-      (contract.api_min ?? contract.api_version) > 1 ||
-      (contract.api_max ?? contract.api_version) < 1
+      (contract.api_min ?? contract.api_version) > clientApi ||
+      (contract.api_max ?? contract.api_version) < clientApi
     ) {
       updateRequired =
         'This client cannot use the server’s API version. Update the client or connect to a compatible server.';
@@ -863,7 +864,13 @@
       prepare={prepareSignIn}
       authenticated={signedIn}
       initialError={signInError || error}
-    /></AuthLayout
+    />
+    <!-- Updating the desktop must not depend on reaching or signing in to a server. -->
+    {#if desktop}<div
+        class="mt-6 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-line pt-4 text-xs text-muted"
+      >
+        Desktop version<DesktopVersion inline />
+      </div>{/if}</AuthLayout
   >
 {:else if !desktop && desktopRequest}
   <AuthLayout

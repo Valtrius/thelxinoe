@@ -30,9 +30,27 @@ jobs:
           test "${RELEASE_REF#refs/tags/}" != "$RELEASE_REF"
           node scripts/release.mjs check "$RELEASE_TAG"
           echo "version=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+  # Tag a commit whose regular develop build already passed, instead of
+  # repeating the full verification for every release.
   verify:
     needs: version
-    uses: ./.github/workflows/ci.yml
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Require a green Build and verify run of this commit on develop
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          runs="repos/$REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$SHA&event=push&status=success"
+          passed=$(gh api "$runs" --jq '[.workflow_runs[] | select(.head_branch == "develop")] | length')
+          if [ "$passed" -eq 0 ]; then
+            echo "::error::Tag a develop commit whose Build and verify run succeeded (or rerun its failed jobs first)."
+            exit 1
+          fi
   desktop:
     needs: verify
     runs-on: windows-latest
@@ -44,8 +62,7 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
       - run: pnpm install --frozen-lockfile
       - run: node scripts/release.mjs desktop
         env:
@@ -114,8 +131,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
       - uses: actions/download-artifact@v4
         with:
           name: signed-desktop

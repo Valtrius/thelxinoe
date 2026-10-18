@@ -14,17 +14,9 @@ import { createPublicKey, createHash } from 'node:crypto';
 const [command, ...args] = process.argv.slice(2);
 const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
 const tag = version;
-function releaseCompose(manifest) {
-  return readFileSync('compose.release.yaml', 'utf8')
-    .replace(
-      /image: \$\{THELXINOE_SERVER_IMAGE:[^\n]+/,
-      `image: ${manifest.server.reference}`,
-    )
-    .replace(
-      /image: \$\{THELXINOE_CONTROLLER_IMAGE:[^\n]+/,
-      `image: ${manifest.controller.reference}`,
-    );
-}
+// Deployments follow the moving `latest` tags, so `docker compose pull` always
+// reaches the newest release whatever version a host currently runs.
+const releaseCompose = () => readFileSync('compose.release.yaml', 'utf8');
 const run = (exe, args, options = {}) =>
   execFileSync(exe, args, { stdio: 'inherit', ...options });
 const gh = (...args) => execFileSync('gh', args, { encoding: 'utf8' }).trim();
@@ -134,16 +126,20 @@ if (command === 'check') {
       throw Error('Pulled image does not match the registry digest');
     return { reference };
   }
+  const database = readFileSync('crates/database/src/lib.rs', 'utf8');
   const schema = Number(
-    readFileSync('crates/database/src/lib.rs', 'utf8').match(
-      /SCHEMA_VERSION: u32 = (\d+)/,
-    )[1],
+    database.match(/pub const SCHEMA_VERSION: u32 = (\d+)/)[1],
   );
-  const api = Number(
-    readFileSync('crates/core/src/lib.rs', 'utf8').match(
-      /API_VERSION: u32 = (\d+)/,
-    )[1],
+  // Servers on any older schema this release still migrates may update to it.
+  const base = Number(
+    database.match(/pub const MIGRATION_BASE: u32 = (\d+)/)[1],
   );
+  const core = readFileSync('crates/core/src/lib.rs', 'utf8');
+  // Client APIs this release's server accepts; its desktop speaks the maximum.
+  const api = {
+    min: Number(core.match(/pub const API_MIN_VERSION: u32 = (\d+)/)[1]),
+    max: Number(core.match(/pub const API_VERSION: u32 = (\d+)/)[1]),
+  };
   const published = Math.floor(Date.now() / 1000);
   const file = basename(installer);
   const manifest = {
@@ -156,9 +152,9 @@ if (command === 'check') {
     windows_x64: {
       url: `https://github.com/Valtrius/thelxinoe/releases/download/${tag}/${file}`,
     },
-    api: { min: api, max: api },
+    api,
     migration: {
-      from: { min: schema, max: schema },
+      from: { min: base, max: schema },
       target: schema,
       recovery: 'full-state-restore',
       recovery_protocol: 1,
@@ -194,7 +190,8 @@ if (command === 'check') {
   copyFileSync(installer, resolve(output, file));
   copyFileSync(signature, resolve(output, `${file}.sig`));
   copyFileSync('releases/release.pub', resolve(output, 'release.pub'));
-  writeFileSync(resolve(output, 'compose.yaml'), releaseCompose(manifest));
+  writeFileSync(resolve(output, 'compose.yaml'), releaseCompose());
+  copyFileSync('.env.example', resolve(output, 'env.example'));
   verify(output, resolve(output, file));
   const assets = [
     file,
@@ -203,6 +200,7 @@ if (command === 'check') {
     'windows-x64.json',
     'release.pub',
     'compose.yaml',
+    'env.example',
   ];
   writeFileSync(
     resolve(output, 'SHA256SUMS'),
@@ -247,6 +245,7 @@ if (command === 'check') {
           'windows-x64.json',
           'release.pub',
           'compose.yaml',
+          'env.example',
           'SHA256SUMS',
         ].includes(name),
     )
@@ -273,7 +272,11 @@ if (command === 'check') {
     readFileSync(resolve(directory, 'compose.yaml'), 'utf8').replaceAll(
       '\r\n',
       '\n',
-    ) !== releaseCompose(manifest).replaceAll('\r\n', '\n')
+    ) !== releaseCompose().replaceAll('\r\n', '\n') ||
+    readFileSync(resolve(directory, 'env.example'), 'utf8').replaceAll(
+      '\r\n',
+      '\n',
+    ) !== readFileSync('.env.example', 'utf8').replaceAll('\r\n', '\n')
   )
     throw Error('Deployment assets do not match this signed release');
   if (
@@ -310,6 +313,34 @@ if (command === 'check') {
       image.Config.Labels['org.opencontainers.image.version'] !== version
     )
       throw Error('Registry image identity mismatch');
+  }
+  // Deployments pull without credentials, so a private package would break every
+  // install and update. Ask the registry the way an anonymous Docker host does.
+  for (const component of ['server', 'controller']) {
+    const [repository, digest] = manifest[component].reference
+      .replace(/^ghcr\.io\//, '')
+      .split('@');
+    const token = await fetch(
+      `https://ghcr.io/token?scope=repository:${repository}:pull`,
+    );
+    const found =
+      token.ok &&
+      (
+        await fetch(`https://ghcr.io/v2/${repository}/manifests/${digest}`, {
+          method: 'HEAD',
+          headers: {
+            Authorization: `Bearer ${(await token.json()).token}`,
+            Accept: [
+              'application/vnd.oci.image.manifest.v1+json',
+              'application/vnd.docker.distribution.manifest.v2+json',
+            ].join(', '),
+          },
+        })
+      ).ok;
+    if (!found)
+      throw Error(
+        `ghcr.io/${repository} is not publicly pullable. On GitHub open Packages → thelxinoe-${component} → Package settings → Change visibility → Public, then run this workflow again.`,
+      );
   }
   for (const component of ['server', 'controller']) {
     const repository = `ghcr.io/valtrius/thelxinoe-${component}`;

@@ -301,7 +301,7 @@ pub fn router(state: AppState) -> Router {
 }
 async fn health() -> Json<serde_json::Value> {
     Json(
-        json!({"status":"ok","version":thelxinoe_core::VERSION,"api_version":thelxinoe_core::API_VERSION,"api_min":thelxinoe_core::API_VERSION,"api_max":thelxinoe_core::API_VERSION}),
+        json!({"status":"ok","version":thelxinoe_core::VERSION,"api_version":thelxinoe_core::API_VERSION,"api_min":thelxinoe_core::API_MIN_VERSION,"api_max":thelxinoe_core::API_VERSION}),
     )
 }
 async fn admin_health(

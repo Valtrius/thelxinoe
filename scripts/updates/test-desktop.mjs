@@ -99,7 +99,7 @@ export async function desktopScenarios({
   };
   await native.context.tracing.start({ screenshots: true, snapshots: true });
   await scenario(
-    'Login hides desktop updates and sign-in connects to the entered server',
+    'Login offers the desktop update and sign-in connects to the entered server',
     async () => {
       await mode('candidate');
       await native.invoke('change_server', { value: 'http://127.0.0.1:1' });
@@ -116,12 +116,10 @@ export async function desktopScenarios({
       await expect(
         native.page.getByRole('group', { name: 'Desktop update policy' }),
       ).toHaveCount(0);
+      // Updating the desktop never depends on reaching or signing in to a server.
       await expect(
         native.page.getByLabel('Desktop version', { exact: true }),
-      ).toHaveCount(0);
-      await expect(
-        native.page.getByLabel('Client update available'),
-      ).toHaveCount(0);
+      ).toBeVisible();
       await native.page.screenshot({
         path: join(output, 'desktop-login.png'),
       });
@@ -258,7 +256,7 @@ export async function desktopScenarios({
         await check();
         await native.invoke('desktop_update_download');
         await expect(native.invoke('desktop_update_install')).rejects.toThrow(
-          'Update the connected server',
+          `The connected server does not support desktop ${lab.next}`,
         );
         expect((await native.invoke('desktop_update_status')).phase).toBe(
           'ready',

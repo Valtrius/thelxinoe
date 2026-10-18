@@ -7,13 +7,22 @@
 [![Rust](https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Svelte](https://img.shields.io/badge/Svelte-FF3E00?logo=svelte&logoColor=white)](https://svelte.dev/)
 
-Self-hosted movies, shows, music, YouTube, Twitch and Kick. Rust server, Svelte web/PWA and Windows Tauri app. [MIT](LICENSE).
+Self-hosted movies, shows, music, YouTube, Twitch and Kick. Rust server, Svelte web/PWA and Windows Tauri app. [MIT](LICENSE); bundled components keep their own licenses ([notices](THIRD_PARTY_NOTICES.md)).
 
 ## Start using Thelxinoe
 
 ### Set up the server
 
-1. On your media host, use Docker with Linux x86-64 containers. Copy [`.env.example`](.env.example) to `.env`. Replace `<PUID>`/`<PGID>` with your media account's numeric IDs (`id -u <user>` / `id -g <user>`) and adjust the example paths:
+Thelxinoe is in **alpha**: expect bugs, and an alpha may occasionally ask you to reset its data. Keep it on your local network, or behind an HTTPS reverse proxy (see [HTTPS](docs/OPERATIONS.md#https-and-tv-access)).
+
+1. On your media host, use Docker with Linux x86-64 containers. In an empty folder, download the latest release's Compose file and settings:
+
+   ```sh
+   curl -L -o compose.yaml https://github.com/Valtrius/thelxinoe/releases/latest/download/compose.yaml
+   curl -L -o .env https://github.com/Valtrius/thelxinoe/releases/latest/download/env.example
+   ```
+
+2. Edit `.env`. Replace the IDs with your media account's numeric IDs (`id -u <user>` / `id -g <user>`) and adjust the example paths:
 
    ```dotenv
    THELXINOE_UID=<PUID>
@@ -24,9 +33,14 @@ Self-hosted movies, shows, music, YouTube, Twitch and Kick. Rust server, Svelte 
    THELXINOE_LISTEN=0.0.0.0
    ```
 
-2. Create `server`, `cache` and `deployment` under the state root, the backup directory, and `movies`, `tv`, `music` and `downloads` under the media root. Grant the account read/write access; UID/GID settings do not change existing ownership. Keep state/backups outside media. For existing services, keep their paths and prepare shared network access below.
-3. Run `docker compose up --build -d` from the repository. Open `http://<server-IP>:8484` and create the first administrator. See [deployment and recovery](docs/OPERATIONS.md) for HTTPS and storage details.
-4. Later, after rebuilding or changing `.env` or `compose.override.yaml`, run `docker compose up --build -d`; the controller waits for the new containers to be accepted. Run `docker compose run --rm controller accept-local`, review the listed changes, type `ACCEPT`, then run `docker compose up -d` again. Pointing Thelxinoe at a different state folder starts a different deployment.
+3. Create `server` and `cache` under the state root, the backup directory, and `movies`, `tv`, `music` and `downloads` under the media root. Grant the account read/write access; UID/GID settings do not change existing ownership. Keep state/backups outside media. For existing services, keep their paths and prepare shared network access below.
+4. Run `docker compose up -d --wait`. Open `http://<server-IP>:8484` and create the administrator right away: the first account created on a new server is the administrator.
+
+Thelxinoe updates itself: **Settings → Server** installs new releases automatically in a nightly maintenance window, or on request. To update by hand, or to repair an installation that missed updates, run `docker compose pull && docker compose up -d`; it always installs the latest release. After editing `.env` or `compose.override.yaml`, run `docker compose up -d`. The controller adopts recreated containers as the same deployment; pointing Thelxinoe at a different state folder starts a different deployment.
+
+The Windows app is on the [releases page](https://github.com/Valtrius/thelxinoe/releases/latest). It is not code-signed, so Windows SmartScreen asks first: choose **More info → Run anyway**. The app keeps itself up to date.
+
+To build the server from source instead, run `docker compose up --build -d` from the repository.
 
 ### Create services that do not exist yet
 
@@ -134,4 +148,8 @@ Supported targets: Linux x86-64 server, Windows x64 desktop and Chromium web/PWA
 
 Wholphin 1.0.8 and Jellyfin Android TV 0.19.10 were locally checked for local media; online libraries were checked in Wholphin only. Wholphin can lose a long active subtitle cue after seeking. Universal audio conversion without playback-info is unsupported. LAN broadcast discovery still needs testing on a real LAN. Repeat client checks before claiming support for newer versions.
 
-This is an unreleased schema baseline with no database upgrade runner. Release publication is not configured. See [deployment, backups and release commands](docs/OPERATIONS.md) and [test commands](docs/TESTING.md); current CI results are in [GitHub Actions](https://github.com/Valtrius/thelxinoe/actions/workflows/ci.yml).
+Released database schemas upgrade in place. See [deployment, backups and release commands](docs/OPERATIONS.md) and [test commands](docs/TESTING.md); current CI results are in [GitHub Actions](https://github.com/Valtrius/thelxinoe/actions/workflows/ci.yml).
+
+## Report a problem
+
+Open an [issue](https://github.com/Valtrius/thelxinoe/issues) with the server version (**Settings → Server**), what you did and what happened. Attach **Settings → Server → Diagnostics → Export redacted diagnostics** and recent logs from `docker compose logs --since 1h server controller`; check the logs for anything private first. For the Windows app, include its version from **Settings → Desktop**.

@@ -1,8 +1,13 @@
 name: thelxinoe
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: '3'
 services:
   controller:
     container_name: thelxinoe-controller
-    image: ${THELXINOE_CONTROLLER_IMAGE:-ghcr.io/valtrius/thelxinoe-controller:0.1.0}
+    image: ${THELXINOE_CONTROLLER_IMAGE:-ghcr.io/valtrius/thelxinoe-controller:latest}
     restart: unless-stopped
     user: "0:${THELXINOE_GID:-10001}"
     network_mode: none
@@ -11,18 +16,19 @@ services:
     volumes:
       - controller-runtime:/run/thelxinoe
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${THELXINOE_STATE_ROOT:-./.local/docker}/deployment:/var/lib/thelxinoe/deployment
+      - deployment:/var/lib/thelxinoe/deployment
       - ${THELXINOE_BACKUP_ROOT:-./.local/backups}:/backups
     read_only: true
     security_opt:
       - no-new-privileges:true
     cap_drop: [ALL]
     cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
+    logging: *logging
     labels:
       app.thelxinoe.component: controller
   server:
     container_name: thelxinoe-server
-    image: ${THELXINOE_SERVER_IMAGE:-ghcr.io/valtrius/thelxinoe-server:0.1.0}
+    image: ${THELXINOE_SERVER_IMAGE:-ghcr.io/valtrius/thelxinoe-server:latest}
     restart: unless-stopped
     user: "${THELXINOE_UID:-10001}:${THELXINOE_GID:-10001}"
     depends_on:
@@ -49,11 +55,14 @@ services:
     security_opt:
       - no-new-privileges:true
     cap_drop: [ALL]
+    logging: *logging
     labels:
       app.thelxinoe.component: server
 networks:
   default:
     # YouTube may block one address family; IPv6 lets public videos switch.
-    enable_ipv6: true
+    # Needs Docker Engine 27 or Docker Desktop 4.42 and host IPv6 access.
+    enable_ipv6: ${THELXINOE_IPV6:-false}
 volumes:
   controller-runtime:
+  deployment:

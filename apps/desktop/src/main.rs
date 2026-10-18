@@ -15,6 +15,9 @@ fn finish_startup(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result
     if window.label() != "main" {
         return Err("Only the main window can finish application startup".into());
     }
+    reveal(&app, &window)
+}
+fn reveal(app: &tauri::AppHandle, window: &tauri::WebviewWindow) -> Result<(), String> {
     if window.is_visible().map_err(|e| e.to_string())? {
         return Ok(());
     }
@@ -31,6 +34,18 @@ fn finish_startup(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result
         tracing::warn!(%error, "Could not focus desktop window");
     }
     Ok(())
+}
+/// The splash stays on top without a taskbar entry. If the frontend never finishes
+/// startup, show the main window anyway so the app can be closed or updated.
+fn reveal_after_timeout(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(40)).await;
+        if let Some(window) = app.get_webview_window("main")
+            && let Err(error) = reveal(&app, &window)
+        {
+            tracing::warn!(%error, "Could not show desktop window after startup timed out");
+        }
+    });
 }
 
 #[tauri::command]
@@ -361,8 +376,10 @@ fn main() {
         .manage(mpv::DesktopPlayback::default())
         .manage(updates::Runtime::default())
         .setup(|app| {
-            tools::initialize(app)?;
+            // Desktop updates start first, so no other startup failure can strand a release.
             updates::start(app.handle().clone());
+            reveal_after_timeout(app.handle().clone());
+            tools::initialize(app)?;
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
@@ -389,9 +406,12 @@ fn main() {
                 tauri::async_runtime::spawn(async move {
                     #[cfg(windows)]
                     app.state::<mpv::DesktopPlayback>().player.stop().await;
-                    let tools = &app.state::<tools::DesktopTools>().tools;
-                    tools.close();
-                    tools.wait_for_operations().await;
+                    if let Some(state) = app.try_state::<tools::DesktopTools>()
+                        && let Ok(tools) = state.manager()
+                    {
+                        tools.close();
+                        tools.wait_for_operations().await;
+                    }
                     app.exit(0);
                 });
             }

@@ -507,3 +507,32 @@ async fn season_requires_complete_confirmed_aired_metadata_and_all_selected_user
         Ok(())
     }).await.unwrap();
 }
+
+#[tokio::test]
+async fn auto_delete_waits_at_least_a_day() {
+    let (_temp, state, cookie) = fixture().await;
+    state
+        .db
+        .write("test.admin", |db| {
+            db.execute("UPDATE users SET role='admin' WHERE id='alice'", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    for (grace, expected) in [
+        (0, axum::http::StatusCode::BAD_REQUEST),
+        (86399, axum::http::StatusCode::BAD_REQUEST),
+        (86400, axum::http::StatusCode::OK),
+    ] {
+        let policy = json!({"enabled":true,"grace_seconds":grace,"exclude_specials":true,"trigger_users":["alice"]});
+        let (status, _, body) = crate::test_support::call(
+            &state,
+            "/api/v1/admin/retention/policy/movies",
+            "POST",
+            policy,
+            &cookie,
+        )
+        .await;
+        assert_eq!(status, expected, "{grace}: {body}");
+    }
+}

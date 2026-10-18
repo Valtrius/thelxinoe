@@ -1,9 +1,10 @@
 import { expect, test, type Page } from '@playwright/test';
+import { current } from './helpers/versions';
 import { installUiFixture } from './helpers/ui-fixture';
 
 async function desktopFixture(page: Page, signedIn = false) {
   const fixture = await installUiFixture(page, { signedIn });
-  await page.addInitScript(() => {
+  await page.addInitScript((version) => {
     const bridge = window as unknown as {
       isTauri: boolean;
       startupReveals: { text: string; iconsReady: boolean; theme: string }[];
@@ -53,7 +54,7 @@ async function desktopFixture(page: Page, signedIn = false) {
         }
         if (command === 'mpv_state') return { status: 'stopped', media_id: '' };
         if (command === 'tools_get') return { tools: [], mpv: {} };
-        if (command === 'plugin:app|version') return '0.1.0';
+        if (command === 'plugin:app|version') return version;
         if (command === 'desktop_update_status') return null;
         if (command === 'plugin:event|listen') {
           listeners.set(String(args.event), Number(args.handler));
@@ -66,7 +67,7 @@ async function desktopFixture(page: Page, signedIn = false) {
       `thelxinoe:${location.origin}:layout-fixture:navigation`,
       JSON.stringify({ section: 'Settings', settingsSection: 'account' }),
     );
-  });
+  }, current);
   return fixture;
 }
 
@@ -89,7 +90,7 @@ test('desktop update and tool activity reaches navigation independently of serve
     );
   await emit('desktop-update-changed', {
     phase: 'downloading',
-    installed: '0.1.0',
+    installed: current,
     policy: 'automatic',
     release: null,
     received: 1,

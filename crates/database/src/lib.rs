@@ -9,8 +9,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Fresh schema identity, also used by signed releases and backups.
+/// Fresh schema identity, also used by signed releases and backups. A released
+/// schema is frozen in `schemas/<version>.sql`; changing `schema.sql` afterwards
+/// needs the next version, its upgrade in `MIGRATIONS` and a new frozen copy.
 pub const SCHEMA_VERSION: u32 = 1;
+/// The oldest released schema this build upgrades in place.
+pub const MIGRATION_BASE: u32 = 1;
+/// `MIGRATIONS[i]` upgrades schema `MIGRATION_BASE + i` to the next version. Each
+/// runs inside the opening transaction with foreign keys enforced.
+const MIGRATIONS: &[&str] = &[];
+const _: () = assert!(MIGRATIONS.len() as u32 == SCHEMA_VERSION - MIGRATION_BASE);
 const APPLICATION_ID: u32 = 0x544c584e; // TLXN
 const SCHEMA: &str = include_str!("../schema.sql");
 
@@ -81,6 +89,24 @@ fn enable_wal(conn: &Connection) -> Result<()> {
     }
 }
 
+/// Bring an older released schema up to date inside the caller's transaction.
+fn upgrade(tx: &Connection, version: u32, base: u32, migrations: &[&str]) -> Result<()> {
+    let head = base + migrations.len() as u32;
+    for (step, sql) in migrations
+        .iter()
+        .enumerate()
+        .skip((version - base) as usize)
+    {
+        let from = base + step as u32;
+        tx.execute_batch(sql)
+            .with_context(|| format!("Upgrade database schema {from} to {}", from + 1))?;
+    }
+    if version != head {
+        tx.pragma_update(None, "user_version", head)?;
+    }
+    Ok(())
+}
+
 impl Database {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::open_with_options(path, Options::default())
@@ -112,9 +138,12 @@ impl Database {
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         } else {
             anyhow::ensure!(
-                !empty && application == APPLICATION_ID && version == SCHEMA_VERSION,
-                "Incompatible database. Use the matching release, or stop Thelxinoe and reset its local database to start fresh."
+                !empty
+                    && application == APPLICATION_ID
+                    && (MIGRATION_BASE..=SCHEMA_VERSION).contains(&version),
+                "Incompatible database (schema {version}; this release reads {MIGRATION_BASE} to {SCHEMA_VERSION}). Use a matching release, or stop Thelxinoe and reset its local database to start fresh."
             );
+            upgrade(&tx, version, MIGRATION_BASE, MIGRATIONS)?;
         }
         tx.commit()?;
         enable_wal(&conn)?;

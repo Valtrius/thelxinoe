@@ -37,14 +37,14 @@ pub async fn mpv_play(
         .unwrap_or(0);
     choices = choices.into_iter().skip(index).collect();
     choices[0] = choice;
+    let tools = app
+        .state::<crate::tools::DesktopTools>()
+        .manager()
+        .map_err(|e| e.to_string())?
+        .clone();
     state
         .player
-        .play(
-            app.clone(),
-            app.state::<crate::tools::DesktopTools>().tools.clone(),
-            choices,
-            music,
-        )
+        .play(app.clone(), tools, choices, music)
         .await
         .map_err(|e| e.to_string())
 }

@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { current } from './helpers/versions';
 import { installUiFixture } from './helpers/ui-fixture';
 import { waitForViewportFit } from '../scripts/ci-readiness.mjs';
 
@@ -1013,7 +1014,7 @@ test('server settings contain display defaults and the version update icon', asy
   for (const text of [
     'Controls server maintenance windows and server activity times.',
     'Server, controller and web share one release.',
-    'Installed version 0.1.0',
+    `Installed version ${current}`,
     'Configure a release channel and its signing public key',
     'Automatic updates wait for idle playback and background work',
     'I understand that installation briefly stops the server.',

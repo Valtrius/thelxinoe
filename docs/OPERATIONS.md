@@ -2,11 +2,11 @@
 
 ## Storage and services
 
-Copy [`.env.example`](../.env.example) to `.env` and choose paths before starting [Compose](../compose.yaml). Set `THELXINOE_UID` and `THELXINOE_GID` to your host media account's numeric IDs (`id -u` and `id -g`); both default to `10001` and must be nonzero. On Linux, pre-create the server, cache, media and backup directories with access for those IDs. Keep SQLite on local storage, and state/backups outside media. The controller deployment directory needs a Linux filesystem with atomic rename and symlinks; use a Linux volume on Docker Desktop.
+Copy [`.env.example`](../.env.example) to `.env` and choose paths before starting [Compose](../compose.yaml). Set `THELXINOE_UID` and `THELXINOE_GID` to your host media account's numeric IDs (`id -u` and `id -g`); both default to `10001` and must be nonzero. On Linux, pre-create the server, cache, media and backup directories with access for those IDs. Keep SQLite on local storage, and state/backups outside media. The release Compose file keeps the controller's deployment record in a Docker volume; building from source keeps it under `THELXINOE_STATE_ROOT/deployment`, which needs a Linux filesystem with atomic rename and symlinks (use a Linux volume on Docker Desktop).
 
 The server and newly installed media services use these IDs. The controller runs as root with the configured group and sets access on its private socket directory. Owned services retain their saved identities through updates and recovery; a transfer gives the copied configuration to the deployment's identity and leaves the original's files unchanged. Choose IDs before initializing the deployment; changing `.env` does not change existing file ownership or saved deployment/service identities.
 
-After the first start, the controller only runs with the server and controller containers it accepted. A rebuilt image or a changed `.env`/override creates new containers that wait for acceptance: run `docker compose run --rm controller accept-local` to review and accept them (`--yes` skips the prompt), then `docker compose up -d`. When only the server changed, the accepted controller keeps running; stop it first with `docker compose stop controller`. Acceptance keeps the deployment, so installed and transferred services stay registered. It refuses a different deployment folder, a server on more than one network, and a changed network or media folder that Thelxinoe-installed services still use, and waits until an interrupted update, backup or restore has finished. [Acceptance](../apps/docker-controller/src/product.rs).
+After the first start, the controller adopts containers that Compose recreates, after `docker compose pull`, a rebuild or a changed `.env`/override, as the next generation of the same deployment, so installed and transferred services stay registered. A recreated controller adopts them when it starts; a running controller adopts a server recreated on its own within a minute. Adoption refuses a different deployment storage, a server and controller from different Thelxinoe versions, a server on more than one network, and a changed network or media folder that Thelxinoe-installed services still use; it waits until an interrupted update, backup or restore has finished. The reason appears in `docker compose logs controller`. [Adoption](../apps/docker-controller/src/product.rs).
 
 Fresh installations share the configured media directory at `/media`:
 
@@ -50,7 +50,7 @@ Trailers and other public YouTube videos are extracted without accounts. YouTube
 
 Recorded videos play YouTube's original files without conversion. Browsers and Jellyfin clients that accept fragmented MP4 HLS receive a byte-range playlist built from each file's own fragment index, so they seek without a server round trip; the desktop player reads the video and audio files directly. Both read through the server's relay, which requests bounded 10 MiB ranges because YouTube throttles open-ended reads to about twice the bitrate. Clients without fragmented MP4 HLS, and live streams, use the FFmpeg pipeline. [Delivery](../apps/server/src/online/streams.rs) and [relay](../apps/server/src/online/relay.rs).
 
-Compose enables IPv6 on the server's network. Docker Desktop 4.42 or later and Docker Engine 27 or later assign it a private IPv6 subnet automatically; the host still needs IPv6 internet access. An external network keeps its own settings, so create it with `docker network create --ipv6`. Where the host kernel disables IPv6, set `enable_ipv6: false` for `default` in `compose.override.yaml`.
+Set `THELXINOE_IPV6=true` in `.env` to enable IPv6 on the server's network (on by default when building from source). Docker Desktop 4.42 or later and Docker Engine 27 or later assign it a private IPv6 subnet automatically; the host still needs IPv6 internet access. An external network keeps its own settings, so create it with `docker network create --ipv6`.
 
 ## Update selection and policies
 
@@ -60,7 +60,7 @@ The former “Stable candidate” label displayed the discovered digest even whe
 
 Both **Notify** and **Automatic** check every six hours in the background, with the first check due after initial setup. Notify leaves preparation and installation to an administrator. Automatic queues discovered updates and waits for the server's maintenance window and idle checks before proceeding. Media services can inherit the server policy or override it. Attached services remain under their original owner's update policy. [Scheduler](../apps/server/src/managers/updates.rs).
 
-Server updates use a signed release manifest with version and compatibility checks. They do not discover releases through a container `latest` tag. GitHub Releases is the default channel, the signing public key is included in the images, and Notify is the default policy. [Server release policy](../apps/server/src/product.rs).
+Server updates use a signed release manifest with version and compatibility checks; GitHub Releases is the default channel and the signing public key is included in the images. **Automatic** is the default server policy: it installs a new release in the nightly maintenance window, 03:00 to 05:00 in the server's timezone, which setup takes from the administrator's browser. An automatic attempt that cannot prepare, for example because a download failed, is retried after 15 minutes, then up to every 6 hours; a release that fails validation or activation is not retried automatically. The release `compose.yaml` follows the `latest` image tags, so `docker compose pull && docker compose up -d` installs the newest release by hand at any time. [Server release policy](../apps/server/src/product.rs).
 
 ## HTTPS and TV access
 
@@ -113,9 +113,9 @@ curl --unix-socket /run/thelxinoe/controller.sock \
   http://localhost/stack/product/OPERATION_UUID/recover
 ```
 
-Recreate from the generated deployment directory using both `compose.yaml` and `compose.override.yaml`; the override pins accepted images. Preserve recovery images until restoration is verified. [Recovery implementation](../apps/docker-controller/src/product.rs).
+To reinstall, run `docker compose pull && docker compose up -d` from the folder with your `compose.yaml` and `.env`; the controller adopts the new containers. Preserve recovery images until restoration is verified. [Recovery implementation](../apps/docker-controller/src/product.rs).
 
-The fresh [schema](../crates/database/schema.sql) rejects earlier development databases and backups. Prefer `pnpm run dev:fresh`. To discard an old development database, stop its server, remove only its `thelxinoe.sqlite3`, `thelxinoe.sqlite3-wal` and `thelxinoe.sqlite3-shm`, then restart and complete setup. This loses accounts, connections, catalog state and preferences; media is separate.
+Each release upgrades databases from earlier released [schemas](../crates/database/schemas) in place. Development databases from before the first release are rejected. Prefer `pnpm run dev:fresh`. To discard an old development database, stop its server, remove only its `thelxinoe.sqlite3`, `thelxinoe.sqlite3-wal` and `thelxinoe.sqlite3-shm`, then restart and complete setup. This loses accounts, connections, catalog state and preferences; media is separate.
 
 ## Publishing
 

@@ -2,7 +2,7 @@ name: thelxinoe
 services:
   controller:
     container_name: thelxinoe-controller
-    image: ${THELXINOE_CONTROLLER_IMAGE:-thelxinoe-controller:0.1.0}
+    image: ${THELXINOE_CONTROLLER_IMAGE:-thelxinoe-controller:0.0.1}
     build:
       context: .
       target: controller
@@ -25,7 +25,7 @@ services:
       app.thelxinoe.component: controller
   server:
     container_name: thelxinoe-server
-    image: ${THELXINOE_SERVER_IMAGE:-thelxinoe-server:0.1.0}
+    image: ${THELXINOE_SERVER_IMAGE:-thelxinoe-server:0.0.1}
     build:
       context: .
       target: server
@@ -60,6 +60,6 @@ services:
 networks:
   default:
     # YouTube may block one address family; IPv6 lets public videos switch.
-    enable_ipv6: true
+    enable_ipv6: ${THELXINOE_IPV6:-true}
 volumes:
   controller-runtime:

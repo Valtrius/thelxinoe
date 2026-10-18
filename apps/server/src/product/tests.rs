@@ -145,3 +145,43 @@ async fn status_reports_the_recorded_controller_state() {
     assert_eq!(unavailable["error"], "Controller unavailable");
     assert_eq!(unavailable["items"], json!([]));
 }
+
+// Automatic mode retries a blocked preparation after a growing pause and never
+// retries a release that failed validation or activation.
+#[test]
+fn automatic_attempts_back_off_and_count_each_blocked_attempt_once() {
+    assert_eq!(automatic_backoff(1), 15 * 60);
+    assert_eq!(automatic_backoff(2), 30 * 60);
+    assert_eq!(automatic_backoff(9), 6 * 3600);
+    let mut automatic = Automatic {
+        version: "0.0.2".into(),
+        ..Default::default()
+    };
+    assert!(automatic_due(&mut automatic, &[], 1000));
+    let blocked = |id: &str| json!({"id":id,"version":"0.0.2","stage":"blocked","error":"Image registry unavailable"});
+    let items = [
+        blocked("first"),
+        json!({"id":"old","version":"0.0.1","stage":"recovered"}),
+    ];
+    assert!(!automatic_due(&mut automatic, &items, 1000));
+    assert_eq!(
+        (automatic.failures, automatic.retry_at),
+        (1, 1000 + 15 * 60)
+    );
+    assert_eq!(
+        automatic.error.as_deref(),
+        Some("Image registry unavailable")
+    );
+    // Seeing the same attempt again does not extend the pause.
+    assert!(!automatic_due(&mut automatic, &items, 1500));
+    assert!(automatic_due(&mut automatic, &items, 1000 + 15 * 60));
+    assert_eq!(automatic.failures, 1);
+    let items = [blocked("second"), blocked("first")];
+    assert!(!automatic_due(&mut automatic, &items, 5000));
+    assert_eq!(
+        (automatic.failures, automatic.retry_at),
+        (2, 5000 + 30 * 60)
+    );
+    let failed = [json!({"id":"third","version":"0.0.2","stage":"runtime-failure"})];
+    assert!(!automatic_due(&mut automatic, &failed, 1_000_000));
+}

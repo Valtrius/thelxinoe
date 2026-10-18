@@ -1,5 +1,6 @@
 import type { AppRoute, SettingsSection } from './navigation';
 import { inBackground, pageSettled, trackPageWork } from './page-readiness';
+import { missingWebCode } from './api';
 
 const cached = <T>(load: () => Promise<T>) => {
   let pending: Promise<T> | undefined;
@@ -8,6 +9,8 @@ const cached = <T>(load: () => Promise<T>) => {
       () =>
         (pending ??= load().catch((error: unknown) => {
           pending = undefined;
+          // The chunk may belong to a build the server no longer serves.
+          void missingWebCode();
           throw error;
         })),
     );

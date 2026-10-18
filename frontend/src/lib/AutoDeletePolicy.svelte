@@ -201,15 +201,15 @@
         <SettingRow
           label="Delete after (days)"
           description={video
-            ? 'After everyone saving or requesting the download has watched.'
-            : 'Grace period after the last selected person has watched.'}
+            ? 'After everyone saving or requesting the download has watched. At least 1 day.'
+            : 'Grace period after the last selected person has watched. At least 1 day.'}
           for={`${ids}-grace`}
         >
           <input
             id={`${ids}-grace`}
             class={twMerge(formControlClass, 'w-24')}
             type="number"
-            min="0"
+            min="1"
             max="365"
             step="any"
             required
