@@ -347,7 +347,8 @@ test('episode analysis saves responsive toggles, reverts a failed edit and persi
   await expect(local).not.toBeChecked();
   await expect(external).toBeChecked();
   fail = true;
-  await local.check();
+  // The failed save can revert the switch before check() could see it change.
+  await local.click();
   await expect(page.getByRole('alert')).toContainText(
     'Analysis settings unavailable',
   );
