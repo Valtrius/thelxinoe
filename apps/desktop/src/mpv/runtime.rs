@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::{
     net::windows::named_pipe::ClientOptions,
     process::Command,
-    sync::{Mutex, mpsc, oneshot, watch},
+    sync::{Mutex, mpsc, watch},
     task::JoinHandle,
 };
 
@@ -28,6 +28,7 @@ pub struct Choice {
 }
 #[derive(Clone, Default, Serialize)]
 pub struct View {
+    pub run: String,
     pub file_id: String,
     pub generation: String,
     pub media_id: String,
@@ -52,21 +53,57 @@ pub enum Control {
     Stop,
 }
 struct Run {
+    id: String,
+    music: bool,
     commands: mpsc::Sender<Control>,
     task: JoinHandle<()>,
     view: Arc<Mutex<View>>,
+    app: AppHandle,
 }
+impl Run {
+    async fn stop(self) {
+        if self.view.lock().await.status == "starting" {
+            self.task.abort();
+            let _ = self.task.await;
+            // An aborted start never reports its final state itself.
+            let mut view = self.view.lock().await;
+            view.status = "stopped".into();
+            let _ = self.app.emit("mpv-state", view.clone());
+            return;
+        }
+        let _ = self.commands.send(Control::Stop).await;
+        let mut task = self.task;
+        if tokio::time::timeout(Duration::from_secs(10), &mut task)
+            .await
+            .is_err()
+        {
+            task.abort();
+        }
+    }
+}
+/// Stops runs on their own task, so a canceled caller cannot leave one half stopped.
+async fn stop_runs(runs: Vec<Run>) {
+    if runs.is_empty() {
+        return;
+    }
+    let _ = tokio::spawn(futures::future::join_all(runs.into_iter().map(Run::stop))).await;
+}
+fn ended(status: &str) -> bool {
+    matches!(status, "stopped" | "ended" | "error" | "failed" | "")
+}
+/// Each video plays in its own MPV window, so several can play at once. One music
+/// queue plays at a time, and never alongside videos.
 pub struct Player {
     operation: Mutex<()>,
-    run: Mutex<Option<Run>>,
-    requests: watch::Sender<u64>,
+    runs: Mutex<Vec<Run>>,
+    stops: watch::Sender<u64>,
 }
 impl Default for Player {
     fn default() -> Self {
         Self {
             operation: Mutex::default(),
-            run: Mutex::default(),
-            requests: watch::channel(0).0,
+            runs: Mutex::default(),
+            stops: watch::channel(0).0,
         }
     }
 }
@@ -74,72 +111,92 @@ impl Player {
     pub async fn restart_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.operation.lock().await
     }
-    pub async fn view(&self) -> View {
-        let run = self.run.lock().await;
-        if let Some(run) = run.as_ref() {
-            run.view.lock().await.clone()
-        } else {
-            View {
+    /// The given run, or the most recently started one.
+    pub async fn view(&self, run: Option<&str>) -> View {
+        let runs = self.runs.lock().await;
+        let found = match run {
+            Some(id) => runs.iter().find(|r| r.id == id),
+            None => runs.last(),
+        };
+        match found {
+            Some(found) => found.view.lock().await.clone(),
+            None => View {
+                run: run.unwrap_or_default().into(),
                 status: "stopped".into(),
                 ..View::default()
-            }
+            },
         }
     }
-    pub async fn stop(&self) {
-        self.requests
-            .send_modify(|revision| *revision = revision.wrapping_add(1));
+    /// Every run that has not ended, oldest first.
+    pub async fn views(&self) -> Vec<View> {
+        let runs = self.runs.lock().await;
+        let mut views = Vec::with_capacity(runs.len());
+        for run in runs.iter() {
+            let view = run.view.lock().await.clone();
+            if !ended(&view.status) {
+                views.push(view);
+            }
+        }
+        views
+    }
+    pub async fn active(&self) -> bool {
+        !self.views().await.is_empty()
+    }
+    /// Stops one run, or without one every run and every start still resolving.
+    pub async fn stop(&self, run: Option<&str>) {
+        if run.is_none() {
+            self.stops
+                .send_modify(|revision| *revision = revision.wrapping_add(1));
+        }
         let _operation = self.operation.lock().await;
-        self.stop_inner().await;
-    }
-    async fn stop_inner(&self) {
-        if let Some(run) = self.run.lock().await.take() {
-            if run.view.lock().await.status == "starting" {
-                run.task.abort();
-                let _ = run.task.await;
-                return;
+        let stopping = {
+            let mut runs = self.runs.lock().await;
+            match run {
+                Some(id) => runs
+                    .iter()
+                    .position(|r| r.id == id)
+                    .map(|index| vec![runs.remove(index)])
+                    .unwrap_or_default(),
+                None => runs.drain(..).collect(),
             }
-            let _ = run.commands.send(Control::Stop).await;
-            let mut task = run.task;
-            if tokio::time::timeout(Duration::from_secs(10), &mut task)
-                .await
-                .is_err()
-            {
-                task.abort();
-            }
-        }
+        };
+        stop_runs(stopping).await;
     }
-    pub async fn control(&self, command: Control) -> Result<()> {
-        let run = self.run.lock().await;
-        run.as_ref()
+    pub async fn control(&self, run: Option<&str>, command: Control) -> Result<()> {
+        let runs = self.runs.lock().await;
+        let found = match run {
+            Some(id) => runs.iter().find(|r| r.id == id),
+            None => runs.last(),
+        };
+        found
             .context("MPV is not playing")?
             .commands
             .send(command)
             .await
             .map_err(|_| anyhow::anyhow!("MPV has stopped"))
     }
+    /// Returns once MPV is launching; the run reports its progress as `mpv-state`.
     pub async fn play(
         &self,
         app: AppHandle,
         tools: Arc<ToolManager>,
+        requested: Option<String>,
         choices: Vec<Choice>,
         music: bool,
     ) -> Result<View> {
-        let mut request = self.requests.subscribe();
-        let mut revision = 0;
-        self.requests.send_modify(|current| {
-            *current = current.wrapping_add(1);
-            revision = *current;
-        });
+        let mut stops = self.stops.subscribe();
+        let revision = *stops.borrow_and_update();
         tokio::select! {
             biased;
-            _ = request.wait_for(|current| *current != revision) => Err(anyhow::anyhow!("Playback canceled")),
-            result = self.play_inner(app, tools, choices, music) => result,
+            _ = stops.wait_for(|current| *current != revision) => Err(anyhow::anyhow!("Playback canceled")),
+            result = self.play_inner(app, tools, requested, choices, music) => result,
         }
     }
     async fn play_inner(
         &self,
         app: AppHandle,
         tools: Arc<ToolManager>,
+        requested: Option<String>,
         choices: Vec<Choice>,
         music: bool,
     ) -> Result<View> {
@@ -153,8 +210,28 @@ impl Player {
                 .all(|c| c.id.len() <= 100 && c.title.len() <= 1000),
             "Invalid media queue"
         );
+        let id = requested.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        ensure!(
+            !id.is_empty()
+                && id.len() <= 64
+                && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'),
+            "Invalid playback run"
+        );
         let _operation = self.operation.lock().await;
-        self.stop_inner().await;
+        let replaced = {
+            let mut runs = self.runs.lock().await;
+            ensure!(
+                !runs.iter().any(|r| r.id == id),
+                "This playback already started"
+            );
+            let (replaced, kept): (Vec<_>, Vec<_>) = runs
+                .drain(..)
+                .filter(|r| !r.task.is_finished())
+                .partition(|r| music || r.music);
+            *runs = kept;
+            replaced
+        };
+        stop_runs(replaced).await;
         let (settings, launch) = tools
             .resolve_launch(&Default::default(), &[ToolId::Mpv], true)
             .await?;
@@ -166,21 +243,24 @@ impl Player {
             .context("Install or select MPV in Windows player settings")?;
         let backend = Backend::new(&app)?;
         let (commands, rx) = mpsc::channel(32);
-        let view = Arc::new(Mutex::new(View {
+        let initial = View {
+            run: id.clone(),
             media_id: choices[0].id.clone(),
             title: choices[0].title.clone(),
             status: "starting".into(),
             music,
             count: choices.len(),
             ..View::default()
-        }));
+        };
+        let view = Arc::new(Mutex::new(initial.clone()));
         let state = view.clone();
-        let (ready, started) = oneshot::channel();
         let controls = commands.clone();
-        let mut owned_run = self.run.lock().await;
+        let task_app = app.clone();
+        let mut runs = self.runs.lock().await;
+        // Publish the run before any other await, so stopping can always reach it.
         let task = tokio::spawn(async move {
             if let Err(error) = run(
-                &app,
+                &task_app,
                 backend,
                 launch,
                 executable,
@@ -189,25 +269,24 @@ impl Player {
                 state.clone(),
                 rx,
                 controls,
-                ready,
             )
             .await
             {
                 let mut state = state.lock().await;
                 state.status = "failed".into();
                 state.error = Some(error.to_string());
-                let _ = app.emit("mpv-state", state.clone());
+                let _ = task_app.emit("mpv-state", state.clone());
             }
         });
-        *owned_run = Some(Run {
+        runs.push(Run {
+            id,
+            music,
             commands,
             task,
             view,
+            app,
         });
-        drop(owned_run);
-        drop(_operation);
-        started.await.context("MPV failed before connecting")??;
-        Ok(self.view().await)
+        Ok(initial)
     }
 }
 struct Prepared {
@@ -335,29 +414,22 @@ async fn run(
     view: Arc<Mutex<View>>,
     mut commands: mpsc::Receiver<Control>,
     controls: mpsc::Sender<Control>,
-    ready: oneshot::Sender<Result<()>>,
 ) -> Result<()> {
     let mut prepared = BTreeMap::new();
     let mut next = 0;
     for _ in 0..if music { choices.len().min(2) } else { 1 } {
-        let entry = match prepare(&backend, &choices[next], next == 0).await {
-            Ok(entry) => entry,
-            Err(error) => {
-                let _ = ready.send(Err(anyhow::anyhow!(error.to_string())));
-                return Err(error);
-            }
-        };
+        let entry = prepare(&backend, &choices[next], next == 0).await?;
         prepared.insert(next, entry);
         next += 1;
     }
     let pipe = format!(r"\\.\pipe\thelxinoe-{}", uuid::Uuid::new_v4());
     let segment_script = app.path().app_local_data_dir()?.join("segments.lua");
-    std::fs::write(&segment_script, include_str!("segments.lua"))?;
+    install_script(&segment_script, include_str!("segments.lua"))?;
     let quality_script = app
         .path()
         .app_local_data_dir()?
         .join("thelxinoe-quality.lua");
-    std::fs::write(&quality_script, include_str!("quality.lua"))?;
+    install_script(&quality_script, include_str!("quality.lua"))?;
     let mut command = Command::new(executable);
     launch.configure(&mut command)?;
     let mut child = command
@@ -390,7 +462,7 @@ async fn run(
         .kill_on_drop(true)
         .spawn()
         .context("Launch MPV")?;
-    let connected = tokio::time::timeout(Duration::from_secs(15), async {
+    let client = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             match ClientOptions::new().open(&pipe) {
                 Ok(client) => return Ok::<_, anyhow::Error>(client),
@@ -404,14 +476,8 @@ async fn run(
             }
         }
     })
-    .await?;
-    let client = match connected {
-        Ok(client) => client,
-        Err(error) => {
-            let _ = ready.send(Err(error));
-            return Ok(());
-        }
-    };
+    .await
+    .context("MPV did not open its control connection")??;
     let (mut ipc, mut events) = Ipc::new(client);
     for (index, property) in ["time-pos", "pause", "video-out-params", "core-idle"]
         .iter()
@@ -432,7 +498,6 @@ async fn run(
         }
         // Prepare both entries before audio starts, even for very short tracks.
         ipc.call(json!(["playlist-play-index", 0])).await?;
-        let _ = ready.send(Ok(()));
         let mut tick = tokio::time::interval(Duration::from_millis(500));
         let mut last_report = Instant::now();
         loop {
@@ -614,7 +679,7 @@ async fn run(
                     }
                     if let Some(entry) = prepared.get(&current) {
                         let mut state = view.lock().await;
-                        *state = View { file_id: entry.data["file_id"].as_str().unwrap_or_default().into(), generation: entry.data["generation"].as_str().unwrap_or_default().into(), media_id: choices[current].id.clone(), mode: entry.data["mode"].as_str().unwrap_or_default().into(), title: choices[current].title.clone(), position: entry.position, duration: entry.data["duration"].as_f64().unwrap_or(0.0), paused, status: if !loaded { "starting" } else if paused { "paused" } else { "playing" }.into(), music, index: current, count: choices.len(), error: None, video_ready: loaded && video_ready };
+                        *state = View { run: state.run.clone(), file_id: entry.data["file_id"].as_str().unwrap_or_default().into(), generation: entry.data["generation"].as_str().unwrap_or_default().into(), media_id: choices[current].id.clone(), mode: entry.data["mode"].as_str().unwrap_or_default().into(), title: choices[current].title.clone(), position: entry.position, duration: entry.data["duration"].as_f64().unwrap_or(0.0), paused, status: if !loaded { "starting" } else if paused { "paused" } else { "playing" }.into(), music, index: current, count: choices.len(), error: None, video_ready: loaded && (video_ready || entry.data["video"] == false) };
                         let _ = app.emit("mpv-state", state.clone());
                     }
                 }
@@ -650,13 +715,25 @@ async fn run(
         state.position = entry.position;
         state.duration = entry.data["duration"].as_f64().unwrap_or(0.0);
     }
-    state.status = "stopped".into();
     state.paused = true;
-    let _ = app.emit("mpv-state", state.clone());
+    // A failed run reports only its failure, from the task that owns it.
+    if work.is_ok() {
+        state.status = "stopped".into();
+        let _ = app.emit("mpv-state", state.clone());
+    }
+    drop(state);
     drop(launch); // Keep versions and the plugin configuration snapshot leased until MPV exits.
     work
 }
 
+/// Every MPV window loads the same script files. Rewrite one only when it changed,
+/// so a window that is starting never reads a script while it is being replaced.
+fn install_script(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    if std::fs::read(path).is_ok_and(|current| current == contents.as_bytes()) {
+        return Ok(());
+    }
+    std::fs::write(path, contents)
+}
 fn quality_allowed(data: &Value, quality: &str) -> bool {
     let choices = data["qualities"].as_array();
     choices.is_some_and(|choices| {
@@ -680,7 +757,7 @@ mod restart_tests {
         let player = Player::default();
         // play() owns this lock even before a Run has been published.
         let preparing = player.operation.lock().await;
-        assert_eq!(player.view().await.status, "stopped");
+        assert_eq!(player.view(None).await.status, "stopped");
         let mut install = std::pin::pin!(player.restart_guard());
         assert!(
             tokio::time::timeout(Duration::from_millis(20), &mut install)

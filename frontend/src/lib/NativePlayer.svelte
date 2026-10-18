@@ -7,28 +7,12 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { playbackRequest, time, type MediaChoice } from './playback';
-  import { api, ApiError } from './api';
-  import { toolsApi } from './providers/tools-api';
-  import { toolOperationActive } from './providers/tools-presentation';
+  import { api } from './api';
+  import { waitForTools, type NativeView as View } from './native-playback';
   import { LoaderCircle } from '@lucide/svelte';
   import Button from './ui/Button.svelte';
   import Panel from './ui/Panel.svelte';
 
-  type View = {
-    file_id: string;
-    generation: string;
-    media_id: string;
-    title: string;
-    position: number;
-    duration: number;
-    paused: boolean;
-    status: string;
-    music: boolean;
-    index: number;
-    count: number;
-    error: string | null;
-    video_ready: boolean;
-  };
   let { choice, closed } = $props<{
     choice: MediaChoice;
     closed: (choice: MediaChoice) => void;
@@ -39,7 +23,8 @@
     waitingTools = $state(false);
   const preparing = $derived(busy || view?.status === 'starting');
   let unsubscribe: UnlistenFn | undefined,
-    generation = 0;
+    generation = 0,
+    run = '';
   let preparation = new AbortController();
   $effect(() => {
     const selected = choice;
@@ -49,6 +34,9 @@
     preparation.abort();
     preparation = new AbortController();
     const revision = ++generation;
+    const own =
+      selected.restore && selected.run ? selected.run : crypto.randomUUID();
+    run = own;
     busy = true;
     waitingTools = false;
     error = '';
@@ -60,22 +48,7 @@
       },
     };
     try {
-      if (!selected.restore)
-        await playbackRequest(async () => {
-          const snapshot = await toolsApi.get();
-          const mpv = snapshot.tools.find((tool) => tool.id === 'mpv');
-          if (
-            mpv?.preference.source === 'managed' &&
-            (!mpv.selectedPath || mpv.diagnostic?.detected === false) &&
-            snapshot.operation.tool === 'mpv' &&
-            toolOperationActive(snapshot.operation)
-          )
-            throw new ApiError(
-              503,
-              'tools_preparing',
-              'Waiting for playback tools…',
-            );
-        }, pending);
+      if (!selected.restore) await waitForTools(pending);
       if (generation !== revision) return;
       if (selected.resolveYoutube)
         await playbackRequest(
@@ -87,16 +60,13 @@
         );
       if (generation !== revision) return;
       unsubscribe?.();
+      let reported = false;
       const listener = await listen<View>('mpv-state', (event) => {
-        if (generation === revision) {
+        if (generation === revision && event.payload.run === own) {
+          reported = true;
           view = event.payload;
           if (event.payload.error) error = event.payload.error;
-          if (
-            event.payload.status === 'stopped' &&
-            event.payload.media_id === selected.id &&
-            !busy
-          )
-            closed(selected);
+          if (event.payload.status === 'stopped' && !busy) closed(selected);
         }
       });
       if (generation !== revision) {
@@ -105,18 +75,29 @@
       }
       unsubscribe = listener;
       const result = selected.restore
-        ? await invoke<View>('mpv_state')
+        ? await invoke<View>('mpv_state', { run: own })
         : await invoke<View>('mpv_play', {
             choice: selected,
             queue: selected.queue ?? null,
             music: selected.kind === 'track',
+            run: own,
           });
-      if (generation === revision) view = result;
+      // Closing while MPV was launching could not reach the run yet.
+      if (generation !== revision) void stop(own);
+      // Its own reports may already be newer than this answer.
+      else if (!reported) view = result;
     } catch (e) {
       if (generation === revision) error = String(e);
     } finally {
       if (generation === revision) busy = false;
     }
+  }
+  function stop(target: string) {
+    return invoke('mpv_command', {
+      command: 'stop',
+      value: null,
+      run: target,
+    }).catch(() => {});
   }
   async function close() {
     const closing = choice;
@@ -132,7 +113,7 @@
   async function command(command: string, value?: number) {
     const revision = generation;
     try {
-      await invoke('mpv_command', { command, value: value ?? null });
+      await invoke('mpv_command', { command, value: value ?? null, run });
     } catch (e) {
       if (generation === revision) error = String(e);
     }
@@ -141,10 +122,7 @@
     generation++;
     preparation.abort();
     unsubscribe?.();
-    if (preparing)
-      void invoke('mpv_command', { command: 'stop', value: null }).catch(
-        () => {},
-      );
+    if (preparing) void stop(run);
   });
 </script>
 

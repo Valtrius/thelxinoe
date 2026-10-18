@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick, untrack } from 'svelte';
-  import { Check, Play } from '@lucide/svelte';
+  import { Check } from '@lucide/svelte';
+  import PlayIcon from '../ui/PlayIcon.svelte';
   import Button from '../ui/Button.svelte';
   import ProgressBar from '../ui/ProgressBar.svelte';
   import StatusBadge from './StatusBadge.svelte';
@@ -190,7 +191,8 @@
                   variant="ghost"
                   size="compact-icon"
                   aria-label={`Play episode ${episode.number}: ${label(episode)}`}
-                  onclick={() => play(episode)}><Play size={15} /></Button
+                  onclick={() => play(episode)}
+                  ><PlayIcon media={episode.id} /></Button
                 >{:else}<span
                   class="grid size-7.5 place-items-center text-xs text-muted tabular-nums"
                   >{episode.number}</span

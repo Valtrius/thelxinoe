@@ -10,6 +10,8 @@
   import { appearance } from '../appearance';
   import { mediaCardMotionClass, mediaCardThumbnailClass } from './styles';
   import { statusChip, type TitleStatus } from '../title/status';
+  import { launchingMedia } from '../native-playback';
+  import LaunchingOverlay from './LaunchingOverlay.svelte';
   let {
     item,
     open,
@@ -61,6 +63,7 @@
   );
   const cardId = $props.id();
   const chip = $derived(timezone ? statusChip(item.status, timezone) : null);
+  const launching = $derived(launchingMedia.has(item.id));
   const chipClass = {
     success: 'text-success',
     accent: 'text-accent',
@@ -153,12 +156,13 @@
           onload={measure}
           onerror={() =>
             backdrop ? (backdropFailed = true) : (imageFailed = true)}
-        />{:else if item.kind === 'youtube'}<PlatformIcon
+        />{:else if launching}<!-- The spinner replaces the placeholder. -->{:else if item.kind === 'youtube'}<PlatformIcon
           platform="youtube"
           class="size-12"
         />{:else if music}<Music size={48} />{:else if item.kind === 'show'}<Tv
           size={48}
         />{:else}<Film size={48} />{/if}
+      {#if launching}<LaunchingOverlay label={`Starting ${item.title}`} />{/if}
       {#if chip}<span
           class={`absolute bottom-2 left-2 z-2 max-w-[calc(100%-1rem)] truncate border border-[#ffffff30] bg-[#080b10e6] px-2 py-1 text-[11px] leading-none font-semibold ${chipClass[chip.tone]}`}
           data-title-chip={item.status?.state}>{chip.label}</span

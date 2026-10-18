@@ -1,5 +1,6 @@
 <script lang="ts">
   import ProgressBar from '../../../ui/ProgressBar.svelte';
+  import LaunchingOverlay from '../../../ui/LaunchingOverlay.svelte';
   import { longPress } from '../../../long-press';
   import { touchDevice } from '../../../responsive';
   import type { YoutubeVideoActions } from '../../youtube-video-actions';
@@ -180,6 +181,9 @@
           onload={updateThumbnailRatio}
         />
       {/if}
+      {#if isLaunching}<LaunchingOverlay
+          label={`Starting ${video.title}`}
+        />{/if}
       {#if showPosition}
         <span
           class="absolute bottom-2 left-1 border border-accent/45 bg-black/75 px-1.5 py-0.5 font-mono text-[0.6rem] text-accent"

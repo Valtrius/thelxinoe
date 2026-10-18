@@ -52,7 +52,7 @@ async function desktopFixture(page: Page, signedIn = false) {
           });
           return;
         }
-        if (command === 'mpv_state') return { status: 'stopped', media_id: '' };
+        if (command === 'mpv_sessions') return [];
         if (command === 'tools_get') return { tools: [], mpv: {} };
         if (command === 'plugin:app|version') return version;
         if (command === 'desktop_update_status') return null;

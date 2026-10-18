@@ -8,12 +8,16 @@ export type MediaChoice = {
   title: string;
   fileId?: string;
   restore?: boolean;
+  /** The desktop MPV run a restored player follows. */
+  run?: string;
   resolveYoutube?: boolean;
   position?: number;
   queueIndex?: number;
   queue_context?: { client_id: string; revision: number; index: number };
   queue?: MediaChoice[];
 };
+/** Media that is playing, or still starting in a desktop MPV window. */
+export type PlayingMedia = { id: string; launching: boolean };
 export type Preferences = {
   quality: string;
   audio_language: string;

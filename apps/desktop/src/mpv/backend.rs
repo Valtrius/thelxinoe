@@ -12,10 +12,7 @@ pub struct Backend {
 impl Backend {
     pub fn new(app: &tauri::AppHandle) -> Result<Self> {
         Ok(Self {
-            client: reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .timeout(Duration::from_secs(30))
-                .build()?,
+            client: crate::http().map_err(anyhow::Error::msg)?,
             origin: crate::server_url(app.clone()).map_err(anyhow::Error::msg)?,
             token: crate::credential(app)
                 .map_err(anyhow::Error::msg)?

@@ -133,6 +133,29 @@ async fn youtube_linking_url(app: &tauri::AppHandle) -> Result<url::Url, String>
     Ok(url)
 }
 
+/// One connection pool for every request to the server. `localhost` connects over
+/// IPv4 first: Windows takes about two seconds to refuse `::1` when the server only
+/// listens on IPv4, and every new connection would wait for that attempt first.
+fn http() -> Result<reqwest::Client, String> {
+    static CLIENT: std::sync::OnceLock<Result<reqwest::Client, String>> =
+        std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(std::time::Duration::from_secs(30))
+                .resolve_to_addrs(
+                    "localhost",
+                    &[
+                        (std::net::Ipv4Addr::LOCALHOST, 0).into(),
+                        (std::net::Ipv6Addr::LOCALHOST, 0).into(),
+                    ],
+                )
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .clone()
+}
 fn credential(app: &tauri::AppHandle) -> Result<keyring::Entry, String> {
     keyring::Entry::new(&app.config().identifier, "server-session").map_err(|e| e.to_string())
 }
@@ -258,7 +281,7 @@ async fn change_server(app: tauri::AppHandle, value: String) -> Result<String, S
         return Ok(origin);
     }
     #[cfg(windows)]
-    app.state::<mpv::DesktopPlayback>().player.stop().await;
+    app.state::<mpv::DesktopPlayback>().player.stop(None).await;
     match credential(&app)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => {}
         Err(e) => return Err(e.to_string()),
@@ -279,7 +302,7 @@ async fn backend_request(
 ) -> Result<Value, String> {
     #[cfg(windows)]
     if path == "/auth/logout" && method == "POST" {
-        app.state::<mpv::DesktopPlayback>().player.stop().await;
+        app.state::<mpv::DesktopPlayback>().player.stop(None).await;
     }
     if !path.starts_with('/') || path.starts_with("//") || path.contains("..") || path.contains('#')
     {
@@ -304,12 +327,7 @@ async fn backend_request(
             }
         }
     }
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let mut request = client
+    let mut request = http()?
         .request(
             method
                 .parse::<reqwest::Method>()
@@ -405,7 +423,7 @@ fn main() {
                 }
                 tauri::async_runtime::spawn(async move {
                     #[cfg(windows)]
-                    app.state::<mpv::DesktopPlayback>().player.stop().await;
+                    app.state::<mpv::DesktopPlayback>().player.stop(None).await;
                     if let Some(state) = app.try_state::<tools::DesktopTools>()
                         && let Ok(tools) = state.manager()
                     {
@@ -456,8 +474,48 @@ fn main() {
             tools::commands::mpv_test_configuration,
             mpv::mpv_play,
             mpv::mpv_state,
+            mpv::mpv_sessions,
             mpv::mpv_command
         ])
         .run(tauri::generate_context!())
         .expect("Failed to run Thelxinoe");
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        sync::mpsc,
+    };
+
+    // A server that also answers on ::1 is still reached over IPv4 first.
+    #[tokio::test]
+    async fn localhost_connects_over_ipv4_first() {
+        let ipv4 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = ipv4.local_addr().unwrap().port();
+        let ipv6 = TcpListener::bind(("::1", port)).await.ok();
+        let (accepted, mut family) = mpsc::unbounded_channel();
+        for listener in std::iter::once(ipv4).chain(ipv6) {
+            let accepted = accepted.clone();
+            tokio::spawn(async move {
+                let (mut stream, peer) = listener.accept().await.unwrap();
+                let _ = accepted.send(peer.is_ipv4());
+                let mut request = [0; 1024];
+                let _ = stream.read(&mut request).await;
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}")
+                    .await
+                    .unwrap();
+            });
+        }
+        let response = crate::http()
+            .unwrap()
+            .get(format!("http://localhost:{port}/"))
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+        assert_eq!(family.recv().await, Some(true));
+    }
 }

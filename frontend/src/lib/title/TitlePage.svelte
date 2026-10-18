@@ -13,6 +13,7 @@
   import { api, type User } from '../api';
   import type { MediaChoice } from '../playback';
   import Button from '../ui/Button.svelte';
+  import PlayIcon from '../ui/PlayIcon.svelte';
   import ContentSkeleton from '../ui/ContentSkeleton.svelte';
   import Notice from '../ui/Notice.svelte';
   import MediaRow from '../seerr/MediaRow.svelte';
@@ -450,11 +451,13 @@
           <div class="mt-5 flex flex-wrap items-center gap-2">
             {#if kind === 'movie' && item?.available}<Button
                 size="form"
-                onclick={() => playMovie()}><Play size={15} />Play</Button
+                onclick={() => playMovie()}
+                ><PlayIcon media={item.id} />Play</Button
               >{:else if kind === 'show' && nextEpisode}<Button
                 size="form"
                 onclick={() => playEpisode(nextEpisode)}
-                ><Play size={15} />{nextEpisode.position && !nextEpisode.watched
+                ><PlayIcon media={nextEpisode.id} />{nextEpisode.position &&
+                !nextEpisode.watched
                   ? 'Resume'
                   : 'Play'}
                 S{nextEpisode.season}E{nextEpisode.number}</Button

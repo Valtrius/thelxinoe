@@ -1,5 +1,6 @@
 <script lang="ts">
   import ProgressBar from '../../../ui/ProgressBar.svelte';
+  import LaunchingOverlay from '../../../ui/LaunchingOverlay.svelte';
   import VideoActionsMenu from './VideoActionsMenu.svelte';
   import type { YoutubeVideoActions } from '../../youtube-video-actions';
   import { longPress } from '../../../long-press';
@@ -166,6 +167,7 @@
     <span
       class="absolute inset-0 bg-linear-to-t from-black/45 via-transparent to-transparent"
     ></span>
+    {#if isLaunching}<LaunchingOverlay label={`Starting ${video.title}`} />{/if}
     {#if tracksVideoProgress && video.durationSeconds}
       <span
         class="absolute right-2 bottom-3 border border-white/20 bg-black/75 px-2 py-1 font-mono text-[0.62rem] text-white"

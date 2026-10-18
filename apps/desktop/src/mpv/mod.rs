@@ -19,6 +19,7 @@ pub async fn mpv_play(
     choice: runtime::Choice,
     queue: Option<Vec<runtime::Choice>>,
     music: bool,
+    run: Option<String>,
 ) -> Result<runtime::View, String> {
     let mut choices = queue
         .filter(|q| music && !q.is_empty())
@@ -44,27 +45,40 @@ pub async fn mpv_play(
         .clone();
     state
         .player
-        .play(app.clone(), tools, choices, music)
+        .play(app.clone(), tools, run, choices, music)
         .await
         .map_err(|e| e.to_string())
 }
+/// One run, or the most recently started one.
 #[cfg(windows)]
 #[tauri::command]
-pub async fn mpv_state(state: tauri::State<'_, DesktopPlayback>) -> Result<runtime::View, String> {
-    Ok(state.player.view().await)
+pub async fn mpv_state(
+    state: tauri::State<'_, DesktopPlayback>,
+    run: Option<String>,
+) -> Result<runtime::View, String> {
+    Ok(state.player.view(run.as_deref()).await)
 }
+#[cfg(windows)]
+#[tauri::command]
+pub async fn mpv_sessions(
+    state: tauri::State<'_, DesktopPlayback>,
+) -> Result<Vec<runtime::View>, String> {
+    Ok(state.player.views().await)
+}
+/// Controls one run, or the most recently started one. Stop without a run stops all.
 #[cfg(windows)]
 #[tauri::command]
 pub async fn mpv_command(
     state: tauri::State<'_, DesktopPlayback>,
     command: String,
     value: Option<f64>,
+    run: Option<String>,
 ) -> Result<(), String> {
     let control = match command.as_str() {
         "pause" => runtime::Control::Pause,
         "next" => runtime::Control::Next,
         "stop" => {
-            state.player.stop().await;
+            state.player.stop(run.as_deref()).await;
             return Ok(());
         }
         "seek" => runtime::Control::Seek(
@@ -81,7 +95,7 @@ pub async fn mpv_command(
     };
     state
         .player
-        .control(control)
+        .control(run.as_deref(), control)
         .await
         .map_err(|e| e.to_string())
 }

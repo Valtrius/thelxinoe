@@ -12,7 +12,7 @@
   import AuthVerification from './lib/AuthVerification.svelte';
   import { cancelVerification, type AuthOptions } from './lib/authentication';
   import { statsClass } from './lib/ui/styles';
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { SvelteURL } from 'svelte/reactivity';
   import { players, preloadPage } from './lib/pages';
   import { playerFrameReveal } from './lib/player-reveal';
@@ -116,6 +116,14 @@
   import { persistQueue } from './lib/media-state';
   import { invoke } from '@tauri-apps/api/core';
   import type { MediaChoice } from './lib/playback';
+  import {
+    connectNativePlayback,
+    launchingMedia,
+    launchVideo,
+    nativeRuns,
+    type NativeView,
+  } from './lib/native-playback';
+  import { dismissToastByKey, showToast } from './lib/providers/toasts';
   import { youtubeVideoIdFromInput } from './lib/providers/youtube-video-input';
   import {
     providers,
@@ -123,6 +131,23 @@
     providerEnabled,
   } from './lib/providers/availability';
   let playing = $state<MediaChoice | null>(null);
+  // Desktop videos play in their own MPV windows; `playing` is the page's
+  // player, or the desktop music queue.
+  const playingMedia = $derived(
+    desktop
+      ? [
+          ...[...launchingMedia].map((id) => ({ id, launching: true })),
+          ...[...nativeRuns.values()]
+            .filter((view) => !launchingMedia.has(view.media_id))
+            .map((view) => ({
+              id: view.media_id,
+              launching: !view.music && !view.video_ready,
+            })),
+        ]
+      : playing
+        ? [{ id: playing.id, launching: false }]
+        : [],
+  );
   let playbackRequest = 0;
   let mediaRevision = $state(0);
   import { Menu } from '@lucide/svelte';
@@ -269,18 +294,16 @@
           restoreNavigation();
           startEvents();
           if (desktop) {
-            const state = await invoke<{
-              media_id: string;
-              title: string;
-              music: boolean;
-              status: string;
-            }>('mpv_state');
-            if (state.media_id && !['stopped', 'failed'].includes(state.status))
+            const music = (await invoke<NativeView[]>('mpv_sessions')).find(
+              (view) => view.music,
+            );
+            if (music)
               playing = {
-                id: state.media_id,
-                title: state.title,
-                kind: state.music ? 'track' : 'movie',
+                id: music.media_id,
+                title: music.title,
+                kind: 'track',
                 restore: true,
+                run: music.run,
               };
           }
         }
@@ -691,6 +714,8 @@
   }
   async function playMedia(choice: MediaChoice, resolveYoutube = false) {
     if (!providerEnabled(choice.id)) return;
+    if (desktop && choice.kind !== 'track')
+      return launchDesktopVideo(choice, resolveYoutube);
     const request = ++playbackRequest;
     const owner = user?.id;
     await act(async () => {
@@ -705,6 +730,41 @@
       }
     });
   }
+  // A video opens its own MPV window. Its card shows it starting; nothing opens
+  // in the page.
+  async function launchDesktopVideo(
+    choice: MediaChoice,
+    resolveYoutube: boolean,
+  ) {
+    if (playingMedia.some((media) => media.id === choice.id)) return;
+    const owner = user?.id;
+    const failure = `native-playback:${choice.id}`;
+    dismissToastByKey(failure);
+    try {
+      await launchVideo(choice, resolveYoutube, (waiting) =>
+        waiting
+          ? showToast({
+              key: 'native-tools',
+              title: 'Installing MPV',
+              message: `${choice.title} plays once MPV is ready.`,
+              durationMs: null,
+              busy: true,
+            })
+          : dismissToastByKey('native-tools'),
+      );
+    } catch (e) {
+      if (user?.id !== owner) return;
+      showToast({
+        key: failure,
+        tone: 'error',
+        title: `Could not play ${choice.title}`,
+        message: e instanceof Error ? e.message : String(e),
+        actionLabel: 'Retry',
+        onAction: () => void launchDesktopVideo(choice, resolveYoutube),
+        durationMs: null,
+      });
+    }
+  }
   $effect(() => {
     void $providers;
     if (!navigationReady || !user) return;
@@ -716,18 +776,36 @@
       openSettings('account');
     if (playing && !providerEnabled(playing.id)) {
       playbackRequest++;
-      if (desktop)
-        void invoke('mpv_command', { command: 'stop', value: null }).catch(
-          (e) => (error = String(e)),
-        );
       playing = null;
     }
+  });
+  $effect(() => {
+    void $providers;
+    if (!desktop || !user) return;
+    for (const view of untrack(() => [...nativeRuns.values()]))
+      if (!providerEnabled(view.media_id))
+        void invoke('mpv_command', {
+          command: 'stop',
+          value: null,
+          run: view.run,
+        }).catch((e) => (error = String(e)));
   });
   onMount(() => {
     document.body.classList.toggle('desktop-app', desktop);
     const updateConnection = connectDesktopUpdates();
     const toolsConnection = desktop
       ? connectTools()
+      : Promise.resolve(() => {});
+    const playbackConnection = desktop
+      ? connectNativePlayback((view) =>
+          showToast({
+            key: `native-playback:${view.media_id}`,
+            tone: 'error',
+            title: `${view.title} stopped`,
+            message: view.error ?? 'MPV stopped playing this media.',
+            durationMs: null,
+          }),
+        )
       : Promise.resolve(() => {});
     const incompatible = (event: Event) => {
       updateRequired = (event as CustomEvent<string>).detail;
@@ -788,6 +866,7 @@
     });
     return () => {
       void toolsConnection.then((disconnect) => disconnect());
+      void playbackConnection.then((disconnect) => disconnect());
       void updateConnection.then((disconnect) => disconnect());
       window.removeEventListener('thelxinoe-update-required', incompatible);
       window.removeEventListener('thelxinoe-open-settings', settingsRequested);
@@ -1039,7 +1118,7 @@
             {preferencesRevision}
             {settingsRevision}
             {scans}
-            {playing}
+            playing={playingMedia}
             play={playMedia}
             navigate={(name) => void navigate(name)}
             {openSettings}
