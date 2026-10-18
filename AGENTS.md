@@ -4,9 +4,9 @@
 - Keep API and UI integration separate from Docker lifecycle ownership; only manage containers Thelxinoe owns.
 
 
-## Migration requirements
+## Database schema
 
-- Until an official release is done, no migration shall be necessary either in DB or code.
+- Released schemas are frozen in `crates/database/schemas/`. Any later change to `schema.sql` bumps `SCHEMA_VERSION`, adds its upgrade to `MIGRATIONS` and freezes the new schema; the database tests enforce this.
 
 
 ## Workflow

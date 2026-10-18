@@ -175,3 +175,128 @@ fn playback_ownership_is_enforced_and_history_survives_source_removal() -> Resul
     assert!(!db.prepare("PRAGMA foreign_key_check")?.exists([])?);
     Ok(())
 }
+
+fn frozen_schema(version: u32) -> String {
+    let path = format!("{}/schemas/{version}.sql", env!("CARGO_MANIFEST_DIR"));
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|_| panic!("{path} is missing"))
+        .replace("\r\n", "\n")
+}
+
+/// What a migrated database must share with a fresh one. Whitespace and the
+/// order columns were added in do not count.
+fn shape(c: &Connection) -> Result<Vec<String>> {
+    let objects = c
+        .prepare("SELECT type,name,tbl_name,COALESCE(sql,'') FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name")?
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut shape = Vec::new();
+    for (kind, name, table, sql) in objects {
+        if kind != "table" {
+            let sql = sql.split_whitespace().collect::<Vec<_>>().join(" ");
+            shape.push(format!("{kind} {name} on {table}: {sql}"));
+            continue;
+        }
+        let strict: bool = c.query_row(
+            "SELECT strict FROM pragma_table_list WHERE schema='main' AND name=?1",
+            [&name],
+            |r| r.get(0),
+        )?;
+        shape.push(format!("table {name} strict={strict}"));
+        let mut details = c
+            .prepare("SELECT name,type,\"notnull\",dflt_value,pk FROM pragma_table_xinfo(?1)")?
+            .query_map([&name], |r| {
+                Ok(format!(
+                    "  column {} {} notnull={} default={:?} pk={}",
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, bool>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, i64>(4)?
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        details.extend(
+            c.prepare("SELECT \"table\",\"from\",\"to\",on_update,on_delete FROM pragma_foreign_key_list(?1)")?
+                .query_map([&name], |r| {
+                    Ok(format!(
+                        "  reference {} -> {}.{} update={} delete={}",
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+        );
+        details.sort();
+        shape.extend(details);
+    }
+    Ok(shape)
+}
+
+// A shipped schema never changes; the next one starts as a frozen copy.
+#[test]
+fn current_schema_matches_its_frozen_copy() {
+    assert!(
+        frozen_schema(SCHEMA_VERSION) == SCHEMA.replace("\r\n", "\n"),
+        "schema.sql differs from schemas/{SCHEMA_VERSION}.sql. If schema {SCHEMA_VERSION} shipped in a release, bump SCHEMA_VERSION, add its upgrade to MIGRATIONS and copy schema.sql to the new schemas/<version>.sql. Before its first release, update schemas/{SCHEMA_VERSION}.sql instead."
+    );
+}
+
+// Every released schema still supported upgrades to what a fresh database gets.
+#[test]
+fn released_schemas_upgrade_to_the_fresh_schema() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let fresh = temp.path().join("fresh.db");
+    drop(Database::open(&fresh)?);
+    let expected = shape(&Connection::open(&fresh)?)?;
+    for version in MIGRATION_BASE..=SCHEMA_VERSION {
+        let path = temp.path().join(format!("{version}.db"));
+        let conn = Connection::open(&path)?;
+        conn.execute_batch(&frozen_schema(version))?;
+        conn.pragma_update(None, "application_id", APPLICATION_ID)?;
+        conn.pragma_update(None, "user_version", version)?;
+        drop(conn);
+        drop(Database::open(&path)?);
+        assert_eq!(verify_snapshot(&path)?, SCHEMA_VERSION);
+        assert_eq!(
+            shape(&Connection::open(&path)?)?,
+            expected,
+            "schema {version} upgrades to a different shape"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn upgrades_run_in_order_from_the_stored_version() -> Result<()> {
+    let conn = Connection::open_in_memory()?;
+    conn.execute_batch("CREATE TABLE t(a INTEGER, b INTEGER); PRAGMA user_version=2;")?;
+    let steps = [
+        "ALTER TABLE t ADD COLUMN b INTEGER",
+        "ALTER TABLE t ADD COLUMN c INTEGER",
+        "ALTER TABLE t ADD COLUMN d INTEGER",
+    ];
+    let columns = |conn: &Connection| -> Result<Vec<String>> {
+        Ok(conn
+            .prepare("SELECT name FROM pragma_table_info('t')")?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?)
+    };
+    // Schema 2 already has the first step's column.
+    upgrade(&conn, 2, 1, &steps)?;
+    assert_eq!(columns(&conn)?, ["a", "b", "c", "d"]);
+    assert_eq!(
+        conn.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))?,
+        4
+    );
+    upgrade(&conn, 4, 1, &steps)?;
+    assert_eq!(columns(&conn)?, ["a", "b", "c", "d"]);
+    // A failing step names the versions it was upgrading between.
+    conn.execute_batch("PRAGMA user_version=3")?;
+    let error = upgrade(&conn, 3, 1, &steps).unwrap_err();
+    assert!(error.to_string().contains("schema 3 to 4"), "{error}");
+    Ok(())
+}
