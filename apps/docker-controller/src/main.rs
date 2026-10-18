@@ -66,10 +66,6 @@ async fn main() -> anyhow::Result<()> {
                     &serde_json::json!({"schema":schema,"verified":true}),
                 )
             }
-            "accept-local" => {
-                stack::product::accept_local(std::env::args().nth(2).as_deref() == Some("--yes"))
-                    .await
-            }
             "controller-probe" => store::write_json(
                 std::path::Path::new("/probe/controller.json"),
                 &serde_json::json!({"version":thelxinoe_core::VERSION,"recovery_protocol":1}),
@@ -86,6 +82,7 @@ async fn main() -> anyhow::Result<()> {
         stack::product::standby().await?;
         let handoff = std::env::var("THELXINOE_HANDOFF").is_ok();
         let mut attempts = 0;
+        let mut adopted = false;
         let writer = loop {
             attempts += 1;
             match lease::Lease::acquire(&directory) {
@@ -94,10 +91,13 @@ async fn main() -> anyhow::Result<()> {
                         break writer;
                     }
                     drop(writer);
-                    anyhow::ensure!(
-                        handoff,
-                        "These containers differ from the accepted deployment. After a rebuild or a Compose configuration change, review and accept them with: docker compose run --rm controller accept-local"
-                    );
+                    // Compose recreated these containers; a successor waits for its handoff.
+                    if !handoff {
+                        anyhow::ensure!(!adopted, "The adopted containers were not accepted");
+                        stack::product::adopt_local(&directory).await?;
+                        adopted = true;
+                        continue;
+                    }
                 }
                 Err(e) if !handoff => return Err(e),
                 Err(_) => (),

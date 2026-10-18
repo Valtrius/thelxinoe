@@ -413,8 +413,11 @@ async fn idle(state: &AppState) -> Result<()> {
     }
     Ok(())
 }
-async fn prepare_update(state: &AppState, user: Option<String>) -> Result<Value> {
-    check_release(state).await?;
+async fn prepare_update(state: &AppState, user: Option<String>, refresh: bool) -> Result<Value> {
+    // Automatic preparation reuses the scheduled check instead of fetching again.
+    if refresh {
+        check_release(state).await?;
+    }
     if eligible(state).await?.is_none() {
         return Err(ApiError::conflict(
             "No eligible server release is available",
@@ -458,7 +461,7 @@ async fn quiesced_command(state: &AppState, path: &str, body: Option<Value>) -> 
 
 async fn prepare(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
-    Ok(Json(prepare_update(&state, Some(p.user.id)).await?))
+    Ok(Json(prepare_update(&state, Some(p.user.id), true).await?))
 }
 #[derive(Deserialize)]
 struct Confirm {
@@ -546,34 +549,36 @@ async fn tick(state: &AppState) -> Result<()> {
     let Some(release) = eligible(state).await?.map(|m| json!(m)) else {
         return Ok(());
     };
+    let version = release["version"].as_str().unwrap_or_default().to_owned();
+    let mut automatic = setting(state, "product.automatic")
+        .await?
+        .and_then(|value| serde_json::from_value::<Automatic>(value).ok())
+        .filter(|automatic| automatic.version == version)
+        .unwrap_or_else(|| Automatic {
+            version: version.clone(),
+            ..Default::default()
+        });
     let observed = crate::managers::controller_request(state, "/product", None).await?;
-    // A restored or failed release stays blocked across database rollback. A
-    // human may prepare it again, but automatic mode never retries that version.
-    if observed["items"].as_array().into_iter().flatten().any(|u| {
-        u["version"] == release["version"]
-            && matches!(
-                u["stage"].as_str(),
-                Some(
-                    "blocked" | "recovered" | "restored" | "runtime-failure" | "recovery-required"
-                )
-            )
-    }) {
+    let items = observed["items"].as_array().cloned().unwrap_or_default();
+    let counted = automatic.counted.clone();
+    let due = automatic_due(&mut automatic, &items, now());
+    if automatic.counted != counted {
+        save(state, "product.automatic", json!(automatic)).await?;
+    }
+    if !due {
         return Ok(());
     }
-    let candidate = observed["items"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|u| {
-            u["version"] == release["version"]
-                && u["stage"] != "superseded"
-                && (u["stage"] != "ready" || current_preflight(u, &observed))
-        });
-    idle(state).await?;
-    match candidate {
-        None => {
-            prepare_update(state, None).await?;
-        }
+    let candidate = items.iter().find(|u| {
+        u["version"] == version
+            && !matches!(u["stage"].as_str(), Some("superseded" | "blocked"))
+            && (u["stage"] != "ready" || current_preflight(u, &observed))
+    });
+    // Playback and background work postpone the attempt without counting against it.
+    if storage::idle(&state.db).await? {
+        return Ok(());
+    }
+    let attempt = match candidate {
+        None => prepare_update(state, None, false).await.map(|_| ()),
         Some(u) if u["stage"] == "ready" && u["recovery_tested"] == true => {
             let id = u["id"]
                 .as_str()
@@ -584,9 +589,59 @@ async fn tick(state: &AppState) -> Result<()> {
                 &format!("/product/{id}/activate"),
                 Some(json!({"confirm":true})),
             )
-            .await?;
+            .await
+            .map(|_| ())
         }
-        _ => (),
+        _ => return Ok(()),
+    };
+    if let Err(e) = &attempt
+        && !(e.2.starts_with("Wait for") || e.2.contains("Another Docker operation is active"))
+    {
+        // A refused or failed command waits before the next try instead of
+        // repeating every few seconds through the whole window.
+        automatic.failures += 1;
+        automatic.retry_at = now() + automatic_backoff(automatic.failures);
+        automatic.error = Some(e.2.clone());
+        save(state, "product.automatic", json!(automatic)).await?;
     }
-    Ok(())
+    attempt
+}
+/// Automatic attempts at one release. Failures back off instead of repeating
+/// every tick; a new release starts over.
+#[derive(Default, Serialize, Deserialize)]
+struct Automatic {
+    version: String,
+    failures: u32,
+    retry_at: i64,
+    /// The newest blocked controller attempt already counted as a failure.
+    counted: Option<String>,
+    error: Option<String>,
+}
+fn automatic_backoff(failures: u32) -> i64 {
+    (15 * 60 * 2i64.pow(failures.saturating_sub(1).min(5))).min(6 * 3600)
+}
+/// Whether automatic mode may try `automatic.version` now. A preparation that
+/// was blocked (download, drift, disk) is retried after a backoff. A release that
+/// failed validation or activation stays failed, also across database rollback;
+/// an administrator may still install it by hand.
+fn automatic_due(automatic: &mut Automatic, items: &[Value], now: i64) -> bool {
+    let attempts = || items.iter().filter(|u| u["version"] == automatic.version);
+    if attempts().any(|u| {
+        matches!(
+            u["stage"].as_str(),
+            Some("recovered" | "restored" | "runtime-failure" | "recovery-required")
+        )
+    }) {
+        return false;
+    }
+    // The controller lists attempts newest first.
+    if let Some(blocked) = attempts().find(|u| u["stage"] == "blocked")
+        && blocked["id"].as_str() != automatic.counted.as_deref()
+    {
+        automatic.counted = blocked["id"].as_str().map(str::to_owned);
+        automatic.failures += 1;
+        automatic.retry_at = now + automatic_backoff(automatic.failures);
+        automatic.error = blocked["error"].as_str().map(str::to_owned);
+    }
+    automatic.retry_at <= now
 }

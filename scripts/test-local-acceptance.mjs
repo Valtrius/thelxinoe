@@ -1,4 +1,4 @@
-// Real Compose: accepting rebuilt images and changed configuration after the first start.
+// Real Compose: adopting rebuilt images and changed configuration after the first start.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -86,16 +86,8 @@ config.services.server.ports = [
   },
 ];
 write();
-const attempt = (...command) =>
-  spawnSync('docker', [...fixture.args, ...command], {
-    encoding: 'utf8',
-    windowsHide: true,
-    timeout: 360000,
-  });
-const accept = () =>
-  attempt('run', '--rm', '-T', 'controller', 'accept-local', '--yes');
 const said = (outcome) => `${outcome.stdout ?? ''}${outcome.stderr ?? ''}`;
-const deployment = () =>
+const stack = () =>
   JSON.parse(
     docker(
       'exec',
@@ -106,22 +98,28 @@ const deployment = () =>
       '/run/thelxinoe/controller.sock',
       'http://localhost/stack',
     ),
-  ).deployment_id;
+  );
+const logs = () =>
+  said(
+    spawnSync('docker', ['logs', `${project}-controller`], {
+      encoding: 'utf8',
+      windowsHide: true,
+    }),
+  );
 const start = () =>
   fixture.compose('up', '-d', '--wait', '--wait-timeout', '180');
 let images, cleanup;
 try {
   start();
-  const id = deployment();
+  const { deployment_id: id, generation } = stack();
   ensure(id, 'The deployment was not initialized');
-  let outcome = accept();
   ensure(
-    outcome.status === 0 && said(outcome).includes('Nothing to accept'),
-    `Unchanged containers needed acceptance: ${said(outcome)}`,
+    !logs().includes('Adopting'),
+    `Unchanged containers were adopted: ${logs()}`,
   );
-  check('accepted containers need no acceptance');
+  check('accepted containers need no adoption');
 
-  // A rebuild gives both components new image IDs.
+  // A rebuild (or `docker compose pull`) gives both components new image IDs.
   images = resourceRecord({ images: [], closed: false });
   const rebuilt = {};
   for (const [name, image] of [
@@ -140,57 +138,45 @@ try {
   config.services.server.image = rebuilt.server;
   config.services.controller.image = rebuilt.controller;
   write();
-  const waiting = attempt('up', '-d', '--wait', '--wait-timeout', '60');
-  ensure(waiting.status !== 0, 'Rebuilt containers started without acceptance');
-  const logs = spawnSync('docker', ['logs', `${project}-controller`], {
-    encoding: 'utf8',
-    windowsHide: true,
-  });
+  start();
+  const adopted = stack();
   ensure(
-    said(logs).includes('controller accept-local'),
-    `The waiting controller did not explain acceptance: ${said(logs)}`,
+    adopted.deployment_id === id && adopted.generation > generation,
+    `A rebuild was not adopted into the same deployment: ${JSON.stringify(adopted)}`,
   );
-  outcome = accept();
   for (const expected of [
-    'Accepted as generation',
+    'Adopting the recreated Thelxinoe containers',
     'server Image changed',
     'controller Image changed',
   ])
     ensure(
-      outcome.status === 0 && said(outcome).includes(expected),
-      `Rebuild acceptance missing "${expected}": ${said(outcome)}`,
+      logs().includes(expected),
+      `Adoption missing "${expected}": ${logs()}`,
     );
-  console.log(said(outcome).trim());
-  start();
-  ensure(deployment() === id, 'A rebuild started a different deployment');
-  check('a rebuild is accepted into the same deployment');
+  check('a rebuild is adopted into the same deployment');
 
-  // Only the server changes, so the accepted controller keeps running.
+  // Only the server changes, so the running controller adopts it.
   config.services.server.environment.THELXINOE_DISCOVERY_URL =
     'http://192.0.2.10:8484';
   write();
   start();
-  const began = Date.now();
-  outcome = accept();
+  const deadline = Date.now() + 90000;
+  while (stack().generation === adopted.generation) {
+    ensure(
+      Date.now() < deadline,
+      `The running controller did not adopt the recreated server: ${logs()}`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
   ensure(
-    outcome.status !== 0 &&
-      said(outcome).includes('docker compose stop controller') &&
-      Date.now() - began < 30000,
-    `A running controller's deployment was not refused promptly: ${said(outcome)}`,
+    stack().deployment_id === id,
+    'A server change started a different deployment',
   );
-  fixture.compose('stop', 'controller');
-  outcome = accept();
   ensure(
-    outcome.status === 0 &&
-      said(outcome).includes(
-        'server Config.Env.THELXINOE_DISCOVERY_URL changed',
-      ),
-    `Server change acceptance failed: ${said(outcome)}`,
+    logs().includes('server Config.Env.THELXINOE_DISCOVERY_URL changed'),
+    `Server change adoption was not reported: ${logs()}`,
   );
-  console.log(said(outcome).trim());
-  start();
-  ensure(deployment() === id, 'A server change started a different deployment');
-  check('a server-only change is accepted after stopping the controller');
+  check('a server-only change is adopted by the running controller');
   result.passed = true;
 } finally {
   writeFileSync(output, JSON.stringify(result, null, 2));
