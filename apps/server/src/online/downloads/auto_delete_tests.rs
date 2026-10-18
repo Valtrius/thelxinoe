@@ -113,7 +113,7 @@ async fn auto_delete_shared_downloads_respect_pins_capacity_watched_users_and_fi
     }).await.unwrap();
 
     policy["enabled"] = json!(true);
-    policy["grace_seconds"] = json!(3600);
+    policy["grace_seconds"] = json!(86400);
     policy["storage_limit_bytes"] = json!(1000);
     api(
         &state,
@@ -176,7 +176,7 @@ async fn auto_delete_shared_downloads_respect_pins_capacity_watched_users_and_fi
         .find(|i| i["video_id"] == "newvideo001" && i["state"] == "pending")
         .unwrap();
     assert!(
-        candidate["due_at"].as_i64().unwrap() >= now() + 3595,
+        candidate["due_at"].as_i64().unwrap() >= now() + 86395,
         "old watches get a fresh countdown"
     );
     let candidate_id = candidate["id"].as_str().unwrap().to_owned();

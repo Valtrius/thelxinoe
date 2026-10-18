@@ -170,6 +170,82 @@ async fn scan_replacement_move_removal_and_failed_scan_preserve_logical_state() 
     Ok(())
 }
 
+// CI runs as root, which ignores permission bits, so the folder is made unreadable by
+// nesting it past Linux's path length limit instead.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_unreadable_folder_is_skipped_and_keeps_its_files() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let media = temp.path().join("music");
+    std::fs::create_dir(&media)?;
+    let media = media.canonicalize()?;
+    let db = Database::open(temp.path().join("db"))?;
+    let root = Root {
+        id: "root".into(),
+        name: "Music".into(),
+        kind: "music".into(),
+        path: media.to_string_lossy().to_string(),
+        last_scan: None,
+        scan_error: None,
+    };
+    std::fs::write(media.join("Track.wav"), wav(1))?;
+    // Each half stays under the limit for the calls that create it; joined, they exceed it.
+    let segment = "d".repeat(200);
+    let staging = temp.path().join("staging");
+    let (mut outer, mut inner) = (media.join("Hidden"), staging.clone());
+    for _ in 0..12 {
+        outer.push(&segment);
+        inner.push(&segment);
+    }
+    std::fs::create_dir_all(&outer)?;
+    std::fs::create_dir_all(&inner)?;
+    std::fs::rename(staging.join(&segment), outer.join(&segment))?;
+    let hidden = outer.join(inner.strip_prefix(&staging)?).join("Song.wav");
+    assert!(hidden.as_os_str().len() > 4096);
+    let (r, kept) = (root.clone(), hidden.to_string_lossy().to_string());
+    let gone = media.join("Gone.wav").to_string_lossy().to_string();
+    db.write("test.fixture", move |c| {
+        c.execute(
+            "INSERT INTO library_roots(id,name,kind,path) VALUES (?1,?2,?3,?4)",
+            params![r.id, r.name, r.kind, r.path],
+        )?;
+        for (id, path) in [("kept", kept), ("gone", gone)] {
+            c.execute(
+                "INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,present,scanned_at) VALUES (?1,'root',?2,?1,1,'1',?1,'{}',1,1)",
+                params![id, path],
+            )?;
+        }
+        Ok(())
+    })
+    .await?;
+    let tool_root = tempfile::tempdir()?;
+    let tools = thelxinoe_tools::Runtime::new(tool_root.path().into());
+    tool_runtime::install(&tools, tool_root.path());
+    assert_eq!(scan(&db, root, tools.media()?).await?, 1);
+    let (warning, present) = db
+        .write("test.fixture", |c| {
+            Ok((
+                c.query_row("SELECT scan_error FROM library_roots", [], |r| {
+                    r.get::<_, Option<String>>(0)
+                })?,
+                c.prepare("SELECT id FROM media_files WHERE present=1 ORDER BY id")?
+                    .query_map([], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?,
+            ))
+        })
+        .await?;
+    let warning = warning.unwrap_or_default();
+    assert!(
+        warning.starts_with("1 folder couldn't be read") && warning.contains("Hidden"),
+        "{warning}"
+    );
+    // The skipped folder keeps its entry; files gone from readable folders are removed.
+    assert_eq!(present.len(), 2, "{present:?}");
+    assert!(present.contains(&"kept".to_owned()));
+    assert!(!present.contains(&"gone".to_owned()));
+    Ok(())
+}
+
 #[test]
 fn fingerprints_cover_small_files_and_sample_large_ones() -> Result<()> {
     let temp = tempfile::tempdir()?;

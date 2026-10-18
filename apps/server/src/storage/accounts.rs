@@ -28,6 +28,7 @@ pub(super) async fn setup(
     hash: String,
     uid: String,
     username: String,
+    timezone: Option<String>,
 ) -> anyhow::Result<bool> {
     db
         .write("accounts.setup", move |db| {
@@ -39,6 +40,13 @@ pub(super) async fn setup(
                 "INSERT INTO users(id,username,password_hash,role,created_at) VALUES (?1,?2,?3,'admin',?4)",
                 params![uid, username, hash, now()],
             )?;
+            // A zone already configured is kept.
+            if let Some(timezone) = timezone {
+                tx.execute(
+                    "INSERT INTO settings(key,value) VALUES ('timezone',?1) ON CONFLICT(key) DO NOTHING",
+                    [timezone],
+                )?;
+            }
             tx.execute(
                 "INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'setup',?1,?2)",
                 params![uid, now()],
@@ -47,6 +55,21 @@ pub(super) async fn setup(
             Ok(true)
         })
         .await
+}
+
+pub(super) async fn remembered_device(
+    db: &Database,
+    username: String,
+    token_hash: String,
+) -> anyhow::Result<bool> {
+    db.read("accounts.remembered_device", move |db| {
+        Ok(db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM auth_remembered_devices d JOIN users u ON u.id=d.user_id WHERE u.username=?1 AND d.token_hash=?2)",
+            params![username, token_hash],
+            |r| r.get(0),
+        )?)
+    })
+    .await
 }
 
 pub(super) async fn check_credentials(

@@ -1090,7 +1090,11 @@ test('administrator setup is centered and accepts an eight-character password', 
   await page.getByRole('button', { name: 'Create your server' }).click();
   await expect
     .poll(() => submitted)
-    .toEqual({ username: 'admin', password: '12345678' });
+    .toEqual({
+      username: 'admin',
+      password: '12345678',
+      timezone: expect.any(String),
+    });
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });

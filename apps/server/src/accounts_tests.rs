@@ -17,12 +17,13 @@ async fn password_change_rejects_a_previously_verified_login_and_revokes_an_issu
         .await
         .unwrap();
     let address = "127.0.0.1".parse().unwrap();
-    let before = crate::accounts::check_credentials(&state, address, "alice", "old password")
+    let before = crate::accounts::check_credentials(&state, address, "alice", "old password", None)
         .await
         .unwrap();
-    let delayed = crate::accounts::check_credentials(&state, address, "alice", "old password")
-        .await
-        .unwrap();
+    let delayed =
+        crate::accounts::check_credentials(&state, address, "alice", "old password", None)
+            .await
+            .unwrap();
     let issued =
         thelxinoe_auth::issue_session(&state.db, before, "device".into(), "before change".into())
             .await
@@ -128,6 +129,82 @@ async fn open_setup_has_bounded_admission_and_an_attempt_limit() {
         .0,
         StatusCode::TOO_MANY_REQUESTS
     );
+}
+
+#[tokio::test]
+async fn a_remembered_device_signs_in_while_others_have_locked_the_account() {
+    use crate::accounts::check_credentials;
+    let (_temp, state, _) = fixture().await;
+    let hash = thelxinoe_auth::password_hash("right password".into())
+        .await
+        .unwrap();
+    let token = "r".repeat(64);
+    let remembered = thelxinoe_auth::digest(&token);
+    state.db.write("test.credential", move |db| {
+        db.execute("UPDATE users SET password_hash=?1 WHERE id='alice'", [hash])?;
+        db.execute("INSERT INTO auth_remembered_devices(id,user_id,token_hash,name,created_at,last_seen) VALUES ('laptop','alice',?1,'Laptop',1,1)", [remembered])?;
+        Ok(())
+    }).await.unwrap();
+    for i in 0..10 {
+        let address: std::net::IpAddr = format!("203.0.113.{i}").parse().unwrap();
+        assert!(
+            check_credentials(&state, address, "alice", "wrong guess", None)
+                .await
+                .is_err()
+        );
+    }
+    let home: std::net::IpAddr = "198.51.100.7".parse().unwrap();
+    for other in [None, Some("x".repeat(64))] {
+        let locked = check_credentials(&state, home, "alice", "right password", other).await;
+        assert_eq!(locked.err().unwrap().0, StatusCode::TOO_MANY_REQUESTS);
+    }
+    assert!(
+        check_credentials(&state, home, "alice", "right password", Some(token.clone()))
+            .await
+            .is_ok()
+    );
+    let wrong = check_credentials(&state, home, "alice", "wrong guess", Some(token)).await;
+    assert_eq!(wrong.err().unwrap().0, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn setup_adopts_a_valid_browser_timezone_as_the_server_default() {
+    for (sent, saved) in [
+        (json!("Europe/Paris"), Some("Europe/Paris")),
+        (json!("Not/AZone"), None),
+        (json!(null), None),
+    ] {
+        let (_temp, state, _) = fixture().await;
+        state
+            .db
+            .write("test.open_setup", |db| {
+                db.execute("DELETE FROM users", [])?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let (status, _, body) = call(
+            &state,
+            "/api/v1/setup",
+            "POST",
+            json!({"username":"admin","password":"a valid password","timezone":sent}),
+            "",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let stored = state
+            .db
+            .read("test.timezone", |db| {
+                Ok(rusqlite::OptionalExtension::optional(db.query_row(
+                    "SELECT value FROM settings WHERE key='timezone'",
+                    [],
+                    |r| r.get::<_, String>(0),
+                ))?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(stored.as_deref(), saved, "{sent}");
+    }
 }
 
 #[tokio::test]

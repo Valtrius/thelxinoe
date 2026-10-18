@@ -44,7 +44,7 @@
       <p class="mt-5 max-w-2xl text-xl leading-relaxed text-muted">
         Connected accounts, server storage and your viewing information.
       </p>
-      <p class="mt-4 text-sm text-muted">Effective date: 2 October 2026</p>
+      <p class="mt-4 text-sm text-muted">Effective date: 18 October 2026</p>
       <article
         class="mt-10 max-w-[70ch] space-y-10 leading-7 text-muted [&_h2]:mb-4 [&_h2]:text-2xl [&_h2]:font-semibold [&_h2]:text-foreground [&_h3]:mt-6 [&_h3]:mb-3 [&_h3]:text-lg [&_h3]:font-semibold [&_h3]:text-foreground [&_p+p]:mt-4 [&_a]:text-accent [&_a]:underline [&_a]:underline-offset-4 [&_strong]:text-foreground"
       >
@@ -127,8 +127,8 @@
             features you use. Requests disclose the necessary identifiers,
             authorization information and ordinary connection details, such as
             IP addresses and request times, to their recipients. Configured
-            media integrations, metadata providers and software update services
-            also receive requests when used.
+            media integrations and metadata providers also receive requests when
+            used.
           </p>
           <p>
             Thelxinoe does not sell Google user data, use it for advertising or
@@ -151,6 +151,38 @@
             and
             <a href="https://kick.com/privacy-policy">Kick Privacy Policy</a>.
           </p>
+          <h3>Automatic requests</h3>
+          <p>
+            Some requests are made in the background, whether or not you use the
+            related feature. They identify the software version but contain no
+            account, library or viewing information. Thelxinoe has no telemetry
+            or analytics and does not report your usage to the project
+            maintainer.
+          </p>
+          <ul class="mt-4 list-disc space-y-2 pl-6">
+            <li>
+              The server checks GitHub for new Thelxinoe releases when it is
+              first started and about every 6 hours after that. The update
+              policy decides only when new versions are installed. With
+              automatic updates, new versions are downloaded from GitHub's
+              container registry. Once managed media services are added, their
+              image registries and GitHub release notes are checked every 6
+              hours too.
+            </li>
+            <li>
+              The server keeps its playback tools up to date. Whenever it
+              starts, and about once a day, it checks GitHub, PyPI and Deno for
+              new versions and downloads them. Before it uses a new YouTube or
+              live-stream tool version, it tests that version on public YouTube
+              videos and Twitch and Kick channels, even when those features are
+              turned off.
+            </li>
+            <li>
+              The desktop app checks GitHub for its own updates when it opens,
+              even before you sign in, and every 6 hours after that. It also
+              checks GitHub about once a day for updates to its playback tools.
+            </li>
+          </ul>
         </section>
         <section aria-labelledby="deletion">
           <h2 id="deletion">Retention, disconnection and deletion</h2>

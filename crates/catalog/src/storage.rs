@@ -43,6 +43,20 @@ pub(super) async fn scan_with_progress_read_media_files(
     .await
 }
 
+pub(super) async fn scan_with_progress_read_present_paths(
+    root: String,
+    db: &Database,
+) -> anyhow::Result<Vec<String>> {
+    db.read("catalog.scan_with_progress_read_present_paths", move |c| {
+        Ok(
+            c.prepare("SELECT path FROM media_files WHERE root_id=?1 AND present=1")?
+                .query_map([root], |r| r.get(0))?
+                .collect::<std::result::Result<_, _>>()?,
+        )
+    })
+    .await
+}
+
 pub(super) async fn scan_with_progress_write_media_files(
     indexed: Vec<IndexedFile>,
     current_paths: std::collections::HashSet<String>,

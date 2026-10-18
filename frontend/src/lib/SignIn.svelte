@@ -92,10 +92,15 @@
       if (!(await prepare(serverAddress))) return;
       if (setup && password !== confirmation)
         throw new Error('Passwords do not match.');
+      // The admin's zone becomes the server default, so maintenance runs at their night.
+      const timezone = setup
+        ? Intl.DateTimeFormat().resolvedOptions().timeZone
+        : undefined;
       await accept(
         await api<LoginResponse>(setup ? '/setup' : '/auth/login', 'POST', {
           username,
           password,
+          timezone,
         }),
       );
     });

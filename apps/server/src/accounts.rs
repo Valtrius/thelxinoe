@@ -17,8 +17,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use thelxinoe_auth::{
-    SessionAuthorization, issue_session, password_hash_with_permit, user_row, validate_credentials,
-    verify_password_with_permit,
+    SessionAuthorization, digest, issue_session, password_hash_with_permit, user_row,
+    validate_credentials, verify_password_with_permit,
 };
 use thelxinoe_core::{Capability, Role, id, now};
 
@@ -97,11 +97,23 @@ pub(crate) async fn respond_session(
         .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
     Ok(response)
 }
+#[derive(Deserialize)]
+pub struct Setup {
+    #[serde(flatten)]
+    credentials: Credentials,
+    /// The admin browser's zone. It becomes the server default so maintenance windows
+    /// such as 03:00–05:00 fall at local night; an unknown zone keeps UTC.
+    #[serde(default)]
+    timezone: Option<String>,
+}
 pub async fn setup(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    Json(c): Json<Credentials>,
+    Json(Setup {
+        credentials: c,
+        timezone,
+    }): Json<Setup>,
 ) -> Result<Response> {
     let context = security::request_context(&state.config, &headers, peer)?;
     if storage::setup_status(&state.db).await? != 0 {
@@ -127,7 +139,10 @@ pub async fn setup(
     let user_id = id();
     let uid = user_id.clone();
     let username = c.username.clone();
-    let created = storage::setup(&state.db, hash.clone(), uid, username).await?;
+    let timezone = timezone
+        .and_then(|zone| zone.parse::<chrono_tz::Tz>().ok())
+        .map(|zone| zone.name().to_owned());
+    let created = storage::setup(&state.db, hash.clone(), uid, username, timezone).await?;
     if !created {
         return Err(ApiError::conflict("Setup is already complete"));
     }
@@ -149,7 +164,23 @@ pub async fn login(
     Json(c): Json<Credentials>,
 ) -> Result<Response> {
     let context = security::request_context(&state.config, &headers, peer)?;
-    let user = check_credentials(&state, context.address, &c.username, &c.password).await?;
+    let remembered = c.remember_token.clone().or_else(|| {
+        headers
+            .get(header::COOKIE)?
+            .to_str()
+            .ok()?
+            .split(';')
+            .find_map(|part| part.trim().strip_prefix("thelxinoe_remember="))
+            .map(str::to_owned)
+    });
+    let user = check_credentials(
+        &state,
+        context.address,
+        &c.username,
+        &c.password,
+        remembered,
+    )
+    .await?;
     crate::authentication::password_login(&state, user, &c, &headers, context.secure).await
 }
 pub(crate) async fn check_credentials(
@@ -157,14 +188,25 @@ pub(crate) async fn check_credentials(
     address: std::net::IpAddr,
     username: &str,
     password: &str,
+    remembered: Option<String>,
 ) -> Result<SessionAuthorization> {
     allow_password_attempt(state, security::client_bucket(address)).await?;
     if password.len() > 256 || username.len() > 64 {
         return Err(ApiError::unauthorized());
     }
-    // Keyed by name whether or not the account exists, so throttling reveals nothing.
+    // Keyed by name whether or not the account exists, so throttling reveals nothing. A device
+    // remembered after two-step sign-in to this account isn't locked out by others' failed
+    // guesses; its own failures still count, and the per-address limit still applies.
     let throttle = format!("password-account:{}", username.to_ascii_lowercase());
-    allow_account_attempt(state, &throttle).await?;
+    let trusted = match remembered.filter(|token| token.len() == 64) {
+        Some(token) => {
+            storage::remembered_device(&state.db, username.to_owned(), digest(&token)).await?
+        }
+        None => false,
+    };
+    if !trusted {
+        allow_account_attempt(state, &throttle).await?;
+    }
     let slot = state
         .password_slots
         .clone()

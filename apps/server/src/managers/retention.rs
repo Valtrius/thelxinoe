@@ -66,11 +66,15 @@ async fn policy(
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
     if !["movies", "shows", "videos"].contains(&domain.as_str())
-        || !(0..=31536000).contains(&input.grace_seconds)
+        || input.grace_seconds > 31536000
         || input.trigger_users.len() > 100
         || !(1..=9_000_000_000_000_000).contains(&input.storage_limit_bytes)
     {
         return Err(ApiError::bad("Invalid auto-delete policy"));
+    }
+    // Scheduled deletions are the only place to keep media before it goes, so they last a day.
+    if input.grace_seconds < 86400 {
+        return Err(ApiError::bad("Delete after must be at least 1 day"));
     }
     input.trigger_users.sort();
     input.trigger_users.dedup();

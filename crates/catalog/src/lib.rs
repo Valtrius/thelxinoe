@@ -90,10 +90,25 @@ where
     let base = PathBuf::from(&root.path)
         .canonicalize()
         .context("Library is unavailable")?;
-    let entries = tokio::task::spawn_blocking(move || -> Result<Vec<PathBuf>> {
+    let (entries, unreadable) = tokio::task::spawn_blocking(move || -> Result<_> {
         let mut entries = Vec::new();
+        // A folder the server can't read, such as lost+found or #recycle, is skipped and
+        // keeps what it had. An unreadable root or an unknown location still fails the scan.
+        let mut unreadable = Vec::new();
         for entry in walkdir::WalkDir::new(&base).follow_links(false) {
-            let entry = entry?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => match error.path().filter(|_| error.depth() > 0) {
+                    Some(path) => {
+                        let reason = error
+                            .io_error()
+                            .map_or_else(|| error.to_string(), ToString::to_string);
+                        unreadable.push((path.to_path_buf(), reason));
+                        continue;
+                    }
+                    None => return Err(error.into()),
+                },
+            };
             if entry.file_type().is_file() && supported(entry.path()) {
                 let path = entry.path().canonicalize()?;
                 if !path.starts_with(&base) {
@@ -102,7 +117,7 @@ where
                 entries.push(path);
             }
         }
-        Ok(entries)
+        Ok((entries, unreadable))
     })
     .await??;
     let total = entries.len();
@@ -112,6 +127,18 @@ where
     // One unreadable or still-changing file must not block the rest of the library.
     let mut retained = std::collections::HashSet::new();
     let mut failures = Vec::new();
+    if !unreadable.is_empty() {
+        retained.extend(
+            storage::scan_with_progress_read_present_paths(root.id.clone(), db)
+                .await?
+                .into_iter()
+                .filter(|path| {
+                    unreadable
+                        .iter()
+                        .any(|(folder, _)| Path::new(path).starts_with(folder))
+                }),
+        );
+    }
     for (done, path) in entries.into_iter().enumerate() {
         let path_string = path.to_string_lossy().to_string();
         let old = storage::scan_with_progress_read_media_files(path_string.clone(), db).await?;
@@ -141,11 +168,24 @@ where
             .entry(file.fingerprint.clone())
             .or_insert(0usize) += 1;
     }
-    let warning = failures.first().map(|first| {
+    let counted = |count: usize, noun: &str| {
+        (count > 0).then(|| format!("{count} {noun}{}", if count == 1 { "" } else { "s" }))
+    };
+    let first = unreadable
+        .first()
+        .map(|(path, error)| format!("{} ({error})", path.display()))
+        .or_else(|| failures.first().cloned());
+    let warning = first.map(|first| {
+        let what = [
+            counted(failures.len(), "file"),
+            counted(unreadable.len(), "folder"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" and ");
         format!(
-            "{} file{} couldn't be read and will be retried; the rest are up to date. First: {first}",
-            failures.len(),
-            if failures.len() == 1 { "" } else { "s" }
+            "{what} couldn't be read and will be retried; the rest are up to date. First: {first}"
         )
     });
     storage::scan_with_progress_write_media_files(
