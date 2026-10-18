@@ -145,9 +145,17 @@ async fn eligible(state: &AppState) -> Result<Option<Manifest>> {
 }
 async fn status(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
-    let controller = controller_status(&state)
-        .await
-        .unwrap_or_else(|_| json!({"items":[],"error":"Controller unavailable"}));
+    // The operations loop records the controller's state every few seconds, so
+    // reading the status never waits on the controller.
+    let mut controller = setting(&state, "product.controller").await?;
+    if controller.is_none() {
+        // Before that loop's first record, ask once instead of reporting it missing.
+        let _ = observe(&state).await;
+        controller = setting(&state, "product.controller").await?;
+    }
+    let controller = controller
+        .filter(|value| value["available"] == true)
+        .unwrap_or_else(|| json!({"items":[],"error":"Controller unavailable"}));
     Ok(Json(
         json!({"version":thelxinoe_core::VERSION,"timezone":storage::server_zone(&state.db).await?.name(),"policy":configured_policy(&state).await?,"release":eligible(&state).await?,"request":setting(&state,"product.install").await?,"observation":setting(&state,"product.observation").await?,"configured":configured(),"controller":controller}),
     ))

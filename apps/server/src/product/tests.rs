@@ -97,3 +97,51 @@ fn preflight_is_invalidated_by_recreation_even_when_the_version_is_unchanged() {
     assert!(!current_preflight(&operation, &json!({"generation":4})));
     assert!(!current_preflight(&operation, &json!({})));
 }
+
+// Settings pages poll the status every few seconds; they read the controller
+// state the operations loop records instead of asking the controller each time.
+#[tokio::test]
+async fn status_reports_the_recorded_controller_state() {
+    let (_temp, state, cookie) = fixture().await;
+    state
+        .db
+        .write("test.admin", |db| {
+            db.execute("UPDATE users SET role='admin' WHERE id='alice'", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let controller = |id: &str| {
+        state.managers.docker.lock().unwrap().insert(
+            "stack/product".into(),
+            json!({"items":[{"id":id,"stage":"ready"}]}),
+        );
+    };
+    async fn reported(state: &AppState, cookie: &str) -> Value {
+        let (status, _, body) = call(
+            state,
+            "/api/v1/admin/product-update",
+            "GET",
+            Value::Null,
+            cookie,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        body["controller"].clone()
+    }
+    // Before the first record the status asks once.
+    controller("first");
+    assert_eq!(reported(&state, &cookie).await["items"][0]["id"], "first");
+    controller("second");
+    assert_eq!(reported(&state, &cookie).await["items"][0]["id"], "first");
+    observe(&state).await.unwrap();
+    assert_eq!(reported(&state, &cookie).await["items"][0]["id"], "second");
+    state.managers.docker.lock().unwrap().insert(
+        "stack/product".into(),
+        json!({"__error":["controller_unavailable","Controller did not respond"]}),
+    );
+    assert!(observe(&state).await.is_err());
+    let unavailable = reported(&state, &cookie).await;
+    assert_eq!(unavailable["error"], "Controller unavailable");
+    assert_eq!(unavailable["items"], json!([]));
+}
