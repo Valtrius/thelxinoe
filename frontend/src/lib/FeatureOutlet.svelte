@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { User } from './api';
-  import type { AppRoute } from './navigation';
+  import { routeHref, type AppRoute } from './navigation';
   import type { MediaChoice } from './playback';
   import { pages } from './pages';
   import Notice from './ui/Notice.svelte';
@@ -59,7 +59,7 @@
     />
   {:else if route.section === 'Statistics'}
     <ContentSkeleton label="Loading statistics" variant="statistics" />
-  {:else if route.section === 'Discover' && route.detail}
+  {:else if (route.section === 'Discover' && route.detail) || (['Movies', 'Shows'].includes(route.section) && route.item)}
     <ContentSkeleton label="Loading details" variant="detail" />
   {:else}
     <MediaSkeleton
@@ -117,6 +117,8 @@
         {preferencesRevision}
         {accountRevision}
         revision={settingsRevision}
+        {catalogRevision}
+        {scans}
         {navigate}
         {openSettings}
         {sessionEnded}
@@ -129,7 +131,8 @@
     {#await pages.discover()}{@render loading()}{:then { default: Discover }}
       <Discover
         {user}
-        {navigate}
+        {play}
+        revision={catalogRevision}
         settings={() => openSettings('services')}
         detail={route.detail}
         showRequests={route.requests}
@@ -142,17 +145,35 @@
         back={() => go({ ...route, detail: undefined, requests: false })}
       />
     {:catch error}{@render failed(error)}{/await}
+  {:else if ['Movies', 'Shows'].includes(route.section) && route.item}
+    {#await pages.title()}{@render loading()}{:then { default: TitlePage }}
+      {#key route.item}<TitlePage
+          {user}
+          kind={route.section === 'Movies' ? 'movie' : 'show'}
+          mediaId={route.item}
+          revision={catalogRevision}
+          backLabel={`Back to ${route.section === 'Movies' ? 'movies' : 'shows'}`}
+          back={() => {
+            const grid = { ...route, item: undefined, ancestors: undefined };
+            // Returning through history restores where the grid was scrolled.
+            if (history.state?.from === routeHref(grid)) history.back();
+            else go(grid);
+          }}
+          {play}
+          openTitle={(detail) =>
+            go({ section: 'Discover', settings: route.settings, detail })}
+        />{/key}
+    {:catch error}{@render failed(error)}{/await}
   {:else if ['Movies', 'Shows', 'Music'].includes(route.section)}
     {#key route.section}
       {#await pages.library()}{@render loading()}{:then { default: LibraryView }}
         <LibraryView
           domain={route.section}
           admin={user.role === 'admin'}
+          {openSettings}
           revision={catalogRevision}
-          {scans}
           userId={user.id}
           timezone={user.timezone}
-          {timeFormat}
           focusId={route.item}
           ancestors={route.ancestors}
           searchQuery={route.query}

@@ -161,8 +161,9 @@ try {
     .getByRole('navigation', { name: 'Main navigation' })
     .getByRole('link', { name: 'Movies', exact: true })
     .click();
+  // Cards open each title's page, which plays the movie.
   await page.getByRole('button', { name: 'Direct 2020', exact: true }).click();
-  await page.getByRole('button', { name: 'Play media', exact: true }).click();
+  await page.getByRole('button', { name: 'Play', exact: true }).click();
   await page.waitForFunction(
     () => {
       const v = document.querySelector('video');
@@ -269,9 +270,12 @@ try {
   }
   for (const title of ['Remux', 'Transcode', 'Audio Only']) {
     await page
+      .getByRole('button', { name: 'Back to movies', exact: true })
+      .click();
+    await page
       .getByRole('button', { name: `${title} 2020`, exact: true })
       .click();
-    await page.getByRole('button', { name: 'Play media', exact: true }).click();
+    await page.getByRole('button', { name: 'Play', exact: true }).click();
     await page.waitForFunction(
       () => {
         const v = document.querySelector('video');

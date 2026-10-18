@@ -4,11 +4,20 @@
   import { untrack } from 'svelte';
   import { api } from './api';
   import Button from './ui/Button.svelte';
-  let { mediaId, fileId, duration, episode } = $props<{
+  let {
+    mediaId,
+    fileId,
+    duration,
+    episode,
+    summary = 'Intro, recap, credits and preview timestamps',
+    open = false,
+  } = $props<{
     mediaId: string;
     fileId: string;
     duration: number;
     episode: boolean;
+    summary?: string;
+    open?: boolean;
   }>();
   type Segment = {
     id: string;
@@ -68,10 +77,9 @@
 
 <details
   class="my-4 border border-line p-4 [&_label]:m-0 [&_label]:max-w-36 [&_span]:text-xs [&_span]:text-muted"
+  {open}
 >
-  <summary class="mb-4 font-semibold">
-    Intro, recap, credits and preview timestamps
-  </summary>
+  <summary class="mb-4 font-semibold">{summary}</summary>
   <p>
     Times are seconds within this edition. Saving an empty list suppresses
     automatic timestamps. Corrections apply to this file version.

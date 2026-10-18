@@ -84,7 +84,7 @@ pub(super) async fn browse_media(
         let rows = db
             .prepare(&sql)?
             .query_map(rusqlite::params_from_iter(&args), |r| {
-                Ok((row(r, &server)?, r.get::<_, i64>(21)? as usize))
+                Ok((row(r, &server)?, r.get::<_, i64>(20)? as usize))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let total = if let Some(row) = rows.first() {
@@ -367,7 +367,7 @@ pub(super) async fn display_preferences(
     }).await
 }
 
-pub(super) const SELECT: &str = "SELECT m.id,m.kind,c.title,m.parent_id,m.year,m.sort_number,m.metadata,m.overrides,m.created_at,m.root_id,COALESCE(u.favorite,0),COALESCE(u.watched,0),COALESCE(ep.position,0),COALESCE(ep.duration,0),p.kind,p.sort_number,pc.title,p.parent_id,gc.title,(SELECT f.probe FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1 ORDER BY f.edition,f.id LIMIT 1),(SELECT COUNT(*) FROM media ch WHERE ch.parent_id=m.id),COUNT(*) OVER()";
+pub(super) const SELECT: &str = "SELECT m.id,m.kind,c.title,m.parent_id,m.year,m.sort_number,m.metadata,m.created_at,m.root_id,COALESCE(u.favorite,0),COALESCE(u.watched,0),COALESCE(ep.position,0),COALESCE(ep.duration,0),p.kind,p.sort_number,pc.title,p.parent_id,gc.title,(SELECT f.probe FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1 ORDER BY f.edition,f.id LIMIT 1),(SELECT COUNT(*) FROM media ch WHERE ch.parent_id=m.id),COUNT(*) OVER()";
 const FROM: &str = "FROM media m JOIN media_cards c ON c.id=m.id LEFT JOIN media_state u ON u.media_id=m.id AND u.user_id=?1 LEFT JOIN edition_progress ep ON ep.rowid=(SELECT rowid FROM edition_progress WHERE media_id=m.id AND user_id=?1 ORDER BY updated_at DESC,edition LIMIT 1) LEFT JOIN media p ON p.id=m.parent_id LEFT JOIN media_cards pc ON pc.id=p.id LEFT JOIN media_cards gc ON gc.id=p.parent_id";
 
 pub(super) fn row(r: &rusqlite::Row<'_>, server: &str) -> rusqlite::Result<Value> {
@@ -376,30 +376,25 @@ pub(super) fn row(r: &rusqlite::Row<'_>, server: &str) -> rusqlite::Result<Value
     let title: String = r.get(2)?;
     let parent: Option<String> = r.get(3)?;
     let metadata: Value = serde_json::from_str(&r.get::<_, String>(6)?).unwrap_or_default();
-    let overrides: Value = serde_json::from_str(&r.get::<_, String>(7)?).unwrap_or_default();
     let probe: Value = r
-        .get::<_, Option<String>>(19)?
+        .get::<_, Option<String>>(18)?
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
     let duration = probe["format"]["duration"]
         .as_str()
         .and_then(|v| v.parse::<f64>().ok())
-        .unwrap_or(r.get(13)?);
-    let position: f64 = r.get(12)?;
-    let played: bool = r.get(11)?;
-    let year = overrides["year"]
-        .as_i64()
-        .or_else(|| {
-            metadata["release_date"]
-                .as_str()
-                .or(metadata["first_air_date"].as_str())
-                .and_then(|s| s.get(..4))
-                .and_then(|s| s.parse().ok())
-        })
+        .unwrap_or(r.get(12)?);
+    let position: f64 = r.get(11)?;
+    let played: bool = r.get(10)?;
+    let year = metadata["release_date"]
+        .as_str()
+        .or(metadata["first_air_date"].as_str())
+        .and_then(|s| s.get(..4))
+        .and_then(|s| s.parse::<i64>().ok())
         .or(r.get(4)?);
-    let mut value = json!({"Id":id,"ServerId":server,"Name":title,"SortName":title,"Type":item_type(&kind),"IsFolder":!["movie","episode","track"].contains(&kind.as_str()),"MediaType":if kind=="track"{"Audio"}else{"Video"},"LocationType":"FileSystem","ParentId":parent.clone().unwrap_or(r.get::<_,String>(9)?),"ProductionYear":year,"IndexNumber":r.get::<_,Option<i64>>(5)?,"RunTimeTicks":ticks(duration),"Overview":overrides.get("overview").or(metadata.get("overview")),"ChildCount":r.get::<_,i64>(20)?,"Genres":[],"People":[],"Studios":[],"ProviderIds":{},"ImageTags":{},"BackdropImageTags":[],"MediaSources":[],"UserData":{"Key":id,"ItemId":id,"IsFavorite":r.get::<_,bool>(10)?,"Played":played,"PlayCount":if played {1}else{0},"PlaybackPositionTicks":if played {0}else{ticks(position)},"PlayedPercentage":if duration>0.0{position/duration*100.0}else{0.0}}});
+    let mut value = json!({"Id":id,"ServerId":server,"Name":title,"SortName":title,"Type":item_type(&kind),"IsFolder":!["movie","episode","track"].contains(&kind.as_str()),"MediaType":if kind=="track"{"Audio"}else{"Video"},"LocationType":"FileSystem","ParentId":parent.clone().unwrap_or(r.get::<_,String>(8)?),"ProductionYear":year,"IndexNumber":r.get::<_,Option<i64>>(5)?,"RunTimeTicks":ticks(duration),"Overview":metadata.get("overview"),"ChildCount":r.get::<_,i64>(19)?,"Genres":[],"People":[],"Studios":[],"ProviderIds":{},"ImageTags":{},"BackdropImageTags":[],"MediaSources":[],"UserData":{"Key":id,"ItemId":id,"IsFavorite":r.get::<_,bool>(9)?,"Played":played,"PlayCount":if played {1}else{0},"PlaybackPositionTicks":if played {0}else{ticks(position)},"PlayedPercentage":if duration>0.0{position/duration*100.0}else{0.0}}});
     if metadata["artwork_cached"] == true {
-        value["ImageTags"] = json!({"Primary":format!("{}",r.get::<_,i64>(8)?)});
+        value["ImageTags"] = json!({"Primary":format!("{}",r.get::<_,i64>(7)?)});
     }
     if let Some(genres) = metadata["genres"].as_array() {
         value["Genres"] = json!(
@@ -412,18 +407,18 @@ pub(super) fn row(r: &rusqlite::Row<'_>, server: &str) -> rusqlite::Result<Value
     match kind.as_str() {
         "episode" => {
             value["SeasonId"] = json!(parent);
-            value["SeriesId"] = json!(r.get::<_, Option<String>>(17)?);
-            value["SeriesName"] = json!(r.get::<_, Option<String>>(18)?);
-            value["SeasonName"] = json!(r.get::<_, Option<String>>(16)?);
-            value["ParentIndexNumber"] = json!(r.get::<_, Option<i64>>(15)?);
+            value["SeriesId"] = json!(r.get::<_, Option<String>>(16)?);
+            value["SeriesName"] = json!(r.get::<_, Option<String>>(17)?);
+            value["SeasonName"] = json!(r.get::<_, Option<String>>(15)?);
+            value["ParentIndexNumber"] = json!(r.get::<_, Option<i64>>(14)?);
         }
         "season" => {
             value["SeriesId"] = json!(parent);
-            value["SeriesName"] = json!(r.get::<_, Option<String>>(16)?);
+            value["SeriesName"] = json!(r.get::<_, Option<String>>(15)?);
         }
         "album" => {
-            value["AlbumArtist"] = json!(r.get::<_, Option<String>>(16)?);
-            value["ArtistItems"] = json!([{"Id":parent,"Name":r.get::<_,Option<String>>(16)?}]);
+            value["AlbumArtist"] = json!(r.get::<_, Option<String>>(15)?);
+            value["ArtistItems"] = json!([{"Id":parent,"Name":r.get::<_,Option<String>>(15)?}]);
         }
         "track" => {
             if let Some(number) = r.get::<_, Option<i64>>(5)? {
@@ -431,9 +426,9 @@ pub(super) fn row(r: &rusqlite::Row<'_>, server: &str) -> rusqlite::Result<Value
                 value["ParentIndexNumber"] = json!(number / 10000);
             }
             value["AlbumId"] = json!(parent);
-            value["Album"] = json!(r.get::<_, Option<String>>(16)?);
-            value["Artists"] = json!([r.get::<_, Option<String>>(18)?]);
-            value["ArtistItems"] = json!([{"Id":r.get::<_,Option<String>>(17)?,"Name":r.get::<_,Option<String>>(18)?}]);
+            value["Album"] = json!(r.get::<_, Option<String>>(15)?);
+            value["Artists"] = json!([r.get::<_, Option<String>>(17)?]);
+            value["ArtistItems"] = json!([{"Id":r.get::<_,Option<String>>(16)?,"Name":r.get::<_,Option<String>>(17)?}]);
         }
         _ => {}
     }

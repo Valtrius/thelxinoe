@@ -80,7 +80,7 @@ try {
     .getByRole('link', { name: 'Movies', exact: true })
     .click();
   await page.getByRole('button', { name: 'Direct 2020', exact: true }).click();
-  await page.getByRole('button', { name: 'Play media', exact: true }).click();
+  await page.getByRole('button', { name: 'Play', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Native player' })).toHaveCount(
     0,
   );

@@ -3,7 +3,14 @@
   import Notice from './ui/Notice.svelte';
   import FormField from './ui/FormField.svelte';
   import { formControlClass } from './ui/styles';
-  import { Folder, RefreshCw, ArrowLeft } from '@lucide/svelte';
+  import {
+    Folder,
+    RefreshCw,
+    ArrowLeft,
+    Ellipsis,
+    FolderCog,
+  } from '@lucide/svelte';
+  import { DropdownMenu } from 'bits-ui';
   import { api } from './api';
   import { activity } from './activity';
   import { LatestRequest } from './latest-request';
@@ -17,11 +24,12 @@
   import MediaSkeleton from './ui/MediaSkeleton.svelte';
   import ContentSkeleton from './ui/ContentSkeleton.svelte';
   import Skeleton from './ui/Skeleton.svelte';
-  import MetadataEditor from './MetadataEditor.svelte';
-  import EpisodeMapping from './EpisodeMapping.svelte';
   import MediaActions from './MediaActions.svelte';
   import MediaOperations from './MediaOperations.svelte';
-  import SegmentEditor from './SegmentEditor.svelte';
+  import TitleMenu from './title/TitleMenu.svelte';
+  import { showToast } from './providers/toasts';
+  import { loadRoots, scanRoot } from './title/catalog';
+  import type { TitleStatus } from './title/status';
   import { untrack, onDestroy } from 'svelte';
   import type { MediaChoice } from './playback';
   import Button from './ui/Button.svelte';
@@ -30,12 +38,11 @@
   let {
     domain,
     admin,
+    openSettings,
     revision = 0,
-    scans = {},
     play,
     userId,
     timezone,
-    timeFormat,
     focusId,
     ancestors,
     selectedChanged,
@@ -45,12 +52,11 @@
   } = $props<{
     domain: string;
     admin: boolean;
+    openSettings?: (name: string) => void;
     revision?: number;
-    scans?: Record<string, { completed: number; total: number }>;
     play: (choice: MediaChoice) => void;
     userId: string;
     timezone: string;
-    timeFormat: '12h' | '24h';
     focusId?: string;
     ancestors?: string[];
     selectedChanged?: (id?: string, ancestors?: string[]) => void;
@@ -68,19 +74,12 @@
     metadata: Record<string, unknown>;
     artwork_url?: string;
     overview?: string;
-    overrides?: { title?: string; overview?: string; year?: number };
+    virtual?: boolean;
+    status?: TitleStatus | null;
   };
-  type Root = {
-    id: string;
-    name: string;
-    kind: string;
-    path: string;
-    last_scan: number | null;
-    scan_error: string | null;
-    watching?: boolean | null;
-  };
+  // Movies and Shows open a title page; Music keeps its track panel here.
+  const titles = $derived(domain !== 'Music');
   let items = $state<Item[]>([]),
-    roots = $state<Root[]>([]),
     error = $state(''),
     busy = $state(true);
   let collections = $state<{ id: number; name: string; count: number }[]>([]),
@@ -96,7 +95,6 @@
       }[];
       local_trailers?: { file_id: string }[];
     } | null>(null);
-  const browsing = $derived(breadcrumbs.at(-1));
   let generation = 0;
   const detailRequests = new LatestRequest();
   let search = $state('');
@@ -135,13 +133,6 @@
         );
         if (request !== generation) return;
         collections = result.items;
-      }
-      if (admin) {
-        const result = await api<{ items: Root[]; media_mount: string }>(
-          '/catalog/roots',
-        );
-        if (request !== generation) return;
-        roots = result.items.filter((r) => r.kind === domain.toLowerCase());
       }
     } catch (e) {
       if (request === generation) error = String(e);
@@ -239,6 +230,31 @@
     selected = null;
     details = null;
   }
+  const menuItemClass =
+    'flex h-8 w-full cursor-default items-center gap-[0.55rem] whitespace-nowrap px-[0.55rem] text-left text-[0.7rem] text-muted outline-none data-[highlighted]:bg-accent-soft data-[highlighted]:text-foreground [&_svg]:size-[0.85rem] compact:h-11 compact:text-[13px]';
+  async function scanLibrary() {
+    try {
+      const roots = (await loadRoots()).filter(
+        (root) => root.kind === domain.toLowerCase(),
+      );
+      await Promise.all(roots.map((root) => scanRoot(root.id)));
+      showToast({
+        key: `scan:${domain}`,
+        tone: roots.length ? 'success' : 'warning',
+        title: domain,
+        message: roots.length
+          ? `Scanning ${roots.length} library ${roots.length === 1 ? 'folder' : 'folders'}.`
+          : 'No library folders are set up for this section.',
+      });
+    } catch (e) {
+      showToast({
+        key: `scan:${domain}`,
+        tone: 'error',
+        title: domain,
+        message: String(e),
+      });
+    }
+  }
   async function loadDetails(id: string) {
     const current = detailRequests.begin();
     try {
@@ -285,6 +301,38 @@
   >{#if busy && !items.length}<Skeleton class="w-16" />{:else}<span
       class="text-muted">{items.length} items</span
     >{/if}
+  {#if admin}<div class="ml-auto">
+      <DropdownMenu.Root>
+        <DropdownMenu.Trigger>
+          {#snippet child({ props })}<Button
+              {...props}
+              variant="secondary"
+              size="icon"
+              aria-label={`${domain} library actions`}
+              title="Library actions"><Ellipsis size={16} /></Button
+            >{/snippet}
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Portal>
+          <DropdownMenu.Content
+            align="end"
+            sideOffset={4}
+            preventScroll={false}
+            class="z-50 grid min-w-48 border border-line-strong bg-surface-strong p-1.5 shadow-2xl"
+          >
+            <DropdownMenu.Item
+              class={menuItemClass}
+              onSelect={() => void scanLibrary()}
+              ><RefreshCw />Scan library</DropdownMenu.Item
+            >
+            {#if openSettings}<DropdownMenu.Item
+                class={menuItemClass}
+                onSelect={() => openSettings('server')}
+                ><FolderCog />Library folders</DropdownMenu.Item
+              >{/if}
+          </DropdownMenu.Content>
+        </DropdownMenu.Portal>
+      </DropdownMenu.Root>
+    </div>{/if}
 </div>
 {#if error}<Notice variant="error" role="alert">{error}</Notice>{/if}
 {#if domain === 'Movies' && collections.length}
@@ -301,38 +349,6 @@
     ></FormField
   >
 {/if}
-{#if admin && roots.length}<details class="mb-5 border-b border-line">
-    <summary>Library folders · {roots.length}</summary>
-    <div>
-      {#each roots as root (root.id)}<div class={rowClass}>
-          <div>
-            <strong>{root.name}</strong><small
-              >{scans[root.id]
-                ? `Scanning ${scans[root.id].completed} of ${scans[root.id].total} files`
-                : (root.scan_error ??
-                  (root.last_scan
-                    ? `Scanned ${new Date(root.last_scan * 1000).toLocaleString(undefined, { timeZone: timezone, hour12: timeFormat === '12h' })}`
-                    : 'Waiting for first scan'))}</small
-            >{#if root.watching === false}<small class="block text-muted"
-                >Live updates are unavailable for this folder; changes appear
-                within 15 minutes.</small
-              >{/if}
-          </div>
-          <Button
-            variant="secondary"
-            size="form"
-            disabled={busy}
-            onclick={async () => {
-              try {
-                await api(`/catalog/roots/${root.id}/scan`, 'POST');
-              } catch (e) {
-                error = String(e);
-              }
-            }}><RefreshCw size={14} /> Scan</Button
-          >
-        </div>{/each}
-    </div>
-  </details>{/if}
 {#if selected}<Panel>
     <SectionHeading>
       <h2>{selected.title}</h2>
@@ -355,9 +371,6 @@
           kind={selected.kind}
           changed={() => void load()}
         />{/key}{/if}
-    {#if details?.local_trailers?.length}<p class="text-muted">
-        {details.local_trailers.length} local trailer(s) indexed.
-      </p>{/if}
     {#if !details && !error}<ContentSkeleton label="Loading media files" />{/if}
     {#each details?.files ?? [] as file (file.id)}<div class={rowClass}>
         <span>{file.edition || 'Original edition'}</span><span
@@ -381,31 +394,8 @@
               })}>Play {file.edition || 'media'}</Button
           >{/if}
       </div>
-      {#if admin && file.present && ['movie', 'episode'].includes(selected.kind)}<SegmentEditor
-          episode={selected.kind === 'episode'}
-          mediaId={selected.id}
-          fileId={file.id}
-          duration={Number(file.probe.format?.duration ?? 0)}
-        />{/if}
     {/each}
-    {#if admin && details}<MetadataEditor
-        id={selected.id}
-        kind={selected.kind}
-        title={selected.title}
-        overrides={selected.overrides}
-        changed={() => void load()}
-      />{#if selected.kind === 'episode'}<EpisodeMapping
-          id={selected.id}
-          changed={() => void load()}
-        />{/if}{/if}
   </Panel>{/if}
-{#if admin && !selected && browsing && ['show', 'season'].includes(browsing.kind)}
-  {#key browsing.id}<MediaOperations
-      id={browsing.id}
-      kind={browsing.kind}
-      changed={() => void load()}
-    />{/key}
-{/if}
 {#if items.length}<MediaGrid
     revision={items.map((i) => i.id).join(',')}
     label={domain}
@@ -432,7 +422,8 @@
             void acknowledgeAttention(entry);
         }}
         open={() => void open(item)}
-        details={() => void select(item)}
+        details={titles ? undefined : () => void select(item)}
+        timezone={titles ? timezone : undefined}
         play={['movie', 'episode', 'track'].includes(item.kind) &&
         item.available
           ? () =>
@@ -446,7 +437,15 @@
                     : undefined,
               })
           : undefined}
-      />{/each}
+        >{#snippet menu()}{#if titles && !item.virtual}<TitleMenu
+              id={item.id}
+              kind={item.kind}
+              title={item.title}
+              {admin}
+              variant="card"
+              changed={() => void load()}
+            />{/if}{/snippet}</LibraryCard
+      >{/each}
   </MediaGrid>{:else if busy}<MediaSkeleton
     label={`Loading ${domain.toLowerCase()}`}
     shape={domain === 'Music' ? 'square' : 'poster'}

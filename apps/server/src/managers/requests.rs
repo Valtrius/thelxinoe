@@ -229,7 +229,10 @@ pub(crate) async fn acquire(state: &AppState, job: &thelxinoe_jobs::Job) -> anyh
         .to_owned();
     let _lease = state.media_operations.write().await;
     let _guard = state.managers.guard.lock().await;
-    if let Err(error) = perform(state, &key).await {
+    let result = perform(state, &key).await;
+    // An added title appears in browse lists as soon as its manager reports it.
+    super::status::refresh_soon(state);
+    if let Err(error) = result {
         let message = error.2;
         storage::acquire(key, message, &state.db).await?;
         anyhow::bail!("Acquisition needs attention; review its request status")

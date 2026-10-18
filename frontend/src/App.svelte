@@ -106,6 +106,7 @@
   }
   import DesktopVersion from './lib/DesktopVersion.svelte';
   import WebUpdateReload from './lib/WebUpdateReload.svelte';
+  import ToastViewport from './lib/providers/components/ui/ToastViewport.svelte';
   import { connectDesktopUpdates } from './lib/desktop-updates';
   import { connectTools } from './lib/providers/tools-events';
   import { persistQueue } from './lib/media-state';
@@ -384,7 +385,15 @@
           const root = (event.payload as { root_id?: string }).root_id;
           if (root) delete scans[root];
         }
-        if (['media-state.changed', 'playback.changed'].includes(event.kind))
+        // Progress reports arrive every few seconds while something plays; library
+        // pages only change when playback pauses or stops.
+        if (
+          ['media-state.changed', 'catalog.status.changed'].includes(
+            event.kind,
+          ) ||
+          (event.kind === 'playback.changed' &&
+            (event.payload as { state?: string }).state !== 'playing')
+        )
           catalogRevision++;
         if (event.kind === 'catalog.scan.progress') {
           const scan = event.payload as {
@@ -458,13 +467,24 @@
     route = { ...homeRoute };
     timeFormat = '24h';
   }
-  function writeLocation(destination: AppRoute, replace: boolean, scroll = 0) {
+  function writeLocation(
+    destination: AppRoute,
+    replace: boolean,
+    scroll = 0,
+    from?: string,
+  ) {
     const url = new SvelteURL(location.href);
     url.searchParams.delete('section');
     url.searchParams.delete('youtube_link');
     url.hash = routeHref(destination);
+    // `from` lets a page's own Back button return through history, restoring
+    // the scroll position its previous page left.
     history[replace ? 'replaceState' : 'pushState'](
-      { thelxinoeRoute: !replace || history.state?.thelxinoeRoute, scroll },
+      {
+        thelxinoeRoute: !replace || history.state?.thelxinoeRoute,
+        scroll,
+        from: replace ? history.state?.from : from,
+      },
       '',
       url,
     );
@@ -488,6 +508,7 @@
       next,
       replace,
       preserveWorkspace || preserveSettingsScroll ? scroll : 0,
+      routeHref(route),
     );
     if (!preserveWorkspace) {
       mobileNavOpen = false;
@@ -555,9 +576,11 @@
       events.abort();
     };
     stopScrollRestoration = stop;
-    if (destination.section === 'Settings' && workspace)
-      for (const event of ['wheel', 'pointerdown', 'keydown'])
-        workspace.addEventListener(event, stop, {
+    // Any input means the reader has taken over. Listen on the window: after
+    // navigation, focus sits outside the scroller.
+    if (scroll > 0 && workspace)
+      for (const event of ['wheel', 'pointerdown', 'touchstart', 'keydown'])
+        window.addEventListener(event, stop, {
           passive: true,
           signal: events.signal,
         });
@@ -567,16 +590,19 @@
     if (cancelled) return;
     if (workspace) {
       const scroller = workspace;
-      const settings =
+      // Pages load their content after they mount: keep the saved position
+      // until enough of it has rendered, the reader scrolls, or a few seconds pass.
+      const content =
         destination.section === 'Settings'
           ? scroller.querySelector('.settings-layout')
-          : null;
-      if (scroll > 0 && settings) {
+          : scroller.querySelector('[data-page-content]');
+      if (scroll > 0 && content) {
         observer = new ResizeObserver(() => {
           scroller.scrollTop = scroll;
           if (scroller.scrollTop >= scroll) stop();
         });
-        observer.observe(settings);
+        observer.observe(content);
+        setTimeout(stop, 5000);
       } else stop();
       scroller.scrollTop = scroll;
     } else stop();
@@ -761,6 +787,8 @@
 {#if desktop}<WindowTitlebar />{/if}
 <AuthVerification />
 <WebUpdateReload playing={Boolean(playing)} admin={user?.role === 'admin'} />
+<!-- One viewport, so a result still shows after leaving the page that started it. -->
+{#if user}<ToastViewport />{/if}
 {#if loading}
   <AuthLayout card={false}>
     <img

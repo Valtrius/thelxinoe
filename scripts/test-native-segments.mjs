@@ -48,26 +48,15 @@ try {
   const segments = await api(`/catalog/${episode.id}/segments`);
   const intro = segments.items.find((s) => s.kind === 'Intro');
   expect(intro).toBeTruthy();
-  await page.getByRole('link', { name: 'Shows', exact: true }).first().click();
-  await page
-    .locator('button.media-card')
-    .filter({ hasText: 'Segment Fixture' })
-    .click();
-  const season = await api(`/catalog/${episode.parent_id}`);
-  await page
-    .locator('button.media-card')
-    .filter({ hasText: season.title })
-    .click();
-  await page
-    .locator('button.media-card')
-    .filter({ hasText: episode.title })
-    .click();
+  // An episode link opens its series page on that season and episode.
+  await page.goto(`${page.url().split('#')[0]}#library/shows/${episode.id}`);
+  const row = page.locator(`[data-episode="${episode.id}"]`);
   const results = [];
   for (const mode of ['Ask', 'Auto', 'Ignore']) {
     const previousPipes = new Set(readdirSync('\\\\.\\pipe\\'));
     await api(`/catalog/${episode.id}/state`, 'PUT', { watched: false });
     await api('/me/segments', 'PUT', { ...preferences, Intro: mode });
-    await page.getByRole('button', { name: 'Play media', exact: true }).click();
+    await row.getByRole('button', { name: /^Play episode / }).click();
     await expect
       .poll(async () => (await native('mpv_state')).video_ready, {
         timeout: 30000,

@@ -155,6 +155,44 @@ const server = await preview({
                 return res.end(JSON.stringify({ error: error.message }));
               }
             }
+            if (req.url === '/__mock/titles' && req.method === 'POST') {
+              let raw = '';
+              for await (const chunk of req) raw += chunk;
+              const { tmdb, progress } = JSON.parse(raw || '{}');
+              const movie = state.titles.movies.find(
+                (entry) => entry.tmdb === tmdb,
+              );
+              if (!movie) {
+                res.writeHead(404);
+                return res.end();
+              }
+              movie.progress = progress;
+              events.emit('catalog.status.changed', {});
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              return res.end(JSON.stringify({ saved: true }));
+            }
+            if (req.url === '/__mock/viewer') {
+              if (req.method === 'POST') {
+                let raw = '';
+                for await (const chunk of req) raw += chunk;
+                const { role } = JSON.parse(raw || '{}');
+                if (!['admin', 'user'].includes(role)) {
+                  res.writeHead(400, { 'Content-Type': 'application/json' });
+                  return res.end(
+                    JSON.stringify({ error: 'Choose the admin or user view' }),
+                  );
+                }
+                state.viewer = role;
+              } else if (req.method !== 'GET') {
+                res.writeHead(405);
+                return res.end();
+              }
+              res.writeHead(200, {
+                'Content-Type': 'application/json',
+                'Cache-Control': 'no-store',
+              });
+              return res.end(JSON.stringify({ role: state.viewer }));
+            }
             if (req.url === '/__mock/reset' && req.method === 'POST') {
               state = createMockState();
               unhandled.length = 0;
@@ -267,7 +305,8 @@ server.httpServer.on('upgrade', (request, socket, head) => {
     sockets.emit('connection', client, request),
   );
 });
-console.log(`Mock preview (admin): http://127.0.0.1:${port}/#home`);
+console.log(`Mock preview: http://127.0.0.1:${port}/#home`);
+console.log('Switch between the admin and user views at the bottom right.');
 console.log(
   `Movie: http://127.0.0.1:${port}/movie/11 | TV: http://127.0.0.1:${port}/tv/22`,
 );

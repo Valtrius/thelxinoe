@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { FlaskConical, X } from '@lucide/svelte';
   import Button from '../ui/Button.svelte';
+  import ExclusiveChoiceGroup from '../ui/ExclusiveChoiceGroup.svelte';
   import FormField from '../ui/FormField.svelte';
   import { formControlClass } from '../ui/styles';
 
@@ -13,6 +14,7 @@
     outcome: string;
     paused: boolean;
   };
+  type Viewer = 'admin' | 'user';
   type Preview = {
     kinds: { kind: string; label: string }[];
     presets: { value: string; label: string }[];
@@ -39,6 +41,7 @@
     outcome: 'success',
     paused: false,
   });
+  let viewer = $state<Viewer | null>(null);
   let busy = $state(false);
   let error = $state('');
   let status = $state('');
@@ -85,7 +88,28 @@
       busy = false;
     }
   }
+  async function view(role: Viewer) {
+    busy = true;
+    error = '';
+    try {
+      const response = await fetch('/__mock/viewer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role }),
+      });
+      if (!response.ok) throw Error((await response.json()).error);
+      location.reload();
+    } catch (failure) {
+      error = String(failure);
+      open = true;
+      busy = false;
+    }
+  }
   onMount(() => {
+    void fetch('/__mock/viewer')
+      .then((response) => response.json())
+      .then((value) => (viewer = value.role))
+      .catch((failure) => (error = String(failure)));
     void read()
       .then(() => selectService())
       .catch((failure) => (error = String(failure)));
@@ -257,7 +281,19 @@
       {#if status}<p class="mt-2 text-muted" role="status">{status}</p>{/if}
     </section>
   {/if}
-  <div class="flex justify-end">
+  <div class="flex items-center justify-end gap-2">
+    {#if viewer}<div class="bg-surface-strong">
+        <ExclusiveChoiceGroup
+          ariaLabel="Preview view"
+          choices={[
+            { value: 'admin', label: 'Admin' },
+            { value: 'user', label: 'User' },
+          ]}
+          value={viewer}
+          disabled={busy}
+          onChange={(role) => void view(role)}
+        />
+      </div>{/if}
     <Button
       size="sm"
       variant="secondary"

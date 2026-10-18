@@ -383,12 +383,10 @@ test('delayed request details cannot acknowledge a newer unseen decision', async
   expect(fixture.unexpected).toEqual([]);
 });
 
-test('native request history keeps newer decisions unread until refreshed and reaches older pages', async ({
+test('opening Requests marks decisions on native acquisition requests as seen', async ({
   page,
 }, testInfo) => {
   const fixture = await installUiFixture(page, { section: 'Discover' });
-  let newer = false;
-  let release: (() => void) | undefined;
   const seen = new Set<string>();
   const acknowledged: unknown[] = [];
   const entries = [
@@ -429,40 +427,7 @@ test('native request history keeps newer decisions unread until refreshed and re
     }
     return route.fulfill({
       json: {
-        items: entries.filter(
-          (entry) =>
-            (entry.resource === 'older' || newer) && !seen.has(entry.revision),
-        ),
-      },
-    });
-  });
-  await page.route('**/api/v1/acquisition/requests**', async (route) => {
-    const currentPage = Number(
-      new URL(route.request().url()).searchParams.get('page') || 1,
-    );
-    if (newer && !release)
-      await new Promise<void>((resolve) => {
-        release = resolve;
-      });
-    const entry = entries[currentPage === 1 ? 0 : 1];
-    return route.fulfill({
-      json: {
-        page: currentPage,
-        pages: 2,
-        items: [
-          {
-            id: entry.resource,
-            title: currentPage === 1 ? 'Recent album' : 'Older album',
-            kind: 'lidarr',
-            state:
-              currentPage === 1 ? (newer ? 'denied' : 'pending') : 'failed',
-            attention: {
-              id: entry.id,
-              revision:
-                currentPage === 1 && !newer ? 'g:pending:1' : entry.revision,
-            },
-          },
-        ],
+        items: entries.filter((entry) => !seen.has(entry.revision)),
       },
     });
   });
@@ -470,50 +435,21 @@ test('native request history keeps newer decisions unread until refreshed and re
   const requests = page
     .getByRole('navigation', { name: 'Discover navigation' })
     .getByRole('button', { name: /^My requests/ });
+  await expect(requests.locator('[data-attention-severity]')).toBeVisible();
+  expect(acknowledged).toEqual([]);
   await requests.click();
-  const pending = page.getByRole('button', {
-    name: 'Recent album pending',
-    exact: true,
-  });
-  await expect(pending).toBeVisible();
-  newer = true;
+  await expect.poll(() => acknowledged.length).toBe(2);
+  expect(acknowledged).toEqual(
+    expect.arrayContaining(
+      entries.map((entry) => ({ revision: entry.revision })),
+    ),
+  );
   await page.evaluate(() =>
     window.dispatchEvent(new Event('thelxinoe-attention-refresh')),
   );
-  await expect.poll(() => Boolean(release)).toBe(true);
-  await pending.hover();
-  expect(acknowledged).toEqual([]);
-  await page.screenshot({
-    path: testInfo.outputPath('stale-history-stays-unread.png'),
-  });
-  release!();
-  await page.mouse.move(0, 0);
-  await page.getByRole('button', { name: /^Recent album denied/ }).hover();
-  await expect.poll(() => acknowledged.length).toBe(1);
-  await expect(requests.locator('[data-attention-severity]')).toBeVisible();
-  await page
-    .getByRole('button', { name: 'Older requests', exact: true })
-    .click();
-  await page.getByRole('button', { name: /^Older album failed/ }).focus();
   await expect(requests.locator('[data-attention-severity]')).toHaveCount(0);
-  expect(acknowledged).toEqual(
-    entries.map((entry) => ({ revision: entry.revision })),
-  );
-  await page
-    .getByRole('button', { name: 'Newer requests', exact: true })
-    .click();
-  await expect(
-    page.getByRole('button', { name: 'Recent album denied', exact: true }),
-  ).toBeVisible();
   await page.screenshot({
-    path: testInfo.outputPath('older-request-acknowledged.png'),
-  });
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page
-    .getByRole('button', { name: 'Older requests', exact: true })
-    .scrollIntoViewIfNeeded();
-  await page.screenshot({
-    path: testInfo.outputPath('request-pages-mobile.png'),
+    path: testInfo.outputPath('native-requests-seen.png'),
   });
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
@@ -868,7 +804,7 @@ for (const [type, section] of [
   ['movie', 'Movies'],
   ['tv', 'Shows'],
 ]) {
-  test(`available ${type} requests open ${section} from the request list`, async ({
+  test(`available ${type} requests open their title from the request list`, async ({
     page,
   }, testInfo) => {
     const fixture = await installUiFixture(page, { section: 'Discover' });
@@ -905,13 +841,22 @@ for (const [type, section] of [
       .getByRole('button', { name: 'Available request Available', exact: true })
       .click();
     await expect(
-      page.getByRole('textbox', {
-        name: `Search ${section.toLowerCase()}`,
+      page.getByRole('heading', {
+        name: 'Available request',
+        level: 1,
         exact: true,
       }),
     ).toBeVisible();
+    await expect(
+      page
+        .getByRole('article', { name: 'Available request' })
+        .getByText(new RegExp(`^${section === 'Movies' ? 'Movie' : 'Series'}`)),
+    ).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: 'Back to discover', exact: true }),
+    ).toBeVisible();
     await page.screenshot({
-      path: testInfo.outputPath('available-request-library.png'),
+      path: testInfo.outputPath('available-request-title.png'),
     });
     expect(fixture.errors).toEqual([]);
     expect(fixture.unexpected).toEqual([]);

@@ -19,6 +19,7 @@ pub(crate) mod recyclarr;
 mod requests;
 mod retention;
 mod seerr;
+pub(crate) mod status;
 pub(crate) use seerr::observe_requests;
 mod stack;
 mod support;
@@ -68,6 +69,7 @@ pub(crate) struct Runtime {
         std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     connection_wake: tokio::sync::Notify,
     recyclarr_tick: std::sync::atomic::AtomicI64,
+    pub(crate) status: status::Store,
     #[cfg(test)]
     pub(crate) docker: std::sync::Mutex<std::collections::HashMap<String, Value>>,
 }
@@ -102,6 +104,7 @@ impl Runtime {
             connection_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
             connection_wake: tokio::sync::Notify::new(),
             recyclarr_tick: std::sync::atomic::AtomicI64::new(0),
+            status: Default::default(),
             #[cfg(test)]
             docker: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
@@ -126,6 +129,7 @@ pub(crate) fn router() -> Router<AppState> {
         .merge(transfers::router())
         .merge(updates::router())
         .merge(retention::router())
+        .merge(status::router())
         .route("/api/v1/admin/managers/containers", get(containers))
         .route("/api/v1/admin/managers", get(list).post(register))
         .route("/api/v1/admin/managers/{id}/options", get(options))
@@ -185,16 +189,20 @@ async fn docker(state: &AppState, path: &str) -> Result<Value> {
         Err(unavailable())
     }
 }
-async fn read(mut response: reqwest::Response) -> Result<Value> {
+async fn bounded(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| unavailable())? {
-        if bytes.len() + chunk.len() > 16 * 1024 * 1024 {
+        if bytes.len() + chunk.len() > limit {
             return Err(ApiError::conflict(
                 "Manager response exceeds the supported size",
             ));
         }
         bytes.extend(chunk);
     }
+    Ok(bytes)
+}
+async fn read(response: reqwest::Response) -> Result<Value> {
+    let bytes = bounded(response, 16 * 1024 * 1024).await?;
     if bytes.is_empty() {
         return Ok(Value::Null);
     }
@@ -445,6 +453,48 @@ impl Connection<'_> {
         query: &[(&str, String)],
         body: Option<Value>,
     ) -> Result<Value> {
+        let response = self
+            .send(&self.state.managers.http, method, path, query, body)
+            .await?;
+        if response.status() == reqwest::StatusCode::NO_CONTENT
+            || response.content_length() == Some(0)
+        {
+            return Ok(Value::Null);
+        }
+        read(response).await
+    }
+    /// A read-only listing decoded straight into the fields its caller keeps. Whole
+    /// libraries can exceed what `read` buffers as generic JSON.
+    async fn fetch<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+    ) -> Result<T> {
+        // Whole libraries can take longer than one request's 20 s budget to stream, so
+        // full lists only bound the gap between reads.
+        let response = self
+            .send(
+                &self.state.managers.proxy_http,
+                reqwest::Method::GET,
+                path,
+                query,
+                None,
+            )
+            .await?;
+        let bytes = bounded(response, 128 * 1024 * 1024).await?;
+        serde_json::from_slice(&bytes).map_err(|error| {
+            tracing::warn!(kind = %self.kind, path, %error, "Manager response could not be read");
+            ApiError::conflict("Manager returned an invalid response")
+        })
+    }
+    async fn send(
+        &self,
+        client: &reqwest::Client,
+        method: reqwest::Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<Value>,
+    ) -> Result<reqwest::Response> {
         if method != reqwest::Method::GET {
             self.authorize().await?;
         }
@@ -453,10 +503,7 @@ impl Connection<'_> {
         } else {
             format!("{}/api/v{}/{path}", self.url_base, self.version())
         };
-        let mut request = self
-            .state
-            .managers
-            .http
+        let mut request = client
             .request(method, format!("{}{endpoint}", self.base))
             .header("X-Api-Key", &self.key)
             .query(query);
@@ -470,12 +517,7 @@ impl Connection<'_> {
         if !response.status().is_success() {
             return Err(failures::rejected(&self.kind, &endpoint, response.status()));
         }
-        if response.status() == reqwest::StatusCode::NO_CONTENT
-            || response.content_length() == Some(0)
-        {
-            return Ok(Value::Null);
-        }
-        read(response).await
+        Ok(response)
     }
     async fn get(&self, path: &str) -> Result<Value> {
         self.call(reqwest::Method::GET, path, &[], None).await

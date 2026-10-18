@@ -80,7 +80,10 @@ test('library filters retain workspace scroll when the results still fit it', as
     page.getByRole('combobox', { name: 'Collection', exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole('button', { name: 'Details Movie 59', exact: true }),
+    page.getByRole('button', {
+      name: 'More actions for Movie 59',
+      exact: true,
+    }),
   ).toBeAttached();
   const before = await page.locator('.workspace-scroll').evaluate((element) => {
     element.scrollTop = 120;
@@ -481,17 +484,19 @@ test('catalog detail and search URLs survive reload and history restores the sel
   const detail = page.getByRole('heading', {
     name: 'Fixture movie 1',
     exact: true,
-    level: 2,
+    level: 1,
   });
   await expect(detail).toBeVisible();
+  await page.reload();
+  await expect(detail).toBeVisible();
+  await page
+    .getByRole('button', { name: 'Back to movies', exact: true })
+    .click();
+  await expect(page).toHaveURL(/#library\/movies\?q=Fixture$/);
+  await expect(detail).toHaveCount(0);
   await expect(
     page.getByRole('textbox', { name: 'Search movies' }),
   ).toHaveValue('Fixture');
-  await page.reload();
-  await expect(detail).toBeVisible();
-  await page.getByRole('button', { name: 'Close', exact: true }).click();
-  await expect(page).toHaveURL(/#library\/movies\?q=Fixture$/);
-  await expect(detail).toHaveCount(0);
   await page.goBack();
   await expect(detail).toBeVisible();
   expect(fixture.errors).toEqual([]);

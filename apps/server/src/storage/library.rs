@@ -44,7 +44,7 @@ pub(super) async fn enqueue_scan(root_id: String, db: &Database) -> anyhow::Resu
 
 pub(super) async fn browse(db: &Database, input: Browse) -> anyhow::Result<Vec<Value>> {
     db.read("library.browse", move|db|{
-        let mut query=db.prepare("SELECT m.id,m.kind,m.title,m.parent_id,m.year,m.sort_number,m.metadata,m.overrides,EXISTS(SELECT 1 FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1) FROM media m WHERE (?1 IS NULL OR m.kind=?1) AND (?2 IS NULL OR m.parent_id=?2) AND (?3 IS NULL OR COALESCE(json_extract(m.overrides,'$.title'),json_extract(m.metadata,'$.title'),json_extract(m.metadata,'$.name'),m.title) LIKE '%'||?3||'%') AND (?4 IS NULL OR json_extract(m.metadata,'$.belongs_to_collection.id')=?4) ORDER BY m.sort_number,m.title LIMIT 500")?;
+        let mut query=db.prepare("SELECT m.id,m.kind,m.title,m.parent_id,m.year,m.sort_number,m.metadata,EXISTS(SELECT 1 FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1) FROM media m WHERE (?1 IS NULL OR m.kind=?1) AND (?2 IS NULL OR m.parent_id=?2) AND (?3 IS NULL OR COALESCE(json_extract(m.metadata,'$.title'),json_extract(m.metadata,'$.name'),m.title) LIKE '%'||?3||'%') AND (?4 IS NULL OR json_extract(m.metadata,'$.belongs_to_collection.id')=?4) ORDER BY m.sort_number,COALESCE(json_extract(m.metadata,'$.title'),json_extract(m.metadata,'$.name'),m.title) COLLATE NOCASE LIMIT 500")?;
         Ok(query.query_map(params![input.kind,input.parent,input.q,input.collection],media_row)?.collect::<std::result::Result<Vec<_>,_>>()?)
     }).await
 }
@@ -85,56 +85,53 @@ pub(super) async fn decorate_cards(
 
 pub(super) async fn detail(db: &Database, media_id: String) -> anyhow::Result<Option<Value>> {
     db.read("library.detail", move|db|{
-        let item=db.query_row("SELECT m.id,m.kind,m.title,m.parent_id,m.year,m.sort_number,m.metadata,m.overrides,EXISTS(SELECT 1 FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1) FROM media m WHERE m.id=?1",[&media_id],media_row).optional()?;
+        let item=db.query_row("SELECT m.id,m.kind,m.title,m.parent_id,m.year,m.sort_number,m.metadata,EXISTS(SELECT 1 FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1) FROM media m WHERE m.id=?1",[&media_id],media_row).optional()?;
         let files=db.prepare("SELECT f.id,f.edition,f.probe,f.present FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=?1")?.query_map([&media_id],|r|Ok(json!({"id":r.get::<_,String>(0)?,"edition":r.get::<_,String>(1)?,"probe":serde_json::from_str::<Value>(&r.get::<_,String>(2)?).unwrap_or_default(),"present":r.get::<_,bool>(3)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
         let trailers=db.prepare("SELECT f.id,f.probe FROM local_trailers t JOIN media_files f ON f.id=t.file_id WHERE t.media_id=?1 AND f.present=1")?.query_map([&media_id],|r|Ok(json!({"file_id":r.get::<_,String>(0)?,"probe":serde_json::from_str::<Value>(&r.get::<_,String>(1)?).unwrap_or_default()})))?.collect::<std::result::Result<Vec<_>,_>>()?;
         Ok(item.map(|mut item|{item["files"]=json!(files);item["local_trailers"]=json!(trailers);item}))
     }).await
 }
 
-pub(super) async fn overrides(
-    db: &Database,
-    media_id: String,
-    value: Value,
-    p: thelxinoe_core::Principal,
-) -> anyhow::Result<usize> {
-    db.write("library.overrides", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;let n=tx.execute("UPDATE media SET overrides=?1 WHERE id=?2",params![value.to_string(),media_id])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'metadata.override',?2,?3)",params![p.user.id,media_id,now()])?;tx.commit()?;Ok(n)}).await
+pub(super) struct Protection {
+    pub(super) own: bool,
+    /// The nearest season or series whose Keep covers this item.
+    pub(super) by: Option<String>,
+    /// Kept seasons and episodes inside this item, which also block its deletion.
+    pub(super) within: i64,
+}
+
+pub(super) async fn keep(db: &Database, media_id: String) -> anyhow::Result<Protection> {
+    db.read("library.keep", move |db| {
+        let own = db.query_row(
+            "SELECT COALESCE((SELECT keep FROM media_protection WHERE media_id=?1),0)",
+            [&media_id],
+            |r| r.get::<_, bool>(0),
+        )?;
+        let by = db.query_row("WITH RECURSIVE up(id,depth) AS (SELECT parent_id,1 FROM media WHERE id=?1 AND parent_id IS NOT NULL UNION ALL SELECT m.parent_id,u.depth+1 FROM media m JOIN up u ON m.id=u.id WHERE m.parent_id IS NOT NULL) SELECT m.kind FROM up JOIN media m ON m.id=up.id JOIN media_protection p ON p.media_id=up.id AND p.keep=1 ORDER BY up.depth LIMIT 1", [&media_id], |r| r.get::<_, String>(0)).optional()?;
+        let within = db.query_row("WITH RECURSIVE down(id) AS (SELECT id FROM media WHERE parent_id=?1 UNION ALL SELECT m.id FROM media m JOIN down d ON m.parent_id=d.id) SELECT COUNT(*) FROM down JOIN media_protection p ON p.media_id=down.id AND p.keep=1", [&media_id], |r| r.get::<_, i64>(0))?;
+        Ok(Protection { own, by, within })
+    })
+    .await
 }
 
 pub(super) fn media_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     let metadata =
         serde_json::from_str::<Value>(&r.get::<_, String>(6)?).unwrap_or_else(|_| json!({}));
-    let overrides =
-        serde_json::from_str::<Value>(&r.get::<_, String>(7)?).unwrap_or_else(|_| json!({}));
-    let title = overrides
+    let title = metadata
         .get("title")
+        .or_else(|| metadata.get("name"))
         .and_then(Value::as_str)
-        .or_else(|| {
-            metadata
-                .get("title")
-                .or_else(|| metadata.get("name"))
-                .and_then(Value::as_str)
-        })
         .map(str::to_string)
         .unwrap_or(r.get::<_, String>(2)?);
-    let year = overrides
-        .get("year")
-        .and_then(Value::as_i64)
-        .or_else(|| {
-            metadata
-                .get("release_date")
-                .or_else(|| metadata.get("first_air_date"))
-                .and_then(Value::as_str)
-                .and_then(|s| s.get(..4))
-                .and_then(|s| s.parse().ok())
-        })
+    let year = metadata
+        .get("release_date")
+        .or_else(|| metadata.get("first_air_date"))
+        .and_then(Value::as_str)
+        .and_then(|s| s.get(..4))
+        .and_then(|s| s.parse().ok())
         .or(r.get::<_, Option<i64>>(4)?);
-    let overview = overrides
-        .get("overview")
-        .or_else(|| metadata.get("overview"))
-        .cloned()
-        .unwrap_or(Value::Null);
+    let overview = metadata.get("overview").cloned().unwrap_or(Value::Null);
     Ok(
-        json!({"id":r.get::<_,String>(0)?,"kind":r.get::<_,String>(1)?,"title":title,"overview":overview,"parent_id":r.get::<_,Option<String>>(3)?,"year":year,"sort_number":r.get::<_,Option<i64>>(5)?,"metadata":metadata,"overrides":overrides,"available":r.get::<_,bool>(8)?}),
+        json!({"id":r.get::<_,String>(0)?,"kind":r.get::<_,String>(1)?,"title":title,"overview":overview,"parent_id":r.get::<_,Option<String>>(3)?,"year":year,"sort_number":r.get::<_,Option<i64>>(5)?,"metadata":metadata,"available":r.get::<_,bool>(7)?}),
     )
 }

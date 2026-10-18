@@ -89,13 +89,25 @@ async function waitLink(source, target, expected) {
     throw Error(`${source} -> ${target}: ${latest?.state}: ${latest?.error}`);
   }
 }
-const action = (kind, name) =>
-  api(
-    `/admin/stack/${services[kind].id}/action`,
-    'POST',
-    { action: name },
-    180000,
-  );
+// Radarr and Sonarr also run their own scheduled commands, which can start right
+// after `idle` returns. The server refuses stack actions until those finish and
+// asks to retry; anything else fails the test.
+async function action(kind, name) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await api(
+        `/admin/stack/${services[kind].id}/action`,
+        'POST',
+        { action: name },
+        180000,
+      );
+    } catch (error) {
+      if (attempt >= 30 || !/: 409 Manager is busy/.test(error.message))
+        throw error;
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+  }
+}
 async function install(kind) {
   const host_port = await freePort();
   const created = await api('/admin/stack/install', 'POST', {

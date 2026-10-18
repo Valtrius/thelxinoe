@@ -366,10 +366,11 @@ async fn forwarded_headers_require_trusted_proxy_and_client_chain_is_resolved_fr
 }
 
 #[tokio::test]
-async fn manual_fields_win_after_metadata_refresh() {
+async fn provider_metadata_is_the_only_title_source() {
     let (_temp, state) = fixture().await;
     let cookie = setup(&state).await;
     state.db.write("test.fixture", |db|{db.execute_batch("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Fixture','movies','/fixture'); INSERT INTO media(id,root_id,kind,evidence_key,title,metadata,created_at) VALUES ('movie','root','movie','fixture','Local title','{\"title\":\"Initial provider title\"}',0);")?;Ok(())}).await.unwrap();
+    // Manual metadata overrides were removed; the endpoint no longer exists.
     assert_eq!(
         request(
             &state,
@@ -381,7 +382,7 @@ async fn manual_fields_win_after_metadata_refresh() {
         )
         .await
         .0,
-        StatusCode::OK
+        StatusCode::NOT_FOUND
     );
     state
         .db
@@ -404,30 +405,21 @@ async fn manual_fields_win_after_metadata_refresh() {
     )
     .await
     .2;
-    assert_eq!(item["title"], "My corrected title");
+    assert_eq!(item["title"], "Refreshed provider title");
     assert_eq!(item["metadata"]["title"], "Refreshed provider title");
-    request(
+    assert!(item.get("overrides").is_none(), "{item}");
+    let cards = request(
         &state,
-        "/api/v1/catalog/movie/overrides",
-        "PUT",
-        json!({}),
+        "/api/v1/catalog?kind=movie",
+        "GET",
+        Value::Null,
         Some(&cookie),
         &[],
     )
-    .await;
-    assert_eq!(
-        request(
-            &state,
-            "/api/v1/catalog/movie",
-            "GET",
-            Value::Null,
-            Some(&cookie),
-            &[]
-        )
-        .await
-        .2["title"],
-        "Refreshed provider title"
-    );
+    .await
+    .2;
+    assert_eq!(cards["items"][0]["title"], "Refreshed provider title");
+    assert!(cards["items"][0].get("overrides").is_none());
 }
 
 #[tokio::test]

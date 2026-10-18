@@ -1,16 +1,19 @@
 <script lang="ts">
   import { onMount, onDestroy, tick, untrack } from 'svelte';
+  import { DropdownMenu } from 'bits-ui';
   import {
     Search,
     X,
     LoaderCircle,
     ArrowRight,
     RefreshCw,
+    Ellipsis,
+    RotateCcw,
+    Ban,
   } from '@lucide/svelte';
   import { api, type User } from '../api';
   import { attention, acknowledgeAttention } from '../attention';
   import AttentionDot from '../ui/AttentionDot.svelte';
-  import AcquisitionHistory from './AcquisitionHistory.svelte';
   import Button from '../ui/Button.svelte';
   import Notice from '../ui/Notice.svelte';
   import { formControlClass } from '../ui/styles';
@@ -18,7 +21,8 @@
   import MediaSkeleton from '../ui/MediaSkeleton.svelte';
   import ContentSkeleton from '../ui/ContentSkeleton.svelte';
   import PosterCard from './PosterCard.svelte';
-  import MediaDetails from './MediaDetails.svelte';
+  import TitlePage from '../title/TitlePage.svelte';
+  import type { MediaChoice } from '../playback';
   import {
     artwork,
     title,
@@ -32,7 +36,6 @@
   let {
     user,
     settings,
-    navigate,
     detail,
     showRequests = false,
     openMedia,
@@ -40,10 +43,13 @@
     searchQuery,
     searchChanged,
     requestsChanged,
+    play,
+    revision = 0,
   } = $props<{
     user: User;
+    play: (choice: MediaChoice) => void;
+    revision?: number;
     settings: () => void;
-    navigate: (section: string) => void;
     detail?: { kind: MediaKind; id: number };
     showRequests?: boolean;
     openMedia: (detail: { kind: MediaKind; id: number }) => void;
@@ -117,6 +123,15 @@
     void requestAttention;
     untrack(() => void loadRequests(requestedPage));
   });
+  // Thelxinoe's own acquisition requests have no list here any more; opening
+  // Requests is when their decisions are seen.
+  $effect(() => {
+    if (tab !== 'requests' || selected) return;
+    for (const entry of $attention.filter(
+      (item) => item.target === 'requests' && item.id.startsWith('request:'),
+    ))
+      void acknowledgeAttention(entry);
+  });
   const filtered = $derived(
     results.filter(
       (item) =>
@@ -169,10 +184,15 @@
     });
   });
   function open(item: Media) {
+    openTarget({ kind: kind(item), id: item.id });
+  }
+  function openTarget(target: { kind: MediaKind; id: number }) {
     if (!selected) browseScroll = scrollWorkspace()?.scrollTop ?? 0;
-    openMedia({ kind: kind(item), id: item.id });
+    openMedia(target);
     scrollWorkspace()?.scrollTo({ top: 0 });
   }
+  const menuItemClass =
+    'flex h-8 w-full cursor-default items-center gap-[0.55rem] whitespace-nowrap px-[0.55rem] text-left text-[0.7rem] text-muted outline-none data-[highlighted]:bg-accent-soft data-[highlighted]:text-foreground [&_svg]:size-[0.85rem] compact:h-11 compact:text-[13px]';
   async function load() {
     for (const feed of feeds) feed.loading = true;
     error = '';
@@ -348,11 +368,15 @@
 </script>
 
 {#if selected}
-  {#key `${selected.kind}:${selected.id}`}<MediaDetails
-      mediaKind={selected.kind}
-      id={selected.id}
+  {#key `${selected.kind}:${selected.id}`}<TitlePage
+      {user}
+      kind={selected.kind === 'tv' ? 'show' : 'movie'}
+      tmdb={selected.id}
+      {revision}
       {back}
-      {open}
+      backLabel="Back to discover"
+      {play}
+      openTitle={openTarget}
     />{/key}
 {:else}
   <div class="w-full min-w-0">
@@ -437,7 +461,6 @@
             >Open Media services <ArrowRight size={15} /></Button
           >{/if}
       </section>
-      {#if tab === 'requests'}<AcquisitionHistory {navigate} />{/if}
     {:else if tab === 'requests'}
       <div class="mb-4 flex items-center justify-between">
         <h2 class="text-base font-semibold">
@@ -464,16 +487,7 @@
               <button
                 class="flex min-w-0 flex-1 items-center gap-4 text-left"
                 onclick={() =>
-                  request.media.status === 5 || request.status === 5
-                    ? navigate(request.type === 'movie' ? 'Movies' : 'Shows')
-                    : open(
-                        request.detail
-                          ? { ...request.detail, mediaType: request.type }
-                          : {
-                              id: request.media.tmdbId,
-                              mediaType: request.type,
-                            },
-                      )}
+                  openTarget({ kind: request.type, id: request.media.tmdbId })}
               >
                 {#if artwork(request.detail?.posterPath)}<img
                     class="aspect-2/3 w-13 shrink-0 object-cover"
@@ -505,34 +519,55 @@
                     >{/if}</span
                 >
               </button>
-              <div class="flex flex-wrap gap-2">
-                {#if request.status === 1}{#if user.role === 'admin'}<Button
-                      size="sm"
-                      disabled={actionBusy !== null}
-                      onclick={() => void requestAction(request.id, 'approve')}
-                      >Approve</Button
-                    ><Button
-                      variant="secondary"
-                      size="sm"
-                      disabled={actionBusy !== null}
-                      onclick={() => void requestAction(request.id, 'decline')}
-                      >Decline</Button
-                    >{:else}<Button
-                      variant="secondary"
-                      size="sm"
-                      disabled={actionBusy !== null}
-                      onclick={() => void requestAction(request.id, 'cancel')}
-                      >Cancel</Button
-                    >{/if}{:else if request.status === 4 && user.role === 'admin'}<Button
+              <div class="flex flex-wrap items-center gap-2">
+                {#if request.status === 1 && user.role === 'admin'}<Button
                     size="sm"
                     disabled={actionBusy !== null}
-                    onclick={() => void requestAction(request.id, 'retry')}
-                    >Retry</Button
+                    onclick={() => void requestAction(request.id, 'approve')}
+                    >Approve</Button
+                  ><Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={actionBusy !== null}
+                    onclick={() => void requestAction(request.id, 'decline')}
+                    >Decline</Button
                   >{/if}
+                {#if request.status === 1 || (request.status === 4 && user.role === 'admin')}<DropdownMenu.Root
+                  >
+                    <DropdownMenu.Trigger disabled={actionBusy !== null}>
+                      {#snippet child({ props })}<Button
+                          {...props}
+                          variant="ghost"
+                          size="compact-icon"
+                          aria-label={`More actions for ${request.detail ? title(request.detail) : 'this request'}`}
+                          ><Ellipsis size={16} /></Button
+                        >{/snippet}
+                    </DropdownMenu.Trigger>
+                    <DropdownMenu.Portal>
+                      <DropdownMenu.Content
+                        align="end"
+                        sideOffset={4}
+                        preventScroll={false}
+                        class="z-50 grid min-w-44 border border-line-strong bg-surface-strong p-1.5 shadow-2xl"
+                      >
+                        {#if request.status === 4 && user.role === 'admin'}<DropdownMenu.Item
+                            class={menuItemClass}
+                            onSelect={() =>
+                              void requestAction(request.id, 'retry')}
+                            ><RotateCcw />Retry request</DropdownMenu.Item
+                          >{/if}
+                        {#if request.status === 1}<DropdownMenu.Item
+                            class={menuItemClass}
+                            onSelect={() =>
+                              void requestAction(request.id, 'cancel')}
+                            ><Ban />Cancel request</DropdownMenu.Item
+                          >{/if}
+                      </DropdownMenu.Content>
+                    </DropdownMenu.Portal>
+                  </DropdownMenu.Root>{/if}
               </div>
             </article>{/each}
         </div>{/if}
-      <AcquisitionHistory {navigate} />
       {#if requestPages > 1}<div class="mt-5 flex justify-center gap-4">
           <Button
             variant="secondary"

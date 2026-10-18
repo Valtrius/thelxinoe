@@ -51,6 +51,7 @@ async fn main() -> Result<()> {
     workers.spawn(thelxinoe_server::run_service_updates(state.clone()));
     workers.spawn(thelxinoe_server::run_service_connections(state.clone()));
     workers.spawn(thelxinoe_server::run_retention(state.clone()));
+    workers.spawn(thelxinoe_server::run_title_status(state.clone()));
     workers.spawn(thelxinoe_server::segments::run(state.clone()));
     workers.spawn(thelxinoe_server::operations::run(state.clone()));
     workers.spawn(thelxinoe_server::operations::watch(state.clone()));
