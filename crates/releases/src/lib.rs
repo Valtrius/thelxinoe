@@ -93,7 +93,9 @@ pub fn https(value: &str) -> Result<url::Url> {
 
 /// Publisher requests never use a device credential or the connected server's client.
 pub fn publisher_client(ca: Option<&str>) -> Result<reqwest::Client> {
+    // Identify the product to the publisher; GitHub may reject anonymous clients.
     let mut builder = reqwest::Client::builder()
+        .user_agent(concat!("Thelxinoe/", env!("CARGO_PKG_VERSION")))
         .https_only(true)
         .redirect(reqwest::redirect::Policy::limited(5))
         .timeout(std::time::Duration::from_secs(60));

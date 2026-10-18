@@ -15,6 +15,8 @@
       ),
   );
   const failure = $derived(error || status?.error);
+  // The server must accept a release before this desktop installs it.
+  const hold = $derived(status?.release ? status.hold : null);
   const view = $derived.by(() => {
     if (status?.phase === 'downloading')
       return {
@@ -41,6 +43,15 @@
         title: 'Desktop update could not complete',
         description: `${failure}\nClick to retry.`,
         icon: RefreshCw,
+      };
+    if (status?.release && hold)
+      return {
+        title: hold,
+        description:
+          status.policy === 'automatic'
+            ? `Desktop ${status.release.version} then installs automatically.`
+            : `Then click to install desktop ${status.release.version}.`,
+        icon: ArrowUp,
       };
     if (status?.release)
       return {
@@ -70,10 +81,13 @@
   }
 </script>
 
+{#snippet requirement()}<span class="text-xs text-warning">{hold}</span
+  >{/snippet}
 <VersionCard
   version={status?.installed ?? '—'}
   label="Desktop version"
   {inline}
+  tools={hold && !busy && !failure ? requirement : undefined}
 >
   <OrbitAction
     label={busy
@@ -83,12 +97,12 @@
         : 'Check for desktop updates'}
     title={view.title}
     description={view.description}
-    tone={failure && !busy
+    tone={(failure || hold) && !busy
       ? 'warning'
       : busy || status?.release
         ? 'accent'
         : 'muted'}
-    motion={busy ? 'working' : status?.release ? 'available' : 'none'}
+    motion={busy ? 'working' : status?.release && !hold ? 'available' : 'none'}
     progress={status?.phase === 'downloading' && status.total
       ? (status.received / status.total) * 100
       : null}

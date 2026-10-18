@@ -10,6 +10,8 @@ export type DesktopUpdateStatus = {
   phase:
     'idle' | 'checking' | 'downloading' | 'ready' | 'waiting' | 'installing';
   release: { version: string; notes: string; bytes: number } | null;
+  /** Why the reachable server prevents installing `release`, e.g. "Update the server to 1.2.0 first". */
+  hold: string | null;
   checked_at: number | null;
   error: string | null;
   received: number;
