@@ -116,11 +116,17 @@ pub fn request_context(
 }
 
 pub async fn guard(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
+    // Clients from older releases keep working until API_MIN_VERSION drops them.
     if request.uri().path().starts_with("/api/v1/")
         && !["/api/v1/health", "/api/v1/release"].contains(&request.uri().path())
         && let Some(version) = request.headers().get("x-thelxinoe-api")
-        && version.to_str().ok().and_then(|v| v.parse::<u32>().ok())
-            != Some(thelxinoe_core::API_VERSION)
+        && !version
+            .to_str()
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .is_some_and(|v| {
+                (thelxinoe_core::API_MIN_VERSION..=thelxinoe_core::API_VERSION).contains(&v)
+            })
     {
         return ApiError(axum::http::StatusCode::UPGRADE_REQUIRED,"update_required","This client uses an incompatible API. Update the client or connect to a compatible server.".into()).into_response();
     }
@@ -365,5 +371,55 @@ mod tests {
         assert_ne!(bucket("2001:db8:1:3::1"), bucket("2001:db8:1:2::1"));
         assert_eq!(bucket("::ffff:192.0.2.7"), "192.0.2.7");
         assert_eq!(bucket("192.0.2.7"), "192.0.2.7");
+    }
+
+    #[tokio::test]
+    async fn clients_within_the_supported_api_range_are_accepted() {
+        use axum::{body::Body, http::StatusCode};
+        use http_body_util::BodyExt;
+        use thelxinoe_core::{API_MIN_VERSION, API_VERSION};
+        use tower::ServiceExt;
+        let (_temp, state, _) = crate::test_support::fixture().await;
+        let send = |path: &'static str, api: String| {
+            let state = state.clone();
+            async move {
+                let mut request = axum::http::Request::builder()
+                    .uri(path)
+                    .header("host", "internal:8484")
+                    .header("x-thelxinoe-client", "1")
+                    .header("x-thelxinoe-api", api)
+                    .body(Body::empty())
+                    .unwrap();
+                request.extensions_mut().insert(axum::extract::ConnectInfo(
+                    "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+                ));
+                let response = crate::router(state).oneshot(request).await.unwrap();
+                let status = response.status();
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default(),
+                )
+            }
+        };
+        // Any client can still learn which range the server accepts.
+        let (status, health) = send("/api/v1/health", (API_VERSION + 1).to_string()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(health["api_version"], API_VERSION);
+        assert_eq!(health["api_min"], API_MIN_VERSION);
+        assert_eq!(health["api_max"], API_VERSION);
+        for api in [API_MIN_VERSION, API_VERSION] {
+            let (status, _) = send("/api/v1/auth/me", api.to_string()).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "API {api}");
+        }
+        for api in [
+            (API_MIN_VERSION - 1).to_string(),
+            (API_VERSION + 1).to_string(),
+            "unknown".into(),
+        ] {
+            let (status, body) = send("/api/v1/auth/me", api.clone()).await;
+            assert_eq!(status, StatusCode::UPGRADE_REQUIRED, "API {api}");
+            assert_eq!(body["error"]["code"], "update_required");
+        }
     }
 }

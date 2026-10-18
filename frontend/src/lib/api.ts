@@ -3,6 +3,8 @@ import { version as clientVersion } from '../../package.json';
 import { captureSession, invalidateSession } from './session';
 import { trackPageWork } from './page-readiness';
 export const desktop = typeof window !== 'undefined' && isTauri();
+// The API this build speaks; servers report the range of client APIs they accept.
+export const clientApi = __THELXINOE_API_VERSION__;
 let desktopServer = '';
 export async function initializeTransport() {
   if (desktop) desktopServer = await invoke<string>('server_url');
@@ -92,7 +94,7 @@ async function request<T>(
     credentials: 'include',
     headers: {
       'X-Thelxinoe-Client': '1',
-      'X-Thelxinoe-API': '1',
+      'X-Thelxinoe-API': String(clientApi),
       ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -107,6 +109,21 @@ async function request<T>(
     );
   }
   return value as T;
+}
+// A server update removes the previous build's lazily loaded code. When a page
+// cannot load its module, ask which web app the server serves now.
+let codeCheck: Promise<void> | undefined;
+export function missingWebCode() {
+  if (desktop) return;
+  return (codeCheck ??= request<{ version?: string }>('/health')
+    .then(({ version }) => {
+      if (version && version !== clientVersion)
+        window.dispatchEvent(
+          new CustomEvent('thelxinoe-web-code-missing', { detail: version }),
+        );
+    })
+    .catch(() => {})
+    .finally(() => (codeCheck = undefined)));
 }
 export type ServerEvent = { id: number; kind: string; payload: unknown };
 export class Events {

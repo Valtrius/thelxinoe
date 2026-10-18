@@ -163,6 +163,25 @@ export function requestedWebVersion() {
 export function clearRequestedWebVersion() {
   sessionStorage.removeItem(reloadKey);
 }
+// Whether web tabs can load the version the server runs. An update the
+// controller still runs may yet restore the previous version. Without
+// controller state, or for a version it did not install, the server decides.
+export function webUpdateSettled(status: ServerUpdateStatus, version: string) {
+  if (status.version !== version) return false;
+  if (status.controller.error) return true;
+  const related = status.controller.items.filter(
+    (item) => item.version === version || item.previous_version === version,
+  );
+  return (
+    !related.length ||
+    related.some(
+      (item) =>
+        (item.version === version && item.stage === 'committed') ||
+        (item.previous_version === version &&
+          ['restored', 'recovered'].includes(item.stage)),
+    )
+  );
+}
 export async function serverUpdateAction(
   action: 'check' | 'install' | 'recover',
   operation?: string,

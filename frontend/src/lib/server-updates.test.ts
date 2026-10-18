@@ -96,3 +96,37 @@ describe('desktop server update response reconciliation', () => {
     expect(observed.error).toBe('Connection lost');
   });
 });
+
+describe('web tab reload readiness', () => {
+  const item = (stage: string, version = '0.1.1', previous = '0.1.0') => ({
+    id: `${version}-${stage}`,
+    version,
+    previous_version: previous,
+    stage,
+    error: null,
+    snapshot_ready: true,
+    recovery_tested: true,
+    activation_crossed: true,
+  });
+  it('waits for the controller to commit or restore the served version', () => {
+    status.version = '0.1.1';
+    status.controller.items = [item('activating')];
+    expect(updates.webUpdateSettled(status, '0.1.1')).toBe(false);
+    status.controller.items = [item('committed')];
+    expect(updates.webUpdateSettled(status, '0.1.1')).toBe(true);
+    expect(updates.webUpdateSettled(status, '0.1.2')).toBe(false);
+    status.version = '0.1.0';
+    status.controller.items = [item('recovering')];
+    expect(updates.webUpdateSettled(status, '0.1.0')).toBe(false);
+    status.controller.items = [item('restored')];
+    expect(updates.webUpdateSettled(status, '0.1.0')).toBe(true);
+  });
+  it('trusts the server version without controller state or history', () => {
+    status.version = '0.1.2';
+    status.controller = { items: [item('activating')], error: 'Unavailable' };
+    expect(updates.webUpdateSettled(status, '0.1.2')).toBe(true);
+    // Installed outside the controller, e.g. by recreating the containers.
+    status.controller = { items: [item('committed')] };
+    expect(updates.webUpdateSettled(status, '0.1.2')).toBe(true);
+  });
+});
