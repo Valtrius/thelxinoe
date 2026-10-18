@@ -1118,22 +1118,33 @@ pub(super) async fn adopt_recreated(runtime: Runtime) {
     let mut reported = None;
     loop {
         tokio::time::sleep(Duration::from_secs(30)).await;
-        let Ok(_guard) = runtime.0.try_lock_owned() else {
-            continue;
-        };
         let Ok(own) = std::env::var("HOSTNAME") else {
             return;
         };
+        let Ok(d) = store::read::<Deployment>(&store::root().join("desired-state.json")) else {
+            continue;
+        };
         // Only the accepted writer adopts; a retiring controller leaves it to its successor.
-        let writer = store::read::<Deployment>(&store::root().join("desired-state.json"))
-            .is_ok_and(|d| {
-                d.controller["Id"]
-                    .as_str()
-                    .is_some_and(|id| id.starts_with(&own))
-            });
-        if !writer {
+        if !d.controller["Id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with(&own))
+        {
             continue;
         }
+        // Checking the server's identity needs no lock, so Docker operations are
+        // only held up when Compose actually replaced it.
+        let replaced = match name(&d.server) {
+            Ok(server) => engine(&format!("/containers/{server}/json"))
+                .await
+                .map_or(true, |current| current["Id"] != d.server["Id"]),
+            Err(_) => false,
+        };
+        if !replaced {
+            continue;
+        }
+        let Ok(_guard) = runtime.0.try_lock_owned() else {
+            continue;
+        };
         let outcome = accept_containers(&own, None, report)
             .await
             .unwrap_or_else(|error| format!("Recreated containers were not adopted: {error}"));
