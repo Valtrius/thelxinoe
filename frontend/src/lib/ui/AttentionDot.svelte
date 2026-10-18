@@ -69,16 +69,20 @@
         stroke-dasharray={state === 'running' ? '12 26' : undefined}
       />
     </svg>
-    {#if items.length}<span
+    {#if items.length}<svg
+        viewBox="0 0 16 16"
+        aria-hidden="true"
         class={[
-          'size-1.75 rounded-full',
+          'absolute inset-0 size-full',
           severity === 'error'
-            ? 'bg-danger'
+            ? 'fill-danger'
             : severity === 'warning'
-              ? 'bg-warning'
-              : 'bg-accent',
+              ? 'fill-warning'
+              : 'fill-accent',
         ]}
-      ></span>{/if}
+      >
+        <circle cx="8" cy="8" r="4" />
+      </svg>{/if}
   </span>
 {:else if items.length}
   <span
