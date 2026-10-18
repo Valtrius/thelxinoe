@@ -17,10 +17,14 @@ opens snapshot recovery.
 Restoring a snapshot also resets the event connection and refreshes client state.
 
 Desktop checks the publisher directly, including before login or while the server
-is unavailable. In Settings → Desktop, the quiet version icon checks for updates;
-the available-update arrow downloads and installs. **Automatic** does this after
-login. Restart waits for playback to stop. A reachable incompatible server blocks
-installation. Downloads are held for the current desktop session.
+is unavailable. In Settings → Desktop, and on the sign-in and update-required
+screens, the quiet version icon checks for updates; the available-update arrow
+downloads and installs. **Automatic** does this after login, or as soon as the
+server reports this desktop as too old. Restart waits for playback to stop. A
+release the reachable server cannot accept waits, saying to update the server
+first, and installs once the server accepts it; an unreachable server never holds
+an update. Downloads are held for the current desktop session, also when starting
+the installer fails, and Automatic retries a failed start after a growing pause.
 See [server policy](../apps/server/src/product.rs),
 [controller recovery](../apps/docker-controller/src/product.rs) and
 [desktop updater](../apps/desktop/src/updates.rs).
@@ -112,6 +116,11 @@ desktop placeholder; the Windows lane tests real signed installer bytes.
 
 ## Release setup and operation
 
+Alpha releases are `0.0.x`, betas `0.x.y` and official releases `x.y.z`. Tags are
+plain versions: the manifest and the release workflows refuse suffixes such as
+`-alpha.1`. Never mark a release as a GitHub pre-release; the update feed follows
+the latest full release, so a pre-release would be invisible to every installation.
+
 Configure these GitHub environments before running release workflows:
 
 - `release-signing`: secrets `MANIFEST_SIGNING_PRIVATE_KEY` (Ed25519 PKCS#8 PEM),
@@ -139,20 +148,28 @@ Authenticode/SmartScreen signing; no Authenticode certificate is configured here
 [Tauri signing reference](https://v2.tauri.app/plugin/updater/#signing-updates).
 
 1. Change `[workspace.package].version` in `Cargo.toml`, run
-   `pnpm run version:sync`, review the change and complete local CI. Before the first
-   official release, source and target DB schemas remain equal; no migration is
-   created by this workflow.
-2. Push the corresponding `X.Y.Z` tag when authorized. **Assemble release draft**
-   runs the full CI, builds the Windows installer and Linux images, verifies the
-   installer signature/hash and image identities, and attaches the installer,
-   `.sig`, `windows-x64.json`, signed `latest.json`, `release.pub`, digest-pinned
-   `compose.yaml` and `SHA256SUMS` to a **draft** release. Images initially have
-   `sha-<commit>` staging tags. Inspect release notes and assets while it is a draft.
-3. Run **Publish reviewed release** with that tag after approval. It downloads and
-   verifies the existing draft, promotes those exact image digests to `X.Y.Z` and
-   `latest`, then publishes the GitHub release. Nothing is rebuilt. Registry tags
-   and GitHub publication are separate operations; on a partial failure retry the
-   publish job while the release remains a draft.
+   `pnpm run version:sync`, review the change and merge it to `develop`. Released
+   database schemas are frozen; a schema change ships with its migration (see
+   `AGENTS.md`), and the manifest lets every schema from `MIGRATION_BASE` update.
+2. When that commit's **Build and verify** run on `develop` has passed, push the
+   `X.Y.Z` tag on it. **Assemble release draft** refuses any other commit instead of
+   repeating the full CI. It builds the Windows installer and Linux images,
+   verifies the installer signature/hash and image identities, and attaches the
+   installer, `.sig`, `windows-x64.json`, signed `latest.json`, `release.pub`,
+   `compose.yaml`, `env.example` and `SHA256SUMS` to a **draft** release. Images
+   initially have `sha-<commit>` staging tags. Inspect release notes and assets
+   while it is a draft.
+3. The first release creates both GHCR packages as private. Make
+   `thelxinoe-server` and `thelxinoe-controller` public (GitHub → Packages →
+   package → Package settings → Change visibility); deployments pull without
+   credentials.
+4. Run **Publish reviewed release** from the tag after approval:
+   `gh workflow run publish-release.yml --ref X.Y.Z -f tag=X.Y.Z`. It downloads and
+   verifies the existing draft, checks that both images can be pulled anonymously,
+   promotes those exact image digests to `X.Y.Z` and `latest`, then publishes the
+   GitHub release. Nothing is rebuilt. Registry tags and GitHub publication are
+   separate operations; on a partial failure retry the publish job while the
+   release remains a draft.
 
 The default feed is
 `https://github.com/Valtrius/thelxinoe/releases/latest/download/latest.json`.
@@ -169,14 +186,19 @@ in the deployment configuration.
 Manifest validity is one year; publish a renewed release before it expires.
 Do not delete images or release assets needed for installed versions and recovery.
 Published versions cannot be overwritten by the assembly script. Desktop and
-server API compatibility ranges are recorded in the signed manifest; any future
-breaking protocol change needs a compatible intermediate release.
+server API compatibility ranges are recorded in the signed manifest. A server
+accepts clients speaking `API_MIN_VERSION` to `API_VERSION` (`crates/core`): raise
+`API_VERSION` for a new protocol and keep `API_MIN_VERSION` until older desktops
+have updated, since raising it turns them away. A desktop update waits until the
+server accepts its protocol.
 
-For a fresh released deployment, download `compose.yaml` from
-that release, configure paths/identity using
-[.env.example](../.env.example), then `docker compose up -d --wait`. After an
-in-app update, recreate from the controller's generated deployment directory and
-its `compose.override.yaml`, which pins the accepted generation. See
+For a fresh deployment, download `compose.yaml` and `env.example` (saved as
+`.env`) from the latest release, configure paths and identity, then
+`docker compose up -d --wait`. The Compose file follows the `latest` image tags:
+`docker compose pull && docker compose up -d` installs the newest release whatever
+version a host runs, and the controller adopts the recreated containers. After an
+in-app update the controller points the local `latest` tags at the installed
+images, so a later `docker compose up -d` keeps that release. See
 [operations and recovery](OPERATIONS.md#backups-and-offline-recovery).
 
 Workflow sources: [assembly](../.github/workflows/release.yml),

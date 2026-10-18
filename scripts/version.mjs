@@ -17,10 +17,15 @@ for (const file of [
       throw new Error(`${file}: expected shared product version ${version}`);
   }
 }
+// The release compose file follows `latest` and needs no version.
 for (const file of [
   'compose.yaml',
   'compose.test.yaml',
-  'compose.release.yaml',
+  'compose.acquisition.test.yaml',
+  'compose.managed.test.yaml',
+  'compose.operations.test.yaml',
+  'compose.segments.test.yaml',
+  'scripts/generate-segment-fixtures.mjs',
 ]) {
   const text = readFileSync(file, 'utf8');
   const next = text.replace(

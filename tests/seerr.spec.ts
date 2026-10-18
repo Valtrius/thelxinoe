@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { current } from './helpers/versions';
 import { execFileSync } from 'node:child_process';
 import { installUiFixture } from './helpers/ui-fixture';
 
@@ -883,7 +884,7 @@ test('desktop trailers resolve through the server and launch MPV with the same v
     expect(resolved).toBe(true);
     launches.push(choice);
   });
-  await page.addInitScript(() => {
+  await page.addInitScript((version) => {
     const bridge = window as unknown as {
       isTauri: boolean;
       __TAURI_INTERNALS__: unknown;
@@ -920,12 +921,12 @@ test('desktop trailers resolve through the server and launch MPV with the same v
           };
         }
         if (command === 'tools_get') return { tools: [], mpv: {} };
-        if (command === 'plugin:app|version') return '0.1.0';
+        if (command === 'plugin:app|version') return version;
         if (command === 'plugin:event|listen') return ++callback;
         return false;
       },
     };
-  });
+  }, current);
   await page.goto('/#discover/movie/11');
   await page.getByRole('link', { name: 'Watch trailer' }).click();
   await expect

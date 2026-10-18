@@ -1,5 +1,16 @@
 import { admin, definitions, label, now, protection, viewer } from './data.mjs';
 import { checkConnection, connectionFailure, stagesApi } from './transfers.mjs';
+import { readFileSync } from 'node:fs';
+
+// The preview server runs the version the web app was built as, so its update
+// controls offer the next patch release instead of a reload.
+const product = (() => {
+  const current = JSON.parse(
+    readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
+  ).version;
+  const [major, minor, patch] = current.split('.').map(Number);
+  return { current, next: `${major}.${minor}.${patch + 1}` };
+})();
 
 export function settingsSeed() {
   const services = definitions
@@ -138,11 +149,11 @@ export function settingsSeed() {
       server_policy: { policy: 'notify', window_start: 3, window_end: 5 },
     },
     product: {
-      version: '0.1.0',
+      version: product.current,
       timezone: 'Europe/Paris',
       configured: true,
       policy: { policy: 'notify', window_start: 3, window_end: 5 },
-      release: { version: '0.1.1', notes: 'Preview release' },
+      release: { version: product.next, notes: 'Preview release' },
       observation: { checked_at: now(), error: null },
       controller: { items: [] },
     },

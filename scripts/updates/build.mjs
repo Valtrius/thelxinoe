@@ -133,7 +133,7 @@ export function source(lab, version) {
     .split(/\r?\n/);
   for (const file of new Set(files)) {
     if (
-      !/^(apps\/|crates\/|frontend\/|scripts\/|releases\/|Cargo\.|rust-toolchain\.toml$|Dockerfile$|compose\.|package|pnpm-|\.dockerignore$)/.test(
+      !/^(apps\/|crates\/|frontend\/|scripts\/|releases\/|Cargo\.|rust-toolchain\.toml$|Dockerfile$|compose\.|package|pnpm-|\.dockerignore$|LICENSE$|THIRD_PARTY_NOTICES\.md$)/.test(
         file,
       ) ||
       !existsSync(join(repository, file))
@@ -455,11 +455,12 @@ export function envelope(lab, version, images) {
       /SCHEMA_VERSION: u32 = (\d+)/,
     )[1],
   );
-  const api = Number(
-    readFileSync(join(repository, 'crates/core/src/lib.rs'), 'utf8').match(
-      /API_VERSION: u32 = (\d+)/,
-    )[1],
-  );
+  const core = readFileSync(join(repository, 'crates/core/src/lib.rs'), 'utf8');
+  // Client APIs this release's server accepts; its desktop speaks the maximum.
+  const api = {
+    min: Number(core.match(/pub const API_MIN_VERSION: u32 = (\d+)/)[1]),
+    max: Number(core.match(/pub const API_VERSION: u32 = (\d+)/)[1]),
+  };
   const now = Math.floor(Date.now() / 1000);
   save(join(release, 'draft.json'), {
     format: 1,
@@ -469,7 +470,7 @@ export function envelope(lab, version, images) {
     server: images?.server ?? image,
     controller: images?.controller ?? image,
     windows_x64: { url: `${lab.publisher}/releases/${version}/setup.exe` },
-    api: { min: api, max: api },
+    api,
     migration: {
       from: { min: schema, max: schema },
       target: schema,
