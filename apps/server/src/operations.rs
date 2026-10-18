@@ -238,42 +238,80 @@ pub(crate) async fn cache_seerr_requests(
 ) -> anyhow::Result<()> {
     attention_storage::cache_seerr(&state.db, service, rows).await
 }
-fn usage(path: &std::path::Path) -> anyhow::Result<Value> {
+/// Bytes under a folder, and whether the total leaves something out because the
+/// walk hit its entry limit or found something it could not read.
+pub(crate) fn folder_size(path: &std::path::Path) -> (u64, bool) {
+    // Playback and downloads add and remove cache files during the walk; what
+    // vanished takes no space and is not an error.
+    let unreadable = |error: std::io::Error| error.kind() != std::io::ErrorKind::NotFound;
     let mut pending = vec![path.to_path_buf()];
     let mut bytes = 0u64;
     let mut entries = 0;
-    let mut limited = false;
+    let mut partial = false;
     while let Some(dir) = pending.pop() {
-        for item in std::fs::read_dir(dir)? {
+        let items = match std::fs::read_dir(&dir) {
+            Ok(items) => items,
+            Err(error) => {
+                partial |= unreadable(error);
+                continue;
+            }
+        };
+        for item in items {
             entries += 1;
             if entries > 100000 {
-                limited = true;
-                break;
+                return (bytes, true);
             }
-            let item = item?;
-            let meta = std::fs::symlink_metadata(item.path())?;
-            if meta.is_file() {
-                bytes += meta.len();
-            } else if meta.is_dir() {
-                pending.push(item.path());
+            let item = match item {
+                Ok(item) => item,
+                Err(error) => {
+                    partial |= unreadable(error);
+                    continue;
+                }
+            };
+            // The listing already knows each entry's type, so only files need a stat.
+            match item.file_type() {
+                Ok(kind) if kind.is_dir() => pending.push(item.path()),
+                Ok(kind) if kind.is_file() => match item.metadata() {
+                    Ok(meta) => bytes += meta.len(),
+                    Err(error) => partial |= unreadable(error),
+                },
+                Ok(_) => {}
+                Err(error) => partial |= unreadable(error),
             }
-        }
-        if limited {
-            break;
         }
     }
-    Ok(json!({"bytes":bytes,"partial":limited,"free_bytes":fs2::available_space(path)?}))
+    (bytes, partial)
+}
+pub(crate) type FolderSizes = Option<(std::time::Instant, [(u64, bool); 2])>;
+/// Walking the state and cache folders is slow on large or network-backed
+/// volumes, so overviews within a minute reuse the last walk.
+async fn folder_sizes(state: &AppState) -> anyhow::Result<[(u64, bool); 2]> {
+    // Overviews opened together wait for one walk instead of starting their own.
+    let mut last = state.folder_sizes.lock().await;
+    if let Some((at, sizes)) = *last
+        && at.elapsed() < std::time::Duration::from_secs(60)
+    {
+        return Ok(sizes);
+    }
+    let config = state.config.clone();
+    let sizes = tokio::task::spawn_blocking(move || {
+        [folder_size(&config.state), folder_size(&config.cache)]
+    })
+    .await?;
+    *last = Some((std::time::Instant::now(), sizes));
+    Ok(sizes)
 }
 async fn dashboard(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
-    let mut result = storage::dashboard(&state.db).await?;
-    let config = state.config.clone();
-    let storage = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
-        Ok(json!({"state":usage(&config.state)?,"cache":usage(&config.cache)?}))
-    })
-    .await
-    .map_err(anyhow::Error::from)??;
-    result["storage"] = storage;
+    let (mut result, [state_size, cache_size]) =
+        tokio::try_join!(storage::dashboard(&state.db), folder_sizes(&state))?;
+    let usage = |path: &std::path::Path, (bytes, partial): (u64, bool)| -> anyhow::Result<Value> {
+        Ok(json!({"bytes":bytes,"partial":partial,"free_bytes":fs2::available_space(path)?}))
+    };
+    result["storage"] = json!({
+        "state": usage(&state.config.state, state_size)?,
+        "cache": usage(&state.config.cache, cache_size)?,
+    });
     result["database"] = json!(state.db.metrics());
     Ok(Json(result))
 }

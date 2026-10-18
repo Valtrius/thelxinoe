@@ -2,14 +2,26 @@ import { test, expect, type Page } from '@playwright/test';
 import { responseGate } from './helpers/response-gate';
 
 test.use({ video: 'on' });
-test.beforeEach(async ({ request }) => {
+test.beforeEach(async ({ page, request }) => {
   await request.post('/__mock/reset');
+  // The outgoing copy renders in a closed shadow tree; keep a handle to sample it.
+  await page.addInitScript(() => {
+    const attach = Element.prototype.attachShadow;
+    Element.prototype.attachShadow = function (init) {
+      const root = attach.call(this, init);
+      if (this instanceof HTMLElement && 'pageLeaving' in this.dataset)
+        (window as unknown as { leavingRoot?: ShadowRoot }).leavingRoot = root;
+      return root;
+    };
+  });
 });
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
 
 const pageContent = (page: Page) => page.locator('[data-page-content]');
+const pageLoading = (page: Page) =>
+  page.getByRole('status', { name: 'Loading page', exact: true });
 const ready = async (page: Page) => {
   await expect(pageContent(page)).toHaveAttribute('data-page-phase', 'idle');
   await expect(pageContent(page)).toHaveCSS('opacity', '1');
@@ -29,7 +41,19 @@ async function recordFrames(page: Page) {
     const sample = () => {
       const root = document.querySelector<HTMLElement>('[data-page-content]');
       if (root) {
-        const style = getComputedStyle(root);
+        // The outgoing page leaves as a copy while the next one mounts.
+        const shadow = (window as unknown as { leavingRoot?: ShadowRoot })
+          .leavingRoot;
+        const effect = shadow?.host.isConnected
+          ? shadow.getAnimations()[0]?.effect
+          : undefined;
+        const outgoing =
+          root.dataset.pagePhase === 'leaving' &&
+          effect instanceof KeyframeEffect &&
+          effect.target instanceof HTMLElement
+            ? effect.target
+            : null;
+        const style = getComputedStyle(outgoing ?? root);
         const matrix = new DOMMatrixReadOnly(style.transform);
         const sidebar = root.querySelector<HTMLElement>(
           '[data-youtube-watchlist-frame]',
@@ -82,11 +106,13 @@ test('all page families keep delayed content hidden and animate both sides of na
       await page.getByRole('link', { name, exact: true }).click();
       await expect.poll(() => requested, `${name} starts loading`).toBe(true);
       await expect(pageContent(page)).toHaveCSS('opacity', '0');
+      await expect(pageLoading(page), `${name} shows a spinner`).toBeVisible();
       await page.screenshot({
         path: info.outputPath(`${name.toLowerCase()}-hidden.png`),
       });
       gate.release();
       await ready(page);
+      await expect(pageLoading(page)).toHaveCount(0);
       const frames = await page.evaluate(
         () =>
           (
@@ -124,6 +150,48 @@ test('all page families keep delayed content hidden and animate both sides of na
     body: JSON.stringify(evidence, null, 2),
     contentType: 'application/json',
   });
+});
+
+test('the next page requests its data while the previous page is still leaving', async ({
+  page,
+}, info) => {
+  await page.goto('/#home');
+  await ready(page);
+  // Load the Movies code first so only its data is left to fetch.
+  await page.getByRole('link', { name: 'Movies', exact: true }).click();
+  await ready(page);
+  await page.getByRole('link', { name: 'Home', exact: true }).click();
+  await ready(page);
+  await page.evaluate(() => {
+    const phases: (string | undefined)[] = [];
+    (window as unknown as { catalogPhases: typeof phases }).catalogPhases =
+      phases;
+    const original = window.fetch;
+    window.fetch = (input, init) => {
+      if (String(input).includes('/api/v1/catalog?'))
+        phases.push(
+          document.querySelector<HTMLElement>('[data-page-content]')?.dataset
+            .pagePhase,
+        );
+      return original(input, init);
+    };
+  });
+  await page.getByRole('link', { name: 'Movies', exact: true }).click();
+  // The copy exists from the click until the leave animation ends.
+  const outgoing = page.locator('[data-page-leaving][aria-hidden="true"]');
+  await expect(outgoing).toHaveCount(1);
+  await page.screenshot({ path: info.outputPath('movies-leaving-home.png') });
+  await ready(page);
+  await expect(outgoing).toHaveCount(0);
+  const phases = await page.evaluate(
+    () =>
+      (window as unknown as { catalogPhases: (string | undefined)[] })
+        .catalogPhases,
+  );
+  expect(phases[0]).toBe('leaving');
+  await expect(
+    page.locator('article[data-layout-key^="library:movie-"]').first(),
+  ).toBeVisible();
 });
 
 test('visible artwork finishes loading before the replacement page fades in', async ({
@@ -199,9 +267,18 @@ for (const viewport of [
             const root = document.querySelector<HTMLElement>(
               '[data-page-content]',
             )!;
-            const content = root.querySelector<HTMLElement>(
-              `[data-page-region="${region}"]`,
-            );
+            const shadow = (window as unknown as { leavingRoot?: ShadowRoot })
+              .leavingRoot;
+            const effect = shadow?.host.isConnected
+              ? shadow.getAnimations()[0]?.effect
+              : undefined;
+            const content =
+              (root.dataset.pagePhase === 'leaving' &&
+              effect instanceof KeyframeEffect &&
+              effect.target instanceof HTMLElement
+                ? effect.target
+                : null) ??
+              root.querySelector<HTMLElement>(`[data-page-region="${region}"]`);
             const navigation = root.querySelector<HTMLElement>(
               `nav[aria-label="${navigationLabel}"]`,
             );
@@ -276,11 +353,17 @@ for (const viewport of [
       await navigation
         .getByRole('link', { name: 'Devices', exact: true })
         .click();
-      await expect(page.locator('[data-page-region="settings"]')).toHaveCSS(
-        'opacity',
-        '0',
-      );
+      const region = page.locator('[data-page-region="settings"]');
+      await expect(region).toHaveCSS('opacity', '0');
       await expect(pageContent(page)).toHaveCSS('opacity', '1');
+      // The spinner sits over the settings content, not the navigation.
+      await expect(pageLoading(page)).toBeVisible();
+      const spinner = (await pageLoading(page).boundingBox())!;
+      const content = (await region.boundingBox())!;
+      expect(spinner.x).toBeGreaterThanOrEqual(content.x);
+      expect(spinner.x + spinner.width).toBeLessThanOrEqual(
+        content.x + content.width,
+      );
       await navigation
         .getByRole('link', { name: 'Account', exact: true })
         .click();
@@ -369,6 +452,47 @@ test('settings sections, service tabs and detail pages also transition without l
   await page.screenshot({
     path: info.outputPath('transitioned-library-detail.png'),
   });
+});
+
+test('the server settings page appears while the administration overview is still loading', async ({
+  page,
+}, info) => {
+  await page.goto('/#settings/account');
+  await ready(page);
+  const overview = responseGate();
+  await page.route('**/api/v1/admin/operations', async (route) => {
+    await overview.promise;
+    await route.fallback();
+  });
+  try {
+    await page
+      .getByRole('navigation', { name: 'Settings navigation' })
+      .getByRole('link', { name: 'Server', exact: true })
+      .click();
+    await ready(page);
+    const card = page.getByRole('region', {
+      name: 'Administration overview',
+    });
+    await expect(
+      card.getByRole('status', { name: 'Loading administration overview' }),
+    ).toBeVisible();
+    await expect(pageLoading(page)).toHaveCount(0);
+    await expect(
+      page.getByRole('heading', { name: 'Library folders', exact: true }),
+    ).toBeVisible();
+    await page.screenshot({
+      path: info.outputPath('server-overview-loading.png'),
+    });
+    overview.release();
+    await expect(
+      card.getByRole('heading', { name: 'Storage', exact: true }),
+    ).toBeVisible();
+    await expect(
+      card.getByRole('status', { name: 'Loading administration overview' }),
+    ).toHaveCount(0);
+  } finally {
+    overview.release();
+  }
 });
 
 test('a debounced search from the outgoing library cannot replace the selected page', async ({

@@ -6,8 +6,10 @@
   import { onMount } from 'svelte';
   import { LoaderCircle } from '@lucide/svelte';
   import { api } from './api';
+  import { inBackground } from './page-readiness';
   import { isServerUpdateInterruption } from './server-updates';
   import Button from './ui/Button.svelte';
+  import LoadingSpinner from './ui/LoadingSpinner.svelte';
   import SettingsCard from './ui/SettingsCard.svelte';
   import SettingRow from './ui/SettingRow.svelte';
   import StatusChip from './ui/StatusChip.svelte';
@@ -52,19 +54,22 @@
   let data = $state<Dashboard | null>(null),
     error = $state(''),
     busy = $state(false);
-  let devices = $state<
-    { id: string; user: string; name: string; transport: string }[]
-  >([]);
+  type Device = { id: string; user: string; name: string; transport: string };
+  let devices = $state<Device[] | null>(null);
   async function load() {
     if (busy) return;
     busy = true;
     try {
-      const [dashboard, connected] = await Promise.all([
-        api<Dashboard>('/admin/operations'),
-        api<{ items: typeof devices }>('/admin/devices'),
+      // Measuring the server's folders can take seconds, so the page shows
+      // without the overview and each card fills in when its data arrives.
+      await Promise.all([
+        inBackground(() => api<Dashboard>('/admin/operations')).then(
+          (dashboard) => (data = dashboard),
+        ),
+        api<{ items: Device[] }>('/admin/devices').then(
+          (connected) => (devices = connected.items),
+        ),
       ]);
-      data = dashboard;
-      devices = connected.items;
       error = '';
     } catch (e) {
       if (!isServerUpdateInterruption(e)) error = String(e);
@@ -109,7 +114,7 @@
   description="Storage, integrations and what the server is doing right now. Refreshes every 30 seconds."
 >
   {#snippet actions()}
-    {#if busy}
+    {#if busy && data}
       <span
         role="status"
         aria-label="Loading administration overview"
@@ -223,6 +228,12 @@
           </p>{/each}
       </div>
     </section>
+  {:else if busy}
+    <LoadingSpinner
+      label="Loading administration overview"
+      size={24}
+      class="min-h-40"
+    />
   {/if}
 </SettingsCard>
 <SettingsCard id="server-diagnostics" title="Diagnostics">
@@ -240,7 +251,7 @@
   title="All devices"
   description="Sessions across every user on this server."
 >
-  {#each devices as device (device.id)}
+  {#each devices ?? [] as device (device.id)}
     <SettingRow
       label={`${device.user} · ${device.name}`}
       description={device.transport}
@@ -260,7 +271,7 @@
     </SettingRow>
   {:else}
     <p class="m-0 {cardBlockClass} text-xs text-muted">
-      {data ? 'No connected devices.' : 'Loading devices…'}
+      {devices ? 'No connected devices.' : 'Loading devices…'}
     </p>
   {/each}
 </SettingsCard>

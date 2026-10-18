@@ -19,6 +19,9 @@ coordinates, chart data, and measured animation geometry.
   call site when an update should be announced; static notices need no live role.
 - `StatusIndicator` provides service state text with a colored dot, including
   activity and reduced-motion behavior.
+- `LoadingSpinner` marks content still loading. A page fades in once the
+  requests it starts finish; content that loads slowly starts its requests in
+  `inBackground` and shows this spinner, so the rest of the page appears first.
 - `ProgressBar` provides determinate and indeterminate progress. Pass a `label`
   for an accessible progress bar; omit it for decorative media overlays that
   already have a text description. `barClass` styles the moving fill.

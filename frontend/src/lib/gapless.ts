@@ -1,4 +1,5 @@
 import { api } from './api';
+import { inBackground } from './page-readiness';
 import { captureSession } from './session';
 import { PlaybackActivity } from './playback-activity';
 import {
@@ -275,14 +276,17 @@ export class GaplessQueue {
     const activeSeconds = entry.activity.seconds();
     entry.reports = entry.reports
       .catch(() => {})
+      // Progress reports never hold back the page being opened.
       .then(() =>
         this.ownsSession()
-          ? api(`/playback/${entry.playback.id}/progress`, 'POST', {
-              sequence,
-              state,
-              position,
-              active_seconds: activeSeconds,
-            })
+          ? inBackground(() =>
+              api(`/playback/${entry.playback.id}/progress`, 'POST', {
+                sequence,
+                state,
+                position,
+                active_seconds: activeSeconds,
+              }),
+            )
           : undefined,
       );
     return entry.reports.catch((e) => {
@@ -297,7 +301,9 @@ export class GaplessQueue {
     try {
       for (const e of this.entries) {
         if (this.closed || !this.ownsSession()) return;
-        await api(`/playback/${e.playback.id}/keepalive`, 'POST');
+        await inBackground(() =>
+          api(`/playback/${e.playback.id}/keepalive`, 'POST'),
+        );
       }
       const current = this.entries[0];
       if (current)

@@ -1,5 +1,6 @@
 import { get, writable } from 'svelte/store';
 import { api } from './api';
+import { inBackground } from './page-readiness';
 import {
   activityDescription,
   hasServerActivity,
@@ -68,10 +69,13 @@ export function refreshAttention(): Promise<void> {
       queued = false;
       const current = ++request;
       try {
-        const result = await api<{
-          items: AttentionItem[];
-          activity?: ActivityItem[];
-        }>('/me/attention');
+        // The navigation's dots are not part of any page.
+        const result = await inBackground(() =>
+          api<{
+            items: AttentionItem[];
+            activity?: ActivityItem[];
+          }>('/me/attention'),
+        );
         if (session === epoch && current === request) {
           if (JSON.stringify(get(attention)) !== JSON.stringify(result.items))
             attention.set(result.items);

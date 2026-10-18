@@ -93,6 +93,8 @@ pub struct AppState {
     pub(crate) release_install: Arc<tokio::sync::Mutex<()>>,
     /// Library roots by ID, and whether filesystem changes reach them live.
     pub(crate) library_watch: Arc<std::sync::Mutex<std::collections::HashMap<String, bool>>>,
+    /// The last measured size of the state and cache folders, and when.
+    pub(crate) folder_sizes: Arc<tokio::sync::Mutex<operations::FolderSizes>>,
 }
 impl AppState {
     pub async fn open(config: Config) -> anyhow::Result<Self> {
@@ -138,6 +140,7 @@ impl AppState {
             release_check: Arc::new(tokio::sync::Mutex::new(())),
             release_install: Arc::new(tokio::sync::Mutex::new(())),
             library_watch: Arc::new(Default::default()),
+            folder_sizes: Arc::new(Default::default()),
             dummy_hash: Arc::new(thelxinoe_auth::password_hash(thelxinoe_auth::token()).await?),
         })
     }

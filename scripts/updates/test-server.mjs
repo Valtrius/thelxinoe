@@ -348,10 +348,13 @@ export async function serverScenarios({
       await stage(replacement.id, 'committed');
       expect((await api('/health')).version).toBe(lab.next);
       expect(controller('/health').version).toBe(lab.next);
-      expect(
-        (await state()).controller.items.find((item) => item.id === previous.id)
-          .stage,
-      ).toBe('superseded');
+      // The status reports the controller as the server last observed it.
+      await until(
+        async () =>
+          (await state()).controller.items.find(
+            (item) => item.id === previous.id,
+          )?.stage === 'superseded',
+      );
       await page.screenshot({
         path: join(output, 'server-automatic-after-recreation.png'),
       });
@@ -479,9 +482,7 @@ export async function serverScenarios({
         Number(marker('lab-product-ticks', 'print(p.read_text())'));
       const before = ticks();
       await until(async () => {
-        if (
-          (await state()).controller.items.some((item) => item.id === update.id)
-        )
+        if (operations().items.some((item) => item.id === update.id))
           throw Object.assign(Error('Update started during playback'), {
             fatal: true,
           });
@@ -715,18 +716,15 @@ export async function serverScenarios({
           )
         ).status(),
       ).toBe(409);
-      expect(
+      const preflightReady = async () =>
         (await state()).controller.items.find(
           (item) => item.id === obsoletePreflight.id,
-        ).stage,
-      ).toBe('ready');
+        )?.stage === 'ready';
+      await until(preflightReady);
       docker('restart', component('controller'));
       await until(() => controller('/health').version === lab.next);
-      expect(
-        (await state()).controller.items.find(
-          (item) => item.id === obsoletePreflight.id,
-        ).stage,
-      ).toBe('ready');
+      // The server reports the restarted controller once it observes it again.
+      await until(preflightReady);
       expect((await api('/health')).version).toBe(lab.next);
     },
   );
