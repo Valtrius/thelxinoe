@@ -638,7 +638,7 @@ async function fixture(
           options.app
             ? "mount(App, { target: document.querySelector('#fixture-root') })"
             : `mount(${options.native ? 'NativePlayer' : options.music ? 'MusicPlayer' : 'Player'}, { target: document.querySelector('#fixture-root'), props: {
-          choice: { id: 'fixture', title: ${JSON.stringify(title)}, kind: ${JSON.stringify(options.music ? 'track' : 'movie')}, restore: ${!!options.nativeRestore} }, closed: () => unmount(app, { outro: true })
+          choice: { id: 'fixture', title: ${JSON.stringify(title)}, kind: ${JSON.stringify(options.music || options.native ? 'track' : 'movie')}, restore: ${!!options.nativeRestore}, run: 'fixture-run' }, closed: () => unmount(app, { outro: true })
         }})`
         };
       </script></body></html>`,
@@ -656,6 +656,7 @@ async function fixture(
       let ready!: () => void;
       const pending = new Promise<void>((resolve) => (ready = resolve));
       let canceled = false;
+      let run = 'fixture-run';
       let listener: ((event: unknown) => void) | undefined;
       let toolsReady = !holdTools;
       bridge.nativeReady = () => {
@@ -665,9 +666,11 @@ async function fixture(
           event: 'mpv-state',
           id: 1,
           payload: {
+            run,
             status: 'playing',
             media_id: 'fixture',
             title: 'Native fixture',
+            music: true,
           },
         });
       };
@@ -687,6 +690,7 @@ async function fixture(
             path?: string;
             method?: string;
             body?: unknown;
+            run?: string;
           } = {},
         ) {
           if (command === 'backend_request') {
@@ -700,9 +704,11 @@ async function fixture(
           if (command === 'plugin:event|listen') return 1;
           if (command === 'mpv_state')
             return {
+              run: args.run,
               status: 'starting',
               media_id: 'fixture',
               title: 'Native fixture',
+              music: true,
             };
           if (command === 'tools_get')
             return {
@@ -730,13 +736,16 @@ async function fixture(
           }
           if (command === 'mpv_play') {
             bridge.nativeInvocations++;
+            run = args.run ?? run;
             await pending;
             if (canceled) throw new Error('Playback canceled');
             bridge.nativeStarts++;
             return {
+              run,
               status: 'playing',
               media_id: 'fixture',
               title: 'Native fixture',
+              music: true,
             };
           }
           return null;

@@ -274,15 +274,10 @@ pub async fn desktop_update_install(app: tauri::AppHandle) -> Result<Value, Stri
 }
 #[cfg(windows)]
 async fn playback_active(app: &tauri::AppHandle) -> bool {
-    !matches!(
-        app.state::<crate::mpv::DesktopPlayback>()
-            .player
-            .view()
-            .await
-            .status
-            .as_str(),
-        "stopped" | "ended" | "error" | "failed" | ""
-    )
+    app.state::<crate::mpv::DesktopPlayback>()
+        .player
+        .active()
+        .await
 }
 async fn install(app: &tauri::AppHandle, wait_for_playback: bool) -> Result<Value, String> {
     let runtime = app.state::<Runtime>();

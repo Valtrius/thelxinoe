@@ -911,11 +911,12 @@ test('desktop trailers resolve through the server and launch MPV with the same v
           });
           return { status: response.status, body: await response.json() };
         }
-        if (command === 'mpv_state') return { status: 'stopped', media_id: '' };
+        if (command === 'mpv_sessions') return [];
         if (command === 'mpv_play') {
           await bridge.recordNativeLaunch(args);
           return {
-            status: 'playing',
+            run: args.run,
+            status: 'starting',
             media_id: 'youtube:xwdamnfS6IM',
             title: 'Arrival · Official Trailer',
           };

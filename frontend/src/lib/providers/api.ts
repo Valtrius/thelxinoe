@@ -39,7 +39,7 @@ export function connectPresentation(
     owner = '';
   };
 }
-export function activeMediaId(choice: MediaChoice): string {
+export function activeMediaId(choice: { id: string }): string {
   const [platform, id] = choice.id.split(':');
   if (platform === 'twitch')
     return [...streams].find(([, stream]) => stream.id === id)?.[0] ?? id;

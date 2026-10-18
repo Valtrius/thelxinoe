@@ -31,6 +31,7 @@ export default defineConfig({
         'media-deletion.spec.ts',
         'loading.spec.ts',
         'desktop-startup.spec.ts',
+        'desktop-playback.spec.ts',
         'attention.spec.ts',
       ],
     },

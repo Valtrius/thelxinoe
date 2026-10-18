@@ -2,6 +2,7 @@
   import type { Snippet } from 'svelte';
   import { elapsedTime, formatViewers, liveNow } from '../../utils';
   import LiveCardBadge from './LiveCardBadge.svelte';
+  import LaunchingOverlay from '../../../ui/LaunchingOverlay.svelte';
   import {
     mediaCardMotionClass,
     mediaCardThumbnailClass,
@@ -84,6 +85,7 @@
         class="absolute inset-0 bg-linear-to-t from-black/60 via-transparent to-black/15"
       ></span>
     </button>
+    {#if isLaunching}<LaunchingOverlay label={`Starting ${displayName}`} />{/if}
     <div class="pointer-events-none absolute top-2 left-2 flex gap-1">
       {@render badges()}
       {#if isLaunching}

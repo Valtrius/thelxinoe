@@ -7,7 +7,7 @@
   import { LatestRequest } from '../latest-request';
   import { appearance, updateAppearance } from '../appearance';
   import { compactViewport } from '../responsive';
-  import type { MediaChoice } from '../playback';
+  import type { MediaChoice, PlayingMedia } from '../playback';
   import {
     connectPresentation,
     activeMediaId,
@@ -48,7 +48,7 @@
     admin: boolean;
     userId: string;
     revision: number;
-    playing: MediaChoice | null;
+    playing: PlayingMedia[];
     play: (choice: MediaChoice) => Promise<void>;
     settings: (section: string) => void;
     watchlistId?: number;
@@ -189,23 +189,21 @@
       kind: 'server-downloads',
       detected: accounts.youtube?.downloads_enabled ?? false,
     },
-    activeSessionCount: playing ? 1 : 0,
+    activeSessionCount: playing.length,
   });
   const activeSessions = $derived<PlaybackSession[]>(
-    playing && playing.id.startsWith(platform + ':')
-      ? [
-          {
-            sessionId: playing.id,
-            platform,
-            mediaId: activeMediaId(playing),
-            ipcEndpoint: '',
-            startedAt: '',
-            playbackState: 'playing',
-            connected: true,
-            sourceKind: 'remote',
-          },
-        ]
-      : [],
+    playing
+      .filter((media: PlayingMedia) => media.id.startsWith(platform + ':'))
+      .map((media: PlayingMedia) => ({
+        sessionId: media.id,
+        platform,
+        mediaId: activeMediaId(media),
+        ipcEndpoint: '',
+        startedAt: '',
+        playbackState: media.launching ? 'starting' : 'playing',
+        connected: true,
+        sourceKind: 'remote',
+      })),
   );
   async function load() {
     if (loadingPlatform === platform || disposed || !ownsSession()) return;

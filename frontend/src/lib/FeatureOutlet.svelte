@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { User } from './api';
   import { routeHref, type AppRoute } from './navigation';
-  import type { MediaChoice } from './playback';
+  import type { MediaChoice, PlayingMedia } from './playback';
   import { pages } from './pages';
   import Notice from './ui/Notice.svelte';
   import Button from './ui/Button.svelte';
@@ -37,7 +37,7 @@
     preferencesRevision: number;
     settingsRevision: number;
     scans: Record<string, { completed: number; total: number }>;
-    playing: MediaChoice | null;
+    playing: PlayingMedia[];
     play: (choice: MediaChoice, resolveYoutube?: boolean) => Promise<void>;
     navigate: (name: string) => void;
     openSettings: (name: string, service?: string) => void;

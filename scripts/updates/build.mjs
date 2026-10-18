@@ -229,12 +229,12 @@ export function source(lab, version) {
 `;
     fault(
       'apps/desktop/src/mpv/runtime.rs',
-      '        self.stop_inner().await;\n        let (settings, launch) = tools',
+      '        stop_runs(replaced).await;\n        let (settings, launch) = tools',
       held(
         'playback',
         'anyhow::bail!("Update lab playback preparation released");',
       ) +
-        '        self.stop_inner().await;\n        let (settings, launch) = tools',
+        '        stop_runs(replaced).await;\n        let (settings, launch) = tools',
     );
     fault(
       'apps/desktop/src/tools/installation.rs',

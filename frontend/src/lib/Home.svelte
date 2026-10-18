@@ -3,7 +3,7 @@
   import { RefreshCw, Radio } from '@lucide/svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import { api, type User } from './api';
-  import type { MediaChoice } from './playback';
+  import type { MediaChoice, PlayingMedia } from './playback';
   import { providers } from './providers/availability';
   import {
     api as providerApi,
@@ -27,7 +27,7 @@
       user: User;
       revision: number;
       accountRevision: number;
-      playing: MediaChoice | null;
+      playing: PlayingMedia[];
       play: (choice: MediaChoice) => Promise<void>;
       navigate: (section: string) => void;
       details: (id: string, kind: string) => void;
@@ -366,7 +366,11 @@
     };
   });
   async function launch(choice: MediaChoice) {
-    if (pending.has(choice.id) || playing?.id === choice.id) return;
+    if (
+      pending.has(choice.id) ||
+      playing.some((media: PlayingMedia) => media.id === choice.id)
+    )
+      return;
     pending.add(choice.id);
     try {
       await play(choice);
@@ -532,9 +536,16 @@
           thumbnailUrl={stream.thumbnail}
           profileImageUrl={stream.avatar}
           statistics={stream}
-          isPlaying={playing?.id === stream.id}
-          isLaunching={pending.has(stream.id)}
-          watchDisabled={playing?.id === stream.id || pending.has(stream.id)}
+          isPlaying={playing.some(
+            (media: PlayingMedia) => media.id === stream.id && !media.launching,
+          )}
+          isLaunching={pending.has(stream.id) ||
+            playing.some(
+              (media: PlayingMedia) =>
+                media.id === stream.id && media.launching,
+            )}
+          watchDisabled={pending.has(stream.id) ||
+            playing.some((media: PlayingMedia) => media.id === stream.id)}
           watchLabel={`Watch ${stream.name}`}
           onWatch={() => void launch({ id: stream.id, title: stream.title })}
         >

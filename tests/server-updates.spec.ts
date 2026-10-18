@@ -34,8 +34,7 @@ async function setup(
             });
             return { status: response.status, body: await response.json() };
           }
-          if (command === 'mpv_state')
-            return { status: 'stopped', media_id: '' };
+          if (command === 'mpv_sessions') return [];
           if (command === 'tools_get') return { tools: [], mpv: {} };
           if (command === 'plugin:app|version') return version;
           if (command === 'desktop_update_status')
