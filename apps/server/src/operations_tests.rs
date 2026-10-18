@@ -488,3 +488,47 @@ async fn domain_events_push_attention_to_affected_users() {
     watcher.abort();
     assert_eq!(pushed, vec![Some("alice".to_owned())]);
 }
+
+// Playback adds and removes cache files while the overview measures them.
+#[test]
+fn folder_size_counts_files_and_tolerates_vanished_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("a"), [0u8; 10]).unwrap();
+    std::fs::create_dir(temp.path().join("nested")).unwrap();
+    std::fs::write(temp.path().join("nested/b"), [0u8; 5]).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(temp.path().join("a"), temp.path().join("link")).unwrap();
+    assert_eq!(super::operations::folder_size(temp.path()), (15, false));
+    assert_eq!(
+        super::operations::folder_size(&temp.path().join("removed")),
+        (0, false)
+    );
+}
+
+#[tokio::test]
+async fn administration_overview_reuses_a_recent_folder_walk() {
+    let (_temp, state, _) = fixture().await;
+    state
+        .db
+        .write("test.admin", |db| {
+            db.execute("UPDATE users SET role='admin' WHERE id='bob'", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let admin =
+        crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
+            .await
+            .unwrap();
+    let admin = format!("thelxinoe_session={admin}");
+    let first = call(&state, "/api/v1/admin/operations", "GET", json!({}), &admin).await;
+    assert_eq!(first.0, StatusCode::OK);
+    std::fs::write(state.config.cache.join("segment"), [0u8; 4096]).unwrap();
+    let second = call(&state, "/api/v1/admin/operations", "GET", json!({}), &admin).await;
+    assert_eq!(second.0, StatusCode::OK);
+    assert_eq!(
+        first.2["storage"]["cache"]["bytes"],
+        second.2["storage"]["cache"]["bytes"]
+    );
+    assert!(second.2["storage"]["cache"]["free_bytes"].as_u64().unwrap() > 0);
+}
