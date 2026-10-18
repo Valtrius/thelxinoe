@@ -1,5 +1,5 @@
 import type { AppRoute, SettingsSection } from './navigation';
-import { trackPageWork } from './page-readiness';
+import { inBackground, pageSettled, trackPageWork } from './page-readiness';
 
 const cached = <T>(load: () => Promise<T>) => {
   let pending: Promise<T> | undefined;
@@ -46,7 +46,6 @@ export const settingsPages = {
   MpvSettings: cached(() => import('./MpvSettings.svelte')),
   AuditSettings: cached(() => import('./AuditSettings.svelte')),
   UserPreferences: cached(() => import('./UserPreferences.svelte')),
-  PasswordSettings: cached(() => import('./PasswordSettings.svelte')),
   AuthSettings: cached(() => import('./AuthSettings.svelte')),
   AuthDevices: cached(() => import('./AuthDevices.svelte')),
   OidcSettings: cached(() => import('./OidcSettings.svelte')),
@@ -73,12 +72,14 @@ export const providerPages = {
   KickView: cached(() => import('./providers/components/kick/KickView.svelte')),
 };
 
+// Every module a settings page renders, so they load together instead of one
+// after another as the page mounts.
 const settingsModules: Record<SettingsSection, (keyof typeof settingsPages)[]> =
   {
-    account: ['UserPreferences', 'PasswordSettings'],
+    account: ['UserPreferences', 'AuthSettings'],
     playback: ['PlaybackSettings', 'SegmentSettings'],
     online: ['OnlineAccounts'],
-    devices: ['QuickConnect'],
+    devices: ['QuickConnect', 'AuthDevices'],
     mpv: ['MpvSettings'],
     connection: ['DesktopUpdatePreferences'],
     server: [
@@ -88,17 +89,32 @@ const settingsModules: Record<SettingsSection, (keyof typeof settingsPages)[]> =
       'ProductVersion',
       'ProductUpdatePreferences',
       'ServerTools',
+      'OidcSettings',
       'AdminOperations',
     ],
     analysis: ['SegmentSettings'],
     providers: ['OnlineSettings'],
-    services: ['ServicesSettings', 'ManagerOwnership'],
-    retention: ['RetentionSettings'],
+    services: ['ServicesSettings'],
+    retention: ['RetentionSettings', 'ManagerOwnership'],
     backups: ['BackupSettings'],
     people: ['UserAdministration'],
     jobs: ['ActivitySettings'],
     audit: ['AuditSettings'],
   };
+// Once the open settings page shows, the others load one at a time so moving
+// between them only waits for their data.
+export async function prefetchSettings(
+  sections: SettingsSection[],
+  signal: AbortSignal,
+) {
+  await pageSettled();
+  for (const key of new Set(
+    sections.flatMap((section) => settingsModules[section]),
+  )) {
+    if (signal.aborted) return;
+    await inBackground(() => settingsPages[key]()).catch(() => {});
+  }
+}
 export async function preloadPage(route: AppRoute) {
   if (route.section === 'Settings') {
     await Promise.all([

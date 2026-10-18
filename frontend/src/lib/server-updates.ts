@@ -2,6 +2,7 @@ import { readable } from 'svelte/store';
 import { api, ApiError, desktop, serverUrl } from './api';
 import { startActivity } from './activity';
 import { refreshAttention } from './attention';
+import { inBackground } from './page-readiness';
 
 export type ServerUpdate = {
   id: string;
@@ -123,7 +124,10 @@ export async function refreshServerUpdate() {
   loading = true;
   const source = serverUrl();
   try {
-    const status = await api<ServerUpdateStatus>('/admin/product-update');
+    // The status waits on the Docker controller; its cards show their own loading.
+    const status = await inBackground(() =>
+      api<ServerUpdateStatus>('/admin/product-update'),
+    );
     if (source === serverUrl()) {
       if (
         !desktop &&

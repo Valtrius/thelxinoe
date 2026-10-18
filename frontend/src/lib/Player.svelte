@@ -22,6 +22,7 @@
   import PlayerOption from './PlayerOption.svelte';
   import { playerHandleReveal, playerReveal } from './player-reveal';
   import { api } from './api';
+  import { inBackground } from './page-readiness';
   import { appearance, updateAppearance, videoMuted } from './appearance';
   import { compactViewport, touchDevice } from './responsive';
   import {
@@ -751,7 +752,10 @@
     };
     reporting = reporting
       .catch(() => {})
-      .then(() => api(`/playback/${id}/progress`, 'POST', data))
+      // Progress reports never hold back the page being opened.
+      .then(() =>
+        inBackground(() => api(`/playback/${id}/progress`, 'POST', data)),
+      )
       .catch((e) => {
         if (active?.id !== id) return;
         error = String(e);

@@ -17,6 +17,7 @@
   import { players, preloadPage } from './lib/pages';
   import { playerFrameReveal } from './lib/player-reveal';
   import FeatureOutlet from './lib/FeatureOutlet.svelte';
+  import PageLoading from './lib/ui/PageLoading.svelte';
   import { PageTransition, pageIdentity } from './lib/page-transition';
   import {
     allowedRoute,
@@ -50,7 +51,10 @@
   import { scrollWithMotion } from './lib/motion';
   import { get } from 'svelte/store';
   const mediaMotion = createLayoutMotion();
-  const pageTransition = new PageTransition();
+  let pageLoading = $state<HTMLElement | null>(null);
+  const pageTransition = new PageTransition(
+    (surface) => (pageLoading = surface),
+  );
   let pendingRoute: AppRoute | undefined;
   function zoomWheel(node: HTMLElement) {
     const wheel = createCardGridWheelHandler({
@@ -539,6 +543,16 @@
       return;
     }
     const preloaded = preloadPage(next).catch(() => {});
+    // The next page mounts while the previous one leaves. Input from the click
+    // on means the reader has taken over from restoring a saved position.
+    const input = new AbortController();
+    let tookOver = false;
+    if (scroll > 0)
+      for (const event of ['wheel', 'pointerdown', 'touchstart', 'keydown'])
+        window.addEventListener(event, () => (tookOver = true), {
+          passive: true,
+          signal: input.signal,
+        });
     void pageTransition
       .change(
         async () => {
@@ -547,7 +561,10 @@
           await tick();
           syncMediaLayouts();
         },
-        () => restoreWorkspace(scroll, focus),
+        async () => {
+          input.abort();
+          if (!tookOver) await restoreWorkspace(scroll, focus);
+        },
         route.section === 'Settings' && next.section === 'Settings'
           ? route.settings === 'services' && next.settings === 'services'
             ? 'service'
@@ -559,7 +576,8 @@
       })
       .catch((caught) => {
         error = String(caught);
-      });
+      })
+      .finally(() => input.abort());
   }
   function updateFilters(destination: AppRoute, replace = true) {
     go(destination, replace, true);
@@ -1043,6 +1061,10 @@
             }}
           />
         </div>
+        {#if pageLoading && workspace}<PageLoading
+            surface={pageLoading}
+            viewport={workspace}
+          />{/if}
       </div>
     </main>
   </div>

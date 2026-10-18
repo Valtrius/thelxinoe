@@ -2,9 +2,10 @@
   import { api } from './api';
   import { serverUpdates } from './server-updates';
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
+  import ContentSkeleton from './ui/ContentSkeleton.svelte';
   import ExclusiveChoiceGroup from './ui/ExclusiveChoiceGroup.svelte';
   import SettingRow from './ui/SettingRow.svelte';
-  import { formControlClass } from './ui/styles';
+  import { cardBlockClass, formControlClass } from './ui/styles';
   let policy = $state('automatic'),
     start = $state(3),
     end = $state(5);
@@ -78,4 +79,12 @@
       </SettingRow>
     {/snippet}
   </AutoSaveForm>
+{:else}
+  <div class={cardBlockClass}>
+    <ContentSkeleton
+      label="Loading update settings"
+      variant="settings"
+      count={2}
+    />
+  </div>
 {/if}

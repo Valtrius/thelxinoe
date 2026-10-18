@@ -1,9 +1,10 @@
 import { tick } from 'svelte';
 
 let active: PagePreparation | undefined;
+let background = 0;
 
 export function trackPageWork<T>(start: () => Promise<T>): Promise<T> {
-  const finish = active?.add();
+  const finish = background ? undefined : active?.add();
   try {
     const pending = start();
     if (finish) void pending.then(finish, finish);
@@ -12,6 +13,22 @@ export function trackPageWork<T>(start: () => Promise<T>): Promise<T> {
     finish?.();
     throw error;
   }
+}
+
+// Content that shows its own loading state starts its work here, so the page
+// appears without waiting for it. Only work started synchronously is detached.
+export function inBackground<T>(start: () => T): T {
+  background++;
+  try {
+    return start();
+  } finally {
+    background--;
+  }
+}
+
+// Resolves once no page is waiting to appear.
+export async function pageSettled() {
+  while (active) await active.closed;
 }
 
 function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -43,6 +60,8 @@ function pageFrame(signal: AbortSignal): Promise<void> {
 class PagePreparation {
   private pending = 0;
   private revision = 0;
+  private finished = () => {};
+  readonly closed = new Promise<void>((resolve) => (this.finished = resolve));
 
   add() {
     this.pending++;
@@ -97,6 +116,7 @@ class PagePreparation {
 
   close() {
     if (active === this) active = undefined;
+    this.finished();
   }
 }
 

@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { onDestroy, untrack } from 'svelte';
+  import { onDestroy, onMount, untrack } from 'svelte';
   import { Globe, Laptop, SearchX, Smartphone } from '@lucide/svelte';
   import { twMerge } from 'tailwind-merge';
   import DesktopVersion from '../DesktopVersion.svelte';
-  import { settingsPages } from '../pages';
+  import { prefetchSettings, settingsPages } from '../pages';
   import { api, desktop, serverUrl, type User, type Job } from '../api';
+  import { inBackground } from '../page-readiness';
   import { captureSession } from '../session';
   import { withVerification } from '../authentication';
   import { LatestRequest } from '../latest-request';
@@ -158,6 +159,14 @@
       hour12: timeFormat === '12h',
     });
   onDestroy(() => requests.invalidate());
+  onMount(() => {
+    const prefetch = new AbortController();
+    void prefetchSettings(
+      groups.flatMap((group) => group.items.map((item) => item.id)),
+      prefetch.signal,
+    );
+    return () => prefetch.abort();
+  });
   $effect(() => {
     void shownKey;
     void revision;
@@ -225,7 +234,10 @@
       const value = await api<{ items: Job[] }>('/admin/jobs');
       if (current()) jobs = value.items;
     } else if (section === 'server') {
-      const value = await api<NonNullable<typeof health>>('/admin/health');
+      // Health waits on the Docker controller; its tiles show their own loading.
+      const value = await inBackground(() =>
+        api<NonNullable<typeof health>>('/admin/health'),
+      );
       if (current()) health = value;
     } else if (section === 'backups') {
       const value = await api<{ timezone: string }>('/admin/settings');

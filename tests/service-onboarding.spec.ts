@@ -45,9 +45,10 @@ test('installation keeps the workspace empty until the API is connected', async 
   await page.goto('/');
   const select = page.getByRole('navigation', { name: 'Select service' });
   await select.getByRole('link', { name: 'Sonarr', exact: true }).click();
+  // An unconfigured service shows its setup section, titled since #62.
   await expect(
     page.getByRole('heading', { name: 'Set up Sonarr' }),
-  ).toHaveCount(0);
+  ).toBeVisible();
   await expect(
     page.getByRole('region', { name: 'Updates', exact: true }),
   ).toHaveCount(0);
