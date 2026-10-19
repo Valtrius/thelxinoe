@@ -49,12 +49,22 @@ test('SHA256SUMS must list exactly the downloaded assets', () => {
   assert.throws(() => checkSums('garbage\n', {}), /Invalid SHA256SUMS/);
 });
 
-test('drafts with a signed feed are only replaced on explicit reassembly', () => {
+test('complete drafts are only replaced on explicit reassembly', () => {
   draftGuard(undefined, false);
-  draftGuard({ isDraft: true, assets: [{ name: 'release.pub' }] }, false);
-  const signed = { isDraft: true, assets: [{ name: 'latest.json' }] };
-  assert.throws(() => draftGuard(signed, false), /reassemble/);
-  draftGuard(signed, true);
+  // An interrupted upload may already hold the signed feed.
+  draftGuard(
+    {
+      isDraft: true,
+      assets: [{ name: 'release.pub' }, { name: 'latest.json' }],
+    },
+    false,
+  );
+  const complete = {
+    isDraft: true,
+    assets: [{ name: 'latest.json' }, { name: 'SHA256SUMS' }],
+  };
+  assert.throws(() => draftGuard(complete, false), /reassemble/);
+  draftGuard(complete, true);
   assert.throws(
     () => draftGuard({ isDraft: false, assets: [] }, true),
     /immutable/,

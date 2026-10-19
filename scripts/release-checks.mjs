@@ -39,16 +39,22 @@ export function checkSums(text, actual) {
     if (!listed.has(name))
       throw Error(`Release asset ${name} is not listed in SHA256SUMS`);
 }
-/** A draft keeps its signed feed unless reassembly is requested explicitly. */
+/** Uploaded last, so only a complete draft has it. */
+export const completeDraftAsset = 'SHA256SUMS';
+/** A complete draft is kept unless reassembly is requested explicitly; an
+ * interrupted upload may simply run again. */
 export function draftGuard(release, reassemble) {
   if (!release) return;
   if (!release.isDraft)
     throw Error(
       'Published releases are immutable; increment the product version',
     );
-  if (release.assets?.some(({ name }) => name === 'latest.json') && !reassemble)
+  if (
+    release.assets?.some(({ name }) => name === completeDraftAsset) &&
+    !reassemble
+  )
     throw Error(
-      'This draft already has a signed latest.json. Review or publish it; to replace it run Assemble release draft from the tag with reassemble enabled.',
+      'This draft is already complete. Review or publish it; to replace it run Assemble release draft from the tag with reassemble enabled.',
     );
 }
 const DOMAIN = Buffer.from('Thelxinoe release manifest v1\0');

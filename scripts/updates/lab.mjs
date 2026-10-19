@@ -256,7 +256,6 @@ function storageVolume(lab) {
     throw Error('Update lab storage volume ownership changed');
   return volume;
 }
-/** The manifest of the live signed feed, or null before the first release. */
 // GitHub and GHCR are remote; ride out brief outages before failing.
 async function retried(action) {
   for (let attempt = 1; ; attempt++) {
@@ -269,14 +268,13 @@ async function retried(action) {
     }
   }
 }
+/** The manifest of the live signed feed. Releases exist, so a missing feed fails. */
 export async function publishedRelease() {
   const response = await retried(async () => {
     const response = await fetch(feed, { signal: AbortSignal.timeout(60000) });
-    if (!response.ok && response.status !== 404)
-      throw Error(`Release feed HTTP ${response.status}`);
+    if (!response.ok) throw Error(`Release feed HTTP ${response.status}`);
     return response;
   });
-  if (response.status === 404) return null;
   return verifyEnvelope(
     await response.json(),
     readFileSync(join(repository, 'releases/release.pub'), 'utf8'),
@@ -311,9 +309,11 @@ async function importPublished(lab, manifest) {
   for (const part of ['server', 'controller']) {
     const source = manifest[part].reference;
     // An empty Docker configuration pulls as a host without credentials.
+    // A stalled pull is killed and retried instead of holding the lane.
     await retried(() =>
       run('docker', ['pull', '--platform', 'linux/amd64', source], {
         env: { ...process.env, DOCKER_CONFIG: join(directory, 'docker') },
+        timeout: 600000,
       }),
     );
     const tag = `localhost:${lab.registryPort}/${lab.id}/${part}:${lab.base}`;

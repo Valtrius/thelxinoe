@@ -23,8 +23,7 @@ try {
   const next = JSON.parse(
     readFileSync(join(repository, 'package.json'), 'utf8'),
   ).version.replace(/\d+$/, (patch) => Number(patch) + 1);
-  if (!published) report.skipped = 'the release feed has no release yet';
-  else if (!newer(next, published.version))
+  if (!newer(next, published.version))
     report.skipped = `published ${published.version} is not older than candidate ${next}`;
   // A release whose own controller cannot update must not block its successor.
   else if (process.env.THELXINOE_SKIP_PUBLISHED_UPDATE === published.version)

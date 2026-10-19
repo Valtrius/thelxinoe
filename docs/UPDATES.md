@@ -138,7 +138,10 @@ anonymously pulled GHCR images (copied into the lab registry, so no host `latest
 changes), then installs a candidate built from this tree with one request. The
 published images accept the lab publisher through `THELXINOE_RELEASE_URL`,
 `THELXINOE_RELEASE_KEY_FILE` and `THELXINOE_RELEASE_CA_FILE`; no secret is needed.
-It is skipped, and passes, while the feed has no release older than the candidate.
+It is skipped, and passes, when the feed's release is not older than the candidate;
+an unreachable or missing feed fails it. It runs on a standard Linux runner, so
+faults specific to other Docker hosts (such as a NAS without CPU quotas) still need
+an update test on such a host.
 When a published controller cannot update at all, set the repository variable
 `THELXINOE_SKIP_PUBLISHED_UPDATE` to that version so its fix can ship; its
 installations then update with `docker compose pull && docker compose up -d`.
@@ -206,16 +209,19 @@ Authenticode/SmartScreen signing; no Authenticode certificate is configured here
    `windows-x64.json`, signed `latest.json`, `release.pub`, `compose.yaml`,
    `env.example` and `SHA256SUMS` to a **draft** release. Images initially have
    `sha-<commit>` staging tags. Inspect release notes and assets while it is a
-   draft. Another run, such as a repeated tag push, never re-signs a draft that has
-   `latest.json`; to rebuild it on purpose run
+   draft. `SHA256SUMS` is uploaded last, so a failed upload can simply be re-run.
+   Another run, such as a repeated tag push, never re-signs a complete draft (one
+   with `SHA256SUMS`); to rebuild it on purpose run
    `gh workflow run release.yml --ref X.Y.Z -f reassemble=true`, which replaces all
-   of its assets.
+   of its assets. That run waits while an earlier run's publish job awaits approval,
+   so reject that job first.
 3. The first release creates both GHCR packages as private. Make
    `thelxinoe-server` and `thelxinoe-controller` public (GitHub → Packages →
    package → Package settings → Change visibility); deployments pull without
    credentials.
 4. The same run's **publish** job then waits for a `release-publish` reviewer:
-   review the draft, then approve the job (reject it to discard the draft). It
+   review the draft, then approve the job. Rejecting it keeps the draft unpublished;
+   delete the draft or reassemble it before the next attempt. It
    checks every downloaded asset against `SHA256SUMS`, the signature and the
    deployment files, requires the version to be newer than the latest published
    release, checks image identities and anonymous pulls, then tags the exact

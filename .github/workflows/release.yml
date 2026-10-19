@@ -53,15 +53,19 @@ jobs:
           TAG: ${{ needs.version.outputs.version }}
           REASSEMBLE: ${{ inputs.reassemble }}
         run: |
-          state=$(gh release view "$TAG" --repo "$REPOSITORY" --json isDraft,assets \
-            --jq '"\(.isDraft) \(any(.assets[]; .name == "latest.json"))"' 2>/dev/null || true)
+          # SHA256SUMS is uploaded last, so only a complete draft has it.
+          if ! state=$(gh release view "$TAG" --repo "$REPOSITORY" --json isDraft,assets \
+            --jq '"\(.isDraft) \(any(.assets[]; .name == "SHA256SUMS"))"' 2>"$RUNNER_TEMP/release.err"); then
+            grep -q "release not found" "$RUNNER_TEMP/release.err" || { cat "$RUNNER_TEMP/release.err"; exit 1; }
+            state=
+          fi
           case "$state" in
             false*)
               echo "::error::$TAG is already published; increment the product version."
               exit 1 ;;
             "true true")
               if [ "$REASSEMBLE" != true ]; then
-                echo "::error::The $TAG draft already has a signed latest.json. Review or publish it; to replace it run Assemble release draft from the tag with reassemble enabled."
+                echo "::error::The $TAG draft is already complete. Review or publish it; to replace it run Assemble release draft from the tag with reassemble enabled."
                 exit 1
               fi ;;
           esac
@@ -75,8 +79,13 @@ jobs:
           # The exact commit, or a develop push or manual run that tested the
           # identical tree (for example a release branch before its merge).
           tree=$(gh api "repos/$REPOSITORY/git/commits/$SHA" --jq .tree.sha)
-          runs=$(gh api "repos/$REPOSITORY/actions/workflows/ci.yml/runs?status=success&per_page=50" \
-            --jq '.workflow_runs[] | select(.head_repository.full_name == .repository.full_name) | select((.event == "push" and .head_branch == "develop") or .event == "workflow_dispatch") | .head_sha' | awk '!seen[$0]++')
+          trusted='.workflow_runs[] | select(.head_repository.full_name == .repository.full_name) | select((.event == "push" and .head_branch == "develop") or .event == "workflow_dispatch") | .head_sha'
+          runs="repos/$REPOSITORY/actions/workflows/ci.yml/runs?status=success&per_page=100"
+          runs=$({
+            gh api "$runs&head_sha=$SHA" --jq "$trusted"
+            gh api "$runs&branch=develop&event=push" --jq "$trusted"
+            gh api "$runs&event=workflow_dispatch" --jq "$trusted"
+          } | awk '!seen[$0]++')
           for commit in $runs; do
             if [ "$commit" = "$SHA" ] || [ "$(gh api "repos/$REPOSITORY/git/commits/$commit" --jq .tree.sha)" = "$tree" ]; then
               echo "Build and verify passed on $commit with this tree."

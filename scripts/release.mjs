@@ -16,6 +16,7 @@ import { createPublicKey, createHash } from 'node:crypto';
 import {
   checkSums,
   checkValidity,
+  completeDraftAsset,
   draftGuard,
   feed,
   requireNewer,
@@ -54,29 +55,49 @@ function latestRelease() {
     throw error;
   }
 }
-/** The digest an anonymous Docker host resolves for `repository:reference`. */
+/**
+ * The digest an anonymous Docker host resolves for `repository:reference`, or
+ * null when it is absent or not public. Other registry errors are retried and
+ * then thrown, so a GHCR hiccup never reads as a missing tag.
+ */
 async function registryDigest(repository, reference) {
   const path = repository.replace(/^ghcr\.io\//, '');
-  const token = await fetch(
-    `https://ghcr.io/token?scope=repository:${path}:pull`,
-  );
-  if (!token.ok) return null;
-  const response = await fetch(
-    `https://ghcr.io/v2/${path}/manifests/${reference}`,
-    {
-      method: 'HEAD',
-      headers: {
-        Authorization: `Bearer ${(await token.json()).token}`,
-        Accept: [
-          'application/vnd.oci.image.manifest.v1+json',
-          'application/vnd.docker.distribution.manifest.v2+json',
-          'application/vnd.oci.image.index.v1+json',
-          'application/vnd.docker.distribution.manifest.list.v2+json',
-        ].join(', '),
-      },
-    },
-  );
-  return response.ok ? response.headers.get('docker-content-digest') : null;
+  const absent = (response) => [401, 403, 404].includes(response.status);
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const token = await fetch(
+        `https://ghcr.io/token?scope=repository:${path}:pull`,
+        { signal: AbortSignal.timeout(30000) },
+      );
+      if (absent(token)) return null;
+      if (!token.ok) throw Error(`GHCR token HTTP ${token.status}`);
+      const response = await fetch(
+        `https://ghcr.io/v2/${path}/manifests/${reference}`,
+        {
+          method: 'HEAD',
+          signal: AbortSignal.timeout(30000),
+          headers: {
+            Authorization: `Bearer ${(await token.json()).token}`,
+            Accept: [
+              'application/vnd.oci.image.manifest.v1+json',
+              'application/vnd.docker.distribution.manifest.v2+json',
+              'application/vnd.oci.image.index.v1+json',
+              'application/vnd.docker.distribution.manifest.list.v2+json',
+            ].join(', '),
+          },
+        },
+      );
+      if (absent(response)) return null;
+      const digest = response.headers.get('docker-content-digest');
+      if (!response.ok || !digest)
+        throw Error(`GHCR ${path}:${reference} HTTP ${response.status}`);
+      return digest;
+    } catch (error) {
+      if (attempt === 4) throw error;
+      console.log(`Retrying after: ${error.message}`);
+      await new Promise((done) => setTimeout(done, 5000 * attempt));
+    }
+  }
 }
 const verify = (directory, installer) =>
   run('cargo', [
@@ -276,8 +297,9 @@ if (command === 'check') {
     previous = JSON.parse(
       gh('release', 'view', tag, '--json', 'isDraft,assets'),
     );
-  } catch {
-    /* First assembly. */
+  } catch (error) {
+    // Only a missing release is a first assembly.
+    if (!/release not found/.test(String(error.stderr))) throw error;
   }
   // A second run (a repeated tag push) must not re-sign a reviewed draft.
   draftGuard(previous, process.env.RELEASE_REASSEMBLE === 'true');
@@ -306,11 +328,27 @@ if (command === 'check') {
         ].includes(name),
     )
     .map((name) => resolve(directory, name));
-  // Reassembly replaces the whole draft; no earlier asset may linger.
-  for (const { name } of previous?.assets ?? [])
-    if (!assets.some((path) => basename(path) === name))
+  // Reassembly replaces the whole draft; no earlier asset may linger. The
+  // completion marker leaves first and returns last, so an interrupted upload
+  // never looks complete.
+  const names = (previous?.assets ?? []).map(({ name }) => name);
+  if (names.includes(completeDraftAsset))
+    gh('release', 'delete-asset', tag, completeDraftAsset, '--yes');
+  for (const name of names)
+    if (
+      name !== completeDraftAsset &&
+      !assets.some((path) => basename(path) === name)
+    )
       gh('release', 'delete-asset', tag, name, '--yes');
-  gh('release', 'upload', tag, ...assets, '--clobber');
+  const marker = resolve(directory, completeDraftAsset);
+  gh(
+    'release',
+    'upload',
+    tag,
+    ...assets.filter((path) => path !== marker),
+    '--clobber',
+  );
+  gh('release', 'upload', tag, marker);
 } else if (command === 'publish') {
   const [requested, directory] = args;
   if (requested !== tag) throw Error('Tag and checkout version differ');
