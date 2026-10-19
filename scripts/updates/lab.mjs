@@ -257,10 +257,26 @@ function storageVolume(lab) {
   return volume;
 }
 /** The manifest of the live signed feed, or null before the first release. */
+// GitHub and GHCR are remote; ride out brief outages before failing.
+async function retried(action) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await action();
+    } catch (error) {
+      if (attempt === 4) throw error;
+      console.log(`Retrying after: ${error.message}`);
+      await new Promise((done) => setTimeout(done, 5000 * attempt));
+    }
+  }
+}
 export async function publishedRelease() {
-  const response = await fetch(feed, { signal: AbortSignal.timeout(60000) });
+  const response = await retried(async () => {
+    const response = await fetch(feed, { signal: AbortSignal.timeout(60000) });
+    if (!response.ok && response.status !== 404)
+      throw Error(`Release feed HTTP ${response.status}`);
+    return response;
+  });
   if (response.status === 404) return null;
-  if (!response.ok) throw Error(`Release feed HTTP ${response.status}`);
   return verifyEnvelope(
     await response.json(),
     readFileSync(join(repository, 'releases/release.pub'), 'utf8'),
@@ -270,14 +286,15 @@ export async function publishedRelease() {
 // copied into the lab registry so its `latest` tags stay the lab's own.
 async function importPublished(lab, manifest) {
   const directory = join(lab.root, 'published');
-  const download = async (name) => {
-    const response = await fetch(
-      `https://github.com/Valtrius/thelxinoe/releases/download/${manifest.version}/${name}`,
-      { signal: AbortSignal.timeout(60000) },
-    );
-    if (!response.ok) throw Error(`Release ${name} HTTP ${response.status}`);
-    return Buffer.from(await response.arrayBuffer());
-  };
+  const download = (name) =>
+    retried(async () => {
+      const response = await fetch(
+        `https://github.com/Valtrius/thelxinoe/releases/download/${manifest.version}/${name}`,
+        { signal: AbortSignal.timeout(60000) },
+      );
+      if (!response.ok) throw Error(`Release ${name} HTTP ${response.status}`);
+      return Buffer.from(await response.arrayBuffer());
+    });
   mkdirSync(join(directory, 'docker'), { recursive: true });
   const file = await download('compose.yaml');
   const sums = (await download('SHA256SUMS')).toString('utf8');
@@ -294,9 +311,11 @@ async function importPublished(lab, manifest) {
   for (const part of ['server', 'controller']) {
     const source = manifest[part].reference;
     // An empty Docker configuration pulls as a host without credentials.
-    run('docker', ['pull', '--platform', 'linux/amd64', source], {
-      env: { ...process.env, DOCKER_CONFIG: join(directory, 'docker') },
-    });
+    await retried(() =>
+      run('docker', ['pull', '--platform', 'linux/amd64', source], {
+        env: { ...process.env, DOCKER_CONFIG: join(directory, 'docker') },
+      }),
+    );
     const tag = `localhost:${lab.registryPort}/${lab.id}/${part}:${lab.base}`;
     docker('tag', source, tag);
     run('docker', ['push', tag]);
