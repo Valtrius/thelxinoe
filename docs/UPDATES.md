@@ -107,12 +107,21 @@ and the isolated Windows profile are kept. Each Docker reset uses a new state di
 The lab publisher listens on the host so Docker can reach it; its control endpoint
 accepts loopback requests only. No private signing key is mounted in containers.
 
+The Docker lab deploys the shipped `compose.release.yaml` as an administrator does:
+`.local/<lab-id>/deployment` holds it as `compose.yaml`, a `.env` and a
+`compose.override.yaml` that adds only the lab's container names, port, publisher and
+trust. Its images follow `latest` tags in the lab registry, so an in-app update moves
+them as on a host. Run Compose there with the lab's project name:
+`docker compose --project-directory .local/<lab-id>/deployment -p <lab-id> ps`.
+
 ## Automated qualification
 
 ```sh
 pnpm run test:updates                 # Windows: Docker + native desktop
 pnpm run test:updates --server-only # Linux or Windows
 pnpm run test:updates --desktop-only
+pnpm run test:updates:published       # Docker: from the published release
+pnpm run test:scripts                 # release script unit tests
 ```
 
 Each run saves `test-results/updates/<timestamp>/result.json`, screenshots,
@@ -122,7 +131,21 @@ Playwright traces and operation/process logs. Open a trace with
 test-only. Failure points are injected solely into disposable candidate sources.
 No production migrations or test switches are added.
 
-The regular CI includes separate Linux server and Windows desktop lanes. Local
+The in-app update runs on the installed release's controller, so a fault in a
+published controller only shows when updating from it. `test:updates:published`
+deploys the release named by the live feed from its own `compose.yaml` and
+anonymously pulled GHCR images (copied into the lab registry, so no host `latest` tag
+changes), then installs a candidate built from this tree with one request. The
+published images accept the lab publisher through `THELXINOE_RELEASE_URL`,
+`THELXINOE_RELEASE_KEY_FILE` and `THELXINOE_RELEASE_CA_FILE`; no secret is needed.
+It is skipped, and passes, while the feed has no release older than the candidate.
+Both Docker qualifications then require `docker compose up -d`, and `docker compose
+pull && docker compose up -d` after the lab registry's `latest` moves to the
+installed release, to leave the installed containers untouched.
+
+The regular CI includes separate Linux server and Windows desktop lanes. The Linux
+lane runs the release script unit tests, the server lab and the published-release
+update. Local
 `pnpm run ci` runs both qualification lanes separately on Windows, using the same
 entry points as GitHub: `ci:updates:server` and `ci:updates:desktop`.
 The full local run starts independent CI lanes concurrently in separate worktrees,
@@ -168,25 +191,43 @@ Authenticode/SmartScreen signing; no Authenticode certificate is configured here
    `pnpm run version:sync`, review the change and merge it to `develop`. Released
    database schemas are frozen; a schema change ships with its migration (see
    `AGENTS.md`), and the manifest lets every schema from `MIGRATION_BASE` update.
-2. When that commit's **Build and verify** run on `develop` has passed, push the
-   `X.Y.Z` tag on it. **Assemble release draft** refuses any other commit instead of
-   repeating the full CI. It builds the Windows installer and Linux images,
-   verifies the installer signature/hash and image identities, and attaches the
-   installer, `.sig`, `windows-x64.json`, signed `latest.json`, `release.pub`,
-   `compose.yaml`, `env.example` and `SHA256SUMS` to a **draft** release. Images
-   initially have `sha-<commit>` staging tags. Inspect release notes and assets
-   while it is a draft.
+2. Push the `X.Y.Z` tag on that commit once **Build and verify** passed for its
+   tree: the commit's `develop` push run (pushes to `develop` are never cancelled),
+   or a manual run of a commit with the identical tree, such as an up-to-date
+   release branch before its squash merge (`gh workflow run ci.yml --ref <branch>`).
+   **Assemble release draft** refuses other trees instead of repeating the full CI.
+   It builds the Windows installer and Linux images, starts the staged images with
+   `compose.release.yaml` and requires both to become healthy and report the
+   version, verifies the installer signature/hash and image identities (version,
+   and revision equal to the tagged commit), and attaches the installer, `.sig`,
+   `windows-x64.json`, signed `latest.json`, `release.pub`, `compose.yaml`,
+   `env.example` and `SHA256SUMS` to a **draft** release. Images initially have
+   `sha-<commit>` staging tags. Inspect release notes and assets while it is a
+   draft. Another run, such as a repeated tag push, never re-signs a draft that has
+   `latest.json`; to rebuild it on purpose run
+   `gh workflow run release.yml --ref X.Y.Z -f reassemble=true`, which replaces all
+   of its assets.
 3. The first release creates both GHCR packages as private. Make
    `thelxinoe-server` and `thelxinoe-controller` public (GitHub → Packages →
    package → Package settings → Change visibility); deployments pull without
    credentials.
-4. Run **Publish reviewed release** from the tag after approval:
-   `gh workflow run publish-release.yml --ref X.Y.Z -f tag=X.Y.Z`. It downloads and
-   verifies the existing draft, checks that both images can be pulled anonymously,
-   promotes those exact image digests to `X.Y.Z` and `latest`, then publishes the
-   GitHub release. Nothing is rebuilt. Registry tags and GitHub publication are
-   separate operations; on a partial failure retry the publish job while the
-   release remains a draft.
+4. The same run's **publish** job then waits for a `release-publish` reviewer:
+   review the draft, then approve the job (reject it to discard the draft). It
+   checks every downloaded asset against `SHA256SUMS`, the signature and the
+   deployment files, requires the version to be newer than the latest published
+   release, checks image identities and anonymous pulls, then tags the exact
+   digests `X.Y.Z`, publishes the GitHub release and moves both `latest` tags last,
+   so `docker compose pull` never reaches a release whose feed is not public.
+   Nothing is rebuilt. To retry after a partial failure, also once the release is
+   published but `latest` has not moved, run **Publish reviewed release** from the
+   tag: `gh workflow run publish-release.yml --ref X.Y.Z -f tag=X.Y.Z`.
+
+**Check live release feed** runs weekly and on demand without secrets. It verifies
+the live `latest.json` against `releases/release.pub`, fails when fewer than 60 days
+of validity remain, and requires the GHCR `latest` and version tags to name the
+feed's digests and both images to pull anonymously. Act on a failure before
+installations stop seeing updates: publish a renewed release, or rerun publication
+for missing tags.
 
 The default feed is
 `https://github.com/Valtrius/thelxinoe/releases/latest/download/latest.json`.
@@ -215,9 +256,14 @@ For a fresh deployment, download `compose.yaml` and `env.example` (saved as
 `docker compose pull && docker compose up -d` installs the newest release whatever
 version a host runs, and the controller adopts the recreated containers. After an
 in-app update the controller points the local `latest` tags at the installed
-images, so a later `docker compose up -d` keeps that release. See
+images, so a later `docker compose up -d` keeps that release. Leave
+`THELXINOE_SERVER_IMAGE` and `THELXINOE_CONTROLLER_IMAGE` unset: with a pinned
+version or digest, `docker compose up -d` brings the pinned release back after an
+in-app update. Images are published for `linux/amd64` only, which `compose.yaml`
+states for both services. See
 [operations and recovery](OPERATIONS.md#backups-and-offline-recovery).
 
 Workflow sources: [assembly](../.github/workflows/release.yml),
 [publication](../.github/workflows/publish-release.yml),
+[feed check](../.github/workflows/release-feed.yml),
 [asset verification](../scripts/release.mjs).
