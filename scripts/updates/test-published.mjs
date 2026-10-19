@@ -26,6 +26,9 @@ try {
   if (!published) report.skipped = 'the release feed has no release yet';
   else if (!newer(next, published.version))
     report.skipped = `published ${published.version} is not older than candidate ${next}`;
+  // A release whose own controller cannot update must not block its successor.
+  else if (process.env.THELXINOE_SKIP_PUBLISHED_UPDATE === published.version)
+    report.skipped = `updates from ${published.version} are exempted by THELXINOE_SKIP_PUBLISHED_UPDATE`;
   if (report.skipped) {
     console.log(`Published release update skipped: ${report.skipped}`);
     report.passed = true;

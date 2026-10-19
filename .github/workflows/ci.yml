@@ -170,6 +170,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm run ci:updates:server
+        env:
+          # A published version whose controller cannot update, while its fix ships.
+          THELXINOE_SKIP_PUBLISHED_UPDATE: ${{ vars.THELXINOE_SKIP_PUBLISHED_UPDATE }}
       - name: Clean owned test resources
         if: always()
         run: node scripts/ci-clean-resources.mjs

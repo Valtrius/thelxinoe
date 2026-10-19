@@ -139,6 +139,9 @@ changes), then installs a candidate built from this tree with one request. The
 published images accept the lab publisher through `THELXINOE_RELEASE_URL`,
 `THELXINOE_RELEASE_KEY_FILE` and `THELXINOE_RELEASE_CA_FILE`; no secret is needed.
 It is skipped, and passes, while the feed has no release older than the candidate.
+When a published controller cannot update at all, set the repository variable
+`THELXINOE_SKIP_PUBLISHED_UPDATE` to that version so its fix can ship; its
+installations then update with `docker compose pull && docker compose up -d`.
 Both Docker qualifications then require `docker compose up -d`, and `docker compose
 pull && docker compose up -d` after the lab registry's `latest` moves to the
 installed release, to leave the installed containers untouched.
