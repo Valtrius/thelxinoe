@@ -146,30 +146,7 @@ fn trust() -> Result<String> {
         .map_err(|_| conflict("Configure the release signing public key on the controller"))
 }
 pub(super) fn deployment_matches(expected: &Value, actual: &Value) -> bool {
-    let normalized = |value: &Value| {
-        let mut value = value.clone();
-        // Docker reports an omitted OOM option as either null or false across
-        // create/start/recreate. Both keep the kernel OOM killer enabled.
-        if value["HostConfig"]["OomKillDisable"].is_null() {
-            value["HostConfig"]["OomKillDisable"] = json!(false);
-        }
-        policy::fingerprint(&value)
-    };
-    let mut actual = actual.clone();
-    // A newer Docker Engine reports more host settings, and unset ones as empty or
-    // null; compare the recorded settings only.
-    if let (Some(recorded), Some(current)) = (
-        expected["HostConfig"].as_object(),
-        actual["HostConfig"].as_object_mut(),
-    ) {
-        current.retain(|key, _| recorded.contains_key(key));
-        for (key, value) in recorded {
-            if policy::same_default(value, current.get(key).unwrap_or(&Value::Null)) {
-                current.insert(key.clone(), value.clone());
-            }
-        }
-    }
-    normalized(expected) == normalized(&actual)
+    policy::matches(&policy::fingerprint(expected), actual)
 }
 pub(super) async fn list(State(runtime): State<Runtime>) -> Result<Json<Value>> {
     // A missing journal is conclusive only when no command still owns the gate.
@@ -421,9 +398,9 @@ fn worker_spec(u: &Update, image: &str, command: &str, mounts: Value) -> Result<
     } else {
         json!(identity.user())
     };
-    Ok(
-        json!({"Image":image,"User":user,"Cmd":[command],"Labels":{"app.thelxinoe.product-update":u.id,"app.thelxinoe.deployment":u.old.id},"Healthcheck":{"Test":["NONE"]},"HostConfig":{"NetworkMode":"none","ReadonlyRootfs":true,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],"Memory":1073741824u64,"NanoCpus":2000000000u64,"PidsLimit":64,"Tmpfs":{"/tmp":"rw,noexec,nosuid,size=64m","/var/cache/thelxinoe":format!("rw,nosuid,size=64m,uid={},gid={}",identity.uid,identity.gid)},"Mounts":mounts}}),
-    )
+    let mut spec = json!({"Image":image,"User":user,"Cmd":[command],"Labels":{"app.thelxinoe.product-update":u.id,"app.thelxinoe.deployment":u.old.id},"Healthcheck":{"Test":["NONE"]},"HostConfig":{"NetworkMode":"none","ReadonlyRootfs":true,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],"Tmpfs":{"/tmp":"rw,noexec,nosuid,size=64m","/var/cache/thelxinoe":format!("rw,nosuid,size=64m,uid={},gid={}",identity.uid,identity.gid)},"Mounts":mounts}});
+    crate::docker::limit(&mut spec, 1 << 30, 2, 64);
+    Ok(spec)
 }
 async fn verify_state(u: &Update, leaf: &str) -> Result<u32> {
     // SQLite may create WAL/SHM even for a read-only integrity connection.
@@ -601,7 +578,7 @@ fn recreate(raw: &Value, image: &str, previous: &Value, next: &Value) -> Result<
         .map(|(name, n)| {
             (
                 name.clone(),
-                json!({"Aliases":n["Aliases"],"IPAMConfig":n["IPAMConfig"]}),
+                json!({"Aliases":policy::aliases(&n["Aliases"],raw["Id"].as_str()),"IPAMConfig":n["IPAMConfig"]}),
             )
         })
         .collect::<serde_json::Map<_, _>>();
@@ -1760,6 +1737,16 @@ mod tests {
         let kept = recreate(&raw, "image", &Value::Null, &Value::Null).unwrap();
         assert_eq!(kept["Env"], raw["Config"]["Env"]);
         assert_eq!(kept["Healthcheck"], raw["Config"]["Healthcheck"]);
+        // The predecessor's own short ID alias (Docker before 26) stays behind.
+        let mut started = raw.clone();
+        started["Id"] = json!(format!("aa4612e2625c{}", "0".repeat(52)));
+        started["NetworkSettings"]["Networks"]["media"]["Aliases"] =
+            json!(["server", "aa4612e2625c"]);
+        let spec = recreate(&started, "image", &Value::Null, &Value::Null).unwrap();
+        assert_eq!(
+            spec["NetworkingConfig"]["EndpointsConfig"]["media"]["Aliases"],
+            json!(["server"])
+        );
     }
 
     #[test]

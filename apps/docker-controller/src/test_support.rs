@@ -199,6 +199,16 @@ impl DockerContext {
         if let Some(name) = path.strip_prefix("/containers/create?name=") {
             assert_eq!(method, Method::POST);
             let spec = body.unwrap();
+            // Like Docker on a kernel without CFS bandwidth control (Synology).
+            if spec["HostConfig"]["NanoCpus"]
+                .as_u64()
+                .is_some_and(|n| n > 0)
+            {
+                return Err((
+                    StatusCode::CONFLICT,
+                    "Docker refused to create container: NanoCPUs can not be set".into(),
+                ));
+            }
             e.creates += 1;
             assert!(
                 !e.containers
@@ -265,6 +275,23 @@ impl DockerContext {
             let started = format!("2026-10-03T22:00:{:02}Z", e.starts);
             e.containers.get_mut(id).unwrap()["State"]["StartedAt"] = json!(started);
             e.containers.get_mut(id).unwrap()["State"]["Running"] = json!(true);
+            // Docker Engine before 26 adds the short ID alias on first start.
+            let short = id.get(..12).unwrap_or(id).to_owned();
+            if let Some(networks) =
+                e.containers.get_mut(id).unwrap()["NetworkSettings"]["Networks"].as_object_mut()
+            {
+                for network in networks.values_mut() {
+                    let aliases = network["Aliases"].as_array().cloned().unwrap_or_default();
+                    if !aliases.contains(&json!(short)) {
+                        network["Aliases"] = json!(
+                            aliases
+                                .into_iter()
+                                .chain([json!(short)])
+                                .collect::<Vec<_>>()
+                        );
+                    }
+                }
+            }
             let raw = e.containers[id].clone();
             if raw["Config"]["Cmd"][0]
                 .as_str()

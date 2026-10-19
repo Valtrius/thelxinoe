@@ -86,7 +86,24 @@ fn bad(message: impl Into<Cow<'static, str>>) -> Failure {
     (StatusCode::BAD_REQUEST, message.into())
 }
 fn persisted<T>(result: anyhow::Result<T>) -> Result<T> {
-    result.map_err(|_| unavailable())
+    result.map_err(|error| {
+        eprintln!("Controller state storage failed: {error:#}");
+        let kind = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+            .map(std::io::Error::kind);
+        let reason = match kind {
+            Some(std::io::ErrorKind::PermissionDenied) => "permission denied",
+            Some(std::io::ErrorKind::StorageFull) => "the disk is full",
+            Some(std::io::ErrorKind::ReadOnlyFilesystem) => "the file system is read-only",
+            Some(std::io::ErrorKind::NotFound) => "a file is missing",
+            _ => "see the controller log",
+        };
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("Controller state storage failed: {reason}").into(),
+        )
+    })
 }
 fn id(value: &str) -> Result<()> {
     if value.len() == 36 && value.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') {
@@ -750,7 +767,9 @@ async fn action(
     .await?;
     let after = engine(&format!("/containers/{}/json", s.container)).await?;
     let fingerprint = policy::fingerprint(&after);
-    if fingerprint != s.expected && !policy::first_start_matches(&s.expected, &fingerprint) {
+    if !policy::matches(&s.expected, &after)
+        && !policy::first_start_matches(&s.expected, &fingerprint)
+    {
         return Err(conflict(
             "Docker configuration changed during the lifecycle action",
         ));
@@ -879,9 +898,9 @@ async fn verify_ownership(d: &Deployment, s: &Managed, raw: &Value) -> Result<()
 
 async fn verify_fingerprint(d: &Deployment, s: &Managed, raw: &Value) -> Result<()> {
     verify_ownership(d, s, raw).await?;
-    let actual = policy::fingerprint(raw);
-    if actual != s.expected
-        && !(s.phase == "changing" && policy::first_start_matches(&s.expected, &actual))
+    if !policy::matches(&s.expected, raw)
+        && !(s.phase == "changing"
+            && policy::first_start_matches(&s.expected, &policy::fingerprint(raw)))
     {
         return Err(conflict("Docker configuration drift blocks reconciliation"));
     }

@@ -898,7 +898,8 @@ async fn run_job(d: &Deployment, key: &str, job: Job<'_>) -> Result<Value> {
     let mut spec = json!({"Image":updates::current_image().await?,"Cmd":command,"Env":env,"Healthcheck":{"Test":["NONE"]},
         "Labels":{"app.thelxinoe.transfer":key,"app.thelxinoe.deployment":d.id},
         "HostConfig":{"NetworkMode":network,"ReadonlyRootfs":true,"CapDrop":["ALL"],"CapAdd":caps,"SecurityOpt":["no-new-privileges:true"],
-            "Memory":1073741824u64,"NanoCpus":1000000000u64,"PidsLimit":64,"Tmpfs":{"/tmp":"rw,nosuid,nodev,size=1g"},"Mounts":mounts}});
+            "Tmpfs":{"/tmp":"rw,nosuid,nodev,size=1g"},"Mounts":mounts}});
+    crate::docker::limit(&mut spec, 1 << 30, 1, 64);
     if let Some(user) = user {
         spec["User"] = json!(user);
     }
@@ -1691,8 +1692,9 @@ async fn validate(d: &Deployment, t: &mut Transfer) -> Result<()> {
         "Labels":{"app.thelxinoe.transfer":t.id,"app.thelxinoe.deployment":d.id,"app.thelxinoe.role":"candidate"},
         "Healthcheck":{"Test":["NONE"]},
         "HostConfig":{"NetworkMode":"none","CapDrop":["ALL"],"CapAdd":["CHOWN","DAC_OVERRIDE","FOWNER","SETUID","SETGID","KILL"],
-            "SecurityOpt":["no-new-privileges:true"],"Memory":2147483648u64,"NanoCpus":2000000000u64,"PidsLimit":256,
+            "SecurityOpt":["no-new-privileges:true"],
             "ExtraHosts":peer_hosts(&t.review),"Mounts":mounts(d,t,&appdata,Some(&media))}});
+    crate::docker::limit(&mut spec, 2 << 30, 2, 256);
     if matches!(t.kind.as_str(), "seerr" | "recyclarr") {
         spec["User"] = json!(format!("{}:{}", identity.0, identity.1));
     }
@@ -2074,12 +2076,13 @@ async fn activate(d: &Deployment, t: &mut Transfer) -> Result<()> {
 async fn health(d: &Deployment, t: &Transfer, container: &str) -> Result<()> {
     let identity = t.review.target_identity;
     let appdata = format!("{}/services/{}/appdata", d.appdata_source, t.id);
-    let checker = json!({"Image":updates::current_image().await?,"User":format!("{}:{}",identity.0,identity.1),
+    let mut checker = json!({"Image":updates::current_image().await?,"User":format!("{}:{}",identity.0,identity.1),
         "Cmd":["adapter-health",t.kind],"Healthcheck":{"Test":["NONE"]},
         "Labels":{"app.thelxinoe.transfer":t.id,"app.thelxinoe.deployment":d.id},
         "HostConfig":{"NetworkMode":format!("container:{container}"),"ReadonlyRootfs":true,"CapDrop":["ALL"],
-            "SecurityOpt":["no-new-privileges:true"],"Memory":268435456,"NanoCpus":1000000000u64,"PidsLimit":32,
+            "SecurityOpt":["no-new-privileges:true"],
             "Mounts":[{"Type":"bind","Source":appdata,"Target":"/config","ReadOnly":true}]}});
+    crate::docker::limit(&mut checker, 256 << 20, 1, 32);
     let name = format!("thelxinoe-transfer-{}-health", &t.id[..8]);
     remove_named(&name).await?;
     let checker = request(

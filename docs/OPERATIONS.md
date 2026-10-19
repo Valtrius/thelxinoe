@@ -8,6 +8,8 @@ The server and newly installed media services use these IDs. The controller runs
 
 After the first start, the controller adopts containers that Compose recreates, after `docker compose pull`, a rebuild or a changed `.env`/override, as the next generation of the same deployment, so installed and transferred services stay registered. A recreated controller adopts them when it starts; a running controller adopts a server recreated on its own within a minute. Adoption refuses a different deployment storage, a server and controller from different Thelxinoe versions, a server on more than one network, and a changed network or media folder that Thelxinoe-installed services still use; it waits until an interrupted update, backup or restore has finished. The reason appears in `docker compose logs controller`. [Adoption](../apps/docker-controller/src/product.rs).
 
+Snapshots, updates, transfers and removals run in short-lived worker containers with memory, CPU and process limits. Engines whose kernel lacks CPU bandwidth control or the pids cgroup, such as Synology Container Manager, drop those two limits and the controller logs Docker's warning; memory limits still apply. When Docker refuses a request, the error names the operation and Docker's reason, with setting values removed; `docker compose logs controller` has the full message.
+
 Fresh installations share the configured media directory at `/media`:
 
 ```text

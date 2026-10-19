@@ -307,6 +307,24 @@ pub fn layout(kind: &str, raw: &Value, context: &Context) -> Result<Layout, Stri
                 mount.destination
             ));
         }
+        // Docker Engine 26 can mount part of a volume; only HostConfig records which part.
+        if raw["HostConfig"]["Mounts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|h| {
+                h["Target"].as_str().map(|t| t.trim_end_matches('/'))
+                    == Some(mount.destination.as_str())
+                    && h["VolumeOptions"]["Subpath"]
+                        .as_str()
+                        .is_some_and(|s| !s.is_empty())
+            })
+        {
+            return Err(format!(
+                "The {} mount uses only part of a Docker volume; transfers need the whole volume or a host folder",
+                mount.destination
+            ));
+        }
         mounts.push(mount);
     }
     // Docker doesn't keep mount order stable between inspections; reviews must be.
@@ -953,6 +971,14 @@ mod tests {
                 &[]
             )
             .contains("Docker socket")
+        );
+        let partial = json!({"Id":"a","Config":{"Env":[]},
+            "Mounts":[{"Type":"volume","Name":"shared","Source":"/var/lib/docker/volumes/shared/_data","Destination":"/config","RW":true}],
+            "HostConfig":{"Mounts":[{"Type":"volume","Source":"shared","Target":"/config","VolumeOptions":{"Subpath":"radarr"}}]}});
+        assert!(
+            layout("radarr", &partial, &context(&[]))
+                .unwrap_err()
+                .contains("part of a Docker volume")
         );
         let writer = json!({"Id":"b","Name":"/backup-sidecar","Mounts":[bind("/srv/appdata/radarr","/source",false)]});
         assert!(
