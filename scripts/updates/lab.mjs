@@ -17,13 +17,17 @@ import {
   openSync,
   closeSync,
   appendFileSync,
+  copyFileSync,
+  writeFileSync,
   rmSync,
 } from 'node:fs';
 import { resolve, join, dirname, sep, posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
 import { request as https } from 'node:https';
-import { downloadFixture } from './registry.mjs';
+import { downloadFixture, tagFixture } from './registry.mjs';
+import { checkSums, feed, verifyEnvelope } from '../release-checks.mjs';
 import {
   run,
   docker,
@@ -105,15 +109,24 @@ function background(lab, name, command, args, env = {}) {
   closeSync(log);
   return child.pid;
 }
+const deployment = (lab) => join(lab.root, 'deployment');
+/** The `latest` reference the lab's Compose file follows, as deployments do. */
+export const latestImage = (lab, part) =>
+  `localhost:${lab.registryPort}/${lab.id}/${part}:latest`;
+/** Docker Compose in the lab deployment directory, configured by its .env alone. */
 export function compose(lab, ...args) {
-  return docker(
-    'compose',
-    '-p',
-    lab.id,
-    '-f',
-    join(lab.root, 'compose.json'),
-    ...args,
-  );
+  return run(
+    'docker',
+    ['compose', '--project-directory', deployment(lab), '-p', lab.id, ...args],
+    {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: Object.fromEntries(
+        Object.entries(process.env).filter(
+          ([key]) => !/^(THELXINOE|COMPOSE)_/i.test(key),
+        ),
+      ),
+    },
+  ).trim();
 }
 export async function startPublisher(lab) {
   lab.processes.publisher = background(lab, 'publisher', process.execPath, [
@@ -134,7 +147,9 @@ export function readLab(file) {
     throw Error('Not a local update lab descriptor');
   return lab;
 }
-function writeCompose(lab) {
+// The shipped compose.release.yaml with a host-style .env. A separate override
+// adds only what the lab needs: unique names and port, its publisher and trust.
+async function writeDeployment(lab) {
   const storageDirectory = `storage-${Date.now()}`;
   // Use the same disk-backed Linux storage on every runner. Docker Desktop's
   // Windows bridge is slow for tool snapshots and its /tmp is memory-backed.
@@ -169,80 +184,63 @@ function writeCompose(lab) {
     'sh',
     lab.images[lab.base].controller.reference,
     '-c',
-    'root="/lab/$1"; mkdir -p "$root/server" "$root/cache" "$root/media" "$root/deployment" && chown 10001:10001 "$root/server" "$root/cache" "$root/media" && chmod 750 "$root/server" "$root/cache" "$root/media"',
+    'root="/lab/$1"; mkdir -p "$root/server" "$root/cache" "$root/media" "$root/backups" && chown 10001:10001 "$root/server" "$root/cache" "$root/media" "$root/backups" && chmod 750 "$root/server" "$root/cache" "$root/media" "$root/backups"',
     '--',
     storageDirectory,
   );
-  const mount = (directory, target) => ({
-    type: 'bind',
-    source: posix.join(lab.storage.replaceAll('\\', '/'), directory),
-    target,
-  });
-  const hardening = {
-    read_only: true,
-    security_opt: ['no-new-privileges:true'],
-    cap_drop: ['ALL'],
-  };
-  save(join(lab.root, 'compose.json'), {
-    name: lab.id,
-    services: {
-      controller: {
-        ...hardening,
-        image: lab.images[lab.base].controller.reference,
-        container_name: `${lab.id}-controller`,
-        user: '0:10001',
-        network_mode: 'none',
-        restart: 'unless-stopped',
-        cap_add: ['CHOWN', 'FOWNER', 'DAC_OVERRIDE'],
-        environment: { THELXINOE_RELEASE_KEY_FILE: '/publisher/release.pub' },
-        volumes: [
-          `${lab.id}-runtime:/run/thelxinoe`,
-          '/var/run/docker.sock:/var/run/docker.sock',
-          mount('deployment', '/var/lib/thelxinoe/deployment'),
-          `${lab.root.replaceAll('\\', '/')}/trust:/publisher:ro`,
-        ],
-        labels: {
-          'app.thelxinoe.component': 'controller',
-          'app.thelxinoe.update-lab': lab.id,
-        },
-      },
-      server: {
-        ...hardening,
-        image: lab.images[lab.base].server.reference,
-        container_name: `${lab.id}-server`,
-        user: '10001:10001',
-        restart: 'unless-stopped',
-        ports: [`127.0.0.1:${lab.serverPort}:8484`],
-        environment: {
-          THELXINOE_TOOLS_CATALOG: '/opt/thelxinoe/tools/catalog.json',
-          THELXINOE_RELEASE_URL: `https://host.docker.internal:${lab.publisherPort}/latest.json`,
-          THELXINOE_RELEASE_KEY_FILE: '/publisher/release.pub',
-          THELXINOE_RELEASE_CA_FILE: '/publisher/tls.pem',
-          THELXINOE_PUBLIC_URL: lab.baseUrl,
-          THELXINOE_DISCOVERY: 'false',
-        },
-        volumes: [
-          mount('server', '/var/lib/thelxinoe'),
-          mount('cache', '/var/cache/thelxinoe'),
-          mount('media', '/media'),
-          `${lab.id}-runtime:/run/thelxinoe:ro`,
-          `${lab.root.replaceAll('\\', '/')}/trust:/publisher:ro`,
-        ],
-        extra_hosts: ['host.docker.internal:host-gateway'],
-        networks: ['media'],
-        tmpfs: ['/tmp:rw,noexec,nosuid,size=64m'],
-        depends_on: { controller: { condition: 'service_healthy' } },
-        labels: {
-          'app.thelxinoe.component': 'server',
-          'app.thelxinoe.update-lab': lab.id,
-        },
-      },
-    },
-    networks: { media: {} },
-    volumes: Object.fromEntries(
-      ['runtime'].map((v) => [`${lab.id}-${v}`, { name: `${lab.id}-${v}` }]),
-    ),
-  });
+  const directory = deployment(lab);
+  mkdirSync(directory, { recursive: true });
+  copyFileSync(lab.composeFile, join(directory, 'compose.yaml'));
+  const storage = lab.storage.replaceAll('\\', '/');
+  writeFileSync(
+    join(directory, '.env'),
+    Object.entries({
+      THELXINOE_UID: 10001,
+      THELXINOE_GID: 10001,
+      THELXINOE_STATE_ROOT: storage,
+      THELXINOE_MEDIA_ROOT: `${storage}/media`,
+      THELXINOE_BACKUP_ROOT: `${storage}/backups`,
+      THELXINOE_LISTEN: '127.0.0.1',
+      THELXINOE_PUBLIC_URL: lab.baseUrl,
+      THELXINOE_DISCOVERY: false,
+      THELXINOE_SERVER_IMAGE: latestImage(lab, 'server'),
+      THELXINOE_CONTROLLER_IMAGE: latestImage(lab, 'controller'),
+    })
+      .map(([key, value]) => `${key}=${value}\n`)
+      .join(''),
+  );
+  // JSON values are YAML; the port list replaces the shipped one.
+  const yaml = JSON.stringify;
+  const trust = [`${lab.root.replaceAll('\\', '/')}/trust:/publisher:ro`];
+  const labels = { 'app.thelxinoe.update-lab': lab.id };
+  writeFileSync(
+    join(directory, 'compose.override.yaml'),
+    `services:
+  controller:
+    container_name: ${yaml(`${lab.id}-controller`)}
+    environment: ${yaml({ THELXINOE_RELEASE_KEY_FILE: '/publisher/release.pub' })}
+    volumes: ${yaml(trust)}
+    labels: ${yaml(labels)}
+  server:
+    container_name: ${yaml(`${lab.id}-server`)}
+    ports: !override ${yaml([`127.0.0.1:${lab.serverPort}:8484`])}
+    environment: ${yaml({
+      THELXINOE_TOOLS_CATALOG: '/opt/thelxinoe/tools/catalog.json',
+      THELXINOE_RELEASE_URL: `https://host.docker.internal:${lab.publisherPort}/latest.json`,
+      THELXINOE_RELEASE_KEY_FILE: '/publisher/release.pub',
+      THELXINOE_RELEASE_CA_FILE: '/publisher/tls.pem',
+    })}
+    volumes: ${yaml(trust)}
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    labels: ${yaml(labels)}
+`,
+  );
+  // `latest` names the base release, locally and in the lab registry.
+  for (const part of ['server', 'controller']) {
+    const reference = lab.images[lab.base][part].reference;
+    await tagFixture(lab, reference, 'latest');
+    docker('tag', reference, latestImage(lab, part));
+  }
 }
 function storageVolume(lab) {
   if (lab.storageVolume !== `${lab.id}-storage`)
@@ -258,25 +256,82 @@ function storageVolume(lab) {
     throw Error('Update lab storage volume ownership changed');
   return volume;
 }
+/** The manifest of the live signed feed, or null before the first release. */
+export async function publishedRelease() {
+  const response = await fetch(feed, { signal: AbortSignal.timeout(60000) });
+  if (response.status === 404) return null;
+  if (!response.ok) throw Error(`Release feed HTTP ${response.status}`);
+  return verifyEnvelope(
+    await response.json(),
+    readFileSync(join(repository, 'releases/release.pub'), 'utf8'),
+  );
+}
+// The published release's own Compose file and anonymously pulled images,
+// copied into the lab registry so its `latest` tags stay the lab's own.
+async function importPublished(lab, manifest) {
+  const directory = join(lab.root, 'published');
+  const download = async (name) => {
+    const response = await fetch(
+      `https://github.com/Valtrius/thelxinoe/releases/download/${manifest.version}/${name}`,
+      { signal: AbortSignal.timeout(60000) },
+    );
+    if (!response.ok) throw Error(`Release ${name} HTTP ${response.status}`);
+    return Buffer.from(await response.arrayBuffer());
+  };
+  mkdirSync(join(directory, 'docker'), { recursive: true });
+  const file = await download('compose.yaml');
+  const sums = (await download('SHA256SUMS')).toString('utf8');
+  checkSums(
+    sums
+      .split(/\r?\n/)
+      .filter((line) => line.endsWith('  compose.yaml'))
+      .join('\n'),
+    { 'compose.yaml': createHash('sha256').update(file).digest('hex') },
+  );
+  lab.composeFile = join(directory, 'compose.yaml');
+  writeFileSync(lab.composeFile, file);
+  const images = {};
+  for (const part of ['server', 'controller']) {
+    const source = manifest[part].reference;
+    // An empty Docker configuration pulls as a host without credentials.
+    run('docker', ['pull', '--platform', 'linux/amd64', source], {
+      env: { ...process.env, DOCKER_CONFIG: join(directory, 'docker') },
+    });
+    const tag = `localhost:${lab.registryPort}/${lab.id}/${part}:${lab.base}`;
+    docker('tag', source, tag);
+    run('docker', ['push', tag]);
+    const [image] = JSON.parse(docker('image', 'inspect', tag));
+    images[part] = {
+      reference: image.RepoDigests.find((v) =>
+        v.startsWith(tag.split(':').slice(0, -1).join(':') + '@'),
+      ),
+    };
+  }
+  return images;
+}
 export async function createLab({
   server = true,
   desktop = process.platform === 'win32',
   headless = false,
+  published = null,
 } = {}) {
   if (desktop && process.platform !== 'win32')
     throw Error('The native update lab requires Windows');
+  if (published && (desktop || !server))
+    throw Error('A published release base qualifies the Docker server only');
   const id = `thelxinoe-update-${Date.now()}${String(process.pid).padStart(10, '0')}`;
   const root = resolve(repository, '.local', id);
   mkdirSync(root, { recursive: true });
-  const base = JSON.parse(
+  const current = JSON.parse(
     readFileSync(join(repository, 'package.json'), 'utf8'),
   ).version;
-  const parts = base.split('.').map(Number);
+  const parts = current.split('.').map(Number);
   parts[2]++;
   const lab = {
     id,
     root,
-    base,
+    base: published?.version ?? current,
+    published: published?.version ?? null,
     next: parts.join('.'),
     server,
     desktop,
@@ -368,6 +423,13 @@ export async function createLab({
       );
     }
     for (const version of [lab.base, lab.next]) {
+      if (published && version === lab.base) {
+        console.log(`Importing published release ${version}`);
+        lab.images[version] = await importPublished(lab, published);
+        envelope(lab, version, lab.images[version]);
+        save(join(root, 'lab.json'), lab);
+        continue;
+      }
       console.log(`Building update lab ${version}`);
       const directory = source(lab, version);
       lab.sources[version] = directory;
@@ -380,7 +442,8 @@ export async function createLab({
       envelope(lab, version, lab.images[version]);
       save(join(root, 'lab.json'), lab);
     }
-    if (server) writeCompose(lab);
+    lab.composeFile ??= join(lab.sources[lab.base], 'compose.release.yaml');
+    if (server) await writeDeployment(lab);
     if (server)
       compose(
         lab,
@@ -608,7 +671,7 @@ export async function stopLab(lab) {
     );
   if (lab.server) {
     await attempt(() => removeContainers(lab));
-    if (existsSync(join(lab.root, 'compose.json')))
+    if (existsSync(join(deployment(lab), 'compose.yaml')))
       await attempt(() =>
         compose(lab, 'down', '--volumes', '--remove-orphans'),
       );
@@ -736,7 +799,7 @@ export async function resetLab(lab) {
   if (lab.server) {
     removeContainers(lab, true);
     compose(lab, 'down', '--volumes');
-    writeCompose(lab);
+    await writeDeployment(lab);
     compose(
       lab,
       'up',

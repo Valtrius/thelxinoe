@@ -77,6 +77,24 @@ if (process.argv[2] === 'serve')
 const digest = (bytes) =>
   `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const imageType = 'application/vnd.oci.image.manifest.v1+json';
+const manifestTypes = `${imageType}, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json`;
+/** Point the lab registry's `tag` at an image, as publication moves `latest`. */
+export async function tagFixture(lab, reference, tag) {
+  const [name, hash] = reference.split('@');
+  const base = `http://127.0.0.1:${lab.registryPort}/v2/${name.slice(name.indexOf('/') + 1)}/manifests`;
+  const source = await fetch(`${base}/${hash}`, {
+    headers: { Accept: manifestTypes },
+    signal: AbortSignal.timeout(60000),
+  });
+  if (!source.ok) throw Error(`Lab registry HTTP ${source.status}: ${hash}`);
+  const target = await fetch(`${base}/${tag}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': source.headers.get('content-type') },
+    body: Buffer.from(await source.arrayBuffer()),
+    signal: AbortSignal.timeout(60000),
+  });
+  if (!target.ok) throw Error(`Lab registry HTTP ${target.status}: ${tag}`);
+}
 // Registry-only content has never entered the Docker/BuildKit cache. This makes
 // slow-download exercise actual engine byte progress without pruning host data.
 export async function downloadFixture(lab, reference) {
@@ -98,9 +116,7 @@ export async function downloadFixture(lab, reference) {
   const manifestAt = async (hash) =>
     (
       await checked(`${base}/manifests/${hash}`, {
-        headers: {
-          Accept: `${imageType}, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json`,
-        },
+        headers: { Accept: manifestTypes },
       })
     ).json();
   let manifest = await manifestAt(source);

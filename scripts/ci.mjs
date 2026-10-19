@@ -425,10 +425,17 @@ if (!process.env.CI && requested.length === 0) {
 }
 async function updatesServer() {
   ensurePlaywright();
+  await evidence.group('release-scripts', () =>
+    run(process.execPath, ['--test', 'scripts/release-checks.test.mjs']),
+  );
   await evidence.group(
     'server-updates',
     () => node('scripts/updates/test.mjs', '--server-only'),
     ['browser-runtime'],
+  );
+  // Installations update with the controller of the release they run.
+  await evidence.group('published-release-update', () =>
+    node('scripts/updates/test-published.mjs'),
   );
 }
 // Real-container ownership transfers of every supported service and storage type.
