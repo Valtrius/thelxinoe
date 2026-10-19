@@ -1,0 +1,21 @@
+name: Check live release feed
+on:
+  schedule:
+    - cron: '23 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# What every installation sees: the signed feed (60 days of validity left), the
+# GHCR `latest` and version tags it names, and anonymous image pulls.
+jobs:
+  feed:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node scripts/release.mjs monitor
