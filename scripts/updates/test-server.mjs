@@ -564,9 +564,8 @@ export async function serverScenarios({
       });
       rmSync(join(lab.root, 'registry-control/hold'), { force: true });
       const recovered = await stage(update.id, 'recovered');
-      expect(recovered.download.component).toBe('controller');
-      expect(recovered.download.received).toBeGreaterThan(0);
-      expect(recovered.download.received).toBe(recovered.download.total);
+      // Download progress ends once both images are present.
+      expect(recovered.download).toBeNull();
       await mode('candidate');
       expect((await api('/health')).version).toBe(lab.base);
       expect((await api('/admin/diagnostics')).database_ok).toBe(true);
@@ -716,15 +715,16 @@ export async function serverScenarios({
           )
         ).status(),
       ).toBe(409);
-      const preflightReady = async () =>
+      // The newer generation retired the preflight; it stays retired across restarts.
+      const preflightRetired = async () =>
         (await state()).controller.items.find(
           (item) => item.id === obsoletePreflight.id,
-        )?.stage === 'ready';
-      await until(preflightReady);
+        )?.stage === 'superseded';
+      await until(preflightRetired);
       docker('restart', component('controller'));
       await until(() => controller('/health').version === lab.next);
       // The server reports the restarted controller once it observes it again.
-      await until(preflightReady);
+      await until(preflightRetired);
       expect((await api('/health')).version).toBe(lab.next);
     },
   );
