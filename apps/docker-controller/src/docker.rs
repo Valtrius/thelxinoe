@@ -15,6 +15,28 @@ pub(crate) fn unavailable() -> Failure {
         "Docker inspection unavailable".into(),
     )
 }
+/// The Docker socket itself did not answer, or not in time; a change may or
+/// may not have happened.
+pub(crate) fn unreachable(error: &reqwest::Error) -> Failure {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        if error.is_timeout() {
+            "Docker did not answer in time".into()
+        } else {
+            "Docker is not reachable".into()
+        },
+    )
+}
+/// Resource limits for a worker container. CPU time uses period and quota: an
+/// engine without CFS bandwidth control (Synology kernels) drops those with a
+/// warning, but refuses `NanoCpus`.
+pub(crate) fn limit(spec: &mut Value, memory: u64, cpus: u64, pids: u64) {
+    let host = &mut spec["HostConfig"];
+    host["Memory"] = json!(memory);
+    host["CpuPeriod"] = json!(100_000);
+    host["CpuQuota"] = json!(cpus * 100_000);
+    host["PidsLimit"] = json!(pids);
+}
 pub(crate) async fn engine(path: &str) -> Result<Value> {
     request(reqwest::Method::GET, path, None).await
 }
@@ -183,18 +205,22 @@ pub(crate) async fn request(
         .timeout(std::time::Duration::from_secs(180))
         .build()
         .map_err(|_| unavailable())?;
-    let mut request = client.request(method, format!("http://docker{path}"));
+    let mut request = client.request(method.clone(), format!("http://docker{path}"));
     if let Some(body) = body {
         request = request.json(&body);
     }
     let mut response = request.send().await.map_err(|error| {
         eprintln!("Docker request {path} failed: {error}");
-        unavailable()
+        unreachable(&error)
     })?;
     let status = response.status();
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|_| unavailable())? {
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        eprintln!("Docker request {path} failed while reading: {error}");
+        unreachable(&error)
+    })? {
         if bytes.len() + chunk.len() > 8 * 1024 * 1024 {
+            eprintln!("Docker request {path} returned more than 8 MiB");
             return Err(unavailable());
         }
         bytes.extend(chunk);
@@ -208,25 +234,136 @@ pub(crate) async fn request(
             .and_then(|body| body["message"].as_str().map(str::to_owned))
             .unwrap_or_default();
         eprintln!("Docker request {path} returned HTTP {status}: {message}");
-        return Err(engine_failure(path, status, &message));
+        return Err(engine_failure(&method, path, status, &message));
     }
     if bytes.is_empty() {
         return Ok(Value::Null);
     }
-    serde_json::from_slice::<Value>(&bytes)
-        .and_then(|value| {
-            if value.get("error").is_some() {
-                Err(<serde_json::Error as serde::de::Error>::custom(
-                    "Docker operation failed",
-                ))
+    let value = serde_json::from_slice::<Value>(&bytes).map_err(|_| {
+        eprintln!("Docker request {path} returned invalid JSON");
+        unavailable()
+    })?;
+    if let Some(error) = value.get("error") {
+        eprintln!("Docker request {path} reported an error: {error}");
+        return Err(unavailable());
+    }
+    // An engine that cannot apply a setting (CPU or process limits) drops it and says so.
+    if let Some(warnings) = value["Warnings"].as_array().filter(|w| !w.is_empty()) {
+        eprintln!(
+            "Docker request {path} warned: {}",
+            Value::Array(warnings.clone())
+        );
+    }
+    Ok(value)
+}
+/// What a refused request was doing, without echoing query strings or bodies.
+fn operation(method: &reqwest::Method, path: &str) -> String {
+    let (route, query) = path.split_once('?').unwrap_or((path, ""));
+    let parts = route.trim_start_matches('/').split('/').collect::<Vec<_>>();
+    let short = |id: &str| {
+        if id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            id[..12].to_owned()
+        } else {
+            id.to_owned()
+        }
+    };
+    match (method.as_str(), parts.as_slice()) {
+        ("POST", ["containers", "create"]) => match query.strip_prefix("name=") {
+            Some(name) => format!("create container {}", name.split('&').next().unwrap_or("")),
+            None => "create a container".into(),
+        },
+        ("POST", ["containers", id, action]) => format!("{action} container {}", short(id)),
+        ("DELETE", ["containers", id]) => format!("remove container {}", short(id)),
+        ("GET", ["containers", id, ..]) => format!("inspect container {}", short(id)),
+        ("POST", ["images", .., "tag"]) => "tag an image".into(),
+        ("DELETE", ["images", ..]) => "remove an image".into(),
+        (_, ["images" | "distribution", ..]) => "inspect an image".into(),
+        (_, ["networks", ..]) => "use a network".into(),
+        (_, ["volumes", ..]) => "use a volume".into(),
+        _ => "complete a request".into(),
+    }
+}
+/// One line of an explanation, without the values of `key=value` settings or
+/// query parameters (environment, API keys in URLs), URL credentials or
+/// authorization tokens.
+pub(crate) fn detail(message: &str) -> String {
+    let line = message.lines().next().unwrap_or_default().trim();
+    let mut token = false;
+    let words = line
+        .split(' ')
+        .map(|word| {
+            let keyword = ["bearer", "basic", "token", "authorization:"]
+                .contains(&word.to_ascii_lowercase().as_str());
+            if std::mem::replace(&mut token, keyword) && !keyword {
+                "[redacted]".to_owned()
+            } else if let Some((key, _)) = word.split_once('=') {
+                format!("{key}=[redacted]")
+            } else if let Some((scheme, rest)) = word.split_once("://")
+                && let Some((_, host)) = rest.split_once('@')
+            {
+                format!("{scheme}://[redacted]@{host}")
             } else {
-                Ok(value)
+                word.to_owned()
             }
         })
-        .map_err(|_| unavailable())
+        .collect::<Vec<_>>()
+        .join(" ");
+    words
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(240)
+        .collect()
+}
+/// The last lines a finished worker printed, each through [`detail`].
+pub(crate) async fn output_tail(container: &str) -> Vec<String> {
+    #[cfg(test)]
+    if crate::test_support::DOCKER.try_with(|_| ()).is_ok() {
+        return Vec::new();
+    }
+    let read = async {
+        let client = reqwest::Client::builder()
+            .unix_socket("/var/run/docker.sock")
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .ok()?;
+        let response = client
+            .get(format!(
+                "http://docker/containers/{container}/logs?stdout=true&stderr=true&tail=10"
+            ))
+            .send()
+            .await
+            .ok()?
+            .error_for_status()
+            .ok()?;
+        response.bytes().await.ok()
+    };
+    let Some(bytes) = read.await else {
+        return Vec::new();
+    };
+    // Without a TTY, Docker frames each chunk with an 8-byte stream header.
+    let mut text = Vec::new();
+    let mut rest = &bytes[..];
+    while rest.len() >= 8 && rest[0] <= 2 && rest[1..4] == [0, 0, 0] {
+        let size = u32::from_be_bytes([rest[4], rest[5], rest[6], rest[7]]) as usize;
+        let end = size.saturating_add(8).min(rest.len());
+        text.extend_from_slice(&rest[8..end]);
+        rest = &rest[end..];
+    }
+    text.extend_from_slice(rest);
+    String::from_utf8_lossy(&text)
+        .lines()
+        .map(detail)
+        .filter(|line| !line.is_empty())
+        .collect()
 }
 /// Translate Docker's own error into a stable explanation an administrator can act on.
-fn engine_failure(path: &str, status: StatusCode, message: &str) -> Failure {
+fn engine_failure(
+    method: &reqwest::Method,
+    path: &str,
+    status: StatusCode,
+    message: &str,
+) -> Failure {
     let lower = message.to_ascii_lowercase();
     let conflict = |text: String| (StatusCode::CONFLICT, Cow::Owned(text));
     if [
@@ -273,7 +410,23 @@ fn engine_failure(path: &str, status: StatusCode, message: &str) -> Failure {
         };
         return (StatusCode::NOT_FOUND, missing.into());
     }
-    unavailable()
+    // Anything else keeps Docker's reason; an engine fault may pass, a refusal won't.
+    let (status, verb) = if status.is_server_error() {
+        (StatusCode::SERVICE_UNAVAILABLE, "Docker failed to")
+    } else {
+        (StatusCode::CONFLICT, "Docker refused to")
+    };
+    let operation = operation(method, path);
+    let detail = detail(message);
+    (
+        status,
+        if detail.is_empty() {
+            format!("{verb} {operation}")
+        } else {
+            format!("{verb} {operation}: {detail}")
+        }
+        .into(),
+    )
 }
 /// Docker names the conflicting binding as `127.0.0.1:7878` or `[::]:7878` in free text.
 fn published_port(message: &str) -> Option<u16> {
@@ -365,7 +518,9 @@ mod tests {
     }
     #[test]
     fn engine_failures_name_the_conflicting_resource() {
+        let post = reqwest::Method::POST;
         let (status, message) = engine_failure(
+            &post,
             "/containers/abc/start",
             StatusCode::INTERNAL_SERVER_ERROR,
             "driver failed programming external connectivity on endpoint radarr (f00): Bind for 127.0.0.1:7878 failed: port is already allocated",
@@ -373,12 +528,14 @@ mod tests {
         assert_eq!(status, StatusCode::CONFLICT);
         assert!(message.contains("Local port 7878 is already in use"));
         let (_, message) = engine_failure(
+            &post,
             "/containers/abc/start",
             StatusCode::INTERNAL_SERVER_ERROR,
             "listen tcp6 [::]:8989: bind: address already in use",
         );
         assert!(message.contains("Local port 8989"));
         let (status, message) = engine_failure(
+            &post,
             "/containers/create",
             StatusCode::BAD_REQUEST,
             "invalid mount config for type \"bind\": bind source path does not exist: /srv/radarr",
@@ -387,6 +544,7 @@ mod tests {
         assert!(message.contains("/srv/radarr"));
         assert_eq!(
             engine_failure(
+                &reqwest::Method::GET,
                 "/containers/abc/json",
                 StatusCode::NOT_FOUND,
                 "No such container: abc"
@@ -395,6 +553,7 @@ mod tests {
         );
         assert_eq!(
             engine_failure(
+                &post,
                 "/containers/create",
                 StatusCode::NOT_FOUND,
                 "No such image: radarr"
@@ -402,13 +561,66 @@ mod tests {
             .1,
             "The service image is not available in Docker"
         );
+    }
+    #[test]
+    fn other_engine_failures_keep_dockers_reason_without_settings() {
+        let post = reqwest::Method::POST;
         assert_eq!(
             engine_failure(
-                "/containers/abc/start",
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "unexpected"
+                &post,
+                "/containers/create?name=thelxinoe-state-fbb830e1-preflight-snapshot",
+                StatusCode::BAD_REQUEST,
+                "NanoCPUs can not be set, as your kernel does not support CPU CFS scheduler or the cgroup is not mounted"
             ),
-            unavailable()
+            (
+                StatusCode::CONFLICT,
+                "Docker refused to create container thelxinoe-state-fbb830e1-preflight-snapshot: NanoCPUs can not be set, as your kernel does not support CPU CFS scheduler or the cgroup is not mounted".into()
+            )
         );
+        let id = "a".repeat(64);
+        let (status, message) = engine_failure(
+            &post,
+            &format!("/containers/{id}/start"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "OCI runtime create failed: API_KEY=private-secret rejected\nsecond line",
+        );
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            message,
+            "Docker failed to start container aaaaaaaaaaaa: OCI runtime create failed: API_KEY=[redacted] rejected"
+        );
+        assert_eq!(
+            engine_failure(
+                &reqwest::Method::DELETE,
+                "/images/x",
+                StatusCode::CONFLICT,
+                ""
+            )
+            .1,
+            "Docker refused to remove an image"
+        );
+        assert_eq!(
+            detail("GET https://admin:hunter2@radarr:7878/api failed: Authorization: Bearer abc"),
+            "GET https://[redacted]@radarr:7878/api failed: Authorization: Bearer [redacted]"
+        );
+    }
+    #[test]
+    fn worker_limits_avoid_settings_engines_refuse() {
+        let mut spec = json!({"HostConfig":{"NetworkMode":"none"}});
+        limit(&mut spec, 1 << 30, 2, 64);
+        assert_eq!(
+            spec["HostConfig"],
+            json!({"NetworkMode":"none","Memory":1u64 << 30,"CpuPeriod":100000,"CpuQuota":200000,"PidsLimit":64})
+        );
+        // Engines without CFS bandwidth control refuse NanoCpus outright.
+        for source in [
+            include_str!("product.rs"),
+            include_str!("updates.rs"),
+            include_str!("transfer.rs"),
+            include_str!("service_removal.rs"),
+            include_str!("recyclarr.rs"),
+        ] {
+            assert!(!source.contains(concat!("\"Nano", "Cpus\"")));
+        }
     }
 }

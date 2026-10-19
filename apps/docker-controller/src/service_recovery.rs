@@ -4,7 +4,7 @@ use super::*;
 fn runtime_state(expected: &Value, live: &Result<Value>) -> Value {
     match live {
         Ok(raw) => {
-            let drift = !expected.is_null() && policy::fingerprint(raw) != *expected;
+            let drift = !expected.is_null() && !policy::matches(expected, raw);
             json!({"existence":"present","inspection_error":null,"drift":drift,
                 "running":raw["State"]["Running"],"status":if drift {"drifted"}
                     else if raw["State"]["Running"] == true {"running"} else {"stopped"}})

@@ -385,7 +385,8 @@ async fn copy_state_inner(
         }
         .to_owned(),
     ];
-    let mut spec = json!({"Image":current_image().await?,"Cmd":command,"Healthcheck":{"Test":["NONE"]},"Labels":{"app.thelxinoe.update":operation,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":"none","ReadonlyRootfs":true,"CapDrop":["ALL"],"CapAdd":["CHOWN","FOWNER","DAC_OVERRIDE"],"SecurityOpt":["no-new-privileges:true"],"Memory":536870912,"NanoCpus":1000000000u64,"PidsLimit":32,"Mounts":[source,{"Type":"bind","Source":destination,"Target":"/destination"}]}});
+    let mut spec = json!({"Image":current_image().await?,"Cmd":command,"Healthcheck":{"Test":["NONE"]},"Labels":{"app.thelxinoe.update":operation,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":"none","ReadonlyRootfs":true,"CapDrop":["ALL"],"CapAdd":["CHOWN","FOWNER","DAC_OVERRIDE"],"SecurityOpt":["no-new-privileges:true"],"Mounts":[source,{"Type":"bind","Source":destination,"Target":"/destination"}]}});
+    crate::docker::limit(&mut spec, 512 << 20, 1, 32);
     if let Some(rules) = disposable {
         spec["Env"] = json!([format!("THELXINOE_SNAPSHOT_DISPOSABLE={rules}")]);
     }
@@ -440,9 +441,10 @@ async fn wait_copy(container: &str, report: &std::path::Path) -> Result<()> {
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
                 .and_then(|value| value["error"].as_str().map(str::to_owned));
-            return Err(conflict(
-                reason.unwrap_or_else(|| "Isolated worker failed its contract".into()),
-            ));
+            return Err(match reason {
+                Some(reason) => conflict(reason),
+                None => worker_failure(container, &raw).await,
+            });
         }
         let current = std::fs::read(report).ok();
         if current.is_some() && current != seen {
@@ -465,12 +467,28 @@ pub(super) async fn wait(container: &str, seconds: u64) -> Result<()> {
             return if raw["State"]["ExitCode"] == 0 {
                 Ok(())
             } else {
-                Err(conflict("Isolated worker failed its contract"))
+                Err(worker_failure(container, &raw).await)
             };
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
     Err(conflict("Isolated worker exceeded its time limit"))
+}
+/// A worker exited unsuccessfully: log its last output and name its last line.
+async fn worker_failure(container: &str, raw: &Value) -> Failure {
+    let output = crate::docker::output_tail(container).await;
+    if !output.is_empty() {
+        eprintln!(
+            "Worker {} exited with {}:\n  {}",
+            raw["Name"].as_str().unwrap_or(container),
+            raw["State"]["ExitCode"],
+            output.join("\n  ")
+        );
+    }
+    conflict(match output.last() {
+        Some(line) => format!("Isolated worker failed its contract: {line}"),
+        None => "Isolated worker failed its contract".into(),
+    })
 }
 async fn snapshot(d: &Deployment, u: &Update, leaf: &str) -> Result<()> {
     let raw = verified(&u.old, d).await?;
@@ -570,7 +588,8 @@ async fn candidate(d: &Deployment, u: &mut Update, config: &str) -> Result<()> {
     for sub in ["movies", "tv", "music", "downloads"] {
         persisted(std::fs::create_dir_all(data.join(sub)).map_err(Into::into))?;
     }
-    let mut spec = json!({"Image":u.candidate,"Env":[format!("PUID={}",identity.uid),format!("PGID={}",identity.gid),"TZ=UTC".to_owned()],"Labels":{"app.thelxinoe.update":u.id,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":"none","CapDrop":["ALL"],"CapAdd":["CHOWN","DAC_OVERRIDE","FOWNER","SETUID","SETGID","KILL"],"SecurityOpt":["no-new-privileges:true"],"Memory":2147483648u64,"NanoCpus":2000000000u64,"PidsLimit":256,"Mounts":[{"Type":"bind","Source":config,"Target":"/config"},{"Type":"bind","Source":host_path(d,u,"scratch-data"),"Target":"/media"}]}});
+    let mut spec = json!({"Image":u.candidate,"Env":[format!("PUID={}",identity.uid),format!("PGID={}",identity.gid),"TZ=UTC".to_owned()],"Labels":{"app.thelxinoe.update":u.id,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":"none","CapDrop":["ALL"],"CapAdd":["CHOWN","DAC_OVERRIDE","FOWNER","SETUID","SETGID","KILL"],"SecurityOpt":["no-new-privileges:true"],"Mounts":[{"Type":"bind","Source":config,"Target":"/config"},{"Type":"bind","Source":host_path(d,u,"scratch-data"),"Target":"/media"}]}});
+    crate::docker::limit(&mut spec, 2 << 30, 2, 256);
     if u.old.kind == "seerr" {
         spec["User"] = json!(identity.user());
         spec["Env"] = json!(["CONFIG_DIRECTORY=/config", "TZ=UTC"]);
@@ -612,7 +631,8 @@ async fn contract(
     isolated: bool,
 ) -> Result<()> {
     let identity = Identity::service(&u.old.kind, &u.old.spec)?;
-    let checker = json!({"Image":current_image().await?,"User":identity.user(),"Cmd":[if isolated {"adapter-contract"} else {"adapter-health"},u.old.kind],"Healthcheck":{"Test":["NONE"]},"Labels":{"app.thelxinoe.update":u.id,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":format!("container:{container}"),"ReadonlyRootfs":true,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],"Memory":268435456,"NanoCpus":1000000000u64,"PidsLimit":32,"Mounts":[{"Type":"bind","Source":config,"Target":"/config","ReadOnly":true}]}});
+    let mut checker = json!({"Image":current_image().await?,"User":identity.user(),"Cmd":[if isolated {"adapter-contract"} else {"adapter-health"},u.old.kind],"Healthcheck":{"Test":["NONE"]},"Labels":{"app.thelxinoe.update":u.id,"app.thelxinoe.deployment":d.id},"HostConfig":{"NetworkMode":format!("container:{container}"),"ReadonlyRootfs":true,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"],"Mounts":[{"Type":"bind","Source":config,"Target":"/config","ReadOnly":true}]}});
+    crate::docker::limit(&mut checker, 256 << 20, 1, 32);
     let raw = request(
         Method::POST,
         &format!("/containers/create?name=thelxinoe-contract-{}", &u.id[..8]),

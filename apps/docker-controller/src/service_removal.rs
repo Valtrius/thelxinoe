@@ -45,12 +45,12 @@ async fn delete_directory(d: &Deployment, service: &str, root: &Path, path: &Pat
     let source = Path::new(&d.appdata_source).join(relative);
     // The regular controller has no DAC override. Use the same fixed-path,
     // isolated worker boundary as snapshots for service-owned appdata.
-    let spec = json!({"Image":updates::current_image().await?,"Cmd":["appdata-remove"],
+    let mut spec = json!({"Image":updates::current_image().await?,"Cmd":["appdata-remove"],
         "Healthcheck":{"Test":["NONE"]},"Labels":{"app.thelxinoe.removal":service,"app.thelxinoe.deployment":d.id},
         "HostConfig":{"NetworkMode":"none","ReadonlyRootfs":true,"CapDrop":["ALL"],
             "CapAdd":["DAC_OVERRIDE","FOWNER"],"SecurityOpt":["no-new-privileges:true"],
-            "Memory":268435456,"NanoCpus":1000000000u64,"PidsLimit":32,
             "Mounts":[{"Type":"bind","Source":source,"Target":"/destination"}]}});
+    crate::docker::limit(&mut spec, 256 << 20, 1, 32);
     let container = request(reqwest::Method::POST, "/containers/create", Some(spec)).await?["Id"]
         .as_str()
         .ok_or_else(unavailable)?
@@ -133,7 +133,7 @@ pub(super) async fn remove(d: &Deployment, s: &mut Managed) -> Result<Json<Value
                 && !retained.iter().any(|old| old == key)
             {
                 verify_recorded(d, s, &raw).await?;
-                if !s.expected.is_null() && policy::fingerprint(&raw) != s.expected {
+                if !s.expected.is_null() && !policy::matches(&s.expected, &raw) {
                     return Err(conflict(
                         "Repair changed service configuration before removal",
                     ));

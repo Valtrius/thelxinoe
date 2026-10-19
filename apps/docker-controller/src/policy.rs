@@ -45,10 +45,71 @@ pub fn fingerprint(container: &Value) -> Value {
         configuration.insert(key.into(), config[key].clone());
     }
     let host_config = host.clone();
+    let id = container["Id"].as_str();
     let networks = container["NetworkSettings"]["Networks"].as_object().map(|n| {
-        n.iter().map(|(name,v)| (name.clone(),json!({"network_id":v["NetworkID"],"aliases":v["Aliases"],"ipam":v["IPAMConfig"]}))).collect::<serde_json::Map<String,Value>>()
+        n.iter().map(|(name,v)| (name.clone(),json!({"network_id":v["NetworkID"],"aliases":aliases(&v["Aliases"],id),"ipam":v["IPAMConfig"]}))).collect::<serde_json::Map<String,Value>>()
     }).unwrap_or_default();
     json!({"image_id":container["Image"],"config":configuration,"host":host_config,"networks":networks})
+}
+/// Docker Engine before 26 adds a container's short ID to its network aliases
+/// when it first starts; that alias is not part of the configuration.
+pub fn aliases(aliases: &Value, container: Option<&str>) -> Value {
+    let Some(list) = aliases.as_array() else {
+        return aliases.clone();
+    };
+    let own = container.map(|id| id.get(..12).unwrap_or(id));
+    let kept = list
+        .iter()
+        .filter(|alias| alias.as_str() != own)
+        .cloned()
+        .collect::<Vec<_>>();
+    if kept.is_empty() {
+        Value::Null
+    } else {
+        Value::Array(kept)
+    }
+}
+/// Whether `container` still has the configuration fingerprinted in `expected`.
+pub fn matches(expected: &Value, container: &Value) -> bool {
+    same(
+        &recorded(expected, container["Id"].as_str()),
+        &fingerprint(container),
+    )
+}
+/// A stored fingerprint of `container` in today's form: records taken after a
+/// first start on Docker before 26 hold the short ID alias.
+pub fn recorded(expected: &Value, container: Option<&str>) -> Value {
+    let mut expected = expected.clone();
+    if let Some(networks) = expected["networks"].as_object_mut() {
+        for network in networks.values_mut() {
+            network["aliases"] = aliases(&network["aliases"], container);
+        }
+    }
+    expected
+}
+/// A newer Docker Engine reports more host settings, and unset ones as empty or
+/// null; compare the recorded settings only. An omitted OOM option reads as
+/// either null or false across create, start and recreate; both keep the OOM
+/// killer enabled.
+fn same(expected: &Value, actual: &Value) -> bool {
+    let mut expected = expected.clone();
+    let mut actual = actual.clone();
+    if let (Some(recorded), Some(current)) =
+        (expected["host"].as_object(), actual["host"].as_object_mut())
+    {
+        current.retain(|key, _| recorded.contains_key(key));
+        for (key, value) in recorded {
+            if same_default(value, current.get(key).unwrap_or(&Value::Null)) {
+                current.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    for value in [&mut expected, &mut actual] {
+        if value["host"].is_object() && value["host"]["OomKillDisable"].is_null() {
+            value["host"]["OomKillDisable"] = json!(false);
+        }
+    }
+    expected == actual
 }
 
 /// Docker leaves network IDs unresolved until a new stopped container first
@@ -68,14 +129,7 @@ pub fn first_start_matches(expected: &Value, actual: &Value) -> bool {
             }
         }
     }
-    // Docker Desktop normalizes its default OOM setting on the same transition.
-    if initialized
-        && normalized["host"]["OomKillDisable"] == false
-        && actual["host"]["OomKillDisable"].is_null()
-    {
-        normalized["host"]["OomKillDisable"] = Value::Null;
-    }
-    initialized && normalized == *actual
+    initialized && same(&normalized, actual)
 }
 fn empty(value: &Value) -> bool {
     value.is_null()
@@ -637,5 +691,45 @@ mod tests {
         after = initialized;
         after["networks"]["media"]["aliases"] = json!(["changed"]);
         assert!(!first_start_matches(&before, &after));
+    }
+
+    #[test]
+    fn short_id_alias_from_older_engines_is_not_drift() {
+        let id = format!("3de5eacc72c1{}", "0".repeat(52));
+        let created = json!({"Id":id,"Image":"sha256:a","Config":{"Env":[]},"HostConfig":{"Privileged":false},
+            "NetworkSettings":{"Networks":{"thelxinoe_default":{"NetworkID":"n","Aliases":["thelxinoe-server","server"]}}}});
+        // Docker 24 adds the short ID when the container first starts.
+        let mut started = created.clone();
+        started["NetworkSettings"]["Networks"]["thelxinoe_default"]["Aliases"] =
+            json!(["thelxinoe-server", "server", "3de5eacc72c1"]);
+        assert!(matches(&fingerprint(&created), &started));
+        assert_eq!(fingerprint(&created), fingerprint(&started));
+        // Fingerprints recorded with the alias still match.
+        let mut recorded = fingerprint(&created);
+        recorded["networks"]["thelxinoe_default"]["aliases"] =
+            json!(["thelxinoe-server", "server", "3de5eacc72c1"]);
+        assert!(matches(&recorded, &started));
+        // Backups compare stored records in today's form.
+        assert_eq!(self::recorded(&recorded, Some(&id)), fingerprint(&created));
+        let mut renamed = started.clone();
+        renamed["NetworkSettings"]["Networks"]["thelxinoe_default"]["Aliases"] =
+            json!(["thelxinoe-server", "3de5eacc72c1"]);
+        assert!(!matches(&fingerprint(&created), &renamed));
+        // A container with only its short ID alias reads as having none.
+        assert_eq!(aliases(&json!(["3de5eacc72c1"]), Some(&id)), Value::Null);
+        assert_eq!(aliases(&Value::Null, Some(&id)), Value::Null);
+    }
+
+    #[test]
+    fn newer_engine_host_settings_are_not_service_drift() {
+        let raw = json!({"Id":"a","Image":"sha256:a","Config":{},"HostConfig":{"Privileged":false,"CapAdd":null,"OomKillDisable":false}});
+        let expected = fingerprint(&raw);
+        let mut newer = raw.clone();
+        newer["HostConfig"]["Annotations"] = json!({});
+        newer["HostConfig"]["CapAdd"] = json!([]);
+        newer["HostConfig"]["OomKillDisable"] = Value::Null;
+        assert!(matches(&expected, &newer));
+        newer["HostConfig"]["Privileged"] = json!(true);
+        assert!(!matches(&expected, &newer));
     }
 }
