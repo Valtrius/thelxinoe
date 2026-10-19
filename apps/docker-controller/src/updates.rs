@@ -474,6 +474,10 @@ pub(super) async fn wait(container: &str, seconds: u64) -> Result<()> {
     }
     Err(conflict("Isolated worker exceeded its time limit"))
 }
+/// Whether a worker ran to its end and reported a broken contract.
+pub(super) fn contract_failure(error: &Failure) -> bool {
+    error.1.starts_with("Isolated worker failed its contract")
+}
 /// A worker exited unsuccessfully: log its last output and name its last line.
 async fn worker_failure(container: &str, raw: &Value) -> Failure {
     let output = crate::docker::output_tail(container).await;

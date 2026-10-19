@@ -54,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
             "transfer-effects" => transfer_worker::effects(&arg(2)),
             "transfer-contract" => contract::transfer(&arg(2), &arg(3)).await,
             "appdata-remove" => state_copy::remove(),
+            "state-report" => state_copy::report(),
             "verify-state" => {
                 let root = std::path::Path::new("/state");
                 let schema = thelxinoe_database::verify_snapshot(&root.join("thelxinoe.sqlite3"))?;
@@ -89,6 +90,13 @@ async fn main() -> anyhow::Result<()> {
                 Ok(writer) => {
                     if stack::product::accepted_writer().await? {
                         break writer;
+                    }
+                    if !handoff {
+                        // Attempts interrupted with the previous containers finish first.
+                        stack::product::recover_interrupted().await;
+                        if stack::product::accepted_writer().await? {
+                            break writer;
+                        }
                     }
                     drop(writer);
                     // Compose recreated these containers; a successor waits for its handoff.
