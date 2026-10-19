@@ -3,13 +3,24 @@ import {
   readFileSync,
   writeFileSync,
   mkdirSync,
+  mkdtempSync,
   copyFileSync,
   readdirSync,
+  rmSync,
   unlinkSync,
 } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { resolve, basename } from 'node:path';
+import { resolve, basename, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { createPublicKey, createHash } from 'node:crypto';
+import {
+  checkSums,
+  checkValidity,
+  draftGuard,
+  feed,
+  requireNewer,
+  verifyEnvelope,
+} from './release-checks.mjs';
 
 const [command, ...args] = process.argv.slice(2);
 const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
@@ -19,7 +30,54 @@ const tag = version;
 const releaseCompose = () => readFileSync('compose.release.yaml', 'utf8');
 const run = (exe, args, options = {}) =>
   execFileSync(exe, args, { stdio: 'inherit', ...options });
-const gh = (...args) => execFileSync('gh', args, { encoding: 'utf8' }).trim();
+const gh = (...args) =>
+  execFileSync('gh', args, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+const sha256 = (file) =>
+  createHash('sha256').update(readFileSync(file)).digest('hex');
+// Images carry the commit they were built from; releases ship the tagged commit.
+const revision = () =>
+  execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+/** The latest published release tag, or null before the first release. */
+function latestRelease() {
+  try {
+    return gh(
+      'api',
+      'repos/Valtrius/thelxinoe/releases/latest',
+      '--jq',
+      '.tag_name',
+    );
+  } catch (error) {
+    if (/HTTP 404/.test(String(error.stderr))) return null;
+    throw error;
+  }
+}
+/** The digest an anonymous Docker host resolves for `repository:reference`. */
+async function registryDigest(repository, reference) {
+  const path = repository.replace(/^ghcr\.io\//, '');
+  const token = await fetch(
+    `https://ghcr.io/token?scope=repository:${path}:pull`,
+  );
+  if (!token.ok) return null;
+  const response = await fetch(
+    `https://ghcr.io/v2/${path}/manifests/${reference}`,
+    {
+      method: 'HEAD',
+      headers: {
+        Authorization: `Bearer ${(await token.json()).token}`,
+        Accept: [
+          'application/vnd.oci.image.manifest.v1+json',
+          'application/vnd.docker.distribution.manifest.v2+json',
+          'application/vnd.oci.image.index.v1+json',
+          'application/vnd.docker.distribution.manifest.list.v2+json',
+        ].join(', '),
+      },
+    },
+  );
+  return response.ok ? response.headers.get('docker-content-digest') : null;
+}
 const verify = (directory, installer) =>
   run('cargo', [
     'run',
@@ -107,6 +165,7 @@ if (command === 'check') {
     .toString('base64');
   if (expected !== actual)
     throw Error('Publisher private key does not match releases/release.pub');
+  const commit = revision();
   function image(reference) {
     if (!/@sha256:[a-f0-9]{64}$/.test(reference))
       throw Error('Release images must use registry digests');
@@ -122,6 +181,8 @@ if (command === 'check') {
       throw Error('Unsupported image platform');
     if (image.Config.Labels['org.opencontainers.image.version'] !== version)
       throw Error('Image version does not match release');
+    if (image.Config.Labels['org.opencontainers.image.revision'] !== commit)
+      throw Error('Image revision does not match the release commit');
     if (!image.RepoDigests.includes(reference))
       throw Error('Pulled image does not match the registry digest');
     return { reference };
@@ -205,26 +266,21 @@ if (command === 'check') {
   writeFileSync(
     resolve(output, 'SHA256SUMS'),
     assets
-      .map(
-        (name) =>
-          `${createHash('sha256')
-            .update(readFileSync(resolve(output, name)))
-            .digest('hex')}  ${name}`,
-      )
+      .map((name) => `${sha256(resolve(output, name))}  ${name}`)
       .join('\n') + '\n',
   );
 } else if (command === 'draft') {
   const [directory] = args;
   let previous;
   try {
-    previous = JSON.parse(gh('release', 'view', tag, '--json', 'isDraft'));
+    previous = JSON.parse(
+      gh('release', 'view', tag, '--json', 'isDraft,assets'),
+    );
   } catch {
     /* First assembly. */
   }
-  if (previous && !previous.isDraft)
-    throw Error(
-      'Published releases are immutable; increment the product version',
-    );
+  // A second run (a repeated tag push) must not re-sign a reviewed draft.
+  draftGuard(previous, process.env.RELEASE_REASSEMBLE === 'true');
   if (!previous)
     gh(
       'release',
@@ -250,13 +306,29 @@ if (command === 'check') {
         ].includes(name),
     )
     .map((name) => resolve(directory, name));
+  // Reassembly replaces the whole draft; no earlier asset may linger.
+  for (const { name } of previous?.assets ?? [])
+    if (!assets.some((path) => basename(path) === name))
+      gh('release', 'delete-asset', tag, name, '--yes');
   gh('release', 'upload', tag, ...assets, '--clobber');
 } else if (command === 'publish') {
   const [requested, directory] = args;
   if (requested !== tag) throw Error('Tag and checkout version differ');
   const release = JSON.parse(gh('release', 'view', tag, '--json', 'isDraft'));
-  if (!release.isDraft)
+  const latest = latestRelease();
+  // A retry after GitHub publication only finishes moving the `latest` tags.
+  if (!release.isDraft && latest !== tag)
     throw Error('Only an existing reviewed draft can be published');
+  if (release.isDraft) requireNewer(version, latest);
+  checkSums(
+    readFileSync(resolve(directory, 'SHA256SUMS'), 'utf8'),
+    Object.fromEntries(
+      readdirSync(directory)
+        .filter((name) => name !== 'SHA256SUMS')
+        .map((name) => [name, sha256(resolve(directory, name))]),
+    ),
+  );
+  const commit = revision();
   const envelope = JSON.parse(
     readFileSync(resolve(directory, 'latest.json'), 'utf8'),
   );
@@ -310,51 +382,177 @@ if (command === 'check') {
       !image.RepoDigests.includes(value.reference) ||
       image.Os !== 'linux' ||
       image.Architecture !== 'amd64' ||
-      image.Config.Labels['org.opencontainers.image.version'] !== version
+      image.Config.Labels['org.opencontainers.image.version'] !== version ||
+      image.Config.Labels['org.opencontainers.image.revision'] !== commit
     )
       throw Error('Registry image identity mismatch');
   }
   // Deployments pull without credentials, so a private package would break every
   // install and update. Ask the registry the way an anonymous Docker host does.
   for (const component of ['server', 'controller']) {
-    const [repository, digest] = manifest[component].reference
-      .replace(/^ghcr\.io\//, '')
-      .split('@');
-    const token = await fetch(
-      `https://ghcr.io/token?scope=repository:${repository}:pull`,
-    );
-    const found =
-      token.ok &&
-      (
-        await fetch(`https://ghcr.io/v2/${repository}/manifests/${digest}`, {
-          method: 'HEAD',
-          headers: {
-            Authorization: `Bearer ${(await token.json()).token}`,
-            Accept: [
-              'application/vnd.oci.image.manifest.v1+json',
-              'application/vnd.docker.distribution.manifest.v2+json',
-            ].join(', '),
-          },
-        })
-      ).ok;
-    if (!found)
+    const [repository, digest] = manifest[component].reference.split('@');
+    if ((await registryDigest(repository, digest)) !== digest)
       throw Error(
-        `ghcr.io/${repository} is not publicly pullable. On GitHub open Packages → thelxinoe-${component} → Package settings → Change visibility → Public, then run this workflow again.`,
+        `${repository} is not publicly pullable. On GitHub open Packages → thelxinoe-${component} → Package settings → Change visibility → Public, then run this workflow again.`,
       );
   }
-  for (const component of ['server', 'controller']) {
-    const repository = `ghcr.io/valtrius/thelxinoe-${component}`;
+  const promote = (reference, target) =>
     run('docker', [
       'buildx',
       'imagetools',
       'create',
       '--prefer-index=false',
       '--tag',
-      `${repository}:${version}`,
-      '--tag',
-      `${repository}:latest`,
-      manifest[component].reference,
+      target,
+      reference,
     ]);
+  // Version tags never move. `latest` moves last, so `docker compose pull`
+  // only reaches a release whose signed feed is already public.
+  for (const component of ['server', 'controller']) {
+    const [repository, digest] = manifest[component].reference.split('@');
+    const current = await registryDigest(repository, version);
+    if (current && current !== digest)
+      throw Error(`${repository}:${version} already names another image`);
+    if (!current)
+      promote(manifest[component].reference, `${repository}:${version}`);
   }
-  gh('release', 'edit', tag, '--draft=false', '--latest');
-} else throw Error('Usage: release.mjs check X.Y.Z | assemble ...');
+  if (release.isDraft) gh('release', 'edit', tag, '--draft=false', '--latest');
+  for (const component of ['server', 'controller']) {
+    const reference = manifest[component].reference;
+    promote(reference, `${reference.split('@')[0]}:latest`);
+  }
+} else if (command === 'monitor') {
+  // What every installation polls: the live signed feed and its images.
+  const response = await fetch(feed);
+  if (!response.ok) throw Error(`Release feed HTTP ${response.status}`);
+  const manifest = verifyEnvelope(
+    await response.json(),
+    readFileSync('releases/release.pub', 'utf8'),
+  );
+  const days = checkValidity(manifest, Math.floor(Date.now() / 1000), 60);
+  // An empty Docker configuration pulls as a host without credentials does.
+  const anonymous = mkdtempSync(join(tmpdir(), 'thelxinoe-anonymous-'));
+  for (const component of ['server', 'controller']) {
+    const reference = manifest[component].reference;
+    const [repository, digest] = reference.split('@');
+    for (const name of ['latest', manifest.version]) {
+      const found = await registryDigest(repository, name);
+      if (found !== digest)
+        throw Error(
+          `${repository}:${name} resolves to ${found ?? 'nothing anonymously'}, but the feed names ${digest}`,
+        );
+    }
+    run('docker', ['pull', '--platform', 'linux/amd64', reference], {
+      env: { ...process.env, DOCKER_CONFIG: anonymous },
+    });
+    const [image] = JSON.parse(
+      execFileSync('docker', ['image', 'inspect', reference], {
+        encoding: 'utf8',
+      }),
+    );
+    if (
+      image.Config.Labels['org.opencontainers.image.version'] !==
+      manifest.version
+    )
+      throw Error(`${reference} is not version ${manifest.version}`);
+  }
+  rmSync(anonymous, { recursive: true, force: true });
+  console.log(
+    `Release feed ${manifest.version} verified; valid for ${Math.floor(days)} more days`,
+  );
+} else if (command === 'smoke') {
+  // Start the staged images with the shipped Compose file before signing them.
+  const [serverRef, controllerRef] = args;
+  if (!controllerRef) throw Error('smoke: server@digest controller@digest');
+  for (const name of ['thelxinoe-server', 'thelxinoe-controller'])
+    if (
+      execFileSync('docker', ['ps', '-aq', '--filter', `name=^${name}$`], {
+        encoding: 'utf8',
+      }).trim()
+    )
+      throw Error(`${name} exists; run this on a disposable Docker host`);
+  const root = mkdtempSync(join(tmpdir(), 'thelxinoe-smoke-'));
+  const project = basename(root).toLowerCase();
+  const env = {
+    ...process.env,
+    THELXINOE_SERVER_IMAGE: serverRef,
+    THELXINOE_CONTROLLER_IMAGE: controllerRef,
+    THELXINOE_STATE_ROOT: `${root}/state`,
+    THELXINOE_MEDIA_ROOT: `${root}/media`,
+    THELXINOE_BACKUP_ROOT: `${root}/backups`,
+    THELXINOE_LISTEN: '127.0.0.1',
+  };
+  const compose = (...rest) =>
+    run(
+      'docker',
+      [
+        'compose',
+        '-p',
+        project,
+        '-f',
+        resolve('compose.release.yaml'),
+        '--project-directory',
+        root,
+        ...rest,
+      ],
+      { env },
+    );
+  // Directories prepared as the deployment notes ask, for the default IDs.
+  const prepare = (script) =>
+    run('docker', [
+      'run',
+      '--rm',
+      '--network',
+      'none',
+      '-v',
+      `${root}:/smoke`,
+      '--entrypoint',
+      'sh',
+      controllerRef,
+      '-c',
+      script,
+    ]);
+  try {
+    prepare(
+      'cd /smoke && mkdir -p state/server state/cache media backups && chown 10001:10001 state/server state/cache media backups',
+    );
+    compose('up', '-d', '--wait', '--wait-timeout', '300');
+    const health = await (
+      await fetch('http://127.0.0.1:8484/api/v1/health')
+    ).json();
+    const controller = JSON.parse(
+      execFileSync(
+        'docker',
+        [
+          'exec',
+          'thelxinoe-controller',
+          'curl',
+          '-fsS',
+          '--unix-socket',
+          '/run/thelxinoe/controller.sock',
+          'http://localhost/health',
+        ],
+        { encoding: 'utf8' },
+      ),
+    );
+    if (health.version !== version || controller.version !== version)
+      throw Error(
+        `Started server ${health.version} and controller ${controller.version}, expected ${version}`,
+      );
+    console.log(`Release ${version} images started healthy with Compose`);
+  } catch (error) {
+    try {
+      compose('logs', '--no-color');
+    } catch {
+      /* Report the original failure. */
+    }
+    throw error;
+  } finally {
+    compose('down', '--volumes', '--remove-orphans');
+    prepare('rm -rf /smoke/state /smoke/media /smoke/backups');
+    rmSync(root, { recursive: true, force: true });
+  }
+} else
+  throw Error(
+    'Usage: release.mjs check X.Y.Z | desktop | assemble ... | draft DIR | publish X.Y.Z DIR | monitor | smoke SERVER CONTROLLER',
+  );
