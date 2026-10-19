@@ -359,28 +359,6 @@ export async function serverScenarios({
       }
     },
   );
-  await scenario(
-    'The shipped Compose deployment keeps an in-app update',
-    async () => {
-      await mode('candidate');
-      const update = await ready();
-      await activate(update);
-      await stage(update.id, 'committed');
-      expect(controller('/health').version).toBe(lab.next);
-      await keepsRelease(lab, lab.next, () => api('/health'));
-      await commandWhenIdle(`/admin/product-update/${update.id}/recover`, {
-        confirm: true,
-      });
-      await stage(update.id, 'restored');
-      expect((await api('/health')).version).toBe(lab.base);
-      // Recovery leaves the moved `latest` tags; return to the lab baseline.
-      for (const part of ['server', 'controller']) {
-        const reference = lab.images[lab.base][part].reference;
-        await tagFixture(lab, reference, 'latest');
-        docker('tag', reference, latestImage(lab, part));
-      }
-    },
-  );
   await api('/admin/settings', 'PUT', { timezone: 'Europe/Paris' });
   await scenario(
     'Automatic updates requalify a ready preflight after Compose recreation',
@@ -441,6 +419,47 @@ export async function serverScenarios({
         window_start: 0,
         window_end: 0,
       });
+    },
+  );
+  // After the automatic scenario: a restored release is never installed
+  // automatically again.
+  await scenario(
+    'The shipped Compose deployment keeps an in-app update',
+    async () => {
+      // Earlier scenarios recreated the containers from the controller's
+      // accepted files. Return to the shipped file, as `docker compose up` does.
+      const generation = controller('/stack/product').generation;
+      compose(
+        lab,
+        'up',
+        '-d',
+        '--force-recreate',
+        '--wait',
+        '--wait-timeout',
+        String(startupTimeout / 1000),
+      );
+      await until(
+        async () => (await api('/health')).version === lab.base,
+        startupTimeout,
+      );
+      await until(() => controller('/stack/product').generation > generation);
+      await mode('candidate');
+      const update = await ready();
+      await activate(update);
+      await stage(update.id, 'committed');
+      expect(controller('/health').version).toBe(lab.next);
+      await keepsRelease(lab, lab.next, () => api('/health'));
+      await commandWhenIdle(`/admin/product-update/${update.id}/recover`, {
+        confirm: true,
+      });
+      await stage(update.id, 'restored');
+      expect((await api('/health')).version).toBe(lab.base);
+      // Older controllers leave `latest` on the restored-from release.
+      for (const part of ['server', 'controller']) {
+        const reference = lab.images[lab.base][part].reference;
+        await tagFixture(lab, reference, 'latest');
+        docker('tag', reference, latestImage(lab, part));
+      }
     },
   );
   await scenario(
