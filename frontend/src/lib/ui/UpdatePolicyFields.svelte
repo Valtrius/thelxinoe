@@ -59,4 +59,7 @@
       /></FormField
     >
   </div>
+  {#if start === end}<p class="m-0 text-xs text-muted">
+      The same start and end keep the window open all day.
+    </p>{/if}
 {/if}

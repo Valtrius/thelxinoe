@@ -6,14 +6,22 @@ server/controller images pinned by digest. Web assets travel with the server.
 
 Server **Notify** discovers releases and adds an administrator notification that
 opens Settings → Server. **Automatic** also prepares and installs during the
-configured idle maintenance window. Preparation tests copied state and recovery;
-installation replaces both containers. Failed activation restores the snapshot.
+configured idle maintenance window; equal start and end hours keep it open all
+day. The server checks hourly, after each start and when the window opens.
+Preparation tests copied state and recovery; installation replaces both
+containers. Failed activation restores the snapshot. Automatic retries a release
+blocked by Docker, disk or downloads after a growing pause, five times at most,
+and never retries one that failed validation or cannot migrate this server.
 Click the icon beside **Product version** once to queue the full server update.
-It waits for playback and background work, prepares, installs and reconnects;
-closing Settings or restarting the server does not cancel it. Hover or focus the
-icon for its current step. Idle web tabs reload automatically after acceptance.
-Update preferences sit below the version cards. **Rollback** on the version card
-opens snapshot recovery.
+It downloads both images while the server keeps working, waits for playback and
+background work, prepares, installs and reconnects. The server is unavailable
+only while it is copied and replaced. Closing Settings, restarting the server or
+an unavailable Docker does not cancel it, and a newer release does not replace
+it; **Cancel** does until installation starts. Hover or focus the icon for its
+current step. Idle web tabs reload automatically after acceptance. Failed
+attempts can be dismissed; attempts for containers since recreated, for example by
+`docker compose up`, no longer count. Update preferences sit below the version
+cards. **Rollback** on the version card opens snapshot recovery.
 Restoring a snapshot also resets the event connection and refreshes client state.
 
 Desktop checks the publisher directly, including before login or while the server
