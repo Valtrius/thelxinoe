@@ -616,12 +616,21 @@ pub(super) async fn restore(
                 .join(manifest.deployment.generation.to_string())
                 .join("desired-state.json"),
         ))?;
+        // Archives from before a service's record was rewritten without the
+        // short ID alias still describe the same layout.
+        let layout = |services: &[Managed]| -> Result<Value> {
+            let mut value = serde_json::to_value(services).map_err(|_| unavailable())?;
+            for service in value.as_array_mut().into_iter().flatten() {
+                service["expected"] =
+                    policy::recorded(&service["expected"], service["container"].as_str());
+            }
+            Ok(value)
+        };
         if manifest.format != 1
             || manifest.deployment.id != d.id
             || serde_json::to_value(&manifest.deployment).map_err(|_| unavailable())?
                 != serde_json::to_value(&accepted).map_err(|_| unavailable())?
-            || serde_json::to_value(&manifest.services).map_err(|_| unavailable())?
-                != serde_json::to_value(&current_services).map_err(|_| unavailable())?
+            || layout(&manifest.services)? != layout(&current_services)?
         {
             return Err(conflict(
                 "Restore requires a previously accepted deployment and the same managed-service layout",

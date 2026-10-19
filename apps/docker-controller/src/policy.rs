@@ -71,14 +71,21 @@ pub fn aliases(aliases: &Value, container: Option<&str>) -> Value {
 }
 /// Whether `container` still has the configuration fingerprinted in `expected`.
 pub fn matches(expected: &Value, container: &Value) -> bool {
+    same(
+        &recorded(expected, container["Id"].as_str()),
+        &fingerprint(container),
+    )
+}
+/// A stored fingerprint of `container` in today's form: records taken after a
+/// first start on Docker before 26 hold the short ID alias.
+pub fn recorded(expected: &Value, container: Option<&str>) -> Value {
     let mut expected = expected.clone();
-    // Records taken after a first start on Docker before 26 hold the short ID alias.
     if let Some(networks) = expected["networks"].as_object_mut() {
         for network in networks.values_mut() {
-            network["aliases"] = aliases(&network["aliases"], container["Id"].as_str());
+            network["aliases"] = aliases(&network["aliases"], container);
         }
     }
-    same(&expected, &fingerprint(container))
+    expected
 }
 /// A newer Docker Engine reports more host settings, and unset ones as empty or
 /// null; compare the recorded settings only. An omitted OOM option reads as
@@ -702,6 +709,8 @@ mod tests {
         recorded["networks"]["thelxinoe_default"]["aliases"] =
             json!(["thelxinoe-server", "server", "3de5eacc72c1"]);
         assert!(matches(&recorded, &started));
+        // Backups compare stored records in today's form.
+        assert_eq!(self::recorded(&recorded, Some(&id)), fingerprint(&created));
         let mut renamed = started.clone();
         renamed["NetworkSettings"]["Networks"]["thelxinoe_default"]["Aliases"] =
             json!(["thelxinoe-server", "3de5eacc72c1"]);

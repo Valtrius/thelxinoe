@@ -15,11 +15,16 @@ pub(crate) fn unavailable() -> Failure {
         "Docker inspection unavailable".into(),
     )
 }
-/// The Docker socket itself did not answer.
-pub(crate) fn unreachable() -> Failure {
+/// The Docker socket itself did not answer, or not in time; a change may or
+/// may not have happened.
+pub(crate) fn unreachable(error: &reqwest::Error) -> Failure {
     (
         StatusCode::SERVICE_UNAVAILABLE,
-        "Docker is not reachable".into(),
+        if error.is_timeout() {
+            "Docker did not answer in time".into()
+        } else {
+            "Docker is not reachable".into()
+        },
     )
 }
 /// Resource limits for a worker container. CPU time uses period and quota: an
@@ -206,13 +211,13 @@ pub(crate) async fn request(
     }
     let mut response = request.send().await.map_err(|error| {
         eprintln!("Docker request {path} failed: {error}");
-        unreachable()
+        unreachable(&error)
     })?;
     let status = response.status();
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|error| {
         eprintln!("Docker request {path} failed while reading: {error}");
-        unreachable()
+        unreachable(&error)
     })? {
         if bytes.len() + chunk.len() > 8 * 1024 * 1024 {
             eprintln!("Docker request {path} returned more than 8 MiB");
@@ -279,14 +284,27 @@ fn operation(method: &reqwest::Method, path: &str) -> String {
     }
 }
 /// One line of an explanation, without the values of `key=value` settings or
-/// query parameters (environment, API keys in URLs).
+/// query parameters (environment, API keys in URLs), URL credentials or
+/// authorization tokens.
 pub(crate) fn detail(message: &str) -> String {
     let line = message.lines().next().unwrap_or_default().trim();
+    let mut token = false;
     let words = line
         .split(' ')
-        .map(|word| match word.split_once('=') {
-            Some((key, _)) => format!("{key}=[redacted]"),
-            None => word.to_owned(),
+        .map(|word| {
+            let keyword = ["bearer", "basic", "token", "authorization:"]
+                .contains(&word.to_ascii_lowercase().as_str());
+            if std::mem::replace(&mut token, keyword) && !keyword {
+                "[redacted]".to_owned()
+            } else if let Some((key, _)) = word.split_once('=') {
+                format!("{key}=[redacted]")
+            } else if let Some((scheme, rest)) = word.split_once("://")
+                && let Some((_, host)) = rest.split_once('@')
+            {
+                format!("{scheme}://[redacted]@{host}")
+            } else {
+                word.to_owned()
+            }
         })
         .collect::<Vec<_>>()
         .join(" ");
@@ -328,7 +346,7 @@ pub(crate) async fn output_tail(container: &str) -> Vec<String> {
     let mut rest = &bytes[..];
     while rest.len() >= 8 && rest[0] <= 2 && rest[1..4] == [0, 0, 0] {
         let size = u32::from_be_bytes([rest[4], rest[5], rest[6], rest[7]]) as usize;
-        let end = (8 + size).min(rest.len());
+        let end = size.saturating_add(8).min(rest.len());
         text.extend_from_slice(&rest[8..end]);
         rest = &rest[end..];
     }
@@ -580,6 +598,10 @@ mod tests {
             )
             .1,
             "Docker refused to remove an image"
+        );
+        assert_eq!(
+            detail("GET https://admin:hunter2@radarr:7878/api failed: Authorization: Bearer abc"),
+            "GET https://[redacted]@radarr:7878/api failed: Authorization: Bearer [redacted]"
         );
     }
     #[test]
