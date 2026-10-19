@@ -81,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&directory)?;
     loop {
         stack::product::standby().await?;
-        let handoff = std::env::var("THELXINOE_HANDOFF").is_ok();
+        let handoff = stack::product::handoff_pending();
         let mut attempts = 0;
         let mut adopted = false;
         let writer = loop {

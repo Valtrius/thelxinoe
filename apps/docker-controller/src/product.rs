@@ -351,6 +351,7 @@ async fn fetch(
                 if published.elapsed() >= Duration::from_secs(1) {
                     progress(download)?;
                     published = std::time::Instant::now();
+                    latest = None;
                 } else {
                     latest = Some(download);
                 }
@@ -546,6 +547,19 @@ async fn verify_state(u: &Update, leaf: &str) -> Result<u32> {
         .and_then(|v| u32::try_from(v).ok())
         .ok_or_else(unavailable)
 }
+/// A worker that ran and failed its contract names the check it ran.
+fn failed_check(check: &'static str) -> impl Fn(Failure) -> Failure {
+    move |error| {
+        if updates::contract_failure(&error) {
+            let reason = error
+                .1
+                .trim_start_matches("Isolated worker failed its contract");
+            conflict(format!("{check}{reason}"))
+        } else {
+            error
+        }
+    }
+}
 async fn server_check(
     u: &Update,
     leaf: &str,
@@ -563,7 +577,9 @@ async fn server_check(
         "validate-state",
         json!([{"Type":"bind","Source":host(u,leaf),"Target":"/var/lib/thelxinoe"}]),
     )?;
-    worker(u, "validate", spec, STATE_CHECK_LIMIT).await?;
+    worker(u, "validate", spec, STATE_CHECK_LIMIT)
+        .await
+        .map_err(failed_check("The release failed its database check"))?;
     let value: Value = persisted(store::read(&report))?;
     if value["version"] != version
         || value["schema"] != schema
@@ -651,7 +667,9 @@ async fn prepare(u: &mut Update) -> Result<()> {
             "controller-probe",
             json!([{"Type":"bind","Source":host(u,"probe"),"Target":"/probe"}]),
         )?;
-        worker(u, "probe", spec, 180).await?;
+        worker(u, "probe", spec, 180).await.map_err(failed_check(
+            "Successor controller failed its release contract",
+        ))?;
         let probe: Value = persisted(store::read(&dir(&u.id).join("probe/controller.json")))?;
         if probe["version"] != manifest.version || probe["recovery_protocol"] != 1 {
             return Err(conflict("Successor controller failed its release contract"));
@@ -670,17 +688,18 @@ async fn prepare(u: &mut Update) -> Result<()> {
     remove_copies(u, None);
     Ok(())
 }
-/// A worker that ran and reported a broken contract is the release failing on this
-/// server's data; anything else (Docker, disk, time limits) may pass on a retry.
+/// A check the release itself ran and failed is the release failing on this
+/// server's data; anything else (Docker, disk, killed copies, time limits) may
+/// pass on a retry.
 fn classify(error: &Failure) -> &'static str {
-    if updates::contract_failure(error)
-        || [
-            "Server migration contract does not match",
-            "Successor controller failed its release contract",
-            "Isolated live-state validation returned an unexpected contract",
-        ]
-        .iter()
-        .any(|message| error.1.starts_with(message))
+    if [
+        "The release failed its database check",
+        "Server migration contract does not match",
+        "Successor controller failed its release contract",
+        "Isolated live-state validation returned an unexpected contract",
+    ]
+    .iter()
+    .any(|message| error.1.starts_with(message))
     {
         "validation"
     } else {
@@ -820,7 +839,7 @@ fn commit(d: &Deployment) -> Result<()> {
         &serde_json::to_value(d).map_err(|_| unavailable())?,
         &compose,
     ))?;
-    retire_obsolete(d.generation);
+    retire_obsolete(d);
     Ok(())
 }
 pub(super) async fn activate(
@@ -885,7 +904,9 @@ async fn replace(u: &mut Update) -> Result<()> {
         json!([{"Type":"bind","Source":u.source,"Target":"/var/lib/thelxinoe"}]),
     )?;
     spec["Labels"]["app.thelxinoe.validation"] = json!("true");
-    worker(u, "live-validation", spec, STATE_CHECK_LIMIT).await?;
+    worker(u, "live-validation", spec, STATE_CHECK_LIMIT)
+        .await
+        .map_err(failed_check("The release failed its database check"))?;
     // Copy the report out with trusted code, then inspect the version/schema contract.
     let report = live_report(u).await?;
     if report["version"] != manifest.version || report["schema"] != manifest.migration.target {
@@ -1129,7 +1150,7 @@ async fn recover_old(u: &mut Update) -> Result<()> {
         updates::start(server).await?;
     } else {
         u.error = Some(
-            "The previous containers were removed; run docker compose up -d to start Thelxinoe again"
+            "The previous containers were removed; Thelxinoe starts again once Compose recreates them (docker compose up -d)"
                 .into(),
         );
     }
@@ -1252,11 +1273,21 @@ async fn clean_successors(u: &Update, active: &Deployment) -> Result<()> {
     Ok(())
 }
 /// Called before acquiring the lease. Standby only writes its own readiness record.
+/// Whether this controller was created for a handoff that is still open; a
+/// successor keeps `THELXINOE_HANDOFF` after it took over.
+pub(crate) fn handoff_pending() -> bool {
+    std::env::var("THELXINOE_HANDOFF").is_ok_and(|key| {
+        read(&key).is_ok_and(|u| matches!(u.stage.as_str(), "creating-successor" | "handoff"))
+    })
+}
 pub(crate) async fn standby() -> anyhow::Result<()> {
     let Ok(key) = std::env::var("THELXINOE_HANDOFF") else {
         return Ok(());
     };
     id(&key).map_err(|(_, e)| anyhow::anyhow!(e))?;
+    if !handoff_pending() {
+        return Ok(());
+    }
     let self_id = std::env::var("HOSTNAME")?;
     store::write_json(
         &dir(&key).join("standby.json"),
@@ -1268,7 +1299,7 @@ pub(crate) async fn standby() -> anyhow::Result<()> {
 pub(crate) async fn accepted_writer() -> anyhow::Result<bool> {
     let file = store::root().join("desired-state.json");
     if !file.exists() {
-        return Ok(std::env::var("THELXINOE_HANDOFF").is_err());
+        return Ok(!handoff_pending());
     }
     let mut d: Deployment = store::read(&file)?;
     let own = std::env::var("HOSTNAME")?;
@@ -1499,16 +1530,23 @@ async fn accept_containers(
         d.media_source
     );
     // Interrupted work recovers against the containers it started with.
+    let attempts = all().map_err(fail)?;
     anyhow::ensure!(
-        all().map_err(fail)?.iter().all(|u| settled(&u.stage)),
+        attempts.iter().all(|u| settled(&u.stage)),
         "Finish or recover the product update first"
     );
+    if let Some(u) = attempts.iter().find(|u| unrestored(u)) {
+        anyhow::bail!(
+            "An interrupted update may have left the server state half migrated. Stop the {} container, then restart the controller to restore its rollback copy",
+            name(&u.old.server).unwrap_or("server")
+        );
+    }
     // An older release may not open a database the installed one migrated.
     if let Some(version) = server_version.as_deref()
         && older(version, &d.version)
     {
         anyhow::bail!(
-            "The recreated containers run {version}, older than the installed {}, whose database {version} may not open. Run docker compose pull to get the newest release, or use Rollback in Settings → Server to return to an earlier one",
+            "The recreated containers run {version}, older than the installed {}, whose database {version} may not open. Run docker compose pull, then docker compose up -d, to run the newest release",
             d.version
         );
     }
@@ -1733,7 +1771,7 @@ fn settled(stage: &str) -> bool {
 }
 pub(crate) async fn startup() -> anyhow::Result<()> {
     if let Ok(d) = store::read::<Deployment>(&store::root().join("desired-state.json")) {
-        retire_obsolete(d.generation);
+        retire_obsolete(&d);
     }
     for mut u in all().map_err(|(_, e)| anyhow::anyhow!(e))? {
         if settled(&u.stage) {
@@ -1855,11 +1893,11 @@ async fn interrupted(u: &mut Update) -> Result<()> {
         "preparing" | "snapshotting" | "validating"
     );
     recover_old(u).await?;
-    u.failure = Some("interrupted".into());
+    u.failure.get_or_insert_with(|| "interrupted".into());
     if preparing {
         u.stage = "blocked".into();
         u.error.get_or_insert_with(|| {
-            "Preparation was interrupted by a restart; it will start again".into()
+            "Preparation was interrupted by a restart; the update can be prepared again".into()
         });
         u.download = None;
         remove_copies(u, None);
@@ -1874,8 +1912,20 @@ async fn interrupted(u: &mut Update) -> Result<()> {
 /// attempts a restart interrupted. Their previous containers may be gone.
 pub(crate) async fn recover_interrupted() {
     let own = std::env::var("HOSTNAME").unwrap_or_default();
+    let desired = store::read::<Deployment>(&store::root().join("desired-state.json")).ok();
     for mut u in all().unwrap_or_default() {
-        if settled(&u.stage) {
+        if settled(&u.stage) && !unrestored(&u) {
+            continue;
+        }
+        // A successor that still exists finishes or recovers its own activation.
+        if let Some(successor) = u.next_controller.as_deref()
+            && desired
+                .as_ref()
+                .is_some_and(|d| d.controller["Id"].as_str() == Some(successor))
+            && engine(&format!("/containers/{successor}/json"))
+                .await
+                .is_ok()
+        {
             continue;
         }
         let predecessor = !own.is_empty()
@@ -1903,17 +1953,17 @@ pub(crate) async fn recover_interrupted() {
         }
     }
 }
-/// Pre-activation attempts for an older generation can never activate. Retire
-/// them, and the copies of those that never touched live state, so clients and
-/// later updates only see current attempts.
-fn retire_obsolete(generation: u64) {
+/// Attempts for an older generation that can never activate or recover again.
+/// Retire them, and the copies of those that never touched live state, so
+/// clients and later updates only see current attempts.
+fn retire_obsolete(d: &Deployment) {
     for mut u in all().unwrap_or_default() {
-        let stale = u.old.generation < generation
-            && (matches!(u.stage.as_str(), "ready" | "blocked")
-                || (u.stage == "recovery-required"
-                    && !u.activation_crossed
-                    && !u.restoring_release
-                    && u.generation.is_none()));
+        let stale = u.old.generation < d.generation
+            && match u.stage.as_str() {
+                "ready" | "blocked" => true,
+                "recovery-required" => !unrestored(&u) && !recoverable(&u, d),
+                _ => false,
+            };
         if !stale {
             continue;
         }
@@ -1923,6 +1973,28 @@ fn retire_obsolete(generation: u64) {
         u.download = None;
         if write(&u).is_ok() && copies {
             remove_copies(&u, None);
+        }
+    }
+}
+/// An activation that took its rollback copy but never handed over may have left
+/// live state half migrated; restoring that copy is the only safe way on.
+fn unrestored(u: &Update) -> bool {
+    u.stage == "recovery-required"
+        && u.snapshot_ready
+        && !u.activation_crossed
+        && !u.restoring_release
+        && u.generation.is_none()
+}
+/// Explicit recovery only works against the deployment the attempt left.
+fn recoverable(u: &Update, d: &Deployment) -> bool {
+    match u.generation {
+        None if u.restoring_release => u
+            .retiring
+            .as_ref()
+            .is_some_and(|r| r.generation == d.generation),
+        None => owns_pre_activation(u, d),
+        Some(generation) => {
+            d.generation == generation || (!u.restoring_release && snapshot_matches(u, d))
         }
     }
 }
@@ -1957,11 +2029,21 @@ async fn clean_orphans() {
         }
     }
 }
-/// Superseded attempts hold no copies; keep a month of them for diagnostics.
+/// Keep a month of superseded attempts for diagnostics, and any that still hold
+/// a copy.
 fn prune_journals() {
     let cutoff = thelxinoe_core::now() - 30 * 86400;
     for u in all().unwrap_or_default() {
-        if u.stage == "superseded" && u.created_at < cutoff {
+        let copies = [
+            "preflight-snapshot",
+            "clone",
+            "rollback",
+            "validated",
+            "probe",
+        ]
+        .iter()
+        .any(|leaf| dir(&u.id).join(leaf).exists());
+        if u.stage == "superseded" && u.created_at < cutoff && !copies {
             let _ = std::fs::remove_dir_all(dir(&u.id));
         }
     }
@@ -2065,11 +2147,10 @@ pub(crate) async fn watchdog(runtime: &std::path::Path) -> anyhow::Result<bool> 
         }
     };
     for mut u in all().map_err(|(_, e)| anyhow::anyhow!(e))? {
-        if u.stage == "handoff"
-            && !dir(&u.id).join("writer.json").exists()
-            && let Err((_, error)) = hand_back(&mut u).await
-        {
-            needs_recovery(&mut u, &error);
+        if u.stage == "handoff" && !dir(&u.id).join("writer.json").exists() {
+            hand_back(&mut u)
+                .await
+                .map_err(|(_, e)| anyhow::anyhow!(e))?;
         }
     }
     Ok(true)
@@ -2408,7 +2489,17 @@ mod tests {
                     "original",
                 );
                 stuck.snapshot_ready = true;
-                for u in [&blocked, &current, &stuck] {
+                // A failed switch to generation 2, before Compose was adopted as 3.
+                let mut switched = journal(
+                    "66666666-0000-0000-0000-000000000000",
+                    "recovery-required",
+                    1,
+                    "original",
+                );
+                switched.generation = Some(2);
+                switched.activation_crossed = true;
+                switched.snapshot_ready = true;
+                for u in [&blocked, &current, &stuck, &switched] {
                     write(u).unwrap();
                 }
                 std::fs::create_dir_all(dir(&blocked.id).join("preflight-snapshot")).unwrap();
@@ -2423,13 +2514,19 @@ mod tests {
                 assert!(!dir(&blocked.id).join("preflight-snapshot").exists());
                 assert!(!progress.exists());
                 assert_eq!(read(&current.id).unwrap().stage, "ready");
-                // A recovery that never finished keeps its rollback copy.
-                assert_eq!(read(&stuck.id).unwrap().stage, "superseded");
+                // State it may have half migrated still needs its rollback copy.
+                assert_eq!(read(&stuck.id).unwrap().stage, "recovery-required");
                 assert!(dir(&stuck.id).join("rollback").exists());
                 assert_eq!(
                     public(&blocked)["error"],
                     "A newer deployment superseded this attempt"
                 );
+                // Generation 2 is still the one the switch left; a later one is not.
+                assert_eq!(read(&switched.id).unwrap().stage, "recovery-required");
+                accept(3, "original");
+                startup().await.unwrap();
+                assert_eq!(read(&switched.id).unwrap().stage, "superseded");
+                assert_eq!(read(&stuck.id).unwrap().stage, "recovery-required");
             })
             .await;
     }
@@ -2495,11 +2592,18 @@ mod tests {
 
     #[test]
     fn only_a_broken_contract_counts_against_the_release() {
+        let checked = failed_check("The release failed its database check")(conflict(
+            "Isolated worker failed its contract: Error: schema",
+        ));
         assert_eq!(
-            classify(&conflict(
-                "Isolated worker failed its contract: Error: schema"
-            )),
-            "validation"
+            checked.1,
+            "The release failed its database check: Error: schema"
+        );
+        assert_eq!(classify(&checked), "validation");
+        // A copy worker killed for memory is no verdict on the release.
+        assert_eq!(
+            classify(&conflict("Isolated worker failed its contract")),
+            "environment"
         );
         assert_eq!(
             classify(&conflict(
