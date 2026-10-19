@@ -8,6 +8,8 @@ services:
   controller:
     container_name: thelxinoe-controller
     image: ${THELXINOE_CONTROLLER_IMAGE:-ghcr.io/valtrius/thelxinoe-controller:latest}
+    # Images are published for Linux amd64 only.
+    platform: linux/amd64
     restart: unless-stopped
     user: "0:${THELXINOE_GID:-10001}"
     network_mode: none
@@ -29,6 +31,7 @@ services:
   server:
     container_name: thelxinoe-server
     image: ${THELXINOE_SERVER_IMAGE:-ghcr.io/valtrius/thelxinoe-server:latest}
+    platform: linux/amd64
     restart: unless-stopped
     user: "${THELXINOE_UID:-10001}:${THELXINOE_GID:-10001}"
     depends_on:
