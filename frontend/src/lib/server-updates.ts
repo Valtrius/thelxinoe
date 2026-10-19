@@ -387,14 +387,16 @@ export function serverUpdateCard(
   const status = model.status;
   const request = status?.request;
   const pending = request?.state === 'pending';
-  const items = status
-    ? status.controller.items.filter(
-        (item) => !obsoleteServerUpdate(item, status.controller),
-      )
-    : [];
-  const operation = pending
-    ? items.find((item) => item.id === request?.id)
-    : items[0];
+  // As in the attention list, only the newest attempt speaks for past updates.
+  const current = (item?: ServerUpdate) =>
+    item && status && !obsoleteServerUpdate(item, status.controller)
+      ? item
+      : undefined;
+  const operation = current(
+    pending
+      ? status?.controller.items.find((item) => item.id === request?.id)
+      : status?.controller.items[0],
+  );
   const stage = operation?.stage;
   const running = status?.version ?? installed;
   const version =
@@ -423,9 +425,10 @@ export function serverUpdateCard(
     restoring = false,
   ): ServerUpdateView => ({
     title,
-    description,
+    // A refused action, e.g. a cancel after installation began, explains itself.
+    description: [model.error, description].filter(Boolean).join('\n'),
     icon,
-    tone: restoring ? 'warning' : 'accent',
+    tone: restoring || model.error ? 'warning' : 'accent',
     motion: restoring ? 'restoring' : 'working',
     action: null,
   });

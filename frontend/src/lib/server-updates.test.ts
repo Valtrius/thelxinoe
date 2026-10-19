@@ -213,6 +213,27 @@ describe('product version card', () => {
       })),
     };
     expect(card(retired).view.title).toBe('Up to date');
+    // Only the newest attempt counts, as in the attention list: an obsolete one
+    // does not let an older failure resurface.
+    const older = nas();
+    older.controller.items[1] = {
+      ...blocked('older', 2),
+      stage: 'runtime-failure',
+      error: 'Accepted server could not start',
+    };
+    expect(card(older).view.title).toBe('Up to date');
+  });
+  it('explains a refused action while the update continues', () => {
+    status.request = intent('update');
+    status.controller = {
+      items: [{ ...blocked('update'), stage: 'activating' }],
+    };
+    const refused = card(status, {
+      error: 'The update is already installing and can no longer be cancelled',
+    });
+    expect(refused.view.title).toBe('Installing 0.0.2');
+    expect(refused.view.description).toContain('can no longer be cancelled');
+    expect(refused.view.tone).toBe('warning');
   });
   it('offers to dismiss a failed attempt and then hides it', () => {
     const status = nas();
