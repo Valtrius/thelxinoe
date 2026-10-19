@@ -9,9 +9,11 @@ on:
 permissions:
   contents: read
 
+# Release tags need a finished run of their develop commit; only superseded pull
+# request runs are cancelled.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_INCREMENTAL: '0'

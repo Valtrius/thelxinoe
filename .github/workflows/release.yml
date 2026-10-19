@@ -3,6 +3,11 @@ on:
   push:
     tags: ['[0-9]*.[0-9]*.[0-9]*']
   workflow_dispatch:
+    inputs:
+      reassemble:
+        description: Rebuild and re-sign an existing draft (run from its tag)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -11,14 +16,15 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+# Jobs holding signing secrets or write tokens pin third-party actions to commits.
 jobs:
   version:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -30,34 +36,62 @@ jobs:
           test "${RELEASE_REF#refs/tags/}" != "$RELEASE_REF"
           node scripts/release.mjs check "$RELEASE_TAG"
           echo "version=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-  # Tag a commit whose regular develop build already passed, instead of
-  # repeating the full verification for every release.
+  # Tag a commit whose regular build already passed, instead of repeating the
+  # full verification for every release.
   verify:
     needs: version
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       actions: read
-      contents: read
+      # Draft releases are only visible with write access.
+      contents: write
     steps:
-      - name: Require a green Build and verify run of this commit on develop
+      - name: Keep an assembled draft unless reassembly was requested
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TAG: ${{ needs.version.outputs.version }}
+          REASSEMBLE: ${{ inputs.reassemble }}
+        run: |
+          state=$(gh release view "$TAG" --repo "$REPOSITORY" --json isDraft,assets \
+            --jq '"\(.isDraft) \(any(.assets[]; .name == "latest.json"))"' 2>/dev/null || true)
+          case "$state" in
+            false*)
+              echo "::error::$TAG is already published; increment the product version."
+              exit 1 ;;
+            "true true")
+              if [ "$REASSEMBLE" != true ]; then
+                echo "::error::The $TAG draft already has a signed latest.json. Review or publish it; to replace it run Assemble release draft from the tag with reassemble enabled."
+                exit 1
+              fi ;;
+          esac
+      - name: Require a green Build and verify run of this tree
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           SHA: ${{ github.sha }}
+          TAG: ${{ needs.version.outputs.version }}
         run: |
-          runs="repos/$REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$SHA&event=push&status=success"
-          passed=$(gh api "$runs" --jq '[.workflow_runs[] | select(.head_branch == "develop")] | length')
-          if [ "$passed" -eq 0 ]; then
-            echo "::error::Tag a develop commit whose Build and verify run succeeded (or rerun its failed jobs first)."
-            exit 1
-          fi
+          # The exact commit, or a develop push or manual run that tested the
+          # identical tree (for example a release branch before its merge).
+          tree=$(gh api "repos/$REPOSITORY/git/commits/$SHA" --jq .tree.sha)
+          runs=$(gh api "repos/$REPOSITORY/actions/workflows/ci.yml/runs?status=success&per_page=50" \
+            --jq '.workflow_runs[] | select(.head_repository.full_name == .repository.full_name) | select((.event == "push" and .head_branch == "develop") or .event == "workflow_dispatch") | .head_sha' | awk '!seen[$0]++')
+          for commit in $runs; do
+            if [ "$commit" = "$SHA" ] || [ "$(gh api "repos/$REPOSITORY/git/commits/$commit" --jq .tree.sha)" = "$tree" ]; then
+              echo "Build and verify passed on $commit with this tree."
+              exit 0
+            fi
+          done
+          echo "::error::Tag a commit whose Build and verify run succeeded, or run it on this tag first: gh workflow run ci.yml --ref $TAG"
+          exit 1
   desktop:
     needs: verify
-    runs-on: windows-latest
+    runs-on: windows-2025
     environment: release-signing
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -76,7 +110,7 @@ jobs:
           if-no-files-found: error
   images:
     needs: [version, verify]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
@@ -85,13 +119,13 @@ jobs:
       controller: ${{ steps.controller.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         id: server
         with:
           context: .
@@ -105,7 +139,7 @@ jobs:
             REVISION=${{ github.sha }}
           cache-from: type=gha,scope=release
           cache-to: type=gha,scope=release,mode=max
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         id: controller
         with:
           context: .
@@ -117,17 +151,47 @@ jobs:
           build-args: |
             VERSION=${{ needs.version.outputs.version }}
             REVISION=${{ github.sha }}
-          cache-from: type=gha,scope=release
+          # Its own scope keeps the server's shared cache intact.
+          cache-from: |
+            type=gha,scope=release
+            type=gha,scope=release-controller
+          cache-to: type=gha,scope=release-controller,mode=max
+  # Images that ship must start with the shipped Compose file before signing.
+  smoke:
+    needs: images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Start staged images with compose.release.yaml
+        env:
+          SERVER_DIGEST: ${{ needs.images.outputs.server }}
+          CONTROLLER_DIGEST: ${{ needs.images.outputs.controller }}
+        run: >-
+          node scripts/release.mjs smoke
+          "ghcr.io/valtrius/thelxinoe-server@$SERVER_DIGEST"
+          "ghcr.io/valtrius/thelxinoe-controller@$CONTROLLER_DIGEST"
   draft:
-    needs: [desktop, images]
-    runs-on: ubuntu-latest
+    needs: [desktop, images, smoke]
+    runs-on: ubuntu-24.04
     environment: release-signing
     permissions:
       contents: write
       packages: read
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -136,7 +200,7 @@ jobs:
         with:
           name: signed-desktop
           path: release-desktop
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -161,3 +225,14 @@ jobs:
       - run: node scripts/release.mjs draft release-assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_REASSEMBLE: ${{ inputs.reassemble }}
+  # Waits for a release-publish reviewer, who inspects the draft first. For a
+  # retry, run Publish reviewed release from the tag.
+  publish:
+    needs: [version, draft]
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/publish-release.yml
+    with:
+      tag: ${{ needs.version.outputs.version }}
