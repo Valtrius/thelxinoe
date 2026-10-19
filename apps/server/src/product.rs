@@ -64,6 +64,10 @@ async fn reconcile_maintenance(state: &AppState) -> Result<()> {
     {
         return Ok(());
     }
+    // A command the controller has not answered may not have taken its lock yet.
+    let Ok(_command) = state.release_command.try_lock() else {
+        return Ok(());
+    };
     let _gate = state.release_gate.write().await;
     let observed = controller_status(state).await?;
     if !controller_requires_maintenance(&observed)? {
@@ -78,6 +82,15 @@ fn current_preflight(operation: &Value, observed: &Value) -> bool {
     operation["source_generation"]
         .as_u64()
         .is_some_and(|generation| observed["generation"].as_u64() == Some(generation))
+}
+/// Whether a release validation holds the controller's lock. Work that needs the
+/// controller waits instead of failing; a lost controller ends the wait.
+pub(crate) fn validating(state: &AppState) -> bool {
+    now()
+        - state
+            .release_validating
+            .load(std::sync::atomic::Ordering::SeqCst)
+        < 30
 }
 /// Whether a journal prepared containers that no longer run, e.g. after
 /// `docker compose up` installed a release. Older controllers leave these in
@@ -195,7 +208,7 @@ async fn status(State(state): State<AppState>, headers: HeaderMap) -> Result<Jso
     ))
 }
 async fn controller_status(state: &AppState) -> Result<Value> {
-    tokio::time::timeout(
+    let observed = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         crate::managers::controller_request(state, "/product", None),
     )
@@ -206,7 +219,16 @@ async fn controller_status(state: &AppState) -> Result<Value> {
             "controller_unavailable",
             "Controller did not respond".into(),
         )
-    })?
+    })??;
+    let validating = observed["busy"] == true
+        && observed["items"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|u| u["stage"] == "validating"));
+    state.release_validating.store(
+        if validating { now() } else { 0 },
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    Ok(observed)
 }
 pub(crate) async fn observe(state: &AppState) -> Result<()> {
     match controller_status(state).await {
@@ -408,7 +430,18 @@ async fn install(
         ));
     }
     // Pin the signed envelope the administrator chose, including images and schema.
-    let request = json!({"id":thelxinoe_core::id(),"version":release.version,"previous_version":thelxinoe_core::VERSION,"release":release,"envelope":setting(&state,"product.envelope").await?,"state":"pending","error":null});
+    let envelope = setting(&state, "product.envelope").await?;
+    let signed = envelope
+        .clone()
+        .and_then(|e| serde_json::from_value::<Envelope>(e).ok())
+        .zip(std::fs::read_to_string(key_file()).ok())
+        .and_then(|(e, key)| thelxinoe_releases::verify(&e, &key).ok());
+    if signed.map(|m| json!(m)) != Some(json!(release)) {
+        return Err(ApiError::conflict(
+            "The available release changed. Check the version and try again.",
+        ));
+    }
+    let request = json!({"id":thelxinoe_core::id(),"version":release.version,"previous_version":thelxinoe_core::VERSION,"release":release,"envelope":envelope,"state":"pending","error":null});
     audit(&state, Some(p.user.id), "install", &input.version).await?;
     save(&state, "product.install", request.clone()).await?;
     state.emit(None, "product.changed", json!({})).await?;
@@ -417,7 +450,15 @@ async fn install(
 /// Withdraws a queued update until the server is fenced for the controller.
 async fn cancel(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageServer).await?;
-    let _guard = state.release_install.lock().await;
+    // The queue holds this lock across controller calls; never wait out their timeout.
+    let _guard = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        state.release_install.lock(),
+    )
+    .await
+    .map_err(|_| {
+        ApiError::conflict("The update is talking to the controller; try again in a moment")
+    })?;
     let mut intent = setting(&state, "product.install")
         .await?
         .filter(|v| v["state"] == "pending")
@@ -473,8 +514,14 @@ fn contended(e: &ApiError) -> bool {
     e.1 == "operation_contended"
         || e.2.starts_with("Wait for")
         || e.2.contains("Another Docker operation is active")
+        || e.2.contains("Another release is downloading")
         || e.2 == PREPARING
 }
+/// Restarts during one release's preparation or activation retried for free; a
+/// controller that restarts every time must not stop the server again and again.
+const INTERRUPTIONS: u32 = 3;
+/// Consecutive failed downloads before a queued release fails, e.g. a missing image.
+const DOWNLOADS: u64 = 3;
 /// Docker, the controller, downloads and the server itself may work on a later try.
 fn transient(e: &ApiError) -> bool {
     contended(e)
@@ -498,11 +545,26 @@ async fn advance_install(state: &AppState) -> Result<bool> {
         .into_iter()
         .flatten()
         .find(|u| u["id"] == intent["id"]);
-    if operation.is_some_and(|u| u["failure"] == "interrupted" || obsolete(u, &observed)) {
+    let interrupted = operation.filter(|u| u["failure"] == "interrupted");
+    let interruptions =
+        intent["interruptions"].as_u64().unwrap_or(0) + u64::from(interrupted.is_some());
+    if operation.is_some_and(|u| obsolete(u, &observed))
+        || (interrupted.is_some() && interruptions <= u64::from(INTERRUPTIONS))
+    {
         // Preserve the selected release, but qualify it again: against the new
-        // containers, or after a restart interrupted its preparation or activation.
+        // containers, or shortly after a restart interrupted it. Repeated
+        // interruptions fail like any other blocked attempt.
         intent["id"] = json!(thelxinoe_core::id());
+        if let Some(u) = interrupted {
+            intent["interruptions"] = json!(interruptions);
+            intent["retry_at"] = json!(now() + 60);
+            intent["waiting"] = json!(u["error"].as_str().map_or(
+                "A restart interrupted the update".into(),
+                crate::managers::controller_message
+            ));
+        }
         save(state, "product.install", intent.clone()).await?;
+        state.emit(None, "product.changed", json!({})).await?;
         operation = None;
     }
     let release = serde_json::from_value::<Manifest>(intent["release"].clone()).ok();
@@ -513,8 +575,13 @@ async fn advance_install(state: &AppState) -> Result<bool> {
             }
             "blocked" | "recovered" | "restored" | "runtime-failure" | "recovery-required" => {
                 intent["state"] = json!("failed");
-                intent["error"] =
-                    json!(u["error"].as_str().map(crate::managers::controller_message));
+                intent["error"] = if interrupted.is_some() {
+                    json!(format!(
+                        "Restarts interrupted the update {interruptions} times; check why the controller or host restarts, then install it again"
+                    ))
+                } else {
+                    json!(u["error"].as_str().map(crate::managers::controller_message))
+                };
             }
             "ready" => (),
             _ => return Ok(true),
@@ -589,8 +656,13 @@ async fn advance_install(state: &AppState) -> Result<bool> {
     .await;
     // Contention and a lost controller response are retryable with the same ID;
     // an unavailable Docker or controller is explained while the request waits.
+    let downloads = match &result {
+        Err(e) if e.1 == "download_failed" => intent["download_failures"].as_u64().unwrap_or(0) + 1,
+        _ => 0,
+    };
+    intent["download_failures"] = json!(downloads);
     let waiting = match result {
-        Err(e) if !contended(&e) && transient(&e) => Some(e.2),
+        Err(e) if !contended(&e) && transient(&e) && downloads < DOWNLOADS => Some(e.2),
         Err(e) if !contended(&e) => {
             intent["state"] = json!("failed");
             intent["error"] = json!(e.2);
@@ -677,6 +749,11 @@ async fn prepare_update(state: &AppState, user: Option<String>, refresh: bool) -
     .await
 }
 async fn quiesced_command(state: &AppState, path: &str, body: Option<Value>) -> Result<Value> {
+    // Reconciliation leaves the fence alone until the controller has answered.
+    let _command = state
+        .release_command
+        .try_lock()
+        .map_err(|_| ApiError::conflict(PREPARING))?;
     {
         let _gate = tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -887,6 +964,9 @@ struct Automatic {
     /// Automatic mode stopped trying this release; an administrator may install it.
     #[serde(default)]
     held: bool,
+    /// Attempts a restart interrupted, retried soon without counting as failures.
+    #[serde(default)]
+    interruptions: u32,
 }
 /// Failed attempts at one release before only an administrator retries it.
 const AUTOMATIC_ATTEMPTS: u32 = 5;
@@ -910,8 +990,8 @@ fn retryable(operation: &Value) -> bool {
     }
 }
 /// Whether automatic mode may try `automatic.version` now. A retryable failure
-/// waits for a growing pause, a few times; an interruption by a restart is
-/// retried soon without counting. A release that failed validation, compatibility
+/// waits for a growing pause, a few times; the first interruptions by a restart
+/// are retried soon without counting. A release that failed validation, compatibility
 /// or activation stays failed, also across database rollback; an administrator
 /// may still install it by hand.
 fn automatic_due(automatic: &mut Automatic, items: &[Value], now: i64) -> bool {
@@ -936,7 +1016,8 @@ fn automatic_due(automatic: &mut Automatic, items: &[Value], now: i64) -> bool {
         automatic.error = failed["error"]
             .as_str()
             .map(crate::managers::controller_message);
-        if failed["failure"] == "interrupted" {
+        if failed["failure"] == "interrupted" && automatic.interruptions < INTERRUPTIONS {
+            automatic.interruptions += 1;
             automatic.retry_at = now + 60;
         } else {
             automatic.failures += 1;

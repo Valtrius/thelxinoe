@@ -225,6 +225,21 @@ fn automatic_attempts_follow_the_failure_class_and_stop_after_repeated_failures(
                 .contains("check that Docker is running")
         );
     }
+    // A controller restarting every time must not loop: later interruptions count.
+    let mut automatic = fresh();
+    for attempt in 1..=INTERRUPTIONS + 1 {
+        let interrupted = [failed(
+            &format!("restart-{attempt}"),
+            "blocked",
+            json!("interrupted"),
+        )];
+        assert!(!automatic_due(&mut automatic, &interrupted, 0));
+    }
+    assert_eq!(
+        (automatic.interruptions, automatic.failures),
+        (INTERRUPTIONS, 1)
+    );
+    assert_eq!(automatic.retry_at, automatic_backoff(1));
     // Environment failures, also unclassified ones older controllers report as
     // blocked, back off and stop after a few attempts.
     let mut automatic = fresh();
@@ -454,6 +469,17 @@ async fn queued_installs_can_be_cancelled_until_the_server_is_fenced() {
     script(&state, "/product", journal("snapshotting"));
     assert_eq!(cancel().await.0, axum::http::StatusCode::CONFLICT);
     assert_eq!(intent(&state).await["state"], "pending");
+    // The queue may be waiting on the controller; Cancel answers instead of waiting.
+    let held = state.release_install.lock().await;
+    let (status, _, body) = cancel().await;
+    assert_eq!(status, axum::http::StatusCode::CONFLICT);
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("talking to the controller")
+    );
+    drop(held);
     script(&state, "/product", journal("validating"));
     assert_eq!(cancel().await.0, axum::http::StatusCode::OK);
     assert_eq!(intent(&state).await["state"], "cancelled");
@@ -472,6 +498,138 @@ async fn queued_installs_can_be_cancelled_until_the_server_is_fenced() {
     // Nothing is queued any more, and the withdrawn request no longer advances.
     assert_eq!(cancel().await.0, axum::http::StatusCode::CONFLICT);
     assert!(!advance_install(&state).await.unwrap());
+}
+
+// A controller restarting during every preparation, or an image that never
+// downloads, must not keep a queued request looping.
+#[tokio::test]
+async fn queued_installs_stop_after_repeated_interruptions_or_failed_downloads() {
+    let (_temp, state, _cookie) = fixture().await;
+    queue(&state, "99.0.0").await;
+    for attempt in 1..=INTERRUPTIONS + 1 {
+        let id = intent(&state).await["id"].clone();
+        script(
+            &state,
+            "/product",
+            json!({"busy":false,"generation":1,"items":[{"id":id,"stage":"blocked","failure":"interrupted","error":"Preparation was interrupted by a restart; it will start again","source_generation":1}]}),
+        );
+        assert!(advance_install(&state).await.unwrap());
+        let request = intent(&state).await;
+        if attempt <= INTERRUPTIONS {
+            // Prepared again after a pause, not in the same tick.
+            assert_eq!(request["state"], "pending");
+            assert_ne!(request["id"], id);
+            assert!(request["retry_at"].as_i64().unwrap() > now());
+            assert!(!state.release_quiescing.load(Ordering::SeqCst));
+            assert_eq!(
+                request["waiting"],
+                "Preparation was interrupted by a restart; it will start again"
+            );
+        } else {
+            assert_eq!(request["state"], "failed");
+            assert!(
+                request["error"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("Restarts interrupted the update 4 times")
+            );
+        }
+    }
+    queue(&state, "99.0.0").await;
+    script(
+        &state,
+        "/product",
+        json!({"busy":false,"generation":1,"items":[]}),
+    );
+    // Another release's download is contention, not a failure.
+    script(
+        &state,
+        "/product/download",
+        json!({"__error":["conflict","Another release is downloading"]}),
+    );
+    assert!(advance_install(&state).await.unwrap());
+    assert_eq!(intent(&state).await["state"], "pending");
+    assert_eq!(intent(&state).await["waiting"], Value::Null);
+    script(
+        &state,
+        "/product/download",
+        json!({"state":"failed","error":"manifest unknown"}),
+    );
+    for _ in 1..DOWNLOADS {
+        assert!(advance_install(&state).await.unwrap());
+        assert_eq!(intent(&state).await["state"], "pending");
+        resume(&state).await;
+    }
+    assert!(advance_install(&state).await.unwrap());
+    let failed = intent(&state).await;
+    assert_eq!(failed["state"], "failed");
+    assert_eq!(
+        failed["error"],
+        "Downloading the update failed: manifest unknown"
+    );
+}
+
+// Validation holds the controller's lock while the server works: controller work
+// waits instead of failing, administrators get a clear answer, and a lost
+// controller ends the wait.
+#[tokio::test]
+async fn validation_pauses_controller_work_without_fencing() {
+    let (_temp, state, _cookie) = fixture().await;
+    let journal = |busy: bool, stage: &str| json!({"busy":busy,"generation":1,"items":[{"id":"update","stage":stage,"source_generation":1}]});
+    script(&state, "/product", journal(true, "validating"));
+    state.release_quiescing.store(true, Ordering::SeqCst);
+    reconcile_maintenance(&state).await.unwrap();
+    assert!(!state.release_quiescing.load(Ordering::SeqCst));
+    assert!(validating(&state));
+    let refused = crate::managers::controller_request(&state, "/backups/start", Some(json!({})))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused.2,
+        "A server update is being validated; try again in a few minutes"
+    );
+    // Reads and the release's own commands still reach the controller.
+    assert!(
+        crate::managers::controller_request(&state, "/product", None)
+            .await
+            .is_ok()
+    );
+    script(&state, "/product/download", json!({"state":"ready"}));
+    assert!(
+        crate::managers::controller_request(&state, "/product/download", Some(json!({})))
+            .await
+            .is_ok()
+    );
+    state.release_validating.store(now() - 31, Ordering::SeqCst);
+    assert!(!validating(&state));
+    observe(&state).await.unwrap();
+    assert!(validating(&state));
+    script(&state, "/product", journal(false, "ready"));
+    observe(&state).await.unwrap();
+    assert!(!validating(&state));
+}
+
+// Before the controller handler takes its lock it reports nothing busy; that
+// must not reopen the fence for a command still waiting for its answer.
+#[tokio::test]
+async fn reconciliation_waits_for_an_unanswered_command() {
+    let (_temp, state, _cookie) = fixture().await;
+    state.release_quiescing.store(true, Ordering::SeqCst);
+    script(&state, "/product", json!({"busy":false,"items":[]}));
+    let command = state.release_command.lock().await;
+    reconcile_maintenance(&state).await.unwrap();
+    assert!(state.release_quiescing.load(Ordering::SeqCst));
+    // Another command meanwhile waits instead of queueing behind the first.
+    assert_eq!(
+        quiesced_command(&state, "/product/preflight", Some(json!({})))
+            .await
+            .unwrap_err()
+            .2,
+        PREPARING
+    );
+    drop(command);
+    reconcile_maintenance(&state).await.unwrap();
+    assert!(!state.release_quiescing.load(Ordering::SeqCst));
 }
 
 // The NAS case: two attempts were blocked at generation 1, then `docker compose

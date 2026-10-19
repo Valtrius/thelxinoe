@@ -20,6 +20,12 @@ pub(super) fn router() -> Router<AppState> {
         .route("/api/v1/admin/stack/{id}/retry", post(retry))
 }
 pub(crate) async fn controller(state: &AppState, path: &str, body: Option<Value>) -> Result<Value> {
+    // Release validation holds the controller's lock; explain instead of its refusal.
+    if body.is_some() && !path.starts_with("/product") && crate::product::validating(state) {
+        return Err(ApiError::conflict(
+            "A server update is being validated; try again in a few minutes",
+        ));
+    }
     #[cfg(test)]
     if let Ok((code, message)) = crate::test_support::CONTROLLER_FAILURE.try_with(|v| *v) {
         return Err(ApiError(
