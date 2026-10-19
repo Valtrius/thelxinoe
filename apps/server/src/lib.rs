@@ -89,6 +89,10 @@ pub struct AppState {
     pub(crate) media_resources: Arc<thelxinoe_core::resource_locks::ResourceLocks>,
     pub(crate) release_gate: Arc<tokio::sync::RwLock<()>>,
     pub(crate) release_quiescing: Arc<std::sync::atomic::AtomicBool>,
+    /// When the controller last reported it was validating a release under its lock.
+    pub(crate) release_validating: Arc<std::sync::atomic::AtomicI64>,
+    /// Held while a release command waits for the controller's answer.
+    pub(crate) release_command: Arc<tokio::sync::Mutex<()>>,
     pub(crate) release_check: Arc<tokio::sync::Mutex<()>>,
     pub(crate) release_install: Arc<tokio::sync::Mutex<()>>,
     /// Library roots by ID, and whether filesystem changes reach them live.
@@ -137,6 +141,8 @@ impl AppState {
             media_resources: Arc::new(Default::default()),
             release_gate: Arc::new(tokio::sync::RwLock::new(())),
             release_quiescing: Arc::new(std::sync::atomic::AtomicBool::new(release_pending)),
+            release_validating: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            release_command: Arc::new(tokio::sync::Mutex::new(())),
             release_check: Arc::new(tokio::sync::Mutex::new(())),
             release_install: Arc::new(tokio::sync::Mutex::new(())),
             library_watch: Arc::new(Default::default()),
@@ -366,11 +372,13 @@ async fn run_service_jobs(state: AppState) -> anyhow::Result<()> {
             }
             continue;
         }
+        // Every service job needs the controller, which a release validation holds.
         let job = {
             let _gate = state.release_gate.read().await;
             if state
                 .release_quiescing
                 .load(std::sync::atomic::Ordering::SeqCst)
+                || product::validating(&state)
             {
                 None
             } else {

@@ -6,15 +6,32 @@ server/controller images pinned by digest. Web assets travel with the server.
 
 Server **Notify** discovers releases and adds an administrator notification that
 opens Settings → Server. **Automatic** also prepares and installs during the
-configured idle maintenance window. Preparation tests copied state and recovery;
-installation replaces both containers. Failed activation restores the snapshot.
+configured idle maintenance window; equal start and end hours keep it open all
+day. The server checks hourly, after each start and when the window opens.
+Preparation tests copied state and recovery; installation replaces both
+containers. Failed activation restores the snapshot. Automatic retries a release
+blocked by Docker, disk or downloads after a growing pause, five times at most,
+and never retries one that failed validation or cannot migrate this server. A
+restart during preparation or activation is retried soon, three times at most.
 Click the icon beside **Product version** once to queue the full server update.
-It waits for playback and background work, prepares, installs and reconnects;
-closing Settings or restarting the server does not cancel it. Hover or focus the
-icon for its current step. Idle web tabs reload automatically after acceptance.
-Update preferences sit below the version cards. **Rollback** on the version card
-opens snapshot recovery.
+It downloads both images while the server keeps working, waits for playback and
+background work, prepares, installs and reconnects. The server is unavailable
+while its state is copied and while it is replaced; jobs that need the Docker
+controller wait while the copy is validated. Closing Settings, restarting the
+server or an unavailable Docker does not cancel it, and a newer release does not
+replace it; **Cancel** does until installation starts. Hover or focus the icon
+for its current step. Idle web tabs reload automatically after acceptance.
+Failed attempts can be dismissed; attempts for containers since recreated, for
+example by `docker compose up`, no longer count. Update preferences sit below the
+version cards. **Rollback** on the version card opens snapshot recovery.
 Restoring a snapshot also resets the event connection and refreshes client state.
+
+The early download and these failure classes need a controller newer than 0.0.2,
+which installs with the next server update. A 0.0.2 controller downloads during
+preparation, while the server is unavailable, and reports every failed
+preparation alike: Automatic retries a release that failed validation up to five
+times, each stopping the server for its copy, and stops trying a release whose
+preparation a restart interrupted.
 
 Desktop checks the publisher directly, including before login or while the server
 is unavailable. In Settings → Desktop, and on the sign-in and update-required

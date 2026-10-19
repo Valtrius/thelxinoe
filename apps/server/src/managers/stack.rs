@@ -20,6 +20,12 @@ pub(super) fn router() -> Router<AppState> {
         .route("/api/v1/admin/stack/{id}/retry", post(retry))
 }
 pub(crate) async fn controller(state: &AppState, path: &str, body: Option<Value>) -> Result<Value> {
+    // Release validation holds the controller's lock; explain instead of its refusal.
+    if body.is_some() && !path.starts_with("/product") && crate::product::validating(state) {
+        return Err(ApiError::conflict(
+            "A server update is being validated; try again in a few minutes",
+        ));
+    }
     #[cfg(test)]
     if let Ok((code, message)) = crate::test_support::CONTROLLER_FAILURE.try_with(|v| *v) {
         return Err(ApiError(
@@ -84,8 +90,7 @@ pub(crate) async fn controller(state: &AppState, path: &str, body: Option<Value>
                 status = status.as_u16(),
                 "Docker controller request failed"
             );
-            let message = response.text().await.unwrap_or_default();
-            let message = message.trim();
+            let message = message(&response.text().await.unwrap_or_default());
             let code = if status.is_server_error() {
                 "dependency_unavailable"
             } else if matches!(
@@ -100,13 +105,6 @@ pub(crate) async fn controller(state: &AppState, path: &str, body: Option<Value>
             } else {
                 "conflict"
             };
-            // The controller only returns curated explanations, including for Docker
-            // and registry failures; its generic outage text points to its log instead.
-            let message = if message.is_empty() || message == "Docker inspection unavailable" {
-                "The Docker controller couldn't complete the request; check that Docker is running and see the controller log".into()
-            } else {
-                message.chars().take(300).collect()
-            };
             return Err(ApiError(axum::http::StatusCode::CONFLICT, code, message));
         }
         read(response).await
@@ -117,6 +115,21 @@ pub(crate) async fn controller(state: &AppState, path: &str, body: Option<Value>
         Err(ApiError::conflict(
             "Managed Docker services require the Linux controller",
         ))
+    }
+}
+/// The controller only returns curated explanations, including for Docker and
+/// registry failures; its generic outage texts point to its log instead.
+pub(crate) fn message(message: &str) -> String {
+    let message = message.trim();
+    if message.is_empty()
+        || matches!(
+            message,
+            "Docker inspection unavailable" | "Docker is not reachable"
+        )
+    {
+        "The Docker controller couldn't complete the request; check that Docker is running and see the controller log".into()
+    } else {
+        message.chars().take(300).collect()
     }
 }
 async fn templates(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {

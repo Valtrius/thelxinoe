@@ -81,6 +81,10 @@ async function setup(
           state: 'pending',
           error: null,
         };
+      if (action === 'cancel' && status.request)
+        status.request.state = 'cancelled';
+      if (action === 'dismiss')
+        status.dismissed = route.request().postDataJSON().id;
       if (action === 'install' && options.loseInstallResponse)
         return route.abort('connectionreset');
       return route.fulfill({ json: status.request ?? {} });
@@ -117,6 +121,10 @@ async function setup(
         snapshot_ready: true,
         recovery_tested: true,
         activation_crossed: false,
+        // Controllers without a separate download step pull while preparing.
+        ...(stage === 'preparing'
+          ? { download: { component: 'server', received: 0, total: null } }
+          : {}),
       },
     ];
   }
@@ -176,7 +184,8 @@ test('Orbit carries the full flow in one fixed, keyboard-accessible control', as
 }, testInfo) => {
   const flow = await setup(page);
   const { version } = flow;
-  const button = version.getByRole('button');
+  // Cancel follows the Orbit control while the update is queued.
+  const button = version.getByRole('button').first();
   await button.focus();
   await expect(version.getByRole('tooltip')).toHaveCSS('opacity', '1');
   await page.keyboard.press('Escape');
@@ -209,7 +218,9 @@ test('Orbit carries the full flow in one fixed, keyboard-accessible control', as
   flow.status.version = next;
   flow.status.controller = { items: [], error: 'Controller unavailable' };
   await flow.refresh();
-  await expect(button).toHaveAccessibleName('Reconnecting to the server');
+  await expect(button).toHaveAccessibleName(
+    'Reconnecting to the update controller',
+  );
   await expect(version.locator('strong')).toHaveText(current);
   delete flow.status.controller.error;
   flow.stage('activating');
@@ -272,7 +283,7 @@ test('server settings keep their layout through update states and maintenance re
   ]) {
     flow.stage(stage);
     await flow.refresh();
-    await expect(flow.version.getByRole('button')).toHaveAttribute(
+    await expect(flow.version.getByRole('button').first()).toHaveAttribute(
       'aria-disabled',
       'true',
     );
@@ -347,7 +358,7 @@ test('Orbit survives lost connections, checks without reinstalling, and retries 
 }, testInfo) => {
   await page.clock.install();
   const flow = await setup(page);
-  const button = flow.version.getByRole('button');
+  const button = flow.version.getByRole('button').first();
   await button.click();
   flow.stage('validating');
   await flow.refresh();
@@ -375,6 +386,51 @@ test('Orbit survives lost connections, checks without reinstalling, and retries 
   });
   await button.click();
   expect(flow.commands.map((c) => c.action)).toEqual(['install', 'install']);
+  // A dismissed failure leaves the release on offer.
+  await flow.version
+    .getByRole('button', { name: 'Dismiss failed server update', exact: true })
+    .click();
+  await expect(button).toHaveAccessibleName(`Update server to ${next}`);
+  expect(flow.commands.at(-1)).toEqual({
+    action: 'dismiss',
+    body: { id: 'update' },
+  });
+  expect(flow.fixture.errors).toEqual([]);
+});
+
+test('a queued update can be cancelled until the server is fenced for it', async ({
+  page,
+}, testInfo) => {
+  const flow = await setup(page);
+  await flow.version
+    .getByRole('button', { name: `Update server to ${next}`, exact: true })
+    .click();
+  const cancel = flow.version.getByRole('button', {
+    name: 'Cancel queued server update',
+    exact: true,
+  });
+  await expect(cancel).toBeVisible();
+  flow.stage('snapshotting');
+  await flow.refresh();
+  await expect(cancel).toHaveCount(0);
+  // Validation works on copies while the server runs again.
+  flow.stage('validating');
+  await flow.refresh();
+  await testInfo.attach('cancellable', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+  await cancel.click();
+  await expect(cancel).toHaveCount(0);
+  flow.stage('ready');
+  await flow.refresh();
+  await expect(
+    flow.version.getByRole('button', {
+      name: `Update server to ${next}`,
+      exact: true,
+    }),
+  ).toBeVisible();
+  expect(flow.commands.map((c) => c.action)).toEqual(['install', 'cancel']);
   expect(flow.fixture.errors).toEqual([]);
 });
 
@@ -427,12 +483,17 @@ test('download tracks bytes without pinning its tooltip, and controller reconnec
   } finally {
     releaseObservation();
   }
-  await expect(button).toHaveAccessibleName('Reconnecting to the server');
+  // The server still answers; only its controller is away.
+  await expect(button).toHaveAccessibleName(
+    'Reconnecting to the update controller',
+  );
   const deadlineStates = [
     { stage: 'observed', time: await page.evaluate(() => Date.now()) },
   ];
   await page.clock.fastForward(115000);
-  await expect(button).toHaveAccessibleName('Reconnecting to the server');
+  await expect(button).toHaveAccessibleName(
+    'Reconnecting to the update controller',
+  );
   deadlineStates.push({
     stage: 'before-deadline',
     time: await page.evaluate(() => Date.now()),
@@ -442,7 +503,7 @@ test('download tracks bytes without pinning its tooltip, and controller reconnec
     contentType: 'image/png',
   });
   await page.clock.fastForward(10000);
-  await expect(button).toHaveAccessibleName('Check server connection');
+  await expect(button).toHaveAccessibleName('Check update controller');
   deadlineStates.push({
     stage: 'after-deadline',
     time: await page.evaluate(() => Date.now()),

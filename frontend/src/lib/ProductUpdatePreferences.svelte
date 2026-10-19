@@ -55,7 +55,7 @@
       <!-- Automatic backups use this window even when updates only notify. -->
       <SettingRow
         label="Maintenance window"
-        description={`Automatic updates and backups run between these hours, ${$serverUpdates.status?.timezone ?? 'UTC'}.`}
+        description={`Automatic updates and backups run between these hours, ${$serverUpdates.status?.timezone ?? 'UTC'}.${start === end ? ' The same start and end keep it open all day.' : ''}`}
       >
         <input
           aria-label="Maintenance starts"

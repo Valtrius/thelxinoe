@@ -303,6 +303,7 @@ async fn advance(state: &AppState, run: &mut Run, open: bool) -> Result<()> {
         || state
             .release_quiescing
             .load(std::sync::atomic::Ordering::SeqCst)
+        || crate::product::validating(state)
     {
         return Ok(());
     }
