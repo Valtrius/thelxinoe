@@ -325,3 +325,57 @@ async fn a_file_deleted_after_probing_is_not_committed_as_present() -> Result<()
     assert!(present[0].ends_with("Kept.wav"));
     Ok(())
 }
+
+// Rescanning an unchanged library rewrites no file rows; a changed file is rewritten.
+#[tokio::test]
+async fn an_unchanged_rescan_writes_no_file_rows() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let media = temp.path().join("music");
+    std::fs::create_dir(&media)?;
+    let db = Database::open(temp.path().join("db"))?;
+    let root = Root {
+        id: "root".into(),
+        name: "Music".into(),
+        kind: "music".into(),
+        path: media.to_string_lossy().to_string(),
+        last_scan: None,
+        scan_error: None,
+    };
+    let r = root.clone();
+    db.write("test.fixture", move |c| {
+        c.execute(
+            "INSERT INTO library_roots(id,name,kind,path) VALUES (?1,?2,?3,?4)",
+            params![r.id, r.name, r.kind, r.path],
+        )?;
+        Ok(())
+    })
+    .await?;
+    for name in ["One.wav", "Two.wav"] {
+        std::fs::write(media.join(name), wav(1))?;
+    }
+    let tool_root = tempfile::tempdir()?;
+    let tools = thelxinoe_tools::Runtime::new(tool_root.path().into());
+    tool_runtime::install(&tools, tool_root.path());
+    scan(&db, root.clone(), tools.media()?).await?;
+    // scanned_at moves only when a row is written.
+    db.write("test.mark", |c| {
+        c.execute("UPDATE media_files SET scanned_at=0", [])?;
+        Ok(())
+    })
+    .await?;
+    std::fs::write(media.join("Two.wav"), wav(2))?;
+    scan(&db, root, tools.media()?).await?;
+    let written: Vec<(String, bool)> = db
+        .read("test.written", |c| {
+            Ok(
+                c.prepare("SELECT path,scanned_at>0 FROM media_files ORDER BY path")?
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<rusqlite::Result<_>>()?,
+            )
+        })
+        .await?;
+    assert_eq!(written.len(), 2);
+    assert!(written[0].0.ends_with("One.wav") && !written[0].1);
+    assert!(written[1].0.ends_with("Two.wav") && written[1].1);
+    Ok(())
+}
