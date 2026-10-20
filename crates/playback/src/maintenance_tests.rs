@@ -187,3 +187,72 @@ async fn cleanup_cannot_remove_a_run_published_after_its_snapshot() {
     );
     pipelines.stop("new").await;
 }
+
+// A remux reads the whole file once to find its keyframes; later starts of the same file
+// generation reuse the index instead of reading it again.
+#[tokio::test]
+async fn a_keyframe_index_is_built_once_per_file_generation() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let tools = thelxinoe_tools::Runtime::new(root.to_path_buf());
+    tool_runtime::install(&tools, root);
+    let media = root.join("clip.mkv");
+    let mut command = tokio::process::Command::new("ffmpeg");
+    command
+        .args([
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=s=64x64:r=10",
+            "-t",
+            "6",
+            "-c:v",
+            "libx264",
+            "-g",
+            "20",
+            "-pix_fmt",
+            "yuv420p",
+            "-y",
+        ])
+        .arg(&media);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    assert!(command.status().await.unwrap().success());
+    let meta = std::fs::metadata(&media).unwrap();
+    let source = Source {
+        id: "clip".into(),
+        media_id: "media".into(),
+        generation: "generation".into(),
+        edition: "default".into(),
+        path: media.clone(),
+        root: root.into(),
+        size: meta.len(),
+        modified: "1".into(),
+        probe: serde_json::json!({"format":{"duration":"6","start_time":"0"}}),
+    };
+    let vod = crate::vod::VodCache::open(
+        &root.join("cache"),
+        Arc::new(tokio::sync::Semaphore::new(4)),
+        tools.clone(),
+        Arc::new(crate::cache::Scanner::default()),
+    )
+    .await
+    .unwrap();
+    let media_tools = tools.media().unwrap();
+    let (boundaries, _) = vod.index(&source, &media_tools).await.unwrap();
+    assert_eq!(boundaries, [0.0, 2.0, 4.0, 6.0]);
+    // Served from the index: the file is no longer there to read.
+    std::fs::remove_file(&media).unwrap();
+    assert_eq!(
+        vod.index(&source, &media_tools).await.unwrap().0,
+        boundaries
+    );
+    // Another generation of the file is indexed anew.
+    let changed = Source {
+        modified: "2".into(),
+        ..source
+    };
+    assert!(vod.index(&changed, &media_tools).await.is_err());
+}

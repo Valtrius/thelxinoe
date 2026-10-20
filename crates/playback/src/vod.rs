@@ -13,9 +13,9 @@ use std::{
 };
 use thelxinoe_tools::{MediaTools, Runtime};
 use tokio::{
-    io::AsyncReadExt,
+    io::AsyncBufReadExt,
     process::Command,
-    sync::{Mutex, Semaphore, watch},
+    sync::{Mutex, OnceCell, Semaphore, watch},
 };
 
 struct Run {
@@ -47,7 +47,10 @@ pub struct VodCache {
     root: PathBuf,
     runs: Mutex<HashMap<String, Arc<Run>>>,
     slots: Arc<Semaphore>,
+    /// Keyframe indexes of local files by file generation; see `index`.
+    indexes: Mutex<HashMap<String, Arc<OnceCell<Keyframes>>>>,
 }
+type Keyframes = (Vec<f64>, f64);
 impl VodCache {
     pub async fn open(
         root: &Path,
@@ -63,7 +66,46 @@ impl VodCache {
             root,
             runs: Mutex::new(HashMap::new()),
             slots,
+            indexes: Mutex::new(HashMap::new()),
         })
+    }
+    /// A local file's keyframe index, built once per file generation. Listing a file's
+    /// packets reads all of it, which can outlast a client's patience on large files: the
+    /// index builds in its own task with a budget scaled to the file, a start waits for it
+    /// at most 30 seconds, and the next start reuses it.
+    pub(crate) async fn index(&self, source: &Source, tools: &MediaTools) -> Result<Keyframes> {
+        let key = format!(
+            "{}\0{}\0{}",
+            source.path.display(),
+            source.size,
+            source.modified
+        );
+        let cell = {
+            let mut indexes = self.indexes.lock().await;
+            if indexes.len() >= 256 {
+                indexes.retain(|_, cell| cell.initialized());
+                if indexes.len() >= 256 {
+                    indexes.clear();
+                }
+            }
+            indexes.entry(key).or_default().clone()
+        };
+        let (source, tools, slots) = (source.clone(), tools.clone(), self.slots.clone());
+        let task = tokio::spawn(async move {
+            cell.get_or_try_init(|| async {
+                let _slot = slots.acquire_owned().await?;
+                let budget = Duration::from_secs(60 + source.size / (64 << 20));
+                keyframes(&source, &tools, None, budget).await
+            })
+            .await
+            .cloned()
+        });
+        match tokio::time::timeout(Duration::from_secs(30), task).await {
+            Ok(index) => index?,
+            Err(_) => bail!(
+                "The keyframe index of this large file is still being built; start again shortly"
+            ),
+        }
     }
     pub async fn start(
         &self,
@@ -136,14 +178,17 @@ impl VodCache {
         // Six-second segments also keep conversion overhead bounded on TVs.
         let segment = 6.0;
         let (boundaries, video_start) = if !encoding.video && source.video_codec().is_some() {
-            let _slot = self
-                .slots
-                .clone()
-                .try_acquire_owned()
-                .context("All conversion slots are busy")?;
-            keyframes(source, &tools, remote.as_ref())
-                .await
-                .context("Source keyframe index is unavailable")?
+            if let Some(remote) = &remote {
+                let _slot = self
+                    .slots
+                    .clone()
+                    .try_acquire_owned()
+                    .context("All conversion slots are busy")?;
+                keyframes(source, &tools, Some(remote), Duration::from_secs(30)).await
+            } else {
+                self.index(source, &tools).await
+            }
+            .context("Source keyframe index is unavailable")?
         } else {
             (
                 (0..(duration / segment).ceil() as usize)
@@ -815,7 +860,8 @@ async fn keyframes(
     source: &Source,
     tools: &MediaTools,
     remote: Option<&RemoteSource>,
-) -> Result<(Vec<f64>, f64)> {
+    budget: Duration,
+) -> Result<Keyframes> {
     if let Some(remote) = remote.filter(|remote| !remote.segments.is_empty()) {
         let mut boundaries = remote
             .segments
@@ -844,21 +890,19 @@ async fn keyframes(
             .args(remote.network_args())
             .args(["-rw_timeout", "15000000"]);
     }
+    // Packet flags mark keyframes without decoding anything.
     command
         .args([
             "-v",
             "error",
             "-fflags",
             "+genpts",
-            "-skip_frame",
-            "nokey",
             "-select_streams",
             "v:0",
-            "-show_frames",
             "-show_entries",
-            "frame=key_frame,best_effort_timestamp_time",
+            "packet=pts_time,dts_time,flags",
             "-of",
-            "json",
+            "csv=p=0",
         ])
         .arg(remote.map_or_else(
             || source.path.to_string_lossy().into_owned(),
@@ -871,37 +915,34 @@ async fn keyframes(
     #[cfg(windows)]
     command.creation_flags(0x08000000);
     let mut child = command.spawn()?;
-    let mut stdout = child
-        .stdout
-        .take()
-        .context("Missing keyframe output")?
-        .take(8 * 1024 * 1024 + 1);
-    let mut bytes = Vec::new();
-    tokio::time::timeout(Duration::from_secs(30), stdout.read_to_end(&mut bytes))
-        .await
-        .context("Keyframe indexing timed out")??;
-    if bytes.len() > 8 * 1024 * 1024 {
-        bail!("Keyframe index exceeds its size limit");
-    }
+    let mut lines =
+        tokio::io::BufReader::new(child.stdout.take().context("Missing keyframe output")?).lines();
+    // Only keyframes are kept: one line per packet would be large for long, high-rate files.
+    let mut frames = Vec::new();
+    tokio::time::timeout(budget, async {
+        while let Some(line) = lines.next_line().await? {
+            let mut fields = line.split(',');
+            let (pts, dts, flags) = (fields.next(), fields.next(), fields.next());
+            if flags.is_some_and(|f| f.contains('K') && !f.contains('D'))
+                && let Some(time) = [pts, dts]
+                    .into_iter()
+                    .flatten()
+                    .find_map(|t| t.parse::<f64>().ok().filter(|v| v.is_finite()))
+            {
+                frames.push(time);
+            }
+        }
+        anyhow::Ok(())
+    })
+    .await
+    .context("Keyframe indexing timed out")??;
     if !tokio::time::timeout(Duration::from_secs(2), child.wait())
         .await??
         .success()
     {
         bail!("Keyframe indexing failed");
     }
-    let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-    let frames = value["frames"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|frame| frame["key_frame"] == 1)
-        .collect::<Vec<_>>();
-    let video_start =
-        frames.first().context("Missing first video keyframe")?["best_effort_timestamp_time"]
-            .as_str()
-            .and_then(|s| s.parse::<f64>().ok())
-            .filter(|v| v.is_finite())
-            .context("Missing first video timestamp")?;
+    let video_start = *frames.first().context("Missing first video keyframe")?;
     let origin = source.probe["format"]["start_time"]
         .as_str()
         .and_then(|s| s.parse::<f64>().ok())
@@ -910,14 +951,12 @@ async fn keyframes(
     let duration = source.duration();
     // The first keyframe may follow a short audio encoder delay. Its media
     // interval still begins at zero; do not create a tiny audio-only segment.
-    for frame in frames.into_iter().skip(1) {
-        if let Some(time) = frame["best_effort_timestamp_time"]
-            .as_str()
-            .and_then(|s| s.parse::<f64>().ok())
-            .map(|n| n - origin)
-            .filter(|v| v.is_finite() && *v < duration - 0.05)
-            && time - result.last().unwrap() > 0.001
-        {
+    let mut frames = frames.into_iter().skip(1).collect::<Vec<_>>();
+    // Packets come in decoding order.
+    frames.sort_by(f64::total_cmp);
+    for time in frames {
+        let time = time - origin;
+        if time < duration - 0.05 && time - result.last().unwrap() > 0.001 {
             result.push(time);
         }
     }
