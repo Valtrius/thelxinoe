@@ -179,10 +179,12 @@ Configure these GitHub environments before running release workflows:
   make both GHCR packages publicly pullable before publishing the first release.
 
 Production private keys belong in the `release-signing` environment's encrypted
-Actions secrets, with a separate secure backup. The workflow writes the manifest
-key to the runner's temporary directory for signing and deletes that file afterward;
-the desktop signer receives its key through the job environment. Neither private
-key is included in images, installers or release assets. Local labs generate separate
+Actions secrets, with a separate secure backup. Nothing is compiled while a private key
+is present: the release verifier is built before the signing step, the manifest key is
+written to the runner's temporary directory only for signing and deleted afterward, and
+no child process inherits it. The desktop is built without its updater key; only
+`tauri signer sign` receives that key, for the finished installer. Neither private key
+is included in images, installers or release assets. Local labs generate separate
 `signing.pem` and `updater.key` files under their ignored `.local/thelxinoe-update-*`
 directory; these are disposable test keys. Provision production keys before the
 first release. If the private key matching the committed `releases/release.pub`
@@ -195,8 +197,10 @@ Authenticode/SmartScreen signing; no Authenticode certificate is configured here
 
 1. Change `[workspace.package].version` in `Cargo.toml`, run
    `pnpm run version:sync`, review the change and merge it to `develop`. Released
-   database schemas are frozen; a schema change ships with its migration (see
-   `AGENTS.md`), and the manifest lets every schema from `MIGRATION_BASE` update.
+   database schemas are frozen: `version:sync` pins the shipped schema's digest in
+   `crates/database/schemas/SHA256SUMS`, and the release check requires it. A schema
+   change ships with its migration (see `AGENTS.md`), and the manifest lets every
+   schema from `MIGRATION_BASE` update.
 2. Push the `X.Y.Z` tag on that commit once **Build and verify** passed for its
    tree: the commit's `develop` push run (pushes to `develop` are never cancelled),
    or a manual run of a commit with the identical tree, such as an up-to-date

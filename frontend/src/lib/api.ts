@@ -99,16 +99,17 @@ async function request<T>(
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  const value = await response.json();
   if (!response.ok) {
     invalidateExpired(response.status);
+    // Proxies answer errors such as 413 or 502 with HTML, not the server's JSON.
+    const value = await response.json().catch(() => null);
     throw new ApiError(
       response.status,
-      value.error?.code ?? 'request_failed',
-      value.error?.message ?? 'Request failed',
+      value?.error?.code ?? 'request_failed',
+      value?.error?.message ?? `Request failed (${response.status})`,
     );
   }
-  return value as T;
+  return (await response.json()) as T;
 }
 // A server update removes the previous build's lazily loaded code. When a page
 // cannot load its module, ask which web app the server serves now.

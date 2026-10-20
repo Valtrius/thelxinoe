@@ -47,6 +47,9 @@ async fn existing() -> (
                 "/api/v3/system/status" => json!({"appName":"Radarr","version":"6","urlBase":""}),
                 "/api/v3/rootfolder" => json!([{"id":1,"path":"/movies"}]),
                 "/api/v3/qualityprofile" => json!([{"id":1,"name":"Existing HD","items":[]}]),
+                "/api/v3/qualityprofile/schema" => {
+                    json!({"id":0,"items":[{"quality":{"id":1},"allowed":false}]})
+                }
                 "/api/v3/command" => json!([]),
                 "/api/v3/queue" => json!({"totalRecords":0}),
                 _ => Value::Null,
@@ -176,8 +179,71 @@ async fn connected_service_can_be_repaired_without_changing_defaults_or_applicat
         assert_eq!(options.2["defaults"], json!({}));
         assert_eq!(options.2["roots"][0]["path"], "/movies");
     }
+    // Without saved defaults a profile is refused before anything is created upstream.
+    let profile = call(
+        &state,
+        &format!("/api/v1/admin/managers/{key}/quality-profiles"),
+        "POST",
+        json!({"name":"Custom","qualities":[1],"cutoff":1}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(profile.0, StatusCode::CONFLICT, "{}", profile.2);
     assert_eq!(service(&state, &key).await.unwrap().defaults, json!({}));
     assert_eq!(writes.load(Ordering::SeqCst), 0);
+    upstream.abort();
+}
+
+#[tokio::test]
+async fn auto_delete_consent_does_not_carry_over_to_a_reused_manager_row() {
+    let (_temp, state, cookie, key, port, _writes, upstream) = existing().await;
+    crate::test_support::own_services(&state).await;
+    let saved = call(
+        &state,
+        &format!("/api/v1/admin/managers/{key}/retention"),
+        "PUT",
+        json!({"enabled":true}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(saved.0, StatusCode::OK, "{}", saved.2);
+    let disabled = key.clone();
+    state
+        .db
+        .write("test.retire", move |db| {
+            // Like a removed installation.
+            db.execute(
+                "UPDATE manager_services SET enabled=0,operational=0 WHERE id=?1",
+                [&disabled],
+            )?;
+            db.execute(
+                "DELETE FROM stack_provisions WHERE service_id=?1",
+                [&disabled],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    // Another Radarr registered later reuses the row of its kind.
+    let request = json!({"name":"Another Radarr","kind":"radarr","container_id":"a".repeat(64),
+        "port":port,"api_key":"incorrect-fixture-key","allow_unverified":true});
+    let registered = call(&state, "/api/v1/admin/managers", "POST", request, &cookie).await;
+    assert_eq!(registered.0, StatusCode::OK, "{}", registered.2);
+    assert_eq!(registered.2["id"], key);
+    let consent = state
+        .db
+        .read("test.consent", move |db| {
+            Ok(db
+                .query_row(
+                    "SELECT value FROM settings WHERE key='manager.retention.'||?1",
+                    [key],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(consent, None);
     upstream.abort();
 }
 

@@ -6,7 +6,7 @@
 
 ## Database schema
 
-- Released schemas are frozen in `crates/database/schemas/`. Any later change to `schema.sql` bumps `SCHEMA_VERSION`, adds its upgrade to `MIGRATIONS` and freezes the new schema; the database tests enforce this.
+- Released schemas are frozen in `crates/database/schemas/` and pinned in its `SHA256SUMS` (`pnpm run version:sync` adds the shipped one). Any later change to `schema.sql` bumps `SCHEMA_VERSION`, adds its upgrade to `MIGRATIONS` and freezes the new schema; the database tests enforce this.
 
 
 ## Workflow

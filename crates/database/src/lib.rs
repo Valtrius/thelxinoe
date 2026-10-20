@@ -15,8 +15,9 @@ use std::{
 pub const SCHEMA_VERSION: u32 = 1;
 /// The oldest released schema this build upgrades in place.
 pub const MIGRATION_BASE: u32 = 1;
-/// `MIGRATIONS[i]` upgrades schema `MIGRATION_BASE + i` to the next version. Each
-/// runs inside the opening transaction with foreign keys enforced.
+/// `MIGRATIONS[i]` upgrades schema `MIGRATION_BASE + i` to the next version. Each runs
+/// inside the opening transaction with foreign keys off, so a table can be rebuilt with
+/// SQLite's documented procedure; every reference is checked before the upgrade commits.
 const MIGRATIONS: &[&str] = &[];
 const _: () = assert!(MIGRATIONS.len() as u32 == SCHEMA_VERSION - MIGRATION_BASE);
 const APPLICATION_ID: u32 = 0x544c584e; // TLXN
@@ -89,6 +90,41 @@ fn enable_wal(conn: &Connection) -> Result<()> {
     }
 }
 
+/// Create the schema, or upgrade a released one, in one transaction. SQLite ignores the
+/// foreign key pragma inside a transaction, so it is off for this one: dropping a rebuilt
+/// table must neither cascade into nor be refused by the rows that reference it.
+fn initialize(conn: &mut Connection, base: u32, migrations: &[&str]) -> Result<()> {
+    conn.pragma_update(None, "foreign_keys", "OFF")?;
+    let result = (|| -> Result<()> {
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let application: u32 = tx.pragma_query_value(None, "application_id", |r| r.get(0))?;
+        let version: u32 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        let head = base + migrations.len() as u32;
+        let empty = !tx
+            .prepare("SELECT 1 FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'")?
+            .exists([])?;
+        if empty && application == 0 && version == 0 {
+            tx.execute_batch(SCHEMA)?;
+            tx.pragma_update(None, "application_id", APPLICATION_ID)?;
+            tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        } else {
+            anyhow::ensure!(
+                !empty && application == APPLICATION_ID && (base..=head).contains(&version),
+                "Incompatible database (schema {version}; this release reads {base} to {head}). Use a matching release, or stop Thelxinoe and reset its local database to start fresh."
+            );
+            upgrade(&tx, version, base, migrations)?;
+            anyhow::ensure!(
+                version == head || !tx.prepare("PRAGMA foreign_key_check")?.exists([])?,
+                "Upgrading database schema {version} to {head} left invalid references"
+            );
+        }
+        tx.commit()?;
+        Ok(())
+    })();
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    result
+}
+
 /// Bring an older released schema up to date inside the caller's transaction.
 fn upgrade(tx: &Connection, version: u32, base: u32, migrations: &[&str]) -> Result<()> {
     let head = base + migrations.len() as u32;
@@ -126,26 +162,7 @@ impl Database {
             std::fs::create_dir_all(parent)?;
         }
         let mut conn = connection(path, false)?;
-        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let application: u32 = tx.pragma_query_value(None, "application_id", |r| r.get(0))?;
-        let version: u32 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        let empty = !tx
-            .prepare("SELECT 1 FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'")?
-            .exists([])?;
-        if empty && application == 0 && version == 0 {
-            tx.execute_batch(SCHEMA)?;
-            tx.pragma_update(None, "application_id", APPLICATION_ID)?;
-            tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-        } else {
-            anyhow::ensure!(
-                !empty
-                    && application == APPLICATION_ID
-                    && (MIGRATION_BASE..=SCHEMA_VERSION).contains(&version),
-                "Incompatible database (schema {version}; this release reads {MIGRATION_BASE} to {SCHEMA_VERSION}). Use a matching release, or stop Thelxinoe and reset its local database to start fresh."
-            );
-            upgrade(&tx, version, MIGRATION_BASE, MIGRATIONS)?;
-        }
-        tx.commit()?;
+        initialize(&mut conn, MIGRATION_BASE, MIGRATIONS)?;
         enable_wal(&conn)?;
         let readers = (0..options.readers)
             .map(|_| connection(path, true))

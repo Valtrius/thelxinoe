@@ -1159,6 +1159,39 @@ async fn failed_passwords_are_throttled_per_account_across_addresses() {
     );
 }
 #[tokio::test]
+async fn failed_reverification_passwords_count_against_the_account() {
+    let (_temp, state) = fixture().await;
+    let cookie = setup(&state).await;
+    for _ in 0..10 {
+        let (status, _) = post(
+            &state,
+            "/api/v1/auth/verify",
+            json!({"password":"not the password"}),
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    let (status, _) = post(
+        &state,
+        "/api/v1/auth/verify",
+        json!({"password":"a good long password"}),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    let login = request(
+        &state,
+        "/api/v1/auth/login",
+        "POST",
+        json!({"username":"admin","password":"a good long password"}),
+        None,
+        &client("198.51.100.200"),
+    )
+    .await;
+    assert_eq!(login.0, StatusCode::TOO_MANY_REQUESTS);
+}
+#[tokio::test]
 async fn password_changes_revoke_client_passwords_only_when_asked() {
     let (_temp, state) = fixture().await;
     let cookie = setup(&state).await;

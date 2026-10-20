@@ -39,12 +39,14 @@
     busy = true;
     error = '';
     try {
-      await withVerification(async () => {
+      const done = await withVerification(async () => {
         await api('/auth/quick-connect/approve', 'POST', {
           code,
           confirmation,
         });
       });
+      // A cancelled verification approved nothing.
+      if (!done) return;
       approved = true;
       device = null;
       code = '';

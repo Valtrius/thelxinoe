@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { version as clientVersion } from '../../package.json';
-import { ApiError, Events, clientApi, missingWebCode } from './api';
+import { ApiError, Events, api, clientApi, missingWebCode } from './api';
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
@@ -56,6 +56,24 @@ describe('server transport', () => {
     events.close();
     await vi.advanceTimersByTimeAsync(30000);
     expect(Socket.all).toHaveLength(2);
+  });
+  it('reports a proxy error page by status and still expires the session', async () => {
+    const target = new EventTarget();
+    vi.stubGlobal('window', target);
+    let expired = 0;
+    target.addEventListener('thelxinoe-session-expired', () => expired++);
+    const html = (status: number) => ({
+      ok: false,
+      status,
+      json: async () => JSON.parse('<html>Bad gateway</html>'),
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(html(502)));
+    const failed = await api('/library').catch((error: unknown) => error);
+    expect(failed).toBeInstanceOf(ApiError);
+    expect(String(failed)).toBe('Request failed (502)');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(html(401)));
+    await api('/library').catch(() => undefined);
+    expect(expired).toBe(1);
   });
   it('shows server explanations without an error-type prefix', () => {
     const error = new ApiError(409, 'conflict', 'Radarr rejected the API key');

@@ -117,6 +117,18 @@ if (command === 'check') {
   if (requested !== version || !/^\d+\.\d+\.\d+$/.test(requested))
     throw Error(`Release tag must be ${version}`);
   execFileSync(process.execPath, ['scripts/version.mjs'], { stdio: 'inherit' });
+  // CI checks the pinned digest; the release only has to pin the schema it ships.
+  const schema = readFileSync('crates/database/src/lib.rs', 'utf8').match(
+    /pub const SCHEMA_VERSION: u32 = (\d+)/,
+  )[1];
+  if (
+    !readFileSync('crates/database/schemas/SHA256SUMS', 'utf8')
+      .split(/\r?\n/)
+      .some((line) => line.endsWith(`  ${schema}.sql`))
+  )
+    throw Error(
+      `Database schema ${schema} ships in this release; pin it with pnpm run version:sync`,
+    );
 } else if (command === 'desktop') {
   if (process.platform !== 'win32')
     throw Error('Release desktop builds require Windows');
@@ -135,18 +147,31 @@ if (command === 'check') {
     readFileSync('apps/desktop/tauri.release.conf.json', 'utf8'),
   );
   settings.plugins.updater.pubkey = process.env.TAURI_UPDATER_PUBLIC_KEY.trim();
+  // The build never sees the updater signing key: no build script or bundler step runs
+  // beside it. Only the finished installer is signed.
+  settings.bundle.createUpdaterArtifacts = false;
   writeFileSync(config, JSON.stringify(settings));
+  const {
+    TAURI_SIGNING_PRIVATE_KEY: signingKey,
+    TAURI_SIGNING_PRIVATE_KEY_PASSWORD: signingPassword,
+    ...env
+  } = process.env;
   const cli = resolve('node_modules/@tauri-apps/cli/tauri.js');
   try {
-    run(process.execPath, [
-      cli,
-      'icon',
-      'frontend/public/icon.svg',
-      '--output',
-      'apps/desktop/icons',
-    ]);
+    run(
+      process.execPath,
+      [
+        cli,
+        'icon',
+        'frontend/public/icon.svg',
+        '--output',
+        'apps/desktop/icons',
+      ],
+      { env },
+    );
     run(process.execPath, [cli, 'build', '--config', config], {
       cwd: 'apps/desktop',
+      env,
     });
     mkdirSync('release-desktop', { recursive: true });
     const folder = 'target/release/bundle/nsis';
@@ -154,6 +179,15 @@ if (command === 'check') {
       name.endsWith(`_${version}_x64-setup.exe`),
     );
     if (!file) throw Error('Missing release installer');
+    run(process.execPath, [cli, 'signer', 'sign', resolve(folder, file)], {
+      env: {
+        ...env,
+        TAURI_SIGNING_PRIVATE_KEY: signingKey,
+        ...(signingPassword === undefined
+          ? {}
+          : { TAURI_SIGNING_PRIVATE_KEY_PASSWORD: signingPassword }),
+      },
+    });
     for (const name of [file, `${file}.sig`])
       copyFileSync(resolve(folder, name), resolve('release-desktop', name));
     writeFileSync(

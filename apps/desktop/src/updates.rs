@@ -181,9 +181,21 @@ async fn download(app: &tauri::AppHandle, release: Manifest) -> Result<(), Strin
     let endpoint = thelxinoe_releases::https(&release.windows_x64.url)
         .and_then(|url| Ok(url.join("windows-x64.json")?))
         .map_err(|_| "Invalid desktop release endpoint")?;
+    // The installer must verify against the updater key built into this desktop. The manifest
+    // names its key only so a release for a different key is refused up front.
+    let trusted = app
+        .config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|updater| updater["pubkey"].as_str())
+        .map(str::trim)
+        .unwrap_or_default();
+    if trusted.is_empty() || trusted != release.windows_x64.updater_public_key.trim() {
+        return Err("This release is signed for a different desktop updater key".into());
+    }
     let mut builder = app
         .updater_builder()
-        .pubkey(&release.windows_x64.updater_public_key)
         .endpoints(vec![endpoint])
         .map_err(|_| "Invalid desktop release endpoint")?
         .timeout(std::time::Duration::from_secs(1800));

@@ -319,6 +319,55 @@ async fn fair_sync_resumes_pages_and_preserves_private_state() {
     server.abort();
 }
 #[tokio::test]
+async fn stale_video_cleanup_keeps_requested_downloads() {
+    const OLD: &str = "lmnopqrstuv";
+    let (_temp, state, _session) = fixture().await;
+    let generation = connect(&state, "alice").await;
+    state.db.write("test.fixture", |db| {
+        let long_ago = now() - 120 * 86400;
+        for video in [VIDEO, OLD] {
+            db.execute("INSERT INTO youtube_videos(user_id,video_id,title,published_at,metadata_at) VALUES ('alice',?1,'Old video',?2,?2)", params![video, long_ago])?;
+        }
+        db.execute("INSERT INTO youtube_download_requests(user_id,video_id,requested_at) VALUES ('alice',?1,?2)", params![VIDEO, now()])?;
+        Ok(())
+    }).await.unwrap();
+    let turn = Turn {
+        user: "alice".into(),
+        generation,
+        cursor: Cursor::default(),
+        failures: 0,
+    };
+    save(
+        &state,
+        turn,
+        false,
+        storage::Page::Videos {
+            ids: vec![],
+            rows: vec![],
+        },
+    )
+    .await
+    .unwrap();
+    let (videos, requests) = state
+        .db
+        .read("test.fixture", |db| {
+            let videos: Vec<String> = db
+                .prepare("SELECT video_id FROM youtube_videos WHERE user_id='alice'")?
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            let requests: i64 =
+                db.query_row("SELECT COUNT(*) FROM youtube_download_requests", [], |r| {
+                    r.get(0)
+                })?;
+            Ok((videos, requests))
+        })
+        .await
+        .unwrap();
+    assert_eq!(videos, [VIDEO]);
+    assert_eq!(requests, 1);
+}
+
+#[tokio::test]
 async fn a_late_provider_reply_cannot_restore_deleted_data() {
     let (_temp, mut state, session) = fixture().await;
     connect(&state, "alice").await;

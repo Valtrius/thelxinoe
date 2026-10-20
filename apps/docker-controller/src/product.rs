@@ -117,18 +117,27 @@ pub(super) async fn restore_archive(
         latest: false,
     };
     private(&dir(&u.id))?;
-    // Capture the authenticated archive state, never the migrated database.
-    copy(&u, &u.source, "rollback", false).await?;
-    let schema = verify_state(&u, "rollback").await?;
-    copy(&u, &host(&u, "rollback"), "clone", false).await?;
-    server_check(
-        &u,
-        "clone",
-        &immutable(&u.old.server)?,
-        &u.old.version,
-        schema,
-    )
-    .await?;
+    let checked = async {
+        // Capture the authenticated archive state, never the migrated database.
+        copy(&u, &u.source, "rollback", false).await?;
+        let schema = verify_state(&u, "rollback").await?;
+        copy(&u, &host(&u, "rollback"), "clone", false).await?;
+        server_check(
+            &u,
+            "clone",
+            &immutable(&u.old.server)?,
+            &u.old.version,
+            schema,
+        )
+        .await
+    }
+    .await;
+    if let Err(e) = checked {
+        // No journal names these plaintext copies yet, so nothing else would remove them.
+        remove_copies(&u, None);
+        let _ = std::fs::remove_dir(dir(&u.id));
+        return Err(e);
+    }
     u.snapshot_ready = true;
     u.recovery_tested = true;
     write(&u)?;
@@ -681,11 +690,12 @@ async fn prepare(u: &mut Update) -> Result<()> {
         u.failure = Some(classify(&e).into());
         return Err(e);
     }
+    // Activation takes its own rollback copy; the preflight's are no longer needed. They go
+    // before the attempt reports ready, so an activation never meets this preflight's work.
+    remove_copies(u, None);
     u.recovery_tested = true;
     u.stage = "ready".into();
     write(u)?;
-    // Activation takes its own rollback copy; the preflight's are no longer needed.
-    remove_copies(u, None);
     Ok(())
 }
 /// A check the release itself ran and failed is the release failing on this

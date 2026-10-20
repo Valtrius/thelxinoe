@@ -1250,6 +1250,8 @@ async fn execute(d: &Deployment, t: &mut Transfer) -> Result<()> {
         write(t)?;
     }
     if t.stage == "creating" {
+        // Validation can take minutes; anything may have started the original meanwhile.
+        original_quiet(t).await?;
         create(d, t).await?;
         // The production boundary is durable before the replacement may reach peers or media.
         cross_boundary(t);
@@ -2053,7 +2055,9 @@ async fn create(d: &Deployment, t: &mut Transfer) -> Result<()> {
 }
 
 /// Start the replacement after the boundary and prove authenticated API readiness only.
+/// Every path that starts a replacement comes through here, so the single-writer check does too.
 async fn activate(d: &Deployment, t: &mut Transfer) -> Result<()> {
+    original_quiet(t).await?;
     let mut s = load(&t.id)?;
     let container = t.replacement.clone().ok_or_else(unavailable)?;
     let raw = engine(&format!("/containers/{container}/json")).await?;
@@ -2717,7 +2721,6 @@ async fn restore_snapshot(d: &Deployment, t: &mut Transfer) -> Result<()> {
         cross_boundary(t);
         advance(t, "activating")?;
     }
-    original_quiet(t).await?;
     activate(d, t).await?;
     t.activated = true;
     t.stage = "activated".into();
@@ -2961,6 +2964,33 @@ mod tests {
         let mut before = journal("failed");
         before.boundary_at = None;
         assert!(plannable(&before).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_replacement_never_starts_while_the_original_can_write() {
+        for (state, restart) in [
+            (json!({"Running":true}), json!({"Name":"no"})),
+            (
+                json!({"Running":false,"Restarting":true}),
+                json!({"Name":"no"}),
+            ),
+            (json!({"Running":false}), json!({"Name":"unless-stopped"})),
+        ] {
+            let docker = crate::test_support::Docker::new();
+            docker.insert(
+                "original",
+                json!({"Id":"original","Name":"/service","State":state,
+                    "Config":{"Labels":{}},"HostConfig":{"RestartPolicy":restart}}),
+            );
+            let (d, _): (Deployment, Value) = docker.update();
+            let mut t = journal("activating");
+            t.replacement = Some("replacement".into());
+            let error = docker
+                .scope(activate(&d, &mut t))
+                .await
+                .expect_err("activation refused");
+            assert_eq!(error.0, StatusCode::CONFLICT);
+        }
     }
 
     #[test]

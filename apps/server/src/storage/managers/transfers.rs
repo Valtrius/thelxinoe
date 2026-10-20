@@ -478,6 +478,7 @@ pub(super) async fn forget(db: &Database, service: String, actor: String) -> any
         }
         match kind.as_str() {
             "radarr" | "sonarr" | "lidarr" => {
+                tx.execute("DELETE FROM settings WHERE key='manager.retention.'||?1", [&service])?;
                 let referenced: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM acquisition_requests WHERE service_id=?1) OR EXISTS(SELECT 1 FROM manager_bindings WHERE service_id=?1) OR EXISTS(SELECT 1 FROM recyclarr_targets WHERE service_id=?1)", [&service], |r| r.get(0))?;
                 if referenced {
                     tx.execute("UPDATE manager_services SET enabled=0,operational=0,verified=0,credential=X'',container_id='forgotten:'||id,port=0,evidence='{}',error='Connection forgotten' WHERE id=?1", [&service])?;

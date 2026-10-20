@@ -171,6 +171,8 @@ export async function serverScenarios({
           [
             'Wait for playback, downloads and background work to finish',
             'Wait for current requests to finish and try again',
+            // Contention the server's own automation also retries.
+            'Another Docker operation is active',
           ].includes(value.error?.message)
         ) {
           const jobs = (await api('/admin/jobs')).items.map(

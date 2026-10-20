@@ -149,8 +149,12 @@ async fn create(
     if recyclarr::owns(&state, &id).await? {
         return Err(ApiError::conflict("Configure guide profiles in Recyclarr"));
     }
+    let kind = service(&state, &id).await?.kind;
+    let _guard = state.managers.guard.service(&kind).await;
+    // Everything local is checked under the guard before the service changes upstream.
     let service = service(&state, &id).await?;
-    let _guard = state.managers.guard.service(&service.kind).await;
+    let mut defaults: Defaults = serde_json::from_value(service.defaults.clone())
+        .map_err(|_| ApiError::conflict("Save this service's acquisition defaults first"))?;
     let c = Connection::open(&state, &service).await?;
     let result = c
         .call(
@@ -166,8 +170,6 @@ async fn create(
             )?),
         )
         .await?;
-    let mut defaults: Defaults =
-        serde_json::from_value(service.defaults.clone()).map_err(|_| unavailable())?;
     defaults.quality_profile = result["id"].as_i64().ok_or_else(unavailable)?;
     storage::defaults(&state.db, id, defaults, actor).await?;
     state.managers.connection_wake.notify_one();
