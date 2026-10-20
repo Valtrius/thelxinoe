@@ -217,7 +217,22 @@ async fn refresh(
 
 async fn exact_entity(connection: &Connection<'_>, kind: &str, external: &str) -> Result<Value> {
     let endpoint = entity_kind(kind);
-    let existing = connection.get(endpoint).await?;
+    // Ask for this one item, not the whole library. A version that ignores the filter
+    // returns its library, and the exact match below still holds.
+    let filter = match endpoint {
+        "movie" => "tmdbId",
+        "series" => "tvdbId",
+        "artist" => "mbId",
+        _ => "foreignAlbumId",
+    };
+    let existing = connection
+        .call(
+            reqwest::Method::GET,
+            endpoint,
+            &[(filter, external.to_owned())],
+            None,
+        )
+        .await?;
     if let Some(row) = existing
         .as_array()
         .into_iter()
@@ -977,3 +992,7 @@ pub(super) async fn serve_artwork(
         .insert("content-type", content_type.parse().unwrap());
     Ok(response)
 }
+
+#[cfg(test)]
+#[path = "metadata_tests.rs"]
+mod tests;
