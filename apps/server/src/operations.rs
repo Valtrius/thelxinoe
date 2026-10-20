@@ -223,8 +223,26 @@ pub async fn watch(state: AppState) -> anyhow::Result<()> {
         }
     }
 }
+/// The digest of each user's last observed attention summary; `None` until the first
+/// observation after start.
+pub(crate) type AttentionDigests = Option<std::collections::HashMap<String, [u8; 32]>>;
 pub(crate) async fn observe(state: &AppState) -> anyhow::Result<()> {
-    for user in attention_storage::observe(&state.db).await? {
+    // Observers take turns, so each reads after the last one and compares with what it kept.
+    let mut last = state.attention_digests.lock().await;
+    let current = attention_storage::digests(&state.db).await?;
+    // Every client refreshes all it shows when it reconnects after a restart, so the
+    // first observation only records where attention stands.
+    let changed = last.as_ref().map_or_else(Vec::new, |last| {
+        current
+            .iter()
+            .filter(|(user, digest)| last.get(*user) != Some(*digest))
+            .map(|(user, _)| user.clone())
+            .collect()
+    });
+    // Replacing the map also forgets deleted users.
+    *last = Some(current);
+    drop(last);
+    for user in changed {
         state
             .emit(Some(user), "attention.changed", json!({}))
             .await?;

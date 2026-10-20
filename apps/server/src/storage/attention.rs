@@ -1,7 +1,9 @@
 use super::{
     ActivityItem, ActivityState, AttentionItem, AttentionSummary, AttentionTarget, Severity,
 };
-use rusqlite::{OptionalExtension, params};
+use rusqlite::params;
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use thelxinoe_core::{Principal, Role, now};
 use thelxinoe_database::Database;
 
@@ -267,22 +269,23 @@ pub(super) async fn summary(
     .await
 }
 
-pub(super) async fn observe(db: &Database) -> anyhow::Result<Vec<String>> {
-    db.write("attention.observe", |db| {
-        let tx = db.transaction()?;
-        let users = tx.prepare("SELECT id,role FROM users")?.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut changed = Vec::new();
-        for (user,role) in users {
-            let value = serde_json::to_string(&collect_summary(&tx,&user,role=="admin")?)?;
-            let previous = tx.query_row("SELECT value FROM attention_snapshots WHERE user_id=?1",[&user],|r|r.get::<_,String>(0)).optional()?;
-            if previous.as_ref()!=Some(&value) {
-                tx.execute("INSERT INTO attention_snapshots VALUES (?1,?2) ON CONFLICT(user_id) DO UPDATE SET value=excluded.value",params![user,value])?;
-                changed.push(user);
-            }
-        }
-        tx.commit()?;
-        Ok(changed)
-    }).await
+/// A digest of every user's summary, read in one snapshot. Comparing digests finds
+/// whose attention changed without writing anything.
+pub(super) async fn digests(db: &Database) -> anyhow::Result<HashMap<String, [u8; 32]>> {
+    db.read("attention.digests", |db| {
+        let users = db
+            .prepare("SELECT id,role FROM users")?
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        users
+            .into_iter()
+            .map(|(user, role)| {
+                let summary = serde_json::to_vec(&collect_summary(db, &user, role == "admin")?)?;
+                Ok((user, Sha256::digest(&summary).into()))
+            })
+            .collect()
+    })
+    .await
 }
 
 pub(super) async fn acknowledge(

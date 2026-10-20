@@ -489,6 +489,47 @@ async fn domain_events_push_attention_to_affected_users() {
     assert_eq!(pushed, vec![Some("alice".to_owned())]);
 }
 
+// Attention is observed every few seconds and after every change. Observing an
+// unchanged summary must not take the writer, and a change pushes only to its user.
+#[tokio::test]
+async fn attention_observation_writes_only_changes_for_affected_users() {
+    let (_temp, state, _alice) = fixture().await;
+    let pushed = |state: crate::AppState| async move {
+        state
+            .db
+            .read("test.events", |db| {
+                Ok(db
+                    .prepare(
+                        "SELECT user_id FROM events WHERE kind='attention.changed' ORDER BY id",
+                    )?
+                    .query_map([], |r| r.get::<_, Option<String>>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?)
+            })
+            .await
+            .unwrap()
+    };
+    state.db.write("test.fixture", |db| {
+        db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('lidarr','Lidarr','lidarr','container',8686,'g',X'00','/music','1',1)", [])?;
+        db.execute("INSERT INTO acquisition_requests(id,user_id,service_id,generation,external_id,title,state,created_at,updated_at) VALUES ('alice-request','alice','lidarr','g','album-a','Album A','denied',1,1)", [])?;
+        Ok(())
+    }).await.unwrap();
+    // After a start, clients refresh on reconnect; the first observation only records.
+    super::operations::observe(&state).await.unwrap();
+    assert!(pushed(state.clone()).await.is_empty());
+    let writes = state.db.metrics().writes.completed;
+    super::operations::observe(&state).await.unwrap();
+    assert_eq!(state.db.metrics().writes.completed, writes);
+    assert!(pushed(state.clone()).await.is_empty());
+    state.db.write("test.change", |db| {
+        db.execute("INSERT INTO acquisition_requests(id,user_id,service_id,generation,external_id,title,state,created_at,updated_at) VALUES ('bob-request','bob','lidarr','g','album-b','Album B','failed',1,1)", [])?;
+        Ok(())
+    }).await.unwrap();
+    super::operations::observe(&state).await.unwrap();
+    assert_eq!(pushed(state.clone()).await, vec![Some("bob".to_owned())]);
+    super::operations::observe(&state).await.unwrap();
+    assert_eq!(pushed(state.clone()).await, vec![Some("bob".to_owned())]);
+}
+
 // Playback adds and removes cache files while the overview measures them.
 #[test]
 fn folder_size_counts_files_and_tolerates_vanished_entries() {

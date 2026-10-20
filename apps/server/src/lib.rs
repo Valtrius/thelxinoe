@@ -76,6 +76,8 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub events: tokio::sync::broadcast::Sender<()>,
     pub(crate) attention: Arc<tokio::sync::Notify>,
+    /// What attention observation last saw, so only changes are pushed.
+    pub(crate) attention_digests: Arc<tokio::sync::Mutex<operations::AttentionDigests>>,
     pub password_slots: Arc<tokio::sync::Semaphore>,
     pub dummy_hash: Arc<String>,
     pub playback: Arc<thelxinoe_playback::Pipelines>,
@@ -133,6 +135,7 @@ impl AppState {
             config: Arc::new(config),
             events: tokio::sync::broadcast::channel(128).0,
             attention: Arc::new(tokio::sync::Notify::new()),
+            attention_digests: Arc::new(Default::default()),
             password_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             compatibility_audio: Arc::new(tokio::sync::Mutex::new(())),
             online: Arc::new(online::Runtime::new()?),
