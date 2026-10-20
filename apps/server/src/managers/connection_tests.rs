@@ -235,6 +235,11 @@ async fn connected_services_on(
             StatusCode::NO_CONTENT
         }))
         .route("/api/v1/system/status",get(||async{Json(json!({"appName":"Prowlarr","version":"1"}))}))
+        .route("/api/v1/appprofile",get(||async{Json(json!([{"id":1,"name":"Standard"}]))}))
+        .route("/api/v1/indexer/schema",get(||async{Json(json!([
+            {"id":0,"implementation":"Torznab","name":"Generic Torznab","protocol":"torrent","fields":[{"name":"baseUrl","value":""}]}
+        ]))}))
+        .route("/api/v1/indexer/test",post(||async{Json(json!({}))}))
         .route("/api/v1/applications/schema",get(||async{Json(json!([
             {"implementation":"Radarr","fields":[{"name":"baseUrl","value":""},{"name":"prowlarrUrl","value":""},{"name":"apiKey","value":""}]},
             {"implementation":"Sonarr","fields":[{"name":"baseUrl","value":""},{"name":"prowlarrUrl","value":""},{"name":"apiKey","value":""}]}
@@ -418,6 +423,23 @@ async fn connected_services_on(
             tasks,
         },
     )
+}
+
+#[tokio::test]
+async fn prowlarr_indexers_are_tested_under_its_url_base() {
+    let (_temp, state, cookie, _mock) = connected_services_on(false, "/custom").await;
+    let draft = json!({"implementation":"Torznab","definition":"Generic Torznab","name":"Indexer",
+        "app_profile_id":1,"fields":{"baseUrl":"https://indexer.example"}});
+    let tested = call(
+        &state,
+        "/api/v1/admin/support/prowlarr/indexers/test",
+        "POST",
+        draft,
+        &cookie,
+    )
+    .await;
+    assert_eq!(tested.0, StatusCode::OK, "{}", tested.2);
+    assert_eq!(tested.2["tested"], true);
 }
 
 #[tokio::test]

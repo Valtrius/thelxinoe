@@ -221,9 +221,11 @@ async fn submit(
         .state
         .managers
         .http
+        // Read the raw response: a rejected indexer explains itself in the body.
         .post(format!(
-            "{}/api/v1/{}",
+            "{}{}/api/v1/{}",
             c.base,
+            c.url_base,
             if test { "indexer/test" } else { "indexer" }
         ))
         .header("X-Api-Key", &c.key)
