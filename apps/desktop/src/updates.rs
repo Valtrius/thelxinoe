@@ -171,15 +171,9 @@ pub async fn desktop_update_check(app: tauri::AppHandle) -> Result<Value, String
             ))
         }
         Err(error) => {
-            // A failed check says nothing about a release already downloaded and verified:
-            // keep it for this session and only report the error.
-            let phase = if runtime.prepared.lock().await.is_some() {
-                "ready"
-            } else {
-                "idle"
-            };
-            change(&app, json!({"phase":phase,"error":error}));
-            Err(error)
+            runtime.prepared.lock().await.take();
+            change(&app, json!({"release":null,"hold":null}));
+            finish(&app, Err(error), "idle")
         }
     }
 }
