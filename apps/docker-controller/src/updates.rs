@@ -170,10 +170,7 @@ pub(super) fn removable_updates(service: &str) -> Result<Vec<String>> {
                 continue;
             };
             if update.service == service {
-                if !matches!(
-                    update.stage.as_str(),
-                    "committed" | "rolled-back" | "blocked" | "runtime-failure"
-                ) {
+                if !thelxinoe_core::service_update::finished(&update.stage) {
                     return Err(conflict(
                         "Finish or recover the service update before removal",
                     ));

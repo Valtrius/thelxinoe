@@ -320,15 +320,8 @@ async fn run_locked(state: &AppState, key: &str, action: &str) -> Result<()> {
             )
             .await?;
         }
-        if [
-            "ready",
-            "committed",
-            "rolled-back",
-            "blocked",
-            "recovery-required",
-            "runtime-failure",
-        ]
-        .contains(&stage)
+        if thelxinoe_core::service_update::finished(stage)
+            || thelxinoe_core::service_update::WAITING.contains(&stage)
         {
             state
                 .emit(
