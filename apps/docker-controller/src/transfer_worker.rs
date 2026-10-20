@@ -1168,10 +1168,12 @@ fn tree(root: &Path) -> anyhow::Result<Value> {
         } else {
             (meta.clone(), meta.is_file().then(|| path.clone()))
         };
+        // Copies keep only the permission bits (state_copy `owner`), so special bits such as
+        // an inherited setgid must not make a faithful copy look incomplete.
         hasher.update(format!(
             "{relative}\0{}\0{}\0{}\0{}\0",
             meta.is_dir(),
-            meta.mode() & 0o7777,
+            meta.mode() & 0o777,
             meta.uid(),
             meta.gid()
         ));
@@ -1392,6 +1394,23 @@ mod tests {
             .unwrap();
         assert_ne!(before["digest"], after["digest"]);
         assert!(records(&c, "Missing", "SELECT 1", true).unwrap().is_none());
+    }
+
+    #[test]
+    fn digests_ignore_the_special_bits_copies_drop() {
+        use std::os::unix::fs::PermissionsExt;
+        let source = tempfile::tempdir().unwrap();
+        let copy = tempfile::tempdir().unwrap();
+        for (root, mode) in [(source.path(), 0o2775), (copy.path(), 0o775)] {
+            let data = root.join("data");
+            fs::create_dir(&data).unwrap();
+            fs::write(data.join("db"), "state").unwrap();
+            fs::set_permissions(&data, fs::Permissions::from_mode(mode)).unwrap();
+        }
+        assert_eq!(
+            tree(source.path()).unwrap()["digest"],
+            tree(copy.path()).unwrap()["digest"]
+        );
     }
 
     #[test]
