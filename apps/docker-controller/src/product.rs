@@ -117,18 +117,27 @@ pub(super) async fn restore_archive(
         latest: false,
     };
     private(&dir(&u.id))?;
-    // Capture the authenticated archive state, never the migrated database.
-    copy(&u, &u.source, "rollback", false).await?;
-    let schema = verify_state(&u, "rollback").await?;
-    copy(&u, &host(&u, "rollback"), "clone", false).await?;
-    server_check(
-        &u,
-        "clone",
-        &immutable(&u.old.server)?,
-        &u.old.version,
-        schema,
-    )
-    .await?;
+    let checked = async {
+        // Capture the authenticated archive state, never the migrated database.
+        copy(&u, &u.source, "rollback", false).await?;
+        let schema = verify_state(&u, "rollback").await?;
+        copy(&u, &host(&u, "rollback"), "clone", false).await?;
+        server_check(
+            &u,
+            "clone",
+            &immutable(&u.old.server)?,
+            &u.old.version,
+            schema,
+        )
+        .await
+    }
+    .await;
+    if let Err(e) = checked {
+        // No journal names these plaintext copies yet, so nothing else would remove them.
+        remove_copies(&u, None);
+        let _ = std::fs::remove_dir(dir(&u.id));
+        return Err(e);
+    }
     u.snapshot_ready = true;
     u.recovery_tested = true;
     write(&u)?;
