@@ -906,10 +906,49 @@ pub(crate) async fn password_change_proof(
 pub(crate) fn authorize_admin(c: &rusqlite::Connection, p: &Principal) -> anyhow::Result<()> {
     storage::authorize_admin(c, p)
 }
+pub(crate) use storage::Revoke;
+/// Invalidate a user's credentials inside the caller's transaction; see `Revoke`.
+pub(crate) fn invalidate_user(
+    c: &rusqlite::Connection,
+    user: &str,
+    revoke: Revoke,
+) -> anyhow::Result<()> {
+    storage::invalidate(c, user, revoke)
+}
 
 #[cfg(test)]
 mod tests {
-    use super::{normalized_code, pairing_code};
+    use super::{Revoke, invalidate_user, normalized_code, pairing_code};
+
+    // Every path that invalidates a user removes the same credentials, desktop pairing
+    // requests aimed at the user included; only a recovery removes sign-in methods.
+    #[tokio::test]
+    async fn invalidating_a_user_leaves_no_session_credential_behind() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = thelxinoe_database::Database::open(temp.path().join("db")).unwrap();
+        let left = db
+            .write("test.invalidate", |c| {
+                c.execute("INSERT INTO users(id,username,password_hash,role,created_at) VALUES ('u','u','h','user',1),('a','a','h','admin',1)", [])?;
+                let seed = |c: &rusqlite::Connection| -> anyhow::Result<()> {
+                    c.execute("INSERT OR REPLACE INTO sessions(id,user_id,token_hash,transport,name,created_at,expires_at,last_seen) VALUES ('s','u','t','web','Web',1,9999999999,1)", [])?;
+                    c.execute("INSERT OR REPLACE INTO auth_desktop_requests(id,secret_hash,code_hash,name,address,created_at,expires_at,user_id,target_user_id) VALUES ('d','s','c','Desktop','127.0.0.1',1,9999999999,'a','u')", [])?;
+                    Ok(())
+                };
+                let count = |c: &rusqlite::Connection| -> anyhow::Result<i64> {
+                    Ok(c.query_row("SELECT (SELECT COUNT(*) FROM sessions WHERE user_id='u')+(SELECT COUNT(*) FROM auth_desktop_requests WHERE target_user_id='u')", [], |r| r.get(0))?)
+                };
+                let mut left = Vec::new();
+                for revoke in [Revoke::Sessions, Revoke::Everything] {
+                    seed(c)?;
+                    invalidate_user(c, "u", revoke)?;
+                    left.push(count(c)?);
+                }
+                Ok(left)
+            })
+            .await
+            .unwrap();
+        assert_eq!(left, [0, 0]);
+    }
 
     #[test]
     fn pairing_codes_are_unambiguous_and_typing_is_forgiving() {
