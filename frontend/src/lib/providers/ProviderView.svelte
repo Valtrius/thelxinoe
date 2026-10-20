@@ -347,11 +347,7 @@
       );
       window.removeEventListener('thelxinoe-youtube-progress', progress);
       window.removeEventListener('thelxinoe-youtube-download-removed', removed);
-      if (ownsSession())
-        void watchlistController
-          .flushWatchlistRemovals()
-          .finally(() => watchlistController.reset());
-      else watchlistController.reset();
+      watchlistController.reset();
       disconnect();
     };
   });
