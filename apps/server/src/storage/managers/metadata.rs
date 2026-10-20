@@ -130,20 +130,21 @@ pub(super) async fn update_metadata_write_media(
     }).await
 }
 
+/// The service, generation and external ID a show's metadata was last bound to.
 pub(super) async fn update_show_read_metadata_bindings(
-    previous_media: String,
-    current_service: String,
-    current_generation: String,
-    current_external: String,
+    media: String,
     db: &Database,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<Option<(String, String, String)>> {
     db.read("managers.metadata.update_show_read_metadata_bindings", move |db| {
-        Ok(db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM metadata_bindings WHERE media_id=?1 AND (service_id<>?2 OR service_generation<>?3 OR external_id<>?4))",
-            params![previous_media,current_service,current_generation,current_external],
-            |r| r.get::<_,bool>(0),
-        )?)
-    }).await
+        Ok(db
+            .query_row(
+                "SELECT service_id,service_generation,external_id FROM metadata_bindings WHERE media_id=?1",
+                [media],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?)
+    })
+    .await
 }
 
 pub(super) async fn update_show_write_manager_episode_mappings(
@@ -158,19 +159,40 @@ pub(super) async fn update_show_write_manager_episode_mappings(
     }).await
 }
 
+pub(super) struct ShowEpisodes {
+    pub(super) refreshed_at: i64,
+    pub(super) service_id: String,
+    pub(super) service_generation: String,
+    pub(super) series_external: String,
+    pub(super) show_id: String,
+    pub(super) saved: Vec<(i64, i64, i64, String)>,
+    /// The generation the show was last refreshed with, when only that changed.
+    pub(super) moved_generation: Option<String>,
+}
+
 pub(super) async fn update_show_write_manager_episodes(
-    refreshed_at: i64,
-    service_id: String,
-    service_generation: String,
-    series_external: String,
-    show_id: String,
-    saved: Vec<(i64, i64, i64, String)>,
+    input: ShowEpisodes,
     db: &Database,
 ) -> anyhow::Result<()> {
+    let ShowEpisodes {
+        refreshed_at,
+        service_id,
+        service_generation,
+        series_external,
+        show_id,
+        saved,
+        moved_generation,
+    } = input;
     db.write("managers.metadata.update_show_write_manager_episodes", move |db| {
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         for (episode,season,number,metadata) in saved {
             tx.execute("INSERT INTO manager_episodes(service_id,service_generation,series_external_id,manager_episode_id,season_number,episode_number,metadata,refreshed_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(service_id,service_generation,manager_episode_id) DO UPDATE SET series_external_id=excluded.series_external_id,season_number=excluded.season_number,episode_number=excluded.episode_number,metadata=excluded.metadata,refreshed_at=excluded.refreshed_at",params![service_id,service_generation,series_external,episode,season,number,metadata,refreshed_at])?;
+        }
+        if let Some(previous) = &moved_generation {
+            // Mappings follow their episodes into the new generation; the previous
+            // generation's episodes go, with mappings of episodes that no longer exist.
+            tx.execute("UPDATE manager_episode_mappings SET service_generation=?2 WHERE service_id=?1 AND service_generation=?3 AND media_id IN (SELECT ep.id FROM media ep JOIN media season ON season.id=ep.parent_id WHERE season.parent_id=?4) AND manager_episode_id IN (SELECT manager_episode_id FROM manager_episodes WHERE service_id=?1 AND service_generation=?2 AND series_external_id=?5)",params![service_id,service_generation,previous,show_id,series_external])?;
+            tx.execute("DELETE FROM manager_episodes WHERE service_id=?1 AND service_generation=?2 AND series_external_id=?3",params![service_id,previous,series_external])?;
         }
         tx.execute("UPDATE manager_episode_mappings SET state='unresolved' WHERE service_id=?1 AND service_generation=?2 AND manager_episode_id IN (SELECT manager_episode_id FROM manager_episodes WHERE service_id=?1 AND service_generation=?2 AND series_external_id=?3 AND refreshed_at<>?4)",params![service_id,service_generation,series_external,refreshed_at])?;
         let rows=tx.prepare("SELECT ep.id,b.members FROM media ep JOIN media season ON season.id=ep.parent_id JOIN media_sources ms ON ms.media_id=ep.id JOIN media_files f ON f.id=ms.file_id AND f.present=1 AND f.ownership='managed' JOIN manager_bindings b ON b.file_id=f.id AND b.generation=f.generation JOIN manager_services s ON s.id=b.service_id AND s.operational=1 AND s.generation=b.service_generation WHERE ep.kind='episode' AND season.parent_id=?1 AND b.service_id=?2 AND b.service_generation=?3 AND b.checked_at>=?4")?.query_map(params![show_id,service_id,service_generation,now()-60],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
