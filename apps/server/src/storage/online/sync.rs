@@ -245,7 +245,8 @@ impl Page {
                 for video in rows {
                     upsert_video(tx, user, &video, &ids)?;
                 }
-                tx.execute("DELETE FROM youtube_videos WHERE user_id=?1 AND published_at<?2 AND metadata_at<?3 AND NOT EXISTS(SELECT 1 FROM youtube_state s WHERE s.user_id=youtube_videos.user_id AND s.video_id=youtube_videos.video_id) AND NOT EXISTS(SELECT 1 FROM youtube_watchlist_items i WHERE i.user_id=youtube_videos.user_id AND i.video_id=youtube_videos.video_id)",params![user,now()-90*86400,now()-30*86400])?;
+                // Requested downloads cascade from their video, so they keep it too.
+                tx.execute("DELETE FROM youtube_videos WHERE user_id=?1 AND published_at<?2 AND metadata_at<?3 AND NOT EXISTS(SELECT 1 FROM youtube_state s WHERE s.user_id=youtube_videos.user_id AND s.video_id=youtube_videos.video_id) AND NOT EXISTS(SELECT 1 FROM youtube_watchlist_items i WHERE i.user_id=youtube_videos.user_id AND i.video_id=youtube_videos.video_id) AND NOT EXISTS(SELECT 1 FROM youtube_download_requests r WHERE r.user_id=youtube_videos.user_id AND r.video_id=youtube_videos.video_id)",params![user,now()-90*86400,now()-30*86400])?;
                 Ok(())
             }
         }
