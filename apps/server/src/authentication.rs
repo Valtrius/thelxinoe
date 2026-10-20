@@ -305,6 +305,28 @@ async fn checked_totp_step(
     }
     step
 }
+/// Checks a re-verification password, counting failures against the account as sign-in does.
+async fn checked_password(
+    state: &AppState,
+    account: &storage::Account,
+    hash: String,
+    password: String,
+) -> Result<bool> {
+    let throttle = format!("password-account:{}", account.username.to_ascii_lowercase());
+    accounts::allow_account_attempt(state, &throttle).await?;
+    let slot = state
+        .password_slots
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(anyhow::Error::from)?;
+    let valid = password.len() <= 256
+        && thelxinoe_auth::verify_password_with_permit(password, hash, slot).await?;
+    if !valid {
+        accounts::record_account_failure(state, throttle).await?;
+    }
+    Ok(valid)
+}
 fn sign_in_expired(message: &str) -> ApiError {
     ApiError(StatusCode::UNAUTHORIZED, "sign_in_expired", message.into())
 }
@@ -429,15 +451,7 @@ async fn verify(
             .password
             .clone()
             .ok_or_else(|| ApiError::bad("Verify with a passkey or your identity provider"))?;
-        let slot = state
-            .password_slots
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(anyhow::Error::from)?;
-        if input.password.len() > 256
-            || !thelxinoe_auth::verify_password_with_permit(input.password, hash, slot).await?
-        {
+        if !checked_password(&state, &account, hash, input.password).await? {
             return Err(ApiError::bad("Password is incorrect"));
         }
         None
@@ -878,17 +892,9 @@ pub(crate) async fn password_change_proof(
     if account.totp.as_ref().is_some_and(|(_, enabled)| *enabled) {
         return require_fresh(state, p).await;
     }
-    if let Some(hash) = account.password {
+    if let Some(hash) = account.password.clone() {
         accounts::allow_password_attempt(state, format!("password:{}", p.user.id)).await?;
-        let slot = state
-            .password_slots
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(anyhow::Error::from)?;
-        if password.len() > 256
-            || !thelxinoe_auth::verify_password_with_permit(password, hash, slot).await?
-        {
+        if !checked_password(state, &account, hash, password).await? {
             return Err(ApiError::bad("Current password is incorrect"));
         }
         storage::verify(&state.db, p.clone(), account.version, None)
