@@ -256,6 +256,36 @@ pub(super) async fn finish_totp(
     })
     .await
 }
+/// Records that whatever holds `presented` (a hash) signed in to `user`, and returns whether
+/// it keeps that token, refreshed. Otherwise it gets `fresh`, which also takes over the other
+/// accounts `presented` was known to, so a token another account planted is never kept.
+pub(crate) fn know(
+    c: &Connection,
+    user: &str,
+    presented: Option<&str>,
+    fresh: &str,
+) -> Result<bool> {
+    let now = now();
+    let expires = now + lifetime::KNOWN;
+    if let Some(presented) = presented {
+        if c.execute(
+            "UPDATE auth_known_browsers SET expires_at=?3 WHERE token_hash=?1 AND user_id=?2 AND expires_at>?4",
+            params![presented, user, expires, now],
+        )? == 1
+        {
+            return Ok(true);
+        }
+        c.execute(
+            "UPDATE auth_known_browsers SET token_hash=?2 WHERE token_hash=?1",
+            params![presented, fresh],
+        )?;
+    }
+    c.execute(
+        "INSERT INTO auth_known_browsers(token_hash,user_id,expires_at) VALUES(?1,?2,?3) ON CONFLICT DO UPDATE SET expires_at=excluded.expires_at",
+        params![fresh, user, expires],
+    )?;
+    Ok(false)
+}
 /// What else goes when a user's credentials are invalidated.
 #[derive(Clone, Copy)]
 pub(crate) enum Revoke<'a> {
@@ -290,6 +320,7 @@ pub(crate) fn invalidate(c: &Connection, user: &str, revoke: Revoke) -> Result<(
     }
     for sql in [
         "DELETE FROM auth_remembered_devices WHERE user_id=?1",
+        "DELETE FROM auth_known_browsers WHERE user_id=?1",
         "DELETE FROM auth_attempts WHERE user_id=?1",
         "DELETE FROM auth_desktop_requests WHERE user_id=?1 OR target_user_id=?1",
     ] {

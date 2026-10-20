@@ -145,18 +145,30 @@ async fn open_setup_has_bounded_admission_and_an_attempt_limit() {
     );
 }
 
+// Only a browser known to this account, and not past its lifetime, gets past the lock that
+// others' guesses put on it; a remembered device alone no longer does.
 #[tokio::test]
-async fn a_remembered_device_signs_in_while_others_have_locked_the_account() {
+async fn a_known_browser_signs_in_while_others_have_locked_the_account() {
     use crate::accounts::check_credentials;
     let (_temp, state, _) = fixture().await;
     let hash = thelxinoe_auth::password_hash("right password".into(), None)
         .await
         .unwrap();
-    let token = "r".repeat(64);
-    let remembered = thelxinoe_auth::digest(&token);
+    let [known, expired, bobs, remembered] =
+        ["k", "e", "b", "r"].map(|c| thelxinoe_auth::digest(&c.repeat(64)));
+    let now = thelxinoe_core::now();
+    let rows = [
+        (known.clone(), "alice", now + 3600),
+        (expired.clone(), "alice", now - 1),
+        (bobs.clone(), "bob", now + 3600),
+    ];
+    let device = remembered.clone();
     state.db.write("test.credential", move |db| {
         db.execute("UPDATE users SET password_hash=?1 WHERE id='alice'", [hash])?;
-        db.execute("INSERT INTO auth_remembered_devices(id,user_id,token_hash,name,created_at,last_seen) VALUES ('laptop','alice',?1,'Laptop',1,1)", [remembered])?;
+        for (hash, user, expires) in rows {
+            db.execute("INSERT INTO auth_known_browsers(token_hash,user_id,expires_at) VALUES (?1,?2,?3)", rusqlite::params![hash, user, expires])?;
+        }
+        db.execute("INSERT INTO auth_remembered_devices(id,user_id,token_hash,name,created_at,last_seen) VALUES ('laptop','alice',?1,'Laptop',?2,?2)", rusqlite::params![device, now])?;
         Ok(())
     }).await.unwrap();
     for i in 0..10 {
@@ -168,16 +180,20 @@ async fn a_remembered_device_signs_in_while_others_have_locked_the_account() {
         );
     }
     let home: std::net::IpAddr = "198.51.100.7".parse().unwrap();
-    for other in [None, Some("x".repeat(64))] {
+    let unknown = thelxinoe_auth::digest(&"x".repeat(64));
+    for other in [
+        None,
+        Some(unknown),
+        Some(expired),
+        Some(bobs),
+        Some(remembered),
+    ] {
         let locked = check_credentials(&state, home, "alice", "right password", other).await;
         assert_eq!(locked.err().unwrap().0, StatusCode::TOO_MANY_REQUESTS);
     }
-    assert!(
-        check_credentials(&state, home, "alice", "right password", Some(token.clone()))
-            .await
-            .is_ok()
-    );
-    let wrong = check_credentials(&state, home, "alice", "wrong guess", Some(token)).await;
+    let signed_in = check_credentials(&state, home, "alice", "right password", Some(known.clone()));
+    assert!(signed_in.await.is_ok());
+    let wrong = check_credentials(&state, home, "alice", "wrong guess", Some(known)).await;
     assert_eq!(wrong.err().unwrap().0, StatusCode::UNAUTHORIZED);
 }
 

@@ -8,6 +8,8 @@ pub(crate) enum Cookie<'a> {
     Session,
     /// A browser remembered after two-step sign-in, so it skips the code.
     Remember,
+    /// A browser that has signed in before, which others' failed guesses can't lock out.
+    Known,
     /// Ties an identity-provider sign-in to the browser that started it.
     Oidc,
     /// Ties YouTube account linking to the browser that started it.
@@ -21,6 +23,7 @@ impl Cookie<'_> {
         match self {
             Self::Session => "thelxinoe_session".into(),
             Self::Remember => "thelxinoe_remember".into(),
+            Self::Known => "thelxinoe_known".into(),
             Self::Oidc => "thelxinoe_oidc".into(),
             Self::YoutubeLink => "thelxinoe_youtube_oauth".into(),
             Self::Service { id, .. } => format!("thelxinoe_service_{id}").into(),
@@ -32,6 +35,7 @@ impl Cookie<'_> {
     fn scope(&self) -> (&'static str, Cow<'_, str>, i64) {
         match self {
             Self::Session | Self::Remember => ("Strict", "/".into(), lifetime::MAX),
+            Self::Known => ("Strict", "/".into(), lifetime::KNOWN),
             Self::Oidc => ("Lax", "/api/v1/auth/oidc".into(), 300),
             Self::YoutubeLink => ("Lax", "/api/v1/online/youtube/callback".into(), 600),
             Self::Service { mount, .. } => ("Strict", format!("{mount}/").into(), 8 * 60 * 60),

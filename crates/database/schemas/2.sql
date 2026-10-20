@@ -82,6 +82,14 @@ CREATE TABLE auth_remembered_devices (
     created_at INTEGER NOT NULL,
     last_seen INTEGER NOT NULL
 ) STRICT;
+-- Browsers, desktops and media clients that have signed in to an account, by a hash of the
+-- token or client identity they keep. They are exempt from the account's lockout.
+CREATE TABLE auth_known_browsers (
+    token_hash TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY(token_hash,user_id)
+) STRICT;
 CREATE TABLE auth_client_passwords (
     id TEXT NOT NULL PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

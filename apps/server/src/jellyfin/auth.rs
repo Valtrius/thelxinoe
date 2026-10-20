@@ -110,6 +110,13 @@ pub fn device(headers: &HeaderMap) -> Result<Device> {
     }
     Ok(device)
 }
+impl Device {
+    /// What a client that has signed in before is known by. Media clients keep no cookie, so
+    /// this is their stable identity; values can't hold the control character that separates them.
+    fn known(&self) -> String {
+        thelxinoe_auth::digest(&format!("jellyfin\n{}\n{}", self.client, self.id))
+    }
+}
 pub async fn principal(state: &AppState, headers: &HeaderMap, query: &Query) -> Result<Principal> {
     let fields = authorization(headers)?;
     let mut candidates = Vec::new();
@@ -175,7 +182,7 @@ pub async fn login(
         address,
         body["Username"].as_str().unwrap_or_default(),
         body["Pw"].as_str().unwrap_or_default(),
-        None,
+        Some(device.known()),
     )
     .await?;
     issue(state, user, device).await
@@ -218,4 +225,53 @@ pub async fn user_dto(state: &AppState, p: &Principal) -> Result<Value> {
     Ok(
         json!({"Id":p.user.id,"Name":p.user.username,"ServerId":state.server_id.as_str(),"ServerName":"Thelxinoe","HasPassword":true,"HasConfiguredPassword":true,"HasConfiguredEasyPassword":false,"EnableAutoLogin":false,"Configuration":configuration,"Policy":policy}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A media client that signed in to the account before keeps signing in while others'
+    // guesses lock the account; a client new to it is still locked out.
+    #[tokio::test]
+    async fn a_known_media_client_is_not_locked_out_by_others() {
+        let (_temp, state, _) = crate::test_support::fixture().await;
+        let hash = thelxinoe_auth::password_hash("right password".into(), None)
+            .await
+            .unwrap();
+        state
+            .db
+            .write("test.credential", move |db| {
+                db.execute("UPDATE users SET password_hash=?1 WHERE id='alice'", [hash])?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let sign_in = async |device: &str, password: &str, address: &str| {
+            let mut headers = HeaderMap::new();
+            let identity = format!(
+                "MediaBrowser Client=\"TV app\", Device=\"TV\", DeviceId=\"{device}\", Version=\"1\""
+            );
+            headers.insert("authorization", identity.parse().unwrap());
+            let body = json!({"Username":"alice","Pw":password});
+            login(&state, &headers, address.parse().unwrap(), body)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.0)
+        };
+        assert_eq!(
+            sign_in("living-room", "right password", "198.51.100.7").await,
+            Ok(())
+        );
+        for n in 0..10 {
+            let guess = sign_in("guesser", "wrong guess", &format!("203.0.113.{n}")).await;
+            assert_eq!(guess, Err(axum::http::StatusCode::UNAUTHORIZED));
+        }
+        let locked = sign_in("bedroom", "right password", "198.51.100.8").await;
+        assert_eq!(locked, Err(axum::http::StatusCode::TOO_MANY_REQUESTS));
+        assert_eq!(
+            sign_in("living-room", "right password", "198.51.100.7").await,
+            Ok(())
+        );
+    }
 }

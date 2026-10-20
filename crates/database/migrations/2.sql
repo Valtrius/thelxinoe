@@ -73,3 +73,12 @@ DROP VIEW statistics_metadata;
 -- Sessions slide 30 days past their last use, up to 400 days after sign-in. Remembered
 -- sessions used to never end; every session gets that bound now.
 UPDATE sessions SET expires_at=MIN(expires_at,created_at+400*86400,last_seen+30*86400);
+
+-- Browsers, desktops and media clients that signed in to an account before skip its
+-- lockout, so others' failed guesses can't keep the owner out.
+CREATE TABLE auth_known_browsers (
+    token_hash TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY(token_hash,user_id)
+) STRICT;

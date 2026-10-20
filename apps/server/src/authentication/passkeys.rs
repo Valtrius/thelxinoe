@@ -220,6 +220,7 @@ async fn finish(
                 device_name: None,
             }
             .credentials(),
+            &headers,
             context.secure,
             None,
         )

@@ -28,6 +28,10 @@ pub(super) async fn prune(db: &Database, now: i64) -> anyhow::Result<usize> {
             "DELETE FROM auth_remembered_devices WHERE rowid IN (SELECT rowid FROM auth_remembered_devices WHERE last_seen<=?1 OR created_at<=?2 LIMIT ?3)",
             params![now - lifetime::REMEMBERED_IDLE, now - lifetime::MAX, BATCH],
         )?;
+        removed += c.execute(
+            "DELETE FROM auth_known_browsers WHERE rowid IN (SELECT rowid FROM auth_known_browsers WHERE expires_at<=?1 LIMIT ?2)",
+            params![now, BATCH],
+        )?;
         // Each tool keeps its latest run, however old.
         removed += c.execute(
             "DELETE FROM tool_jobs WHERE rowid IN (SELECT rowid FROM tool_jobs WHERE stage IN ('complete','failed','canceled') AND updated_at<?1 AND rowid NOT IN (SELECT max(rowid) FROM tool_jobs GROUP BY tool) LIMIT ?2)",

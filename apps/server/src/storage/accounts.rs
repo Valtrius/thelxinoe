@@ -9,16 +9,24 @@ pub(super) async fn setup_status(db: &Database) -> anyhow::Result<i64> {
     .await
 }
 
-pub(super) async fn respond_session(
+/// Records a completed sign-in's known browser (see `authentication::know`) and returns the
+/// signed-in user, and whether the browser keeps the token it presented.
+pub(super) async fn signed_in(
     db: &Database,
     user_id: String,
-) -> anyhow::Result<thelxinoe_core::User> {
-    db.read("accounts.respond_session", move |db| {
-        Ok(db.query_row(
+    presented: Option<String>,
+    fresh: String,
+) -> anyhow::Result<(thelxinoe_core::User, bool)> {
+    db.write("accounts.signed_in", move |db| {
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let kept = crate::authentication::know(&tx, &user_id, presented.as_deref(), &fresh)?;
+        let user = tx.query_row(
             "SELECT id,username,role,timezone FROM user_profiles WHERE id=?1",
-            [user_id],
+            [&user_id],
             user_row,
-        )?)
+        )?;
+        tx.commit()?;
+        Ok((user, kept))
     })
     .await
 }
@@ -57,15 +65,16 @@ pub(super) async fn setup(
         .await
 }
 
-pub(super) async fn remembered_device(
+/// Whether `token_hash` belongs to a browser or client known to the account named `username`.
+pub(super) async fn known(
     db: &Database,
     username: String,
     token_hash: String,
 ) -> anyhow::Result<bool> {
-    db.read("accounts.remembered_device", move |db| {
+    db.read("accounts.known", move |db| {
         Ok(db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM auth_remembered_devices d JOIN users u ON u.id=d.user_id WHERE u.username=?1 AND d.token_hash=?2)",
-            params![username, token_hash],
+            "SELECT EXISTS(SELECT 1 FROM auth_known_browsers k JOIN users u ON u.id=k.user_id WHERE u.username=?1 AND k.token_hash=?2 AND k.expires_at>?3)",
+            params![username, token_hash, now()],
             |r| r.get(0),
         )?)
     })

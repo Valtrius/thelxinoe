@@ -383,6 +383,7 @@ async fn complete(
                 device_name: None,
             }
             .credentials(),
+            headers,
             secure,
             None,
         )

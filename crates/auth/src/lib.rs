@@ -31,6 +31,8 @@ pub mod lifetime {
     pub const MAX: i64 = 400 * DAY;
     /// A remembered device asks for two-step sign-in again after going this long unused.
     pub const REMEMBERED_IDLE: i64 = 90 * DAY;
+    /// A browser or client stays known to an account this long after it last signed in.
+    pub const KNOWN: i64 = MAX;
 }
 
 pub fn token() -> String {

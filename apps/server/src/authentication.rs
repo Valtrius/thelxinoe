@@ -137,6 +137,7 @@ impl LoginDetails {
             transport: self.transport.clone(),
             device_name: self.device_name.clone(),
             remember_token: None,
+            known_token: None,
         }
     }
 }
@@ -213,6 +214,7 @@ pub(crate) async fn password_login(
                 state,
                 verified(&account, 0, Some(device)),
                 c,
+                headers,
                 secure,
                 Some(&raw),
             )
@@ -236,7 +238,7 @@ pub(crate) async fn password_login(
             .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
         Ok(response)
     } else {
-        accounts::respond_session(state, authorization, c, secure, None).await
+        accounts::respond_session(state, authorization, c, headers, secure, None).await
     }
 }
 fn totp(state: &AppState, account: &storage::Account) -> Result<totp_rs::Totp> {
@@ -375,6 +377,7 @@ async fn totp_login(
         &state,
         authorization,
         &details.credentials(),
+        &headers,
         context.secure,
         remember.as_deref(),
     )
@@ -790,13 +793,12 @@ async fn desktop_exchange(
     accounts::respond_session(
         &state,
         authorization,
-        &Credentials {
-            username: String::new(),
-            password: String::new(),
+        &LoginDetails {
             transport: Some("device".into()),
             device_name: Some(name),
-            remember_token: None,
-        },
+        }
+        .credentials(),
+        &headers,
         context.secure,
         None,
     )
@@ -860,7 +862,7 @@ pub(crate) async fn password_change_proof(
 pub(crate) fn authorize_admin(c: &rusqlite::Connection, p: &Principal) -> anyhow::Result<()> {
     storage::authorize_admin(c, p)
 }
-pub(crate) use storage::Revoke;
+pub(crate) use storage::{Revoke, know};
 /// Invalidate a user's credentials inside the caller's transaction; see `Revoke`.
 pub(crate) fn invalidate_user(
     c: &rusqlite::Connection,
@@ -886,10 +888,11 @@ mod tests {
                 let seed = |c: &rusqlite::Connection| -> anyhow::Result<()> {
                     c.execute("INSERT OR REPLACE INTO sessions(id,user_id,token_hash,transport,name,created_at,expires_at,last_seen) VALUES ('s','u','t','web','Web',1,9999999999,1)", [])?;
                     c.execute("INSERT OR REPLACE INTO auth_desktop_requests(id,secret_hash,code_hash,name,address,created_at,expires_at,user_id,target_user_id) VALUES ('d','s','c','Desktop','127.0.0.1',1,9999999999,'a','u')", [])?;
+                    c.execute("INSERT OR REPLACE INTO auth_known_browsers(token_hash,user_id,expires_at) VALUES ('k','u',9999999999)", [])?;
                     Ok(())
                 };
                 let count = |c: &rusqlite::Connection| -> anyhow::Result<i64> {
-                    Ok(c.query_row("SELECT (SELECT COUNT(*) FROM sessions WHERE user_id='u')+(SELECT COUNT(*) FROM auth_desktop_requests WHERE target_user_id='u')", [], |r| r.get(0))?)
+                    Ok(c.query_row("SELECT (SELECT COUNT(*) FROM sessions WHERE user_id='u')+(SELECT COUNT(*) FROM auth_desktop_requests WHERE target_user_id='u')+(SELECT COUNT(*) FROM auth_known_browsers WHERE user_id='u')", [], |r| r.get(0))?)
                 };
                 let mut left = Vec::new();
                 for revoke in [Revoke::Sessions, Revoke::Everything] {
@@ -902,6 +905,33 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(left, [0, 0]);
+    }
+
+    // A browser keeps its token while it's known to the account signing in. A token new to that
+    // account is replaced, and the accounts it was known to follow the browser to the new one.
+    #[tokio::test]
+    async fn a_browser_stays_known_to_each_account_that_signed_in_on_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = thelxinoe_database::Database::open(temp.path().join("db")).unwrap();
+        let (kept, rows) = db
+            .write("test.know", |c| {
+                c.execute("INSERT INTO users(id,username,password_hash,role,created_at) VALUES ('a','a','h','user',1),('b','b','h','user',1)", [])?;
+                let kept = [
+                    super::know(c, "a", None, "first")?,
+                    super::know(c, "a", Some("first"), "unused")?,
+                    super::know(c, "b", Some("first"), "second")?,
+                    super::know(c, "b", Some("planted"), "third")?,
+                ];
+                let rows = c
+                    .prepare("SELECT token_hash||':'||user_id FROM auth_known_browsers ORDER BY 1")?
+                    .query_map([], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok((kept, rows))
+            })
+            .await
+            .unwrap();
+        assert_eq!(kept, [false, true, false, false]);
+        assert_eq!(rows, ["second:a", "second:b", "third:b"]);
     }
 
     // A remembered device skips two-step sign-in only while it's in use and within the cap.

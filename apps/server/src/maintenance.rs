@@ -73,6 +73,12 @@ mod tests {
                         rusqlite::params![id, created, seen],
                     )?;
                 }
+                for (hash, expires) in [("lapsed", now() - 1), ("known", now() + 3600)] {
+                    db.execute(
+                        "INSERT INTO auth_known_browsers(token_hash,user_id,expires_at) VALUES (?1,'alice',?2)",
+                        rusqlite::params![hash, expires],
+                    )?;
+                }
                 db.execute("INSERT INTO server_tools(id,channel) VALUES ('ffmpeg','stable') ON CONFLICT DO NOTHING", [])?;
                 for (id, stage) in [("check-1", "complete"), ("check-2", "failed"), ("check-3", "complete")] {
                     db.execute(
@@ -96,6 +102,10 @@ mod tests {
         assert_eq!(
             rows(&state, "SELECT id FROM auth_remembered_devices").await,
             ["in-use"]
+        );
+        assert_eq!(
+            rows(&state, "SELECT token_hash FROM auth_known_browsers").await,
+            ["known"]
         );
         assert_eq!(
             rows(&state, "SELECT id FROM tool_jobs WHERE tool='ffmpeg'").await,
