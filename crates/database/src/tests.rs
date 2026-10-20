@@ -443,6 +443,30 @@ fn schema_2_keeps_downloads_and_refuses_the_unused_deleting_state() -> Result<()
     Ok(())
 }
 
+// Maintenance prunes files missing for a month, timed by their scan time.
+#[test]
+fn schema_2_gives_already_missing_files_a_month_from_the_upgrade() -> Result<()> {
+    let (_temp, conn) = upgraded(
+        1,
+        "INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Films','movies','/media');
+        INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,present,scanned_at) VALUES
+            ('present','root','/media/a.mkv','g',1,'1','a','{}',1,1),
+            ('missing','root','/media/b.mkv','g',1,'1','b','{}',0,1);",
+    )?;
+    let upgraded_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs() as i64
+        - 60;
+    let scanned = conn
+        .prepare("SELECT id,scanned_at FROM media_files ORDER BY id")?
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    assert_eq!(scanned[0].0, "missing");
+    assert!(scanned[0].1 >= upgraded_at, "{scanned:?}");
+    assert_eq!(scanned[1], ("present".into(), 1));
+    Ok(())
+}
+
 #[test]
 fn upgrades_run_in_order_from_the_stored_version() -> Result<()> {
     let conn = Connection::open_in_memory()?;

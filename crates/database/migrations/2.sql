@@ -60,3 +60,7 @@ DROP TABLE music_queues;
 ALTER TABLE playback_sessions DROP COLUMN client_id;
 ALTER TABLE playback_sessions DROP COLUMN queue_revision;
 ALTER TABLE playback_sessions DROP COLUMN queue_index;
+
+-- A missing file's scan time is when it went missing; maintenance prunes it a month later.
+-- Files already missing start that month at the upgrade.
+UPDATE media_files SET scanned_at=CAST(strftime('%s','now') AS INTEGER) WHERE present=0;

@@ -69,8 +69,9 @@ pub(super) async fn scan_with_progress_write_media_files(
     db.write("catalog.scan_with_progress_write_media_files", move|c|{
         let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let missing:Vec<(String,String)>=tx.prepare("SELECT id,path,fingerprint FROM media_files WHERE root_id=?1 AND present=1")?.query_map([&root.id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))?.collect::<std::result::Result<Vec<_>,_>>()?.into_iter().filter(|(_,path,_)|!current_paths.contains(path)).map(|(id,_,hash)|(id,hash)).collect();
-        // Only files that are gone change; an unchanged library writes almost nothing.
-        for (missing_id,_) in &missing {tx.execute("UPDATE media_files SET present=0 WHERE id=?1",[missing_id])?;}
+        // Only files that are gone change; an unchanged library writes almost nothing. Their
+        // scan time records when they went missing, which maintenance waits on before pruning.
+        for (missing_id,_) in &missing {tx.execute("UPDATE media_files SET present=0,scanned_at=?2 WHERE id=?1",params![missing_id,now()])?;}
         // Files that couldn't be read this time keep their previous entry until a later scan.
         for path in &retained {tx.execute("UPDATE media_files SET present=1 WHERE root_id=?1 AND path=?2",params![root.id,path])?;}
         for file in indexed {

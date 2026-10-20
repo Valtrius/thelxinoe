@@ -80,9 +80,10 @@ pub(super) async fn protected_or_active(
 
 pub(super) async fn mutate(ids: String, db: &Database) -> anyhow::Result<()> {
     db.write("managers.operations.mutate", move |db| {
+        // As after a scan, the scan time of a missing file is when it went missing.
         db.execute(
-            "UPDATE media_files SET present=0 WHERE id IN (SELECT value FROM json_each(?1))",
-            [ids],
+            "UPDATE media_files SET present=0,scanned_at=?2 WHERE id IN (SELECT value FROM json_each(?1))",
+            params![ids, now()],
         )?;
         Ok(())
     })

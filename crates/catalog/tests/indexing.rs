@@ -364,18 +364,23 @@ async fn an_unchanged_rescan_writes_no_file_rows() -> Result<()> {
     })
     .await?;
     std::fs::write(media.join("Two.wav"), wav(2))?;
-    scan(&db, root, tools.media()?).await?;
-    let written: Vec<(String, bool)> = db
-        .read("test.written", |c| {
+    scan(&db, root.clone(), tools.media()?).await?;
+    let written = || {
+        db.read("test.written", |c| {
             Ok(
                 c.prepare("SELECT path,scanned_at>0 FROM media_files ORDER BY path")?
                     .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-                    .collect::<rusqlite::Result<_>>()?,
+                    .collect::<rusqlite::Result<Vec<(String, bool)>>>()?,
             )
         })
-        .await?;
-    assert_eq!(written.len(), 2);
-    assert!(written[0].0.ends_with("One.wav") && !written[0].1);
-    assert!(written[1].0.ends_with("Two.wav") && written[1].1);
+    };
+    let rows = written().await?;
+    assert_eq!(rows.len(), 2);
+    assert!(rows[0].0.ends_with("One.wav") && !rows[0].1);
+    assert!(rows[1].0.ends_with("Two.wav") && rows[1].1);
+    // A file that goes missing records when, so maintenance can wait before pruning it.
+    std::fs::remove_file(media.join("One.wav"))?;
+    scan(&db, root, tools.media()?).await?;
+    assert!(written().await?[0].1);
     Ok(())
 }

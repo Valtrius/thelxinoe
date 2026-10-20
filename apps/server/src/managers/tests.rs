@@ -451,6 +451,19 @@ async fn deletion_rechecks_keep_and_file_replacement_and_never_retries_completed
     let result = call(&state, &execute, "POST", json!({}), &admin).await;
     assert_eq!(result.0, StatusCode::OK, "{}", result.2);
     assert!(!path.exists());
+    // Maintenance prunes the row a month after the file went missing, not after its last scan.
+    let missing_since_now = state
+        .db
+        .read("test.missing", |db| {
+            Ok(db.query_row(
+                "SELECT present=0 AND scanned_at>1 FROM media_files WHERE id='file'",
+                [],
+                |r| r.get::<_, bool>(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert!(missing_since_now);
     assert_eq!(
         call(&state, &execute, "POST", json!({}), &admin).await.0,
         StatusCode::CONFLICT
