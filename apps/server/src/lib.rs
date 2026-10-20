@@ -17,6 +17,7 @@ mod grants;
 mod history;
 mod jellyfin;
 pub mod library;
+pub mod maintenance;
 mod managers;
 #[path = "storage/media_resources.rs"]
 mod media_resources;
@@ -288,10 +289,7 @@ pub fn router(state: AppState) -> Router {
             get(playback::subtitle),
         )
         .route("/api/v1/catalog/{id}/playback", get(playback::media_info))
-        .route(
-            "/api/v1/admin/jobs",
-            get(realtime::jobs).post(realtime::enqueue),
-        )
+        .route("/api/v1/admin/jobs", get(realtime::jobs))
         .route(
             "/api/v1/admin/settings",
             get(accounts::settings).put(accounts::save_settings),
@@ -412,7 +410,6 @@ async fn run_general_jobs(state: AppState) -> anyhow::Result<()> {
         if let Some(job) = job {
             state.notify_attention();
             match job.kind.as_str() {
-                "checkpoint" => queue.checkpoint(&job).await?,
                 "manager.request" => {
                     let result = managers::acquire(&state, &job).await;
                     queue

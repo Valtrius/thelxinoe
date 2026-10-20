@@ -838,7 +838,7 @@ async fn provisioning_is_admin_only_durable_and_never_puts_credentials_in_jobs()
             .0,
         StatusCode::CONFLICT
     );
-    let (key,encrypted,payload)=state.db.write("test.fixture", |db|Ok(db.query_row("SELECT p.id,p.credential,j.payload FROM stack_provisions p JOIN jobs j ON json_extract(j.payload,'$.id')=p.id",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Vec<u8>>(1)?,r.get::<_,String>(2)?)))?)).await.unwrap();
+    let (key,encrypted,payload)=state.db.write("test.fixture", |db|Ok(db.query_row("SELECT p.id,p.credential,j.payload FROM stack_provisions p JOIN jobs j ON j.kind='stack.install' AND j.subject=p.id",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Vec<u8>>(1)?,r.get::<_,String>(2)?)))?)).await.unwrap();
     let plain = state
         .secrets
         .decrypt(&format!("provision:{key}"), &encrypted)

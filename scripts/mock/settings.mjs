@@ -285,7 +285,7 @@ export function settingsSeed() {
       'Library scan',
       'YouTube synchronization',
       'Segment analysis',
-      'Database checkpoint',
+      'Metadata refresh',
     ].map((kind, i) => ({
       id: `job-${i}`,
       kind,
@@ -519,17 +519,7 @@ export async function settingsApi(s, c) {
     if (method === 'PUT') Object.assign(s.segments.config, body);
     return json(s.segments);
   }
-  if (path === '/admin/jobs') {
-    if (method === 'POST')
-      s.jobs.unshift({
-        id: `job-${++s.sequence}`,
-        kind: 'Database checkpoint',
-        state: 'complete',
-        error: null,
-        created_at: now(),
-      });
-    return json({ items: s.jobs });
-  }
+  if (path === '/admin/jobs') return json({ items: s.jobs });
   if (path === '/admin/health')
     return json({
       version: s.product.version,

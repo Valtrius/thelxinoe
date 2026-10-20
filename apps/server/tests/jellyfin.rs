@@ -1062,7 +1062,7 @@ async fn diagnostics_exclude_compatibility_credentials_and_untrusted_errors() {
     );
     let leaked_error = format!("untrusted-error-sentinel: {query}");
     state.db.write("test.fixture", move |db| {
-        db.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,error,created_at) VALUES ('redaction','fixture','{}','redaction','failed',1,?1,1)", [&leaked_error])?;
+        db.execute("INSERT INTO jobs(id,kind,subject,payload,state,available_at,error,created_at) VALUES ('redaction','fixture','redaction','{}','failed',1,?1,1)", [&leaked_error])?;
         db.execute("INSERT INTO audit(action,target,created_at) VALUES ('fixture',?1,1)", [&leaked_error])?;
         Ok(())
     }).await.unwrap();

@@ -76,22 +76,23 @@ test('HTTPS setup, secure login, event replay, CSRF rejection and device revocat
           reject(new Error('Socket failed'));
         };
       });
-    await fetch('/api/v1/admin/jobs', {
-      method: 'POST',
+    // Saving unchanged preferences still announces them.
+    await fetch('/api/v1/me/preferences', {
+      method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
         'X-Thelxinoe-Client': '1',
       },
-      body: JSON.stringify({ key: crypto.randomUUID() }),
+      body: JSON.stringify({}),
     });
     const first = await receive(await ticket(), 0);
     const replay = await receive(await ticket(), first.id - 1);
     return { first, replay };
   });
   expect(events.replay.id).toBe(events.first.id);
-  const csrf = await request.post('/api/v1/admin/jobs', {
+  const csrf = await request.put('/api/v1/me/preferences', {
     headers: { ...headers, Origin: 'https://evil.test' },
-    data: { key: 'csrf' },
+    data: {},
   });
   expect(csrf.status()).toBe(403);
   const login = await request.post('/api/v1/auth/login', {

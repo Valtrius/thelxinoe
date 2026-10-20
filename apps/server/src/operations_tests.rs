@@ -11,7 +11,7 @@ async fn activity_summary_tracks_real_operations_and_respects_audience() {
         db.execute("INSERT INTO stack_provisions(id,kind,actor_id,state,created_at,updated_at) VALUES ('radarr','radarr','bob','installing',1,1)", [])?;
         db.execute("INSERT INTO tool_jobs(id,tool,action,manual,revision,stage,created_at,updated_at) VALUES ('tool','ffmpeg','install',1,0,'waiting',1,1)", [])?;
         db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Movies','movies','/movies')", [])?;
-        db.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES ('scan','library.scan','{\"root_id\":\"root\",\"secret\":\"PRIVATE-TOKEN\"}','scan','running',1,1)", [])?;
+        db.execute("INSERT INTO jobs(id,kind,subject,payload,state,available_at,created_at) VALUES ('scan','library.scan','root','{\"root_id\":\"root\",\"secret\":\"PRIVATE-TOKEN\"}','running',1,1)", [])?;
         db.execute("INSERT INTO settings(key,value) VALUES ('product.controller','{\"items\":[{\"id\":\"product\",\"stage\":\"preparing\"}]}'),('backups.controller','{\"items\":[{\"id\":\"backup\",\"stage\":\"snapshotting\"}]}')", [])?;
         db.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES ('alice','private-video','Private video')", [])?;
         db.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) VALUES ('private-video','g','downloading','{}',1,1)", [])?;
@@ -238,7 +238,7 @@ async fn older_request_updates_remain_reachable_for_members_and_administrators()
 #[tokio::test]
 async fn attention_is_private_live_and_diagnostics_exclude_secret_material() {
     let (_temp, state, alice) = fixture().await;
-    state.db.write("test.fixture", |db|{db.execute("UPDATE users SET role='admin' WHERE id='bob'",[])?;db.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,completed_at,error,created_at) VALUES ('failed','metadata.match','{\"secret\":\"PRIVATE-TOKEN\"}','test','failed',1,?1,'https://private/?ApiKey=PRIVATE-TOKEN',1)",[thelxinoe_core::now()])?;Ok(())}).await.unwrap();
+    state.db.write("test.fixture", |db|{db.execute("UPDATE users SET role='admin' WHERE id='bob'",[])?;db.execute("INSERT INTO jobs(id,kind,subject,payload,state,available_at,completed_at,error,created_at) VALUES ('failed','metadata.match','media','{\"secret\":\"PRIVATE-TOKEN\"}','failed',1,?1,'https://private/?ApiKey=PRIVATE-TOKEN',1)",[thelxinoe_core::now()])?;Ok(())}).await.unwrap();
     let token =
         crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
             .await

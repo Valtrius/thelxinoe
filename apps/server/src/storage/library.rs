@@ -36,10 +36,17 @@ pub(super) async fn add_root(
 }
 
 pub(super) async fn enqueue_scan(root_id: String, db: &Database) -> anyhow::Result<String> {
-    db.write("library.enqueue_scan", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        if let Some(queued)=tx.query_row("SELECT id FROM jobs WHERE kind='library.scan' AND state='queued' AND json_extract(payload,'$.root_id')=?1",[&root_id],|r|r.get::<_,String>(0)).optional()?{return Ok(queued);}
-        let job_id=id();tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'library.scan',?2,?1,'queued',?3,?3)",params![job_id,json!({"root_id":root_id}).to_string(),now()])?;tx.commit()?;Ok(job_id)
-    }).await
+    // A scan already waiting covers this request; one that is running may miss the change.
+    db.write("library.enqueue_scan", move |db| {
+        Ok(thelxinoe_jobs::enqueue_in(
+            db,
+            "library.scan",
+            &root_id,
+            &json!({ "root_id": root_id }),
+            0,
+        )?)
+    })
+    .await
 }
 
 pub(super) async fn browse(db: &Database, input: Browse) -> anyhow::Result<Vec<Value>> {

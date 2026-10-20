@@ -57,6 +57,11 @@ async fn main() -> Result<()> {
         state.clone(),
         thelxinoe_server::playback::maintain,
     ));
+    workers.spawn(supervise(
+        "maintenance",
+        state.clone(),
+        thelxinoe_server::maintenance::run,
+    ));
     // LAN discovery errors are invalid settings or an unavailable port; they stay fatal.
     workers.spawn(thelxinoe_server::run_discovery(state.clone()));
     workers.spawn(supervise(

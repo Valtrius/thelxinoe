@@ -66,10 +66,16 @@ fn enqueue(
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>()
     );
-    if let Some(run) = c.query_row("SELECT r.id FROM recyclarr_runs r JOIN jobs j ON json_extract(j.payload,'$.id')=r.id AND j.kind='recyclarr.sync' WHERE r.provision_id=?1 AND r.state IN ('queued','running','retrying') AND json_extract(j.payload,'$.preview')=?2 AND json_extract(j.payload,'$.revision')=?3 ORDER BY r.created_at LIMIT 1",params![provision,preview,revision],|r|r.get(0)).optional()? { return Ok(run); }
+    if let Some(run) = c.query_row("SELECT r.id FROM recyclarr_runs r JOIN jobs j ON j.kind='recyclarr.sync' AND j.subject=r.id WHERE r.provision_id=?1 AND r.state IN ('queued','running','retrying') AND json_extract(j.payload,'$.preview')=?2 AND json_extract(j.payload,'$.revision')=?3 ORDER BY r.created_at LIMIT 1",params![provision,preview,revision],|r|r.get(0)).optional()? { return Ok(run); }
     let run = id();
     c.execute("INSERT INTO recyclarr_runs(id,provision_id,actor_id,state,created_at,updated_at) VALUES (?1,?2,?3,'queued',?4,?4)",params![run,provision,actor,now()])?;
-    c.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'recyclarr.sync',?2,?3,'queued',?4,?4)",params![id(),json!({"id":run,"preview":preview,"automatic":automatic,"revision":revision,"configuration_revision":input["revision"],"files":input["files"],"used_services":input["used_services"]}).to_string(),format!("recyclarr:{run}"),now()])?;
+    thelxinoe_jobs::enqueue_in(
+        c,
+        "recyclarr.sync",
+        &run,
+        &json!({"id":run,"preview":preview,"automatic":automatic,"revision":revision,"configuration_revision":input["revision"],"files":input["files"],"used_services":input["used_services"]}),
+        0,
+    )?;
     Ok(run)
 }
 pub(super) async fn queue(
@@ -380,7 +386,8 @@ pub(super) async fn retry(
         let tx = c.transaction()?;
         let changed = tx.execute("UPDATE recyclarr_runs SET state='retrying',error=?1,updated_at=?2 WHERE id=?3 AND state IN ('queued','running','retrying')",params![error,now(),run])?;
         if changed == 0 { return Ok(false); }
-        anyhow::ensure!(tx.execute("UPDATE jobs SET state='queued',available_at=?1,started_at=NULL WHERE id=?2 AND kind='recyclarr.sync' AND json_extract(payload,'$.id')=?3", params![now()+seconds,job,run])? == 1, "Recyclarr retry lost its job");
+        let owned = thelxinoe_jobs::newest(&tx, "recyclarr.sync", &run)?.is_some_and(|newest| newest.id == job);
+        anyhow::ensure!(owned && thelxinoe_jobs::retry(&tx, &job, seconds)?, "Recyclarr retry lost its job");
         tx.commit()?;
         Ok(true)
     }).await

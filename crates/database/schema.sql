@@ -132,8 +132,8 @@ CREATE TABLE audit (
 CREATE TABLE jobs (
     id TEXT NOT NULL PRIMARY KEY,
     kind TEXT NOT NULL,
+    subject TEXT NOT NULL,
     payload TEXT NOT NULL,
-    dedupe_key TEXT NOT NULL UNIQUE,
     state TEXT NOT NULL CHECK(state IN ('queued','running','complete','failed')),
     attempts INTEGER NOT NULL DEFAULT 0,
     available_at INTEGER NOT NULL,
@@ -141,11 +141,6 @@ CREATE TABLE jobs (
     completed_at INTEGER,
     error TEXT,
     created_at INTEGER NOT NULL
-) STRICT;
-
-CREATE TABLE job_effects (
-    job_id TEXT NOT NULL PRIMARY KEY REFERENCES jobs(id),
-    value TEXT NOT NULL
 ) STRICT;
 
 CREATE TABLE events (
@@ -1050,6 +1045,7 @@ CREATE TABLE playback_history (
 CREATE INDEX sessions_user ON sessions(user_id);
 
 CREATE INDEX jobs_ready ON jobs(state, available_at);
+CREATE INDEX jobs_subject ON jobs(kind, subject, created_at);
 
 CREATE INDEX media_parent ON media(parent_id);
 

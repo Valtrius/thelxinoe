@@ -206,7 +206,7 @@ export const settingsSearchIndex: Record<
   jobs: [
     {
       title: 'Background jobs',
-      terms: 'jobs running queued failed completed checkpoint state',
+      terms: 'jobs running queued failed completed state',
     },
   ],
   audit: [

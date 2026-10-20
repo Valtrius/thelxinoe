@@ -111,7 +111,12 @@ pub(super) async fn perform(
 }
 
 pub(super) fn enqueue(tx: &rusqlite::Transaction<'_>, request: &str) -> anyhow::Result<()> {
-    let key = id();
-    tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'manager.request',?2,?1,'queued',?3,?3)",params![key,json!({"request_id":request}).to_string(),now()])?;
+    thelxinoe_jobs::enqueue_in(
+        tx,
+        "manager.request",
+        request,
+        &json!({ "request_id": request }),
+        0,
+    )?;
     Ok(())
 }

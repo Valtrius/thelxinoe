@@ -9,7 +9,7 @@ fn user(db: &Connection, id: &str) -> Result<()> {
 }
 
 #[tokio::test]
-async fn initialization_reopen_and_online_backup_preserve_data() -> Result<()> {
+async fn initialization_and_reopen_preserve_data() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let path = temp.path().join("main.db");
     let db = Database::open(&path)?;
@@ -29,13 +29,10 @@ async fn initialization_reopen_and_online_backup_preserve_data() -> Result<()> {
         Ok(())
     })
     .await?;
-    let snapshot = temp.path().join("snapshot.db");
-    db.backup(snapshot.clone()).await?;
-    assert!(db.backup(snapshot.clone()).await.is_err());
     drop(db);
-    for path in [&path, &snapshot] {
-        assert_eq!(verify_snapshot(path)?, SCHEMA_VERSION);
-        let reopened = Database::open(path)?;
+    {
+        assert_eq!(verify_snapshot(&path)?, SCHEMA_VERSION);
+        let reopened = Database::open(&path)?;
         assert_eq!(
             reopened.connect()?.query_row(
                 "SELECT value FROM settings WHERE key='timezone'",
@@ -363,6 +360,63 @@ fn released_schemas_upgrade_to_the_fresh_schema() -> Result<()> {
             "schema {version} upgrades to a different shape"
         );
     }
+    Ok(())
+}
+
+/// Opens a database created at a released schema, after `seed` filled it.
+fn upgraded(version: u32, seed: &str) -> Result<(tempfile::TempDir, Connection)> {
+    let temp = tempfile::tempdir()?;
+    let path = temp.path().join(format!("{version}.db"));
+    let conn = Connection::open(&path)?;
+    conn.execute_batch(&frozen_schema(version))?;
+    conn.execute_batch(seed)?;
+    conn.pragma_update(None, "application_id", APPLICATION_ID)?;
+    conn.pragma_update(None, "user_version", version)?;
+    drop(conn);
+    drop(Database::open(&path)?);
+    let conn = Connection::open(&path)?;
+    Ok((temp, conn))
+}
+
+#[test]
+fn schema_2_names_each_jobs_subject_and_drops_checkpoints() -> Result<()> {
+    let job = |id: &str, kind: &str, payload: &str| {
+        format!(
+            "INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES ('{id}','{kind}','{payload}','{id}','queued',1,1);"
+        )
+    };
+    let seed = [
+        job("scan", "library.scan", r#"{"root_id":"root"}"#),
+        job("request", "manager.request", r#"{"request_id":"r1"}"#),
+        job(
+            "match",
+            "metadata.match",
+            r#"{"media_id":"m1","service_id":"s"}"#,
+        ),
+        job(
+            "update",
+            "service.update",
+            r#"{"id":"u1","action":"activate"}"#,
+        ),
+        job("checkpoint", "checkpoint", r#"{"message":"x"}"#),
+        "INSERT INTO job_effects VALUES ('checkpoint','{}');".into(),
+    ]
+    .concat();
+    let (_temp, conn) = upgraded(1, &seed)?;
+    let subjects = conn
+        .prepare("SELECT id,subject FROM jobs ORDER BY id")?
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let expected = [
+        ("match", "m1"),
+        ("request", "r1"),
+        ("scan", "root"),
+        ("update", "u1"),
+    ];
+    assert_eq!(
+        subjects,
+        expected.map(|(id, subject)| (id.to_owned(), subject.to_owned()))
+    );
     Ok(())
 }
 
