@@ -620,13 +620,13 @@ async fn setup(state: &AppState, key: &str, row: &storage::Provision) -> Result<
         // Required check: authenticated API readiness of this exact container.
         if matches!(kind.as_str(), "radarr" | "sonarr" | "lidarr") {
             let s = super::service(state, &integration).await?;
-            access::check_connection(&Connection::open(state, &s).await?).await
+            access::verify_endpoint(&Connection::open(state, &s).await?, None).await?;
         } else {
             let s = support::load(state, &integration).await?;
-            support::version(&support::connect(state, &s).await?, &s.credentials)
-                .await
-                .map(|_| ())
+            access::verify_endpoint(&support::connect(state, &s).await?, Some(&s.credentials))
+                .await?;
         }
+        Ok(())
     })
     .await
 }

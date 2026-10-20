@@ -583,42 +583,21 @@ async fn register_with_actor(
         )));
     }
     let _guard = state.managers.guard.service(&input.kind).await;
-    access::validate_base(&input.kind, &input.url_base)?;
-    let (base, media_source) = evidence(&state, &input.container_id, input.port).await?;
-    let connection = Connection::validation(
-        &state,
-        base.clone(),
-        input.url_base.clone(),
-        input.api_key.clone(),
-        input.kind.clone(),
-    );
-    let observed = docker(&state, &format!("containers/{}", input.container_id)).await?;
-    input.container_name = observed["name"]
-        .as_str()
-        .unwrap_or_default()
-        .trim_start_matches('/')
-        .to_owned();
-    let status = if observed["running"] == false {
-        if !input.allow_unverified {
-            return Err(failures::stopped(&input.container_name));
-        }
-        json!({"appName":input.kind,"version":"Unverified", "urlBase":input.url_base})
-    } else {
-        let status = connection.get("system/status").await?;
-        if !status["appName"]
-            .as_str()
-            .is_some_and(|n| n.eq_ignore_ascii_case(&input.kind))
-        {
-            return Err(failures::identity(&input.kind, &status["appName"]));
-        }
-        status
+    let credentials = support::Credentials {
+        username: String::new(),
+        secret: input.api_key.clone(),
     };
-    access::check_reported_base(&input.kind, &input.url_base, &status)?;
-    let version = status["version"]
-        .as_str()
-        .filter(|v| v.len() < 100)
-        .ok_or_else(|| failures::identity(&input.kind, &status["appName"]))?
-        .to_owned();
+    let endpoint = inspect_endpoint(
+        &state,
+        &input.kind,
+        &input.container_id,
+        input.port,
+        &input.url_base,
+        &credentials,
+        input.allow_unverified,
+    )
+    .await?;
+    input.container_name = endpoint.container_name.clone();
     let kind = input.kind.clone();
     let existing = storage::register_with_actor_read_manager_services(kind, &state.db).await?;
     let key = existing.unwrap_or_else(id);
@@ -626,16 +605,7 @@ async fn register_with_actor(
     let credential = state
         .secrets
         .encrypt(&format!("manager:{key}"), input.api_key.as_bytes())?;
-    let registration = Registration {
-        key,
-        credential,
-        media_source,
-        version,
-        engine: observed["engine"].as_str().unwrap_or_default().to_owned(),
-        evidence: connection_evidence(&observed, &base),
-        verified: observed["running"] == true,
-        setup: input.setup.clone(),
-    };
+    let registration = endpoint.registration(key, credential, input.setup.clone());
     let allowed = storage::register_with_actor_write_stack_provisions(
         &state.db,
         registration,
@@ -667,6 +637,86 @@ fn connection_evidence(observed: &Value, route: &str) -> Value {
     json!({"engine":observed["engine"],"container":{"id":observed["id"],"name":observed["name"],"image":observed["image"],"image_id":observed["image_id"]},
         "route":route,"networks":observed["networks"],"mounts":observed["mounts"],"ports":observed["ports"],"network_mode":observed["network_mode"],
         "restart_policy":observed["restart_policy"],"compose":{"project":observed["compose_project"],"service":observed["compose_service"]},"observed_at":now()})
+}
+/// A container and the service it was verified to serve, as a saved connection records it.
+struct Endpoint {
+    base: String,
+    media_source: String,
+    observed: Value,
+    container_name: String,
+    version: String,
+}
+impl Endpoint {
+    fn stopped(&self) -> bool {
+        self.observed["running"] == false
+    }
+    fn verified(&self) -> bool {
+        self.observed["running"] == true
+    }
+    fn engine(&self) -> String {
+        self.observed["engine"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    }
+    fn evidence(&self) -> Value {
+        connection_evidence(&self.observed, &self.base)
+    }
+    fn registration(self, key: String, credential: Vec<u8>, setup: Option<String>) -> Registration {
+        Registration {
+            key,
+            credential,
+            engine: self.engine(),
+            evidence: self.evidence(),
+            verified: self.verified(),
+            media_source: self.media_source,
+            version: self.version,
+            setup,
+        }
+    }
+}
+/// Inspect a container and verify the service it serves before any connection to it is
+/// saved. A stopped container can't be verified, so it is accepted only when the
+/// administrator allows that.
+async fn inspect_endpoint(
+    state: &AppState,
+    kind: &str,
+    container: &str,
+    port: u16,
+    url_base: &str,
+    credentials: &support::Credentials,
+    allow_unverified: bool,
+) -> Result<Endpoint> {
+    access::validate_base(kind, url_base)?;
+    let (base, media_source) = support::api_evidence(state, container, port, kind).await?;
+    let observed = docker(state, &format!("containers/{container}")).await?;
+    let container_name = observed["name"]
+        .as_str()
+        .unwrap_or_default()
+        .trim_start_matches('/')
+        .to_owned();
+    let version = if observed["running"] == false {
+        if !allow_unverified {
+            return Err(failures::stopped(&container_name));
+        }
+        "Unverified".to_owned()
+    } else {
+        let c = Connection::validation(
+            state,
+            base.clone(),
+            url_base.to_owned(),
+            credentials.secret.clone(),
+            kind.to_owned(),
+        );
+        access::verify_endpoint(&c, Some(credentials)).await?
+    };
+    Ok(Endpoint {
+        base,
+        media_source,
+        observed,
+        container_name,
+        version,
+    })
 }
 async fn options(
     State(state): State<AppState>,
@@ -829,24 +879,11 @@ async fn test_manager(state: &AppState, id: &str) -> Result<Value> {
     let s = connected(&state, &id).await?;
     let result = async {
         let c = Connection::open(&state, &s).await?;
-        let v = c.get("system/status").await?;
-        if !v["appName"]
-            .as_str()
-            .is_some_and(|n| n.eq_ignore_ascii_case(&s.kind))
-        {
-            return Err(failures::identity(&s.kind, &v["appName"]));
-        }
-        access::check_reported_base(&s.kind, &s.url_base, &v)?;
-        Ok::<_, ApiError>(v["version"].clone())
+        access::verify_endpoint(&c, None).await
     }
     .await;
     let error = result.as_ref().err().map(|e| e.2.clone());
-    let version = result
-        .as_ref()
-        .ok()
-        .and_then(|v| v.as_str())
-        .filter(|v| !v.is_empty() && v.len() < 100)
-        .map(str::to_owned);
+    let version = result.as_ref().ok().cloned();
     storage::test(&state.db, id, s.container, version, error).await?;
     state.notify_attention();
     Ok(json!({"healthy":true,"version":result?}))

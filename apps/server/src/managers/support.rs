@@ -304,36 +304,17 @@ async fn register_with_actor(
         ));
     }
     let _guard = state.managers.guard.service(&input.kind).await;
-    if !access::supported(&input.kind) && !input.url_base.is_empty() {
-        return Err(ApiError::bad("This service does not support a URL Base"));
-    }
-    access::validate_base(&input.kind, &input.url_base)?;
-    let (base, media_source) =
-        api_evidence(&state, &input.container_id, input.port, &input.kind).await?;
-    let c = Connection::validation(
+    let endpoint = inspect_endpoint(
         &state,
-        base.clone(),
-        input.url_base.clone(),
-        input.credentials.secret.clone(),
-        input.kind.clone(),
-    );
-    let observed = docker(&state, &format!("containers/{}", input.container_id)).await?;
-    input.container_name = observed["name"]
-        .as_str()
-        .unwrap_or_default()
-        .trim_start_matches('/')
-        .to_owned();
-    let version = if observed["running"] == false {
-        if !input.allow_unverified {
-            return Err(failures::stopped(&input.container_name));
-        }
-        "Unverified".into()
-    } else {
-        version(&c, &input.credentials).await?
-    };
-    if observed["running"] == true && !thelxinoe_core::service_url_base(&input.kind).is_empty() {
-        access::check_connection(&c).await?;
-    }
+        &input.kind,
+        &input.container_id,
+        input.port,
+        &input.url_base,
+        &input.credentials,
+        input.allow_unverified,
+    )
+    .await?;
+    input.container_name = endpoint.container_name.clone();
     let kind = input.kind.clone();
     let key = storage::register_with_actor_read_support_services(kind, &state.db)
         .await?
@@ -343,16 +324,7 @@ async fn register_with_actor(
         &format!("support:{key}"),
         &serde_json::to_vec(&input.credentials).map_err(|_| unavailable())?,
     )?;
-    let registration = Registration {
-        key,
-        credential: secret,
-        media_source,
-        version,
-        engine: observed["engine"].as_str().unwrap_or_default().to_owned(),
-        evidence: connection_evidence(&observed, &base),
-        verified: observed["running"] == true,
-        setup: input.setup.clone(),
-    };
+    let registration = endpoint.registration(key, secret, input.setup.clone());
     let allowed = storage::register_with_actor_write_stack_provisions(
         &state.db,
         registration,
@@ -377,13 +349,7 @@ pub(super) async fn test(state: &AppState, key: &str) -> Result<Value> {
     let s = load_connected(state, key).await?;
     let result = async {
         let c = connect(state, &s).await?;
-        let version = version(&c, &s.credentials).await?;
-        if s.kind == "seerr" {
-            c.get("settings/main").await?;
-        } else if !thelxinoe_core::service_url_base(&s.kind).is_empty() {
-            access::check_connection(&c).await?;
-        }
-        Ok::<_, ApiError>(version)
+        access::verify_endpoint(&c, Some(&s.credentials)).await
     }
     .await;
     let error = result.as_ref().err().map(|e| e.2.clone());

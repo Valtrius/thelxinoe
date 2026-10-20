@@ -96,12 +96,7 @@ pub(super) async fn follow(state: &AppState, id: &str, missing: &str) -> Result<
         credentials.secret.clone(),
         record.kind.clone(),
     );
-    if manager {
-        let status = c.get("system/status").await?;
-        access::check_reported_base(&record.kind, &record.url_base, &status)?;
-    } else {
-        support::version(&c, &credentials).await?;
-    }
+    access::verify_endpoint(&c, Some(&credentials)).await?;
     if !storage::follow(
         &state.db,
         id.to_owned(),
