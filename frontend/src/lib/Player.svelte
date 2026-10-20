@@ -32,6 +32,7 @@
     mediaUrl,
     prepare,
     playbackRequest,
+    sessionRefused,
     time,
     replayGain,
     type MediaChoice,
@@ -756,7 +757,7 @@
         inBackground(() => api(`/playback/${id}/progress`, 'POST', data)),
       )
       .catch((e) => {
-        if (active?.id !== id) return;
+        if (active?.id !== id || !sessionRefused(e)) return;
         error = String(e);
         player?.pause();
       });
