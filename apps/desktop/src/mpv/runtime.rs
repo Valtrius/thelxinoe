@@ -1,5 +1,5 @@
 use super::{backend::Backend, ipc::Ipc};
-use crate::tools::{LaunchTools, ToolManager, models::ToolId};
+use crate::tools::{LaunchTools, ToolManager, models::ToolId, process::ProcessJob};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -12,7 +12,7 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::{
     net::windows::named_pipe::ClientOptions,
-    process::Command,
+    process::{Child, Command},
     sync::{Mutex, mpsc, watch},
     task::JoinHandle,
 };
@@ -434,7 +434,7 @@ async fn run(
     install_script(&quality_script, include_str!("quality.lua"))?;
     let mut command = Command::new(executable);
     launch.configure(&mut command)?;
-    let mut child = command
+    command
         .args(&launch.mpv_args)
         .arg(format!("--scripts-append={}", segment_script.display()))
         .arg(format!("--scripts-append={}", quality_script.display()))
@@ -456,14 +456,8 @@ async fn run(
             vec!["--vid=no", "--audio-display=no", "--force-window=no"]
         } else {
             vec!["--force-window=immediate"]
-        })
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(0x08000000)
-        .kill_on_drop(true)
-        .spawn()
-        .context("Launch MPV")?;
+        });
+    let (mut child, _job) = spawn_player(&mut command)?;
     let client = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             match ClientOptions::new().open(&pipe) {
@@ -728,6 +722,16 @@ async fn run(
     work
 }
 
+/// MPV runs in a kill-on-close job. Windows closes the job with the desktop process,
+/// so a crashed or ended desktop cannot leave MPV playing with no window to stop it.
+fn spawn_player(command: &mut Command) -> Result<(Child, ProcessJob)> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    ProcessJob::spawn(command).context("Launch MPV")
+}
+
 /// Every MPV window loads the same script files. Rewrite one only when it changed,
 /// so a window that is starting never reads a script while it is being replaced.
 fn install_script(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
@@ -771,5 +775,23 @@ mod restart_tests {
         assert!(player.operation.try_lock().is_err());
         drop(installing);
         assert!(player.operation.try_lock().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod process_tests {
+    use super::*;
+    // Windows closes every handle of a process that crashes or is ended, including the job.
+    #[tokio::test]
+    async fn player_ends_when_the_desktop_closes_its_job() {
+        let mut command = Command::new("cmd.exe");
+        command.args(["/d", "/c", "ping -n 30 127.0.0.1 > nul"]);
+        let (mut child, job) = spawn_player(&mut command).unwrap();
+        assert!(child.try_wait().unwrap().is_none());
+        drop(job);
+        tokio::time::timeout(Duration::from_secs(5), child.wait())
+            .await
+            .expect("closing the job must end the player")
+            .unwrap();
     }
 }
