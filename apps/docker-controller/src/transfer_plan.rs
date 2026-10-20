@@ -418,34 +418,71 @@ pub fn layout(kind: &str, raw: &Value, context: &Context) -> Result<Layout, Stri
         supplementary.push(mount);
     }
     // Another service's configuration must never share this state.
-    for other in context.others {
-        if other["Id"] == raw["Id"] {
-            continue;
-        }
-        for m in other["Mounts"].as_array().into_iter().flatten() {
-            let Ok(theirs) = mount_of(m) else { continue };
-            let same = theirs.kind == appdata.kind
-                && if appdata.kind == "volume" {
-                    theirs.source == appdata.source
-                } else {
-                    crate::policy::overlapping(&theirs.source, &appdata.source)
-                };
-            if same {
-                let name = other["Name"]
-                    .as_str()
-                    .unwrap_or("another container")
-                    .trim_start_matches('/');
-                return Err(format!(
-                    "{name} also mounts this configuration ({}); stop sharing it so the copy has a single writer",
-                    appdata.source
-                ));
-            }
-        }
+    if let Some(name) = sharer(raw, &appdata, context.others) {
+        return Err(format!(
+            "{name} also mounts this configuration ({}); stop sharing it so the copy has a single writer",
+            appdata.source
+        ));
     }
     Ok(Layout {
         appdata,
         retained,
         supplementary,
+    })
+}
+
+/// Another container that mounts the source's configuration, by name.
+fn sharer<'a>(raw: &Value, appdata: &Mount, others: &'a [Value]) -> Option<&'a str> {
+    let other = others
+        .iter()
+        .filter(|o| o["Id"] != raw["Id"])
+        .find(|other| {
+            other["Mounts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|m| mount_of(m).ok())
+                .any(|theirs| {
+                    theirs.kind == appdata.kind
+                        && if appdata.kind == "volume" {
+                            theirs.source == appdata.source
+                        } else {
+                            crate::policy::overlapping(&theirs.source, &appdata.source)
+                        }
+                })
+        })?;
+    Some(
+        other["Name"]
+            .as_str()
+            .unwrap_or("another container")
+            .trim_start_matches('/'),
+    )
+}
+
+/// What could restart, recreate or write the original once it runs again: an updater whose
+/// scope includes it, or another container mounting its configuration. Unrelated Compose
+/// members and containers with Docker access were declared at approval, so their changes
+/// don't count; the original's own configuration is compared separately.
+pub fn restart_threat(
+    raw: &Value,
+    appdata: &Mount,
+    others: &[Value],
+    controller: &str,
+) -> Option<String> {
+    if let Some(updater) = automation(raw, others, controller)
+        .into_iter()
+        .find(|a| a.blocks)
+    {
+        return Some(format!(
+            "{} updates containers automatically and could restart or replace the original. Exclude it from {} (label com.centurylinklabs.watchtower.enable=false) before returning",
+            updater.name, updater.name
+        ));
+    }
+    sharer(raw, appdata, others).map(|name| {
+        format!(
+            "{name} also mounts the original's configuration ({}); stop sharing it before returning",
+            appdata.source
+        )
     })
 }
 
@@ -631,7 +668,7 @@ pub fn automation(raw: &Value, others: &[Value], controller: &str) -> Vec<Automa
         if other["Id"] == raw["Id"]
             || other["Id"]
                 .as_str()
-                .is_some_and(|id| id.starts_with(controller))
+                .is_some_and(|id| !controller.is_empty() && id.starts_with(controller))
             || other["Config"]["Labels"]["app.thelxinoe.deployment"].is_string()
             || other["Config"]["Labels"]["app.thelxinoe.component"].is_string()
         {

@@ -359,26 +359,7 @@ async fn inspect(d: &Deployment, input: &ReviewInput, key: String) -> Result<Rev
     if target_version.release_cmp(&source_version) == std::cmp::Ordering::Less {
         blockers.push("The qualified image is older than the running application; downgrades are never applied".into());
     }
-    let mut others = Vec::new();
-    for row in engine("/containers/json?all=true")
-        .await?
-        .as_array()
-        .ok_or_else(unavailable)?
-        .iter()
-        .take(500)
-    {
-        let id = row["Id"].as_str().ok_or_else(unavailable)?;
-        // This deployment's transfer workers only ever mount a source read-only.
-        let worker = row["Labels"]["app.thelxinoe.transfer"].is_string()
-            && row["Labels"]["app.thelxinoe.managed-id"].is_null()
-            && row["Labels"]["app.thelxinoe.deployment"] == d.id.as_str();
-        if id != input.container_id
-            && !worker
-            && let Ok(other) = engine(&format!("/containers/{id}/json")).await
-        {
-            others.push(other);
-        }
-    }
+    let others = others(d, &input.container_id).await?;
     // A configuration folder must not contain any server media, including secondary mounts.
     let server_media: Vec<String> = d.server["Mounts"]
         .as_array()
@@ -661,6 +642,31 @@ async fn inspect(d: &Deployment, input: &ReviewInput, key: String) -> Result<Rev
         revision,
         created_at: thelxinoe_core::now(),
     })
+}
+
+/// Every container except the source, inspected.
+async fn others(d: &Deployment, source: &str) -> Result<Vec<Value>> {
+    let mut others = Vec::new();
+    for row in engine("/containers/json?all=true")
+        .await?
+        .as_array()
+        .ok_or_else(unavailable)?
+        .iter()
+        .take(500)
+    {
+        let id = row["Id"].as_str().ok_or_else(unavailable)?;
+        // This deployment's transfer workers only ever mount a source read-only.
+        let worker = row["Labels"]["app.thelxinoe.transfer"].is_string()
+            && row["Labels"]["app.thelxinoe.managed-id"].is_null()
+            && row["Labels"]["app.thelxinoe.deployment"] == d.id.as_str();
+        if id != source
+            && !worker
+            && let Ok(other) = engine(&format!("/containers/{id}/json")).await
+        {
+            others.push(other);
+        }
+    }
+    Ok(others)
 }
 
 /// Application settings the transfer changes in the copied configuration only.
@@ -2438,17 +2444,13 @@ pub(super) async fn recovery_plan(
     )
     .await
     .unwrap_or_else(|error| json!({"known":[],"uncertain":[format!("Live effects couldn't be inventoried: {}",error.1)]}));
-    let current_evidence = digest(&json!([
-        t.review.automation,
-        t.review.compose,
-        t.review.layout
-    ]));
+    // Checked live, as the return checks it before the replacement stops.
+    let back = returnable(&d, &t).await.err().map(|error| error.1);
     let evidence = json!({"images":{"source":t.review.source_image,"replacement":t.review.decision.image()},
         "versions":{"source":t.review.source_version.text,"replacement":t.review.target_version.text},
         "generations":{"source_appdata":t.review.layout.appdata,"snapshot":t.snapshot.as_ref().map(|s| &s["digest"]),
             "activated":t.production.as_ref().map(|p| &p["digest"]),"preserved":t.generations,"activations":t.activations},
-        "boundary_at":t.boundary_at,"containers":{"replacement":replacement,"original":original},"effects":effects,
-        "automation_revision":current_evidence});
+        "boundary_at":t.boundary_at,"containers":{"replacement":replacement,"original":original},"effects":effects});
     let cannot_undo = [
         "Downloads, imports and file changes the replacement made",
         "Notifications or webhooks it sent",
@@ -2465,15 +2467,13 @@ pub(super) async fn recovery_plan(
         "The replacement container no longer exists",
     );
     let (snapshot, snapshot_reason) = starts(t.snapshot.is_some(), "The transfer has no snapshot");
-    let back = original["present"] == true && original["unchanged"] == true;
     let options = json!([
         {"action":"repair","label":"Repair and continue","available":repair,"unavailable":repair_reason,
             "description":"Keep the replacement's latest appdata, repeat the required checks and finish the transfer when healthy"},
         {"action":"restore_snapshot","label":"Restore the transfer snapshot into a new candidate","available":snapshot,"unavailable":snapshot_reason,
             "description":"Preserve the current appdata as a generation and activate an independent replacement built from the snapshot taken when the original stopped. Reviewed setup runs again for the new appdata",
             "requires":["state_loss","reconciliation"]},
-        {"action":"return_original","label":"Return to the original","available":back,
-            "unavailable":if back {Value::Null} else {json!("The original container is missing or its configuration changed")},
+        {"action":"return_original","label":"Return to the original","available":back.is_none(),"unavailable":back,
             "description":"Stop and remove the replacement, keeping its appdata as a generation, then restart the original. The service ends Connected with this failed transfer recorded",
             "requires":["state_loss","reconciliation","automation"]},
         {"action":"suspend","label":"Suspend for manual resolution","available":true,
@@ -2659,9 +2659,28 @@ async fn repair(d: &Deployment, t: &mut Transfer) -> Result<()> {
     Ok(())
 }
 
+/// The original may run again: still as reviewed, stopped, and nothing else can restart,
+/// recreate or write it.
+async fn returnable(d: &Deployment, t: &Transfer) -> Result<()> {
+    let raw = source(t).await?;
+    if raw["State"]["Running"] != false {
+        return Err(conflict(
+            "The original is running beside the replacement; stop it before recovery",
+        ));
+    }
+    let controller = std::env::var("HOSTNAME").unwrap_or_default();
+    let others = others(d, &original_id(t)?).await?;
+    match plan::restart_threat(&raw, &t.review.layout.appdata, &others, &controller) {
+        Some(threat) => Err(conflict(threat)),
+        None => Ok(()),
+    }
+}
+
 /// Single writer: the replacement stops and is retired before the original starts again.
 async fn return_original(d: &Deployment, t: &mut Transfer) -> Result<()> {
     if phase(t) == "accepted" {
+        // Checked before anything stops, so a refused return leaves the replacement running.
+        returnable(d, t).await?;
         advance(t, "stopping-replacement")?;
     }
     if phase(t) == "stopping-replacement" {
@@ -2669,27 +2688,8 @@ async fn return_original(d: &Deployment, t: &mut Transfer) -> Result<()> {
         advance(t, "checking-original")?;
     }
     if phase(t) == "checking-original" {
-        let raw = source(t).await?;
-        if raw["State"]["Running"] != false {
-            return Err(conflict(
-                "The original is running beside the replacement; stop it before recovery",
-            ));
-        }
-        let current = inspect(
-            d,
-            &ReviewInput {
-                kind: t.kind.clone(),
-                container_id: original_id(t)?,
-                service_id: t.review.service.clone(),
-            },
-            t.id.clone(),
-        )
-        .await?;
-        if current.evidence_revision != t.review.evidence_revision {
-            return Err(conflict(
-                "Automation around the original changed; review its evidence before restarting it",
-            ));
-        }
+        // Again with the replacement stopped, right before the irreversible steps.
+        returnable(d, t).await?;
         advance(t, "retiring-replacement")?;
     }
     if phase(t) == "retiring-replacement" {

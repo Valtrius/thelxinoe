@@ -278,6 +278,74 @@ async fn a_return_to_the_original_resumes_from_its_journal() {
     }
 }
 
+/// An unrelated running container with Docker access.
+fn docker_access(name: &str, image: &str, env: Value) -> Value {
+    json!({"Id":name,"Name":format!("/{name}"),"State":{"Running":true},
+        "Config":{"Image":image,"Labels":{},"Env":env},"HostConfig":{},
+        "Mounts":[{"Type":"bind","Source":"/var/run/docker.sock","Destination":"/var/run/docker.sock","RW":true}],
+        "NetworkSettings":{"Networks":{}}})
+}
+
+// A return checks what could restart the original before the replacement stops. An updater
+// that would restart it refuses the return and the replacement keeps running; a dashboard
+// with Docker access that appeared since the review was declared and doesn't block it.
+#[tokio::test]
+async fn a_return_checks_what_could_restart_the_original_before_the_replacement_stops() {
+    let docker = Docker::new();
+    docker.insert("original", original(false, "no"));
+    docker.insert("replacement", replacement(true));
+    docker.insert(
+        "dashboard",
+        docker_access("dashboard", "ghcr.io/example/dashboard:1", json!([])),
+    );
+    docker.insert(
+        "watchtower",
+        docker_access("watchtower", "containrrr/watchtower:1.7", json!([])),
+    );
+    docker
+        .scope(async {
+            let (d, _): (Deployment, Value) = docker.update();
+            save(&managed()).unwrap();
+            let mut t = journal("recovering", true);
+            t.command = Some(command("return_original", "accepted"));
+            write(&mut t).unwrap();
+            run_command(&d, &mut t).await;
+            assert_eq!(t.stage, "recovery-required");
+            let refused = t.command.as_ref().unwrap();
+            assert_eq!(refused.state, "failed");
+            assert!(
+                refused
+                    .error
+                    .as_deref()
+                    .is_some_and(|e| e.starts_with("watchtower updates containers")),
+                "{:?}",
+                refused.error
+            );
+            assert!(docker.running("replacement"));
+            // Limited to labelled containers, the updater leaves the original alone.
+            docker.insert(
+                "watchtower",
+                docker_access(
+                    "watchtower",
+                    "containrrr/watchtower:1.7",
+                    json!(["WATCHTOWER_LABEL_ENABLE=true"]),
+                ),
+            );
+            t.stage = "recovering".into();
+            t.command = Some(command("return_original", "accepted"));
+            write(&mut t).unwrap();
+            run_command(&d, &mut t).await;
+            assert_eq!(t.stage, "returned", "{:?}", t.error);
+        })
+        .await;
+    assert!(docker.running("original"));
+    assert!(
+        !docker
+            .names()
+            .contains(&"/thelxinoe-radarr-replacement".to_owned())
+    );
+}
+
 // Repair starts the retained replacement again only while the original can't write; a
 // refusal leaves everything as it was.
 #[tokio::test]
