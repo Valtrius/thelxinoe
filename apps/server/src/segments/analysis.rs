@@ -115,7 +115,6 @@ async fn analyze(
     generation: &str,
     cfg: Config,
 ) -> anyhow::Result<()> {
-    let _lease = state.media_operations.read().await;
     let tools = state.tools.runtime.media()?;
     let src = playback::source(state, media, Some(file))
         .await
@@ -187,6 +186,8 @@ async fn store(
     origin: &'static str,
     kind: Option<&'static str>,
 ) -> anyhow::Result<()> {
+    // Only the write waits for the media lease; analysing never holds it.
+    let _lease = state.media_operations.read().await;
     src.validate().await?;
     let src = src.clone();
     storage::store(src, &state.db, segments, origin, kind).await

@@ -80,8 +80,65 @@ pub async fn scan_with_progress<F, Fut>(
     db: &Database,
     root: Root,
     tools: thelxinoe_tools::MediaTools,
-    mut progress: F,
+    progress: F,
 ) -> Result<usize>
+where
+    F: FnMut(usize, usize) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    index_with_progress(db, root, tools, progress)
+        .await?
+        .commit(db)
+        .await
+}
+/// A root that was walked and probed but not written yet. Probing can take minutes, so a
+/// caller serializing against deletions holds its lease for `commit` only.
+pub struct Scanned {
+    root: Root,
+    indexed: Vec<IndexedFile>,
+    current_paths: std::collections::HashSet<String>,
+    retained: std::collections::HashSet<String>,
+    warning: Option<String>,
+}
+impl Scanned {
+    /// Write the scan. A file that disappeared since it was probed, for example deleted
+    /// while the caller's lease was free, is no longer present.
+    pub async fn commit(mut self, db: &Database) -> Result<usize> {
+        let mut indexed = Vec::with_capacity(self.indexed.len());
+        for file in self.indexed {
+            if tokio::fs::try_exists(&file.path).await.unwrap_or(false) {
+                indexed.push(file);
+            } else {
+                self.current_paths.remove(&file.path);
+            }
+        }
+        let mut fingerprint_counts = std::collections::HashMap::new();
+        for file in &indexed {
+            *fingerprint_counts
+                .entry(file.fingerprint.clone())
+                .or_insert(0usize) += 1;
+        }
+        let count = indexed.len();
+        storage::scan_with_progress_write_media_files(
+            indexed,
+            self.current_paths,
+            self.retained,
+            fingerprint_counts,
+            self.warning,
+            db,
+            self.root,
+        )
+        .await?;
+        Ok(count)
+    }
+}
+/// Walk and probe a root without writing it; see [`Scanned::commit`].
+pub async fn index_with_progress<F, Fut>(
+    db: &Database,
+    root: Root,
+    tools: thelxinoe_tools::MediaTools,
+    mut progress: F,
+) -> Result<Scanned>
 where
     F: FnMut(usize, usize) -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
@@ -158,16 +215,9 @@ where
             last_progress = std::time::Instant::now();
         }
     }
-    let count = indexed.len();
     let mut current_paths: std::collections::HashSet<_> =
         indexed.iter().map(|f| f.path.clone()).collect();
     current_paths.extend(retained.iter().cloned());
-    let mut fingerprint_counts = std::collections::HashMap::new();
-    for file in &indexed {
-        *fingerprint_counts
-            .entry(file.fingerprint.clone())
-            .or_insert(0usize) += 1;
-    }
     let counted = |count: usize, noun: &str| {
         (count > 0).then(|| format!("{count} {noun}{}", if count == 1 { "" } else { "s" }))
     };
@@ -188,17 +238,13 @@ where
             "{what} couldn't be read and will be retried; the rest are up to date. First: {first}"
         )
     });
-    storage::scan_with_progress_write_media_files(
+    Ok(Scanned {
+        root,
         indexed,
         current_paths,
         retained,
-        fingerprint_counts,
         warning,
-        db,
-        root,
-    )
-    .await?;
-    Ok(count)
+    })
 }
 async fn index(
     path: &Path,

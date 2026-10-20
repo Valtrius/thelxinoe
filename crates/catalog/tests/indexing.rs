@@ -277,3 +277,51 @@ fn fingerprints_cover_small_files_and_sample_large_ones() -> Result<()> {
     assert_eq!(fingerprint(&between)?, base);
     Ok(())
 }
+
+// Probing holds no lease, so a file can be deleted between probing and the commit; the
+// commit then writes it as gone instead of bringing it back.
+#[tokio::test]
+async fn a_file_deleted_after_probing_is_not_committed_as_present() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let media = temp.path().join("music");
+    std::fs::create_dir(&media)?;
+    let db = Database::open(temp.path().join("db"))?;
+    let root = Root {
+        id: "root".into(),
+        name: "Music".into(),
+        kind: "music".into(),
+        path: media.to_string_lossy().to_string(),
+        last_scan: None,
+        scan_error: None,
+    };
+    let r = root.clone();
+    db.write("test.fixture", move |c| {
+        c.execute(
+            "INSERT INTO library_roots(id,name,kind,path) VALUES (?1,?2,?3,?4)",
+            params![r.id, r.name, r.kind, r.path],
+        )?;
+        Ok(())
+    })
+    .await?;
+    for name in ["Kept.wav", "Deleted.wav"] {
+        std::fs::write(media.join(name), wav(1))?;
+    }
+    let tool_root = tempfile::tempdir()?;
+    let tools = thelxinoe_tools::Runtime::new(tool_root.path().into());
+    tool_runtime::install(&tools, tool_root.path());
+    let scanned =
+        thelxinoe_catalog::index_with_progress(&db, root, tools.media()?, |_, _| async { Ok(()) })
+            .await?;
+    std::fs::remove_file(media.join("Deleted.wav"))?;
+    assert_eq!(scanned.commit(&db).await?, 1);
+    let present: Vec<String> = db
+        .read("test.present", |c| {
+            Ok(c.prepare("SELECT path FROM media_files WHERE present=1")?
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?)
+        })
+        .await?;
+    assert_eq!(present.len(), 1);
+    assert!(present[0].ends_with("Kept.wav"));
+    Ok(())
+}
