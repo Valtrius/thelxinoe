@@ -62,6 +62,48 @@ pub async fn add_root(
     enqueue_scan(&state, &root_id).await?;
     Ok(Json(json!({"id":root_id})))
 }
+#[derive(Deserialize)]
+pub struct RootChange {
+    name: String,
+}
+/// Only the name changes. Every entry's identity comes from the folder's location and
+/// media type, so changing either is adding the folder again.
+pub async fn rename_root(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(root_id): Path<String>,
+    Json(input): Json<RootChange>,
+) -> Result<Json<Value>> {
+    let p = security::require(&state, &headers, Capability::ManageLibrary).await?;
+    if input.name.trim().is_empty() || input.name.len() > 100 {
+        return Err(ApiError::bad("Enter a library name"));
+    }
+    if !storage::rename_root(&state.db, p, root_id.clone(), input.name).await? {
+        return Err(ApiError::not_found());
+    }
+    state
+        .emit(None, "catalog.changed", json!({"root_id":root_id}))
+        .await?;
+    Ok(Json(json!({"saved":true})))
+}
+/// Removes a library and its entries, with everyone's state for them. Files on disk and
+/// watch history stay. Media operations in progress finish first, and a running scan of
+/// the library stops without writing.
+pub async fn remove_root(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(root_id): Path<String>,
+) -> Result<Json<Value>> {
+    let p = security::require(&state, &headers, Capability::ManageLibrary).await?;
+    let _lease = state.media_operations.write().await;
+    if !storage::remove_root(&state.db, p, root_id.clone()).await? {
+        return Err(ApiError::not_found());
+    }
+    state
+        .emit(None, "catalog.changed", json!({"root_id":root_id}))
+        .await?;
+    Ok(Json(json!({"deleted":true})))
+}
 pub async fn enqueue_scan(state: &AppState, root_id: &str) -> anyhow::Result<String> {
     let root_id = root_id.to_string();
     storage::enqueue_scan(root_id, &state.db).await
@@ -532,5 +574,268 @@ mod presentation_tests {
             .2["favorites"],
             serde_json::json!([])
         );
+    }
+}
+
+#[cfg(test)]
+mod root_tests {
+    use crate::{
+        AppState,
+        test_support::{call, fixture},
+    };
+    use axum::http::StatusCode;
+    use serde_json::{Value, json};
+
+    async fn rows(state: &AppState, sql: &'static str) -> Vec<String> {
+        state
+            .db
+            .read("test.rows", move |db| {
+                Ok(db
+                    .prepare(sql)?
+                    .query_map([], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?)
+            })
+            .await
+            .unwrap()
+    }
+
+    // Only administrators manage library folders. Removing one takes its entries, and
+    // everyone's state for them, out of the library and retires its queued work, while its
+    // files, watch history and other libraries stay.
+    #[tokio::test]
+    async fn administrators_add_rename_and_remove_library_folders() {
+        let (_temp, state, alice) = fixture().await;
+        let bob =
+            crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Bob".into())
+                .await
+                .unwrap();
+        let bob = format!("thelxinoe_session={bob}");
+        state
+            .db
+            .write("test.fixture", |db| {
+                db.execute("UPDATE users SET role='admin' WHERE id='alice'", [])?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        for folder in ["movies", "shows"] {
+            std::fs::create_dir_all(state.config.media.join(folder)).unwrap();
+        }
+        let film = state.config.media.join("movies/Film (2020).mkv");
+        std::fs::write(&film, b"media").unwrap();
+        let folder = |name: &str, kind: &str| json!({"name":name,"kind":kind,"path":state.config.media.join(kind)});
+        let roots = "/api/v1/catalog/roots";
+        assert_eq!(
+            call(&state, roots, "POST", folder("Movies", "movies"), &bob)
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        let movies = call(&state, roots, "POST", folder("Movies", "movies"), &alice).await;
+        assert_eq!(movies.0, StatusCode::OK);
+        let movies = movies.2["id"].as_str().unwrap().to_owned();
+        let shows = call(&state, roots, "POST", folder("Shows", "shows"), &alice).await;
+        let shows = shows.2["id"].as_str().unwrap().to_owned();
+
+        let path = format!("{roots}/{movies}");
+        for (name, cookie, status) in [
+            ("Films", &bob, StatusCode::FORBIDDEN),
+            (" ", &alice, StatusCode::BAD_REQUEST),
+            ("Films", &alice, StatusCode::OK),
+        ] {
+            let renamed = call(&state, &path, "PATCH", json!({"name":name}), cookie).await;
+            assert_eq!(renamed.0, status, "{name}");
+        }
+        assert_eq!(
+            call(
+                &state,
+                &format!("{roots}/unknown"),
+                "PATCH",
+                json!({"name":"Films"}),
+                &alice
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+        let listed = call(&state, roots, "GET", Value::Null, &alice).await.2;
+        let names = listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|root| root["name"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["Films", "Shows"]);
+
+        let (m, s) = (movies.clone(), shows.clone());
+        state.db.write("test.fixture", move |db| {
+            for (root, media, file) in [(&m, "film", "film-file"), (&s, "show", "show-file")] {
+                db.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES (?1,?2,'movie',?1,?1,1)", rusqlite::params![media, root])?;
+                db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES (?1,?2,?1,'g',1,'1','f','{}',1)", rusqlite::params![file, root])?;
+                db.execute("INSERT INTO media_sources VALUES (?1,?2)", [media, file])?;
+                db.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES ('alice',?1,1,1)", [media])?;
+            }
+            // Rows that refer to the entries and files without cascading.
+            db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES ('trailer',?1,'trailer','g',1,'1','t','{}',1)", [&m])?;
+            db.execute("INSERT INTO local_trailers VALUES ('film','trailer')", [])?;
+            db.execute("INSERT INTO media_operations(id,media_id,action,state,targets,created_at,updated_at) VALUES ('operation','film','delete','complete','[]',1,1)", [])?;
+            db.execute("INSERT INTO retention_candidates(id,media_id,operation_id,stamp,state,eligible_at,due_at) VALUES ('candidate','film','operation','stamp','pending',1,1)", [])?;
+            db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('radarr','Radarr','radarr','radarr',7878,'g',x'00','/media','5',1)", [])?;
+            db.execute("INSERT INTO manager_bindings(file_id,service_id,generation,service_generation,manager_file_id,entity_id,manager_path,external_id,members,checked_at) VALUES ('film-file','radarr','g','g',1,1,'/movies/Film.mkv','1','[]',1)", [])?;
+            db.execute("INSERT INTO jobs(id,kind,subject,payload,state,available_at,created_at) VALUES ('refresh','metadata.refresh','film','{}','queued',1,1)", [])?;
+            db.execute("INSERT INTO playback_history(playback_id,user_id,platform,media_id,media_title,content_type,device_name,started_at,updated_at,position,state) VALUES ('p','alice','movies','film','Film','movie','Browser',1,1,1,'stopped')", [])?;
+            Ok(())
+        }).await.unwrap();
+
+        assert_eq!(
+            call(&state, &path, "DELETE", Value::Null, &bob).await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            call(&state, &path, "DELETE", Value::Null, &alice).await.0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            call(&state, &path, "DELETE", Value::Null, &alice).await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            rows(&state, "SELECT name FROM library_roots").await,
+            ["Shows"]
+        );
+        assert_eq!(rows(&state, "SELECT id FROM media").await, ["show"]);
+        assert_eq!(
+            rows(&state, "SELECT id FROM media_files").await,
+            ["show-file"]
+        );
+        assert_eq!(
+            rows(&state, "SELECT media_id FROM media_state").await,
+            ["show"]
+        );
+        assert_eq!(
+            rows(&state, "SELECT media_title FROM playback_history").await,
+            ["Film"]
+        );
+        assert!(film.exists(), "files on disk stay");
+        // The new library's scan and the entry's refresh are done; the other library's
+        // scan still waits.
+        let s = shows.clone();
+        let jobs = state
+            .db
+            .read("test.jobs", move |db| {
+                Ok(db
+                    .prepare("SELECT subject,state FROM jobs ORDER BY subject=?1,kind")?
+                    .query_map([&s], |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            jobs,
+            [
+                (movies, "complete".to_owned()),
+                ("film".to_owned(), "complete".to_owned()),
+                (shows, "queued".to_owned()),
+            ]
+        );
+        assert_eq!(
+            rows(
+                &state,
+                "SELECT action FROM audit WHERE action LIKE 'library.%' ORDER BY id"
+            )
+            .await,
+            [
+                "library.add",
+                "library.add",
+                "library.rename",
+                "library.remove"
+            ]
+        );
+        assert!(
+            state
+                .db
+                .read("test.foreign_keys", |db| Ok(!db
+                    .prepare("PRAGMA foreign_key_check")?
+                    .exists([])?))
+                .await
+                .unwrap()
+        );
+    }
+
+    fn wav() -> Vec<u8> {
+        let samples = vec![0u8; 16000];
+        let mut out = b"RIFF".to_vec();
+        out.extend((36 + samples.len() as u32).to_le_bytes());
+        out.extend(b"WAVEfmt ");
+        out.extend(16u32.to_le_bytes());
+        out.extend([1, 0, 1, 0]);
+        out.extend(8000u32.to_le_bytes());
+        out.extend(16000u32.to_le_bytes());
+        out.extend([2, 0, 16, 0]);
+        out.extend(b"data");
+        out.extend((samples.len() as u32).to_le_bytes());
+        out.extend(samples);
+        out
+    }
+
+    // A library removed while its scan was probing: the scan writes nothing and its job
+    // completes rather than failing.
+    #[tokio::test]
+    async fn a_scan_of_a_library_removed_while_it_ran_completes_without_writing() {
+        let (_temp, state, _) = fixture().await;
+        crate::test_support::tool_runtime::install(
+            &state.tools.runtime,
+            &state.config.state.join("tools"),
+        );
+        let folder = state.config.media.join("music");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("Song.wav"), wav()).unwrap();
+        let path = folder.to_string_lossy().into_owned();
+        state.db.write("test.fixture", move |db| {
+            db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Music','music',?1)", [path])?;
+            db.execute("INSERT INTO jobs(id,kind,subject,payload,state,available_at,created_at) VALUES ('scan','library.scan','root','{\"root_id\":\"root\"}','queued',1,1)", [])?;
+            Ok(())
+        }).await.unwrap();
+        let queue = thelxinoe_jobs::Queue(state.db.clone());
+        let job = queue.claim_general().await.unwrap().unwrap();
+        // The scan probes the folder, then waits for the media lease to write.
+        let lease = state.media_operations.write().await;
+        let scan = tokio::spawn({
+            let state = state.clone();
+            async move { crate::run_job(state, job).await }
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !state.db.read("test.probed", |db| Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM events WHERE kind='catalog.scan.progress' AND json_extract(payload,'$.completed')=1)", [], |r| r.get::<_, bool>(0))?)).await.unwrap() {
+            assert!(std::time::Instant::now() < deadline, "the scan never probed");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let admin = thelxinoe_core::Principal {
+            user: thelxinoe_core::User {
+                id: "alice".into(),
+                username: "alice".into(),
+                role: thelxinoe_core::Role::Admin,
+                timezone: "UTC".into(),
+            },
+            session_id: "session".into(),
+            transport: "web".into(),
+        };
+        assert!(
+            super::storage::remove_root(&state.db, admin, "root".into())
+                .await
+                .unwrap()
+        );
+        drop(lease);
+        scan.await.unwrap();
+        assert_eq!(
+            rows(
+                &state,
+                "SELECT state||':'||COALESCE(error,'') FROM jobs WHERE id='scan'"
+            )
+            .await,
+            ["complete:"]
+        );
+        assert!(rows(&state, "SELECT id FROM media_files").await.is_empty());
     }
 }

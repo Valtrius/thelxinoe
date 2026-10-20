@@ -10,6 +10,8 @@ use tower::ServiceExt;
 mod auth_session;
 #[path = "../../../tests/helpers/server-config.rs"]
 mod configuration;
+#[path = "../../../tests/helpers/tool-runtime.rs"]
+pub(crate) mod tool_runtime;
 pub(crate) use auth_session::issue_session;
 
 #[derive(Default)]

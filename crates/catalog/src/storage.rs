@@ -21,6 +21,24 @@ pub(super) async fn roots(db: &Database) -> anyhow::Result<Vec<Root>> {
     .await
 }
 
+/// Why a scan stopped without writing: its library was removed while it ran.
+pub(super) const REMOVED: &str = "Library was removed";
+
+fn root_exists_in(c: &rusqlite::Connection, root: &str) -> rusqlite::Result<bool> {
+    c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM library_roots WHERE id=?1)",
+        [root],
+        |r| r.get(0),
+    )
+}
+
+pub(super) async fn root_exists(root: String, db: &Database) -> anyhow::Result<bool> {
+    db.read("catalog.root_exists", move |c| {
+        Ok(root_exists_in(c, &root)?)
+    })
+    .await
+}
+
 pub(super) async fn scan_with_progress_read_media_files(
     lookup: String,
     db: &Database,
@@ -68,6 +86,7 @@ pub(super) async fn scan_with_progress_write_media_files(
 ) -> anyhow::Result<()> {
     db.write("catalog.scan_with_progress_write_media_files", move|c|{
         let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if !root_exists_in(&tx,&root.id)? {bail!(REMOVED);}
         let missing:Vec<(String,String)>=tx.prepare("SELECT id,path,fingerprint FROM media_files WHERE root_id=?1 AND present=1")?.query_map([&root.id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))?.collect::<std::result::Result<Vec<_>,_>>()?.into_iter().filter(|(_,path,_)|!current_paths.contains(path)).map(|(id,_,hash)|(id,hash)).collect();
         // Only files that are gone change; an unchanged library writes almost nothing. Their
         // scan time records when they went missing, which maintenance waits on before pruning.

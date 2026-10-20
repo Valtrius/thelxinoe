@@ -294,6 +294,42 @@ test('library folders live in server settings and scans start from the library m
   expect(errors).toEqual([]);
 });
 
+test('the preview adds, renames and removes library folders', async ({
+  page,
+}) => {
+  const errors = track(page);
+  await page.goto('/#library/shows');
+  await page.getByRole('button', { name: 'Shows library actions' }).click();
+  await page.getByRole('menuitem', { name: 'Library folders' }).click();
+  const folders = page.locator('#server-library');
+  await expect(folders.getByRole('row')).toHaveCount(4);
+  await folders.getByRole('button', { name: 'Add folder' }).click();
+  const form = folders.getByRole('form', { name: 'Add a library folder' });
+  await form.getByLabel('Name').fill('Concerts');
+  await form.getByLabel('Media type').selectOption('music');
+  await form.getByLabel('Folder').fill('/media/concerts');
+  await form.getByRole('button', { name: 'Add folder' }).click();
+  await expect(folders.getByRole('row')).toHaveCount(5);
+  // The new folder's first scan finishes shortly after it is added.
+  await expect(folders.getByText('Waiting for first scan')).toHaveCount(0);
+
+  await folders.getByRole('button', { name: 'Rename shows' }).click();
+  await folders.getByLabel('New name for shows').fill('Series');
+  await folders.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(
+    folders.getByRole('button', { name: 'Scan Series' }),
+  ).toBeVisible();
+
+  await folders.getByRole('button', { name: 'Remove Concerts' }).click();
+  await page
+    .getByRole('dialog', { name: 'Remove Concerts?' })
+    .getByRole('button', { name: 'Remove folder' })
+    .click();
+  await expect(folders.getByRole('row')).toHaveCount(4);
+  await expect(folders.getByText('Concerts')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
 test('returning from a title restores where the library grid was scrolled', async ({
   page,
 }) => {

@@ -9,8 +9,7 @@ mod formats;
 #[path = "stream_index.rs"]
 mod index;
 #[cfg(test)]
-#[path = "../../../../tests/helpers/tool-runtime.rs"]
-mod tool_runtime;
+use crate::test_support::tool_runtime;
 
 use super::{downloads, extract, live, network::Family};
 use crate::{

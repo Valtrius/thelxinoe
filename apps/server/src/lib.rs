@@ -266,6 +266,10 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/catalog/roots",
             get(library::roots).post(library::add_root),
         )
+        .route(
+            "/api/v1/catalog/roots/{id}",
+            axum::routing::patch(library::rename_root).delete(library::remove_root),
+        )
         .route("/api/v1/catalog/roots/{id}/scan", post(library::scan))
         .route("/api/v1/catalog", get(library::browse))
         .route("/api/v1/catalog/{id}", get(library::detail))
@@ -413,7 +417,9 @@ async fn scan_library(state: &AppState, job: &thelxinoe_jobs::Job) -> anyhow::Re
         .into_iter()
         .find(|r| Some(r.id.as_str()) == job.payload["root_id"].as_str())
     else {
-        anyhow::bail!("Library no longer exists");
+        // Removing a library retires its queued scans; one claimed just before has nothing
+        // left to do.
+        return Ok(());
     };
     let keys = media_resources::for_root(&state.db, &root.id).await?;
     let _files = state
@@ -455,8 +461,15 @@ async fn scan_library(state: &AppState, job: &thelxinoe_jobs::Job) -> anyhow::Re
         Ok(scanned) => scanned.commit(&state.db).await,
         Err(error) => Err(error),
     };
+    // A library removed during its scan stopped it; that's no failure.
+    let removed = result.is_err()
+        && !thelxinoe_catalog::roots(&state.db)
+            .await?
+            .iter()
+            .any(|r| r.id == root.id);
     match &result {
         Ok(_) => managers::reconcile_after_scan(state).await,
+        Err(_) if removed => {}
         Err(error) => storage::run_jobs(error.to_string(), root, &state.db).await?,
     }
     state
@@ -466,6 +479,9 @@ async fn scan_library(state: &AppState, job: &thelxinoe_jobs::Job) -> anyhow::Re
             json!({"root_id":job.payload["root_id"]}),
         )
         .await?;
+    if removed {
+        return Ok(());
+    }
     result.map(|_| ())
 }
 

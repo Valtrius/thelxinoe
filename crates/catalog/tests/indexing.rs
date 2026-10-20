@@ -449,6 +449,36 @@ async fn count(db: &Database, sql: &'static str) -> Result<i64> {
     .await
 }
 
+// A library removed during its scan stops it: probing ends at the next progress check, and
+// a scan probed before the removal writes nothing.
+#[tokio::test]
+async fn a_scan_of_a_removed_library_stops_without_writing() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let (db, root, media, tools) = library(temp.path(), "music").await?;
+    std::fs::write(media.join("Song.wav"), wav(1))?;
+    let probed =
+        thelxinoe_catalog::index_with_progress(&db, root.clone(), tools.media()?, |_, _| async {
+            Ok(())
+        })
+        .await?;
+    db.write("test.remove", |c| {
+        c.execute("DELETE FROM library_roots", [])?;
+        Ok(())
+    })
+    .await?;
+    let committed = probed.commit(&db).await.map_err(|error| error.to_string());
+    assert_eq!(committed, Err("Library was removed".into()));
+    let probing =
+        thelxinoe_catalog::index_with_progress(&db, root, tools.media()?, |_, _| async { Ok(()) })
+            .await;
+    assert_eq!(
+        probing.err().map(|error| error.to_string()).as_deref(),
+        Some("Library was removed")
+    );
+    assert_eq!(count(&db, "SELECT COUNT(*) FROM media_files").await?, 0);
+    Ok(())
+}
+
 // The file keeps its logical entry, so watch state stays with what was watched, while its
 // title and place follow the file: an episode renamed S01E02 to S01E03 becomes episode 3.
 #[tokio::test]
