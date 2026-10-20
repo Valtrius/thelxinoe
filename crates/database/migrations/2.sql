@@ -69,3 +69,7 @@ UPDATE media_files SET scanned_at=CAST(strftime('%s','now') AS INTEGER) WHERE pr
 -- Statistics read each played item from its own source by key instead of through a view.
 CREATE INDEX playback_history_open ON playback_history(playback_id) WHERE ended_at IS NULL;
 DROP VIEW statistics_metadata;
+
+-- Sessions slide 30 days past their last use, up to 400 days after sign-in. Remembered
+-- sessions used to never end; every session gets that bound now.
+UPDATE sessions SET expires_at=MIN(expires_at,created_at+400*86400,last_seen+30*86400);

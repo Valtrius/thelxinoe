@@ -343,9 +343,11 @@ pub async fn require(
     }
     Ok(p)
 }
+/// The cookie lasts as long as any session can; the server decides when the session ends.
 pub fn cookie(raw: &str, secure: bool) -> String {
     format!(
-        "thelxinoe_session={raw}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000{}",
+        "thelxinoe_session={raw}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}{}",
+        thelxinoe_auth::lifetime::MAX,
         if secure { "; Secure" } else { "" }
     )
 }

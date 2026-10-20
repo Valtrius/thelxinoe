@@ -98,17 +98,12 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
                 .map(|(_, value)| value.to_owned())
         })
 }
-fn persistent_cookie(name: &str, raw: &str, secure: bool) -> String {
+pub(crate) fn remember_cookie(raw: &str, secure: bool) -> String {
     format!(
-        "{name}={raw}; HttpOnly; SameSite=Strict; Path=/; Max-Age=34560000{}",
+        "thelxinoe_remember={raw}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}{}",
+        thelxinoe_auth::lifetime::MAX,
         if secure { "; Secure" } else { "" }
     )
-}
-pub(crate) fn session_cookie(raw: &str, secure: bool) -> String {
-    persistent_cookie("thelxinoe_session", raw, secure)
-}
-pub(crate) fn remember_cookie(raw: &str, secure: bool) -> String {
-    persistent_cookie("thelxinoe_remember", raw, secure)
 }
 fn label(value: &str) -> Result<String> {
     let v = value.trim();
@@ -926,6 +921,35 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(left, [0, 0]);
+    }
+
+    // A remembered device skips two-step sign-in only while it's in use and within the cap.
+    #[tokio::test]
+    async fn remembered_devices_lapse_when_unused_or_past_the_cap() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = thelxinoe_database::Database::open(temp.path().join("db")).unwrap();
+        let now = thelxinoe_core::now();
+        let day = 86400;
+        db.write("test.remembered", move |c| {
+            c.execute("INSERT INTO users(id,username,password_hash,role,created_at) VALUES ('u','u','h','user',1)", [])?;
+            for (id, created, seen) in [("unused", now - 100 * day, now - 91 * day), ("capped", now - 401 * day, now), ("in-use", now - 100 * day, now - 89 * day)] {
+                c.execute(
+                    "INSERT INTO auth_remembered_devices(id,user_id,token_hash,name,created_at,last_seen) VALUES (?1,'u',?1,'Browser',?2,?3)",
+                    rusqlite::params![id, created, seen],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+        for (device, expected) in [
+            ("unused", None),
+            ("capped", None),
+            ("in-use", Some("in-use")),
+        ] {
+            let found = super::storage::remembered(&db, "u".into(), device.into()).await;
+            assert_eq!(found.unwrap().as_deref(), expected, "{device}");
+        }
     }
 
     #[test]

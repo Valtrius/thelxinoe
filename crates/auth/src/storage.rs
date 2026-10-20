@@ -50,7 +50,7 @@ pub(super) async fn issue_session(
                 transport,
                 name,
                 now(),
-                if remembered.is_some() { 253402300799_i64 } else { now() + 30 * 86400 },
+                now() + lifetime::SESSION_IDLE,
                 expected_hash,
                 authorizer,
                 version,
@@ -76,15 +76,24 @@ pub(super) async fn resolve(
         let result = c.query_row("SELECT u.id,u.username,u.role,u.timezone,s.id,s.transport,s.last_seen FROM sessions s JOIN user_profiles u ON u.id=s.user_id WHERE token_hash=?1 AND transport=?2 AND expires_at>?3", params![hash,transport,now()], |r| Ok((Principal { user: user_row(r)?, session_id: r.get(4)?, transport: r.get(5)? },r.get::<_,i64>(6)?))).optional()?;
         Ok(result)
     }).await?;
+    // Recording use at most once a minute keeps the writer quiet; the same write slides the
+    // session's end, up to its cap, and keeps the device it was remembered on in use.
     if let Some((principal, last_seen)) = &result
         && *last_seen < now() - 60
     {
         let session = principal.session_id.clone();
         db.write("auth.touch_session", move |c| {
-            c.execute(
-                "UPDATE sessions SET last_seen=?1 WHERE id=?2 AND last_seen<?3 AND expires_at>?1",
-                params![now(), session, now() - 60],
-            )?;
+            let now = now();
+            if c.execute(
+                "UPDATE sessions SET last_seen=?1,expires_at=MIN(?1+?3,created_at+?4) WHERE id=?2 AND last_seen<?1-60 AND expires_at>?1",
+                params![now, session, lifetime::SESSION_IDLE, lifetime::MAX],
+            )? == 1
+            {
+                c.execute(
+                    "UPDATE auth_remembered_devices SET last_seen=?1 WHERE id=(SELECT remembered_device_id FROM sessions WHERE id=?2)",
+                    params![now, session],
+                )?;
+            }
             Ok(())
         })
         .await?;

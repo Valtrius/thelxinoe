@@ -1,5 +1,5 @@
-//! Daily database housekeeping: finished jobs, expired sessions, old tool runs, stale
-//! segment fingerprints and files missing for a month.
+//! Daily database housekeeping: finished jobs, expired sign-in credentials, old tool runs,
+//! stale segment fingerprints and files missing for a month.
 
 #[path = "storage/maintenance.rs"]
 mod storage;
@@ -31,7 +31,7 @@ async fn prune(state: &AppState) -> anyhow::Result<()> {
     if removed > 0 {
         tracing::info!(
             removed,
-            "Pruned finished jobs, expired sessions, old tool runs, stale fingerprints and missing files"
+            "Pruned finished jobs, expired sign-in credentials, old tool runs, stale fingerprints and missing files"
         );
     }
     Ok(())
@@ -66,6 +66,13 @@ mod tests {
                         rusqlite::params![id, old, expires],
                     )?;
                 }
+                let year = 365 * 86400;
+                for (id, created, seen) in [("idle", old, now() - year / 3), ("capped", now() - 2 * year, now()), ("in-use", old, now())] {
+                    db.execute(
+                        "INSERT INTO auth_remembered_devices(id,user_id,token_hash,name,created_at,last_seen) VALUES (?1,'alice',?1,'Browser',?2,?3)",
+                        rusqlite::params![id, created, seen],
+                    )?;
+                }
                 db.execute("INSERT INTO server_tools(id,channel) VALUES ('ffmpeg','stable') ON CONFLICT DO NOTHING", [])?;
                 for (id, stage) in [("check-1", "complete"), ("check-2", "failed"), ("check-3", "complete")] {
                     db.execute(
@@ -85,6 +92,10 @@ mod tests {
         let sessions = rows(&state, "SELECT id FROM sessions").await;
         assert!(
             sessions.contains(&"current".to_owned()) && !sessions.contains(&"expired".to_owned())
+        );
+        assert_eq!(
+            rows(&state, "SELECT id FROM auth_remembered_devices").await,
+            ["in-use"]
         );
         assert_eq!(
             rows(&state, "SELECT id FROM tool_jobs WHERE tool='ffmpeg'").await,

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
-use thelxinoe_auth::SessionAuthorization;
+use thelxinoe_auth::{SessionAuthorization, lifetime};
 use thelxinoe_core::{Principal, now};
 use thelxinoe_database::Database;
 
@@ -214,7 +214,7 @@ pub(super) async fn remembered(
     user: String,
     hash: String,
 ) -> Result<Option<String>> {
-    db.write("authentication.remembered.resolve",move |c|Ok(c.query_row("UPDATE auth_remembered_devices SET last_seen=?3 WHERE user_id=?1 AND token_hash=?2 RETURNING id",params![user,hash,now()],|r|r.get(0)).optional()?)).await
+    db.write("authentication.remembered.resolve",move |c|Ok(c.query_row("UPDATE auth_remembered_devices SET last_seen=?3 WHERE user_id=?1 AND token_hash=?2 AND last_seen>?3-?4 AND created_at>?3-?5 RETURNING id",params![user,hash,now(),lifetime::REMEMBERED_IDLE,lifetime::MAX],|r|r.get(0)).optional()?)).await
 }
 pub(super) struct Remember {
     pub id: String,
@@ -259,7 +259,7 @@ pub(super) async fn finish_totp(
 /// What else goes when a user's credentials are invalidated.
 #[derive(Clone, Copy)]
 pub(crate) enum Revoke<'a> {
-    /// Every other session; the caller's own keeps a bounded lifetime.
+    /// Every other session; the caller's own stays, no longer remembered.
     OtherSessions(&'a str),
     /// Every session.
     Sessions,
@@ -280,8 +280,8 @@ pub(crate) fn invalidate(c: &Connection, user: &str, revoke: Revoke) -> Result<(
                 params![user, keep],
             )?;
             c.execute(
-                "UPDATE sessions SET remembered_device_id=NULL,expires_at=MIN(expires_at,?2) WHERE id=?1",
-                params![keep, now() + 30 * 86400],
+                "UPDATE sessions SET remembered_device_id=NULL WHERE id=?1",
+                [keep],
             )?;
         }
         Revoke::Sessions | Revoke::Everything => {

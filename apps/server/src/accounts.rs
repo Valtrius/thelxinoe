@@ -55,13 +55,6 @@ pub(crate) async fn respond_session(
         return Err(ApiError::bad("Unsupported credential transport"));
     }
     let user_id = authorization.user_id().to_owned();
-    let remembered = matches!(
-        &authorization,
-        SessionAuthorization::Verified {
-            remembered_device_id: Some(_),
-            ..
-        }
-    );
     let raw = issue_session(
         &state.db,
         authorization,
@@ -90,13 +83,7 @@ pub(crate) async fn respond_session(
     if !device {
         response.headers_mut().insert(
             header::SET_COOKIE,
-            if remembered {
-                crate::authentication::session_cookie(&raw, secure)
-            } else {
-                security::cookie(&raw, secure)
-            }
-            .parse()
-            .unwrap(),
+            security::cookie(&raw, secure).parse().unwrap(),
         );
         if let Some(remember) = remember {
             response.headers_mut().append(
