@@ -2970,7 +2970,10 @@ mod tests {
     async fn a_replacement_never_starts_while_the_original_can_write() {
         for (state, restart) in [
             (json!({"Running":true}), json!({"Name":"no"})),
-            (json!({"Running":false,"Restarting":true}), json!({"Name":"no"})),
+            (
+                json!({"Running":false,"Restarting":true}),
+                json!({"Name":"no"}),
+            ),
             (json!({"Running":false}), json!({"Name":"unless-stopped"})),
         ] {
             let docker = crate::test_support::Docker::new();
@@ -2985,8 +2988,7 @@ mod tests {
             let error = docker
                 .scope(activate(&d, &mut t))
                 .await
-                .err()
-                .expect("activation refused");
+                .expect_err("activation refused");
             assert_eq!(error.0, StatusCode::CONFLICT);
         }
     }
