@@ -120,7 +120,10 @@ async fn main() -> anyhow::Result<()> {
         let socket = directory.join("controller.sock");
         stack::retain_worker_image().await?;
         stack::product::startup().await?;
-        stack::recover_backups().await?;
+        if let Err(error) = stack::recover_backups().await {
+            // The journals keep what still needs recovery; serving the API never waits on it.
+            eprintln!("Backup recovery failed: {error:#}");
+        }
         if socket.exists() {
             if !std::fs::symlink_metadata(&socket)?.file_type().is_socket() {
                 anyhow::bail!("Refusing to replace a non-socket path");
