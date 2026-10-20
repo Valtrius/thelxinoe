@@ -64,7 +64,7 @@ impl ToolManager {
                 args.push(format!("--config-dir={}", directory.display()));
                 snapshot = Some(directory.clone());
                 for id in ToolId::ALL.into_iter().filter(|id| id.plugin()) {
-                    let p = Self::preference(state, id, &AppSettings::default());
+                    let p = Self::preference(state, id);
                     // Off suppresses local copies too, but only in the disposable snapshot.
                     if !p.enabled || p.source == crate::tools::models::ToolSource::Managed {
                         for name in Self::plugin_script_names(id) {
@@ -191,10 +191,7 @@ mod tests {
                     Ok(())
                 })
                 .unwrap();
-            let (_, runtime) = manager
-                .resolve_launch(&AppSettings::default(), &[], true)
-                .await
-                .unwrap();
+            let (_, runtime) = manager.resolve_launch(&[], true).await.unwrap();
             let snapshot = PathBuf::from(
                 runtime
                     .mpv_args
@@ -332,10 +329,7 @@ mp.set_property_native('user-data/thelxinoe-plugin-probe/' .. mp.get_script_name
                     Ok(())
                 })
                 .unwrap();
-            let (_, runtime) = manager
-                .resolve_launch(&AppSettings::default(), &[], true)
-                .await
-                .unwrap();
+            let (_, runtime) = manager.resolve_launch(&[], true).await.unwrap();
             let mut probe = Probe::start_mode(&executable, &runtime.mpv_args, true)
                 .await
                 .unwrap();
@@ -405,10 +399,7 @@ mp.set_property_native('user-data/thelxinoe-plugin-probe/' .. mp.get_script_name
         let custom = "# Keep my destination\r\nsubtitles_directory=!D:/My subtitles\r\n";
         for text in ["", custom] {
             fs::write(&config, text).unwrap();
-            let (_, runtime) = manager
-                .resolve_launch(&AppSettings::default(), &[ToolId::Mpv], true)
-                .await
-                .unwrap();
+            let (_, runtime) = manager.resolve_launch(&[ToolId::Mpv], true).await.unwrap();
             let snapshot = PathBuf::from(
                 runtime
                     .mpv_args

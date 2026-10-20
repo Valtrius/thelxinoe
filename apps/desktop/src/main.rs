@@ -280,7 +280,6 @@ async fn change_server(app: tauri::AppHandle, value: String) -> Result<String, S
     if server_url(app.clone())?.trim_end_matches('/') == origin {
         return Ok(origin);
     }
-    #[cfg(windows)]
     app.state::<mpv::DesktopPlayback>().player.stop(None).await;
     match credential(&app)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => {}
@@ -300,7 +299,6 @@ async fn backend_request(
     method: String,
     mut body: Option<Value>,
 ) -> Result<Value, String> {
-    #[cfg(windows)]
     if path == "/auth/logout" && method == "POST" {
         app.state::<mpv::DesktopPlayback>().player.stop(None).await;
     }
@@ -422,7 +420,6 @@ fn main() {
                     tracing::warn!(%error, "Could not save desktop window state");
                 }
                 tauri::async_runtime::spawn(async move {
-                    #[cfg(windows)]
                     app.state::<mpv::DesktopPlayback>().player.stop(None).await;
                     if let Some(state) = app.try_state::<tools::DesktopTools>()
                         && let Ok(tools) = state.manager()

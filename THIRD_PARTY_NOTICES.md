@@ -27,7 +27,7 @@ file's `notes_url`.
 
 The installer contains the Thelxinoe desktop app, Rust crates and npm packages
 listed in the lock files above, and Microsoft's WebView2 bootstrapper. The player
-and its tools (mpv, FFmpeg, yt-dlp, Streamlink) are downloaded from their
+and its plugins (mpv, uosc, thumbfast, sub-select) are downloaded from their
 publishers when you install them in **Settings → MPV**, under their own licenses.
 
 ## Source for GPL components

@@ -1,11 +1,9 @@
 use super::*;
 
 impl ToolManager {
-    pub async fn mpv_schema(&self, settings: &AppSettings) -> AppResult<MpvSchema> {
-        let (settings, _lease) = self
-            .resolve_launch(settings, &[crate::tools::models::ToolId::Mpv], false)
-            .await?;
-        let check = self.probe("mpv", settings.mpv_path.as_deref()).await;
+    pub async fn mpv_schema(&self) -> AppResult<MpvSchema> {
+        let (mpv_path, _lease) = self.resolve_launch(&[ToolId::Mpv], false).await?;
+        let check = self.probe("mpv", mpv_path.as_deref()).await;
         let path = check.path.filter(|_| check.detected).ok_or_else(|| {
             AppError::validation("Select or install MPV to load its available options.")
         })?;
@@ -42,15 +40,9 @@ impl ToolManager {
         result
     }
 
-    pub async fn test_mpv_configuration(
-        &self,
-        settings: &AppSettings,
-        clean: bool,
-    ) -> AppResult<String> {
-        let (settings, runtime) = self
-            .resolve_launch(settings, &[crate::tools::models::ToolId::Mpv], !clean)
-            .await?;
-        let check = self.probe("mpv", settings.mpv_path.as_deref()).await;
+    pub async fn test_mpv_configuration(&self, clean: bool) -> AppResult<String> {
+        let (mpv_path, runtime) = self.resolve_launch(&[ToolId::Mpv], !clean).await?;
+        let check = self.probe("mpv", mpv_path.as_deref()).await;
         let path = check
             .path
             .filter(|_| check.detected)

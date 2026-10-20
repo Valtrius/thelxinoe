@@ -57,12 +57,12 @@ pub(super) fn record_installation(
 }
 
 impl ToolManager {
-    pub async fn install(&self, id: &str, settings: &AppSettings) -> AppResult<()> {
+    pub async fn install(&self, id: &str) -> AppResult<()> {
         let _operation = self.operations.lock().await;
-        self.install_locked(id, settings).await
+        self.install_locked(id).await
     }
 
-    pub(super) async fn install_locked(&self, id: &str, settings: &AppSettings) -> AppResult<()> {
+    pub(super) async fn install_locked(&self, id: &str) -> AppResult<()> {
         let state = self.state();
         let package = state
             .catalog
@@ -72,8 +72,8 @@ impl ToolManager {
             .ok_or_else(|| AppError::validation("Select an available upstream package."))?;
         let result = async {
             for dependency in &package.dependencies {
-                if !self.diagnostic(*dependency, settings).await.detected {
-                    let preference = Self::preference(&state, *dependency, settings);
+                if !self.diagnostic(*dependency).await.detected {
+                    let preference = Self::preference(&state, *dependency);
                     if preference.source == ToolSource::Custom || (preference.source == ToolSource::System && state.tools.contains_key(dependency)) {
                         return Err(AppError::validation(format!("The selected {} executable is unavailable. Check it or choose a managed version in MPV settings; your installation will not be replaced.", dependency.key())));
                     }
@@ -92,7 +92,7 @@ impl ToolManager {
                         .await?;
                     let current = self.state();
                     if current.tools.get(dependency).is_some_and(|p| p.source == ToolSource::Managed && p.active.as_deref() == Some(&package_id)) {
-                        self.diagnostic(*dependency, settings).await;
+                        self.diagnostic(*dependency).await;
                     }
                 }
             }
@@ -111,7 +111,7 @@ impl ToolManager {
                     p.source == ToolSource::Managed && p.active.as_deref() == Some(&package.id)
                 })
             {
-                self.diagnostic(package.tool, settings).await;
+                self.diagnostic(package.tool).await;
             }
         }
         self.emit(ToolOperation {
@@ -280,14 +280,6 @@ impl ToolManager {
                 return Err(check.error.unwrap_or_else(|| {
                     AppError::validation("Tool did not pass its startup check.")
                 }));
-            }
-            if package.tool == ToolId::Ffmpeg {
-                let probe = entry.with_file_name("ffprobe.exe");
-                if !self.probe("ffprobe", probe.to_str()).await.detected {
-                    return Err(AppError::validation(
-                        "FFmpeg package does not include a working FFprobe.",
-                    ));
-                }
             }
             check.version.unwrap_or_default()
         };
@@ -514,7 +506,6 @@ mod tests {
                             p.previous = Some(inactive.clone());
                             p.pinned = true;
                             p.enabled = false;
-                            p.channel = "preview".into();
                             p.update_policy = UpdatePolicy::Manual;
                             p.held_versions = vec![inactive.clone()];
                             Ok(())
@@ -628,23 +619,19 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         println!("Qualification directory: {}", directory.path().display());
         let manager = ToolManager::new(directory.path().to_path_buf(), None).unwrap();
-        let settings = AppSettings::default();
         assert!(manager.state().catalog.is_none());
         assert!(
             manager
-                .snapshot(&settings)
+                .snapshot()
                 .unwrap()
                 .tools
                 .iter()
                 .all(|tool| tool.versions.is_empty())
         );
         manager.refresh_catalog().await.unwrap();
-        assert_eq!(
-            manager.state().upstream_checked.len(),
-            ToolId::DESKTOP.len()
-        );
+        assert_eq!(manager.state().upstream_checked.len(), ToolId::ALL.len());
         let first = manager.state();
-        assert_eq!(first.upstream_etags.len(), ToolId::DESKTOP.len());
+        assert_eq!(first.upstream_etags.len(), ToolId::ALL.len());
         manager
             .edit(|s| {
                 s.last_checked = None;
@@ -657,7 +644,7 @@ mod tests {
             serde_json::to_value(&manager.state().catalog).unwrap()
         );
         let catalog = manager.state().catalog.unwrap();
-        for id in ToolId::DESKTOP {
+        for id in ToolId::ALL {
             let package = catalog
                 .packages
                 .iter()
@@ -665,11 +652,11 @@ mod tests {
                 .unwrap();
             println!("Installing {} {}", id.key(), package.version);
             manager
-                .install(&package.id, &settings)
+                .install(&package.id)
                 .await
                 .unwrap_or_else(|e| panic!("{}: {} {:?}", id.key(), e.message, e.technical));
         }
-        let schema = manager.mpv_schema(&settings).await.unwrap();
+        let schema = manager.mpv_schema().await.unwrap();
         assert!(schema.options.len() > 300);
         assert!(schema.options.iter().any(|v| v["name"] == "volume"));
         println!("MPV exposes {} options", schema.options.len());
@@ -682,23 +669,13 @@ mod tests {
             .unwrap();
         let doc = manager.config_document("mpv.conf").unwrap();
         let saved = manager
-            .save_config_document(
-                "mpv.conf",
-                "# qualification\nvolume=42\n",
-                &doc.revision,
-                &settings,
-            )
+            .save_config_document("mpv.conf", "# qualification\nvolume=42\n", &doc.revision)
             .await
             .unwrap();
         assert_eq!(saved.text, "# qualification\nvolume=42\n");
         assert!(
             manager
-                .save_config_document(
-                    "mpv.conf",
-                    "volume=invalid-number\n",
-                    &saved.revision,
-                    &settings
-                )
+                .save_config_document("mpv.conf", "volume=invalid-number\n", &saved.revision)
                 .await
                 .is_err()
         );
@@ -711,16 +688,12 @@ mod tests {
                 .save_config_document(
                     "mpv.conf",
                     "nonexistent-thelxinoe-option=yes\n",
-                    &saved.revision,
-                    &settings
+                    &saved.revision
                 )
                 .await
                 .is_err()
         );
-        let (_, runtime) = manager
-            .resolve_launch(&settings, &[ToolId::Mpv], true)
-            .await
-            .unwrap();
+        let (_, runtime) = manager.resolve_launch(&[ToolId::Mpv], true).await.unwrap();
         assert!(runtime.mpv_args.iter().any(|a| a.contains("config-dir")));
         assert_eq!(
             runtime
@@ -744,20 +717,8 @@ mod tests {
             })
             .unwrap();
         manager.repair(&active).await.unwrap();
-        println!(
-            "{}",
-            manager
-                .test_mpv_configuration(&settings, false)
-                .await
-                .unwrap()
-        );
-        println!(
-            "{}",
-            manager
-                .test_mpv_configuration(&settings, true)
-                .await
-                .unwrap()
-        );
+        println!("{}", manager.test_mpv_configuration(false).await.unwrap());
+        println!("{}", manager.test_mpv_configuration(true).await.unwrap());
         println!("All upstream packages and MPV configuration checks passed");
     }
 }

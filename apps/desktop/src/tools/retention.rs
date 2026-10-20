@@ -118,7 +118,7 @@ mod tests {
     async fn downloaded_versions_are_capped_per_tool_after_activation() {
         let directory = tempfile::tempdir().unwrap();
         let manager = ToolManager::new(directory.path().to_path_buf(), None).unwrap();
-        for tool in [ToolId::Mpv, ToolId::Deno] {
+        for tool in [ToolId::Mpv, ToolId::Uosc] {
             for number in 1..=12 {
                 let id = retention_install(&manager, tool, number);
                 manager.activate(tool, &id).await.unwrap();
@@ -222,7 +222,7 @@ mod tests {
             manager.activate(ToolId::Mpv, &id).await.unwrap();
             launches.push(
                 manager
-                    .resolve_launch(&AppSettings::default(), &[ToolId::Mpv], false)
+                    .resolve_launch(&[ToolId::Mpv], false)
                     .await
                     .unwrap()
                     .1,

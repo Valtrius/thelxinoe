@@ -231,16 +231,12 @@ fn releases(tool: ToolId, bytes: &[u8], previous: &[Package]) -> AppResult<Vec<P
         .map_err(|e| AppError::internal(e.to_string()))?;
     let mut packages = Vec::new();
     for release in releases {
-        let mut assets: Vec<_> = release
+        let assets: Vec<_> = release
             .assets
             .iter()
             .filter(|a| pattern.is_match(&a.name))
             .collect();
-        // FFmpeg publishes several maintenance branches in one dated release.
-        // Pick the newest numeric LGPL branch, without hard-coding its major version.
-        if tool == ToolId::Ffmpeg {
-            assets.sort_by_key(|a| std::cmp::Reverse(ffmpeg_branch(&pattern, &a.name)));
-        } else if assets.len() > 1 {
+        if assets.len() > 1 {
             return Err(AppError::validation(
                 "Upstream has multiple matching Windows packages; installation rules need updating.",
             ));
@@ -307,19 +303,6 @@ fn releases(tool: ToolId, bytes: &[u8], previous: &[Package]) -> AppResult<Vec<P
     }
     mark_latest(&mut packages)?;
     Ok(packages)
-}
-
-fn ffmpeg_branch(pattern: &regex::Regex, name: &str) -> Vec<u32> {
-    pattern
-        .captures(name)
-        .and_then(|c| c.get(1))
-        .map(|m| {
-            m.as_str()
-                .split('.')
-                .filter_map(|v| v.parse().ok())
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn package(
@@ -588,53 +571,27 @@ mod tests {
         catalog::validate(&Catalog { packages }).unwrap();
     }
     #[test]
-    fn ffmpeg_chooses_highest_numeric_lgpl_branch() {
-        let mut data = release(
-            ToolId::Ffmpeg,
-            "autobuild-2026-09-11",
-            "ffmpeg-n9.0-1-gabc-win64-lgpl-9.0.zip",
-            "2026-09-11T00:00:00Z",
-        );
-        for name in [
-            "ffmpeg-n10.0-1-gabc-win64-lgpl-10.0.zip",
-            "ffmpeg-n11.0-1-gabc-win64-gpl-11.0.zip",
-            "ffmpeg-n12.0-1-gabc-winarm64-lgpl-12.0.zip",
-        ] {
-            let asset = release(
-                ToolId::Ffmpeg,
-                "autobuild-2026-09-11",
-                name,
-                "2026-09-11T00:00:00Z",
-            )["assets"][0]
-                .clone();
-            data["assets"].as_array_mut().unwrap().push(asset);
-        }
-        let packages = parse(ToolId::Ffmpeg, &[data], &[]).unwrap();
-        assert!(packages[0].url.ends_with("win64-lgpl-10.0.zip"));
-        catalog::validate(&Catalog { packages }).unwrap();
-    }
-    #[test]
     fn digests_are_required_and_republished_bytes_get_a_new_id() {
         let data = release(
-            ToolId::Ytdlp,
-            "2026.09.01",
-            "yt-dlp.exe",
+            ToolId::Mpv,
+            "20260901",
+            "mpv-x86_64-20260901-git-cdef.7z",
             "2026-09-01T00:00:00Z",
         );
-        let previous = parse(ToolId::Ytdlp, std::slice::from_ref(&data), &[]).unwrap();
-        let unchanged = parse(ToolId::Ytdlp, std::slice::from_ref(&data), &previous).unwrap();
+        let previous = parse(ToolId::Mpv, std::slice::from_ref(&data), &[]).unwrap();
+        let unchanged = parse(ToolId::Mpv, std::slice::from_ref(&data), &previous).unwrap();
         assert_eq!(previous[0].id, unchanged[0].id);
         let mut changed = data.clone();
         changed["assets"][0]["digest"] = format!("sha256:{}", "b".repeat(64)).into();
-        let changed = parse(ToolId::Ytdlp, &[changed], &previous).unwrap();
+        let changed = parse(ToolId::Mpv, &[changed], &previous).unwrap();
         assert_ne!(previous[0].id, changed[0].id);
         let mut missing = data.clone();
         missing["assets"][0]["digest"] = Value::Null;
-        assert!(parse(ToolId::Ytdlp, std::slice::from_ref(&missing), &[]).is_err());
-        assert!(parse(ToolId::Ytdlp, &[missing], &previous).is_ok());
+        assert!(parse(ToolId::Mpv, std::slice::from_ref(&missing), &[]).is_err());
+        assert!(parse(ToolId::Mpv, &[missing], &previous).is_ok());
         let mut invalid = data;
         invalid["assets"][0]["digest"] = "sha256:bad".into();
-        assert!(parse(ToolId::Ytdlp, &[invalid], &previous).is_err());
+        assert!(parse(ToolId::Mpv, &[invalid], &previous).is_err());
     }
     #[test]
     fn commit_snapshots_require_full_hashes() {

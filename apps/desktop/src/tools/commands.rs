@@ -10,11 +10,7 @@ async fn changed(app: &AppHandle, _state: &DesktopTools) {
 }
 #[tauri::command]
 pub async fn tools_get(state: State<'_, DesktopTools>) -> AppResult<ToolsSnapshot> {
-    let mut snapshot = state.manager()?.snapshot(&Default::default())?;
-    snapshot
-        .tools
-        .retain(|tool| ToolId::DESKTOP.contains(&tool.id));
-    Ok(snapshot)
+    state.manager()?.snapshot()
 }
 
 #[tauri::command]
@@ -28,15 +24,14 @@ pub async fn tools_check(
             "Use the MPV configuration test to check plugins.",
         ));
     }
-    let settings = crate::models::AppSettings::default();
     state.manager()?.invalidate_tool_diagnostic(tool);
-    state.manager()?.diagnostic(tool, &settings).await;
+    state.manager()?.diagnostic(tool).await;
     changed(&app, &state).await;
     Ok(())
 }
 #[tauri::command]
 pub async fn tools_updates(state: State<'_, DesktopTools>) -> AppResult<Vec<ToolUpdate>> {
-    Ok(state.manager()?.available_updates(&Default::default()))
+    Ok(state.manager()?.available_updates())
 }
 #[tauri::command]
 pub async fn tools_update(
@@ -44,10 +39,7 @@ pub async fn tools_update(
     state: State<'_, DesktopTools>,
     package_id: String,
 ) -> AppResult<()> {
-    let result = state
-        .manager()?
-        .update(&package_id, &Default::default())
-        .await;
+    let result = state.manager()?.update(&package_id).await;
     changed(&app, &state).await;
     result
 }
@@ -74,10 +66,7 @@ pub async fn tools_install(
     state: State<'_, DesktopTools>,
     package_id: String,
 ) -> AppResult<()> {
-    let result = state
-        .manager()?
-        .install(&package_id, &Default::default())
-        .await;
+    let result = state.manager()?.install(&package_id).await;
     changed(&app, &state).await;
     result
 }
@@ -90,7 +79,7 @@ pub async fn tools_activate(
 ) -> AppResult<()> {
     state.manager()?.activate(tool, &package_id).await?;
     if !tool.plugin() {
-        state.manager()?.diagnostic(tool, &Default::default()).await;
+        state.manager()?.diagnostic(tool).await;
     }
     changed(&app, &state).await;
     Ok(())
@@ -103,7 +92,7 @@ pub async fn tools_rollback(
 ) -> AppResult<()> {
     state.manager()?.rollback(tool).await?;
     if !tool.plugin() {
-        state.manager()?.diagnostic(tool, &Default::default()).await;
+        state.manager()?.diagnostic(tool).await;
     }
     changed(&app, &state).await;
     Ok(())
@@ -126,16 +115,13 @@ pub async fn tools_repair(
 ) -> AppResult<()> {
     let result = state.manager()?.repair(&package_id).await;
     if result.is_ok() {
-        let snapshot = state.manager()?.snapshot(&Default::default())?;
+        let snapshot = state.manager()?.snapshot()?;
         if let Some(tool) = snapshot.tools.iter().find(|tool| {
             !tool.id.plugin()
                 && tool.preference.source == super::models::ToolSource::Managed
                 && tool.preference.active.as_deref() == Some(&package_id)
         }) {
-            state
-                .manager()?
-                .diagnostic(tool.id, &Default::default())
-                .await;
+            state.manager()?.diagnostic(tool.id).await;
         }
     }
     changed(&app, &state).await;
@@ -171,7 +157,7 @@ pub async fn mpv_config_save(
 ) -> AppResult<ConfigDocument> {
     state
         .manager()?
-        .save_config_document(&name, &text, &revision, &Default::default())
+        .save_config_document(&name, &text, &revision)
         .await
 }
 #[tauri::command]
@@ -182,7 +168,7 @@ pub async fn mpv_config_restore(
 ) -> AppResult<ConfigDocument> {
     state
         .manager()?
-        .restore_config_document(&name, &revision, &Default::default())
+        .restore_config_document(&name, &revision)
         .await
 }
 #[tauri::command]
@@ -210,15 +196,12 @@ pub async fn mpv_open_configuration_directory(state: State<'_, DesktopTools>) ->
 }
 #[tauri::command]
 pub async fn mpv_options(state: State<'_, DesktopTools>) -> AppResult<MpvSchema> {
-    state.manager()?.mpv_schema(&Default::default()).await
+    state.manager()?.mpv_schema().await
 }
 #[tauri::command]
 pub async fn mpv_test_configuration(
     state: State<'_, DesktopTools>,
     clean: bool,
 ) -> AppResult<String> {
-    state
-        .manager()?
-        .test_mpv_configuration(&Default::default(), clean)
-        .await
+    state.manager()?.test_mpv_configuration(clean).await
 }

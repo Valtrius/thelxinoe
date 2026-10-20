@@ -1,17 +1,12 @@
-#[cfg(windows)]
 mod backend;
-#[cfg(windows)]
 mod ipc;
-#[cfg(windows)]
 mod runtime;
 
 use tauri::Manager;
 #[derive(Default)]
 pub struct DesktopPlayback {
-    #[cfg(windows)]
     pub player: runtime::Player,
 }
-#[cfg(windows)]
 #[tauri::command]
 pub async fn mpv_play(
     app: tauri::AppHandle,
@@ -46,7 +41,6 @@ pub async fn mpv_play(
         .map_err(|e| e.to_string())
 }
 /// One run, or the most recently started one.
-#[cfg(windows)]
 #[tauri::command]
 pub async fn mpv_state(
     state: tauri::State<'_, DesktopPlayback>,
@@ -54,7 +48,6 @@ pub async fn mpv_state(
 ) -> Result<runtime::View, String> {
     Ok(state.player.view(run.as_deref()).await)
 }
-#[cfg(windows)]
 #[tauri::command]
 pub async fn mpv_sessions(
     state: tauri::State<'_, DesktopPlayback>,
@@ -62,7 +55,6 @@ pub async fn mpv_sessions(
     Ok(state.player.views().await)
 }
 /// Controls one run, or the most recently started one. Stop without a run stops all.
-#[cfg(windows)]
 #[tauri::command]
 pub async fn mpv_command(
     state: tauri::State<'_, DesktopPlayback>,

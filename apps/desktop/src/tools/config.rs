@@ -8,10 +8,7 @@ use super::{
     models::{MpvConfigSource, MpvPreferences, Registry, ToolId},
     process::ProcessJob,
 };
-use crate::{
-    error::{AppError, AppResult},
-    models::AppSettings,
-};
+use crate::error::{AppError, AppResult};
 use probe::Probe;
 use serde::Serialize;
 use serde_json::{Value, json};

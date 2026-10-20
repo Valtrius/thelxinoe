@@ -18,34 +18,6 @@ pub fn provider(tool: ToolId) -> Provider {
             "GPL; see upstream build and component notices",
             &[],
         ),
-        ToolId::Ytdlp => (
-            "yt-dlp/yt-dlp",
-            r"^yt-dlp\.exe$",
-            "yt-dlp.exe",
-            "GPL-3.0-or-later (standalone binary)",
-            &[ToolId::Deno],
-        ),
-        ToolId::Streamlink => (
-            "streamlink/windows-builds",
-            r"^streamlink-[\d.]+-\d+-py\d+-x86_64\.zip$",
-            "streamlink.exe",
-            "BSD-2-Clause; bundled dependencies have separate licenses",
-            &[],
-        ),
-        ToolId::Ffmpeg => (
-            "BtbN/FFmpeg-Builds",
-            r"^ffmpeg-n[\d.]+-[\w-]+-win64-lgpl-([\d.]+)\.zip$",
-            "ffmpeg.exe",
-            "LGPL-2.1-or-later; see included notices",
-            &[],
-        ),
-        ToolId::Deno => (
-            "denoland/deno",
-            r"^deno-x86_64-pc-windows-msvc\.zip$",
-            "deno.exe",
-            "MIT; see upstream third-party notices",
-            &[],
-        ),
         ToolId::Uosc => (
             "tomasklaen/uosc",
             r"^uosc\.zip$",
@@ -82,10 +54,6 @@ pub(super) fn test_package(tool: ToolId) -> super::models::Package {
     let definition = provider(tool);
     let name = match tool {
         ToolId::Mpv => "mpv-x86_64-20260101-git-abcd.7z",
-        ToolId::Ytdlp => "yt-dlp.exe",
-        ToolId::Streamlink => "streamlink-8.0.0-1-py314-x86_64.zip",
-        ToolId::Ffmpeg => "ffmpeg-n9.0-1-gabcd-win64-lgpl-9.0.zip",
-        ToolId::Deno => "deno-x86_64-pc-windows-msvc.zip",
         ToolId::Uosc => "uosc.zip",
         ToolId::Thumbfast | ToolId::SubSelect => "snapshot.zip",
     };

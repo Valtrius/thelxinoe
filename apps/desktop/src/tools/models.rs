@@ -8,34 +8,16 @@ use crate::models::ExecutableDiagnostic;
 #[serde(rename_all = "kebab-case")]
 pub enum ToolId {
     Mpv,
-    Ytdlp,
-    Streamlink,
-    Ffmpeg,
-    Deno,
     Uosc,
     Thumbfast,
     SubSelect,
 }
 
 impl ToolId {
-    pub const DESKTOP: [Self; 4] = [Self::Mpv, Self::Uosc, Self::Thumbfast, Self::SubSelect];
-    pub const ALL: [Self; 8] = [
-        Self::Mpv,
-        Self::Ytdlp,
-        Self::Streamlink,
-        Self::Ffmpeg,
-        Self::Deno,
-        Self::Uosc,
-        Self::Thumbfast,
-        Self::SubSelect,
-    ];
+    pub const ALL: [Self; 4] = [Self::Mpv, Self::Uosc, Self::Thumbfast, Self::SubSelect];
     pub fn key(self) -> &'static str {
         match self {
             Self::Mpv => "mpv",
-            Self::Ytdlp => "yt-dlp",
-            Self::Streamlink => "streamlink",
-            Self::Ffmpeg => "ffmpeg",
-            Self::Deno => "deno",
             Self::Uosc => "uosc",
             Self::Thumbfast => "thumbfast",
             Self::SubSelect => "sub-select",

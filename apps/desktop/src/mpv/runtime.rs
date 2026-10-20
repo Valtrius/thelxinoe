@@ -234,12 +234,9 @@ impl Player {
             replaced
         };
         stop_runs(replaced).await;
-        let (settings, launch) = tools
-            .resolve_launch(&Default::default(), &[ToolId::Mpv], true)
-            .await?;
+        let (mpv_path, launch) = tools.resolve_launch(&[ToolId::Mpv], true).await?;
         let diagnostic =
-            crate::tools::discovery::detect_named_executable("mpv", settings.mpv_path.as_deref())
-                .await;
+            crate::tools::discovery::detect_named_executable("mpv", mpv_path.as_deref()).await;
         let executable = diagnostic
             .path
             .context("Install or select MPV in Windows player settings")?;

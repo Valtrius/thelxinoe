@@ -87,7 +87,7 @@ pub fn initialize(app: &tauri::App) -> AppResult<()> {
     });
     let handle = app.handle().clone();
     tauri::async_runtime::spawn(async move {
-        manager.diagnostic(ToolId::Mpv, &Default::default()).await;
+        manager.diagnostic(ToolId::Mpv).await;
         let _ = handle.emit("tools-changed", ());
         let mut interval = tokio::time::interval(Duration::from_secs(3600));
         loop {
@@ -95,7 +95,7 @@ pub fn initialize(app: &tauri::App) -> AppResult<()> {
             if manager.closing.load(Ordering::SeqCst) {
                 break;
             }
-            manager.auto_update(&Default::default()).await;
+            manager.auto_update().await;
             let _ = handle.emit("tools-changed", ());
         }
     });
