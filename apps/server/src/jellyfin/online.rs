@@ -702,7 +702,6 @@ pub async fn playback_info(
         state,
         p,
         crate::playback::Create {
-            queue: None,
             media_id: media,
             file_id: None,
             position: Some(0.0),

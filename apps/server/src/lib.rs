@@ -235,10 +235,6 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/me/preferences",
             get(timezones::get).put(timezones::update),
         )
-        .route(
-            "/api/v1/me/queue/{client}",
-            get(user_media::queue_get).put(user_media::queue_put),
-        )
         .route("/api/v1/me/history", get(history::mine))
         .route("/api/v1/me/statistics", get(statistics::mine))
         .route("/api/v1/admin/statistics", get(statistics::admin))

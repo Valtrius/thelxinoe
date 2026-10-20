@@ -67,20 +67,6 @@ pub(super) async fn media_info_read_media_sources(
     }).await
 }
 
-pub(super) async fn queue_matches(
-    user: Principal,
-    queue: crate::user_media::QueueContext,
-    media: String,
-    db: &Database,
-) -> anyhow::Result<bool> {
-    db.read("playback.queue_matches", move |db| {
-        let saved = crate::user_media::queue_value(db, &user, &queue.client_id)?;
-        Ok(saved["revision"].as_i64() == Some(queue.revision)
-            && saved["items"][queue.index].as_str() == Some(&media))
-    })
-    .await
-}
-
 pub(super) struct PlaybackSession {
     pub(super) online_video: Option<String>,
     pub(super) mode: &'static str,
@@ -91,7 +77,6 @@ pub(super) struct PlaybackSession {
     pub(super) src: Source,
     pub(super) options: Options,
     pub(super) position: Option<f64>,
-    pub(super) queue: Option<crate::user_media::QueueContext>,
 }
 
 pub(super) async fn create_session(db: &Database, input: PlaybackSession) -> anyhow::Result<f64> {
@@ -105,7 +90,6 @@ pub(super) async fn create_session(db: &Database, input: PlaybackSession) -> any
         src,
         options,
         position,
-        queue,
     } = input;
 
     db.write("playback.create_session", move|db| {
@@ -117,7 +101,7 @@ pub(super) async fn create_session(db: &Database, input: PlaybackSession) -> any
             let available=tx.query_row("SELECT EXISTS(SELECT 1 FROM youtube_downloads d JOIN youtube_videos v ON v.video_id=d.video_id WHERE d.video_id=?1 AND d.generation=?2 AND d.state='ready' AND v.user_id=?3)",params![video,src.generation,user],|r|r.get::<_,bool>(0))?;
             anyhow::ensure!(available,"Online media changed before playback");
         }
-        tx.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,media_id,file_id,generation,edition,state,mode,options,duration,position,created_at,updated_at,client_id,queue_revision,queue_index,youtube_video_id) VALUES (?1,?2,?3,?4,?5,?6,?7,'ready',?8,?9,?10,?11,?12,?12,?13,?14,?15,?16)",params![key,user,auth,online_video.is_none().then_some(&src.media_id),online_video.is_none().then_some(&src.id),src.generation,src.edition,mode,serde_json::to_string(&options)?,duration,position,now(),queue.as_ref().map(|q|&q.client_id),queue.as_ref().map(|q|q.revision),queue.as_ref().map(|q|q.index as i64),online_video])?;tx.commit()?;Ok(position)
+        tx.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,media_id,file_id,generation,edition,state,mode,options,duration,position,created_at,updated_at,youtube_video_id) VALUES (?1,?2,?3,?4,?5,?6,?7,'ready',?8,?9,?10,?11,?12,?12,?13)",params![key,user,auth,online_video.is_none().then_some(&src.media_id),online_video.is_none().then_some(&src.id),src.generation,src.edition,mode,serde_json::to_string(&options)?,duration,position,now(),online_video])?;tx.commit()?;Ok(position)
     }).await
 }
 

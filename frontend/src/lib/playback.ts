@@ -12,8 +12,8 @@ export type MediaChoice = {
   run?: string;
   resolveYoutube?: boolean;
   position?: number;
+  /** This choice's place in `queue`, or in the queue it was taken from. */
   queueIndex?: number;
-  queue_context?: { client_id: string; revision: number; index: number };
   queue?: MediaChoice[];
 };
 /** Media that is playing, or still starting in a desktop MPV window. */
@@ -269,7 +269,6 @@ export function prepare(
     file_id: choice.fileId,
     options,
     position: position ?? choice.position,
-    queue: choice.queue_context,
   };
   const request = () => api<Playback>('/playback', 'POST', body);
   return preparation ? playbackRequest(request, preparation) : request();

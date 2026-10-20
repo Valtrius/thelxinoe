@@ -113,7 +113,7 @@
   import ToastViewport from './lib/providers/components/ui/ToastViewport.svelte';
   import { connectDesktopUpdates } from './lib/desktop-updates';
   import { connectTools } from './lib/providers/tools-events';
-  import { persistQueue } from './lib/media-state';
+  import { musicQueue } from './lib/media-state';
   import { invoke } from '@tauri-apps/api/core';
   import type { MediaChoice } from './lib/playback';
   import {
@@ -148,7 +148,6 @@
         ? [{ id: playing.id, launching: false }]
         : [],
   );
-  let playbackRequest = 0;
   let mediaRevision = $state(0);
   import { Menu } from '@lucide/svelte';
   import {
@@ -483,7 +482,6 @@
     cancelVerification();
     invalidateSession();
     navigationReady = false;
-    playbackRequest++;
     resetAppearance();
     playing = null;
     user = null;
@@ -716,11 +714,8 @@
     if (!providerEnabled(choice.id)) return;
     if (desktop && choice.kind !== 'track')
       return launchDesktopVideo(choice, resolveYoutube);
-    const request = ++playbackRequest;
-    const owner = user?.id;
     await act(async () => {
-      const next = await persistQueue(choice);
-      if (request !== playbackRequest || user?.id !== owner) return;
+      const next = musicQueue(choice);
       playing = resolveYoutube ? { ...next, resolveYoutube: true } : next;
       // The page's own player opens above its content. Compact layouts pin it
       // to the screen instead, so the page keeps its scroll position there.
@@ -774,10 +769,7 @@
       !Object.values($providers).some(Boolean)
     )
       openSettings('account');
-    if (playing && !providerEnabled(playing.id)) {
-      playbackRequest++;
-      playing = null;
-    }
+    if (playing && !providerEnabled(playing.id)) playing = null;
   });
   $effect(() => {
     void $providers;

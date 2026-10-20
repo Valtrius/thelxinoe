@@ -10,7 +10,7 @@ use axum::{
 use http_body_util::BodyExt;
 use rusqlite::params;
 use serde_json::{Value, json};
-use thelxinoe_core::{Principal, Role, User, id, now};
+use thelxinoe_core::{Principal, Role, User, now};
 use thelxinoe_server::{
     AppState,
     config::Config,
@@ -449,7 +449,7 @@ async fn time_format_update_distinguishes_omitted_null_and_override() {
 }
 
 #[tokio::test]
-async fn shared_playlists_keep_owner_edits_and_private_favorites_and_queues() {
+async fn shared_playlists_keep_owner_edits_and_private_favorites() {
     let (_temp, state) = fixture().await;
     let (alice, _) = login(&state, "alice").await;
     let (bob, _) = login(&state, "bob").await;
@@ -562,56 +562,6 @@ async fn shared_playlists_keep_owner_edits_and_private_favorites_and_queues() {
         call(&state, &alice, &path, "PUT", edit).await.0,
         StatusCode::CONFLICT
     );
-    let client = id();
-    let queue = format!("/me/queue/{client}");
-    ok(
-        &state,
-        &alice,
-        &queue,
-        "PUT",
-        json!({"revision":0,"items":["a","b"],"current_index":1}),
-    )
-    .await;
-    assert_eq!(
-        ok(&state, &bob, &queue, "GET", Value::Null).await["revision"],
-        0
-    );
-    assert_eq!(
-        ok(
-            &state,
-            &alice,
-            &format!("/me/queue/{}", id()),
-            "GET",
-            Value::Null
-        )
-        .await["revision"],
-        0
-    );
-    assert_eq!(
-        call(
-            &state,
-            &alice,
-            &queue,
-            "PUT",
-            json!({"revision":0,"items":["b"],"current_index":0})
-        )
-        .await
-        .0,
-        StatusCode::CONFLICT
-    );
-    let reopened =
-        thelxinoe_database::Database::open(state.config.state.join("thelxinoe.sqlite3")).unwrap();
-    assert_eq!(
-        reopened
-            .write("test.fixture", move |db| Ok(db.query_row(
-                "SELECT current_index FROM music_queues WHERE client_id=?1",
-                [client],
-                |r| r.get::<_, i64>(0)
-            )?))
-            .await
-            .unwrap(),
-        1
-    );
     ok(
         &state,
         &alice,
@@ -637,18 +587,12 @@ async fn shared_playlists_keep_owner_edits_and_private_favorites_and_queues() {
         StatusCode::BAD_REQUEST
     );
 }
-async fn session(
-    state: &AppState,
-    p: &Principal,
-    key: &str,
-    media: &str,
-    queue: Option<(String, i64, i64)>,
-) {
+async fn session(state: &AppState, p: &Principal, key: &str, media: &str) {
     let user = p.user.id.clone();
     let auth = p.session_id.clone();
     let key = key.to_string();
     let media = media.to_string();
-    state.db.write("test.fixture", move|db|{db.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,media_id,file_id,generation,edition,state,mode,options,duration,created_at,updated_at,client_id,queue_revision,queue_index) VALUES (?1,?2,?3,?4,?4,'generation','','ready','direct','{}',100,?5,?5,?6,?7,?8)",params![key,user,auth,media,now(),queue.as_ref().map(|q|&q.0),queue.as_ref().map(|q|q.1),queue.as_ref().map(|q|q.2)])?;Ok(())}).await.unwrap();
+    state.db.write("test.fixture", move|db|{db.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,media_id,file_id,generation,edition,state,mode,options,duration,created_at,updated_at) VALUES (?1,?2,?3,?4,?4,'generation','','ready','direct','{}',100,?5,?5)",params![key,user,auth,media,now()])?;Ok(())}).await.unwrap();
 }
 async fn progress(
     state: &AppState,
@@ -678,7 +622,7 @@ async fn viewing_statistics_exclude_seek_jumps_and_survive_device_revocation() {
     let (alice, p) = login(&state, "alice").await;
     let (bob, _) = login(&state, "bob").await;
     let (admin, _) = login(&state, "admin").await;
-    session(&state, &p, "play", "movie", None).await;
+    session(&state, &p, "play", "movie").await;
     progress(&state, &p, "play", 0, 0.0, "playing").await;
     state
         .db
@@ -758,43 +702,4 @@ async fn viewing_statistics_exclude_seek_jumps_and_survive_device_revocation() {
         ok(&state, &admin, "/admin/audit", "GET", Value::Null).await["items"][0]["action"],
         "session.revoke"
     );
-}
-#[tokio::test]
-async fn prefetched_and_stale_playbacks_cannot_rewind_or_overwrite_the_current_queue() {
-    let (_temp, state) = fixture().await;
-    let (token, p) = login(&state, "alice").await;
-    let client = id();
-    let path = format!("/me/queue/{client}");
-    ok(
-        &state,
-        &token,
-        &path,
-        "PUT",
-        json!({"revision":0,"items":["a","b"],"current_index":0}),
-    )
-    .await;
-    session(&state, &p, "first", "a", Some((client.clone(), 1, 0))).await;
-    session(&state, &p, "second", "b", Some((client.clone(), 1, 1))).await;
-    assert_eq!(
-        ok(&state, &token, &path, "GET", Value::Null).await["current_index"],
-        0
-    );
-    progress(&state, &p, "first", 0, 5.0, "playing").await;
-    progress(&state, &p, "second", 0, 1.0, "playing").await;
-    progress(&state, &p, "first", 1, 100.0, "stopped").await;
-    let saved = ok(&state, &token, &path, "GET", Value::Null).await;
-    assert_eq!(saved["current_index"], 1);
-    assert_eq!(saved["position"], 1.0);
-    ok(
-        &state,
-        &token,
-        &path,
-        "PUT",
-        json!({"revision":1,"items":["a"],"current_index":0}),
-    )
-    .await;
-    progress(&state, &p, "second", 1, 20.0, "playing").await;
-    let saved = ok(&state, &token, &path, "GET", Value::Null).await;
-    assert_eq!(saved["current_index"], 0);
-    assert_eq!(saved["position"], 0.0);
 }

@@ -4,7 +4,6 @@ import { writeFileSync } from 'node:fs';
 const browser = await launchBrowser();
 const owner = await browser.newContext({ ignoreHTTPSErrors: true });
 const guest = await browser.newContext({ ignoreHTTPSErrors: true });
-const second = await browser.newContext({ ignoreHTTPSErrors: true });
 const page = await owner.newPage(),
   other = await guest.newPage();
 const origin = process.env.THELXINOE_PLAYBACK_URL ?? 'https://localhost:20443';
@@ -117,47 +116,28 @@ try {
     .poll(async () => (await api(guest, `/playlists/${playlist}`)).favorite)
     .toBe(true);
   expect((await api(owner, `/playlists/${playlist}`)).favorite).toBe(false);
+  const music = () => api(owner, '/me/history?range=all&platform=music');
+  const before = Math.max(0, ...(await music()).items.map((item) => item.id));
   await page
     .getByRole('button', { name: 'Play playlist', exact: true })
     .click();
   await expect(
     page.getByRole('region', { name: 'Music player', exact: true }),
   ).toBeVisible();
-  const client = await page.evaluate(() =>
-    localStorage.getItem('thelxinoe-client-id'),
-  );
+  // The playlist plays through: its last track is recorded to the end.
   await expect
-    .poll(async () => (await api(owner, `/me/queue/${client}`)).completed, {
-      timeout: 20000,
-    })
+    .poll(
+      async () =>
+        (await music()).items.some(
+          (item) =>
+            item.id > before &&
+            item.title === 'Gapless 2' &&
+            item.position >= item.duration * 0.99,
+        ),
+      { timeout: 20000 },
+    )
     .toBe(true);
-  expect((await api(owner, `/me/queue/${client}`)).current_index).toBe(1);
   await page.getByRole('button', { name: 'Close player', exact: true }).click();
-  await page.reload();
-  await expect(
-    page.getByRole('button', { name: 'New playlist', exact: true }),
-  ).toBeVisible();
-  expect(
-    await page.evaluate(() => localStorage.getItem('thelxinoe-client-id')),
-  ).toBe(client);
-  expect((await api(owner, `/me/queue/${client}`)).completed).toBe(true);
-  const another = await second.newPage();
-  await login(another, 'admin');
-  await another.getByRole('link', { name: 'Playlists', exact: true }).click();
-  await another.getByRole('button', { name, exact: true }).click();
-  await another
-    .getByRole('button', { name: 'Play playlist', exact: true })
-    .click();
-  await expect(
-    another.getByRole('region', { name: 'Music player', exact: true }),
-  ).toBeVisible();
-  const otherClient = await another.evaluate(() =>
-    localStorage.getItem('thelxinoe-client-id'),
-  );
-  expect(otherClient).toMatch(/^[0-9a-f-]{36}$/);
-  expect(otherClient).not.toBe(client);
-  expect((await api(second, `/me/queue/${otherClient}`)).items).toHaveLength(2);
-  expect((await api(owner, `/me/queue/${client}`)).completed).toBe(true);
   await page.getByRole('link', { name: 'Settings', exact: true }).click();
   await page
     .getByRole('combobox', { name: 'Display timezone', exact: true })
@@ -196,7 +176,7 @@ try {
         private_favorites: true,
         shared_owned_playlists: true,
         independent_playlist_favorites: true,
-        persistent_client_queues: true,
+        playlist_playback: true,
         history_permissions: true,
         user_timezone: true,
       },
@@ -205,7 +185,7 @@ try {
     ),
   );
   console.log(
-    'HTTPS user-state UI passed: private lists, owned shared playlists, music queue persistence, timezone and history access.',
+    'HTTPS user-state UI passed: private lists, owned shared playlists, playlist playback, timezone and history access.',
   );
 } finally {
   if (playlist)

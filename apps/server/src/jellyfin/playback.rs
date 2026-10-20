@@ -260,7 +260,6 @@ pub(super) async fn info_source(
         state,
         p,
         core::Create {
-            queue: None,
             media_id: media.into(),
             file_id: Some(source.id.clone()),
             position: Some(0.0),
