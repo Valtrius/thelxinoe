@@ -1,12 +1,17 @@
 import { qualifyHostRecovery } from './auth-host-recovery.mjs';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
+  existsSync,
   mkdirSync,
   openSync,
   closeSync,
   readFileSync,
+  rmSync,
+  writeFileSync,
   writeSync,
 } from 'node:fs';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { qualification } from './ci-evidence.mjs';
 import {
   stageBuildImages,
@@ -370,6 +375,45 @@ function populateMedia(compose) {
   );
 }
 
+/**
+ * The pinned Windows MPV and FFmpeg the native playback tests use, verified by digest.
+ * Extracted copies are kept in .local/ci-tools, which CI caches by the pins.
+ */
+async function nativeTools() {
+  const pins = JSON.parse(readFileSync('scripts/ci-native-tools.json', 'utf8'));
+  const root = resolve('.local/ci-tools');
+  const entries = {};
+  for (const pin of pins) {
+    const directory = join(root, `${pin.name}-${pin.sha256.slice(0, 12)}`);
+    const entry = join(directory, pin.entry);
+    if (!existsSync(entry)) {
+      const response = await fetch(pin.url, {
+        signal: AbortSignal.timeout(600000),
+      });
+      if (!response.ok)
+        throw new Error(`${pin.name}: HTTP ${response.status} from ${pin.url}`);
+      const bytes = Buffer.from(await response.arrayBuffer());
+      const digest = createHash('sha256').update(bytes).digest('hex');
+      if (bytes.length !== pin.size || digest !== pin.sha256)
+        throw new Error(
+          `${pin.name}: ${pin.url} no longer matches its pinned digest; pin a new build in scripts/ci-native-tools.json`,
+        );
+      rmSync(directory, { recursive: true, force: true });
+      mkdirSync(directory, { recursive: true });
+      const archive = `${directory}.download`;
+      writeFileSync(archive, bytes);
+      // Windows' bsdtar reads both the 7z and the zip archive.
+      run(
+        join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe'),
+        ['-xf', archive, '-C', directory],
+      );
+      rmSync(archive);
+    }
+    entries[pin.name] = entry;
+  }
+  return { mpv: entries.mpv, ffmpeg: dirname(entries.ffmpeg) };
+}
+
 async function desktop() {
   if (!isWindows) {
     throw new Error('The desktop CI phase requires Windows.');
@@ -398,6 +442,39 @@ async function desktop() {
   );
   await evidence.group('desktop-product-tests', () =>
     run('cargo', ['test', '--locked', '-p', 'thelxinoe-desktop']),
+  );
+  await evidence.group(
+    'native-playback',
+    async () => {
+      // The MPV tests drive a real player over its IPC pipe, with generated media.
+      const { mpv, ffmpeg } = await nativeTools();
+      const path =
+        Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ??
+        'PATH';
+      run(
+        'cargo',
+        [
+          'test',
+          '--locked',
+          '-p',
+          'thelxinoe-desktop',
+          '--',
+          '--ignored',
+          '--exact',
+          'mpv::runtime::quality_smoke::mpv_quality_reload_keeps_process_position_and_pause',
+          'tools::config::runtime::tests::real_mpv_loads_one_plugin_copy_with_the_saved_settings',
+        ],
+        {
+          env: {
+            ...process.env,
+            [path]: `${ffmpeg}${delimiter}${process.env[path]}`,
+            THELXINOE_TEST_MPV: mpv,
+            THELXINOE_MPV_TEST_EXE: mpv,
+          },
+        },
+      );
+    },
+    ['desktop-product-tests'],
   );
   await evidence.group('windows-process-isolation', () =>
     run('cargo', [

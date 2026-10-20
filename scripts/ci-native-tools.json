@@ -1,0 +1,16 @@
+[
+  {
+    "name": "mpv",
+    "url": "https://downloads.sourceforge.net/project/mpv-player-windows/64bit/mpv-x86_64-20261018-git-01e2533f31.7z",
+    "sha256": "d7157567a2fd88e46f739d2e8b8e6c02d2ad812db04547b45c59a2800821991f",
+    "size": 33998447,
+    "entry": "mpv.exe"
+  },
+  {
+    "name": "ffmpeg",
+    "url": "https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip",
+    "sha256": "60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba",
+    "size": 114768076,
+    "entry": "ffmpeg-9.0.2-essentials_build/bin/ffmpeg.exe"
+  }
+]
