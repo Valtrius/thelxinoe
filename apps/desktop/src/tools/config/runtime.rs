@@ -339,9 +339,28 @@ mp.set_property_native('user-data/thelxinoe-plugin-probe/' .. mp.get_script_name
             let mut probe = Probe::start_mode(&executable, &runtime.mpv_args, true)
                 .await
                 .unwrap();
-            let loaded = probe
-                .request(json!(["get_property", "user-data/thelxinoe-plugin-probe"]))
-                .await;
+            // mpv runs scripts concurrently: wait until every plugin reported, then a moment
+            // longer, so a second copy that loads late is still counted.
+            let mut attempts = 0;
+            let loaded = loop {
+                let current = probe
+                    .request(json!(["get_property", "user-data/thelxinoe-plugin-probe"]))
+                    .await;
+                attempts += 1;
+                if current
+                    .as_ref()
+                    .is_ok_and(|v| v.as_object().is_some_and(|o| o.len() >= plugins.len()))
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    break probe
+                        .request(json!(["get_property", "user-data/thelxinoe-plugin-probe"]))
+                        .await;
+                }
+                if attempts == 100 {
+                    break current;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            };
             let unrelated = probe
                 .request(json!([
                     "get_property",
