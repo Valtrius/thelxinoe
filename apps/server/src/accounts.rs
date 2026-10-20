@@ -205,7 +205,7 @@ pub(crate) async fn check_credentials(
         None => false,
     };
     if !trusted {
-        allow_account_attempt(state, &throttle).await?;
+        reserve_account_attempt(state, &throttle).await?;
     }
     let slot = state
         .password_slots
@@ -221,8 +221,14 @@ pub(crate) async fn check_credentials(
         .unwrap_or_else(|| state.dummy_hash.as_ref().clone());
     let valid = verify_password_with_permit(password.to_owned(), hash, slot).await?;
     if !valid || record.is_none() {
-        record_account_failure(state, throttle).await?;
+        // An untrusted attempt already counts; a remembered device's failures count here.
+        if trusted {
+            record_account_failure(state, throttle).await?;
+        }
         return Err(ApiError::unauthorized());
+    }
+    if !trusted {
+        release_account_attempt(state, throttle).await?;
     }
     let (user_id, expected_hash) = record.unwrap();
     Ok(SessionAuthorization::Password {
@@ -243,14 +249,21 @@ pub(crate) async fn allow_password_attempt(state: &AppState, address: String) ->
 }
 /// Failed proofs allowed per account in the 15-minute window, whatever addresses they come from.
 const ACCOUNT_FAILURE_LIMIT: i64 = 10;
-pub(crate) async fn allow_account_attempt(state: &AppState, key: &str) -> Result<()> {
-    if storage::account_failures(&state.db, key.to_owned()).await? >= ACCOUNT_FAILURE_LIMIT {
+/// Counts an attempt against the account before its proof is checked, in the same write
+/// that checks the limit, so concurrent guesses can't all pass it. A proof that succeeds
+/// gives its attempt back with `release_account_attempt`.
+pub(crate) async fn reserve_account_attempt(state: &AppState, key: &str) -> Result<()> {
+    if storage::reserve_account_attempt(&state.db, key.to_owned()).await? > ACCOUNT_FAILURE_LIMIT {
         return Err(ApiError(
             axum::http::StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",
             "Too many failed attempts for this account. Try again in 15 minutes.".into(),
         ));
     }
+    Ok(())
+}
+pub(crate) async fn release_account_attempt(state: &AppState, key: String) -> Result<()> {
+    storage::release_account_attempt(&state.db, key).await?;
     Ok(())
 }
 pub(crate) async fn record_account_failure(state: &AppState, key: String) -> Result<()> {

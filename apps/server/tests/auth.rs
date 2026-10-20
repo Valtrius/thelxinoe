@@ -1159,6 +1159,49 @@ async fn failed_passwords_are_throttled_per_account_across_addresses() {
     );
 }
 #[tokio::test]
+async fn concurrent_guesses_cannot_pass_the_account_limit_together() {
+    let (_temp, state) = fixture().await;
+    setup(&state).await;
+    let guesses = (0..30).map(|n| {
+        let state = state.clone();
+        async move {
+            let address = format!("203.0.113.{n}");
+            request(
+                &state,
+                "/api/v1/auth/login",
+                "POST",
+                json!({"username":"admin","password":"not the password"}),
+                None,
+                &client(&address),
+            )
+            .await
+            .0
+        }
+    });
+    let statuses = futures_util::future::join_all(guesses).await;
+    let checked = statuses
+        .iter()
+        .filter(|status| **status == StatusCode::UNAUTHORIZED)
+        .count();
+    // Only the account's ten attempts reach the password check; the rest are refused first.
+    assert_eq!(checked, 10, "{statuses:?}");
+    assert!(
+        statuses
+            .iter()
+            .all(|s| matches!(*s, StatusCode::UNAUTHORIZED | StatusCode::TOO_MANY_REQUESTS))
+    );
+    let login = request(
+        &state,
+        "/api/v1/auth/login",
+        "POST",
+        json!({"username":"admin","password":"a good long password"}),
+        None,
+        &client("203.0.113.200"),
+    )
+    .await;
+    assert_eq!(login.0, StatusCode::TOO_MANY_REQUESTS);
+}
+#[tokio::test]
 async fn failed_reverification_passwords_count_against_the_account() {
     let (_temp, state) = fixture().await;
     let cookie = setup(&state).await;

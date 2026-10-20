@@ -97,16 +97,29 @@ pub(super) async fn allow_password_attempt(db: &Database, address: String) -> an
     }).await
 }
 
-pub(super) async fn account_failures(db: &Database, key: String) -> anyhow::Result<i64> {
-    db.read("accounts.account_failures", move |db| {
-        Ok(db
-            .query_row(
-                "SELECT count FROM login_attempts WHERE address=?1 AND window_start>=?2",
-                params![key, now() - 900],
-                |r| r.get(0),
-            )
-            .optional()?
-            .unwrap_or(0))
+/// Count one more attempt in the account's window and return the new total.
+pub(super) async fn reserve_account_attempt(db: &Database, key: String) -> anyhow::Result<i64> {
+    db.write("accounts.reserve_account_attempt", move |db| {
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute("DELETE FROM login_attempts WHERE window_start<?1", [now() - 900])?;
+        let count = tx.query_row(
+            "INSERT INTO login_attempts VALUES (?1,1,?2) ON CONFLICT(address) DO UPDATE SET count=count+1 RETURNING count",
+            params![key, now()],
+            |r| r.get(0),
+        )?;
+        tx.commit()?;
+        Ok(count)
+    })
+    .await
+}
+
+pub(super) async fn release_account_attempt(db: &Database, key: String) -> anyhow::Result<()> {
+    db.write("accounts.release_account_attempt", move |db| {
+        db.execute(
+            "UPDATE login_attempts SET count=MAX(count-1,0) WHERE address=?1",
+            [key],
+        )?;
+        Ok(())
     })
     .await
 }
