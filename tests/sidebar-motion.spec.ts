@@ -89,7 +89,13 @@ for (const { section, width, scrollbars } of cases) {
               })
               .map((element) => {
                 const { x, y, width, height } = element.getBoundingClientRect();
-                return { x, y, width, height };
+                // Which elements are on screen changes as the feed reflows, so
+                // grouped elements are matched by their group, not position.
+                const key =
+                  element
+                    .closest('[data-layout-key]')
+                    ?.getAttribute('data-layout-key') ?? undefined;
+                return { x, y, width, height, key };
               }),
           ]),
         );
@@ -181,17 +187,16 @@ for (const { section, width, scrollbars } of cases) {
           'Date heading right edge follows the feed with a fixed scrollbar gutter',
         ).toBeLessThan(0.5);
       }
-      before['[data-card-group-header] .feed-group-label'].forEach(
-        (rect, index) => {
-          const current =
-            next['[data-card-group-header] .feed-group-label'][index];
-          if (current)
-            expect(
-              Math.abs(current.width - rect.width),
-              'Date label keeps its width',
-            ).toBeLessThan(0.5);
-        },
-      );
+      for (const rect of before['[data-card-group-header] .feed-group-label']) {
+        const current = next['[data-card-group-header] .feed-group-label'].find(
+          (label) => label.key === rect.key,
+        );
+        if (current)
+          expect(
+            Math.abs(current.width - rect.width),
+            'Date label keeps its width',
+          ).toBeLessThan(0.5);
+      }
     }
     for (const name of ['Collapse sidebar', 'Expand sidebar']) {
       const before = await sample();
