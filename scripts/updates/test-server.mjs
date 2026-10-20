@@ -466,10 +466,10 @@ export async function serverScenarios({
           exact: true,
         })
         .click();
+      // Images download while the update waits for idle, so either can show.
       await expect(
         page.getByRole('button', {
-          name: 'Waiting for the server to be idle',
-          exact: true,
+          name: /^(Waiting for the server to be idle|Downloading (the|server|controller) update)$/,
         }),
       ).toBeVisible();
       const update = (await state()).request;
@@ -506,18 +506,21 @@ export async function serverScenarios({
         .getByRole('navigation', { name: 'Settings navigation' })
         .getByRole('link', { name: 'Server', exact: true })
         .click();
+      // Images download in the background before any attempt exists, so the
+      // server reports the progress.
       const downloading = await until(async () => {
-        const operation = operations().items.find(
-          (item) => item.id === update.id,
-        );
+        const { download } = await state();
         return (
-          operation?.stage === 'preparing' &&
-          operation.download?.received > 0 &&
-          (!operation.download.total ||
-            operation.download.received < operation.download.total) &&
-          operation
+          download?.state === 'downloading' &&
+          download.download?.received > 0 &&
+          (!download.download.total ||
+            download.download.received < download.download.total) &&
+          download
         );
       }, 45000);
+      expect(operations().items.some((item) => item.id === update.id)).toBe(
+        false,
+      );
       const version = page.getByLabel('Product version', { exact: true });
       await expect(
         version.getByRole('button', {
@@ -539,34 +542,23 @@ export async function serverScenarios({
         await expect(progress).toHaveCount(0);
       }
       await page.screenshot({ path: join(output, 'server-downloading.png') });
-      // Restart after controller acceptance, while slow image pulls are ongoing.
+      // Restart while slow image pulls are ongoing: the download resumes, and
+      // the server stays available until the controller accepts the update.
       docker('restart', component('server'));
       await until(async () => (await request('/health')).ok(), startupTimeout);
-      expect((await request('/playback', 'POST', {})).status()).toBe(503);
+      await until(
+        async () => (await state()).download?.state === 'downloading',
+      );
+      expect((await request('/setup')).status()).toBe(200);
       expect(
         (await request('/catalog/roots/missing/scan', 'POST', {})).status(),
-      ).toBe(503);
-      // Keep the real maintenance fence active while a fresh page boots.
-      // A transient 503 must not strand an authenticated user at sign-in.
-      expect((await request('/setup')).status()).toBe(503);
-      const maintenanceBoot = page.waitForResponse(
-        (response) =>
-          response.url().endsWith('/api/v1/setup') && response.status() === 503,
-      );
-      await page.reload();
-      await maintenanceBoot;
-      await expect(page.getByText('Connecting to your library…')).toBeVisible();
-      await expect(
-        page.getByRole('button', { name: 'Sign in', exact: true }),
-      ).toHaveCount(0);
-      await page.screenshot({
-        path: join(output, 'server-maintenance-reload.png'),
-      });
+      ).not.toBe(503);
       rmSync(join(lab.root, 'registry-control/hold'), { force: true });
       const recovered = await stage(update.id, 'recovered');
-      expect(recovered.download.component).toBe('controller');
-      expect(recovered.download.received).toBeGreaterThan(0);
-      expect(recovered.download.received).toBe(recovered.download.total);
+      // Download progress ends once both images are present.
+      expect(recovered.download).toBeNull();
+      for (const part of ['server', 'controller'])
+        docker('image', 'inspect', lab.images[lab.next][part].reference);
       await mode('candidate');
       expect((await api('/health')).version).toBe(lab.base);
       expect((await api('/admin/diagnostics')).database_ok).toBe(true);
@@ -716,15 +708,16 @@ export async function serverScenarios({
           )
         ).status(),
       ).toBe(409);
-      const preflightReady = async () =>
+      // The newer generation retired the preflight; it stays retired across restarts.
+      const preflightRetired = async () =>
         (await state()).controller.items.find(
           (item) => item.id === obsoletePreflight.id,
-        )?.stage === 'ready';
-      await until(preflightReady);
+        )?.stage === 'superseded';
+      await until(preflightRetired);
       docker('restart', component('controller'));
       await until(() => controller('/health').version === lab.next);
       // The server reports the restarted controller once it observes it again.
-      await until(preflightReady);
+      await until(preflightRetired);
       expect((await api('/health')).version).toBe(lab.next);
     },
   );

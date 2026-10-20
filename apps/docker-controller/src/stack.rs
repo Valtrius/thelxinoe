@@ -452,6 +452,7 @@ pub fn router() -> Router {
         .route("/stack/backups/{id}/restore", post(backups::restore))
         .route("/stack/product", get(product::list))
         .route("/stack/product/preflight", post(product::preflight))
+        .route("/stack/product/download", post(product::download))
         .route("/stack/product/{id}/activate", post(product::activate))
         .route("/stack/product/{id}/recover", post(product::recover))
         .route("/stack/{id}/preflight", post(updates::preflight))

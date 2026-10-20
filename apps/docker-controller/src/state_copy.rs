@@ -81,6 +81,16 @@ impl Filter {
     }
 }
 
+/// Copy only the live-state validation report; the rest of the state stays unread.
+pub fn report() -> anyhow::Result<()> {
+    let name = ".release-validation.json";
+    fs::copy(
+        Path::new("/source").join(name),
+        Path::new("/destination").join(name),
+    )?;
+    Ok(())
+}
+
 pub fn remove() -> anyhow::Result<()> {
     let destination = Path::new("/destination");
     anyhow::ensure!(
@@ -197,6 +207,16 @@ fn copy_tree(
         fs::read_dir(destination)?.next().is_none(),
         "Snapshot destination is not empty"
     );
+    // Fail before the first byte rather than on a full disk midway.
+    let needed = budget.allocated.saturating_add(16 << 20);
+    if let Ok(available) = fs2::available_space(destination) {
+        anyhow::ensure!(
+            available >= needed,
+            "Copying needs {} MiB free on the controller's deployment storage; {} MiB are available",
+            needed >> 20,
+            available >> 20
+        );
+    }
     progress.phase("copying");
     copy_entries(&entries, destination, filter, progress)?;
     owner(source, destination)?;

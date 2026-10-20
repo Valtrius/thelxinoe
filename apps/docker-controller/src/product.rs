@@ -29,6 +29,14 @@ struct Update {
     archive: Option<String>,
     #[serde(default)]
     download: Option<Download>,
+    /// Why a preparation or activation stopped: `environment` (Docker, disk,
+    /// download), `interrupted` (a restart), `validation` (the release failed
+    /// on this server's data) or `incompatible` (it cannot migrate this state).
+    #[serde(default)]
+    failure: Option<String>,
+    /// The Compose `latest` tags point at the release this attempt installed.
+    #[serde(default)]
+    latest: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Download {
@@ -50,7 +58,7 @@ fn write(u: &Update) -> Result<()> {
     persisted(store::write_json(&dir(&u.id).join("update.json"), u))
 }
 fn public(u: &Update) -> Value {
-    json!({"id":u.id,"created_at":u.created_at,"stage":u.stage,"download":u.download,"error":u.error,"version":u.manifest.as_ref().map(|m|m.version.as_str()).unwrap_or(&u.old.version),"previous_version":u.old.version,"recovery":"full-state-restore","snapshot_ready":u.snapshot_ready,"recovery_tested":u.recovery_tested,"activation_crossed":u.activation_crossed,"generation":u.generation,"source_generation":u.old.generation,"archive":u.archive})
+    json!({"id":u.id,"created_at":u.created_at,"stage":u.stage,"download":u.download,"error":u.error,"version":u.manifest.as_ref().map(|m|m.version.as_str()).unwrap_or(&u.old.version),"previous_version":u.old.version,"recovery":"full-state-restore","snapshot_ready":u.snapshot_ready,"recovery_tested":u.recovery_tested,"activation_crossed":u.activation_crossed,"generation":u.generation,"source_generation":u.old.generation,"archive":u.archive,"failure":u.failure})
 }
 fn all() -> Result<Vec<Update>> {
     let mut items = vec![];
@@ -105,6 +113,8 @@ pub(super) async fn restore_archive(
         retiring: Some(current),
         archive: Some(archive),
         download: None,
+        failure: None,
+        latest: false,
     };
     private(&dir(&u.id))?;
     // Capture the authenticated archive state, never the migrated database.
@@ -228,6 +238,7 @@ pub(super) async fn preflight(
             previous.stage = "superseded".into();
             previous.error = Some("A newer deployment superseded this preflight".into());
             write(&previous)?;
+            remove_copies(&previous, None);
         }
     }
     let mut u = Update {
@@ -249,6 +260,8 @@ pub(super) async fn preflight(
         retiring: None,
         archive: None,
         download: None,
+        failure: None,
+        latest: false,
     };
     private(&dir(&u.id))?;
     write(&u)?;
@@ -259,8 +272,12 @@ pub(super) async fn preflight(
         if let Err(e) = prepare(&mut u).await {
             u.stage = "blocked".into();
             u.error = Some(e.1.to_string());
+            u.failure.get_or_insert_with(|| "environment".into());
+            u.download = None;
             let _ = write(&u);
             let _ = updates::start(u.old.server["Id"].as_str().unwrap_or("")).await;
+            // A retry is a new attempt; these copies only hold disk space and credentials.
+            remove_copies(&u, None);
         }
     });
     Ok(Json(result))
@@ -272,12 +289,26 @@ async fn pull(u: &mut Update, component: &str, image: &thelxinoe_releases::Image
         total: None,
     });
     write(u)?;
-    // Cached immutable images also support offline recovery and release fixtures.
+    fetch(component, image, |download| {
+        u.download = Some(download);
+        write(u)
+    })
+    .await
+}
+/// Make a signed release image available locally, reporting download progress
+/// about once a second. Cached immutable images also support offline recovery
+/// and release fixtures.
+async fn fetch(
+    component: &str,
+    image: &thelxinoe_releases::Image,
+    mut progress: impl FnMut(Download) -> Result<()>,
+) -> Result<()> {
     let raw = match engine(&format!("/images/{}/json", image.reference)).await {
         Ok(v) => v,
         Err((StatusCode::NOT_FOUND, _)) => {
             let mut layers = std::collections::BTreeMap::<String, (u64, Option<u64>, bool)>::new();
             let mut published = std::time::Instant::now();
+            let mut latest = None;
             crate::docker::pull_image(&image.reference, |event| {
                 let status = event["status"].as_str().unwrap_or("");
                 if let Some(id) = event["id"].as_str() {
@@ -312,25 +343,33 @@ async fn pull(u: &mut Update, component: &str, image: &thelxinoe_releases::Image
                         .map(|(current, total, _)| total.unwrap_or(*current))
                         .sum()
                 });
-                u.download = Some(Download {
+                let download = Download {
                     component: component.into(),
                     received: layers.values().map(|(current, _, _)| *current).sum(),
                     total,
-                });
+                };
                 if published.elapsed() >= Duration::from_secs(1) {
-                    write(u)?;
+                    progress(download)?;
                     published = std::time::Instant::now();
+                    latest = None;
+                } else {
+                    latest = Some(download);
                 }
                 Ok(())
             })
             .await?;
-            write(u)?;
+            if let Some(download) = latest {
+                progress(download)?;
+            }
             engine(&format!("/images/{}/json", image.reference)).await?
         }
         Err(e) => return Err(e),
     };
-    // Docker's classic and containerd stores report different local image IDs.
-    // The signed registry digest pins the manifest and its entire content chain.
+    signed_identity(&raw, image)
+}
+/// Docker's classic and containerd stores report different local image IDs.
+/// The signed registry digest pins the manifest and its entire content chain.
+fn signed_identity(raw: &Value, image: &thelxinoe_releases::Image) -> Result<()> {
     if !raw["RepoDigests"].as_array().is_some_and(|digests| {
         digests.iter().any(|digest| {
             digest
@@ -347,6 +386,92 @@ async fn pull(u: &mut Update, component: &str, image: &thelxinoe_releases::Image
         ));
     }
     Ok(())
+}
+/// A release's images, downloading in the background so a later preflight finds
+/// them cached; the server stays available meanwhile.
+struct Downloading {
+    references: [String; 2],
+    running: bool,
+    download: Option<Download>,
+    error: Option<String>,
+}
+static DOWNLOADS: std::sync::Mutex<Option<Downloading>> = std::sync::Mutex::new(None);
+#[derive(Deserialize)]
+pub(super) struct Fetch {
+    envelope: Envelope,
+}
+pub(super) async fn download(Json(input): Json<Fetch>) -> Result<Json<Value>> {
+    let manifest = thelxinoe_releases::verify(&input.envelope, &trust()?)
+        .map_err(|_| bad("Release signature or manifest is invalid"))?;
+    let images = [manifest.server.clone(), manifest.controller.clone()];
+    let references = images.clone().map(|image| image.reference);
+    let state =
+        |downloading: &Downloading| json!({"state":"downloading","download":downloading.download});
+    {
+        let mut downloads = DOWNLOADS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(current) = downloads.as_ref().filter(|d| d.references == references) {
+            if current.running {
+                return Ok(Json(state(current)));
+            }
+            // Report a failure once; the next request starts again.
+            if let Some(error) = current.error.clone() {
+                *downloads = None;
+                return Ok(Json(json!({"state":"failed","error":error})));
+            }
+        }
+    }
+    let mut missing = false;
+    for image in &images {
+        match engine(&format!("/images/{}/json", image.reference)).await {
+            Ok(raw) => signed_identity(&raw, image)?,
+            Err((StatusCode::NOT_FOUND, _)) => missing = true,
+            Err(e) => return Err(e),
+        }
+    }
+    if !missing {
+        return Ok(Json(json!({"state":"ready"})));
+    }
+    let mut downloads = DOWNLOADS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(current) = downloads.as_ref().filter(|d| d.running) {
+        return if current.references == references {
+            Ok(Json(state(current)))
+        } else {
+            Err(conflict("Another release is downloading"))
+        };
+    }
+    *downloads = Some(Downloading {
+        references: references.clone(),
+        running: true,
+        download: None,
+        error: None,
+    });
+    drop(downloads);
+    tokio::spawn(async move {
+        let update = |change: &dyn Fn(&mut Downloading)| {
+            let mut downloads = DOWNLOADS.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(current) = downloads.as_mut().filter(|d| d.references == references) {
+                change(current);
+            }
+        };
+        let mut result = Ok(());
+        for (component, image) in [("server", &images[0]), ("controller", &images[1])] {
+            result = fetch(component, image, |download| {
+                update(&|current| current.download = Some(download.clone()));
+                Ok(())
+            })
+            .await;
+            if result.is_err() {
+                break;
+            }
+        }
+        let error = result.err().map(|(_, error)| error.to_string());
+        update(&|current| {
+            current.running = false;
+            current.download = None;
+            current.error = error.clone();
+        });
+    });
+    Ok(Json(json!({"state":"downloading","download":null})))
 }
 async fn server_state_isolated(source: &str, media: &str) -> Result<bool> {
     if policy::appdata_isolated(source, media) {
@@ -373,7 +498,9 @@ async fn server_state_isolated(source: &str, media: &str) -> Result<bool> {
         })
     }))
 }
-async fn worker(u: &Update, label: &str, spec: Value) -> Result<()> {
+/// Database checks and migrations can take long on slow disks; the probe cannot.
+const STATE_CHECK_LIMIT: u64 = 1800;
+async fn worker(u: &Update, label: &str, spec: Value, seconds: u64) -> Result<()> {
     let name = format!("thelxinoe-product-{}-{label}", &u.id[..8]);
     let container = request(
         Method::POST,
@@ -384,7 +511,7 @@ async fn worker(u: &Update, label: &str, spec: Value) -> Result<()> {
     let key = container["Id"].as_str().ok_or_else(unavailable)?;
     let result = async {
         updates::start(key).await?;
-        updates::wait(key, 180).await
+        updates::wait(key, seconds).await
     }
     .await;
     let cleaned = updates::remove(key).await;
@@ -411,7 +538,7 @@ async fn verify_state(u: &Update, leaf: &str) -> Result<u32> {
         "verify-state",
         json!([{"Type":"bind","Source":host(u,leaf),"Target":"/state"}]),
     )?;
-    worker(u, "verify", spec).await?;
+    worker(u, "verify", spec, STATE_CHECK_LIMIT).await?;
     let report: Value = persisted(store::read(
         &dir(&u.id).join(leaf).join(".snapshot-validation.json"),
     ))?;
@@ -419,6 +546,19 @@ async fn verify_state(u: &Update, leaf: &str) -> Result<u32> {
         .as_u64()
         .and_then(|v| u32::try_from(v).ok())
         .ok_or_else(unavailable)
+}
+/// A worker that ran and failed its contract names the check it ran.
+fn failed_check(check: &'static str) -> impl Fn(Failure) -> Failure {
+    move |error| {
+        if updates::contract_failure(&error) {
+            let reason = error
+                .1
+                .trim_start_matches("Isolated worker failed its contract");
+            conflict(format!("{check}{reason}"))
+        } else {
+            error
+        }
+    }
 }
 async fn server_check(
     u: &Update,
@@ -437,7 +577,9 @@ async fn server_check(
         "validate-state",
         json!([{"Type":"bind","Source":host(u,leaf),"Target":"/var/lib/thelxinoe"}]),
     )?;
-    worker(u, "validate", spec).await?;
+    worker(u, "validate", spec, STATE_CHECK_LIMIT)
+        .await
+        .map_err(failed_check("The release failed its database check"))?;
     let value: Value = persisted(store::read(&report))?;
     if value["version"] != version
         || value["schema"] != schema
@@ -467,6 +609,7 @@ async fn prepare(u: &mut Update) -> Result<()> {
     let manifest = u.manifest.clone().ok_or_else(unavailable)?;
     pull(u, "server", &manifest.server).await?;
     pull(u, "controller", &manifest.controller).await?;
+    u.download = None;
     // Retain old images independently of mutable bootstrap tags.
     for (component, raw) in [("server", &u.old.server), ("controller", &u.old.controller)] {
         let image = immutable(raw)?;
@@ -486,47 +629,110 @@ async fn prepare(u: &mut Update) -> Result<()> {
     copy(u, &u.source, "preflight-snapshot", false).await?;
     updates::start(u.old.server["Id"].as_str().ok_or_else(unavailable)?).await?;
     let schema = verify_state(u, "preflight-snapshot").await?;
-    manifest
+    if manifest
         .candidate(&u.old.version, schema, thelxinoe_core::now())
-        .map_err(|_| {
-            conflict("Release version, validity, schema or recovery protocol is incompatible")
-        })?;
+        .is_err()
+    {
+        u.failure = Some("incompatible".into());
+        return Err(conflict(
+            "Release version, validity, schema or recovery protocol is incompatible",
+        ));
+    }
     u.stage = "validating".into();
     write(u)?;
-    copy(u, &host(u, "preflight-snapshot"), "clone", false).await?;
-    server_check(
-        u,
-        "clone",
-        &manifest.server.reference,
-        &manifest.version,
-        manifest.migration.target,
-    )
-    .await?;
-    // Exercise the real restore worker against migrated state, then run the old binary.
-    copy(u, &host(u, "preflight-snapshot"), "clone", true).await?;
-    server_check(
-        u,
-        "clone",
-        &immutable(&u.old.server)?,
-        &u.old.version,
-        schema,
-    )
-    .await?;
-    private(&dir(&u.id).join("probe"))?;
-    let spec = worker_spec(
-        u,
-        &manifest.controller.reference,
-        "controller-probe",
-        json!([{"Type":"bind","Source":host(u,"probe"),"Target":"/probe"}]),
-    )?;
-    worker(u, "probe", spec).await?;
-    let probe: Value = persisted(store::read(&dir(&u.id).join("probe/controller.json")))?;
-    if probe["version"] != manifest.version || probe["recovery_protocol"] != 1 {
-        return Err(conflict("Successor controller failed its release contract"));
+    let validated = async {
+        copy(u, &host(u, "preflight-snapshot"), "clone", false).await?;
+        server_check(
+            u,
+            "clone",
+            &manifest.server.reference,
+            &manifest.version,
+            manifest.migration.target,
+        )
+        .await?;
+        // Exercise the real restore worker against migrated state, then run the old binary.
+        copy(u, &host(u, "preflight-snapshot"), "clone", true).await?;
+        server_check(
+            u,
+            "clone",
+            &immutable(&u.old.server)?,
+            &u.old.version,
+            schema,
+        )
+        .await?;
+        private(&dir(&u.id).join("probe"))?;
+        let spec = worker_spec(
+            u,
+            &manifest.controller.reference,
+            "controller-probe",
+            json!([{"Type":"bind","Source":host(u,"probe"),"Target":"/probe"}]),
+        )?;
+        worker(u, "probe", spec, 180).await.map_err(failed_check(
+            "Successor controller failed its release contract",
+        ))?;
+        let probe: Value = persisted(store::read(&dir(&u.id).join("probe/controller.json")))?;
+        if probe["version"] != manifest.version || probe["recovery_protocol"] != 1 {
+            return Err(conflict("Successor controller failed its release contract"));
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(e) = validated {
+        u.failure = Some(classify(&e).into());
+        return Err(e);
     }
     u.recovery_tested = true;
     u.stage = "ready".into();
-    write(u)
+    write(u)?;
+    // Activation takes its own rollback copy; the preflight's are no longer needed.
+    remove_copies(u, None);
+    Ok(())
+}
+/// A check the release itself ran and failed is the release failing on this
+/// server's data; anything else (Docker, disk, killed copies, time limits) may
+/// pass on a retry.
+fn classify(error: &Failure) -> &'static str {
+    if [
+        "The release failed its database check",
+        "Server migration contract does not match",
+        "Successor controller failed its release contract",
+        "Isolated live-state validation returned an unexpected contract",
+    ]
+    .iter()
+    .any(|message| error.1.starts_with(message))
+    {
+        "validation"
+    } else {
+        "environment"
+    }
+}
+/// Delete an attempt's state copies, except `keep`. They hold complete server
+/// state, credentials included.
+fn remove_copies(u: &Update, keep: Option<&str>) {
+    for leaf in [
+        "preflight-snapshot",
+        "clone",
+        "rollback",
+        "validated",
+        "probe",
+    ] {
+        let path = dir(&u.id).join(leaf);
+        if Some(leaf) == keep || !path.exists() {
+            continue;
+        }
+        if let Err(error) = std::fs::remove_dir_all(&path) {
+            eprintln!("Could not remove {}: {error}", path.display());
+        }
+    }
+    // Progress reports of copy workers interrupted before they could remove them.
+    let prefix = format!("thelxinoe-state-{}-", &u.id[..u.id.len().min(8)]);
+    if let Ok(entries) = std::fs::read_dir(store::root().join("progress")) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
 }
 /// The image tag a Compose service names, kept on its successors.
 const COMPOSE_IMAGE: &str = "app.thelxinoe.compose-image";
@@ -632,7 +838,9 @@ fn commit(d: &Deployment) -> Result<()> {
         d.generation,
         &serde_json::to_value(d).map_err(|_| unavailable())?,
         &compose,
-    ))
+    ))?;
+    retire_obsolete(d);
+    Ok(())
 }
 pub(super) async fn activate(
     State(runtime): State<Runtime>,
@@ -668,6 +876,7 @@ pub(super) async fn activate(
         tokio::time::sleep(Duration::from_secs(2)).await;
         if let Err(e) = replace(&mut u).await {
             u.error = Some(e.1.to_string());
+            u.failure = Some(classify(&e).into());
             if recover_old(&mut u).await.is_err() {
                 u.stage = "recovery-required".into();
             }
@@ -695,18 +904,36 @@ async fn replace(u: &mut Update) -> Result<()> {
         json!([{"Type":"bind","Source":u.source,"Target":"/var/lib/thelxinoe"}]),
     )?;
     spec["Labels"]["app.thelxinoe.validation"] = json!("true");
-    worker(u, "live-validation", spec).await?;
-    // Copy the report with trusted code, then inspect the version/schema contract.
-    copy(u, &u.source, "validated", false).await?;
-    let report: Value = persisted(store::read(
-        &dir(&u.id).join("validated/.release-validation.json"),
-    ))?;
+    worker(u, "live-validation", spec, STATE_CHECK_LIMIT)
+        .await
+        .map_err(failed_check("The release failed its database check"))?;
+    // Copy the report out with trusted code, then inspect the version/schema contract.
+    let report = live_report(u).await?;
     if report["version"] != manifest.version || report["schema"] != manifest.migration.target {
         return Err(conflict(
             "Isolated live-state validation returned an unexpected contract",
         ));
     }
     handoff(u).await
+}
+/// The live-state validation report alone, copied out by a worker running as
+/// the server; the rest of the live state is not copied again.
+async fn live_report(u: &Update) -> Result<Value> {
+    let leaf = dir(&u.id).join("validated");
+    private(&leaf)?;
+    let identity = Identity::from_user(&u.old.server["Config"])?;
+    persisted(
+        std::os::unix::fs::chown(&leaf, Some(identity.uid), Some(identity.gid)).map_err(Into::into),
+    )?;
+    let spec = worker_spec(
+        u,
+        &updates::current_image().await?,
+        "state-report",
+        json!([{"Type":"bind","Source":u.source,"Target":"/source","ReadOnly":true},
+            {"Type":"bind","Source":host(u,"validated"),"Target":"/destination"}]),
+    )?;
+    worker(u, "report", spec, 180).await?;
+    persisted(store::read(&leaf.join(".release-validation.json")))
 }
 async fn handoff(u: &mut Update) -> Result<()> {
     let retiring = u.retiring.clone().unwrap_or_else(|| u.old.clone());
@@ -757,9 +984,14 @@ async fn handoff(u: &mut Update) -> Result<()> {
         inspect(immutable(&u.old.controller)?).await,
         inspect(controller_image.clone()).await,
     ];
+    let retired = if u.restoring_release {
+        "replaced"
+    } else {
+        "retired"
+    };
     rename(
         retiring.server["Id"].as_str().ok_or_else(unavailable)?,
-        &format!("{server_name}-retired-{}", &u.id[..8]),
+        &format!("{server_name}-{retired}-{}", &u.id[..8]),
     )
     .await?;
     let mut spec = recreate(&u.old.server, &server_image, &images[0], &images[1])?;
@@ -781,7 +1013,7 @@ async fn handoff(u: &mut Update) -> Result<()> {
     spec["HostConfig"]["RestartPolicy"] = json!({"Name":"unless-stopped"});
     rename(
         retiring.controller["Id"].as_str().ok_or_else(unavailable)?,
-        &format!("{controller_name}-retired-{}", &u.id[..8]),
+        &format!("{controller_name}-{retired}-{}", &u.id[..8]),
     )
     .await?;
     u.next_controller = Some(create(&controller_name, spec).await?);
@@ -875,8 +1107,22 @@ async fn recover_old(u: &mut Update) -> Result<()> {
     write(u)?;
     clean_workers(u).await?;
     clean_successors(u, &u.old).await?;
+    let server = u.old.server["Id"].as_str().ok_or_else(unavailable)?;
+    // The previous containers may have been removed by hand meanwhile.
+    let present = |result: Result<()>| match result {
+        Err((StatusCode::NOT_FOUND, _)) => Ok(false),
+        other => other.map(|_| true),
+    };
     if u.snapshot_ready {
-        updates::stop(u.old.server["Id"].as_str().ok_or_else(unavailable)?).await?;
+        if !present(updates::stop(server).await)? {
+            // Never restore beneath a server that took over the same state.
+            let named = engine(&format!("/containers/{}/json", name(&u.old.server)?)).await;
+            if named.is_ok_and(|c| c["State"]["Running"] == true) {
+                return Err(conflict(
+                    "Another server container is running; stop it before recovering the update",
+                ));
+            }
+        }
         updates::copy_state(
             &u.old,
             &u.id,
@@ -887,22 +1133,27 @@ async fn recover_old(u: &mut Update) -> Result<()> {
         )
         .await?;
     }
-    rename(
-        u.old.server["Id"].as_str().ok_or_else(unavailable)?,
-        name(&u.old.server)?,
-    )
-    .await?;
-    rename(
-        u.old.controller["Id"].as_str().ok_or_else(unavailable)?,
-        name(&u.old.controller)?,
-    )
-    .await?;
+    let server_present = present(rename(server, name(&u.old.server)?).await)?;
+    present(
+        rename(
+            u.old.controller["Id"].as_str().ok_or_else(unavailable)?,
+            name(&u.old.controller)?,
+        )
+        .await,
+    )?;
     if current.generation != u.old.generation {
         let mut restored = u.old.clone();
         restored.generation = next_generation()?;
         commit(&restored)?;
     }
-    updates::start(u.old.server["Id"].as_str().ok_or_else(unavailable)?).await?;
+    if server_present {
+        updates::start(server).await?;
+    } else {
+        u.error = Some(
+            "The previous containers were removed; Thelxinoe starts again once Compose recreates them (docker compose up -d)"
+                .into(),
+        );
+    }
     u.stage = "recovered".into();
     write(u)
 }
@@ -1022,11 +1273,21 @@ async fn clean_successors(u: &Update, active: &Deployment) -> Result<()> {
     Ok(())
 }
 /// Called before acquiring the lease. Standby only writes its own readiness record.
+/// Whether this controller was created for a handoff that is still open; a
+/// successor keeps `THELXINOE_HANDOFF` after it took over.
+pub(crate) fn handoff_pending() -> bool {
+    std::env::var("THELXINOE_HANDOFF").is_ok_and(|key| {
+        read(&key).is_ok_and(|u| matches!(u.stage.as_str(), "creating-successor" | "handoff"))
+    })
+}
 pub(crate) async fn standby() -> anyhow::Result<()> {
     let Ok(key) = std::env::var("THELXINOE_HANDOFF") else {
         return Ok(());
     };
     id(&key).map_err(|(_, e)| anyhow::anyhow!(e))?;
+    if !handoff_pending() {
+        return Ok(());
+    }
     let self_id = std::env::var("HOSTNAME")?;
     store::write_json(
         &dir(&key).join("standby.json"),
@@ -1038,7 +1299,7 @@ pub(crate) async fn standby() -> anyhow::Result<()> {
 pub(crate) async fn accepted_writer() -> anyhow::Result<bool> {
     let file = store::root().join("desired-state.json");
     if !file.exists() {
-        return Ok(std::env::var("THELXINOE_HANDOFF").is_err());
+        return Ok(!handoff_pending());
     }
     let mut d: Deployment = store::read(&file)?;
     let own = std::env::var("HOSTNAME")?;
@@ -1047,6 +1308,14 @@ pub(crate) async fn accepted_writer() -> anyhow::Result<bool> {
         .is_some_and(|id| id.starts_with(&own))
     {
         return Ok(true);
+    }
+    // Interrupted attempts recover against the containers they started with first.
+    if all()
+        .map_err(|(_, e)| anyhow::anyhow!(e))?
+        .iter()
+        .any(|u| !settled(&u.stage))
+    {
+        return Ok(false);
     }
     // Compose can recreate a pinned generation with new container IDs. Only accept its
     // original names, exact images and equivalent security/mount configuration.
@@ -1261,20 +1530,26 @@ async fn accept_containers(
         d.media_source
     );
     // Interrupted work recovers against the containers it started with.
+    let attempts = all().map_err(fail)?;
     anyhow::ensure!(
-        all().map_err(fail)?.iter().all(|u| matches!(
-            u.stage.as_str(),
-            "ready"
-                | "blocked"
-                | "recovered"
-                | "committed"
-                | "restored"
-                | "runtime-failure"
-                | "recovery-required"
-                | "superseded"
-        )),
+        attempts.iter().all(|u| settled(&u.stage)),
         "Finish or recover the product update first"
     );
+    if let Some(u) = attempts.iter().find(|u| unrestored(u)) {
+        anyhow::bail!(
+            "An interrupted update may have left the server state half migrated. Stop the {} container, then restart the controller to restore its rollback copy",
+            name(&u.old.server).unwrap_or("server")
+        );
+    }
+    // An older release may not open a database the installed one migrated.
+    if let Some(version) = server_version.as_deref()
+        && older(version, &d.version)
+    {
+        anyhow::bail!(
+            "The recreated containers run {version}, older than the installed {}, whose database {version} may not open. Run docker compose pull, then docker compose up -d, to run the newest release",
+            d.version
+        );
+    }
     anyhow::ensure!(
         !super::backups::interrupted().map_err(fail)?,
         "Finish the interrupted backup or restore with the previous containers first"
@@ -1353,6 +1628,17 @@ async fn accept_containers(
     d.generation = next_generation().map_err(fail)?;
     commit(&d).map_err(fail)?;
     Ok(format!("Adopted as generation {}.", d.generation))
+}
+/// Whether release `version` precedes `installed`; development builds compare as equal.
+fn older(version: &str, installed: &str) -> bool {
+    let parse = |v: &str| -> Option<Vec<u64>> {
+        let parts = v
+            .split('.')
+            .map(|p| p.parse().ok())
+            .collect::<Option<Vec<u64>>>()?;
+        (parts.len() == 3).then_some(parts)
+    };
+    matches!((parse(version), parse(installed)), (Some(a), Some(b)) if a < b)
 }
 async fn normalize_stopped_server(server: &mut Value) -> Result<()> {
     if server["State"]["Running"] == true {
@@ -1469,109 +1755,320 @@ fn equivalent(expected: &Value, actual: &Value) -> bool {
     };
     networks(expected) == networks(actual)
 }
+/// Journal stages no restart has to continue.
+fn settled(stage: &str) -> bool {
+    matches!(
+        stage,
+        "ready"
+            | "blocked"
+            | "recovered"
+            | "committed"
+            | "restored"
+            | "runtime-failure"
+            | "recovery-required"
+            | "superseded"
+    )
+}
 pub(crate) async fn startup() -> anyhow::Result<()> {
+    if let Ok(d) = store::read::<Deployment>(&store::root().join("desired-state.json")) {
+        retire_obsolete(&d);
+    }
     for mut u in all().map_err(|(_, e)| anyhow::anyhow!(e))? {
-        if matches!(
-            u.stage.as_str(),
-            "ready"
-                | "blocked"
-                | "recovered"
-                | "committed"
-                | "restored"
-                | "runtime-failure"
-                | "recovery-required"
-                | "superseded"
-        ) {
+        if settled(&u.stage) {
             continue;
         }
-        let d = bootstrap().await.map_err(|(_, e)| anyhow::anyhow!(e))?;
-        if u.stage == "handoff"
-            && d.generation == u.generation.unwrap_or(0)
-            && d.controller["Id"].as_str() == u.next_controller.as_deref()
-        {
-            store::write_json(
-                &dir(&u.id).join("writer.json"),
-                &json!({"generation":d.generation,"version":thelxinoe_core::VERSION}),
-            )?;
-            u.activation_crossed = true;
-            u.stage = "activating".into();
-            write(&u).map_err(|(_, e)| anyhow::anyhow!(e))?;
-            let activated = async {
-                let key = u.next_server.as_deref().ok_or_else(unavailable)?;
-                updates::start(key).await?;
-                for _ in 0..180 {
-                    let raw = engine(&format!("/containers/{key}/json")).await?;
-                    if raw["State"]["Health"]["Status"] == "healthy" {
-                        return Ok(());
-                    }
-                    if raw["State"]["Running"] == false {
-                        return Err(conflict("Accepted server exited"));
-                    }
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
-                Err(conflict("Accepted server health check timed out"))
-            }
-            .await;
-            u.stage = if activated.is_ok() {
-                if u.restoring_release {
-                    "restored"
-                } else {
-                    "committed"
-                }
-            } else {
-                "runtime-failure"
-            }
-            .into();
-            if activated.is_err() {
-                u.error =
-                    Some("Accepted server could not start; explicit recovery is required".into());
-            }
-            write(&u).map_err(|(_, e)| anyhow::anyhow!(e))?;
-            if u.stage == "committed" {
-                retag_latest(&u).await;
-                clean_copies(&u);
-            }
-            // The accepted descriptor is sufficient to recreate old images offline; retired
-            // Compose containers must not compete with the accepted service names.
-            let retired = u.retiring.as_ref().unwrap_or(&u.old);
-            let _ = updates::remove(retired.server["Id"].as_str().unwrap_or("")).await;
-            let _ = updates::remove(retired.controller["Id"].as_str().unwrap_or("")).await;
-        } else if u.activation_crossed {
-            u.stage = "runtime-failure".into();
-            u.error = Some(
-                "Server activation was interrupted; inspect health before explicit recovery".into(),
-            );
-            write(&u).map_err(|(_, e)| anyhow::anyhow!(e))?;
-        } else if u.restoring_release {
-            restore_release(&mut u)
-                .await
-                .map_err(|(_, e)| anyhow::anyhow!(e))?;
-        } else if !owns_pre_activation(&u, &d) && d.generation > u.old.generation {
-            // Historical attempts must not stop the accepted controller starting.
-            // No Docker or appdata mutation is permitted for this old generation.
-            u.stage = "superseded".into();
-            u.error = Some("A newer deployment superseded this attempt".into());
-            write(&u).map_err(|(_, e)| anyhow::anyhow!(e))?;
-        } else {
-            recover_old(&mut u)
-                .await
-                .map_err(|(_, e)| anyhow::anyhow!(e))?;
+        if let Err((_, error)) = resume(&mut u).await {
+            needs_recovery(&mut u, &error);
         }
     }
+    retag_installed().await;
+    clean_orphans().await;
+    prune_journals();
     Ok(())
+}
+/// An attempt the controller cannot finish waits for an administrator. The
+/// controller keeps running, so adoption, diagnostics and recovery stay possible.
+fn needs_recovery(u: &mut Update, error: &str) {
+    eprintln!("Server update {} needs recovery: {error}", u.id);
+    u.stage = "recovery-required".into();
+    u.error = Some(error.into());
+    let _ = write(u);
+}
+async fn resume(u: &mut Update) -> Result<()> {
+    let d = bootstrap().await?;
+    if u.stage == "handoff"
+        && d.generation == u.generation.unwrap_or(0)
+        && d.controller["Id"].as_str() == u.next_controller.as_deref()
+    {
+        return take_over(u, &d).await;
+    }
+    if u.activation_crossed {
+        u.stage = "runtime-failure".into();
+        u.error = Some(
+            "Server activation was interrupted; inspect health before explicit recovery".into(),
+        );
+        write(u)?;
+        remove_retired(u).await;
+        return Ok(());
+    }
+    if u.restoring_release {
+        return restore_release(u).await;
+    }
+    if !owns_pre_activation(u, &d) && d.generation > u.old.generation {
+        // Historical attempts must not stop the accepted controller starting.
+        // No Docker or appdata mutation is permitted for this old generation.
+        u.stage = "superseded".into();
+        u.error = Some("A newer deployment superseded this attempt".into());
+        return write(u);
+    }
+    interrupted(u).await
+}
+/// The accepted successor finishes its own activation.
+async fn take_over(u: &mut Update, d: &Deployment) -> Result<()> {
+    persisted(store::write_json(
+        &dir(&u.id).join("writer.json"),
+        &json!({"generation":d.generation,"version":thelxinoe_core::VERSION}),
+    ))?;
+    u.activation_crossed = true;
+    u.stage = "activating".into();
+    write(u)?;
+    let activated = async {
+        let key = u.next_server.as_deref().ok_or_else(unavailable)?;
+        updates::start(key).await?;
+        let mut steady = 0;
+        for _ in 0..180 {
+            let raw = engine(&format!("/containers/{key}/json")).await?;
+            if raw["State"]["Health"]["Status"] == "healthy" {
+                return Ok(());
+            }
+            if raw["State"]["Running"] == false {
+                return Err(conflict("Accepted server exited"));
+            }
+            // An override can disable the health check; then staying up counts.
+            if raw["State"]["Health"].is_null() {
+                steady += 1;
+                if steady >= 30 {
+                    return Ok(());
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        Err(conflict("Accepted server health check timed out"))
+    }
+    .await;
+    u.stage = if activated.is_ok() {
+        if u.restoring_release {
+            "restored"
+        } else {
+            "committed"
+        }
+    } else {
+        "runtime-failure"
+    }
+    .into();
+    if activated.is_err() {
+        u.error = Some("Accepted server could not start; explicit recovery is required".into());
+    }
+    write(u)?;
+    if activated.is_ok() {
+        u.latest = retag_latest(u).await;
+        write(u)?;
+        clean_copies(u);
+    }
+    remove_retired(u).await;
+    Ok(())
+}
+/// The accepted descriptor is sufficient to recreate old images offline; retired
+/// Compose containers must not compete with the accepted service names.
+async fn remove_retired(u: &Update) {
+    let retired = u.retiring.as_ref().unwrap_or(&u.old);
+    let _ = updates::remove(retired.server["Id"].as_str().unwrap_or("")).await;
+    let _ = updates::remove(retired.controller["Id"].as_str().unwrap_or("")).await;
+}
+/// Recover an attempt a restart interrupted before the point of no return. The
+/// release may still be fine, so it can be tried again.
+async fn interrupted(u: &mut Update) -> Result<()> {
+    let preparing = matches!(
+        u.stage.as_str(),
+        "preparing" | "snapshotting" | "validating"
+    );
+    recover_old(u).await?;
+    u.failure.get_or_insert_with(|| "interrupted".into());
+    if preparing {
+        u.stage = "blocked".into();
+        u.error.get_or_insert_with(|| {
+            "Preparation was interrupted by a restart; the update can be prepared again".into()
+        });
+        u.download = None;
+        remove_copies(u, None);
+    } else {
+        u.error.get_or_insert_with(|| {
+            "The update was interrupted by a restart; the previous version is running".into()
+        });
+    }
+    write(u)
+}
+/// Before this controller accepts containers that Compose recreated, finish the
+/// attempts a restart interrupted. Their previous containers may be gone.
+pub(crate) async fn recover_interrupted() {
+    let own = std::env::var("HOSTNAME").unwrap_or_default();
+    let desired = store::read::<Deployment>(&store::root().join("desired-state.json")).ok();
+    for mut u in all().unwrap_or_default() {
+        if settled(&u.stage) && !unrestored(&u) {
+            continue;
+        }
+        // A successor that still exists finishes or recovers its own activation.
+        if let Some(successor) = u.next_controller.as_deref()
+            && desired
+                .as_ref()
+                .is_some_and(|d| d.controller["Id"].as_str() == Some(successor))
+            && engine(&format!("/containers/{successor}/json"))
+                .await
+                .is_ok()
+        {
+            continue;
+        }
+        let predecessor = !own.is_empty()
+            && [Some(&u.old), u.retiring.as_ref()]
+                .into_iter()
+                .flatten()
+                .any(|d| {
+                    d.controller["Id"]
+                        .as_str()
+                        .is_some_and(|id| id.starts_with(&own))
+                });
+        let result =
+            if u.stage == "handoff" && !dir(&u.id).join("writer.json").exists() && predecessor {
+                // This controller restarted while its successor never took over.
+                hand_back(&mut u).await
+            } else if u.stage == "handoff" || u.activation_crossed || u.restoring_release {
+                Err(conflict(
+                    "The update was interrupted while switching versions; recover it explicitly",
+                ))
+            } else {
+                interrupted(&mut u).await
+            };
+        if let Err((_, error)) = result {
+            needs_recovery(&mut u, &error);
+        }
+    }
+}
+/// Attempts for an older generation that can never activate or recover again.
+/// Retire them, and the copies of those that never touched live state, so
+/// clients and later updates only see current attempts.
+fn retire_obsolete(d: &Deployment) {
+    for mut u in all().unwrap_or_default() {
+        let stale = u.old.generation < d.generation
+            && match u.stage.as_str() {
+                "ready" | "blocked" => true,
+                "recovery-required" => !unrestored(&u) && !recoverable(&u, d),
+                _ => false,
+            };
+        if !stale {
+            continue;
+        }
+        let copies = u.stage != "recovery-required";
+        u.stage = "superseded".into();
+        u.error = Some("A newer deployment superseded this attempt".into());
+        u.download = None;
+        if write(&u).is_ok() && copies {
+            remove_copies(&u, None);
+        }
+    }
+}
+/// An activation that took its rollback copy but never handed over may have left
+/// live state half migrated; restoring that copy is the only safe way on.
+fn unrestored(u: &Update) -> bool {
+    u.stage == "recovery-required"
+        && u.snapshot_ready
+        && !u.activation_crossed
+        && !u.restoring_release
+        && u.generation.is_none()
+}
+/// Explicit recovery only works against the deployment the attempt left.
+fn recoverable(u: &Update, d: &Deployment) -> bool {
+    match u.generation {
+        None if u.restoring_release => u
+            .retiring
+            .as_ref()
+            .is_some_and(|r| r.generation == d.generation),
+        None => owns_pre_activation(u, d),
+        Some(generation) => {
+            d.generation == generation || (!u.restoring_release && snapshot_matches(u, d))
+        }
+    }
+}
+/// Worker containers a restart left behind, for attempts that are settled.
+async fn clean_orphans() {
+    let Ok(rows) = engine("/containers/json?all=true").await else {
+        return;
+    };
+    let attempts = all()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|u| settled(&u.stage))
+        .map(|u| (u.id, u.old.id))
+        .collect::<Vec<_>>();
+    for c in rows.as_array().into_iter().flatten() {
+        let labels = &c["Labels"];
+        let Some(attempt) = labels["app.thelxinoe.product-update"]
+            .as_str()
+            .or(labels["app.thelxinoe.update"].as_str())
+        else {
+            continue;
+        };
+        // Successors carry their component label and stay.
+        if !labels["app.thelxinoe.component"].is_null() {
+            continue;
+        }
+        if attempts.iter().any(|(id, deployment)| {
+            id == attempt && labels["app.thelxinoe.deployment"].as_str() == Some(deployment)
+        }) && let Some(container) = c["Id"].as_str()
+        {
+            let _ = updates::remove(container).await;
+        }
+    }
+}
+/// Keep a month of superseded attempts for diagnostics, and any that still hold
+/// a copy.
+fn prune_journals() {
+    let cutoff = thelxinoe_core::now() - 30 * 86400;
+    for u in all().unwrap_or_default() {
+        let copies = [
+            "preflight-snapshot",
+            "clone",
+            "rollback",
+            "validated",
+            "probe",
+        ]
+        .iter()
+        .any(|leaf| dir(&u.id).join(leaf).exists());
+        if u.stage == "superseded" && u.created_at < cutoff && !copies {
+            let _ = std::fs::remove_dir_all(dir(&u.id));
+        }
+    }
 }
 /// `docker compose up` compares containers with the images their Compose tags name
 /// locally. A deployment following `latest` gets that tag moved to the installed
-/// release, so Compose neither recreates the new containers nor brings back the
-/// previous release; `docker compose pull` still reaches anything newer.
-async fn retag_latest(u: &Update) {
-    let Some(manifest) = &u.manifest else {
-        return;
+/// (or restored) release, so Compose neither recreates the new containers nor
+/// brings back another release; `docker compose pull` still reaches anything newer.
+async fn retag_latest(u: &Update) -> bool {
+    let images = if u.restoring_release {
+        match (immutable(&u.old.server), immutable(&u.old.controller)) {
+            (Ok(server), Ok(controller)) => [server, controller],
+            _ => return false,
+        }
+    } else {
+        let Some(manifest) = &u.manifest else {
+            return false;
+        };
+        [
+            manifest.server.reference.clone(),
+            manifest.controller.reference.clone(),
+        ]
     };
-    for (raw, image) in [
-        (&u.old.server, &manifest.server.reference),
-        (&u.old.controller, &manifest.controller.reference),
-    ] {
+    let mut tagged = true;
+    for (raw, image) in [(&u.old.server, &images[0]), (&u.old.controller, &images[1])] {
         let Some(repository) = raw["Config"]["Labels"][COMPOSE_IMAGE]
             .as_str()
             .or(raw["Config"]["Image"].as_str())
@@ -1582,8 +2079,34 @@ async fn retag_latest(u: &Update) {
         let path = format!("/images/{image}/tag?repo={repository}&tag=latest");
         if let Err((_, error)) = request(Method::POST, &path, None).await {
             eprintln!("Could not point {repository}:latest at the installed release: {error}");
+            tagged = false;
         }
     }
+    tagged
+}
+/// Retry a `latest` tag a previous start could not move, for the release that is
+/// still installed.
+async fn retag_installed() {
+    let Ok(d) = store::read::<Deployment>(&store::root().join("desired-state.json")) else {
+        return;
+    };
+    let Some(mut u) = all()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|u| matches!(u.stage.as_str(), "committed" | "restored"))
+    else {
+        return;
+    };
+    let installed = if u.restoring_release {
+        Some(u.old.version.as_str())
+    } else {
+        u.manifest.as_ref().map(|m| m.version.as_str())
+    };
+    if u.latest || installed != Some(d.version.as_str()) {
+        return;
+    }
+    u.latest = retag_latest(&u).await;
+    let _ = write(&u);
 }
 /// Once a release commits, only its rollback copy can still be used. Earlier
 /// attempts' copies hold complete server state, credentials included.
@@ -1593,23 +2116,8 @@ fn clean_copies(committed: &Update) {
             u.stage.as_str(),
             "committed" | "blocked" | "recovered" | "restored" | "runtime-failure" | "superseded"
         );
-        if !finished {
-            continue;
-        }
-        for leaf in [
-            "preflight-snapshot",
-            "clone",
-            "rollback",
-            "validated",
-            "probe",
-        ] {
-            let path = dir(&u.id).join(leaf);
-            if (u.id == committed.id && leaf == "rollback") || !path.exists() {
-                continue;
-            }
-            if let Err(error) = std::fs::remove_dir_all(&path) {
-                eprintln!("Could not remove {}: {error}", path.display());
-            }
+        if finished {
+            remove_copies(&u, (u.id == committed.id).then_some("rollback"));
         }
     }
 }
@@ -1626,32 +2134,54 @@ pub(crate) async fn watchdog(runtime: &std::path::Path) -> anyhow::Result<bool> 
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
-    let _lease = crate::lease::Lease::acquire(runtime)?;
+    // A successor that is still starting holds the lease for a while.
+    let mut attempts = 0;
+    let _lease = loop {
+        match crate::lease::Lease::acquire(runtime) {
+            Ok(lease) => break lease,
+            Err(_) if attempts < 300 => {
+                attempts += 1;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    };
     for mut u in all().map_err(|(_, e)| anyhow::anyhow!(e))? {
         if u.stage == "handoff" && !dir(&u.id).join("writer.json").exists() {
-            if u.restoring_release {
-                // Keep the existing controller available for explicit continuation;
-                // never start its newer server against the restored older database.
-                let result = async {
-                    let mut active = u.retiring.clone().ok_or_else(unavailable)?;
-                    clean_successors(&u, &active).await?;
-                    rename(active.server["Id"].as_str().ok_or_else(unavailable)?, name(&u.old.server)?).await?;
-                    rename(active.controller["Id"].as_str().ok_or_else(unavailable)?, name(&u.old.controller)?).await?;
-                    active.generation = next_generation()?;
-                    commit(&active)?;
-                    u.stage = "recovery-required".into();
-                    u.error = Some("Recovery controller did not take over; resume recovery through the private controller API".into());
-                    write(&u)
-                }.await;
-                result.map_err(|(_, e)| anyhow::anyhow!(e))?;
-            } else {
-                recover_old(&mut u)
-                    .await
-                    .map_err(|(_, e)| anyhow::anyhow!(e))?;
-            }
+            hand_back(&mut u)
+                .await
+                .map_err(|(_, e)| anyhow::anyhow!(e))?;
         }
     }
     Ok(true)
+}
+/// Take the deployment back from a successor that never became the writer.
+async fn hand_back(u: &mut Update) -> Result<()> {
+    if !u.restoring_release {
+        return recover_old(u).await;
+    }
+    // Keep the existing controller available for explicit continuation;
+    // never start its newer server against the restored older database.
+    let mut active = u.retiring.clone().ok_or_else(unavailable)?;
+    clean_successors(u, &active).await?;
+    rename(
+        active.server["Id"].as_str().ok_or_else(unavailable)?,
+        name(&u.old.server)?,
+    )
+    .await?;
+    rename(
+        active.controller["Id"].as_str().ok_or_else(unavailable)?,
+        name(&u.old.controller)?,
+    )
+    .await?;
+    active.generation = next_generation()?;
+    commit(&active)?;
+    u.stage = "recovery-required".into();
+    u.error = Some(
+        "Recovery controller did not take over; resume recovery through the private controller API"
+            .into(),
+    );
+    write(u)
 }
 #[cfg(test)]
 mod tests {
@@ -1911,5 +2441,188 @@ mod tests {
                 assert_eq!(current.generation, 2);
             })
             .await;
+    }
+
+    fn journal(id: &str, stage: &str, generation: u64, server: &str) -> Update {
+        serde_json::from_value(json!({
+            "id":id,"created_at":thelxinoe_core::now(),"stage":stage,"error":null,"manifest":null,
+            "envelope":null,"old":{"id":"deployment","generation":generation,"version":"0.0.1",
+                "server":{"Id":server,"Name":"/service"},"controller":{"Id":"old-controller","Name":"/thelxinoe-controller"},
+                "network":"media","media_source":"/media","appdata_source":store::root()},
+            "source":store::root().join("live"),"snapshot_ready":false,"recovery_tested":false,
+            "activation_crossed":false,"next_server":null,"next_controller":null,"generation":null
+        }))
+        .unwrap()
+    }
+    fn accept(generation: u64, server: &str) {
+        let d = journal("unused", "ready", generation, server).old;
+        store::commit_generation(
+            &store::root(),
+            generation,
+            &serde_json::to_value(&d).unwrap(),
+            &json!({}),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn newer_generations_retire_attempts_that_can_no_longer_activate() {
+        let fixture = crate::test_support::Docker::new();
+        fixture
+            .scope(async {
+                let blocked = journal(
+                    "11111111-0000-0000-0000-000000000000",
+                    "blocked",
+                    1,
+                    "original",
+                );
+                let current = journal(
+                    "22222222-0000-0000-0000-000000000000",
+                    "ready",
+                    2,
+                    "original",
+                );
+                let mut stuck = journal(
+                    "33333333-0000-0000-0000-000000000000",
+                    "recovery-required",
+                    1,
+                    "original",
+                );
+                stuck.snapshot_ready = true;
+                // A failed switch to generation 2, before Compose was adopted as 3.
+                let mut switched = journal(
+                    "66666666-0000-0000-0000-000000000000",
+                    "recovery-required",
+                    1,
+                    "original",
+                );
+                switched.generation = Some(2);
+                switched.activation_crossed = true;
+                switched.snapshot_ready = true;
+                for u in [&blocked, &current, &stuck, &switched] {
+                    write(u).unwrap();
+                }
+                std::fs::create_dir_all(dir(&blocked.id).join("preflight-snapshot")).unwrap();
+                std::fs::create_dir_all(dir(&stuck.id).join("rollback")).unwrap();
+                let progress =
+                    store::root().join("progress/thelxinoe-state-11111111-preflight-snapshot");
+                std::fs::create_dir_all(&progress).unwrap();
+                accept(2, "original");
+                startup().await.unwrap();
+                let blocked = read(&blocked.id).unwrap();
+                assert_eq!(blocked.stage, "superseded");
+                assert!(!dir(&blocked.id).join("preflight-snapshot").exists());
+                assert!(!progress.exists());
+                assert_eq!(read(&current.id).unwrap().stage, "ready");
+                // State it may have half migrated still needs its rollback copy.
+                assert_eq!(read(&stuck.id).unwrap().stage, "recovery-required");
+                assert!(dir(&stuck.id).join("rollback").exists());
+                assert_eq!(
+                    public(&blocked)["error"],
+                    "A newer deployment superseded this attempt"
+                );
+                // Generation 2 is still the one the switch left; a later one is not.
+                assert_eq!(read(&switched.id).unwrap().stage, "recovery-required");
+                accept(3, "original");
+                startup().await.unwrap();
+                assert_eq!(read(&switched.id).unwrap().stage, "superseded");
+                assert_eq!(read(&stuck.id).unwrap().stage, "recovery-required");
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_preparation_can_be_tried_again() {
+        let fixture = crate::test_support::Docker::new();
+        fixture
+            .scope(async {
+                accept(1, "original");
+                let u = journal(
+                    "44444444-0000-0000-0000-000000000000",
+                    "snapshotting",
+                    1,
+                    "original",
+                );
+                write(&u).unwrap();
+                std::fs::create_dir_all(dir(&u.id).join("preflight-snapshot")).unwrap();
+                startup().await.unwrap();
+                let u = read(&u.id).unwrap();
+                assert_eq!(u.stage, "blocked");
+                assert_eq!(u.failure.as_deref(), Some("interrupted"));
+                assert!(u.error.unwrap().contains("interrupted by a restart"));
+                assert!(!dir(&u.id).join("preflight-snapshot").exists());
+                // The previous server runs again; the missing old controller is no obstacle.
+                assert!(fixture.running("original"));
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn recovery_never_restores_beneath_a_recreated_server_and_never_stops_the_controller() {
+        let fixture = crate::test_support::Docker::new();
+        fixture
+            .scope(async {
+                accept(1, "gone");
+                let mut u = journal(
+                    "55555555-0000-0000-0000-000000000000",
+                    "isolated-migration",
+                    1,
+                    "gone",
+                );
+                u.snapshot_ready = true;
+                write(&u).unwrap();
+                // Compose recreated the server under its name and started it.
+                fixture.insert(
+                    "service",
+                    json!({"Id":"service","Name":"/service","State":{"Running":true},
+                    "Config":{},"HostConfig":{},"NetworkSettings":{"Networks":{}}}),
+                );
+                startup().await.unwrap();
+                let u = read(&u.id).unwrap();
+                assert_eq!(u.stage, "recovery-required");
+                assert!(
+                    u.error
+                        .unwrap()
+                        .contains("Another server container is running")
+                );
+                assert_eq!(fixture.copies(), 0);
+            })
+            .await;
+    }
+
+    #[test]
+    fn only_a_broken_contract_counts_against_the_release() {
+        let checked = failed_check("The release failed its database check")(conflict(
+            "Isolated worker failed its contract: Error: schema",
+        ));
+        assert_eq!(
+            checked.1,
+            "The release failed its database check: Error: schema"
+        );
+        assert_eq!(classify(&checked), "validation");
+        // A copy worker killed for memory is no verdict on the release.
+        assert_eq!(
+            classify(&conflict("Isolated worker failed its contract")),
+            "environment"
+        );
+        assert_eq!(
+            classify(&conflict(
+                "Server migration contract does not match the signed release"
+            )),
+            "validation"
+        );
+        assert_eq!(
+            classify(&conflict("Isolated worker exceeded its time limit")),
+            "environment"
+        );
+        assert_eq!(
+            classify(&conflict("Docker refused to create container x: no")),
+            "environment"
+        );
+        assert!(older("0.0.1", "0.0.2"));
+        assert!(older("0.9.9", "1.0.0"));
+        assert!(!older("0.0.2", "0.0.2"));
+        assert!(!older("0.0.3", "0.0.2"));
+        assert!(!older("test", "0.0.2"));
     }
 }
