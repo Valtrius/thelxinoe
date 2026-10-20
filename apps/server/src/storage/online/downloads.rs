@@ -108,6 +108,23 @@ pub(super) async fn source(
     db.read("online.downloads.source", move |db| Ok(db.query_row("SELECT generation,path,size,modified,probe FROM youtube_downloads WHERE video_id=?1 AND state='ready'",[&video],|r|Ok(Source {id:video.clone(),media_id:format!("youtube:{video}"),generation:r.get(0)?,edition:"public".into(),path:PathBuf::from(r.get::<_,String>(1)?),root,size:r.get::<_,i64>(2)? as u64,modified:r.get(3)?,probe:serde_json::from_str(&r.get::<_,String>(4)?).unwrap_or_default()})).optional()?)).await
 }
 
+/// Mark a ready download whose file is missing or changed as failed; its row no longer
+/// claims cache space, and a new request downloads it again.
+pub(super) async fn invalidate(
+    video: String,
+    generation: String,
+    db: &Database,
+) -> anyhow::Result<()> {
+    db.write("online.downloads.invalidate", move |db| {
+        db.execute(
+            "UPDATE youtube_downloads SET state='failed',error='The downloaded copy is missing or changed',updated_at=?3 WHERE video_id=?1 AND generation=?2 AND state='ready'",
+            params![video, generation, now()],
+        )?;
+        Ok(())
+    })
+    .await
+}
+
 pub(super) async fn recover_downloads(db: &Database) -> anyhow::Result<()> {
     db.write("online.downloads.recover_downloads", |db| {
         db.execute(

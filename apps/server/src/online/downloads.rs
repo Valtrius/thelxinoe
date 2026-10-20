@@ -148,11 +148,21 @@ pub(crate) async fn request_for(
 }
 
 pub(crate) async fn source(state: &AppState, video: &str) -> Result<Source> {
-    let video = video.to_owned();
     let root = state.config.cache.join("youtube");
-    storage::source(video, root, &state.db)
+    let source = storage::source(video.to_owned(), root, &state.db)
         .await?
-        .ok_or_else(|| ApiError::conflict("The public download is not ready"))
+        .ok_or_else(|| ApiError::conflict("The public download is not ready"))?;
+    // A copy that is missing or changed on disk can't play; the video streams instead and
+    // can be downloaded again.
+    if let Err(error) = source.validate().await {
+        tracing::warn!(video, %error, "Downloaded copy is unusable");
+        storage::invalidate(video.to_owned(), source.generation.clone(), &state.db).await?;
+        state
+            .emit(None, "online.download.changed", json!({"video_id":video}))
+            .await?;
+        return Err(ApiError::conflict("The public download is not ready"));
+    }
+    Ok(source)
 }
 
 pub(crate) use storage::record_state;
