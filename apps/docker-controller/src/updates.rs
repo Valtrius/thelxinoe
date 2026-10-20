@@ -254,6 +254,7 @@ pub(super) async fn preflight(
                 let _ = save(&u.old);
             }
         }
+        remove_copies(&d, &u).await;
     });
     Ok(Json(result))
 }
@@ -717,7 +718,10 @@ pub(super) async fn activate(
             if let Err(error) = write(&u) {
                 eprintln!("Service update recovery journal failed: {}", error.1);
             }
+        } else {
+            retire_older(&d, &u).await;
         }
+        remove_copies(&d, &u).await;
     });
     Ok(Json(result))
 }
@@ -930,7 +934,124 @@ pub(super) async fn recover(
     u.stage = "rolled-back".into();
     u.error = None;
     write(&u)?;
+    remove_copies(&d, &u).await;
     Ok(Json(public(&u)))
+}
+
+/// Copies an attempt no longer needs. Its preflight copies go once it settles, and a rolled
+/// back attempt keeps nothing. A committed attempt keeps its recovery copy and stopped
+/// original until a newer update of the service commits.
+async fn remove_copies(d: &Deployment, u: &Update) {
+    let leaves: &[&str] = match u.stage.as_str() {
+        "ready" | "blocked" | "committed" | "runtime-failure" => {
+            &["snapshot", "clone", "scratch-data"]
+        }
+        "rolled-back" => &["snapshot", "clone", "scratch-data", "recovery"],
+        _ => &[],
+    };
+    for leaf in leaves {
+        let directory = path(&u.id).join(leaf);
+        if directory.exists()
+            && let Err(error) =
+                removal::delete_directory(d, &u.service, &store::root(), &directory).await
+        {
+            eprintln!("Service update {} kept its {leaf} copy: {}", u.id, error.1);
+        }
+    }
+}
+
+/// Committed attempts of `newer`'s service other than it, newest last by journal time.
+fn committed_before(newer: &Update) -> Vec<Update> {
+    let Ok(entries) = std::fs::read_dir(store::root().join("updates")) else {
+        return vec![];
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            read_listed(&entry.file_name().to_string_lossy())
+                .ok()
+                .flatten()
+        })
+        .filter(|u| u.id != newer.id && u.service == newer.service && u.stage == "committed")
+        .collect()
+}
+
+/// Once an update commits, older committed attempts of the service can't be recovered to:
+/// their recovery copies and stopped originals go. Anything running or changed is kept.
+async fn retire_older(d: &Deployment, newer: &Update) {
+    for older in committed_before(newer) {
+        let retired = match verified(&older.old, d).await {
+            Ok(raw) if raw["State"]["Running"] == false => request(
+                Method::DELETE,
+                &format!("/containers/{}?v=false", older.old.container),
+                None,
+            )
+            .await
+            .map(|_| ())
+            .or_else(|error| {
+                if error.0 == StatusCode::NOT_FOUND {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            }),
+            Err((StatusCode::NOT_FOUND, _)) => Ok(()),
+            Ok(_) => Err(conflict("It is running")),
+            Err(error) => Err(error),
+        };
+        if let Err(error) = retired {
+            eprintln!(
+                "Service update {} kept its original {}: {}",
+                older.id, older.old.container, error.1
+            );
+            continue;
+        }
+        let recovery = path(&older.id).join("recovery");
+        if recovery.exists()
+            && let Err(error) =
+                removal::delete_directory(d, &older.service, &store::root(), &recovery).await
+        {
+            eprintln!(
+                "Service update {} kept its recovery copy: {}",
+                older.id, error.1
+            );
+        }
+    }
+}
+
+/// Startup cleanup of copies earlier attempts left behind; the newest committed attempt
+/// of each service keeps what its recovery needs.
+pub(super) async fn prune_settled() -> Result<()> {
+    let root = store::root().join("updates");
+    if !root.exists() {
+        return Ok(());
+    }
+    let d = bootstrap().await?;
+    let mut newest = std::collections::BTreeMap::<String, (std::time::SystemTime, Update)>::new();
+    for entry in std::fs::read_dir(root)
+        .map_err(|_| unavailable())?
+        .flatten()
+    {
+        let Some(u) = read_listed(&entry.file_name().to_string_lossy())? else {
+            continue;
+        };
+        remove_copies(&d, &u).await;
+        if u.stage == "committed" {
+            let time = entry
+                .path()
+                .join("update.json")
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .map_err(|_| unavailable())?;
+            if newest.get(&u.service).is_none_or(|(seen, _)| time > *seen) {
+                newest.insert(u.service.clone(), (time, u));
+            }
+        }
+    }
+    for (_, u) in newest.values() {
+        retire_older(&d, u).await;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -205,3 +205,59 @@ async fn copy_workers_report_their_own_failure() {
         })
         .await;
 }
+
+// Settled attempts keep only what the newest committed one can recover to: its recovery
+// copy and stopped original. Everything an older commit or a preflight left goes.
+#[tokio::test]
+async fn settled_updates_keep_only_what_the_newest_commit_can_recover_to() {
+    const OLDER: &str = "00000000-0000-0000-0000-000000000001";
+    const NEWER: &str = "00000000-0000-0000-0000-000000000002";
+    const BLOCKED: &str = "00000000-0000-0000-0000-000000000003";
+    let fixture = Docker::new();
+    fixture
+        .scope(async {
+            let d: Deployment = fixture.backup_deployment();
+            store::write_json(&store::root().join("desired-state.json"), &d).unwrap();
+            store::write_json(&store::root().join("generations/1/desired-state.json"), &d).unwrap();
+            let (_, template): (Deployment, Update) = fixture.update();
+            for (key, stage, original) in [
+                // The fixture's stopped original is what the older commit retained.
+                (OLDER, "committed", "original"),
+                (NEWER, "committed", "newer-prior"),
+                (BLOCKED, "blocked", "newer-prior"),
+            ] {
+                let mut u = template.clone();
+                u.id = key.into();
+                u.stage = stage.into();
+                u.old.container = original.into();
+                u.activation_crossed = stage == "committed";
+                // Only an activation takes a recovery copy.
+                let leaves: &[&str] = if stage == "committed" {
+                    &["snapshot", "clone", "scratch-data", "recovery"]
+                } else {
+                    &["snapshot", "clone", "scratch-data"]
+                };
+                for leaf in leaves {
+                    std::fs::create_dir_all(path(key).join(leaf)).unwrap();
+                    std::fs::write(path(key).join(leaf).join("config.xml"), "api-key").unwrap();
+                }
+                write(&u).unwrap();
+                // Journal times order the commits.
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            prune_settled().await.unwrap();
+            let left = |key: &str| {
+                ["snapshot", "clone", "scratch-data", "recovery"]
+                    .into_iter()
+                    .filter(|leaf| path(key).join(leaf).exists())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(left(OLDER), Vec::<&str>::new());
+            assert_eq!(left(NEWER), ["recovery"]);
+            assert_eq!(left(BLOCKED), Vec::<&str>::new());
+            assert!(!fixture.names().contains(&"/service".to_owned()));
+            // Journals stay, so a lost reply still finds its outcome.
+            assert!(read(OLDER).is_ok() && read(NEWER).is_ok());
+        })
+        .await;
+}

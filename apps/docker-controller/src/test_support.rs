@@ -210,7 +210,13 @@ impl DockerContext {
         if path == "/containers/controller-fixture/json" {
             return Ok(json!({"Image":format!("sha256:{}", "a".repeat(64))}));
         }
-        if let Some(name) = path.strip_prefix("/containers/create?name=") {
+        let created = path
+            .strip_prefix("/containers/create?name=")
+            .map(str::to_owned)
+            .or_else(|| {
+                (path == "/containers/create").then(|| format!("unnamed-{}", e.creates + 1))
+            });
+        if let Some(name) = created {
             assert_eq!(method, Method::POST);
             let spec = body.unwrap();
             // Like Docker on a kernel without CFS bandwidth control (Synology).
@@ -232,7 +238,11 @@ impl DockerContext {
             let mut config = spec.clone();
             config.as_object_mut().unwrap().remove("HostConfig");
             let id = match spec["Cmd"][0].as_str() {
-                Some(c) if c.starts_with("snapshot-") || c == "transfer-digest" => {
+                Some(c)
+                    if c.starts_with("snapshot-")
+                        || c == "transfer-digest"
+                        || c == "appdata-remove" =>
+                {
                     format!("worker-{}", e.creates)
                 }
                 Some("adapter-health") => format!("checker-{}", e.creates),
@@ -334,6 +344,21 @@ impl DockerContext {
                     serde_json::to_vec(&tree_digest(&source("/state"))).unwrap(),
                 )
                 .unwrap();
+                e.containers.get_mut(id).unwrap()["State"]["Running"] = json!(false);
+                e.containers.get_mut(id).unwrap()["State"]["ExitCode"] = json!(0);
+            }
+            if raw["Config"]["Cmd"][0] == "appdata-remove" {
+                let mounts = raw["HostConfig"]["Mounts"].as_array().unwrap();
+                let destination = std::path::Path::new(mounts[0]["Source"].as_str().unwrap());
+                assert!(destination.starts_with(&self.root));
+                for entry in std::fs::read_dir(destination).unwrap() {
+                    let path = entry.unwrap().path();
+                    if path.is_dir() {
+                        std::fs::remove_dir_all(path).unwrap();
+                    } else {
+                        std::fs::remove_file(path).unwrap();
+                    }
+                }
                 e.containers.get_mut(id).unwrap()["State"]["Running"] = json!(false);
                 e.containers.get_mut(id).unwrap()["State"]["ExitCode"] = json!(0);
             }

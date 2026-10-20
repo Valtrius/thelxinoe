@@ -124,6 +124,9 @@ async fn main() -> anyhow::Result<()> {
             // The journals keep what still needs recovery; serving the API never waits on it.
             eprintln!("Backup recovery failed: {error:#}");
         }
+        if let Err(error) = stack::prune_updates().await {
+            eprintln!("Service update cleanup failed: {error:#}");
+        }
         if socket.exists() {
             if !std::fs::symlink_metadata(&socket)?.file_type().is_socket() {
                 anyhow::bail!("Refusing to replace a non-socket path");

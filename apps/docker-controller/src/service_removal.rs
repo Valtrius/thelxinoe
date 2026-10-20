@@ -36,7 +36,12 @@ fn checked_directory(root: &Path, path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn delete_directory(d: &Deployment, service: &str, root: &Path, path: &Path) -> Result<()> {
+pub(super) async fn delete_directory(
+    d: &Deployment,
+    service: &str,
+    root: &Path,
+    path: &Path,
+) -> Result<()> {
     checked_directory(root, path)?;
     if !path.exists() {
         return Ok(());
