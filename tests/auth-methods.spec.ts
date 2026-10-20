@@ -285,6 +285,23 @@ test('real password, TOTP, passkey, remembered device, client access and adminis
     'canceled password change',
   );
   await expect(page.getByText(/Password changed\./)).not.toBeVisible();
+  // Cancelling the proof for revoking this device leaves it signed in.
+  await page.goto('/#settings/devices');
+  await page
+    .getByText('This device', { exact: true })
+    .locator('xpath=ancestor::*[.//button[normalize-space()="Revoke"]][1]')
+    .getByRole('button', { name: 'Revoke', exact: true })
+    .click();
+  await expect(proofDialog).toBeVisible();
+  await proofDialog.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(proofDialog).not.toBeVisible();
+  await expect(page.getByText('This device', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Username', { exact: true })).not.toBeVisible();
+  await page.goto('/#settings/account');
+  await expect(page.locator('[data-page-content]')).toHaveAttribute(
+    'data-page-phase',
+    'idle',
+  );
   await page
     .getByRole('button', { name: 'Verify with passkey', exact: true })
     .click();

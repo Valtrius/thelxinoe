@@ -338,10 +338,10 @@
             disabled={busy}
             onclick={() =>
               act(async () => {
-                await withVerification(async () => {
+                const revoked = await withVerification(async () => {
                   await api(`/auth/sessions/${session.id}`, 'DELETE');
                 });
-                if (!ownsSession()) return;
+                if (!revoked || !ownsSession()) return;
                 if (session.id === currentSession) {
                   sessionEnded();
                 } else await loadSettings();
