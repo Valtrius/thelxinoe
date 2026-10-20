@@ -1311,20 +1311,17 @@ pub(crate) async fn accepted_writer() -> anyhow::Result<bool> {
     if !file.exists() {
         return Ok(!handoff_pending());
     }
-    let mut d: Deployment = store::read(&file)?;
-    let own = std::env::var("HOSTNAME")?;
+    accepted(&std::env::var("HOSTNAME")?).await
+}
+async fn accepted(own: &str) -> anyhow::Result<bool> {
+    let mut d: Deployment = store::read(&store::root().join("desired-state.json"))?;
     if d.controller["Id"]
         .as_str()
-        .is_some_and(|id| id.starts_with(&own))
+        .is_some_and(|id| id.starts_with(own))
     {
         return Ok(true);
     }
-    // Interrupted attempts recover against the containers they started with first.
-    if all()
-        .map_err(|(_, e)| anyhow::anyhow!(e))?
-        .iter()
-        .any(|u| !settled(&u.stage))
-    {
+    if unsettled().map_err(|(_, e)| anyhow::anyhow!(e))?.is_some() {
         return Ok(false);
     }
     // Compose can recreate a pinned generation with new container IDs. Only accept its
@@ -1539,18 +1536,13 @@ async fn accept_containers(
         "Thelxinoe-installed media services use {}; keep it mounted as the server's /media",
         d.media_source
     );
-    // Interrupted work recovers against the containers it started with.
-    let attempts = all().map_err(fail)?;
-    anyhow::ensure!(
-        attempts.iter().all(|u| settled(&u.stage)),
-        "Finish or recover the product update first"
-    );
-    if let Some(u) = attempts.iter().find(|u| unrestored(u)) {
-        anyhow::bail!(
-            "An interrupted update may have left the server state half migrated. Stop the {} container, then restart the controller to restore its rollback copy",
-            name(&u.old.server).unwrap_or("server")
-        );
+    if let Some(reason) = unsettled().map_err(fail)? {
+        anyhow::bail!(reason);
     }
+    anyhow::ensure!(
+        !super::backups::interrupted().map_err(fail)?,
+        "Finish the interrupted backup or restore with the previous containers first"
+    );
     // An older release may not open a database the installed one migrated.
     if let Some(version) = server_version.as_deref()
         && older(version, &d.version)
@@ -1560,10 +1552,6 @@ async fn accept_containers(
             d.version
         );
     }
-    anyhow::ensure!(
-        !super::backups::interrupted().map_err(fail)?,
-        "Finish the interrupted backup or restore with the previous containers first"
-    );
     normalize_stopped_server(&mut server).await.map_err(fail)?;
     let mut changes = Vec::new();
     for (component, before, after) in [
@@ -1778,6 +1766,23 @@ fn settled(stage: &str) -> bool {
             | "recovery-required"
             | "superseded"
     )
+}
+/// Why containers other than the accepted ones may not take the writer role yet: an
+/// interrupted update recovers against the containers it started with, and adopting
+/// others first would leave its rollback copy unreachable. Interrupted backups are not
+/// a reason here, because they recover only once a controller is the writer.
+fn unsettled() -> Result<Option<String>> {
+    let attempts = all()?;
+    if attempts.iter().any(|u| !settled(&u.stage)) {
+        return Ok(Some("Finish or recover the product update first".into()));
+    }
+    if let Some(u) = attempts.iter().find(|u| unrestored(u)) {
+        return Ok(Some(format!(
+            "An interrupted update may have left the server state half migrated. Stop the {} container, then restart the controller to restore its rollback copy",
+            name(&u.old.server).unwrap_or("server")
+        )));
+    }
+    Ok(None)
 }
 pub(crate) async fn startup() -> anyhow::Result<()> {
     if let Ok(d) = store::read::<Deployment>(&store::root().join("desired-state.json")) {
@@ -2596,6 +2601,66 @@ mod tests {
                         .contains("Another server container is running")
                 );
                 assert_eq!(fixture.copies(), 0);
+            })
+            .await;
+    }
+
+    // `docker compose down && up` gives the accepted configuration new container IDs.
+    // Interrupted work that only the previous containers can recover keeps them out.
+    #[tokio::test]
+    async fn recreated_containers_wait_for_interrupted_work_before_they_become_the_writer() {
+        let fixture = crate::test_support::Docker::new();
+        fixture
+            .scope(async {
+                let container = |id: &str, name: &str| {
+                    json!({"Id":id,"Name":name,"Image":format!("sha256:{}", "1".repeat(64)),
+                        "Config":{"Env":[]},"HostConfig":{},"State":{"Running":true},"Mounts":[],
+                        "NetworkSettings":{"Networks":{"media":{}}}})
+                };
+                let mut accepted_deployment = journal("unused", "ready", 1, "old-server").old;
+                accepted_deployment.server = container("old-server", "/server");
+                accepted_deployment.controller = container("old-controller", "/controller");
+                store::commit_generation(
+                    &store::root(),
+                    1,
+                    &serde_json::to_value(&accepted_deployment).unwrap(),
+                    &json!({}),
+                )
+                .unwrap();
+                fixture.insert("server", container("server", "/server"));
+                fixture.insert("controller", container("controller", "/controller"));
+                let generation = || {
+                    store::read::<Deployment>(&store::root().join("desired-state.json"))
+                        .unwrap()
+                        .generation
+                };
+                // An activation took its rollback copy, then failed before handing over.
+                let mut u = journal(
+                    "77777777-0000-0000-0000-000000000000",
+                    "recovery-required",
+                    1,
+                    "old-server",
+                );
+                u.snapshot_ready = true;
+                write(&u).unwrap();
+                assert!(!accepted("controller").await.unwrap());
+                assert_eq!(generation(), 1);
+                u.stage = "recovered".into();
+                write(&u).unwrap();
+                let backup = store::root().join("backups/88888888-0000-0000-0000-000000000000");
+                let operation = |stage: &str| {
+                    store::write_json(
+                        &backup.join("operation.json"),
+                        &json!({"id":"88888888-0000-0000-0000-000000000000","stage":stage,
+                            "created_at":1,"error":null,"components":[]}),
+                    )
+                    .unwrap();
+                };
+                // Backup recovery runs once a controller is the writer, so an interrupted
+                // restore must not keep the recreated containers out.
+                operation("restoring");
+                assert!(accepted("controller").await.unwrap());
+                assert_eq!(generation(), 2);
             })
             .await;
     }
