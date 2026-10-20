@@ -384,3 +384,225 @@ async fn an_unchanged_rescan_writes_no_file_rows() -> Result<()> {
     assert!(written().await?[0].1);
     Ok(())
 }
+
+/// A one-second WAV with RIFF INFO tags, which FFprobe reports as format tags.
+fn tagged_wav(tags: &[(&[u8; 4], &str)]) -> Vec<u8> {
+    let mut info = b"INFO".to_vec();
+    for (key, value) in tags {
+        let mut value = format!("{value}\0").into_bytes();
+        let length = u32::try_from(value.len()).unwrap();
+        value.resize(value.len().next_multiple_of(2), 0);
+        info.extend(*key);
+        info.extend(length.to_le_bytes());
+        info.extend(value);
+    }
+    let plain = wav(1);
+    let mut out = plain[..36].to_vec();
+    // The tags go between the format and data chunks.
+    out.extend(b"LIST");
+    out.extend(u32::try_from(info.len()).unwrap().to_le_bytes());
+    out.extend(info);
+    out.extend(&plain[36..]);
+    let size = u32::try_from(out.len() - 8).unwrap();
+    out[4..8].copy_from_slice(&size.to_le_bytes());
+    out
+}
+
+/// One empty library of `kind` with a user to hold watch state, and the runner's FFmpeg.
+async fn library(
+    temp: &std::path::Path,
+    kind: &str,
+) -> Result<(Database, Root, std::path::PathBuf, thelxinoe_tools::Runtime)> {
+    let media = temp.join(kind);
+    std::fs::create_dir(&media)?;
+    let db = Database::open(temp.join("db"))?;
+    let root = Root {
+        id: "root".into(),
+        name: kind.into(),
+        kind: kind.into(),
+        path: media.to_string_lossy().to_string(),
+        last_scan: None,
+        scan_error: None,
+    };
+    let r = root.clone();
+    db.write("test.fixture", move |c| {
+        c.execute(
+            "INSERT INTO library_roots(id,name,kind,path) VALUES (?1,?2,?3,?4)",
+            params![r.id, r.name, r.kind, r.path],
+        )?;
+        c.execute(
+            "INSERT INTO users(id,username,password_hash,role,created_at) VALUES ('alice','alice','unused','user',1)",
+            [],
+        )?;
+        Ok(())
+    })
+    .await?;
+    let tools = thelxinoe_tools::Runtime::new(temp.join("tools"));
+    tool_runtime::install(&tools, &temp.join("tools"));
+    Ok((db, root, media, tools))
+}
+
+async fn count(db: &Database, sql: &'static str) -> Result<i64> {
+    db.read("test.count", move |c| {
+        Ok(c.query_row(sql, [], |r| r.get(0))?)
+    })
+    .await
+}
+
+// The file keeps its logical entry, so watch state stays with what was watched, while its
+// title and place follow the file: an episode renamed S01E02 to S01E03 becomes episode 3.
+#[tokio::test]
+async fn a_renamed_episode_keeps_its_entry_and_watch_state_at_its_new_number() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let (db, root, media, tools) = library(temp.path(), "shows").await?;
+    let season = media.join("Show/Season 1");
+    std::fs::create_dir_all(&season)?;
+    std::fs::write(season.join("Show S01E01.wav"), wav(1))?;
+    std::fs::write(season.join("Show S01E02.wav"), wav(2))?;
+    scan(&db, root.clone(), tools.media()?).await?;
+    let episode = db
+        .write("test.fixture", |c| {
+            let episode: String = c.query_row(
+                "SELECT id FROM media WHERE evidence_key='show:s1:e2'",
+                [],
+                |r| r.get(0),
+            )?;
+            c.execute(
+                "INSERT INTO media_state(user_id,media_id,watched,favorite,updated_at) VALUES ('alice',?1,1,1,1)",
+                [&episode],
+            )?;
+            // The show's matched metadata stays; what was derived from the old number goes.
+            c.execute(
+                "INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('sonarr','Sonarr','sonarr','sonarr',8989,'g',x'00','/media','4',1)",
+                [],
+            )?;
+            c.execute(
+                "INSERT INTO manager_episodes(service_id,service_generation,series_external_id,manager_episode_id,season_number,episode_number,refreshed_at,metadata) VALUES ('sonarr','g','series',2,1,2,1,'{}')",
+                [],
+            )?;
+            c.execute(
+                "INSERT INTO manager_episode_mappings VALUES (?1,'sonarr','g',2,'confirmed')",
+                [&episode],
+            )?;
+            c.execute(
+                "UPDATE media SET metadata='{\"title\":\"The second episode\"}' WHERE id=?1",
+                [&episode],
+            )?;
+            c.execute(
+                "INSERT INTO metadata_bindings(media_id,service_id,service_generation,external_id) SELECT id,'sonarr','g','series' FROM media WHERE kind='show'",
+                [],
+            )?;
+            Ok(episode)
+        })
+        .await?;
+    std::fs::rename(
+        season.join("Show S01E02.wav"),
+        season.join("Show S01E03.wav"),
+    )?;
+    scan(&db, root, tools.media()?).await?;
+    let moved = db
+        .read("test.moved", move |c| {
+            Ok(c.query_row(
+                "SELECT m.evidence_key,m.sort_number,m.title,m.metadata,s.watched AND s.favorite,(SELECT COUNT(*) FROM manager_episode_mappings WHERE media_id=m.id) FROM media m JOIN media_state s ON s.media_id=m.id AND s.user_id='alice' WHERE m.id=?1",
+                [&episode],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, bool>(4)?,
+                        r.get::<_, i64>(5)?,
+                    ))
+                },
+            )?)
+        })
+        .await?;
+    assert_eq!(
+        moved,
+        (
+            "show:s1:e3".into(),
+            3,
+            "Show · S01E03".into(),
+            "{}".into(),
+            true,
+            0
+        )
+    );
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM media WHERE kind='episode'").await?,
+        2,
+        "no entry is left behind at the old number"
+    );
+    assert_eq!(
+        count(&db, "SELECT COUNT(*) FROM metadata_bindings").await?,
+        1
+    );
+    Ok(())
+}
+
+// Retagging a track's album moves the same entry under the new album, and the album left
+// without tracks goes.
+#[tokio::test]
+async fn a_retagged_track_moves_to_its_new_album_with_its_watch_state() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let (db, root, media, tools) = library(temp.path(), "music").await?;
+    let tagged = |album: &str| {
+        tagged_wav(&[
+            (b"IART", "Artist"),
+            (b"IPRD", album),
+            (b"INAM", "Song"),
+            (b"ITRK", "1"),
+        ])
+    };
+    std::fs::write(media.join("Song.wav"), tagged("First"))?;
+    std::fs::write(media.join("Other.wav"), wav(2))?;
+    scan(&db, root.clone(), tools.media()?).await?;
+    let track = db
+        .write("test.fixture", |c| {
+            let track: String = c.query_row(
+                "SELECT id FROM media WHERE kind='track' AND title='Song'",
+                [],
+                |r| r.get(0),
+            )?;
+            c.execute(
+                "INSERT INTO media_state(user_id,media_id,watched,favorite,updated_at) VALUES ('alice',?1,1,1,1)",
+                [&track],
+            )?;
+            Ok(track)
+        })
+        .await?;
+    std::fs::write(media.join("Song.wav"), tagged("Second album"))?;
+    scan(&db, root, tools.media()?).await?;
+    let (album, watched) = db
+        .read("test.moved", move |c| {
+            Ok(c.query_row(
+                "SELECT a.title,s.watched AND s.favorite FROM media m JOIN media a ON a.id=m.parent_id JOIN media_state s ON s.media_id=m.id AND s.user_id='alice' WHERE m.id=?1",
+                [&track],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)),
+            )?)
+        })
+        .await?;
+    assert_eq!(album, "Second album");
+    assert!(watched, "watch state stays with the retagged file");
+    let albums: Vec<String> = db
+        .read("test.albums", |c| {
+            Ok(
+                c.prepare("SELECT title FROM media WHERE kind='album' ORDER BY title")?
+                    .query_map([], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?,
+            )
+        })
+        .await?;
+    // The untagged track keeps its folder's album; the emptied "First" goes.
+    assert_eq!(albums, ["Second album", "music"]);
+    assert_eq!(
+        count(
+            &db,
+            "SELECT COUNT(*) FROM media WHERE kind IN ('track','artist')"
+        )
+        .await?,
+        4
+    );
+    Ok(())
+}
