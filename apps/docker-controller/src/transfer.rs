@@ -1144,6 +1144,7 @@ pub(super) async fn resume(
                 | "creating"
                 | "activating"
                 | "recovering"
+                | "restoring"
         )
     };
     let probe = read(&key)?;
@@ -1158,10 +1159,10 @@ pub(super) async fn resume(
     let result = status(&t, true);
     crate::recovery::spawn(async move {
         let _guard = guard;
-        if t.stage == "recovering" {
-            run_command(&d, &mut t).await;
-        } else {
-            run(&d, &mut t).await;
+        match t.stage.as_str() {
+            "recovering" => run_command(&d, &mut t).await,
+            "restoring" => restore_automatically(&d, &mut t).await,
+            _ => run(&d, &mut t).await,
         }
     });
     Ok(Json(result))
@@ -1170,27 +1171,43 @@ pub(super) async fn resume(
 async fn run(d: &Deployment, t: &mut Transfer) {
     if let Err(error) = execute(d, t).await {
         t.error = Some(error.1.to_string());
+        t.worker = None;
         if error.0 == StatusCode::PRECONDITION_FAILED && !t.restart_disabled {
             t.stage = "stale".into();
         } else if t.boundary_at.is_none() {
             // Before the production boundary the original returns automatically when safe.
-            match restore_original(d, t).await {
-                Ok(()) => t.stage = "returned".into(),
-                Err(restore) => {
-                    t.stage = "failed".into();
-                    t.error = Some(format!(
-                        "{}; restoring the original also failed: {}",
-                        error.1, restore.1
-                    ));
-                }
-            }
+            // The restore is journaled first, so a restart finishes it instead of resuming
+            // the transfer that just failed.
+            t.stage = "restoring".into();
+            record(t);
+            return restore_automatically(d, t).await;
         } else {
             t.stage = "recovery-required".into();
         }
-        t.worker = None;
-        if let Err(write_error) = write(t) {
-            eprintln!("Transfer journal failed: {}", write_error.1);
+        record(t);
+    }
+}
+
+/// Give the original back after a failure before the boundary; `t.error` says what failed.
+async fn restore_automatically(d: &Deployment, t: &mut Transfer) {
+    match restore_original(d, t).await {
+        Ok(()) => t.stage = "returned".into(),
+        Err(restore) => {
+            t.stage = "failed".into();
+            t.error = Some(format!(
+                "{}; restoring the original also failed: {}",
+                t.error.as_deref().unwrap_or("The transfer failed"),
+                restore.1
+            ));
         }
+    }
+    record(t);
+}
+
+/// Journal from a background task, where a failed write can only be logged.
+fn record(t: &mut Transfer) {
+    if let Err(error) = write(t) {
+        eprintln!("Transfer journal failed: {}", error.1);
     }
 }
 
@@ -2302,7 +2319,7 @@ pub(super) async fn restore(
     if t.stage == "returned" {
         return Ok(Json(status(&t, false)));
     }
-    if t.boundary_at.is_some() || !matches!(t.stage.as_str(), "failed" | "stale") {
+    if t.boundary_at.is_some() || !matches!(t.stage.as_str(), "failed" | "restoring" | "stale") {
         return Err(conflict(
             "Only a failed transfer before production activation restores automatically",
         ));
@@ -2564,9 +2581,7 @@ async fn run_command(d: &Deployment, t: &mut Transfer) {
         }
     }
     t.worker = None;
-    if let Err(error) = write(t) {
-        eprintln!("Transfer journal failed: {}", error.1);
-    }
+    record(t);
 }
 
 fn phase(t: &Transfer) -> String {

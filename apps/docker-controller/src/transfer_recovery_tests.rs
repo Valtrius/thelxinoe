@@ -156,6 +156,44 @@ async fn an_original_that_can_write_again_returns_the_transfer_before_the_bounda
     }
 }
 
+// A restart while the original is being given back leaves `restoring` in the journal, so
+// resuming finishes the restore instead of continuing the transfer that failed.
+#[tokio::test]
+async fn an_interrupted_restore_finishes_instead_of_resuming_the_transfer() {
+    let docker = Docker::new();
+    // Its restart policy is enabled again, so the replacement can't be created.
+    docker.insert("original", original(false, REVIEWED));
+    docker
+        .scope(async {
+            let (d, _): (Deployment, Value) = docker.update();
+            store::write_json(&store::root().join("desired-state.json"), &d).unwrap();
+            let mut t = journal("creating", false);
+            write(&mut t).unwrap();
+            // The restore stops before the original starts, and its outcome is never journaled.
+            docker.fault(Fault::StartBefore("original"));
+            docker.fault(Fault::JournalBefore("failed"));
+            run(&d, &mut t).await;
+            assert_eq!(read(KEY).unwrap().stage, "restoring");
+            assert!(!docker.running("original"));
+            let runtime = Runtime(Default::default());
+            let resumed = resume(State(runtime.clone()), Path(KEY.into()))
+                .await
+                .unwrap();
+            assert_eq!(resumed.0["operation_active"], true);
+            drop(runtime.0.service("radarr").await);
+            let t = read(KEY).unwrap();
+            assert_eq!(t.stage, "returned", "{:?}", t.error);
+            assert!(t.error.unwrap().contains("restart policy is enabled again"));
+        })
+        .await;
+    assert_eq!(docker.creates(), 0);
+    assert!(docker.running("original"));
+    assert_eq!(
+        docker.container("original")["HostConfig"]["RestartPolicy"]["Name"],
+        REVIEWED
+    );
+}
+
 // Once the replacement is being retired a return can only continue. A lost journal
 // acknowledgement in any of its phases resumes from the journal and keeps the replacement's
 // appdata exactly once.

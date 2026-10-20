@@ -88,14 +88,16 @@ const STEPS: [(&str, &str, &str); 12] = [
     ("complete", "Complete the transfer", "backend"),
 ];
 /// Map the controller journal onto the guided steps.
-fn controller_step(stage: &str) -> &'static str {
-    match stage {
+fn controller_step(stage: &str) -> Option<&'static str> {
+    Some(match stage {
         "approved" | "stopping" => "stop",
         "copying" => "copy",
         "validating" => "validate",
         "building" | "creating" | "activating" => "activate",
+        // Giving the original back keeps the step that failed.
+        "restoring" => return None,
         _ => "commit",
-    }
+    })
 }
 fn steps(t: &storage::Row) -> Vec<Value> {
     let blocked = t.review["blockers"]
@@ -159,7 +161,7 @@ fn actions(t: &storage::Row, controller: &Value) -> Value {
         "cancel": t.state == "review" || (t.state == "queued" && matches!(stage, "" | "approved") && controller["source"]["restart_disabled"] != true),
         "retry": t.state == "failed" && t.replacement_id.is_some() && !ended,
         // Before the boundary the controller restores, or already restored, the original.
-        "restore": t.state == "failed" && !boundary && matches!(stage, "failed" | "stale" | "returned"),
+        "restore": t.state == "failed" && !boundary && matches!(stage, "failed" | "restoring" | "stale" | "returned"),
         "recovery": matches!(t.state.as_str(), "failed" | "suspended") && boundary && controller["completed"] != true
             && !ended && stage != "recovering",
         "remove_original": t.state == "complete" && controller["source"]["removed"] != true,
@@ -1168,7 +1170,7 @@ async fn drive(state: &AppState, t: &storage::Row) -> Result<bool> {
                 storage::fail(
                     &state.db,
                     t.id.clone(),
-                    Some(controller_step(&stage).into()),
+                    controller_step(&stage).map(Into::into),
                     status["error"]
                         .as_str()
                         .unwrap_or("The transfer failed")
@@ -1183,7 +1185,7 @@ async fn drive(state: &AppState, t: &storage::Row) -> Result<bool> {
             &state.db,
             t.id.clone(),
             None,
-            Some(controller_step(&stage).into()),
+            controller_step(&stage).map(Into::into),
             Some(status["progress"].clone()),
             None,
         )
