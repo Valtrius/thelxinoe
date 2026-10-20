@@ -53,7 +53,6 @@ pub(crate) use metadata::run as run_metadata;
 pub(crate) use requests::acquire;
 
 pub(crate) async fn reconcile_after_scan(state: &AppState) {
-    let _guard = state.managers.guard.lock().await;
     let _ = bindings::reconcile(state).await;
 }
 use rusqlite::{OptionalExtension, params};

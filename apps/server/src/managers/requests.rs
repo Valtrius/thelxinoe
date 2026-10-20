@@ -278,13 +278,17 @@ async fn perform(state: &AppState, key: &str) -> Result<()> {
     let kind = endpoint(&s.kind);
     // Re-read manager metadata and ownership instead of accepting a client-supplied object.
     let mut item = lookup(&c, &row.external_id).await?;
-    let existing = c.get(kind).await?;
-    let existing = existing
-        .as_array()
-        .ok_or_else(unavailable)?
-        .iter()
-        .find(|r| external(&s.kind, r).as_deref() == Some(&row.external_id))
-        .cloned();
+    // Ask for this one title; a manager that ignores the filter lists it among the rest.
+    let filter = match s.kind.as_str() {
+        "radarr" => "tmdbId",
+        "sonarr" => "tvdbId",
+        _ => "foreignAlbumId",
+    };
+    let existing = c
+        .fetch::<Vec<Value>>(kind, &[(filter, row.external_id.clone())])
+        .await?
+        .into_iter()
+        .find(|r| external(&s.kind, r).as_deref() == Some(&row.external_id));
     update(state, key, RequestState::Adding, None).await?;
     let mut item = if let Some(existing) = existing {
         existing
@@ -294,13 +298,11 @@ async fn perform(state: &AppState, key: &str) -> Result<()> {
                 .as_str()
                 .ok_or_else(unavailable)?
                 .to_owned();
-            let artists = c.get("artist").await?;
-            let existing = artists
-                .as_array()
-                .ok_or_else(unavailable)?
-                .iter()
-                .find(|a| a["foreignArtistId"] == artist_id)
-                .cloned();
+            let existing = c
+                .fetch::<Vec<Value>>("artist", &[("mbId", artist_id.clone())])
+                .await?
+                .into_iter()
+                .find(|a| a["foreignArtistId"] == artist_id);
             let artist = if let Some(a) = existing {
                 a
             } else {

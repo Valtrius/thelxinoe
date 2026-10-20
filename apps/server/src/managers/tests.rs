@@ -32,6 +32,8 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
     let add_count = adds.clone();
     let searches = Arc::new(AtomicUsize::new(0));
     let search_count = searches.clone();
+    let whole_library = Arc::new(AtomicUsize::new(0));
+    let whole_library_reads = whole_library.clone();
     let stub = Router::new()
         .route(
             "/services/radarr/api/v3/system/status",
@@ -60,10 +62,17 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
         )
         .route(
             "/services/radarr/api/v3/movie",
-            get(move || {
-                let m = get_movies.clone();
-                async move { Json(json!(*m.lock().await)) }
-            })
+            get(
+                move |axum::extract::Query(query): axum::extract::Query<
+                    std::collections::HashMap<String, String>,
+                >| {
+                    if !query.contains_key("tmdbId") {
+                        whole_library_reads.fetch_add(1, Ordering::SeqCst);
+                    }
+                    let m = get_movies.clone();
+                    async move { Json(json!(*m.lock().await)) }
+                },
+            )
             .post(move |Json(mut body): Json<Value>| {
                 let m = post_movies.clone();
                 let count = add_count.clone();
@@ -222,6 +231,11 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
     acquire(&state, &job).await.unwrap();
     assert_eq!(adds.load(Ordering::SeqCst), 1);
     assert_eq!(searches.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        whole_library.load(Ordering::SeqCst),
+        0,
+        "A request looks up its own title, not the whole library"
+    );
     let rows = call(
         &state,
         "/api/v1/acquisition/requests",

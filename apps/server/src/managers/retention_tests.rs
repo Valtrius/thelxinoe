@@ -23,7 +23,8 @@ async fn batch_inventory_is_shared_and_does_not_exclude_unrelated_playback() {
                 let calls = calls.clone();
                 async move {
                     calls.reached().await;
-                    Json(json!((1..=5).map(|i| json!({"id":i,"tmdbId":i,"hasFile":true})).collect::<Vec<_>>()))
+                    Json(json!((1..=5).map(|i| json!({"id":i,"tmdbId":i,"hasFile":true,
+                        "movieFile":{"id":i,"movieId":i,"path":format!("/media/movies/{i}.mp4")}})).collect::<Vec<_>>()))
                 }
             }))
             .route("/api/v3/moviefile", get(move |axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String,String>>| {
@@ -136,7 +137,11 @@ async fn batch_inventory_is_shared_and_does_not_exclude_unrelated_playback() {
         if change == "none" {
             assert_eq!(result.unwrap(), 5);
             assert_eq!(control.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-            assert_eq!(file_calls.load(std::sync::atomic::Ordering::SeqCst), 5);
+            assert_eq!(
+                file_calls.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "The movie list carries each movie's file"
+            );
         } else {
             assert!(result.is_err());
             let count = state
@@ -156,6 +161,38 @@ async fn batch_inventory_is_shared_and_does_not_exclude_unrelated_playback() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn retention_never_reads_music_libraries() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (temp, mut state, _) = fixture().await;
+    let media = temp.path().join("media");
+    std::fs::create_dir_all(&media).unwrap();
+    Arc::get_mut(&mut state.config).unwrap().media = media.clone();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let counted = requests.clone();
+    let stub = Router::new().fallback(move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+        async { Json(json!([])) }
+    });
+    let server = bindings::tests::manager(&state, &media, "lidarr", stub).await;
+    let track =
+        bindings::tests::library_file(&state, &media, "music", "music/Artist/Album/01.flac").await;
+    let managed = track.clone();
+    state.db.write("test.music", move |db| {
+        db.execute("UPDATE media_files SET ownership='managed' WHERE id=?1", [managed])?;
+        db.execute("UPDATE retention_policies SET enabled=1,trigger_users='[\"alice\"]' WHERE domain='movies'", [])?;
+        Ok(())
+    }).await.unwrap();
+    assert_eq!(evaluate_all(&state, None).await.unwrap(), 0);
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        bindings::tests::ownership(&state, &track).await,
+        "managed",
+        "Music keeps what its own reconciliation decided"
+    );
+    server.abort();
 }
 
 #[tokio::test]
@@ -555,11 +592,14 @@ async fn a_busy_manager_postpones_a_due_deletion_instead_of_blocking_it() {
     let (queue, created, removed) = (busy.clone(), exclusions.clone(), file.clone());
     let movie = json!({"id":1,"tmdbId":603,"hasFile":true,"title":"One","year":1999});
     let listed = movie.clone();
+    let lists = Arc::new(AtomicUsize::new(0));
+    let counted = lists.clone();
     let stub = Router::new()
         .route(
             "/api/v3/movie",
             get(move || {
                 let listed = listed.clone();
+                counted.fetch_add(1, Ordering::SeqCst);
                 async move { Json(json!([listed])) }
             }),
         )
@@ -676,7 +716,13 @@ async fn a_busy_manager_postpones_a_due_deletion_instead_of_blocking_it() {
     assert_eq!(exclusions.load(Ordering::SeqCst), 0);
     assert!(file.exists());
     busy.store(false, Ordering::SeqCst);
+    let before = lists.load(Ordering::SeqCst);
     delete_locked(&state, &candidate, None, true).await.unwrap();
+    assert_eq!(
+        lists.load(Ordering::SeqCst) - before,
+        1,
+        "Only reconciliation reads the whole library; rechecks read the selected movie"
+    );
     let (done, operation, _) = states().await.unwrap();
     assert_eq!(
         (done.as_str(), operation.as_str()),

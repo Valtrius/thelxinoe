@@ -34,11 +34,15 @@ pub(super) async fn file_generations(
     .await
 }
 
-pub(super) async fn reconcile_read_manager_services(db: &Database) -> anyhow::Result<Vec<String>> {
-    db.read("managers.bindings.reconcile_read_manager_services", |db| {
+pub(super) async fn reconcile_read_manager_services(
+    db: &Database,
+    kinds: &[&str],
+) -> anyhow::Result<Vec<String>> {
+    let kinds = serde_json::to_string(kinds)?;
+    db.read("managers.bindings.reconcile_read_manager_services", move |db| {
         Ok(db
-            .prepare("SELECT id FROM manager_services WHERE operational=1 ORDER BY id")?
-            .query_map([], |r| r.get::<_, String>(0))?
+            .prepare("SELECT id FROM manager_services WHERE operational=1 AND kind IN (SELECT value FROM json_each(?1)) ORDER BY id")?
+            .query_map([kinds], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?)
     })
     .await
@@ -73,13 +77,16 @@ pub(super) async fn reconcile_write_media_files(
     }).await
 }
 
-pub(super) async fn refresh_ownership(db: &Database) -> anyhow::Result<()> {
-    db.write("managers.bindings.refresh_ownership", |db| {
+/// Decide the ownership of files in the libraries of the manager `kinds` just reconciled;
+/// other files keep what their own last reconciliation decided.
+pub(super) async fn refresh_ownership(db: &Database, kinds: &[&str]) -> anyhow::Result<()> {
+    let kinds = serde_json::to_string(kinds)?;
+    db.write("managers.bindings.refresh_ownership", move |db| {
         db.execute("UPDATE media_files SET ownership=CASE
           WHEN EXISTS(SELECT 1 FROM manager_services s LEFT JOIN manager_reconciliations r ON r.service_id=s.id JOIN library_roots l ON l.id=media_files.root_id WHERE s.operational=1 AND s.kind=CASE l.kind WHEN 'movies' THEN 'radarr' WHEN 'shows' THEN 'sonarr' ELSE 'lidarr' END AND (r.error IS NOT NULL OR r.checked_at IS NULL OR r.checked_at<?1 OR r.generation<>s.generation)) THEN 'unresolved'
           WHEN EXISTS(SELECT 1 FROM manager_bindings b JOIN manager_services s ON s.id=b.service_id WHERE b.file_id=media_files.id AND b.generation=media_files.generation AND b.service_generation=s.generation AND b.checked_at>=?1 AND s.operational=1) THEN 'managed'
           WHEN EXISTS(SELECT 1 FROM manager_bindings b WHERE b.file_id=media_files.id) THEN 'unresolved'
-          ELSE 'unmanaged' END WHERE present=1",[now()-60])?;
+          ELSE 'unmanaged' END WHERE present=1 AND (SELECT CASE l.kind WHEN 'movies' THEN 'radarr' WHEN 'shows' THEN 'sonarr' ELSE 'lidarr' END FROM library_roots l WHERE l.id=media_files.root_id) IN (SELECT value FROM json_each(?2))",params![now()-60,kinds])?;
         Ok(())
     }).await
 }

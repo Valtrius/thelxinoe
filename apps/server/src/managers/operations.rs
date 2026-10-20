@@ -42,7 +42,7 @@ pub(super) async fn prepare_operation(
 ) -> Result<Json<Value>> {
     let action: MediaAction = serde_json::from_value(json!(action))
         .map_err(|_| ApiError::bad("Unknown media operation"))?;
-    let observed = bindings::observe(state).await?;
+    let observed = bindings::observe(state, bindings::ALL).await?;
     let _lease = state.media_operations.write().await;
     let _manager = state.managers.guard.lock().await;
     bindings::reconcile_observation(state, &observed).await?;
@@ -90,20 +90,25 @@ fn validate_ownership(files: &[Target], action: &str) -> Result<()> {
     }
     Ok(())
 }
+/// Recheck the selection against its managers' current files. Only the selected movies,
+/// series or albums are read: nothing else can change what this operation affects.
 async fn complete_manager_scope(state: &AppState, files: &[Target]) -> Result<()> {
+    let mut entities = std::collections::BTreeMap::<&str, std::collections::BTreeSet<i64>>::new();
+    for claim in files.iter().flat_map(|f| &f.claims) {
+        entities
+            .entry(&claim.service_id)
+            .or_default()
+            .insert(claim.entity_id);
+    }
     let mut inventories = std::collections::BTreeMap::new();
-    for file in files {
-        for claim in &file.claims {
-            if inventories.contains_key(&claim.service_id) {
-                continue;
-            }
-            let s = service(state, &claim.service_id).await?;
-            let inventory = bindings::inventory(state, &s).await;
-            inventories.insert(
-                s.id,
-                bindings::ServiceInventory::from_claims(s.generation, s.kind, inventory),
-            );
-        }
+    for (key, entities) in entities {
+        let s = service(state, key).await?;
+        let entities = entities.into_iter().collect::<Vec<_>>();
+        let inventory = bindings::inventory(state, &s, Some(&entities)).await;
+        inventories.insert(
+            s.id,
+            bindings::ServiceInventory::from_claims(s.generation, s.kind, inventory),
+        );
     }
     validate_scope(files, &inventories)
 }
@@ -363,10 +368,7 @@ pub(super) async fn execute_locked(
         ));
     }
     let captured: Vec<Target> = serde_json::from_str(&saved).map_err(|_| unavailable())?;
-    {
-        let _manager = state.managers.guard.lock().await;
-        bindings::reconcile(state).await?;
-    }
+    bindings::reconcile(state).await?;
     let keys = captured
         .iter()
         .map(|file| format!("file:{}", file.id))

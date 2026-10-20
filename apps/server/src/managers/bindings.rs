@@ -1,8 +1,14 @@
 #[path = "../storage/managers/bindings.rs"]
 mod storage;
+#[cfg(test)]
+#[path = "bindings_tests.rs"]
+pub(super) mod tests;
 
 use super::*;
 use std::collections::BTreeMap;
+
+/// Every manager kind; retention reads only the movie and series managers it deletes through.
+pub(super) const ALL: &[&str] = &["radarr", "sonarr", "lidarr"];
 
 pub(super) struct ServiceInventory {
     pub generation: String,
@@ -10,6 +16,8 @@ pub(super) struct ServiceInventory {
     pub claims: Result<BTreeMap<(i64, i64), Claim>>,
 }
 pub(super) struct ManagerInventory {
+    /// The manager kinds read, and so the files whose ownership this inventory decides.
+    kinds: &'static [&'static str],
     pub services: BTreeMap<String, ServiceInventory>,
     files: BTreeMap<String, (String, String)>,
 }
@@ -42,26 +50,36 @@ impl ServiceInventory {
     }
 }
 
-pub(super) async fn observe(state: &AppState) -> Result<ManagerInventory> {
+/// Read the operational managers of `kinds`. This only reads, so it runs without any lock;
+/// `reconcile_observation` rejects it if anything changed meanwhile.
+pub(super) async fn observe(
+    state: &AppState,
+    kinds: &'static [&'static str],
+) -> Result<ManagerInventory> {
     let files = storage::file_generations(&state.db).await?;
-    let keys = storage::reconcile_read_manager_services(&state.db).await?;
+    let keys = storage::reconcile_read_manager_services(&state.db, kinds).await?;
     let mut services = BTreeMap::new();
     for key in keys {
         let s = service(state, &key).await?;
-        let result = inventory(state, &s).await;
+        let result = inventory(state, &s, None).await;
         services.insert(
             key,
             ServiceInventory::from_claims(s.generation, s.kind, result),
         );
     }
-    Ok(ManagerInventory { services, files })
+    Ok(ManagerInventory {
+        kinds,
+        services,
+        files,
+    })
 }
 
+/// Record an observation. Callers hold the exclusive manager lock for this write only.
 pub(super) async fn reconcile_observation(
     state: &AppState,
     observed: &ManagerInventory,
 ) -> Result<()> {
-    let keys = storage::reconcile_read_manager_services(&state.db).await?;
+    let keys = storage::reconcile_read_manager_services(&state.db, observed.kinds).await?;
     if keys != observed.services.keys().cloned().collect::<Vec<_>>()
         || storage::file_generations(&state.db).await? != observed.files
     {
@@ -88,7 +106,7 @@ pub(super) async fn reconcile_observation(
         )
         .await?;
     }
-    storage::refresh_ownership(&state.db).await?;
+    storage::refresh_ownership(&state.db, observed.kinds).await?;
     super::metadata::enqueue_managed_refreshes(state).await?;
     Ok(())
 }
@@ -132,87 +150,143 @@ pub(super) struct Claim {
     pub server_path: String,
 }
 
-fn positive(row: &Value, field: &str) -> Result<i64> {
-    row[field]
-        .as_i64()
-        .filter(|v| *v > 0)
-        .ok_or_else(unavailable)
+/// What reconciliation keeps of a movie, series or album. Whole libraries are decoded
+/// straight into this, so memory never depends on everything else a manager lists.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Entity {
+    id: i64,
+    tmdb_id: Option<u64>,
+    tvdb_id: Option<u64>,
+    foreign_album_id: Option<String>,
+    has_file: Option<bool>,
+    statistics: Option<Statistics>,
+    /// Radarr lists a movie's file with the movie.
+    movie_file: Option<FileRecord>,
 }
-pub(super) async fn inventory(state: &AppState, s: &Service) -> Result<Vec<Claim>> {
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Statistics {
+    episode_file_count: Option<u64>,
+    track_file_count: Option<u64>,
+}
+#[derive(Deserialize)]
+struct FileRecord {
+    id: i64,
+    path: String,
+}
+/// A Sonarr episode or Lidarr track, and the file it is in.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Member {
+    id: i64,
+    episode_file_id: Option<i64>,
+    track_file_id: Option<i64>,
+    /// Sonarr 4 lists an episode's file with the episode when asked to.
+    episode_file: Option<FileRecord>,
+}
+impl Entity {
+    fn external(&self, kind: &str) -> Option<String> {
+        match kind {
+            "radarr" => self.tmdb_id.map(|v| v.to_string()),
+            "sonarr" => self.tvdb_id.map(|v| v.to_string()),
+            _ => self.foreign_album_id.clone(),
+        }
+    }
+    fn without_files(&self, kind: &str) -> bool {
+        let statistics = self.statistics.as_ref();
+        match kind {
+            "radarr" => self.has_file == Some(false),
+            "sonarr" => statistics.and_then(|s| s.episode_file_count) == Some(0),
+            _ => statistics.and_then(|s| s.track_file_count) == Some(0),
+        }
+    }
+}
+impl Member {
+    fn file(&self, kind: &str) -> Option<i64> {
+        if kind == "sonarr" {
+            self.episode_file_id
+        } else {
+            self.track_file_id
+        }
+    }
+}
+fn positive(value: i64) -> Result<i64> {
+    Some(value).filter(|v| *v > 0).ok_or_else(unavailable)
+}
+/// Every file a manager claims, or only those of `entities` when an operation rechecks its
+/// own selection. Movies need nothing beyond their list; each series or album needs its own.
+pub(super) async fn inventory(
+    state: &AppState,
+    s: &Service,
+    entities: Option<&[i64]>,
+) -> Result<Vec<Claim>> {
     let c = Connection::open(state, s).await?;
-    let entities = c.get(requests::endpoint(&s.kind)).await?;
+    let endpoint = requests::endpoint(&s.kind);
+    let listed: Vec<Entity> = match entities {
+        None => c.fetch(endpoint, &[]).await?,
+        Some(ids) => {
+            let mut listed = Vec::with_capacity(ids.len());
+            for id in ids {
+                listed.push(c.fetch(&format!("{endpoint}/{id}"), &[]).await?);
+            }
+            listed
+        }
+    };
     let mut claims = Vec::new();
-    for entity in entities.as_array().ok_or_else(unavailable)? {
-        if (s.kind == "radarr" && entity["hasFile"] == false)
-            || (s.kind == "sonarr" && entity["statistics"]["episodeFileCount"].as_u64() == Some(0))
-            || (s.kind == "lidarr" && entity["statistics"]["trackFileCount"].as_u64() == Some(0))
-        {
+    for entity in listed {
+        if entity.without_files(&s.kind) {
             continue;
         }
-        let entity_id = positive(entity, "id")?;
-        let external_id = requests::external(&s.kind, entity).ok_or_else(unavailable)?;
-        let (files, members) = match s.kind.as_str() {
-            "radarr" => (
-                c.call(
-                    reqwest::Method::GET,
-                    "moviefile",
-                    &[("movieId", entity_id.to_string())],
-                    None,
-                )
-                .await?,
-                json!([]),
-            ),
-            "sonarr" => (
-                c.call(
-                    reqwest::Method::GET,
-                    "episodefile",
-                    &[("seriesId", entity_id.to_string())],
-                    None,
-                )
-                .await?,
-                c.call(
-                    reqwest::Method::GET,
-                    "episode",
-                    &[("seriesId", entity_id.to_string())],
-                    None,
-                )
-                .await?,
-            ),
+        let entity_id = positive(entity.id)?;
+        let external_id = entity.external(&s.kind).ok_or_else(unavailable)?;
+        let id = entity_id.to_string();
+        let (files, members): (Vec<FileRecord>, Vec<Member>) = match s.kind.as_str() {
+            "radarr" => match entity.movie_file {
+                Some(file) => (vec![file], Vec::new()),
+                None => (c.fetch("moviefile", &[("movieId", id)]).await?, Vec::new()),
+            },
+            "sonarr" => {
+                let mut members: Vec<Member> = c
+                    .fetch(
+                        "episode",
+                        &[
+                            ("seriesId", id.clone()),
+                            ("includeEpisodeFile", "true".into()),
+                        ],
+                    )
+                    .await?;
+                // Sonarr 3 ignores includeEpisodeFile, so its files need their own list.
+                let files = if members
+                    .iter()
+                    .any(|m| m.episode_file_id.is_some_and(|f| f > 0) && m.episode_file.is_none())
+                {
+                    c.fetch("episodefile", &[("seriesId", id)]).await?
+                } else {
+                    let mut files = BTreeMap::new();
+                    for file in members.iter_mut().filter_map(|m| m.episode_file.take()) {
+                        files.insert(file.id, file);
+                    }
+                    files.into_values().collect()
+                };
+                (files, members)
+            }
             _ => (
-                c.call(
-                    reqwest::Method::GET,
-                    "trackfile",
-                    &[("albumId", entity_id.to_string())],
-                    None,
-                )
-                .await?,
-                c.call(
-                    reqwest::Method::GET,
-                    "track",
-                    &[("albumId", entity_id.to_string())],
-                    None,
-                )
-                .await?,
+                c.fetch("trackfile", &[("albumId", id.clone())]).await?,
+                c.fetch("track", &[("albumId", id)]).await?,
             ),
         };
-        for file in files.as_array().ok_or_else(unavailable)? {
-            let manager_file_id = positive(file, "id")?;
-            let path = file["path"].as_str().ok_or_else(unavailable)?;
-            let Some(server_path) = storage_paths::resolve(state, &s.media_source, path).await?
+        for file in files {
+            let manager_file_id = positive(file.id)?;
+            let Some(server_path) =
+                storage_paths::resolve(state, &s.media_source, &file.path).await?
             else {
                 continue;
             };
-            let field = if s.kind == "sonarr" {
-                "episodeFileId"
-            } else {
-                "trackFileId"
-            };
             let members = members
-                .as_array()
-                .ok_or_else(unavailable)?
                 .iter()
-                .filter(|m| m[field].as_i64() == Some(manager_file_id))
-                .map(|m| positive(m, "id"))
+                .filter(|m| m.file(&s.kind) == Some(manager_file_id))
+                .map(|m| positive(m.id))
                 .collect::<Result<Vec<_>>>()?;
             if s.kind != "radarr" && members.is_empty() {
                 return Err(ApiError::conflict(
@@ -224,7 +298,7 @@ pub(super) async fn inventory(state: &AppState, s: &Service) -> Result<Vec<Claim
                 service_generation: s.generation.clone(),
                 manager_file_id,
                 entity_id,
-                manager_path: path.into(),
+                manager_path: file.path,
                 external_id: external_id.clone(),
                 members,
                 server_path,
@@ -233,13 +307,14 @@ pub(super) async fn inventory(state: &AppState, s: &Service) -> Result<Vec<Claim
     }
     Ok(claims)
 }
+/// Read every manager without a lock, then record the result under the exclusive one.
 pub(super) async fn reconcile(state: &AppState) -> Result<()> {
-    let observed = observe(state).await?;
+    let observed = observe(state, ALL).await?;
+    let _guard = state.managers.guard.lock().await;
     reconcile_observation(state, &observed).await
 }
 async fn reconcile_api(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     security::require(&state, &headers, Capability::ManageServer).await?;
-    let _guard = state.managers.guard.lock().await;
     reconcile(&state).await?;
     Ok(Json(json!({"reconciled":true})))
 }
