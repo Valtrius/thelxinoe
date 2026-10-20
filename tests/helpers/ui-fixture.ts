@@ -655,5 +655,15 @@ export async function installUiFixture(
       json: { error: { message: `Unexpected fixture request: ${path}` } },
     });
   });
-  return { writes, errors, unexpected, owned, cleared, operations };
+  return {
+    writes,
+    errors,
+    unexpected,
+    owned,
+    cleared,
+    operations,
+    // Quick successive changes save once input pauses; tests that reload
+    // right after them wait for the save.
+    savedAppearance: () => appearance,
+  };
 }

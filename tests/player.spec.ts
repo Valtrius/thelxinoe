@@ -286,6 +286,7 @@ async function fixture(
     progressAttempts: 0,
     errors: [] as string[],
     savedVolume: 0.31,
+    volumeSaves: [] as number[],
     savedHeight: options.playerHeight ?? null,
     fail: options.fail ?? false,
     toolsPreparing: !!options.tools,
@@ -436,6 +437,8 @@ async function fixture(
     if (path.endsWith('/me/appearance')) {
       if (route.request().method() === 'PATCH') {
         const change = route.request().postDataJSON();
+        if (change.audio_volume !== undefined)
+          state.volumeSaves.push(change.audio_volume);
         state.savedVolume = change.audio_volume ?? state.savedVolume;
         if ('player_height' in change) state.savedHeight = change.player_height;
       }
@@ -1169,6 +1172,26 @@ test('failed progress reports keep web playback going until the server refuses t
     'Playback session refused.',
   );
   await expect.poll(playing).toBe(-1);
+  expect(state.errors).toEqual([]);
+});
+
+test('a volume drag saves where it starts and where it stops', async ({
+  page,
+}) => {
+  const state = await fixture(page);
+  await decoded(page);
+  // One input per frame, as a pointer drag delivers them.
+  await page
+    .getByRole('slider', { name: 'Playback volume' })
+    .evaluate(async (input: HTMLInputElement) => {
+      for (let step = 1; step <= 30; step++) {
+        input.value = String(step / 50);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        await new Promise(requestAnimationFrame);
+      }
+    });
+  await expect.poll(() => state.savedVolume).toBe(0.6);
+  expect(state.volumeSaves).toEqual([0.02, 0.6]);
   expect(state.errors).toEqual([]);
 });
 
