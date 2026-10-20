@@ -326,6 +326,12 @@ impl VodCache {
             .clone()
             .try_acquire_owned()
             .context("All conversion slots are busy")?;
+        // The gate makes this the directory's only conversion. Dropped after the children
+        // below, so a killed conversion's output goes too.
+        let _partials = Partials {
+            directory: run.directory.clone(),
+            work: true,
+        };
         let temp = path.with_extension("tmp");
         let start = run.boundaries[index];
         let duration = run.boundaries[index + 1] - start;
@@ -458,8 +464,6 @@ impl VodCache {
         };
         if status.is_err() {
             let _ = child.kill().await;
-            let _ = tokio::fs::remove_file(&temp).await;
-            let _ = clean_work(&run.directory).await;
         }
         let status = status?;
         if status.success() && remux_video {
@@ -475,7 +479,6 @@ impl VodCache {
             .map(|v| v.len())
             .unwrap_or(0);
         if !status.success() || size == 0 || size >= 96 * 1024 * 1024 {
-            let _ = tokio::fs::remove_file(&temp).await;
             bail!("Unable to prepare a bounded playback segment");
         }
         if fragmented {
@@ -704,11 +707,19 @@ impl VodCache {
                 .kill_on_drop(true);
             #[cfg(windows)]
             command.creation_flags(0x08000000);
-            let mut child = command.spawn().context("Start public video conversion")?;
+            let child = command.spawn().context("Start public video conversion")?;
             let mut canceled = run.canceled.subscribe();
             let directory = run.directory.clone();
             let task = tokio::spawn(async move {
+                // Another window replaces this one by aborting it, which leaves the muxer's
+                // unfinished segment behind; its work files stay for the published segments.
+                // Dropped last, after the child is killed.
+                let _partials = Partials {
+                    directory: directory.clone(),
+                    work: false,
+                };
                 let _slot = slot;
+                let mut child = child;
                 let result = tokio::select! {
                     result = tokio::time::timeout(Duration::from_secs(60), child.wait()) =>
                         result.context("Public video conversion timed out").and_then(|r| r.map_err(Into::into)),
@@ -969,6 +980,31 @@ async fn keyframes(
     Ok((result, video_start))
 }
 
+/// Removes a run's partial conversion output when the conversion ends, however it ends. A
+/// seek drops the request preparing a segment mid-conversion, and leftovers would count
+/// against the run's work and cache limits until it stops. Published output has been
+/// renamed away by then.
+struct Partials {
+    directory: PathBuf,
+    /// Also the remux work files, which only a request's own conversion uses.
+    work: bool,
+}
+impl Drop for Partials {
+    fn drop(&mut self) {
+        let Ok(entries) = std::fs::read_dir(&self.directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.ends_with(".tmp")
+                || (self.work && (name.starts_with("work-") || name == "work.csv"))
+            {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
 async fn clean_work(directory: &Path) -> Result<()> {
     let mut entries = tokio::fs::read_dir(directory).await?;
     while let Some(entry) = entries.next_entry().await? {
