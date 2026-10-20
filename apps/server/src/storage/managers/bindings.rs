@@ -67,8 +67,8 @@ pub(super) async fn reconcile_write_media_files(
                         tx.execute("INSERT INTO manager_bindings VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(file_id,service_id) DO UPDATE SET generation=excluded.generation,service_generation=excluded.service_generation,manager_file_id=excluded.manager_file_id,entity_id=excluded.entity_id,manager_path=excluded.manager_path,external_id=excluded.external_id,members=excluded.members,checked_at=excluded.checked_at",params![file,claim.service_id,generation,claim.service_generation,claim.manager_file_id,claim.entity_id,claim.manager_path,claim.external_id,serde_json::to_string(&claim.members)?,now()])?;
                     }
                 }
-                // Retain old rows as historical evidence, but make freshness explicit.
-                tx.execute("UPDATE manager_bindings SET checked_at=0 WHERE service_id=?1 AND file_id NOT IN (SELECT value FROM json_each(?2))",params![key,serde_json::to_string(&current)?])?;
+                // The inventory is complete, so a file it no longer lists is no longer claimed.
+                tx.execute("DELETE FROM manager_bindings WHERE service_id=?1 AND file_id NOT IN (SELECT value FROM json_each(?2))",params![key,serde_json::to_string(&current)?])?;
                 tx.execute("INSERT INTO manager_reconciliations VALUES (?1,?2,?3,NULL) ON CONFLICT(service_id) DO UPDATE SET generation=excluded.generation,checked_at=excluded.checked_at,error=NULL",params![key,generation,now()])?;
             },
             Err(error)=> {tx.execute("INSERT INTO manager_reconciliations VALUES (?1,?2,?3,?4) ON CONFLICT(service_id) DO UPDATE SET generation=excluded.generation,checked_at=excluded.checked_at,error=excluded.error",params![key,generation,now(),error.2])?;}
@@ -82,11 +82,16 @@ pub(super) async fn reconcile_write_media_files(
 pub(super) async fn refresh_ownership(db: &Database, kinds: &[&str]) -> anyhow::Result<()> {
     let kinds = serde_json::to_string(kinds)?;
     db.write("managers.bindings.refresh_ownership", move |db| {
-        db.execute("UPDATE media_files SET ownership=CASE
+        let tx = db.transaction()?;
+        // Claims last only while Thelxinoe owns their manager. A held one, such as a
+        // replacement being verified, keeps its files unresolved until it is back.
+        tx.execute("DELETE FROM manager_bindings WHERE service_id NOT IN (SELECT s.id FROM manager_services s JOIN stack_provisions p ON p.service_id=s.id WHERE s.enabled=1)",[])?;
+        tx.execute("UPDATE media_files SET ownership=CASE
           WHEN EXISTS(SELECT 1 FROM manager_services s LEFT JOIN manager_reconciliations r ON r.service_id=s.id JOIN library_roots l ON l.id=media_files.root_id WHERE s.operational=1 AND s.kind=CASE l.kind WHEN 'movies' THEN 'radarr' WHEN 'shows' THEN 'sonarr' ELSE 'lidarr' END AND (r.error IS NOT NULL OR r.checked_at IS NULL OR r.checked_at<?1 OR r.generation<>s.generation)) THEN 'unresolved'
           WHEN EXISTS(SELECT 1 FROM manager_bindings b JOIN manager_services s ON s.id=b.service_id WHERE b.file_id=media_files.id AND b.generation=media_files.generation AND b.service_generation=s.generation AND b.checked_at>=?1 AND s.operational=1) THEN 'managed'
           WHEN EXISTS(SELECT 1 FROM manager_bindings b WHERE b.file_id=media_files.id) THEN 'unresolved'
           ELSE 'unmanaged' END WHERE present=1 AND (SELECT CASE l.kind WHEN 'movies' THEN 'radarr' WHEN 'shows' THEN 'sonarr' ELSE 'lidarr' END FROM library_roots l WHERE l.id=media_files.root_id) IN (SELECT value FROM json_each(?2))",params![now()-60,kinds])?;
+        tx.commit()?;
         Ok(())
     }).await
 }

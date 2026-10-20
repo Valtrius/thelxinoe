@@ -241,3 +241,53 @@ async fn series_files_come_with_their_episodes() {
         server.abort();
     }
 }
+
+#[tokio::test]
+async fn claims_are_released_once_no_owned_manager_lists_them() {
+    let (_temp, state, media) = media_state().await;
+    let stub = Router::new().route(
+        "/api/v3/movie",
+        get(|| async {
+            Json(json!([{"id":1,"tmdbId":1,"hasFile":true,
+                "movieFile":{"id":11,"path":"/media/movies/kept.mkv"}}]))
+        }),
+    );
+    let server = manager(&state, &media, "radarr", stub).await;
+    let kept = library_file(&state, &media, "movies", "movies/kept.mkv").await;
+    let dropped = library_file(&state, &media, "movies", "movies/dropped.mkv").await;
+    let retired = library_file(&state, &media, "shows", "tv/retired.mkv").await;
+    let held = library_file(&state, &media, "music", "music/held.flac").await;
+    let claims = [
+        (dropped.clone(), "radarr"),
+        (retired.clone(), "sonarr"),
+        (held.clone(), "lidarr"),
+    ];
+    state.db.write("test.claims", move |db| {
+        // Radarr no longer lists one file, Sonarr's installation was retired, and Lidarr
+        // is held while its replacement is verified.
+        db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,enabled,checked_at) VALUES ('sonarr','Sonarr','sonarr','retired',1,'g',X'00','','1',0,1)",[])?;
+        db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('lidarr','Lidarr','lidarr','held',1,'g',X'00','','1',1)",[])?;
+        db.execute("INSERT INTO stack_provisions(id,kind,actor_id,state,container_id,service_id,origin,hold,created_at,updated_at) VALUES ('held','lidarr','alice','connecting','held','lidarr','installed','setup',1,1)",[])?;
+        for (file, service) in claims {
+            db.execute("INSERT INTO manager_bindings VALUES (?1,?2,'g','g',5,6,'/media/old','7','[8]',?3)",params![file,service,now()])?;
+        }
+        Ok(())
+    }).await.unwrap();
+    reconcile(&state).await.unwrap();
+    assert_eq!(ownership(&state, &kept).await, "managed");
+    assert_eq!(ownership(&state, &dropped).await, "unmanaged");
+    assert_eq!(ownership(&state, &retired).await, "unmanaged");
+    assert_eq!(ownership(&state, &held).await, "unresolved");
+    let remaining = state
+        .db
+        .read("test.remaining", |db| {
+            Ok(db
+                .prepare("SELECT file_id FROM manager_bindings ORDER BY file_id")?
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(remaining, [kept, held]);
+    server.abort();
+}

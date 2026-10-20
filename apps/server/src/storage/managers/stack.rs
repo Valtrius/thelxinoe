@@ -95,8 +95,8 @@ pub(super) async fn retire(
             let retain_missing = if remove { "false" } else { "true" };
             tx.execute("UPDATE settings SET value=json_set(value,'$.enabled',json('false'),'$.cleanup',json(CASE WHEN json_extract(value,'$.source')=?1 THEN 'false' ELSE 'true' END),'$.state',CASE WHEN json_extract(value,'$.source')=?1 THEN 'disconnected' ELSE 'disconnecting' END,'$.error',NULL,'$.next_attempt',0,'$.retain_missing',json(?2)) WHERE key LIKE 'services.connection.%' AND (json_extract(value,'$.source')=?1 OR json_extract(value,'$.target')=?1)",params![&service,retain_missing])?;
             if matches!(kind.as_str(),"radarr"|"sonarr"|"lidarr") {
-                // Keep historical requests/bindings, but stop acquisition and
-                // leave previously claimed media unresolved until reviewed.
+                // Keep historical requests but stop acquisition. Its media stays unresolved
+                // until the next reconciliation releases the retired service's claims.
                 tx.execute("UPDATE manager_services SET enabled=0,operational=0,error='Installation retired',checked_at=0 WHERE id=?1",[&service])?;
                 tx.execute("DELETE FROM settings WHERE key='manager.retention.'||?1",[&service])?;
                 tx.execute("UPDATE acquisition_requests SET state='cancelled',error='Installation retired',updated_at=?1 WHERE service_id=?2 AND state IN ('pending','approved','adding','searching','uncertain')",params![now(),service])?;
