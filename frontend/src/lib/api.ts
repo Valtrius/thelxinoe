@@ -60,17 +60,13 @@ async function request<T>(
   body?: unknown,
 ): Promise<T> {
   const ownsSession = captureSession();
-  const invalidateExpired = (status: number) => {
+  // Only the server's session_expired ends the session; its other 401s are ordinary
+  // refusals. A 401 that isn't the server's JSON comes from a proxy in front of it.
+  const invalidateExpired = (status: number, code: string | undefined) => {
     if (
       status === 401 &&
-      ownsSession() &&
-      path !== '/auth/login' &&
-      !path.startsWith('/auth/totp') &&
-      !path.startsWith('/auth/passkey') &&
-      !path.startsWith('/auth/recovery') &&
-      !path.startsWith('/auth/desktop/') &&
-      path !== '/auth/verify' &&
-      path !== '/setup'
+      (code === 'session_expired' || code === undefined) &&
+      ownsSession()
     )
       window.dispatchEvent(new Event('thelxinoe-session-expired'));
   };
@@ -80,7 +76,7 @@ async function request<T>(
       body: { error?: { code: string; message: string } };
     }>('backend_request', { path, method, body: body ?? null });
     if (response.status >= 400) {
-      invalidateExpired(response.status);
+      invalidateExpired(response.status, response.body.error?.code);
       throw new ApiError(
         response.status,
         response.body.error?.code ?? 'request_failed',
@@ -100,9 +96,12 @@ async function request<T>(
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!response.ok) {
-    invalidateExpired(response.status);
     // Proxies answer errors such as 413 or 502 with HTML, not the server's JSON.
     const value = await response.json().catch(() => null);
+    invalidateExpired(
+      response.status,
+      value ? (value.error?.code ?? '') : undefined,
+    );
     throw new ApiError(
       response.status,
       value?.error?.code ?? 'request_failed',

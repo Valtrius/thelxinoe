@@ -382,7 +382,7 @@ pub(super) async fn remove_method(
         match kind.as_str(){
             "password"=>{tx.execute("UPDATE users SET password_hash=NULL WHERE id=?1",[&p.user.id])?;},
             "totp"=>{tx.execute("DELETE FROM auth_totp WHERE user_id=?1",[&p.user.id])?;},
-            "passkey"=>{if tx.execute("DELETE FROM auth_passkeys WHERE id=?1 AND user_id=?2",params![key,p.user.id])?!=1{return Err(Fault::Unauthorized.into());}},
+            "passkey"=>{if tx.execute("DELETE FROM auth_passkeys WHERE id=?1 AND user_id=?2",params![key,p.user.id])?!=1{return Err(Fault::State("passkey_missing","This passkey was already removed.").into());}},
             "oidc"=>{tx.execute("DELETE FROM auth_oidc_identities WHERE user_id=?1",[&p.user.id])?;},
             _=>return Err(Fault::Conflict.into())
         }

@@ -1469,7 +1469,7 @@ async fn quick_connect_requires_review_and_is_single_use() {
         )
         .await
         .0,
-        StatusCode::UNAUTHORIZED
+        StatusCode::BAD_REQUEST
     );
     assert_eq!(
         call(
@@ -1527,7 +1527,8 @@ async fn quick_connect_requires_review_and_is_single_use() {
         )
         .await
         .0,
-        StatusCode::UNAUTHORIZED
+        // A used approval is gone, not a reason to sign the approving browser out.
+        StatusCode::GONE
     );
 }
 
