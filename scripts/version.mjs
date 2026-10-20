@@ -59,23 +59,23 @@ if (dockerfile !== nextDockerfile) {
   writeFileSync('Dockerfile', nextDockerfile);
 }
 // A release ships the current database schema, which then never changes: pin its digest.
-const schema = readFileSync('crates/database/src/lib.rs', 'utf8').match(
-  /pub const SCHEMA_VERSION: u32 = (\d+)/,
-)[1];
-const pins = 'crates/database/schemas/SHA256SUMS';
-const pinned = readFileSync(pins, 'utf8');
-if (
-  process.argv.includes('--write') &&
-  !pinned.split(/\r?\n/).some((line) => line.endsWith(`  ${schema}.sql`))
-) {
-  const digest = createHash('sha256')
-    .update(
-      readFileSync(`crates/database/schemas/${schema}.sql`, 'utf8').replace(
-        /\r\n/g,
-        '\n',
-      ),
-    )
-    .digest('hex');
-  writeFileSync(pins, `${pinned}${digest}  ${schema}.sql\n`);
+// Only when writing: image builds check the version without the Rust sources.
+if (process.argv.includes('--write')) {
+  const schema = readFileSync('crates/database/src/lib.rs', 'utf8').match(
+    /pub const SCHEMA_VERSION: u32 = (\d+)/,
+  )[1];
+  const pins = 'crates/database/schemas/SHA256SUMS';
+  const pinned = readFileSync(pins, 'utf8');
+  if (!pinned.split(/\r?\n/).some((line) => line.endsWith(`  ${schema}.sql`))) {
+    const digest = createHash('sha256')
+      .update(
+        readFileSync(`crates/database/schemas/${schema}.sql`, 'utf8').replace(
+          /\r\n/g,
+          '\n',
+        ),
+      )
+      .digest('hex');
+    writeFileSync(pins, `${pinned}${digest}  ${schema}.sql\n`);
+  }
 }
 console.log(`Product version ${version}`);
