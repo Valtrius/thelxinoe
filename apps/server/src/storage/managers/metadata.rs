@@ -2,22 +2,6 @@
 use super::*;
 use thelxinoe_database::Database;
 
-pub(super) async fn service_for_kind(
-    kind: String,
-    db: &Database,
-) -> anyhow::Result<Option<String>> {
-    db.read("managers.metadata.service_for_kind", move |db| {
-        Ok(db
-            .query_row(
-                "SELECT id FROM manager_services WHERE operational=1 AND kind=?1",
-                [kind],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()?)
-    })
-    .await
-}
-
 pub(super) async fn match_item(db: &Database, target: String) -> anyhow::Result<Option<String>> {
     db.read("managers.metadata.match_item", move |db| {
         Ok(db

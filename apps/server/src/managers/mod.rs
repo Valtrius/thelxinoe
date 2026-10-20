@@ -366,6 +366,13 @@ async fn service(state: &AppState, id: &str) -> Result<Service> {
     }
     Ok(s)
 }
+/// The operational manager of `kind`; the schema allows one per kind.
+async fn service_for_kind(state: &AppState, kind: &str) -> Result<Option<Service>> {
+    match storage::service_for_kind(kind.to_owned(), &state.db).await? {
+        Some(id) => Ok(Some(service(state, &id).await?)),
+        None => Ok(None),
+    }
+}
 /// Any saved manager connection, for read-only health and identity validation.
 async fn connected(state: &AppState, id: &str) -> Result<Service> {
     let mut s = storage::service(id.to_owned(), &state.db)

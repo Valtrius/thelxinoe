@@ -75,15 +75,6 @@ fn valid_external_id(kind: &str, value: &str) -> bool {
     }
 }
 
-async fn service_for_kind(state: &AppState, kind: &str) -> Result<Option<Service>> {
-    let kind = kind.to_owned();
-    let id = storage::service_for_kind(kind, &state.db).await?;
-    match id {
-        Some(id) => Ok(Some(service(state, &id).await?)),
-        None => Ok(None),
-    }
-}
-
 #[derive(Deserialize)]
 struct Search {
     q: String,

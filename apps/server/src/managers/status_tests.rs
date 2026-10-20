@@ -31,31 +31,28 @@ fn inventory(kind: &str, titles: Value, episodes: Value, queue: Value) -> Invent
             )
         })
         .collect();
+    // Each fixture inventory is read from the service "<kind>-1".
     Inventory::new(
-        kind,
+        &format!("{kind}-1"),
         titles,
         episodes,
         serde_json::from_value(queue).unwrap(),
     )
 }
-fn snapshot_with(services: Vec<(&str, Inventory)>) -> Snapshot {
-    snapshot(services)
-}
 fn snapshot(services: Vec<(&str, Inventory)>) -> Snapshot {
     Snapshot {
         services: services
             .into_iter()
-            .map(|(id, inventory)| (id.to_owned(), Arc::new(inventory)))
+            .map(|(kind, inventory)| (kind.to_owned(), Arc::new(inventory)))
             .collect(),
     }
 }
 fn shown(status: Status, admin: bool) -> Value {
     json!(status.for_viewer(admin))
 }
-fn found<'a>(snapshot: &'a Snapshot, service: &str, title: i64) -> Found<'a> {
-    let (service, inventory) = snapshot.services.get_key_value(service).unwrap();
+fn found<'a>(snapshot: &'a Snapshot, kind: &str, title: i64) -> Found<'a> {
+    let inventory = &snapshot.services[kind];
     Found {
-        service,
         inventory,
         title: &inventory.titles[&title],
     }
@@ -231,8 +228,8 @@ fn sonarr() -> Inventory {
 
 #[test]
 fn episodes_seasons_and_shows_aggregate_their_episodes() {
-    let snapshot = snapshot(vec![("sonarr-1", sonarr())]);
-    let series = found(&snapshot, "sonarr-1", 10);
+    let snapshot = snapshot(vec![("sonarr", sonarr())]);
+    let series = found(&snapshot, "sonarr", 10);
     let episode = |id: i64, library: bool| {
         let episode = series.inventory.episodes[&10]
             .iter()
@@ -280,7 +277,7 @@ fn episodes_seasons_and_shows_aggregate_their_episodes() {
     let mut idle = sonarr();
     idle.queue.clear();
     let idle = snapshot_of(idle);
-    let series = found(&idle, "sonarr-1", 10);
+    let series = found(&idle, "sonarr", 10);
     assert_eq!(
         season_status(series, 1, &HashSet::new(), NOW).state,
         Phase::Partial
@@ -293,7 +290,7 @@ fn episodes_seasons_and_shows_aggregate_their_episodes() {
         season_status(series, 0, &HashSet::new(), NOW).state,
         Phase::Unmonitored
     );
-    let unwatched = found(&idle, "sonarr-1", 11);
+    let unwatched = found(&idle, "sonarr", 11);
     assert_eq!(
         shown(show_status(unwatched, &HashSet::new(), NOW), true),
         json!({"state":"unmonitored","episodes":{"available":0,"total":1},"monitored":false})
@@ -304,12 +301,12 @@ fn episodes_seasons_and_shows_aggregate_their_episodes() {
     );
 }
 fn snapshot_of(inventory: Inventory) -> Snapshot {
-    snapshot(vec![("sonarr-1", inventory)])
+    snapshot(vec![("sonarr", inventory)])
 }
 
 #[test]
 fn catalog_links_prefer_bindings_then_provider_identities() {
-    let snapshot = snapshot(vec![("radarr-1", radarr()), ("sonarr-1", sonarr())]);
+    let snapshot = snapshot(vec![("radarr", radarr()), ("sonarr", sonarr())]);
     let link = |kind: &str| Link {
         id: "item".into(),
         kind: kind.into(),
@@ -370,7 +367,7 @@ fn catalog_links_prefer_bindings_then_provider_identities() {
 
 #[test]
 fn seasons_merge_library_and_sonarr_episodes_with_specials_last() {
-    let snapshot = snapshot(vec![("sonarr-1", sonarr())]);
+    let snapshot = snapshot(vec![("sonarr", sonarr())]);
     let episode = |id: &str, number: i64, available: bool, watched: bool| LibraryEpisode {
         id: id.into(),
         number: Some(number),
@@ -408,7 +405,7 @@ fn seasons_merge_library_and_sonarr_episodes_with_specials_last() {
             episodes: Vec::new(),
         },
     ];
-    let value = seasons_value(Some(found(&snapshot, "sonarr-1", 10)), &library, true, NOW);
+    let value = seasons_value(Some(found(&snapshot, "sonarr", 10)), &library, true, NOW);
     let seasons = value["seasons"].as_array().unwrap();
     assert_eq!(
         seasons
@@ -455,7 +452,7 @@ fn seasons_merge_library_and_sonarr_episodes_with_specials_last() {
     assert_eq!(specials["episodes"][0]["id"], "sp1");
     assert_eq!(specials["episodes"][0]["status"]["state"], "unmonitored");
     // Users get the collapsed states, and a library without Sonarr has no status.
-    let user = seasons_value(Some(found(&snapshot, "sonarr-1", 10)), &library, false, NOW);
+    let user = seasons_value(Some(found(&snapshot, "sonarr", 10)), &library, false, NOW);
     assert_eq!(
         user["seasons"][2]["episodes"][0]["status"],
         json!({"state":"unavailable"})
@@ -469,7 +466,7 @@ fn seasons_merge_library_and_sonarr_episodes_with_specials_last() {
 
 #[test]
 fn wanted_titles_without_catalog_items_become_virtual_items() {
-    let snapshot = snapshot(vec![("radarr-1", radarr()), ("sonarr-1", sonarr())]);
+    let snapshot = snapshot(vec![("radarr", radarr()), ("sonarr", sonarr())]);
     let linked = Linked {
         entities: HashSet::from([("radarr-1".to_owned(), 1)]),
         tmdb: HashSet::from([102]),
@@ -498,15 +495,6 @@ fn wanted_titles_without_catalog_items_become_virtual_items() {
         "g",
     );
     assert!(poster.is_empty(), "available titles are not wanted");
-    // Two Radarr services wanting the same titles still list each title once.
-    let doubled = snapshot_with(vec![("radarr-1", radarr()), ("radarr-4k", radarr())]);
-    assert_eq!(
-        virtual_items(&doubled, "movie", &linked, None, false, NOW, "g")
-            .iter()
-            .map(|m| m["id"].clone())
-            .collect::<Vec<_>>(),
-        [json!("tmdb:103"), json!("tmdb:104"), json!("tmdb:106")]
-    );
     let shows = virtual_items(&snapshot, "show", &Linked::default(), None, true, NOW, "g");
     // The monitored series is downloading; the unmonitored one is never listed.
     assert_eq!(shows.len(), 1);
@@ -725,7 +713,7 @@ INSERT INTO edition_progress VALUES ('alice','e2','',30,60,1);")?;
     shows.queue.clear();
     replace(
         &state,
-        snapshot(vec![("radarr-1", movies), ("sonarr-1", shows)]),
+        snapshot(vec![("radarr", movies), ("sonarr", shows)]),
     );
     (temp, state, alice, format!("thelxinoe_session={bob}"))
 }

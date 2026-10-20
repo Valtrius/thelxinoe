@@ -415,15 +415,11 @@ struct ProfileQuery {
     media_id: i64,
 }
 async fn request_manager(state: &AppState, kind: &str) -> Result<Service> {
-    for key in storage::managers(&state.db).await? {
-        let service = super::service(state, &key).await?;
-        if service.kind == kind {
-            return Ok(service);
-        }
-    }
-    Err(ApiError::conflict(format!(
-        "Connect {kind} in Media services before requesting this media"
-    )))
+    super::service_for_kind(state, kind).await?.ok_or_else(|| {
+        ApiError::conflict(format!(
+            "Connect {kind} in Media services before requesting this media"
+        ))
+    })
 }
 async fn existing_series_profile(
     c: &Connection<'_>,
