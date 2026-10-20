@@ -15,6 +15,8 @@ pub(crate) enum Fault {
     JournalWrite,
     JournalBefore(&'static str),
     JournalAfter(&'static str),
+    /// A recovery command's journal reaches `phase` on disk but its write reports failure.
+    PhaseAfter(&'static str),
     StartBefore(&'static str),
     StartReply(&'static str),
 }
@@ -114,6 +116,12 @@ impl Docker {
             .map(|c| c["Name"].as_str().unwrap().into())
             .collect()
     }
+    pub(crate) fn container(&self, id: &str) -> Value {
+        self.engine.lock().unwrap().containers[id].clone()
+    }
+    pub(crate) fn starts(&self) -> usize {
+        self.engine.lock().unwrap().starts
+    }
     pub(crate) fn running(&self, id: &str) -> bool {
         self.engine.lock().unwrap().containers[id]["State"]["Running"] == true
     }
@@ -169,6 +177,12 @@ impl DockerContext {
             e.fault = None;
             return true;
         }
+        if let Some(Fault::PhaseAfter(phase)) = e.fault
+            && serde_json::from_slice::<Value>(bytes).is_ok_and(|v| v["command"]["phase"] == phase)
+        {
+            e.fault = None;
+            return true;
+        }
         false
     }
     pub(crate) fn request(
@@ -217,13 +231,12 @@ impl DockerContext {
             );
             let mut config = spec.clone();
             config.as_object_mut().unwrap().remove("HostConfig");
-            let id = if spec["Cmd"][0]
-                .as_str()
-                .is_some_and(|c| c.starts_with("snapshot-"))
-            {
-                format!("worker-{}", e.creates)
-            } else {
-                "replacement".into()
+            let id = match spec["Cmd"][0].as_str() {
+                Some(c) if c.starts_with("snapshot-") || c == "transfer-digest" => {
+                    format!("worker-{}", e.creates)
+                }
+                Some("adapter-health") => format!("checker-{}", e.creates),
+                _ => "replacement".into(),
             };
             e.containers.insert(id.clone(),json!({"Id":id,"Name":format!("/{name}"),"Image":spec["Image"],"Config":config,"HostConfig":spec["HostConfig"],"State":{"Running":false,"StartedAt":"0001-01-01T00:00:00Z"},"NetworkSettings":{"Networks":{"media":{}}}}));
             match e.fault {
@@ -266,6 +279,9 @@ impl DockerContext {
             e.containers.get_mut(id).unwrap()["Name"] = json!(format!("/{name}"));
         } else if action.starts_with("stop") {
             e.containers.get_mut(id).unwrap()["State"]["Running"] = json!(false);
+        } else if action == "update" {
+            e.containers.get_mut(id).unwrap()["HostConfig"]["RestartPolicy"] =
+                body.unwrap()["RestartPolicy"].clone();
         } else if action == "start" {
             if matches!(e.fault,Some(Fault::StartBefore(target)) if target == id) {
                 e.fault = None;
@@ -307,6 +323,25 @@ impl DockerContext {
                 e.containers.get_mut(id).unwrap()["State"]["Running"] = json!(false);
                 e.containers.get_mut(id).unwrap()["State"]["ExitCode"] = json!(0);
             }
+            if raw["Config"]["Cmd"][0] == "transfer-digest" {
+                let mounts = raw["HostConfig"]["Mounts"].as_array().unwrap();
+                let source = |target: &str| {
+                    let mount = mounts.iter().find(|m| m["Target"] == target).unwrap();
+                    std::path::PathBuf::from(mount["Source"].as_str().unwrap())
+                };
+                std::fs::write(
+                    source("/progress").join("report.json"),
+                    serde_json::to_vec(&tree_digest(&source("/state"))).unwrap(),
+                )
+                .unwrap();
+                e.containers.get_mut(id).unwrap()["State"]["Running"] = json!(false);
+                e.containers.get_mut(id).unwrap()["State"]["ExitCode"] = json!(0);
+            }
+            // The replacement's authenticated health check passes at once.
+            if raw["Config"]["Cmd"][0] == "adapter-health" {
+                e.containers.get_mut(id).unwrap()["State"]["Running"] = json!(false);
+                e.containers.get_mut(id).unwrap()["State"]["ExitCode"] = json!(0);
+            }
             if let Some(source) = raw["Mounts"][0]["Source"].as_str() {
                 std::fs::write(
                     std::path::Path::new(source).join("marker"),
@@ -323,4 +358,41 @@ impl DockerContext {
         }
         Ok(Value::Null)
     }
+}
+
+/// A transfer worker's report for the tree at `root`: its files and their content.
+fn tree_digest(root: &std::path::Path) -> Value {
+    use sha2::{Digest, Sha256};
+    let mut files = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    let mut hasher = Sha256::new();
+    let mut bytes = 0;
+    for file in &files {
+        let content = std::fs::read(file).unwrap();
+        hasher.update(
+            file.strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .as_bytes(),
+        );
+        hasher.update(&content);
+        bytes += content.len();
+    }
+    let digest: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    json!({"digest":digest,"bytes":bytes,"files":files.len()})
 }

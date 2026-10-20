@@ -2862,6 +2862,10 @@ pub(super) async fn list(State(runtime): State<Runtime>) -> Result<Json<Value>> 
 }
 
 #[cfg(test)]
+#[path = "transfer_recovery_tests.rs"]
+mod recovery_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
