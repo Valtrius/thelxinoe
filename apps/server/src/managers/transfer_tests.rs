@@ -334,6 +334,44 @@ async fn completion_releases_this_server_only_after_the_controller_agrees() {
 }
 
 #[tokio::test]
+async fn a_completed_transfer_stays_owned_while_the_controller_is_unreachable() {
+    let t = seeded("radarr", "committed", true).await;
+    let radarr = || async {
+        let (status, _, body) = CONTROLLER_FAILURE
+            .scope(
+                ("dependency_unavailable", "connection reset"),
+                call(
+                    &t.state,
+                    "/api/v1/admin/services",
+                    "GET",
+                    Value::Null,
+                    &t.cookie,
+                ),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["kind"] == "radarr")
+            .unwrap()
+            .clone()
+    };
+    // While the transfer holds it, Owned needs the controller's agreement.
+    assert_eq!(radarr().await["stage"], "connected");
+    t.script(
+        "",
+        json!({"stage":"complete","completed":true,"committed":true}),
+    );
+    assert!(t.job().await.unwrap());
+    assert_eq!(t.row().await.state, "complete");
+    let owned = radarr().await;
+    assert_eq!(owned["stage"], "owned");
+    assert_eq!(owned["actions"], json!(["manage"]));
+}
+
+#[tokio::test]
 async fn a_cancelled_transfer_is_never_reopened_by_a_job_already_under_way() {
     let t = seeded("radarr", "queued", false).await;
     t.script("/cancel", json!({"id":t.id,"stage":"cancelled"}));
