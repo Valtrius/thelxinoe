@@ -125,6 +125,8 @@ pub fn validate_credentials(username: &str, password: &str) -> Result<()> {
     }
     Ok(())
 }
+/// Runs password work on the blocking pool. The `permit`, one of the server's password slots,
+/// is held until the work ends, even if the caller stops waiting for it.
 async fn password_work<T: Send + 'static>(
     permit: Option<tokio::sync::OwnedSemaphorePermit>,
     work: impl FnOnce() -> Result<T> + Send + 'static,
@@ -135,16 +137,7 @@ async fn password_work<T: Send + 'static>(
     })
     .await?
 }
-pub async fn password_hash(password: String) -> Result<String> {
-    hash_password(password, None).await
-}
-pub async fn password_hash_with_permit(
-    password: String,
-    permit: tokio::sync::OwnedSemaphorePermit,
-) -> Result<String> {
-    hash_password(password, Some(permit)).await
-}
-async fn hash_password(
+pub async fn password_hash(
     password: String,
     permit: Option<tokio::sync::OwnedSemaphorePermit>,
 ) -> Result<String> {
@@ -156,17 +149,7 @@ async fn hash_password(
     })
     .await
 }
-pub async fn verify_password(password: String, hash: String) -> Result<bool> {
-    check_password(password, hash, None).await
-}
-pub async fn verify_password_with_permit(
-    password: String,
-    hash: String,
-    permit: tokio::sync::OwnedSemaphorePermit,
-) -> Result<bool> {
-    check_password(password, hash, Some(permit)).await
-}
-async fn check_password(
+pub async fn verify_password(
     password: String,
     hash: String,
     permit: Option<tokio::sync::OwnedSemaphorePermit>,
@@ -318,11 +301,11 @@ mod tests {
     }
     #[tokio::test]
     async fn passwords_are_salted_and_verified() -> Result<()> {
-        let a = password_hash("long passphrase".into()).await?;
-        let b = password_hash("long passphrase".into()).await?;
+        let a = password_hash("long passphrase".into(), None).await?;
+        let b = password_hash("long passphrase".into(), None).await?;
         assert_ne!(a, b);
-        assert!(verify_password("long passphrase".into(), a.clone()).await?);
-        assert!(!verify_password("wrong".into(), a).await?);
+        assert!(verify_password("long passphrase".into(), a.clone(), None).await?);
+        assert!(!verify_password("wrong".into(), a, None).await?);
         Ok(())
     }
     #[test]

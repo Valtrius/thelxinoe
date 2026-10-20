@@ -151,7 +151,9 @@ impl AppState {
             release_install: Arc::new(tokio::sync::Mutex::new(())),
             library_watch: Arc::new(Default::default()),
             folder_sizes: Arc::new(Default::default()),
-            dummy_hash: Arc::new(thelxinoe_auth::password_hash(thelxinoe_auth::token()).await?),
+            dummy_hash: Arc::new(
+                thelxinoe_auth::password_hash(thelxinoe_auth::token(), None).await?,
+            ),
         })
     }
     pub async fn emit(

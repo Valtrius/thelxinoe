@@ -107,6 +107,9 @@ fn persistent_cookie(name: &str, raw: &str, secure: bool) -> String {
 pub(crate) fn session_cookie(raw: &str, secure: bool) -> String {
     persistent_cookie("thelxinoe_session", raw, secure)
 }
+pub(crate) fn remember_cookie(raw: &str, secure: bool) -> String {
+    persistent_cookie("thelxinoe_remember", raw, secure)
+}
 fn label(value: &str) -> Result<String> {
     let v = value.trim();
     if v.is_empty() || v.chars().count() > 100 {
@@ -213,7 +216,7 @@ pub(crate) async fn password_login(
     headers: &HeaderMap,
     secure: bool,
 ) -> Result<Response> {
-    let account = storage::account(&state.db, authorization.user_id().into(), false)
+    let account = storage::account(&state.db, authorization.user_id().into())
         .await?
         .ok_or_else(ApiError::unauthorized)?;
     if let SessionAuthorization::Password { expected_hash, .. } = &authorization
@@ -230,18 +233,14 @@ pub(crate) async fn password_login(
             && let Some(device) =
                 storage::remembered(&state.db, account.id.clone(), digest(&raw)).await?
         {
-            let mut response =
-                accounts::respond_session(state, verified(&account, 0, Some(device)), c, secure)
-                    .await?;
-            if c.transport.as_deref() != Some("device") {
-                response.headers_mut().append(
-                    header::SET_COOKIE,
-                    persistent_cookie("thelxinoe_remember", &raw, secure)
-                        .parse()
-                        .unwrap(),
-                );
-            }
-            return Ok(response);
+            return accounts::respond_session(
+                state,
+                verified(&account, 0, Some(device)),
+                c,
+                secure,
+                Some(&raw),
+            )
+            .await;
         }
         let details = LoginDetails {
             transport: c.transport.clone(),
@@ -261,7 +260,7 @@ pub(crate) async fn password_login(
             .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
         Ok(response)
     } else {
-        accounts::respond_session(state, authorization, c, secure).await
+        accounts::respond_session(state, authorization, c, secure, None).await
     }
 }
 fn totp(state: &AppState, account: &storage::Account) -> Result<totp_rs::Totp> {
@@ -321,7 +320,7 @@ async fn checked_password(
         .await
         .map_err(anyhow::Error::from)?;
     let valid = password.len() <= 256
-        && thelxinoe_auth::verify_password_with_permit(password, hash, slot).await?;
+        && thelxinoe_auth::verify_password(password, hash, Some(slot)).await?;
     if valid {
         accounts::release_account_attempt(state, throttle).await?;
     }
@@ -354,7 +353,6 @@ async fn totp_login(
     let account = storage::account(
         &state.db,
         a.user.clone().ok_or_else(|| sign_in_expired(EXPIRED))?,
-        false,
     )
     .await?
     .ok_or_else(|| sign_in_expired(EXPIRED))?;
@@ -397,35 +395,14 @@ async fn totp_login(
         ApiError(StatusCode::UNAUTHORIZED, ..) => sign_in_expired(EXPIRED),
         other => other,
     })?;
-    let mut response = accounts::respond_session(
+    accounts::respond_session(
         &state,
         authorization,
         &details.credentials(),
         context.secure,
+        remember.as_deref(),
     )
-    .await?;
-    if let Some(raw) = remember {
-        if details.transport.as_deref() == Some("device") {
-            // The native transport saves and strips this credential before returning to the renderer.
-            let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
-                .await
-                .map_err(anyhow::Error::from)?;
-            let mut value: Value = serde_json::from_slice(&bytes).map_err(anyhow::Error::from)?;
-            value["remember_token"] = json!(raw);
-            response = Json(value).into_response();
-            response
-                .headers_mut()
-                .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
-        } else {
-            response.headers_mut().append(
-                header::SET_COOKIE,
-                persistent_cookie("thelxinoe_remember", &raw, context.secure)
-                    .parse()
-                    .unwrap(),
-            );
-        }
-    }
-    Ok(response)
+    .await
 }
 #[derive(Deserialize)]
 struct Proof {
@@ -441,7 +418,7 @@ async fn verify(
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
     accounts::allow_password_attempt(&state, format!("verify:{}", p.user.id)).await?;
-    let account = storage::account(&state.db, p.user.id.clone(), false)
+    let account = storage::account(&state.db, p.user.id.clone())
         .await?
         .ok_or_else(ApiError::unauthorized)?;
     let step = if account.totp.as_ref().is_some_and(|(_, enabled)| *enabled) {
@@ -511,7 +488,7 @@ async fn totp_confirm(
 ) -> Result<Json<Value>> {
     let p = security::principal(&state, &headers).await?;
     accounts::allow_password_attempt(&state, format!("totp-enroll:{}", p.user.id)).await?;
-    let account = storage::account(&state.db, p.user.id.clone(), false)
+    let account = storage::account(&state.db, p.user.id.clone())
         .await?
         .ok_or_else(ApiError::unauthorized)?;
     let secret = match &account.totp {
@@ -676,7 +653,7 @@ async fn recovery_enroll(
         .acquire_owned()
         .await
         .map_err(anyhow::Error::from)?;
-    let hash = thelxinoe_auth::password_hash_with_permit(input.password, slot).await?;
+    let hash = thelxinoe_auth::password_hash(input.password, Some(slot)).await?;
     storage::recovery_enroll(&state.db, digest(&input.token), Some(hash), None)
         .await
         .map_err(failure)?;
@@ -845,6 +822,7 @@ async fn desktop_exchange(
             remember_token: None,
         },
         context.secure,
+        None,
     )
     .await
 }
@@ -886,7 +864,7 @@ pub(crate) async fn password_change_proof(
             ) => {}
         Err(error) => return Err(failure(error)),
     }
-    let account = storage::account(&state.db, p.user.id.clone(), false)
+    let account = storage::account(&state.db, p.user.id.clone())
         .await?
         .ok_or_else(ApiError::unauthorized)?;
     if account.totp.as_ref().is_some_and(|(_, enabled)| *enabled) {

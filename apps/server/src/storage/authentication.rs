@@ -71,8 +71,8 @@ fn account_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
             .map(|s| (s, r.get::<_, bool>(5).unwrap_or(false))),
     })
 }
-pub(super) async fn account(db: &Database, user: String, by_name: bool) -> Result<Option<Account>> {
-    db.read("authentication.account", move |c| Ok(c.query_row(if by_name {"SELECT u.id,u.username,u.password_hash,u.auth_version,t.secret,t.enabled FROM users u LEFT JOIN auth_totp t ON t.user_id=u.id WHERE u.username=?1"} else {"SELECT u.id,u.username,u.password_hash,u.auth_version,t.secret,t.enabled FROM users u LEFT JOIN auth_totp t ON t.user_id=u.id WHERE u.id=?1"}, [user], account_row).optional()?)).await
+pub(super) async fn account(db: &Database, user: String) -> Result<Option<Account>> {
+    db.read("authentication.account", move |c| Ok(c.query_row("SELECT u.id,u.username,u.password_hash,u.auth_version,t.secret,t.enabled FROM users u LEFT JOIN auth_totp t ON t.user_id=u.id WHERE u.id=?1", [user], account_row).optional()?)).await
 }
 #[derive(Serialize)]
 pub(super) struct PasskeyInfo {

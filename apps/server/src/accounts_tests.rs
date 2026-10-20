@@ -5,7 +5,7 @@ use serde_json::json;
 #[tokio::test]
 async fn password_change_rejects_a_previously_verified_login_and_revokes_an_issued_one() {
     let (_temp, state, cookie) = fixture().await;
-    let hash = thelxinoe_auth::password_hash("old password".into())
+    let hash = thelxinoe_auth::password_hash("old password".into(), None)
         .await
         .unwrap();
     state
@@ -135,7 +135,7 @@ async fn open_setup_has_bounded_admission_and_an_attempt_limit() {
 async fn a_remembered_device_signs_in_while_others_have_locked_the_account() {
     use crate::accounts::check_credentials;
     let (_temp, state, _) = fixture().await;
-    let hash = thelxinoe_auth::password_hash("right password".into())
+    let hash = thelxinoe_auth::password_hash("right password".into(), None)
         .await
         .unwrap();
     let token = "r".repeat(64);
@@ -212,7 +212,9 @@ async fn stale_password_change_verifies_current_password_and_revokes_other_devic
     let (_temp, state, cookie) = fixture().await;
     let old = "previous passphrase";
     let new = "12345678";
-    let hash = thelxinoe_auth::password_hash(old.into()).await.unwrap();
+    let hash = thelxinoe_auth::password_hash(old.into(), None)
+        .await
+        .unwrap();
     state
         .db
         .write("test.fixture", move |db| {
@@ -317,12 +319,12 @@ async fn stale_password_change_verifies_current_password_and_revokes_other_devic
         .await
         .unwrap();
     assert!(
-        !thelxinoe_auth::verify_password(old.into(), hash.clone())
+        !thelxinoe_auth::verify_password(old.into(), hash.clone(), None)
             .await
             .unwrap()
     );
     assert!(
-        thelxinoe_auth::verify_password(new.into(), hash)
+        thelxinoe_auth::verify_password(new.into(), hash, None)
             .await
             .unwrap()
     );

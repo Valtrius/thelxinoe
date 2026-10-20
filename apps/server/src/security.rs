@@ -32,15 +32,6 @@ impl RequestContext {
     pub fn bucket(&self) -> String {
         client_bucket(self.address)
     }
-    pub fn remote(&self) -> bool {
-        match self.address {
-            IpAddr::V4(ip) => !(ip.is_private() || ip.is_loopback() || ip.is_link_local()),
-            IpAddr::V6(ip) => ip.to_ipv4_mapped().map_or_else(
-                || !(ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local()),
-                |ip| !(ip.is_private() || ip.is_loopback() || ip.is_link_local()),
-            ),
-        }
-    }
 }
 pub fn request_context(
     config: &Config,

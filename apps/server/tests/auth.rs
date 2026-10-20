@@ -607,37 +607,6 @@ async fn explicit_cors_and_api_compatibility_preserve_authentication() {
 }
 
 #[tokio::test]
-async fn remote_quality_uses_the_trusted_client_address() {
-    let (_temp, state) = fixture().await;
-    for (address, remote) in [
-        ("192.168.1.9", false),
-        ("127.0.0.1", false),
-        ("::ffff:192.168.1.9", false),
-        ("2001:4860:4860::8888", true),
-        ("8.8.8.8", true),
-    ] {
-        let headers = axum::http::HeaderMap::from_iter([(
-            "x-forwarded-for".parse::<axum::http::HeaderName>().unwrap(),
-            address.parse().unwrap(),
-        )]);
-        let context = thelxinoe_server::security::request_context(
-            &state.config,
-            &headers,
-            "10.0.0.2:1234".parse().unwrap(),
-        )
-        .unwrap();
-        assert_eq!(context.remote(), remote);
-        let untrusted = thelxinoe_server::security::request_context(
-            &state.config,
-            &headers,
-            "192.168.1.2:1234".parse().unwrap(),
-        )
-        .unwrap();
-        assert!(!untrusted.remote());
-    }
-}
-
-#[tokio::test]
 async fn concurrent_library_additions_serialize_overlap_checks_and_job_writes() {
     let (_temp, state) = fixture().await;
     let cookie = setup(&state).await;

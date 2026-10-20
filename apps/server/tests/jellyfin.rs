@@ -24,7 +24,7 @@ async fn fixture() -> (tempfile::TempDir, AppState, String) {
     let state = AppState::open(configuration::config(temp.path()))
         .await
         .unwrap();
-    let hash = thelxinoe_auth::password_hash("a long test-only password".into())
+    let hash = thelxinoe_auth::password_hash("a long test-only password".into(), None)
         .await
         .unwrap();
     state

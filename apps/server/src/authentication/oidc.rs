@@ -216,7 +216,7 @@ async fn start(
         require_fresh(&state, p.as_ref().unwrap()).await?;
     }
     let account = if let Some(p) = &p {
-        storage::account(&state.db, p.user.id.clone(), false).await?
+        storage::account(&state.db, p.user.id.clone()).await?
     } else {
         None
     };
@@ -379,11 +379,12 @@ async fn complete(
             }
             .credentials(),
             secure,
+            None,
         )
         .await?
     } else {
         let user = a.user.ok_or_else(ApiError::unauthorized)?;
-        let account = storage::account(&state.db, user, false)
+        let account = storage::account(&state.db, user)
             .await?
             .ok_or_else(ApiError::unauthorized)?;
         if a.version != Some(account.version) {

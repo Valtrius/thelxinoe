@@ -17,8 +17,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use thelxinoe_auth::{
-    SessionAuthorization, digest, issue_session, password_hash_with_permit, user_row,
-    validate_credentials, verify_password_with_permit,
+    SessionAuthorization, digest, issue_session, password_hash, user_row, validate_credentials,
+    verify_password,
 };
 use thelxinoe_core::{Capability, Role, id, now};
 
@@ -40,11 +40,15 @@ pub async fn setup_status(State(state): State<AppState>) -> Result<Json<Value>> 
         json!({"setup_required":count==0,"version":thelxinoe_core::VERSION}),
     ))
 }
+/// Issues the session a completed sign-in earned and answers with it: in a cookie for the web,
+/// or in the body for a device, whose native transport stores and strips it. A device
+/// remembered for two-step sign-in gets its `remember` token the same way.
 pub(crate) async fn respond_session(
     state: &AppState,
     authorization: SessionAuthorization,
     c: &Credentials,
     secure: bool,
+    remember: Option<&str>,
 ) -> Result<Response> {
     let transport = c.transport.as_deref().unwrap_or("web");
     if !matches!(transport, "web" | "device") {
@@ -77,10 +81,13 @@ pub(crate) async fn respond_session(
     .ok_or_else(ApiError::unauthorized)?;
     let user = storage::respond_session(&state.db, user_id).await?;
     let user = crate::avatars::profile(state, user).await?;
-    let mut response =
-        Json(json!({"user":user,"token":if transport=="device"{Some(&raw)}else{None}}))
-            .into_response();
-    if transport == "web" {
+    let device = transport == "device";
+    let mut body = json!({"user":user,"token":device.then_some(&raw)});
+    if device && let Some(remember) = remember {
+        body["remember_token"] = json!(remember);
+    }
+    let mut response = Json(body).into_response();
+    if !device {
         response.headers_mut().insert(
             header::SET_COOKIE,
             if remembered {
@@ -91,6 +98,14 @@ pub(crate) async fn respond_session(
             .parse()
             .unwrap(),
         );
+        if let Some(remember) = remember {
+            response.headers_mut().append(
+                header::SET_COOKIE,
+                crate::authentication::remember_cookie(remember, secure)
+                    .parse()
+                    .unwrap(),
+            );
+        }
     }
     response
         .headers_mut()
@@ -135,7 +150,7 @@ pub async fn setup(
                 "Authentication is busy. Try again shortly.".into(),
             )
         })?;
-    let hash = password_hash_with_permit(c.password.clone(), slot).await?;
+    let hash = password_hash(c.password.clone(), Some(slot)).await?;
     let user_id = id();
     let uid = user_id.clone();
     let username = c.username.clone();
@@ -154,6 +169,7 @@ pub async fn setup(
         },
         &c,
         context.secure,
+        None,
     )
     .await
 }
@@ -219,7 +235,7 @@ pub(crate) async fn check_credentials(
         .as_ref()
         .map(|r| r.1.clone())
         .unwrap_or_else(|| state.dummy_hash.as_ref().clone());
-    let valid = verify_password_with_permit(password.to_owned(), hash, slot).await?;
+    let valid = verify_password(password.to_owned(), hash, Some(slot)).await?;
     if !valid || record.is_none() {
         // An untrusted attempt already counts; a remembered device's failures count here.
         if trusted {
@@ -298,7 +314,7 @@ pub async fn change_password(
         .acquire_owned()
         .await
         .map_err(anyhow::Error::from)?;
-    let hash = password_hash_with_permit(input.new_password, slot).await?;
+    let hash = password_hash(input.new_password, Some(slot)).await?;
     crate::authentication::set_password(
         &state,
         principal.clone(),
@@ -376,7 +392,7 @@ pub async fn create_user(
         .acquire_owned()
         .await
         .map_err(anyhow::Error::from)?;
-    let hash = password_hash_with_permit(std::mem::take(&mut user.password), slot).await?;
+    let hash = password_hash(std::mem::take(&mut user.password), Some(slot)).await?;
     let result = storage::create_user(&state.db, user, p, hash).await?;
     result
         .map(|id| Json(json!({"id":id})))
