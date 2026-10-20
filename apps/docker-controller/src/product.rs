@@ -690,11 +690,12 @@ async fn prepare(u: &mut Update) -> Result<()> {
         u.failure = Some(classify(&e).into());
         return Err(e);
     }
+    // Activation takes its own rollback copy; the preflight's are no longer needed. They go
+    // before the attempt reports ready, so an activation never meets this preflight's work.
+    remove_copies(u, None);
     u.recovery_tested = true;
     u.stage = "ready".into();
     write(u)?;
-    // Activation takes its own rollback copy; the preflight's are no longer needed.
-    remove_copies(u, None);
     Ok(())
 }
 /// A check the release itself ran and failed is the release failing on this
