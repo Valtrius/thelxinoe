@@ -35,9 +35,9 @@ pub async fn retain_worker_image() -> anyhow::Result<()> {
         .map(|_| ())
         .map_err(|(_, message)| anyhow::anyhow!(message))
 }
-/// Copies and stopped originals of settled service updates that are no longer needed.
-pub async fn prune_updates() -> anyhow::Result<()> {
-    updates::prune_settled()
+/// Settle interrupted service-update activations and prune what settled ones no longer need.
+pub async fn settle_updates() -> anyhow::Result<()> {
+    updates::settle()
         .await
         .map_err(|(_, message)| anyhow::anyhow!(message))
 }

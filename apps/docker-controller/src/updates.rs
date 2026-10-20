@@ -138,7 +138,10 @@ pub(super) async fn retained_originals(d: &Deployment, service: &Managed) -> Res
         if update.service != service.id
             || update.old.container == service.container
             || !update.activation_crossed
-            || !matches!(update.stage.as_str(), "committed" | "runtime-failure")
+            || !matches!(
+                update.stage.as_str(),
+                "activating" | "committed" | "runtime-failure"
+            )
         {
             continue;
         }
@@ -169,7 +172,7 @@ pub(super) fn removable_updates(service: &str) -> Result<Vec<String>> {
             if update.service == service {
                 if !matches!(
                     update.stage.as_str(),
-                    "committed" | "rolled-back" | "blocked"
+                    "committed" | "rolled-back" | "blocked" | "runtime-failure"
                 ) {
                     return Err(conflict(
                         "Finish or recover the service update before removal",
@@ -710,6 +713,10 @@ pub(super) async fn activate(
             u.error = Some(error.1.to_string());
             if u.activation_crossed {
                 u.stage = "runtime-failure".into();
+                let _ = write(&u);
+                if let Err(error) = settle_crossed(&d, &mut u).await {
+                    eprintln!("Service update {} needs recovery: {}", u.id, error.1);
+                }
             } else if rollback(&d, &mut u).await.is_ok() {
                 u.stage = "rolled-back".into();
             } else {
@@ -1019,9 +1026,54 @@ async fn retire_older(d: &Deployment, newer: &Update) {
     }
 }
 
-/// Startup cleanup of copies earlier attempts left behind; the newest committed attempt
-/// of each service keeps what its recovery needs.
-pub(super) async fn prune_settled() -> Result<()> {
+/// An activation that crossed its boundary but never recorded its replacement: the
+/// controller stopped, or the replacement couldn't be inspected after its start. Docker may
+/// have run the replacement, so nothing rolls back automatically: the service moves to it,
+/// as `replace` would have, and the attempt ends as a runtime failure for explicit review.
+/// The stopped original is kept and never started.
+async fn settle_crossed(d: &Deployment, u: &mut Update) -> Result<()> {
+    if !u.activation_crossed
+        || !matches!(u.stage.as_str(), "activating" | "runtime-failure")
+        || u.old.kind == "recyclarr"
+    {
+        return Ok(());
+    }
+    let current = load(&u.service)?;
+    if current.phase == "updating" && current.active_update.as_deref() == Some(u.id.as_str()) {
+        let intent = u
+            .replacement_intent
+            .clone()
+            .ok_or_else(|| conflict("The replacement's creation intent is missing"))?;
+        let container = intent
+            .find(d)
+            .await?
+            .ok_or_else(|| conflict("The replacement no longer exists"))?;
+        let raw = engine(&format!("/containers/{container}/json")).await?;
+        verify_recorded(d, &intent.service, &raw).await?;
+        let mut accepted = u.old.clone();
+        accepted.container = container.clone();
+        accepted.image = u.candidate.clone();
+        accepted.spec = intent.service.spec;
+        accepted.expected = policy::fingerprint(&raw);
+        accepted.phase = "active".into();
+        save(&accepted)?;
+        u.replacement = Some(container);
+        u.error = Some(
+            "Activation was interrupted after the replacement could start; it was kept without its health check".into(),
+        );
+    }
+    if u.stage == "activating" {
+        u.stage = "runtime-failure".into();
+        u.error
+            .get_or_insert_with(|| "Activation was interrupted".into());
+    }
+    write(u)
+}
+
+/// Startup: settle activations interrupted after their boundary, then remove copies earlier
+/// attempts left behind. The newest committed attempt of each service keeps what its
+/// recovery needs.
+pub(super) async fn settle() -> Result<()> {
     let root = store::root().join("updates");
     if !root.exists() {
         return Ok(());
@@ -1032,9 +1084,12 @@ pub(super) async fn prune_settled() -> Result<()> {
         .map_err(|_| unavailable())?
         .flatten()
     {
-        let Some(u) = read_listed(&entry.file_name().to_string_lossy())? else {
+        let Some(mut u) = read_listed(&entry.file_name().to_string_lossy())? else {
             continue;
         };
+        if let Err(error) = settle_crossed(&d, &mut u).await {
+            eprintln!("Service update {} needs recovery: {}", u.id, error.1);
+        }
         remove_copies(&d, &u).await;
         if u.stage == "committed" {
             let time = entry

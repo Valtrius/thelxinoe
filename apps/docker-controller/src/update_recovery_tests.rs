@@ -245,7 +245,7 @@ async fn settled_updates_keep_only_what_the_newest_commit_can_recover_to() {
                 // Journal times order the commits.
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
-            prune_settled().await.unwrap();
+            settle().await.unwrap();
             let left = |key: &str| {
                 ["snapshot", "clone", "scratch-data", "recovery"]
                     .into_iter()
@@ -258,6 +258,52 @@ async fn settled_updates_keep_only_what_the_newest_commit_can_recover_to() {
             assert!(!fixture.names().contains(&"/service".to_owned()));
             // Journals stay, so a lost reply still finds its outcome.
             assert!(read(OLDER).is_ok() && read(NEWER).is_ok());
+        })
+        .await;
+}
+
+// An activation that stopped after its boundary, before its replacement was recorded, no
+// longer leaves the service stuck: startup moves it to the replacement, the original stays
+// stopped, and the attempt no longer blocks removal.
+#[tokio::test]
+async fn an_interrupted_activation_moves_the_service_to_its_replacement() {
+    let fixture = Docker::new();
+    fixture
+        .scope(async {
+            let (deployment, mut update) = fixture.update();
+            store::write_json(&store::root().join("desired-state.json"), &deployment).unwrap();
+            write(&update).unwrap();
+            let mut updating = update.old.clone();
+            updating.phase = "updating".into();
+            updating.active_update = Some(update.id.clone());
+            save(&updating).unwrap();
+            let container = prepare_replacement(&deployment, &mut update).await.unwrap();
+            // The boundary is journaled and the replacement started; then the controller stops.
+            update.stage = "activating".into();
+            update.activation_crossed = true;
+            write(&update).unwrap();
+            start(&container).await.unwrap();
+            settle().await.unwrap();
+            let service = load(&update.service).unwrap();
+            assert_eq!(
+                (service.container.as_str(), service.phase.as_str()),
+                (container.as_str(), "active")
+            );
+            assert_eq!(service.image, update.candidate);
+            let raw = engine(&format!("/containers/{container}/json"))
+                .await
+                .unwrap();
+            assert!(policy::matches(&service.expected, &raw));
+            let settled = read(&update.id).unwrap();
+            assert_eq!(settled.stage, "runtime-failure");
+            assert_eq!(
+                removable_updates(&update.service).unwrap(),
+                [update.id.clone()]
+            );
+            assert!(!fixture.running("original"));
+            // A later start changes nothing.
+            settle().await.unwrap();
+            assert_eq!(load(&update.service).unwrap().container, container);
         })
         .await;
 }
