@@ -7,7 +7,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 function registryProxy(lab, slow, held = () => false) {
-  return createServer((incoming, outgoing) => {
+  const server = createServer((incoming, outgoing) => {
     const upstream = request(
       {
         hostname: lab.registryHost ?? '127.0.0.1',
@@ -57,7 +57,13 @@ function registryProxy(lab, slow, held = () => false) {
       outgoing.end();
     });
     incoming.pipe(upstream);
-  }).listen(lab.registryPort, lab.registryBind ?? '127.0.0.1');
+  });
+  // Never close idle client connections. The lab pools them while synchronous
+  // docker builds and pushes block its event loop, so a socket closed here in
+  // the meantime would still be reused: "SocketError: other side closed".
+  // Clients close their own idle sockets.
+  server.keepAliveTimeout = 0;
+  return server.listen(lab.registryPort, lab.registryBind ?? '127.0.0.1');
 }
 
 if (process.argv[2] === 'serve')
@@ -78,22 +84,46 @@ const digest = (bytes) =>
   `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const imageType = 'application/vnd.oci.image.manifest.v1+json';
 const manifestTypes = `${imageType}, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json`;
+// Every lab registry request is content-addressed, opens a new upload or puts
+// the same manifest again, so a dropped connection is retried; its cause is
+// logged, since fetch only says "failed". HTTP errors are never retried.
+async function registryRequest(url, options) {
+  let response;
+  for (let attempt = 1; !response; attempt++) {
+    try {
+      response = await fetch(url, {
+        signal: AbortSignal.timeout(60000),
+        ...options,
+      });
+    } catch (error) {
+      const reason = `${new URL(url).pathname}: ${error.cause ?? error}`;
+      if (attempt === 3)
+        throw Error(`Lab registry request failed: ${reason}`, {
+          cause: error,
+        });
+      console.log(`Retrying lab registry request after ${reason}`);
+      await delay(2000 * attempt);
+    }
+  }
+  if (!response.ok)
+    throw Error(
+      `Lab registry HTTP ${response.status}: ${new URL(url).pathname}`,
+    );
+  return response;
+}
 /** Point the lab registry's `tag` at an image, as publication moves `latest`. */
 export async function tagFixture(lab, reference, tag) {
   const [name, hash] = reference.split('@');
   const base = `http://127.0.0.1:${lab.registryPort}/v2/${name.slice(name.indexOf('/') + 1)}/manifests`;
-  const source = await fetch(`${base}/${hash}`, {
+  const source = await registryRequest(`${base}/${hash}`, {
     headers: { Accept: manifestTypes },
-    signal: AbortSignal.timeout(60000),
   });
-  if (!source.ok) throw Error(`Lab registry HTTP ${source.status}: ${hash}`);
-  const target = await fetch(`${base}/${tag}`, {
+  const body = Buffer.from(await source.arrayBuffer());
+  await registryRequest(`${base}/${tag}`, {
     method: 'PUT',
     headers: { 'Content-Type': source.headers.get('content-type') },
-    body: Buffer.from(await source.arrayBuffer()),
-    signal: AbortSignal.timeout(60000),
+    body,
   });
-  if (!target.ok) throw Error(`Lab registry HTTP ${target.status}: ${tag}`);
 }
 // Registry-only content has never entered the Docker/BuildKit cache. This makes
 // slow-download exercise actual engine byte progress without pruning host data.
@@ -102,35 +132,9 @@ export async function downloadFixture(lab, reference) {
   const repository = name.slice(name.indexOf('/') + 1);
   const origin = `http://127.0.0.1:${lab.registryPort}`;
   const base = `${origin}/v2/${repository}`;
-  // Every request here is content-addressed or opens a new upload, so a dropped
-  // connection is retried; its cause is logged, since fetch only says "failed".
-  const checked = async (url, options) => {
-    let response;
-    for (let attempt = 1; !response; attempt++) {
-      try {
-        response = await fetch(url, {
-          signal: AbortSignal.timeout(60000),
-          ...options,
-        });
-      } catch (error) {
-        const reason = `${new URL(url).pathname}: ${error.cause ?? error}`;
-        if (attempt === 3)
-          throw Error(`Lab registry request failed: ${reason}`, {
-            cause: error,
-          });
-        console.log(`Retrying lab registry request after ${reason}`);
-        await delay(2000 * attempt);
-      }
-    }
-    if (!response.ok)
-      throw Error(
-        `Lab registry HTTP ${response.status}: ${new URL(url).pathname}`,
-      );
-    return response;
-  };
   const manifestAt = async (hash) =>
     (
-      await checked(`${base}/manifests/${hash}`, {
+      await registryRequest(`${base}/manifests/${hash}`, {
         headers: { Accept: manifestTypes },
       })
     ).json();
@@ -144,7 +148,7 @@ export async function downloadFixture(lab, reference) {
     manifest = await manifestAt(linux.digest);
   }
   const config = await (
-    await checked(`${base}/blobs/${manifest.config.digest}`)
+    await registryRequest(`${base}/blobs/${manifest.config.digest}`)
   ).json();
   const payload = randomBytes(8 * 1024 * 1024);
   const header = Buffer.alloc(512);
@@ -169,11 +173,13 @@ export async function downloadFixture(lab, reference) {
   const blob = gzipSync(tar);
   const upload = async (bytes) => {
     const hash = digest(bytes);
-    const begin = await checked(`${base}/blobs/uploads/`, { method: 'POST' });
+    const begin = await registryRequest(`${base}/blobs/uploads/`, {
+      method: 'POST',
+    });
     const location = new URL(begin.headers.get('location'), origin);
     const url = new URL(location.pathname + location.search, origin);
     url.searchParams.set('digest', hash);
-    await checked(url, {
+    await registryRequest(url, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/octet-stream' },
       body: bytes,
@@ -196,7 +202,7 @@ export async function downloadFixture(lab, reference) {
     size: blob.length,
   });
   const bytes = Buffer.from(JSON.stringify(manifest));
-  await checked(`${base}/manifests/download-fixture`, {
+  await registryRequest(`${base}/manifests/download-fixture`, {
     method: 'PUT',
     headers: { 'Content-Type': manifest.mediaType ?? imageType },
     body: bytes,
