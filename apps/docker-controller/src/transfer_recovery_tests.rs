@@ -52,13 +52,13 @@ fn journal(stage: &str, boundary: bool) -> Transfer {
             "layout":{"appdata":mount,"retained":[],"supplementary":[]},"source_identity":[1000,1000],
             "target_identity":[10001,10001],"aliases":[],"published":null,"automation":[],"compose":null,
             "inspection":{},"access":{},"changes":[],"settings":[],"transformations":{},"blockers":[],
-            "evidence_revision":"evidence","revision":"revision","created_at":0},
-        "source_running":true,"restart_disabled":true,"stopped":true,"snapshot":{"digest":"snapshot"},
+            "revision":"revision","created_at":0},
+        "source_running":true,"restart_disabled":true,"snapshot":{"digest":"snapshot"},
         "source_state":null,"qualification":null,
         "production":boundary.then(|| json!({"digest":"first","generation":"one"})),
         "intent":null,"replacement":boundary.then_some("replacement"),
         "boundary_at":boundary.then_some(100),"activated":boundary,"committed":false,
-        "completed":false,"declarations":{},"compose_mode":null,"created_at":0,"updated_at":0
+        "created_at":0,"updated_at":0
     }))
     .unwrap()
 }
@@ -94,7 +94,6 @@ async fn an_interrupted_start_copies_the_stopped_original_and_returns_it_on_fail
             .unwrap();
             let mut t = journal("approved", false);
             t.restart_disabled = false;
-            t.stopped = false;
             t.review.layout.appdata.source = root.join("appdata").to_string_lossy().into();
             write(&mut t).unwrap();
             docker.fault(Fault::JournalAfter("stopping"));
@@ -378,7 +377,7 @@ async fn completion_discards_the_snapshot_and_keeps_preserved_generations() {
                 std::fs::read_to_string(directory(KEY).join("generation-1/marker")).unwrap(),
                 "generation-1"
             );
-            assert!(read(KEY).unwrap().completed);
+            assert!(read(KEY).unwrap().completed());
             assert_eq!(load(KEY).unwrap().hold, None);
         })
         .await;

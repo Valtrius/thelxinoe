@@ -155,13 +155,13 @@ fn actions(t: &storage::Row, controller: &Value) -> Value {
     let stage = controller["stage"].as_str().unwrap_or("");
     let boundary = controller["boundary_at"].is_number();
     // An outcome the controller already reached leaves nothing to retry or recover.
-    let ended = matches!(stage, "complete" | "returned" | "cancelled" | "stale");
+    let ended = matches!(stage, "complete" | "returned" | "cancelled");
     json!({
         "approve": t.state == "review" && t.review["blockers"].as_array().is_none_or(Vec::is_empty),
         "cancel": t.state == "review" || (t.state == "queued" && matches!(stage, "" | "approved") && controller["source"]["restart_disabled"] != true),
         "retry": t.state == "failed" && t.replacement_id.is_some() && !ended,
         // Before the boundary the controller restores, or already restored, the original.
-        "restore": t.state == "failed" && !boundary && matches!(stage, "failed" | "restoring" | "stale" | "returned"),
+        "restore": t.state == "failed" && !boundary && matches!(stage, "failed" | "restoring" | "returned"),
         "recovery": matches!(t.state.as_str(), "failed" | "suspended") && boundary && controller["completed"] != true
             && !ended && stage != "recovering",
         "remove_original": t.state == "complete" && controller["source"]["removed"] != true,
@@ -505,7 +505,6 @@ async fn recyclarr_targets(
     plan: &Value,
     blockers: &mut Vec<String>,
 ) -> Result<Value> {
-    let configured = plan["inspection"]["recyclarr"].clone();
     let managers = super::storage::list(&state.db).await?;
     let mut targets = Vec::new();
     for imported in plan["recyclarr"]["targets"]
@@ -543,7 +542,6 @@ async fn recyclarr_targets(
         blockers
             .push("Recyclarr needs at least one configured Owned Radarr or Sonarr target".into());
     }
-    let _ = configured;
     Ok(json!(targets))
 }
 
@@ -992,22 +990,6 @@ async fn reconcile(state: &AppState, t: &storage::Row, status: &Value) -> Result
                     true
                 }
             }
-            ("stale", "queued" | "running") => {
-                storage::outcome(
-                    &state.db,
-                    t.id.clone(),
-                    "returned".into(),
-                    Some(format!(
-                        "{}; nothing changed",
-                        status["error"]
-                            .as_str()
-                            .unwrap_or("The reviewed deployment changed")
-                    )),
-                    None,
-                )
-                .await?;
-                true
-            }
             ("cancelled", "queued" | "running") => {
                 storage::outcome(&state.db, t.id.clone(), "cancelled".into(), None, None).await?;
                 true
@@ -1125,7 +1107,7 @@ async fn drive(state: &AppState, t: &storage::Row) -> Result<bool> {
             let started = controller_call(
                 state,
                 &format!("/transfers/{}/start", t.id),
-                Some(json!({"revision":t.review["plan"]["revision"],"declarations":t.declarations,"compose_mode":t.choices["compose_mode"]})),
+                Some(json!({"revision":t.review["plan"]["revision"],"compose_mode":t.choices["compose_mode"]})),
             )
             .await;
             match started {
