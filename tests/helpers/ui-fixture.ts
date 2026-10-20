@@ -1,6 +1,26 @@
-import type { Page } from '@playwright/test';
+import type { Page, WebSocketRoute } from '@playwright/test';
 import { current } from './versions';
 import type { RecyclarrConfiguration } from '../../frontend/src/lib/services/recyclarr-configuration';
+
+// Delivers server events to the page; install it before the page opens.
+export async function installServerEvents(page: Page) {
+  let socket: WebSocketRoute | undefined;
+  let id = 0;
+  await page.routeWebSocket(/\/api\/v1\/events(?:\?|$)/, (route) => {
+    socket = route;
+  });
+  await page.route('**/api/v1/auth/event-ticket', (route) =>
+    route.fulfill({
+      json: { ticket: 'layout', cursor: 0, epoch: 'layout', version: current },
+    }),
+  );
+  return {
+    connected: () => socket !== undefined,
+    send(kind: string, payload: unknown = {}) {
+      socket!.send(JSON.stringify({ id: ++id, kind, payload }));
+    },
+  };
+}
 
 // All requests stay in the browser. This fixture never uses a server account.
 export async function installUiFixture(

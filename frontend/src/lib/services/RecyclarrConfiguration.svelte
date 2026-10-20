@@ -1,13 +1,17 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { FileCode } from '@lucide/svelte';
   import { api } from '../api';
+  import { LatestRequest } from '../latest-request';
   import Button from '../ui/Button.svelte';
   import type {
     RecyclarrConfiguration,
     YamlFiles,
   } from './recyclarr-configuration';
-  let { provisionId } = $props<{ provisionId: string }>();
+  let { provisionId, revision = 0 } = $props<{
+    provisionId: string;
+    revision?: number;
+  }>();
   let configuration = $state<RecyclarrConfiguration | null>(null),
     error = $state(''),
     opening = $state(false);
@@ -21,7 +25,7 @@
   let Review = $state<
     (typeof import('./RecyclarrConfigurationReview.svelte'))['default'] | null
   >(null);
-  let alive = true;
+  const requests = new LatestRequest();
   let opener: HTMLElement | null = null;
   function close() {
     editor = false;
@@ -32,27 +36,26 @@
     void refresh();
   }
   async function refresh() {
+    const current = requests.begin();
     try {
       const result = await api<RecyclarrConfiguration>(
         '/admin/recyclarr/configuration',
       );
-      if (alive && !editor && !review) {
+      if (current() && !editor && !review) {
         configuration = result;
         error = '';
       }
     } catch (caught) {
-      if (alive) error = String(caught);
+      if (current()) error = String(caught);
     }
   }
-  onMount(() => {
-    void refresh();
-    const timer = setInterval(() => {
+  // Configuration saves and service connection changes bump the revision.
+  $effect(() => {
+    void revision;
+    untrack(() => {
       if (!editor && !review) void refresh();
-    }, 15000);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
+    });
+    return () => requests.invalidate();
   });
   async function open(
     mode: 'editor' | 'defaults' | 'candidate',

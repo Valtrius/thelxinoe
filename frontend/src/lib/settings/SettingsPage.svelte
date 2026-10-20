@@ -452,10 +452,12 @@
           workflow={route.workflow}
           onSelect={(service) => openSettings('services', service)}
           openSettings={(name) => openSettings(name)}
+          {revision}
         />{:catch caught}{@render failed(caught)}{/await}{/if}
     {#if section === 'retention'}{#await settingsPages.RetentionSettings()}{@render loading(
           'Loading settings',
         )}{:then { default: RetentionSettings }}<RetentionSettings
+          {revision}
         />{:catch caught}{@render failed(caught)}{/await}{/if}
     {#if section === 'retention'}{#await settingsPages.ManagerOwnership()}{@render loading(
           'Loading settings',

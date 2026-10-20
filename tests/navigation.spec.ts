@@ -1,7 +1,6 @@
 import { expect, test } from '@playwright/test';
-import { installUiFixture } from './helpers/ui-fixture';
+import { installServerEvents, installUiFixture } from './helpers/ui-fixture';
 import { responseGate } from './helpers/response-gate';
-import { current } from './helpers/versions';
 
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: 'ignoreErrors' });
@@ -404,17 +403,7 @@ test('the server alone removes a watched video from an auto-remove watchlist', a
   page,
 }) => {
   const fixture = await installUiFixture(page, { section: 'YouTube' });
-  let sendEvent: ((kind: string) => void) | undefined;
-  let eventId = 0;
-  await page.routeWebSocket(/\/api\/v1\/events(?:\?|$)/, (socket) => {
-    sendEvent = (kind) =>
-      socket.send(JSON.stringify({ id: ++eventId, kind, payload: {} }));
-  });
-  await page.route('**/api/v1/auth/event-ticket', (route) =>
-    route.fulfill({
-      json: { ticket: 'layout', cursor: 0, epoch: 'layout', version: current },
-    }),
-  );
+  const events = await installServerEvents(page);
   await page.route('**/api/v1/online/youtube', (route) =>
     route.fulfill({
       json: {
@@ -486,7 +475,7 @@ test('the server alone removes a watched video from an auto-remove watchlist', a
   );
   await page.clock.install();
   await page.goto('/#online/youtube/watchlists/1');
-  await expect.poll(() => Boolean(sendEvent)).toBe(true);
+  await expect.poll(events.connected).toBe(true);
   const row = page.locator(`[data-watchlist-video-id="${video.videoId}"]`);
   await row.hover();
   await row.getByRole('button', { name: 'Mark watched', exact: true }).click();
@@ -500,7 +489,7 @@ test('the server alone removes a watched video from an auto-remove watchlist', a
   await page.clock.runFor(8000);
   await expect(unwatch).toBeAttached();
   items = [];
-  sendEvent!('youtube.changed');
+  events.send('youtube.changed');
   await expect(row).toHaveCount(0);
   expect(fixture.writes.filter(({ method }) => method === 'DELETE')).toEqual(
     [],

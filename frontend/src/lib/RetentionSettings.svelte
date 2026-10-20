@@ -1,12 +1,14 @@
 <script lang="ts">
   import ContentSkeleton from './ui/ContentSkeleton.svelte';
-  import { onMount } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import { api } from './api';
+  import { LatestRequest } from './latest-request';
   import AutoDeletePolicy, {
     type Policy,
     type VideoUsage,
   } from './AutoDeletePolicy.svelte';
   import Button from './ui/Button.svelte';
+  let { revision = 0 } = $props<{ revision?: number }>();
   type Settings = {
     policies: Policy[];
     users: { id: string; username: string }[];
@@ -22,13 +24,13 @@
   let loaded = $state(false);
   let loading = $state(false);
   let error = $state('');
-  let active = false;
+  const requests = new LatestRequest();
   async function refresh() {
-    if (loading) return;
+    const current = requests.begin();
     loading = true;
     try {
       const result = await api<Settings>('/admin/retention');
-      if (!active) return;
+      if (!current()) return;
       if (!loaded) {
         policies = result.policies;
         users = result.users;
@@ -41,20 +43,17 @@
       };
       error = '';
     } catch (failure) {
-      if (active) error = String(failure);
+      if (current()) error = String(failure);
     } finally {
-      if (active) loading = false;
+      if (current()) loading = false;
     }
   }
-  onMount(() => {
-    active = true;
-    void refresh();
-    const timer = setInterval(() => void refresh(), 30_000);
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
+  // Retention and download events bump the settings revision.
+  $effect(() => {
+    void revision;
+    untrack(() => void refresh());
   });
+  onDestroy(() => requests.invalidate());
 </script>
 
 {#if error}

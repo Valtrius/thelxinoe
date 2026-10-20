@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { untrack } from 'svelte';
   import { api } from '../api';
+  import { LatestRequest } from '../latest-request';
   import RecyclarrConfiguration from './RecyclarrConfiguration.svelte';
   import AutoSaveForm from '../ui/AutoSaveForm.svelte';
   import FormField from '../ui/FormField.svelte';
@@ -9,6 +10,7 @@
   import Notice from '../ui/Notice.svelte';
   import { formControlClass } from '../ui/styles';
 
+  let { revision = 0 } = $props<{ revision?: number }>();
   type Snapshot = {
     settings: { provision_id: string; paused: boolean; hour: number } | null;
     runs: { id: string; state: string; error: string | null }[];
@@ -21,9 +23,13 @@
     loaded = $state(false),
     schedule = $state({ paused: false, hour: 4 });
   let feedbackRun = '';
+  const requests = new LatestRequest();
   async function refresh() {
+    const current = requests.begin();
     try {
-      snapshot = await api<Snapshot>('/admin/recyclarr');
+      const next = await api<Snapshot>('/admin/recyclarr');
+      if (!current()) return;
+      snapshot = next;
       loadError = '';
       if (!loaded && snapshot.settings) {
         schedule = {
@@ -43,7 +49,7 @@
             : 'Sync did not finish. Retry the sync.');
       }
     } catch (caught) {
-      loadError = String(caught);
+      if (current()) loadError = String(caught);
     }
   }
   async function sync() {
@@ -62,10 +68,11 @@
       error = String(caught);
     }
   }
-  onMount(() => {
-    void refresh();
-    const timer = setInterval(() => void refresh(), 4000);
-    return () => clearInterval(timer);
+  // Run, configuration and stack events bump the settings revision.
+  $effect(() => {
+    void revision;
+    untrack(() => void refresh());
+    return () => requests.invalidate();
   });
 </script>
 
@@ -83,7 +90,10 @@
       >{error || loadError}</Notice
     >{/if}
   {#if loaded && snapshot?.settings}
-    <RecyclarrConfiguration provisionId={snapshot.settings.provision_id} />
+    <RecyclarrConfiguration
+      provisionId={snapshot.settings.provision_id}
+      {revision}
+    />
     <AutoSaveForm
       value={schedule}
       label="Daily guide sync"

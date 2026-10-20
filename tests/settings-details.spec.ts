@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { installUiFixture } from './helpers/ui-fixture';
+import { installServerEvents, installUiFixture } from './helpers/ui-fixture';
 
 test('auto-delete policies save on change and Audit owns scheduled deletions and outcomes', async ({
   page,
@@ -233,6 +233,74 @@ test('auto-delete policies save on change and Audit owns scheduled deletions and
     writes.filter((w) => w.domain === 'movies').at(-1)?.value.trigger_users,
   ).toEqual(['alice', 'bob']);
   expect(fixture.errors).toEqual([]);
+});
+
+test('auto-delete usage and server tools refresh from server events instead of polling', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'retention',
+  });
+  const events = await installServerEvents(page);
+  let waiting = 1;
+  let retentionReads = 0;
+  await page.route('**/api/v1/admin/retention', (route) => {
+    retentionReads++;
+    return route.fulfill({
+      json: {
+        policies: [
+          {
+            domain: 'videos',
+            enabled: false,
+            grace_seconds: 86400,
+            exclude_specials: true,
+            trigger_users: [],
+            storage_limit_bytes: 100_000_000_000,
+          },
+        ],
+        items: [],
+        users: [],
+        video_usage: { unpinned_bytes: 0, pinned_bytes: 0, waiting },
+      },
+    });
+  });
+  let toolReads = 0;
+  await page.route('**/api/v1/admin/tools', (route) => {
+    toolReads++;
+    return route.fulfill({ json: { items: [], supported: false } });
+  });
+  await page.clock.install();
+  await page.goto('/');
+  await expect.poll(events.connected).toBe(true);
+  const usage = page.getByRole('status').filter({ hasText: 'waiting for' });
+  await expect(usage).toContainText('1 download waiting');
+  waiting = 2;
+  events.send('online.download.changed');
+  await expect(usage).toContainText('2 downloads waiting');
+  // Every refresh so far came from an event; nothing polls.
+  const reads = retentionReads;
+  await page.clock.runFor(65_000);
+  expect(retentionReads).toBe(reads);
+  waiting = 0;
+  events.send('retention.changed');
+  await expect(usage).toHaveCount(0);
+
+  await page
+    .getByRole('navigation', { name: 'Settings navigation' })
+    .getByRole('link', { name: 'Server', exact: true })
+    .click();
+  await expect(
+    page.getByRole('region', { name: 'Server tools' }),
+  ).toBeVisible();
+  await expect.poll(() => toolReads).toBeGreaterThan(0);
+  const tools = toolReads;
+  await page.clock.runFor(35_000);
+  expect(toolReads).toBe(tools);
+  events.send('tools.changed');
+  await expect.poll(() => toolReads).toBe(tools + 1);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
 });
 
 test('administration overview shows loading until health and devices arrive and on refresh', async ({

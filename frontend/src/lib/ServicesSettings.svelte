@@ -52,12 +52,14 @@
     workflow,
     onSelect,
     openSettings,
+    revision = 0,
   } = $props<{
     timeFormat?: '12h' | '24h';
     selected?: string;
     workflow?: 'setup' | 'updates';
     onSelect?: (kind: string) => void;
     openSettings?: (name: string) => void;
+    revision?: number;
   }>();
 
   import {
@@ -1708,6 +1710,7 @@
           </div>{/if}
       {/if}
       {#if selectedKind === 'recyclarr' && item?.state === 'complete' && operational('recyclarr')}<RecyclarrSettings
+          {revision}
         />{/if}
       {#if operational(selectedKind) && (connected || (definition.role === 'job' && live)) && !setupActive(selectedKind)}
         <section
