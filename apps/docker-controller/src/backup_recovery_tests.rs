@@ -49,15 +49,17 @@ async fn startup_recovers_early_restore_failure_and_accepts_the_same_archive() {
                 let snapshot = work(&key).join("archive-source");
                 std::fs::create_dir_all(snapshot.join("server")).unwrap();
                 std::fs::write(snapshot.join("server/marker"), "valid-archive").unwrap();
-                let manifest = Manifest {
+                let mut manifest = serde_json::to_value(Manifest {
                     format: 1,
                     created_at: 1,
                     deployment: d.clone(),
                     services: vec![],
                     components,
                     excluded: vec![],
-                    compose: json!({}),
-                };
+                })
+                .unwrap();
+                // Archives from 0.0.3 and earlier also hold Compose pins that nothing reads.
+                manifest["compose"] = json!({"name":"thelxinoe","services":{}});
                 store::write_json(&snapshot.join("manifest.json"), &manifest).unwrap();
                 let archive = archive_root().join(format!("{key}.age"));
                 let passphrase = "early restore regression passphrase";
@@ -304,7 +306,6 @@ async fn backups_leave_held_services_running_and_restore_every_owned_service_by_
             store::write_json(&store::root().join("desired-state.json"), &d).unwrap();
             store::write_json(&store::root().join("generations/1/desired-state.json"), &d)
                 .unwrap();
-            store::write_json(&store::root().join("compose.override.yaml"), &json!({})).unwrap();
             updates::start("original").await.unwrap();
             for (key, container, kind, origin, hold) in [
                 (INSTALLED, "installed", "prowlarr", "installed", Value::Null),

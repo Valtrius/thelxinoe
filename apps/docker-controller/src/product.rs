@@ -839,15 +839,10 @@ fn next_generation() -> Result<u64> {
         + 1)
 }
 fn commit(d: &Deployment) -> Result<()> {
-    let project = d.controller["Config"]["Labels"]["com.docker.compose.project"]
-        .as_str()
-        .unwrap_or("thelxinoe");
-    let compose = json!({"name":project,"services":{"server":compose_service(&d.server)?,"controller":compose_service(&d.controller)?},"networks":{"media":{"external":true,"name":d.network}}});
     persisted(store::commit_generation(
         &store::root(),
         d.generation,
         &serde_json::to_value(d).map_err(|_| unavailable())?,
-        &compose,
     ))?;
     retire_obsolete(d);
     Ok(())
@@ -2394,7 +2389,7 @@ mod tests {
                     "version":"test","server":server("old-server",&format!("sha256:{}", "1".repeat(64)),&[]),
                     "controller":controller("old-controller",&format!("sha256:{}", "1".repeat(64))),"network":"media",
                     "media_source":"/srv/media","appdata_source":storage})).unwrap();
-                store::commit_generation(&root, 1, &serde_json::to_value(&accepted).unwrap(), &json!({}))
+                store::commit_generation(&root, 1, &serde_json::to_value(&accepted).unwrap())
                     .unwrap();
                 // Compose recreated both from a rebuild and an edited .env.
                 fixture.insert("controller", controller("controller", &format!("sha256:{}", "2".repeat(64))));
@@ -2475,7 +2470,6 @@ mod tests {
             &store::root(),
             generation,
             &serde_json::to_value(&d).unwrap(),
-            &json!({}),
         )
         .unwrap();
     }
@@ -2624,7 +2618,6 @@ mod tests {
                     &store::root(),
                     1,
                     &serde_json::to_value(&accepted_deployment).unwrap(),
-                    &json!({}),
                 )
                 .unwrap();
                 fixture.insert("server", container("server", "/server"));

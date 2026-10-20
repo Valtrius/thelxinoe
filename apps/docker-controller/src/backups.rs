@@ -37,7 +37,6 @@ struct Manifest {
     components: Vec<Component>,
     #[serde(default)]
     excluded: Vec<Exclusion>,
-    compose: Value,
 }
 #[derive(Serialize, Deserialize)]
 struct Record {
@@ -485,7 +484,6 @@ pub(super) async fn create(
             let manifest = Manifest {
                 format: 1,
                 created_at: r.created_at,
-                compose: persisted(store::read(&store::root().join("compose.override.yaml")))?,
                 deployment: d,
                 services,
                 components: r.components.clone(),

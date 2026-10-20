@@ -544,36 +544,12 @@ async function scenario(uid, gid, full) {
       ).toBe(identity);
       checked('product workers validate copied state using configured IDs');
     }
-    // Use the real accepted deployment export to recreate the server and controller.
-    for (const name of ['compose.yaml', 'compose.override.yaml'])
-      writeFileSync(
-        `${root}/${name}`,
-        docker(
-          'exec',
-          `${project}-controller`,
-          'cat',
-          `/var/lib/thelxinoe/deployment/${name}`,
-        ),
-      );
-    docker(
-      'compose',
-      '-p',
-      project,
-      '-f',
-      `${root}/compose.yaml`,
-      '-f',
-      `${root}/compose.override.yaml`,
-      'up',
-      '-d',
-      '--force-recreate',
-      '--wait',
-      '--wait-timeout',
-      '180',
-    );
+    // The controller adopts recreated containers as the same deployment.
+    compose('up', '-d', '--force-recreate', '--wait', '--wait-timeout', '180');
     expect(docker('exec', `${project}-server`, 'id', '-u')).toBe(String(uid));
     expect(docker('exec', `${project}-server`, 'id', '-g')).toBe(String(gid));
     expect((await api('admin/stack')).deployment_id).toBe(deployment);
-    checked('accepted Compose recreation preserves IDs and data');
+    checked('Compose recreation preserves IDs and data');
     result.passed = true;
   } catch (error) {
     result.error = error.message;

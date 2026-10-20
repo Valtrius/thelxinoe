@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test';
 import { join, posix } from 'node:path';
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { writeFileSync, rmSync } from 'node:fs';
 import { docker, save, envelope } from './build.mjs';
 import { until, refreshDownloads, compose, latestImage } from './lab.mjs';
 import { tagFixture } from './registry.mjs';
@@ -199,35 +199,25 @@ export async function serverScenarios({
     commandWhenIdle(`/admin/product-update/${update.id}/activate`, {
       confirm: true,
     });
+  // `docker compose up --force-recreate` with the shipped file, once the
+  // controller points the local `latest` tags at the installed images.
   const recreate = async (version) => {
-    const directory = join(lab.root, 'accepted');
-    mkdirSync(directory, { recursive: true });
-    for (const file of [
-      'compose.yaml',
-      'compose.override.yaml',
-      'desired-state.json',
-    ])
-      writeFileSync(
-        join(directory, file),
-        docker(
-          'exec',
-          component('controller'),
-          'cat',
-          '/var/lib/thelxinoe/deployment/' + file,
-        ),
+    for (const part of ['server', 'controller']) {
+      const [installed] = JSON.parse(docker('inspect', component(part)));
+      await until(
+        () =>
+          docker(
+            'image',
+            'inspect',
+            '--format',
+            '{{.Id}}',
+            latestImage(lab, part),
+          ) === installed.Image,
       );
+    }
     const before = controller('/stack/product').generation;
-    save(join(directory, 'compose.yaml'), {
-      name: lab.id,
-      services: {
-        server: { image: 'thelxinoe-server:stale-bootstrap' },
-        controller: { image: 'thelxinoe-controller:stale-bootstrap' },
-      },
-    });
-    docker(
-      'compose',
-      '--project-directory',
-      directory,
+    compose(
+      lab,
       'up',
       '-d',
       '--force-recreate',
@@ -428,8 +418,8 @@ export async function serverScenarios({
   await scenario(
     'The shipped Compose deployment keeps an in-app update',
     async () => {
-      // Earlier scenarios recreated the containers from the controller's
-      // accepted files. Return to the shipped file, as `docker compose up` does.
+      // The restore left containers the controller created. Return to ones
+      // Compose creates from the shipped file.
       const generation = controller('/stack/product').generation;
       compose(
         lab,
@@ -811,76 +801,6 @@ export async function serverScenarios({
       // The server reports the restarted controller once it observes it again.
       await until(preflightRetired);
       expect((await api('/health')).version).toBe(lab.next);
-    },
-  );
-  await scenario(
-    'Accepted Compose pins survive actual container recreation',
-    async () => {
-      const directory = join(lab.root, 'accepted');
-      mkdirSync(directory, { recursive: true });
-      for (const file of [
-        'compose.yaml',
-        'compose.override.yaml',
-        'desired-state.json',
-      ])
-        writeFileSync(
-          join(directory, file),
-          docker(
-            'exec',
-            component('controller'),
-            'cat',
-            '/var/lib/thelxinoe/deployment/' + file,
-          ),
-        );
-      const before = JSON.parse(
-        docker(
-          'exec',
-          component('controller'),
-          'cat',
-          '/var/lib/thelxinoe/deployment/desired-state.json',
-        ),
-      );
-      save(join(directory, 'compose.yaml'), {
-        name: lab.id,
-        services: {
-          server: { image: 'thelxinoe-server:stale-bootstrap' },
-          controller: { image: 'thelxinoe-controller:stale-bootstrap' },
-        },
-      });
-      docker(
-        'compose',
-        '--project-directory',
-        directory,
-        'up',
-        '-d',
-        '--force-recreate',
-        '--no-build',
-        '--pull',
-        'never',
-      );
-      await until(
-        async () => (await api('/health')).version === lab.next,
-        startupTimeout,
-      );
-      await until(() => controller('/health').version === lab.next);
-      const after = JSON.parse(
-        docker(
-          'exec',
-          component('controller'),
-          'cat',
-          '/var/lib/thelxinoe/deployment/desired-state.json',
-        ),
-      );
-      expect(after.generation).toBeGreaterThan(before.generation);
-      expect(after.server.Image).toBe(before.server.Image);
-      expect(after.controller.Image).toBe(before.controller.Image);
-      expect(after.server.Id).not.toBe(before.server.Id);
-      await expect(page.locator('.page-header .connection')).toHaveText(
-        'Connected',
-        {
-          timeout: 45000,
-        },
-      );
     },
   );
   await scenario(
