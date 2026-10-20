@@ -184,7 +184,9 @@ fn frozen_schema(version: u32) -> String {
 }
 
 /// What a migrated database must share with a fresh one. Whitespace and the
-/// order columns were added in do not count.
+/// order columns were added in do not count. CHECK constraints live only in a
+/// table's SQL text, which migrations may format differently, so a migration
+/// that changes one needs its own test.
 fn shape(c: &Connection) -> Result<Vec<String>> {
     let objects = c
         .prepare("SELECT type,name,tbl_name,COALESCE(sql,'') FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name")?
@@ -197,12 +199,14 @@ fn shape(c: &Connection) -> Result<Vec<String>> {
             shape.push(format!("{kind} {name} on {table}: {sql}"));
             continue;
         }
-        let strict: bool = c.query_row(
-            "SELECT strict FROM pragma_table_list WHERE schema='main' AND name=?1",
+        let (strict, without_rowid): (bool, bool) = c.query_row(
+            "SELECT strict,wr FROM pragma_table_list WHERE schema='main' AND name=?1",
             [&name],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        shape.push(format!("table {name} strict={strict}"));
+        shape.push(format!(
+            "table {name} strict={strict} without_rowid={without_rowid}"
+        ));
         let mut details = c
             .prepare("SELECT name,type,\"notnull\",dflt_value,pk FROM pragma_table_xinfo(?1)")?
             .query_map([&name], |r| {
@@ -230,6 +234,37 @@ fn shape(c: &Connection) -> Result<Vec<String>> {
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?,
         );
+        // Indexes behind UNIQUE and PRIMARY KEY constraints have generated names, so
+        // they are compared by what they cover. Named indexes also match by SQL above.
+        let indexes = c
+            .prepare("SELECT name,\"unique\",origin,partial FROM pragma_index_list(?1)")?
+            .query_map([&name], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, bool>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, bool>(3)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (index, unique, origin, partial) in indexes {
+            let columns = c
+                .prepare("SELECT COALESCE(name,'<expression>'),\"desc\",coll FROM pragma_index_xinfo(?1) WHERE key=1 ORDER BY seqno")?
+                .query_map([&index], |r| {
+                    Ok(format!(
+                        "{}{} {}",
+                        r.get::<_, String>(0)?,
+                        if r.get::<_, bool>(1)? { " desc" } else { "" },
+                        r.get::<_, String>(2)?
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let label = if origin == "c" { index } else { origin };
+            details.push(format!(
+                "  index {label} unique={unique} partial={partial} ({})",
+                columns.join(", ")
+            ));
+        }
         details.sort();
         shape.extend(details);
     }
@@ -241,8 +276,30 @@ fn shape(c: &Connection) -> Result<Vec<String>> {
 fn current_schema_matches_its_frozen_copy() {
     assert!(
         frozen_schema(SCHEMA_VERSION) == SCHEMA.replace("\r\n", "\n"),
-        "schema.sql differs from schemas/{SCHEMA_VERSION}.sql. If schema {SCHEMA_VERSION} shipped in a release, bump SCHEMA_VERSION, add its upgrade to MIGRATIONS and copy schema.sql to the new schemas/<version>.sql. Before its first release, update schemas/{SCHEMA_VERSION}.sql instead."
+        "schema.sql differs from schemas/{SCHEMA_VERSION}.sql. If schema {SCHEMA_VERSION} shipped in a release (schemas/SHA256SUMS lists it), bump SCHEMA_VERSION, add its upgrade to MIGRATIONS and copy schema.sql to the new schemas/<version>.sql. Before its first release, update schemas/{SCHEMA_VERSION}.sql instead."
     );
+}
+
+// Releasing a schema pins its digest (`pnpm run version:sync`); editing it fails here.
+#[test]
+fn released_schemas_never_change() {
+    use sha2::{Digest, Sha256};
+    let sums = include_str!("../schemas/SHA256SUMS").replace("\r\n", "\n");
+    let mut released = Vec::new();
+    for line in sums.lines().filter(|line| !line.is_empty()) {
+        let (digest, file) = line.split_once("  ").expect("<sha256>  <version>.sql");
+        let version: u32 = file.trim_end_matches(".sql").parse().unwrap();
+        let actual = Sha256::digest(frozen_schema(version).as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            actual, digest,
+            "schemas/{file} shipped in a release and must not change; add the next schema version instead"
+        );
+        released.push(version);
+    }
+    assert!(released.contains(&MIGRATION_BASE));
 }
 
 // Every released schema still supported upgrades to what a fresh database gets.

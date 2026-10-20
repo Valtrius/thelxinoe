@@ -117,6 +117,18 @@ if (command === 'check') {
   if (requested !== version || !/^\d+\.\d+\.\d+$/.test(requested))
     throw Error(`Release tag must be ${version}`);
   execFileSync(process.execPath, ['scripts/version.mjs'], { stdio: 'inherit' });
+  // CI checks the pinned digest; the release only has to pin the schema it ships.
+  const schema = readFileSync('crates/database/src/lib.rs', 'utf8').match(
+    /pub const SCHEMA_VERSION: u32 = (\d+)/,
+  )[1];
+  if (
+    !readFileSync('crates/database/schemas/SHA256SUMS', 'utf8')
+      .split(/\r?\n/)
+      .some((line) => line.endsWith(`  ${schema}.sql`))
+  )
+    throw Error(
+      `Database schema ${schema} ships in this release; pin it with pnpm run version:sync`,
+    );
 } else if (command === 'desktop') {
   if (process.platform !== 'win32')
     throw Error('Release desktop builds require Windows');

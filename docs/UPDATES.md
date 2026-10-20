@@ -197,8 +197,10 @@ Authenticode/SmartScreen signing; no Authenticode certificate is configured here
 
 1. Change `[workspace.package].version` in `Cargo.toml`, run
    `pnpm run version:sync`, review the change and merge it to `develop`. Released
-   database schemas are frozen; a schema change ships with its migration (see
-   `AGENTS.md`), and the manifest lets every schema from `MIGRATION_BASE` update.
+   database schemas are frozen: `version:sync` pins the shipped schema's digest in
+   `crates/database/schemas/SHA256SUMS`, and the release check requires it. A schema
+   change ships with its migration (see `AGENTS.md`), and the manifest lets every
+   schema from `MIGRATION_BASE` update.
 2. Push the `X.Y.Z` tag on that commit once **Build and verify** passed for its
    tree: the commit's `develop` push run (pushes to `develop` are never cancelled),
    or a manual run of a commit with the identical tree, such as an up-to-date
