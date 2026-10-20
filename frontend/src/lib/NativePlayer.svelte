@@ -2,6 +2,7 @@
   import SectionHeading from './ui/SectionHeading.svelte';
   import Notice from './ui/Notice.svelte';
   import FormField from './ui/FormField.svelte';
+  import SeekRange from './SeekRange.svelte';
   import { formControlClass } from './ui/styles';
   import { onDestroy, untrack } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
@@ -172,16 +173,14 @@
             ? 'Live'
             : `${time(view.position)} / ${time(view.duration)}`}</span
         >{#if view.duration > 0}<FormField
-            >Position<input
+            >Position<SeekRange
               class={formControlClass}
               aria-label="Native playback position"
-              type="range"
               min="0"
               max={view.duration}
               step="0.1"
-              value={view.position}
-              onchange={(e) =>
-                void command('seek', Number(e.currentTarget.value))}
+              position={view.position}
+              onseek={(to) => void command('seek', to)}
             /></FormField
           >{/if}<FormField
           >Volume<input
