@@ -200,11 +200,16 @@ jobs:
       packages: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
       - uses: ./.github/actions/setup-rust
+      # Compiled before any secret exists, so no build script ever runs beside the signing key.
+      - name: Build the release verifier
+        run: cargo build --locked -p thelxinoe-releases --bin verify-release
       - uses: actions/download-artifact@v4
         with:
           name: signed-desktop
@@ -224,11 +229,13 @@ jobs:
           import {writeFileSync, readdirSync, unlinkSync} from 'node:fs';
           import {execFileSync} from 'node:child_process';
           const key = process.env.RUNNER_TEMP + '/manifest-signing.pem';
-          if (!process.env.MANIFEST_SIGNING_PRIVATE_KEY) throw Error('Missing manifest signing key');
-          writeFileSync(key, process.env.MANIFEST_SIGNING_PRIVATE_KEY, {mode:0o600});
+          // Children (docker, cargo, release scripts) get the key file only, never the secret.
+          const {MANIFEST_SIGNING_PRIVATE_KEY: secret, ...env} = process.env;
+          if (!secret) throw Error('Missing manifest signing key');
+          writeFileSync(key, secret, {mode:0o600});
           try {
             const file = 'release-desktop/' + readdirSync('release-desktop').find(n => n.endsWith('.exe'));
-            execFileSync(process.execPath, ['scripts/release.mjs','assemble','release-assets',file,file+'.sig','release-desktop/updater.pub',key,'ghcr.io/valtrius/thelxinoe-server@'+process.env.SERVER_DIGEST,'ghcr.io/valtrius/thelxinoe-controller@'+process.env.CONTROLLER_DIGEST], {stdio:'inherit'});
+            execFileSync(process.execPath, ['scripts/release.mjs','assemble','release-assets',file,file+'.sig','release-desktop/updater.pub',key,'ghcr.io/valtrius/thelxinoe-server@'+process.env.SERVER_DIGEST,'ghcr.io/valtrius/thelxinoe-controller@'+process.env.CONTROLLER_DIGEST], {stdio:'inherit', env});
           } finally {unlinkSync(key);}
           NODE
       - run: node scripts/release.mjs draft release-assets

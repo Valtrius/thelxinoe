@@ -31,10 +31,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.tag }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
       - uses: ./.github/actions/setup-rust
+      # Compiled before the write token is in the environment.
+      - name: Build the release verifier
+        run: cargo build --locked -p thelxinoe-releases --bin verify-release
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
