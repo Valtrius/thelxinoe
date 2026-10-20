@@ -313,18 +313,11 @@ pub async fn principal(state: &AppState, headers: &HeaderMap) -> Result<Principa
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "));
-    let cookie = headers
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| {
-            s.split(';')
-                .map(str::trim)
-                .find_map(|s| s.strip_prefix("thelxinoe_session="))
-        });
+    let cookie = crate::cookies::get(headers, &crate::cookies::Cookie::Session);
     let (raw, transport) = if let Some(token) = bearer {
         (token, "device")
-    } else if let Some(token) = cookie {
-        (token, "web")
+    } else if let Some(token) = &cookie {
+        (token.as_str(), "web")
     } else {
         return Err(ApiError::session_expired());
     };
@@ -342,14 +335,6 @@ pub async fn require(
         return Err(ApiError::forbidden());
     }
     Ok(p)
-}
-/// The cookie lasts as long as any session can; the server decides when the session ends.
-pub fn cookie(raw: &str, secure: bool) -> String {
-    format!(
-        "thelxinoe_session={raw}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}{}",
-        thelxinoe_auth::lifetime::MAX,
-        if secure { "; Secure" } else { "" }
-    )
 }
 
 #[cfg(test)]

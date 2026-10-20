@@ -270,7 +270,12 @@ async fn start(
         .url();
     let mut response = Json(json!({"url":url.to_string()})).into_response();
     // Only this one-use binding crosses the identity-provider redirect; the app session remains Strict.
-    response.headers_mut().append(header::SET_COOKIE,format!("thelxinoe_oidc={binding}; HttpOnly; SameSite=Lax; Path=/api/v1/auth/oidc; Max-Age=300{}",if context.secure{"; Secure"}else{""}).parse().unwrap());
+    cookies::set(
+        response.headers_mut(),
+        &Cookie::Oidc,
+        &binding,
+        context.secure,
+    );
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
@@ -291,7 +296,7 @@ async fn complete(
     let a = storage::attempt(&state.db, digest(&input.state), "oidc".into(), false)
         .await
         .map_err(failure)?;
-    let binding = cookie_value(headers, "thelxinoe_oidc").ok_or_else(ApiError::unauthorized)?;
+    let binding = cookies::get(headers, &Cookie::Oidc).ok_or_else(ApiError::unauthorized)?;
     if a.binding.as_deref() != Some(&digest(&binding)) {
         return Err(ApiError::unauthorized());
     }
@@ -455,7 +460,9 @@ async fn callback(
     headers: HeaderMap,
     Query(input): Query<Callback>,
 ) -> Response {
-    let result = match security::request_context(&state.config, &headers, peer) {
+    let context = security::request_context(&state.config, &headers, peer);
+    let secure = context.as_ref().is_ok_and(|c| c.secure);
+    let result = match context {
         Ok(context) => complete(&state, &headers, &input, context.secure).await,
         Err(e) => Err(e),
     };
@@ -467,12 +474,7 @@ async fn callback(
             axum::response::Redirect::to(&format!("/?{}", url.query().unwrap())).into_response()
         }
     };
-    response.headers_mut().append(
-        header::SET_COOKIE,
-        "thelxinoe_oidc=; HttpOnly; SameSite=Lax; Path=/api/v1/auth/oidc; Max-Age=0"
-            .parse()
-            .unwrap(),
-    );
+    cookies::clear(response.headers_mut(), &Cookie::Oidc, secure);
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());

@@ -61,6 +61,20 @@ async fn password_change_rejects_a_previously_verified_login_and_revokes_an_issu
     );
 }
 
+// A second session cookie, as a sibling host can plant, must not decide whose session is used.
+#[tokio::test]
+async fn a_session_cookie_sent_twice_is_refused() {
+    let (_temp, state, cookie) = fixture().await;
+    let me = async |cookie: &str| {
+        call(&state, "/api/v1/auth/me", "GET", json!({}), cookie)
+            .await
+            .0
+    };
+    assert_eq!(me(&cookie).await, StatusCode::OK);
+    let planted = format!("{cookie}; thelxinoe_session={}", "0".repeat(64));
+    assert_eq!(me(&planted).await, StatusCode::UNAUTHORIZED);
+}
+
 #[tokio::test]
 async fn closed_setup_never_waits_for_password_hashing_capacity() {
     let (_temp, state, cookie) = fixture().await;

@@ -12,6 +12,7 @@ mod auto_delete;
 mod avatars;
 pub mod backups;
 pub mod config;
+mod cookies;
 pub mod error;
 mod grants;
 mod history;

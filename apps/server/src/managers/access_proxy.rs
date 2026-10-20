@@ -83,22 +83,17 @@ fn request_headers(
         output.remove(header::AUTHORIZATION);
     }
     let prefix = upstream_cookie_prefix(s);
-    let cookies = headers
-        .get_all(header::COOKIE)
-        .iter()
-        .filter_map(|h| h.to_str().ok())
-        .flat_map(|h| h.split(';'))
-        .filter_map(|part| part.trim().split_once('='))
+    let forwarded = crate::cookies::pairs(headers)
         .filter_map(|(name, value)| {
             name.strip_prefix(&prefix)
                 .map(|name| format!("{name}={value}"))
         })
         .collect::<Vec<_>>()
         .join("; ");
-    if !cookies.is_empty() {
+    if !forwarded.is_empty() {
         output.insert(
             header::COOKIE,
-            cookies
+            forwarded
                 .parse()
                 .map_err(|_| ApiError::bad("Invalid service cookie"))?,
         );

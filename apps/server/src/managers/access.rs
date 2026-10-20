@@ -5,6 +5,7 @@ mod proxy;
 mod storage;
 
 use super::*;
+use crate::cookies::{self, Cookie};
 use axum::{
     Extension,
     extract::Request,
@@ -297,27 +298,17 @@ pub(super) async fn verify_endpoint(
         .ok_or_else(|| failures::identity(&c.kind, &Value::Null))
 }
 
-fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
-    let mut values = headers
-        .get_all(header::COOKIE)
-        .iter()
-        .filter_map(|h| h.to_str().ok())
-        .flat_map(|h| h.split(';'))
-        .filter_map(|part| part.trim().split_once('='))
-        .filter(|(key, _)| *key == name)
-        .map(|(_, value)| value.to_owned());
-    let first = values.next()?;
-    values.next().is_none().then_some(first)
-}
-
 fn resource(s: &Destination, purpose: &str) -> String {
     format!(
         "service-{purpose}:{}:{}:{}",
         s.id, s.access_revision, s.container
     )
 }
-fn grant_cookie(s: &Destination) -> String {
-    format!("thelxinoe_service_{}", s.id)
+fn grant_cookie(s: &Destination) -> Cookie<'_> {
+    Cookie::Service {
+        id: &s.id,
+        mount: mount(&s.kind, &s.url_base),
+    }
 }
 fn upstream_cookie_prefix(s: &Destination) -> String {
     format!("thelxinoe_native_{}_", s.id)
@@ -352,8 +343,8 @@ async fn authorize(
 ) -> Result<Authorization> {
     // A native API key or Authorization header never authenticates the gateway.
     let candidates = [
-        cookie(headers, "thelxinoe_session").map(Authorization::Session),
-        cookie(headers, &grant_cookie(s)).map(Authorization::Grant),
+        cookies::get(headers, &Cookie::Session).map(Authorization::Session),
+        cookies::get(headers, &grant_cookie(s)).map(Authorization::Grant),
     ];
     let mut denied = ApiError::unauthorized();
     for auth in candidates.into_iter().flatten() {
@@ -597,16 +588,11 @@ async fn exchange(
     let token = crate::grants::issue(&state, &p, &resource(&s, "browser"), 8 * 60 * 60).await?;
     let base = mount(&s.kind, &s.url_base);
     let mut response = Json(json!({"path":format!("{base}/")})).into_response();
-    response.headers_mut().insert(
-        header::SET_COOKIE,
-        format!(
-            "{}={token}; HttpOnly; SameSite=Strict; Path={}/; Max-Age=28800{}",
-            grant_cookie(&s),
-            base,
-            if context.secure { "; Secure" } else { "" }
-        )
-        .parse()
-        .unwrap(),
+    cookies::set(
+        response.headers_mut(),
+        &grant_cookie(&s),
+        &token,
+        context.secure,
     );
     response
         .headers_mut()

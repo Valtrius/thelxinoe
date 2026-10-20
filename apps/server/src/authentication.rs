@@ -6,6 +6,7 @@ mod storage;
 use crate::{
     AppState,
     accounts::{self, Credentials},
+    cookies::{self, Cookie},
     error::{ApiError, Result},
     security,
 };
@@ -84,26 +85,6 @@ fn failure(error: anyhow::Error) -> ApiError {
 }
 pub(crate) async fn require_fresh(state: &AppState, p: &Principal) -> Result<()> {
     storage::fresh(&state.db, p.clone()).await.map_err(failure)
-}
-fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
-    headers
-        .get(header::COOKIE)?
-        .to_str()
-        .ok()?
-        .split(';')
-        .find_map(|part| {
-            part.trim()
-                .split_once('=')
-                .filter(|(key, _)| *key == name)
-                .map(|(_, value)| value.to_owned())
-        })
-}
-pub(crate) fn remember_cookie(raw: &str, secure: bool) -> String {
-    format!(
-        "thelxinoe_remember={raw}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}{}",
-        thelxinoe_auth::lifetime::MAX,
-        if secure { "; Secure" } else { "" }
-    )
 }
 fn label(value: &str) -> Result<String> {
     let v = value.trim();
@@ -223,7 +204,7 @@ pub(crate) async fn password_login(
         let trust = c
             .remember_token
             .clone()
-            .or_else(|| cookie_value(headers, "thelxinoe_remember"));
+            .or_else(|| cookies::get(headers, &Cookie::Remember));
         if let Some(raw) = trust.filter(|t| t.len() == 64)
             && let Some(device) =
                 storage::remembered(&state.db, account.id.clone(), digest(&raw)).await?

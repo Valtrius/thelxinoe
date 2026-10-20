@@ -3,11 +3,12 @@ mod storage;
 
 use crate::{
     AppState,
+    cookies::{self, Cookie},
     error::{ApiError, Result},
     security,
 };
 use axum::{
-    Json,
+    Extension, Json,
     extract::{ConnectInfo, Path, State},
     http::{HeaderMap, header},
     response::{IntoResponse, Response},
@@ -81,17 +82,10 @@ pub(crate) async fn respond_session(
     }
     let mut response = Json(body).into_response();
     if !device {
-        response.headers_mut().insert(
-            header::SET_COOKIE,
-            security::cookie(&raw, secure).parse().unwrap(),
-        );
+        let headers = response.headers_mut();
+        cookies::set(headers, &Cookie::Session, &raw, secure);
         if let Some(remember) = remember {
-            response.headers_mut().append(
-                header::SET_COOKIE,
-                crate::authentication::remember_cookie(remember, secure)
-                    .parse()
-                    .unwrap(),
-            );
+            cookies::set(headers, &Cookie::Remember, remember, secure);
         }
     }
     response
@@ -167,15 +161,10 @@ pub async fn login(
     Json(c): Json<Credentials>,
 ) -> Result<Response> {
     let context = security::request_context(&state.config, &headers, peer)?;
-    let remembered = c.remember_token.clone().or_else(|| {
-        headers
-            .get(header::COOKIE)?
-            .to_str()
-            .ok()?
-            .split(';')
-            .find_map(|part| part.trim().strip_prefix("thelxinoe_remember="))
-            .map(str::to_owned)
-    });
+    let remembered = c
+        .remember_token
+        .clone()
+        .or_else(|| cookies::get(&headers, &Cookie::Remember));
     let user = check_credentials(
         &state,
         context.address,
@@ -324,17 +313,16 @@ pub async fn me(State(state): State<AppState>, headers: HeaderMap) -> Result<Jso
         json!({"user":crate::avatars::profile(&state, user).await?}),
     ))
 }
-pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
+pub async fn logout(
+    State(state): State<AppState>,
+    Extension(context): Extension<security::RequestContext>,
+    headers: HeaderMap,
+) -> Result<Response> {
     let p = security::principal(&state, &headers).await?;
     storage::logout(&state.db, p).await?;
     state.notify_events();
     let mut response = Json(json!({"ok":true})).into_response();
-    response.headers_mut().insert(
-        header::SET_COOKIE,
-        "thelxinoe_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
-            .parse()
-            .unwrap(),
-    );
+    cookies::clear(response.headers_mut(), &Cookie::Session, context.secure);
     Ok(response)
 }
 pub async fn sessions(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
