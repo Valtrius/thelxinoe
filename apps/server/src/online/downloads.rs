@@ -183,6 +183,11 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
 
 /// Free disk space a download needs to start.
 const START_SPACE: u64 = 3 * 1024 * 1024 * 1024;
+/// A download is bounded by its progress, not its length, so slow links still finish:
+/// yt-dlp reports progress every second while bytes arrive, and reports its retries.
+const STALLED: Duration = Duration::from_secs(300);
+/// A safety bound only: a 2 GB download at about 400 kbit/s.
+const LONGEST: Duration = Duration::from_secs(12 * 3600);
 /// A download waiting for space is tried again after this long even when its capacity looks
 /// unchanged, for changes `capacity` can't see.
 const RECHECK: Duration = Duration::from_secs(300);
@@ -358,7 +363,8 @@ async fn download(
             state.tools.temporary()?,
             &bundle.yt_dlp.path,
             &args,
-            Duration::from_secs(1800),
+            STALLED,
+            LONGEST,
             1024 * 1024,
             Some(progress_tx),
         );

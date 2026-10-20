@@ -1,8 +1,11 @@
 //! Bounded child execution with a fresh configuration environment and tree cleanup.
 use anyhow::{Context, ensure};
 use process_wrap::tokio::*;
-use std::{ffi::OsString, path::Path, process::Stdio, time::Duration};
-use tokio::io::{AsyncRead, AsyncReadExt};
+use std::{ffi::OsString, path::Path, process::Stdio, sync::Mutex, time::Duration};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt},
+    time::Instant,
+};
 
 /// A managed tool's process tree, ended when its owner drops it. process-wrap's
 /// kill-on-drop only signals the leader, so on Unix a still-running tool's whole process
@@ -104,7 +107,8 @@ pub(super) async fn run(
     timeout: Duration,
     output_limit: usize,
 ) -> anyhow::Result<Output> {
-    run_progress(home, executable, args, timeout, output_limit, None).await
+    // A short run is bounded by its length alone.
+    run_progress(home, executable, args, timeout, timeout, output_limit, None).await
 }
 
 async fn collect_progress(
@@ -142,10 +146,41 @@ async fn collect_progress(
     }
 }
 
+/// A tool's output pipe, noting when it last delivered anything.
+struct Active<'a, R>(R, &'a Mutex<Instant>);
+impl<R: AsyncRead + Unpin> AsyncRead for Active<'_, R> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buffer.filled().len();
+        let result = std::pin::Pin::new(&mut self.0).poll_read(context, buffer);
+        if buffer.filled().len() > before {
+            *self.1.lock().unwrap() = Instant::now();
+        }
+        result
+    }
+}
+
+/// Resolves once the tool has written nothing for `idle`.
+async fn stalled(active: &Mutex<Instant>, idle: Duration) {
+    loop {
+        let deadline = *active.lock().unwrap() + idle;
+        if Instant::now() >= deadline {
+            return;
+        }
+        tokio::time::sleep_until(deadline).await;
+    }
+}
+
+/// Runs a tool that ends once it writes nothing for `idle`, and at the latest after
+/// `timeout`. A tool that keeps reporting progress may run up to that bound.
 pub(super) async fn run_progress(
     home: tempfile::TempDir,
     executable: &Path,
     args: &[OsString],
+    idle: Duration,
     timeout: Duration,
     output_limit: usize,
     progress: Option<tokio::sync::mpsc::Sender<String>>,
@@ -159,12 +194,18 @@ pub(super) async fn run_progress(
     .context("Could not start managed online tool")?;
     let stdout = child.stdout().take().context("Missing tool stdout")?;
     let stderr = child.stderr().take().context("Missing tool stderr")?;
+    let active = Mutex::new(Instant::now());
     let result = tokio::time::timeout(timeout, async {
-        tokio::try_join!(
-            async { Ok::<_, anyhow::Error>(child.wait().await?) },
-            collect_progress(stdout, output_limit, progress),
-            collect(stderr, 256 * 1024),
-        )
+        tokio::select! {
+            result = async {
+                tokio::try_join!(
+                    async { Ok::<_, anyhow::Error>(child.wait().await?) },
+                    collect_progress(Active(stdout, &active), output_limit, progress),
+                    collect(Active(stderr, &active), 256 * 1024),
+                )
+            } => result,
+            () = stalled(&active, idle) => Err(anyhow::anyhow!("Online tool stopped making progress")),
+        }
     })
     .await;
     match result {
@@ -341,6 +382,36 @@ mod tests {
         assert_eq!(exited, WAIT_OBJECT_0, "Descendant escaped the Windows job");
         let failure = result.err().expect("Output overflow must stop the tool");
         assert!(failure.to_string().contains("output exceeded"), "{failure}");
+    }
+    // A download is bounded by its progress, not its length: a tool that keeps writing
+    // outlives the idle limit, and a silent one ends once it passes, long before the total.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn output_extends_a_run_and_silence_ends_it() {
+        async fn shell(script: &str) -> anyhow::Result<Output> {
+            run_progress(
+                tempfile::tempdir().unwrap(),
+                Path::new("/bin/sh"),
+                &["-c".into(), script.into()],
+                Duration::from_secs(2),
+                Duration::from_secs(60),
+                1024,
+                None,
+            )
+            .await
+        }
+        // Four seconds of output every quarter second.
+        let output =
+            shell("for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do echo $i; sleep 0.25; done")
+                .await
+                .unwrap();
+        assert!(output.success);
+        let started = std::time::Instant::now();
+        let Err(silent) = shell("echo started; sleep 30").await else {
+            panic!("A silent tool must be stopped");
+        };
+        assert!(silent.to_string().contains("progress"), "{silent}");
+        assert!(started.elapsed() < Duration::from_secs(20));
     }
     #[cfg(unix)]
     #[tokio::test]
