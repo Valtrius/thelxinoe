@@ -418,6 +418,42 @@ async fn backups_leave_held_services_running_and_restore_every_owned_service_by_
             assert!(fixture.running("held"));
             assert_eq!(fixture.started_at("held"), held_started);
             assert_eq!(plaintext(&key), Vec::<String>::new());
+            // A service update since the backup replaced the container and image; its
+            // configuration restores into the updated service, whose record stays current.
+            let source = fixture.root().join("transferred");
+            let updated = json!({"Id":"transferred-v2","Name":"/transferred","Image":"sha256:image2",
+                "Config":{"Image":"image2","Labels":{"app.thelxinoe.deployment":"deployment","app.thelxinoe.managed-id":TRANSFERRED}},
+                "HostConfig":{},"Mounts":[{"Type":"bind","Source":source,"Destination":"/config","RW":true}],
+                "State":{"Running":true,"StartedAt":"2026-10-02T00:00:00Z"},
+                "NetworkSettings":{"Networks":{"media":{}}}});
+            fixture.insert("transferred-v2", updated.clone());
+            assert!(
+                request(reqwest::Method::DELETE, "/containers/transferred?force=true", None)
+                    .await
+                    .is_ok()
+            );
+            let mut service = load(TRANSFERRED).unwrap();
+            (service.container, service.image) = ("transferred-v2".into(), "image2".into());
+            service.expected = policy::fingerprint(&updated);
+            save(&service).unwrap();
+            std::fs::write(source.join("marker"), "written-after-update").unwrap();
+            assert_eq!(
+                restore_with(Some(vec![TRANSFERRED.to_owned()])).await.unwrap().0["stage"],
+                "restore-queued"
+            );
+            finished("restored").await;
+            // Captured, restored, then written by the restarted service in this fixture.
+            assert_eq!(fixture.copies(), 3 + 6 + 2 + 2);
+            assert_ne!(
+                std::fs::read_to_string(source.join("marker")).unwrap(),
+                "written-after-update"
+            );
+            let current = load(TRANSFERRED).unwrap();
+            assert_eq!(
+                (current.container.as_str(), current.image.as_str()),
+                ("transferred-v2", "image2")
+            );
+            assert!(fixture.running("transferred-v2"));
         })
         .await;
 }

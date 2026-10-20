@@ -620,24 +620,15 @@ pub(super) async fn restore(
                 .join(manifest.deployment.generation.to_string())
                 .join("desired-state.json"),
         ))?;
-        // Archives from before a service's record was rewritten without the
-        // short ID alias still describe the same layout.
-        let layout = |services: &[Managed]| -> Result<Value> {
-            let mut value = serde_json::to_value(services).map_err(|_| unavailable())?;
-            for service in value.as_array_mut().into_iter().flatten() {
-                service["expected"] =
-                    policy::recorded(&service["expected"], service["container"].as_str());
-            }
-            Ok(value)
-        };
+        // Services update, install and go away between backups, so only the components
+        // being restored are matched below; the live registry stays authoritative for them.
         if manifest.format != 1
             || manifest.deployment.id != d.id
             || serde_json::to_value(&manifest.deployment).map_err(|_| unavailable())?
                 != serde_json::to_value(&accepted).map_err(|_| unavailable())?
-            || layout(&manifest.services)? != layout(&current_services)?
         {
             return Err(conflict(
-                "Restore requires a previously accepted deployment and the same managed-service layout",
+                "Restore requires a backup of a previously accepted deployment",
             ));
         }
         let selected = selection(&manifest, &current_services, chosen.as_deref());
@@ -652,11 +643,10 @@ pub(super) async fn restore(
                     "A selected service can't be backed up or restored now; check it in Media services",
                 )
             })?;
-            if (key != "server" && archived.container != live.container)
-                || archived.source != live.source
-            {
+            // Updates replace a service's container; its configuration stays where it was.
+            if archived.source != live.source {
                 return Err(conflict(
-                    "Restore requires a previously accepted deployment and the same managed-service layout",
+                    "This service's configuration moved since the backup; it can't be restored over",
                 ));
             }
         }
@@ -734,14 +724,6 @@ pub(super) async fn restore(
                     &format!("r{i}"),
                 )
                 .await?;
-            }
-            // The compatible descriptor is authenticated in the archive and remains the accepted generation.
-            for s in manifest
-                .services
-                .iter()
-                .filter(|s| r.components.iter().any(|c| c.key == s.id))
-            {
-                save(s)?;
             }
             if change_release {
                 r.stage = "release-handoff".into();
