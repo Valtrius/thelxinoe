@@ -176,9 +176,28 @@ impl Github<'_> {
                 previous,
             ));
         }
-        mark_latest(&mut packages)?;
+        mark_settled(&mut packages, Utc::now())?;
         Ok(packages)
     }
+}
+
+/// Days a commit stays on the default branch before it is recommended, so a pushed mistake
+/// (or a push with a stolen token) is usually reverted before any desktop installs it.
+const COMMIT_SETTLE_DAYS: i64 = 7;
+/// Recommend the newest commit that has settled, or the oldest one known when none has.
+fn mark_settled(packages: &mut [Package], now: DateTime<Utc>) -> AppResult<()> {
+    mark_latest(packages)?;
+    let settled = packages
+        .iter()
+        .position(|p| {
+            timestamp(&p.published_at)
+                .is_some_and(|at| now - at >= chrono::Duration::days(COMMIT_SETTLE_DAYS))
+        })
+        .unwrap_or(packages.len().saturating_sub(1));
+    for (index, package) in packages.iter_mut().enumerate() {
+        package.recommended = index == settled;
+    }
+    Ok(())
 }
 
 fn commit_url(tool: ToolId, sha: &str) -> AppResult<String> {
@@ -504,6 +523,33 @@ mod tests {
     }
     fn parse(tool: ToolId, values: &[Value], previous: &[Package]) -> AppResult<Vec<Package>> {
         releases(tool, &serde_json::to_vec(values).unwrap(), previous)
+    }
+    #[test]
+    fn commits_are_recommended_only_once_they_settled() {
+        let now = timestamp("2026-10-20T00:00:00Z").unwrap();
+        let commit = |day: &str| {
+            package(
+                ToolId::Thumbfast,
+                day,
+                format!("https://codeload.github.com/po5/thumbfast/zip/{day}"),
+                ("a".repeat(64), 1),
+                "zip",
+                &format!("2026-10-{day}T00:00:00Z"),
+                &[],
+            )
+        };
+        let mut packages = vec![commit("19"), commit("15"), commit("10"), commit("01")];
+        mark_settled(&mut packages, now).unwrap();
+        let recommended: Vec<_> = packages
+            .iter()
+            .filter(|p| p.recommended)
+            .map(|p| p.version.as_str())
+            .collect();
+        assert_eq!(recommended, ["10"]);
+        // Without a settled commit, the oldest one known is offered.
+        let mut recent = vec![commit("19"), commit("18")];
+        mark_settled(&mut recent, now).unwrap();
+        assert!(recent[1].recommended && !recent[0].recommended);
     }
     #[test]
     fn releases_exclude_previews_and_mutable_tags_and_sort_by_publication() {

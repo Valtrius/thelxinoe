@@ -24,7 +24,13 @@ pub(super) fn select_package(
     p.source = ToolSource::Managed;
     if first {
         p.enabled = tool.plugin();
-        p.update_policy = UpdatePolicy::Automatic;
+        // A commit-tracked plugin has no reviewed releases: its updates are offered, never
+        // installed automatically.
+        p.update_policy = if providers::provider(tool).uses_commits() {
+            UpdatePolicy::Notify
+        } else {
+            UpdatePolicy::Automatic
+        };
     }
     Ok(())
 }
@@ -585,6 +591,21 @@ mod tests {
             manager.state().tools[&ToolId::Mpv].active.as_deref(),
             Some("first")
         );
+    }
+
+    #[tokio::test]
+    async fn commit_tracked_plugins_offer_their_updates_by_default() {
+        let directory = tempfile::tempdir().unwrap();
+        let manager = ToolManager::new(directory.path().to_path_buf(), None).unwrap();
+        for (tool, policy) in [
+            (ToolId::Thumbfast, UpdatePolicy::Notify),
+            (ToolId::SubSelect, UpdatePolicy::Notify),
+            (ToolId::Uosc, UpdatePolicy::Automatic),
+        ] {
+            fake_install(&manager, tool, tool.key());
+            manager.activate(tool, tool.key()).await.unwrap();
+            assert_eq!(manager.state().tools[&tool].update_policy, policy);
+        }
     }
 
     #[tokio::test]
