@@ -6,18 +6,24 @@ on:
         description: Existing reviewed draft tag (X.Y.Z)
         required: true
         type: string
+  # The final, reviewer-approved job of Assemble release draft.
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
 
 permissions:
   contents: read
 
-concurrency:
-  group: release-publish
-  cancel-in-progress: false
-
+# Holds write tokens: third-party actions are pinned to commits.
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: release-publish
+    concurrency:
+      group: release-publish
+      cancel-in-progress: false
     permissions:
       contents: write
       packages: write
@@ -29,8 +35,8 @@ jobs:
         with:
           node-version: 24
       - uses: ./.github/actions/setup-rust
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

@@ -77,6 +77,24 @@ if (process.argv[2] === 'serve')
 const digest = (bytes) =>
   `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const imageType = 'application/vnd.oci.image.manifest.v1+json';
+const manifestTypes = `${imageType}, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json`;
+/** Point the lab registry's `tag` at an image, as publication moves `latest`. */
+export async function tagFixture(lab, reference, tag) {
+  const [name, hash] = reference.split('@');
+  const base = `http://127.0.0.1:${lab.registryPort}/v2/${name.slice(name.indexOf('/') + 1)}/manifests`;
+  const source = await fetch(`${base}/${hash}`, {
+    headers: { Accept: manifestTypes },
+    signal: AbortSignal.timeout(60000),
+  });
+  if (!source.ok) throw Error(`Lab registry HTTP ${source.status}: ${hash}`);
+  const target = await fetch(`${base}/${tag}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': source.headers.get('content-type') },
+    body: Buffer.from(await source.arrayBuffer()),
+    signal: AbortSignal.timeout(60000),
+  });
+  if (!target.ok) throw Error(`Lab registry HTTP ${target.status}: ${tag}`);
+}
 // Registry-only content has never entered the Docker/BuildKit cache. This makes
 // slow-download exercise actual engine byte progress without pruning host data.
 export async function downloadFixture(lab, reference) {
@@ -84,11 +102,26 @@ export async function downloadFixture(lab, reference) {
   const repository = name.slice(name.indexOf('/') + 1);
   const origin = `http://127.0.0.1:${lab.registryPort}`;
   const base = `${origin}/v2/${repository}`;
+  // Every request here is content-addressed or opens a new upload, so a dropped
+  // connection is retried; its cause is logged, since fetch only says "failed".
   const checked = async (url, options) => {
-    const response = await fetch(url, {
-      signal: AbortSignal.timeout(60000),
-      ...options,
-    });
+    let response;
+    for (let attempt = 1; !response; attempt++) {
+      try {
+        response = await fetch(url, {
+          signal: AbortSignal.timeout(60000),
+          ...options,
+        });
+      } catch (error) {
+        const reason = `${new URL(url).pathname}: ${error.cause ?? error}`;
+        if (attempt === 3)
+          throw Error(`Lab registry request failed: ${reason}`, {
+            cause: error,
+          });
+        console.log(`Retrying lab registry request after ${reason}`);
+        await delay(2000 * attempt);
+      }
+    }
     if (!response.ok)
       throw Error(
         `Lab registry HTTP ${response.status}: ${new URL(url).pathname}`,
@@ -98,9 +131,7 @@ export async function downloadFixture(lab, reference) {
   const manifestAt = async (hash) =>
     (
       await checked(`${base}/manifests/${hash}`, {
-        headers: {
-          Accept: `${imageType}, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json`,
-        },
+        headers: { Accept: manifestTypes },
       })
     ).json();
   let manifest = await manifestAt(source);

@@ -450,11 +450,13 @@ export function envelope(lab, version, images) {
   const image = {
     reference: `example.invalid/update-lab@sha256:${'a'.repeat(64)}`,
   };
-  const schema = Number(
-    readFileSync(join(repository, 'crates/database/src/lib.rs'), 'utf8').match(
-      /SCHEMA_VERSION: u32 = (\d+)/,
-    )[1],
+  const database = readFileSync(
+    join(repository, 'crates/database/src/lib.rs'),
+    'utf8',
   );
+  const schema = Number(database.match(/SCHEMA_VERSION: u32 = (\d+)/)[1]);
+  // Like a release, accept every schema this source migrates (a published base).
+  const base = Number(database.match(/MIGRATION_BASE: u32 = (\d+)/)[1]);
   const core = readFileSync(join(repository, 'crates/core/src/lib.rs'), 'utf8');
   // Client APIs this release's server accepts; its desktop speaks the maximum.
   const api = {
@@ -472,7 +474,7 @@ export function envelope(lab, version, images) {
     windows_x64: { url: `${lab.publisher}/releases/${version}/setup.exe` },
     api,
     migration: {
-      from: { min: schema, max: schema },
+      from: { min: base, max: schema },
       target: schema,
       recovery: 'full-state-restore',
       recovery_protocol: 1,

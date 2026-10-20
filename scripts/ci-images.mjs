@@ -100,7 +100,12 @@ export async function pullFixtureImage(reference) {
           `Image staging failed: ${image} (${category}); see .local/ci-image-staging.json`,
           { cause: error },
         );
-      await delay(1000 * 3 ** (attempt - 1));
+      // Parallel CI runs share registry quotas; seconds rarely outlast a 429.
+      await delay(
+        category === 'rate-limit'
+          ? 20000 * 2 ** (attempt - 1)
+          : 1000 * 3 ** (attempt - 1),
+      );
     }
   }
 }

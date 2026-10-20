@@ -1,3 +1,4 @@
+# Release jobs holding signing secrets use this too: actions are pinned to commits.
 name: Set up pinned Rust
 description: Install the repository toolchain and restore its build cache
 runs:
@@ -6,8 +7,8 @@ runs:
     - id: version
       shell: bash
       run: node --input-type=module -e "import fs from 'node:fs'; const version=fs.readFileSync('rust-toolchain.toml','utf8').match(/channel = \"([^\"]+)\"/)[1]; fs.appendFileSync(process.env.GITHUB_OUTPUT,'toolchain='+version+'\n');"
-    - uses: dtolnay/rust-toolchain@master
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
       with:
         toolchain: ${{ steps.version.outputs.toolchain }}
         components: rustfmt, clippy
-    - uses: Swatinem/rust-cache@v2
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2

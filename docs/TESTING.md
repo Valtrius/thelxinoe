@@ -71,6 +71,12 @@ UID/GID deployments with real Linux file permissions, managed-service updates,
 a transfer from another identity, product validation and saved Compose recreation. It removes its
 disposable containers/volumes and writes `.local/container-identity-result.json`.
 Use `--built` with current `thelxinoe-service-{server,controller}:local` images.
+CI does not run it yet: it reads `RepoDigests` of locally built images, which Docker
+Engine's classic image store leaves empty, so a Linux lane needs a registry push first.
+The managed-stack and service-update scripts in the table below are manual too. They
+expect a prepared `compose.managed.test.yaml` stack at `https://localhost:24443`
+(fixed project, ports and image tags) and depend on each other's results; CI covers
+service update preflight and commit in `test-service-connections.mjs`.
 
 ## Browser fixtures
 

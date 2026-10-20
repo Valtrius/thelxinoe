@@ -2,13 +2,59 @@ import { expect } from '@playwright/test';
 import { join, posix } from 'node:path';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { docker, save, envelope } from './build.mjs';
-import { until, refreshDownloads } from './lab.mjs';
+import { until, refreshDownloads, compose, latestImage } from './lab.mjs';
+import { tagFixture } from './registry.mjs';
 import {
   budgets,
   serverToolsReady,
   waitForServerTools,
   waitForState,
 } from '../ci-readiness.mjs';
+
+/** After an in-app update to `version`, `docker compose up -d`, and `pull`
+ * once publication moved `latest` there, keep the installed containers. */
+export async function keepsRelease(lab, version, health) {
+  const containers = () =>
+    Object.fromEntries(
+      ['server', 'controller'].map((part) => {
+        const [container] = JSON.parse(docker('inspect', `${lab.id}-${part}`));
+        return [
+          part,
+          {
+            id: container.Id,
+            image: container.Image,
+            version:
+              container.Config.Labels['org.opencontainers.image.version'],
+          },
+        ];
+      }),
+    );
+  const installed = containers();
+  for (const part of ['server', 'controller']) {
+    expect(installed[part].version).toBe(version);
+    // The controller points the local `latest` tags at the installed images.
+    expect(
+      docker('image', 'inspect', '--format', '{{.Id}}', latestImage(lab, part)),
+    ).toBe(installed[part].image);
+  }
+  const up = () =>
+    compose(
+      lab,
+      'up',
+      '-d',
+      '--wait',
+      '--wait-timeout',
+      String(budgets.startup / 1000),
+    );
+  up();
+  expect(containers()).toEqual(installed);
+  for (const part of ['server', 'controller'])
+    await tagFixture(lab, lab.images[version][part].reference, 'latest');
+  compose(lab, 'pull');
+  up();
+  expect(containers()).toEqual(installed);
+  expect((await health()).version).toBe(version);
+}
 
 export async function serverScenarios({
   lab,
@@ -373,6 +419,50 @@ export async function serverScenarios({
         window_start: 0,
         window_end: 0,
       });
+    },
+  );
+  // After the automatic scenario: a restored release is never installed
+  // automatically again.
+  await scenario(
+    'The shipped Compose deployment keeps an in-app update',
+    async () => {
+      // Earlier scenarios recreated the containers from the controller's
+      // accepted files. Return to the shipped file, as `docker compose up` does.
+      const generation = controller('/stack/product').generation;
+      compose(
+        lab,
+        'up',
+        '-d',
+        '--force-recreate',
+        '--wait',
+        '--wait-timeout',
+        String(startupTimeout / 1000),
+      );
+      await until(
+        async () => (await api('/health')).version === lab.base,
+        startupTimeout,
+      );
+      await until(() => controller('/stack/product').generation > generation);
+      await mode('candidate');
+      const update = await ready();
+      await activate(update);
+      await stage(update.id, 'committed');
+      expect(controller('/health').version).toBe(lab.next);
+      await keepsRelease(lab, lab.next, () => api('/health'));
+      await commandWhenIdle(`/admin/product-update/${update.id}/recover`, {
+        confirm: true,
+      });
+      await stage(update.id, 'restored');
+      expect((await api('/health')).version).toBe(lab.base);
+      // The controller points the local `latest` tags back at the restored
+      // release; the lab registry follows as publication would.
+      for (const part of ['server', 'controller']) {
+        const reference = lab.images[lab.base][part].reference;
+        const id = (image) =>
+          docker('image', 'inspect', '--format', '{{.Id}}', image);
+        await until(() => id(latestImage(lab, part)) === id(reference));
+        await tagFixture(lab, reference, 'latest');
+      }
     },
   );
   await scenario(
