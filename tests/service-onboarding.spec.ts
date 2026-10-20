@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type Request } from '@playwright/test';
 import { installUiFixture } from './helpers/ui-fixture';
 
 async function installClock(page: Page) {
@@ -132,9 +132,19 @@ test('connection actions spin locally, survive polling, and show errors in their
   let finish!: () => void;
   let fail = false;
   const reads: string[] = [];
+  let pendingReads = 0;
+  const read = (request: Request) =>
+    request.method() === 'GET' && request.url().includes('/admin/');
   page.on('request', (request) => {
-    if (request.method() === 'GET' && request.url().includes('/admin/'))
-      reads.push(request.url());
+    if (!read(request)) return;
+    reads.push(request.url());
+    pendingReads += 1;
+  });
+  page.on('requestfinished', (request) => {
+    if (read(request)) pendingReads -= 1;
+  });
+  page.on('requestfailed', (request) => {
+    if (read(request)) pendingReads -= 1;
   });
   await page.route('**/api/v1/admin/service-connections', async (route) => {
     if (route.request().method() === 'GET')
@@ -171,6 +181,15 @@ test('connection actions spin locally, survive polling, and show errors in their
   await expect(
     page.getByText('Fixture indexer', { exact: true }),
   ).toBeVisible();
+  // Pausing fires the services poll once more, and its refresh issues its
+  // reads one after another. Count from when all of them have finished.
+  await expect
+    .poll(async () => {
+      const seen = reads.length;
+      await page.waitForTimeout(500);
+      return pendingReads === 0 && reads.length === seen;
+    })
+    .toBe(true);
   const before = reads.length;
   const button = row.getByRole('button', { name: 'Disconnect', exact: true });
   const bounds = await button.boundingBox();

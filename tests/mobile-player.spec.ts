@@ -247,6 +247,13 @@ for (const route of ['home', 'online/youtube'])
     const player = page.getByRole('region', { name: 'Media player' });
     await expect(player).toHaveCSS('transform', 'none');
     const edge = (await page.locator('.player-frame').boundingBox())!.y;
+    // Samples are one frame apart, and a loaded runner skips frames, so a
+    // transition at full speed can end or start between two samples and read
+    // as a jump. Slowed down, consecutive frames stay a fraction of a pixel
+    // apart while a real jump keeps its size.
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send('Animation.enable');
+    await cdp.send('Animation.setPlaybackRate', { playbackRate: 0.1 });
     await page.evaluate(() => {
       const samples: { open: boolean; top: number; edge?: number }[] = [];
       Object.assign(window, { pageEdge: samples });
