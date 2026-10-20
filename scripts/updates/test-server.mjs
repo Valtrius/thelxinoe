@@ -454,11 +454,14 @@ export async function serverScenarios({
       });
       await stage(update.id, 'restored');
       expect((await api('/health')).version).toBe(lab.base);
-      // Older controllers leave `latest` on the restored-from release.
+      // The controller points the local `latest` tags back at the restored
+      // release; the lab registry follows as publication would.
       for (const part of ['server', 'controller']) {
         const reference = lab.images[lab.base][part].reference;
+        const id = (image) =>
+          docker('image', 'inspect', '--format', '{{.Id}}', image);
+        await until(() => id(latestImage(lab, part)) === id(reference));
         await tagFixture(lab, reference, 'latest');
-        docker('tag', reference, latestImage(lab, part));
       }
     },
   );

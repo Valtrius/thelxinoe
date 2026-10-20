@@ -102,11 +102,26 @@ export async function downloadFixture(lab, reference) {
   const repository = name.slice(name.indexOf('/') + 1);
   const origin = `http://127.0.0.1:${lab.registryPort}`;
   const base = `${origin}/v2/${repository}`;
+  // Every request here is content-addressed or opens a new upload, so a dropped
+  // connection is retried; its cause is logged, since fetch only says "failed".
   const checked = async (url, options) => {
-    const response = await fetch(url, {
-      signal: AbortSignal.timeout(60000),
-      ...options,
-    });
+    let response;
+    for (let attempt = 1; !response; attempt++) {
+      try {
+        response = await fetch(url, {
+          signal: AbortSignal.timeout(60000),
+          ...options,
+        });
+      } catch (error) {
+        const reason = `${new URL(url).pathname}: ${error.cause ?? error}`;
+        if (attempt === 3)
+          throw Error(`Lab registry request failed: ${reason}`, {
+            cause: error,
+          });
+        console.log(`Retrying lab registry request after ${reason}`);
+        await delay(2000 * attempt);
+      }
+    }
     if (!response.ok)
       throw Error(
         `Lab registry HTTP ${response.status}: ${new URL(url).pathname}`,

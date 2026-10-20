@@ -111,7 +111,10 @@ try {
     report.passed = true;
   }
 } catch (error) {
-  report.error = error.stack ?? String(error);
+  // Network errors such as `fetch failed` explain themselves only in `cause`.
+  report.error = [error.stack ?? String(error), error.cause?.stack]
+    .filter(Boolean)
+    .join('\nCaused by: ');
   process.exitCode = 1;
   console.error(report.error);
 } finally {
