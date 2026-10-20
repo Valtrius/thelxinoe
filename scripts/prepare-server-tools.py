@@ -1,15 +1,34 @@
 """Build and qualify the offline seed using the same package path as the server."""
+import http.client
 import importlib.util
 import json
 import shutil
 from pathlib import Path
 import sys
+import time
 
 sys.dont_write_bytecode = True
 source = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("package", source / "apps/server/src/tools/package.py")
 package = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(package)
+download = package.acquire
+
+
+def acquire(root, value):
+    """Every image build fetches all pinned artifacts; ride out brief outages.
+    Digest and size failures raise RuntimeError and are never retried."""
+    for attempt in range(1, 5):
+        try:
+            return download(root, value)
+        except (OSError, EOFError, http.client.HTTPException) as error:
+            if attempt == 4:
+                raise
+            print(f"Retrying {value['url']} after {error!r}", file=sys.stderr, flush=True)
+            time.sleep(10 * attempt)
+
+
+package.acquire = acquire
 destination = Path(sys.argv[1])
 destination.mkdir(parents=True, exist_ok=True)
 package.CACHE_ROOT = destination / "catalog"
