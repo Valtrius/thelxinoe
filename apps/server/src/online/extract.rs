@@ -1,8 +1,5 @@
 //! Public extraction never receives provider credentials or browser state.
 
-#[path = "../storage/online/extract.rs"]
-mod storage;
-
 use super::{
     network::{self, Family},
     process, sync, tools,
@@ -10,53 +7,14 @@ use super::{
 use crate::{
     AppState,
     error::{ApiError, Result},
-    security,
 };
-use axum::{
-    Json,
-    extract::{Path, State},
-    http::HeaderMap,
-};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{ffi::OsString, future::Future, time::Duration};
 
 /// Extraction usually takes one to five seconds; a viewer will not wait minutes.
 pub(super) const EXTRACTION: Duration = Duration::from_secs(30);
 
-pub async fn inspect(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-) -> Result<Json<Value>> {
-    let user = security::principal(&state, &headers).await?.user.id;
-    if !sync::identifier(&id, 11) {
-        return Err(ApiError::bad("Invalid YouTube video"));
-    }
-    let video = id.clone();
-    let owned = storage::inspect(&state.db, user, video).await?;
-    if !owned {
-        return Err(ApiError::not_found());
-    }
-    let metadata = match metadata(&state, &id).await {
-        Ok((value, _)) => value,
-        Err(error)
-            if error.1 == "extractor_authentication_required"
-                || error.1 == "network_blocked"
-                || error.1 == "extraction_failed"
-                || error.1 == "unavailable" =>
-        {
-            return Ok(Json(json!({"state":error.1})));
-        }
-        Err(error) => return Err(error),
-    };
-    Ok(Json(
-        json!({"state":"available","duration":metadata["duration"],"live":metadata["is_live"].as_bool().unwrap_or(false),"format_count":metadata["formats"].as_array().map_or(0,Vec::len)}),
-    ))
-}
 /// Signed media addresses only work from the returned address family.
-pub(super) async fn metadata(state: &AppState, id: &str) -> Result<(Value, Family)> {
-    with_metadata(state, id, |value, _| std::future::ready(Ok(value))).await
-}
 pub(super) async fn with_metadata<T, F, Fut>(
     state: &AppState,
     id: &str,

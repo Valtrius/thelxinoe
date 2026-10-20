@@ -245,10 +245,6 @@ pub fn router(state: AppState) -> Router<AppState> {
                 .delete(downloads::remove),
         )
         .route(
-            "/api/v1/online/youtube/videos/{id}/extract",
-            post(extract::inspect),
-        )
-        .route(
             "/api/v1/online/youtube/videos/{id}",
             axum::routing::put(feed::edit),
         )
