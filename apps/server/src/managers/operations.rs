@@ -407,6 +407,13 @@ pub(super) async fn execute_locked(
     for proof in &proofs {
         recheck(proof).await?;
     }
+    // Read-only checks a busy or briefly unreachable manager can fail run while the
+    // operation is still pending, so a later pass can try again; nothing has changed yet.
+    complete_manager_scope(state, &current).await?;
+    for claim in current.iter().flat_map(|file| &file.claims) {
+        let s = service(state, &claim.service_id).await?;
+        manager_idle(&Connection::open(state, &s).await?).await?;
+    }
     let k = key.clone();
     storage::execute_locked_write_media_operations(k, &state.db).await?;
     // Once executing is durable, interruption never automatically repeats a destructive call.
