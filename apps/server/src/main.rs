@@ -38,6 +38,9 @@ async fn main() -> Result<()> {
     let bind = config.bind;
     let state = AppState::open(config).await?;
     thelxinoe_server::tools::initialize(&state).await?;
+    if let Err(error) = thelxinoe_server::operations::prime_attention(&state).await {
+        tracing::warn!(%error, "Attention could not be read; the first check records it");
+    }
     tracing::info!(version=thelxinoe_core::VERSION, %bind, "Starting Thelxinoe");
     let listener = tokio::net::TcpListener::bind(bind).await?;
     let mut workers = tokio::task::JoinSet::new();

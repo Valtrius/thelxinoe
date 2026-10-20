@@ -420,6 +420,29 @@ fn schema_2_names_each_jobs_subject_and_drops_checkpoints() -> Result<()> {
     Ok(())
 }
 
+// CHECK lists are not part of `shape`, so the rebuilt downloads table is checked here.
+#[test]
+fn schema_2_keeps_downloads_and_refuses_the_unused_deleting_state() -> Result<()> {
+    let (_temp, conn) = upgraded(
+        1,
+        "INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) VALUES ('kept','g','ready','{}',1,1);",
+    )?;
+    let state: String = conn.query_row(
+        "SELECT state FROM youtube_downloads WHERE video_id='kept'",
+        [],
+        |r| r.get(0),
+    )?;
+    assert_eq!(state, "ready");
+    assert!(
+        conn.execute(
+            "INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) VALUES ('new','g','deleting','{}',1,1)",
+            [],
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
 #[test]
 fn upgrades_run_in_order_from_the_stored_version() -> Result<()> {
     let conn = Connection::open_in_memory()?;

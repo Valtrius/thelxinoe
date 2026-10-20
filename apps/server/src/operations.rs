@@ -226,6 +226,11 @@ pub async fn watch(state: AppState) -> anyhow::Result<()> {
 /// The digest of each user's last observed attention summary; `None` until the first
 /// observation after start.
 pub(crate) type AttentionDigests = Option<std::collections::HashMap<String, [u8; 32]>>;
+/// Records where attention stands before clients connect, so a change made right after
+/// a start is pushed like any other.
+pub async fn prime_attention(state: &AppState) -> anyhow::Result<()> {
+    observe(state).await
+}
 pub(crate) async fn observe(state: &AppState) -> anyhow::Result<()> {
     // Observers take turns, so each reads after the last one and compares with what it kept.
     let mut last = state.attention_digests.lock().await;

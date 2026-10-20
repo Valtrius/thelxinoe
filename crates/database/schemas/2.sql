@@ -405,7 +405,7 @@ CREATE TABLE youtube_state (
 CREATE TABLE youtube_downloads (
     video_id TEXT NOT NULL PRIMARY KEY,
     generation TEXT NOT NULL,
-    state TEXT NOT NULL CHECK(state IN ('queued','waiting_for_space','downloading','ready','extractor_authentication_required','network_blocked','unavailable','failed','deleting')),
+    state TEXT NOT NULL CHECK(state IN ('queued','waiting_for_space','downloading','ready','extractor_authentication_required','network_blocked','unavailable','failed')),
     tools TEXT NOT NULL,
     path TEXT,
     size INTEGER,
@@ -884,11 +884,6 @@ CREATE TABLE attention_seen (
     revision TEXT NOT NULL,
     seen_at INTEGER NOT NULL,
     PRIMARY KEY(user_id,source)
-) STRICT;
-
-CREATE TABLE attention_snapshots (
-    user_id TEXT NOT NULL PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    value TEXT NOT NULL
 ) STRICT;
 
 CREATE TABLE seerr_request_states (
