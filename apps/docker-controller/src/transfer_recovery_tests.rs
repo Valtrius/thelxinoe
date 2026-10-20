@@ -110,10 +110,8 @@ async fn an_interrupted_start_copies_the_stopped_original_and_returns_it_on_fail
             run(&d, &mut t).await;
             assert_eq!(t.stage, "returned", "{:?}", t.error);
             assert_eq!(t.snapshot.as_ref().unwrap()["files"], 1);
-            assert_eq!(
-                std::fs::read_to_string(directory(KEY).join("snapshot/marker")).unwrap(),
-                "original-state"
-            );
+            // With the original back, nothing can use the snapshot.
+            assert!(!directory(KEY).join("snapshot").exists());
         })
         .await;
     assert_eq!(docker.copies(), 1);
@@ -343,6 +341,53 @@ async fn a_return_checks_what_could_restart_the_original_before_the_replacement_
         !docker
             .names()
             .contains(&"/thelxinoe-radarr-replacement".to_owned())
+    );
+}
+
+// Completion keeps only what may still be needed: the snapshot and its supplementary copies
+// go, the appdata generations a replacement wrote stay until they are discarded explicitly.
+#[tokio::test]
+async fn completion_discards_the_snapshot_and_keeps_preserved_generations() {
+    let docker = Docker::new();
+    docker.insert("original", original(false, "no"));
+    docker.insert("replacement", replacement(true));
+    let root = docker.root().to_owned();
+    docker
+        .scope(async {
+            let d: Deployment = serde_json::from_value(json!({"id":"deployment","generation":1,
+                "version":"test","server":{},"controller":{},"network":"media",
+                "media_source":"/media","appdata_source":root}))
+            .unwrap();
+            store::write_json(&root.join("desired-state.json"), &d).unwrap();
+            save(&managed()).unwrap();
+            let mut t = journal("committed", true);
+            t.committed = true;
+            t.generations = vec![json!({"name":"generation-1","from":"replacement"})];
+            write(&mut t).unwrap();
+            for leaf in ["snapshot", "supplementary/0", "generation-1"] {
+                std::fs::create_dir_all(directory(KEY).join(leaf)).unwrap();
+                std::fs::write(directory(KEY).join(leaf).join("marker"), leaf).unwrap();
+            }
+            let completed = complete(State(Runtime(Default::default())), Path(KEY.into()))
+                .await
+                .unwrap();
+            assert_eq!(completed.0["stage"], "complete");
+            assert!(!directory(KEY).join("snapshot").exists());
+            assert!(!directory(KEY).join("supplementary").exists());
+            assert_eq!(
+                std::fs::read_to_string(directory(KEY).join("generation-1/marker")).unwrap(),
+                "generation-1"
+            );
+            assert!(read(KEY).unwrap().completed);
+            assert_eq!(load(KEY).unwrap().hold, None);
+        })
+        .await;
+    // The cleanup workers ran and were removed.
+    assert!(
+        docker
+            .names()
+            .iter()
+            .all(|name| !name.starts_with("/thelxinoe-transfer-"))
     );
 }
 

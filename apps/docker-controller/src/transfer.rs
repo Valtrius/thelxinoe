@@ -1219,6 +1219,9 @@ async fn restore_automatically(d: &Deployment, t: &mut Transfer) {
         }
     }
     record(t);
+    if t.stage == "returned" {
+        discard_snapshot(d, t).await;
+    }
 }
 
 /// Journal from a background task, where a failed write can only be logged.
@@ -1350,7 +1353,8 @@ async fn source(t: &Transfer) -> Result<Value> {
     Ok(raw)
 }
 
-async fn clear(d: &Deployment, t: &Transfer, leaf: &str) -> Result<()> {
+/// Remove a transfer folder whose copied files keep their original owners.
+async fn discard(d: &Deployment, t: &Transfer, leaf: &str) -> Result<()> {
     let path = directory(&t.id).join(leaf);
     if path.exists() {
         run_worker(
@@ -1365,8 +1369,22 @@ async fn clear(d: &Deployment, t: &Transfer, leaf: &str) -> Result<()> {
             600,
         )
         .await?;
+        persisted(std::fs::remove_dir(&path).map_err(Into::into))?;
     }
-    persisted(std::fs::create_dir_all(&path).map_err(Into::into))
+    Ok(())
+}
+async fn clear(d: &Deployment, t: &Transfer, leaf: &str) -> Result<()> {
+    discard(d, t, leaf).await?;
+    persisted(std::fs::create_dir_all(directory(&t.id).join(leaf)).map_err(Into::into))
+}
+/// Nothing uses the snapshot once a transfer ended, and it can hold gigabytes. Preserved
+/// generations stay: they are the only copy of what a replacement wrote.
+async fn discard_snapshot(d: &Deployment, t: &Transfer) {
+    for leaf in ["snapshot", "supplementary"] {
+        if let Err(error) = discard(d, t, leaf).await {
+            eprintln!("Transfer {} kept its {leaf} copy: {}", t.id, error.1);
+        }
+    }
 }
 
 async fn copy(
@@ -2293,6 +2311,7 @@ pub(super) async fn complete(
     t.stage = "complete".into();
     t.recovery = Value::Null;
     write(&mut t)?;
+    discard_snapshot(&d, &t).await;
     Ok(Json(status(&t, false)))
 }
 
@@ -2350,6 +2369,7 @@ pub(super) async fn restore(
     restore_original(&d, &mut t).await?;
     t.stage = "returned".into();
     write(&mut t)?;
+    discard_snapshot(&d, &t).await;
     Ok(Json(status(&t, false)))
 }
 
@@ -2599,6 +2619,9 @@ async fn run_command(d: &Deployment, t: &mut Transfer) {
     }
     t.worker = None;
     record(t);
+    if t.stage == "returned" {
+        discard_snapshot(d, t).await;
+    }
 }
 
 fn phase(t: &Transfer) -> String {
