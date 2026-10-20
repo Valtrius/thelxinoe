@@ -302,6 +302,45 @@ fn released_schemas_never_change() {
     assert!(released.contains(&MIGRATION_BASE));
 }
 
+// A table rebuild keeps the rows that reference the rebuilt table, and an upgrade that
+// leaves a dangling reference is rolled back.
+#[test]
+fn table_rebuilds_keep_referencing_rows() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let mut conn = connection(&temp.path().join("rebuild.db"), false)?;
+    conn.execute_batch(
+        "CREATE TABLE parent(id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('a'))) STRICT;
+        CREATE TABLE child(id TEXT PRIMARY KEY, parent TEXT NOT NULL REFERENCES parent(id) ON DELETE CASCADE) STRICT;
+        CREATE TABLE pinned(parent TEXT NOT NULL REFERENCES parent(id)) STRICT;
+        INSERT INTO parent VALUES ('p','a');
+        INSERT INTO child VALUES ('c','p');
+        INSERT INTO pinned VALUES ('p');",
+    )?;
+    conn.pragma_update(None, "application_id", APPLICATION_ID)?;
+    conn.pragma_update(None, "user_version", 1)?;
+    // SQLite's documented rebuild, here to widen a CHECK list.
+    let rebuild = "CREATE TABLE parent_new(id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('a','b'))) STRICT;
+        INSERT INTO parent_new SELECT id,kind FROM parent;
+        DROP TABLE parent;
+        ALTER TABLE parent_new RENAME TO parent;";
+    let count = |conn: &Connection, table: &str| -> Result<u32> {
+        Ok(conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?)
+    };
+    initialize(&mut conn, 1, &[rebuild])?;
+    assert_eq!((count(&conn, "child")?, count(&conn, "pinned")?), (1, 1));
+    conn.execute("INSERT INTO parent VALUES ('q','b')", [])?;
+    assert!(conn.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))?);
+    let error = initialize(&mut conn, 1, &[rebuild, "DELETE FROM parent"]).unwrap_err();
+    assert!(error.to_string().contains("invalid references"), "{error}");
+    assert_eq!(count(&conn, "parent")?, 2);
+    assert_eq!(
+        conn.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))?,
+        2
+    );
+    assert!(conn.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))?);
+    Ok(())
+}
+
 // Every released schema still supported upgrades to what a fresh database gets.
 #[test]
 fn released_schemas_upgrade_to_the_fresh_schema() -> Result<()> {
