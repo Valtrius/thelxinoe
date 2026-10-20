@@ -96,6 +96,7 @@ pub(super) async fn retire(
                 // Keep historical requests/bindings, but stop acquisition and
                 // leave previously claimed media unresolved until reviewed.
                 tx.execute("UPDATE manager_services SET enabled=0,operational=0,error='Installation retired',checked_at=0 WHERE id=?1",[&service])?;
+                tx.execute("DELETE FROM settings WHERE key='manager.retention.'||?1",[&service])?;
                 tx.execute("UPDATE acquisition_requests SET state='cancelled',error='Installation retired',updated_at=?1 WHERE service_id=?2 AND state IN ('pending','approved','adding','searching','uncertain')",params![now(),service])?;
                 tx.execute("UPDATE media_files SET ownership='unresolved' WHERE id IN (SELECT file_id FROM manager_bindings WHERE service_id=?1)",[&service])?;
             } else {

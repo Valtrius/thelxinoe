@@ -195,6 +195,59 @@ async fn connected_service_can_be_repaired_without_changing_defaults_or_applicat
 }
 
 #[tokio::test]
+async fn auto_delete_consent_does_not_carry_over_to_a_reused_manager_row() {
+    let (_temp, state, cookie, key, port, _writes, upstream) = existing().await;
+    crate::test_support::own_services(&state).await;
+    let saved = call(
+        &state,
+        &format!("/api/v1/admin/managers/{key}/retention"),
+        "PUT",
+        json!({"enabled":true}),
+        &cookie,
+    )
+    .await;
+    assert_eq!(saved.0, StatusCode::OK, "{}", saved.2);
+    let disabled = key.clone();
+    state
+        .db
+        .write("test.retire", move |db| {
+            // Like a removed installation.
+            db.execute(
+                "UPDATE manager_services SET enabled=0,operational=0 WHERE id=?1",
+                [&disabled],
+            )?;
+            db.execute(
+                "DELETE FROM stack_provisions WHERE service_id=?1",
+                [&disabled],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    // Another Radarr registered later reuses the row of its kind.
+    let request = json!({"name":"Another Radarr","kind":"radarr","container_id":"a".repeat(64),
+        "port":port,"api_key":"incorrect-fixture-key","allow_unverified":true});
+    let registered = call(&state, "/api/v1/admin/managers", "POST", request, &cookie).await;
+    assert_eq!(registered.0, StatusCode::OK, "{}", registered.2);
+    assert_eq!(registered.2["id"], key);
+    let consent = state
+        .db
+        .read("test.consent", move |db| {
+            Ok(db
+                .query_row(
+                    "SELECT value FROM settings WHERE key='manager.retention.'||?1",
+                    [key],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(consent, None);
+    upstream.abort();
+}
+
+#[tokio::test]
 async fn transfer_approval_is_rejected_after_the_connection_changes() {
     let (_temp, state, cookie, key, port, writes, upstream) = existing().await;
     state
