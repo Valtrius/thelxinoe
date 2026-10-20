@@ -265,18 +265,6 @@ CREATE TABLE playlist_favorites (
     PRIMARY KEY(user_id, playlist_id)
 ) STRICT;
 
-CREATE TABLE music_queues (
-    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    client_id TEXT NOT NULL,
-    revision INTEGER NOT NULL,
-    items TEXT NOT NULL,
-    current_index INTEGER NOT NULL DEFAULT 0,
-    position REAL NOT NULL DEFAULT 0,
-    updated_at INTEGER NOT NULL,
-    completed INTEGER NOT NULL DEFAULT 0 CHECK(completed IN (0,1)),
-    PRIMARY KEY(user_id, client_id)
-) STRICT;
-
 CREATE TABLE compat_devices (
     session_id TEXT NOT NULL PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
     device_id TEXT NOT NULL,
@@ -498,9 +486,6 @@ CREATE TABLE playback_sessions (
     sequence INTEGER NOT NULL DEFAULT -1,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    client_id TEXT,
-    queue_revision INTEGER,
-    queue_index INTEGER,
     youtube_video_id TEXT REFERENCES youtube_media(video_id),
     streaming INTEGER NOT NULL DEFAULT 0 CHECK(streaming IN (0,1)),
     live_media_id TEXT REFERENCES live_media(id),

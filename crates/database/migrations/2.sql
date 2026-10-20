@@ -54,3 +54,9 @@ SELECT video_id,generation,CASE state WHEN 'deleting' THEN 'failed' ELSE state E
 FROM youtube_downloads;
 DROP TABLE youtube_downloads;
 ALTER TABLE youtube_downloads_new RENAME TO youtube_downloads;
+
+-- The saved music queue was written on every play and never read.
+DROP TABLE music_queues;
+ALTER TABLE playback_sessions DROP COLUMN client_id;
+ALTER TABLE playback_sessions DROP COLUMN queue_revision;
+ALTER TABLE playback_sessions DROP COLUMN queue_index;

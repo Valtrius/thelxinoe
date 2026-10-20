@@ -226,6 +226,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/events", get(realtime::events))
         .route("/api/v1/me/home", get(user_media::home))
+        .route(
+            "/api/v1/me/queue/{client}",
+            get(user_media::legacy_queue).put(user_media::legacy_queue),
+        )
         .route("/api/v1/timezones", get(timezones::list))
         .route(
             "/api/v1/me/appearance",

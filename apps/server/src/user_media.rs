@@ -17,6 +17,17 @@ use serde_json::{Value, json};
 use thelxinoe_core::{Principal, now};
 
 pub(crate) use storage::{card, validate_tracks};
+/// Released desktops (API 1) save the music queue before they play a track. They get
+/// an empty queue that is never stored, until API_MIN_VERSION drops them.
+pub async fn legacy_queue(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>> {
+    security::principal(&state, &headers).await?;
+    Ok(Json(
+        json!({"revision":0,"items":[],"current_index":0,"position":0}),
+    ))
+}
 pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -99,4 +110,31 @@ pub(crate) async fn home_for(state: &AppState, principal: &Principal) -> Result<
     let p = principal.clone();
     let result = storage::home_for(p, &state.db).await?;
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::test_support::{call, fixture};
+    use axum::http::StatusCode;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn released_desktops_still_get_an_empty_queue_before_playing_music() {
+        let (_temp, state, cookie) = fixture().await;
+        let path = "/api/v1/me/queue/9f7a3a8e-1d2c-4b5e-8f6a-0c1d2e3f4a5b";
+        for (method, body) in [
+            ("GET", json!(null)),
+            (
+                "PUT",
+                json!({"revision":0,"items":["track"],"current_index":0}),
+            ),
+        ] {
+            let (status, _, queue) = call(&state, path, method, body, &cookie).await;
+            assert_eq!(status, StatusCode::OK, "{method}");
+            assert_eq!(queue["revision"], 0);
+            assert_eq!(queue["items"], json!([]));
+        }
+        let (status, _, _) = call(&state, path, "GET", json!(null), "").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
 }
