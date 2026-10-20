@@ -1,7 +1,6 @@
 //! Two isolated resident Streamlink workers, bounded by the shared extraction slots.
 use crate::AppState;
 use anyhow::{Context, Result, bail, ensure};
-use process_wrap::tokio::*;
 use serde_json::{Value, json};
 use std::{process::Stdio, time::Duration};
 use thelxinoe_tools::Package;
@@ -93,7 +92,7 @@ impl Pool {
 
 struct Worker {
     package: Package,
-    child: Box<dyn ChildWrapper>,
+    child: super::process::Tree,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
     _home: tempfile::TempDir,
@@ -104,34 +103,13 @@ impl Worker {
         let python = package.executable("python")?;
         python.verify_unchanged().await?;
         let home = tempfile::tempdir()?;
-        let mut command = CommandWrap::with_new(&python.path, |cmd| {
+        let mut child = super::process::spawn_isolated(&python.path, home.path(), |cmd| {
             cmd.args(["-I", "-B", "-u", "-c", SCRIPT])
-                .env_clear()
-                .current_dir(home.path())
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
-            for key in [
-                "HOME",
-                "USERPROFILE",
-                "APPDATA",
-                "LOCALAPPDATA",
-                "XDG_CONFIG_HOME",
-                "XDG_CACHE_HOME",
-                "TMPDIR",
-                "TMP",
-                "TEMP",
-            ] {
-                cmd.env(key, home.path());
-            }
-            cmd.env("LANG", "C.UTF-8");
-        });
-        command.wrap(KillOnDrop);
-        #[cfg(unix)]
-        command.wrap(ProcessGroup::leader());
-        #[cfg(windows)]
-        command.wrap(JobObject);
-        let mut child = command.spawn().context("Start Streamlink worker")?;
+        })
+        .context("Start Streamlink worker")?;
         let input = child.stdin().take().context("Missing worker input")?;
         let output = BufReader::new(child.stdout().take().context("Missing worker output")?);
         let mut worker = Self {

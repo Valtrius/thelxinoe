@@ -5,7 +5,6 @@ use super::{
 };
 use crate::AppState;
 use anyhow::{Context, Result, ensure};
-use process_wrap::tokio::*;
 use serde_json::{Value, json};
 use std::{path::Path, process::Stdio, sync::Arc, time::Duration};
 use tokio::{
@@ -137,7 +136,7 @@ impl Pool {
 }
 struct Worker {
     snapshot: Arc<Snapshot>,
-    child: Box<dyn ChildWrapper>,
+    child: super::process::Tree,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
     requests: usize,
@@ -146,46 +145,16 @@ struct Worker {
 impl Worker {
     async fn start(python: &Path, snapshot: Arc<Snapshot>) -> Result<Self> {
         let home = tempfile::tempdir()?;
-        let mut command = CommandWrap::with_new(python, |cmd| {
+        let mut child = super::process::spawn_isolated(python, home.path(), |cmd| {
             cmd.args(["-I", "-B", "-u", "-c", SCRIPT])
                 .arg(&snapshot.module.path)
                 .arg(&snapshot.bundle.deno.path)
                 .arg(&snapshot.bundle.yt_dlp.version)
-                .env_clear()
-                .current_dir(home.path())
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
-            for key in [
-                "HOME",
-                "USERPROFILE",
-                "APPDATA",
-                "LOCALAPPDATA",
-                "XDG_CONFIG_HOME",
-                "XDG_CACHE_HOME",
-                "TMPDIR",
-                "TMP",
-                "TEMP",
-                "DENO_DIR",
-            ] {
-                cmd.env(key, home.path());
-            }
-            cmd.env("LANG", "C.UTF-8");
-            #[cfg(windows)]
-            for key in ["SystemRoot", "WINDIR"] {
-                if let Some(value) = std::env::var_os(key) {
-                    cmd.env(key, value);
-                }
-            }
-        });
-        command.wrap(KillOnDrop);
-        #[cfg(unix)]
-        command.wrap(ProcessGroup::leader());
-        #[cfg(windows)]
-        command.wrap(JobObject).wrap(CreationFlags(
-            windows::Win32::System::Threading::CREATE_NO_WINDOW,
-        ));
-        let mut child = command.spawn().context("Start YouTube worker")?;
+        })
+        .context("Start YouTube worker")?;
         let input = child.stdin().take().context("Missing worker input")?;
         let output = BufReader::new(child.stdout().take().context("Missing worker output")?);
         let mut worker = Self {
