@@ -214,8 +214,8 @@ Authenticode/SmartScreen signing; no Authenticode certificate is configured here
    `env.example` and `SHA256SUMS` to a **draft** release. Images initially have
    `sha-<commit>` staging tags. Inspect release notes and assets while it is a
    draft. `SHA256SUMS` is uploaded last, so a failed upload can simply be re-run.
-   Another run, such as a repeated tag push, never re-signs a complete draft (one
-   with `SHA256SUMS`); to rebuild it on purpose run
+   Another run, such as a repeated tag push, stops at its draft step instead of
+   replacing a complete draft (one with `SHA256SUMS`); to rebuild it on purpose run
    `gh workflow run release.yml --ref X.Y.Z -f reassemble=true`, which replaces all
    of its assets. That run waits while an earlier run's publish job awaits approval,
    so reject that job first.
