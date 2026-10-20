@@ -120,3 +120,11 @@ pub(crate) fn own(db: &rusqlite::Connection) -> rusqlite::Result<()> {
     db.execute("UPDATE support_services SET operational=1 WHERE id IN (SELECT service_id FROM stack_provisions WHERE hold IS NULL AND state='complete')", [])?;
     Ok(())
 }
+
+/// What SQLite's planner does at each step of `sql`, with every parameter bound to ''.
+pub(crate) fn query_plan(db: &rusqlite::Connection, sql: &str) -> rusqlite::Result<Vec<String>> {
+    let mut plan = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
+    let parameters = std::iter::repeat_n("", plan.parameter_count());
+    plan.query_map(rusqlite::params_from_iter(parameters), |r| r.get(3))?
+        .collect()
+}

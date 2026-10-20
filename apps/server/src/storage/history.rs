@@ -117,26 +117,27 @@ pub(crate) fn record(
     Ok(())
 }
 
+/// Ends the history of playback that stopped reporting. Playback maintenance runs this on the
+/// writer every 10 seconds, so it reads only open rows, through `playback_history_open`.
+pub(super) const FINISH_STALE: &str = "UPDATE playback_history SET ended_at=updated_at,state='stopped'
+     WHERE ended_at IS NULL
+       AND NOT EXISTS(
+         SELECT 1
+         FROM playback_sessions p
+         JOIN sessions s ON s.id=p.auth_session_id
+         WHERE p.id=playback_history.playback_id
+           AND p.state IN ('playing','paused')
+           AND s.expires_at>?1
+           AND p.updated_at>?2
+           AND (
+             (playback_history.platform='youtube' AND 'youtube:'||p.youtube_video_id=playback_history.media_id)
+             OR (playback_history.platform IN ('twitch','kick') AND p.live_media_id=playback_history.media_id)
+             OR (playback_history.platform IN ('movies','shows','music') AND p.media_id=playback_history.media_id)
+           )
+       )";
+
 pub(crate) fn finish_stale(db: &rusqlite::Connection) -> anyhow::Result<()> {
-    db.execute(
-        "UPDATE playback_history SET ended_at=updated_at,state='stopped'
-         WHERE ended_at IS NULL
-           AND NOT EXISTS(
-             SELECT 1
-             FROM playback_sessions p
-             JOIN sessions s ON s.id=p.auth_session_id
-             WHERE p.id=playback_history.playback_id
-               AND p.state IN ('playing','paused')
-               AND s.expires_at>?1
-               AND p.updated_at>?2
-               AND (
-                 (playback_history.platform='youtube' AND 'youtube:'||p.youtube_video_id=playback_history.media_id)
-                 OR (playback_history.platform IN ('twitch','kick') AND p.live_media_id=playback_history.media_id)
-                 OR (playback_history.platform IN ('movies','shows','music') AND p.media_id=playback_history.media_id)
-               )
-           )",
-        params![now(), now() - 120],
-    )?;
+    db.execute(FINISH_STALE, params![now(), now() - 120])?;
     Ok(())
 }
 

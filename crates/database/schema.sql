@@ -1064,36 +1064,14 @@ CREATE INDEX playback_history_time ON playback_history(started_at DESC,id DESC);
 CREATE INDEX playback_history_user_platform_time
  ON playback_history(user_id,platform,started_at DESC,id DESC);
 
+CREATE INDEX playback_history_open ON playback_history(playback_id) WHERE ended_at IS NULL;
+
 CREATE VIEW media_cards AS
 SELECT m.id,m.kind,
     COALESCE(json_extract(m.metadata,'$.title'),json_extract(m.metadata,'$.name'),m.title) AS title,
     m.parent_id,m.sort_number,m.year,
     EXISTS(SELECT 1 FROM media_sources s JOIN media_files f ON f.id=s.file_id WHERE s.media_id=m.id AND f.present=1) AS available
 FROM media m;
-
-CREATE VIEW statistics_metadata AS
-SELECT NULL AS user_id, m.id AS media_id,
-       CASE m.kind WHEN 'movie' THEN 'movies' WHEN 'episode' THEN 'shows' ELSE 'music' END AS platform,
-       m.title AS media_title,
-       COALESCE(grandparent.id,parent.id,m.id) AS channel_id,
-       COALESCE(grandparent.title,parent.title,m.title) AS channel_name,
-       CASE WHEN m.kind='track' THEN COALESCE(parent.title,'') ELSE '' END AS category_name,
-       m.kind AS content_type
-FROM media_cards m
-LEFT JOIN media_cards parent ON parent.id=m.parent_id
-LEFT JOIN media_cards grandparent ON grandparent.id=parent.parent_id
-WHERE m.kind IN ('movie','episode','track')
-UNION ALL
-SELECT user_id,'youtube:'||video_id,'youtube',title,channel_id,channel_title,'',
-       CASE WHEN broadcast='live' THEN 'live' WHEN broadcast='upcoming' THEN 'upcoming'
-            WHEN is_short=1 THEN 'short' WHEN broadcast='replay' THEN 'live_replay' ELSE 'upload' END
-FROM youtube_videos
-UNION ALL
-SELECT user_id,'twitch:'||channel_id,'twitch',title,channel_id,display_name,category,'live'
-FROM twitch_streams
-UNION ALL
-SELECT user_id,'kick:'||slug,'kick',title,slug,slug,category,'live'
-FROM kick_channels;
 
 CREATE VIEW user_profiles AS
 WITH defaults AS (
