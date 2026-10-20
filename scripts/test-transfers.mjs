@@ -68,6 +68,26 @@ async function stage(kind) {
     (item) => item.kind === kind,
   );
 }
+/** Wait until every enabled connection of a service is connected. */
+async function connected(kind) {
+  await expect
+    .poll(
+      async () =>
+        (await f.api('/admin/service-connections')).items
+          .filter(
+            (link) =>
+              link.enabled &&
+              [link.source_kind, link.target_kind].includes(kind),
+          )
+          .filter((link) => link.state !== 'connected')
+          .map(
+            (link) =>
+              `${link.source_kind} → ${link.target_kind}: ${link.state} ${link.error ?? ''}`,
+          ),
+      { timeout: 180000, message: `${kind} connections didn't settle` },
+    )
+    .toEqual([]);
+}
 const retry = async (label, run, attempts = 4) => {
   for (let attempt = 1; ; attempt++) {
     try {
@@ -82,7 +102,12 @@ const retry = async (label, run, attempts = 4) => {
 };
 const pick = (rows, fields) =>
   rows.map((row) => Object.fromEntries(fields.map((key) => [key, row[key]])));
-/** Write a media file through the original, which already mounts the media root. */
+/**
+ * Write a media file through the original, which already mounts the media root. Zeros
+ * are no container ffprobe knows, so Radarr imports the file by its name. Random bytes
+ * were read about once in 240 files as LRC lyrics or H.263 video, which Radarr rejects
+ * for good as "No audio tracks detected"; no rescan could import them.
+ */
 function mediaFile(source, path) {
   docker(
     'exec',
@@ -92,7 +117,7 @@ function mediaFile(source, path) {
     'sh',
     '-c',
     // Only the new title folder; other media keeps the original's ownership.
-    'mkdir -p "$(dirname "$1")" && head -c 2000000 /dev/urandom > "$1" && chown -R 10001:10001 "$(dirname "$1")"',
+    'mkdir -p "$(dirname "$1")" && head -c 2000000 /dev/zero > "$1" && chown -R 10001:10001 "$(dirname "$1")"',
     'sh',
     path,
   );
@@ -600,6 +625,11 @@ try {
         'transferred services recreate a missing container and are reverified with preserved settings',
         async () => {
           for (const kind of ['sonarr', 'nzbget']) {
+            // Connecting an Arr to NZBGet adds its category, reloads NZBGet and waits
+            // up to 40 s for it while holding the NZBGet lock and the media lease that
+            // recreate takes. Removing a container inside that window stalls recreate
+            // behind the wait, so each removal starts from settled connections.
+            await connected(kind);
             const before = (await f.stack()).items.find(
               (item) => item.kind === kind,
             );

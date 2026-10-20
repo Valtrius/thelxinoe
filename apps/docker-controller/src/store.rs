@@ -66,7 +66,24 @@ fn secret_store() -> anyhow::Result<thelxinoe_auth::SecretStore> {
 }
 pub fn write_secret<T: Serialize>(path: &Path, scope: &str, value: &T) -> anyhow::Result<()> {
     let store = secret_store()?;
-    write(path, &store.encrypt(scope, &serde_json::to_vec(value)?)?)
+    let plain = serde_json::to_vec(value)?;
+    // Encrypted journals get the same injected faults, matched on their plaintext.
+    #[cfg(test)]
+    if crate::test_support::DOCKER
+        .try_with(|context| context.fail_write(&plain))
+        .unwrap_or(false)
+    {
+        anyhow::bail!("Injected journal persistence failure");
+    }
+    write(path, &store.encrypt(scope, &plain)?)?;
+    #[cfg(test)]
+    if crate::test_support::DOCKER
+        .try_with(|context| context.fail_after_write(&plain))
+        .unwrap_or(false)
+    {
+        anyhow::bail!("Injected lost journal acknowledgement");
+    }
+    Ok(())
 }
 
 pub fn read_secret<T: DeserializeOwned>(path: &Path, scope: &str) -> anyhow::Result<T> {

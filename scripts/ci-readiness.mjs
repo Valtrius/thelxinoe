@@ -14,7 +14,11 @@ export const requestBudget = (path) =>
   path.startsWith('/admin/recyclarr/configuration') ||
   /^\/admin\/backups\/[^/]+\/restore$/.test(path)
     ? budgets.stateCopy
-    : budgets.request;
+    : // Lifecycle actions wait for the service lock and media lease behind any
+      // connection check (20 s per service call), and stop/restart give Docker 30 s.
+      /^\/admin\/stack\/[^/]+\/action$/.test(path)
+      ? budgets.restart
+      : budgets.request;
 
 export async function waitForState(
   label,

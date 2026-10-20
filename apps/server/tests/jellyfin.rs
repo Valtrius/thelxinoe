@@ -2,12 +2,20 @@
 mod auth_session;
 #[path = "../../../tests/helpers/server-config.rs"]
 mod configuration;
+#[path = "../../../tests/helpers/tool-runtime.rs"]
+mod tool_runtime;
 use axum::{
-    body::Body,
-    http::{Request, StatusCode},
+    body::{Body, Bytes},
+    http::{HeaderMap, Request, StatusCode, header},
 };
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+use std::{
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+};
 use thelxinoe_server::{AppState, config::Config, router};
 use tower::ServiceExt;
 
@@ -42,13 +50,13 @@ async fn fixture() -> (tempfile::TempDir, AppState, String) {
     .unwrap();
     (temp, state, token)
 }
-async fn call(
+async fn send(
     state: &AppState,
     path: &str,
     method: &str,
     body: Value,
     headers: &[(&str, &str)],
-) -> (StatusCode, Value) {
+) -> (StatusCode, HeaderMap, Bytes) {
     let mut req = Request::builder()
         .uri(path)
         .method(method)
@@ -63,13 +71,237 @@ async fn call(
         .await
         .unwrap();
     let status = response.status();
+    let headers = response.headers().clone();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, headers, bytes)
+}
+async fn call(
+    state: &AppState,
+    path: &str,
+    method: &str,
+    body: Value,
+    headers: &[(&str, &str)],
+) -> (StatusCode, Value) {
+    let (status, _, bytes) = send(state, path, method, body, headers).await;
     (
         status,
         serde_json::from_slice(&bytes).unwrap_or(Value::Null),
     )
 }
 const DEVICE: &str = "MediaBrowser Client=\"Test%20client\", Device=\"Living room, TV\", DeviceId=\"tv-one\", Version=\"1\"";
+async fn login(state: &AppState, user: &str, device: &str) -> String {
+    let (status, login) = call(
+        state,
+        "/Users/AuthenticateByName",
+        "POST",
+        json!({"Username":user,"Pw":"a long test-only password"}),
+        &[("Authorization", device)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{login}");
+    login["AccessToken"].as_str().unwrap().to_owned()
+}
+fn run(program: &str, args: &[&str]) -> Vec<u8> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output.stdout
+}
+/// Codec summaries of a file, such as `h264 160x90` or `aac 2ch`.
+fn streams(path: &Path) -> Vec<String> {
+    let probe: Value = serde_json::from_slice(&run(
+        "ffprobe",
+        &[
+            "-v",
+            "error",
+            "-show_streams",
+            "-of",
+            "json",
+            path.to_str().unwrap(),
+        ],
+    ))
+    .unwrap();
+    probe["streams"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| match s["channels"].as_i64() {
+            Some(channels) => format!("{} {channels}ch", s["codec_name"].as_str().unwrap()),
+            None => format!(
+                "{} {}x{}",
+                s["codec_name"].as_str().unwrap(),
+                s["width"],
+                s["height"]
+            ),
+        })
+        .collect()
+}
+/// A scanned movie with AAC and AC-3 audio tracks, keyframes every five
+/// seconds, and a music track. Both are tiny and generated on the runner.
+async fn local_library(root: &Path, state: &AppState) -> (PathBuf, PathBuf) {
+    tool_runtime::install(&state.tools.runtime, &state.config.state.join("tools"));
+    let movies = root.join("media/Movies");
+    let album = root.join("media/Music/Artist/Album");
+    std::fs::create_dir_all(&movies).unwrap();
+    std::fs::create_dir_all(&album).unwrap();
+    let movie = movies.join("Feature (2021).mkv");
+    let track = album.join("01 Song.m4a");
+    run(
+        "ffmpeg",
+        &[
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=s=160x90:r=24",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000",
+            "-t",
+            "18",
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-map",
+            "1:a",
+            "-c:v",
+            "libx264",
+            "-g",
+            "120",
+            "-sc_threshold",
+            "0",
+            "-c:a:0",
+            "aac",
+            "-c:a:1",
+            "ac3",
+            movie.to_str().unwrap(),
+        ],
+    );
+    run(
+        "ffmpeg",
+        &[
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=660:sample_rate=48000",
+            "-t",
+            "12",
+            "-c:a",
+            "aac",
+            "-metadata",
+            "title=Song",
+            "-metadata",
+            "artist=Artist",
+            "-metadata",
+            "album=Album",
+            "-metadata",
+            "track=1",
+            "-movflags",
+            "+faststart",
+            track.to_str().unwrap(),
+        ],
+    );
+    let paths = [movies, root.join("media/Music")].map(|p| p.to_string_lossy().into_owned());
+    state.db.write("test.fixture", move |db| {
+        db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('movies','Movies','movies',?1),('music','Music','music',?2)", paths)?;
+        Ok(())
+    }).await.unwrap();
+    for root in thelxinoe_catalog::roots(&state.db).await.unwrap() {
+        thelxinoe_catalog::scan(&state.db, root, state.tools.runtime.media().unwrap())
+            .await
+            .unwrap();
+    }
+    (movie, track)
+}
+async fn playback_state(state: &AppState, id: &str) -> (String, String) {
+    let id = id.to_owned();
+    state
+        .db
+        .read("test.fixture", move |db| {
+            Ok(db.query_row(
+                "SELECT mode,state FROM playback_sessions WHERE id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?)
+        })
+        .await
+        .unwrap()
+}
+async fn playbacks(state: &AppState, user: &str, media: &str) -> Vec<(String, String)> {
+    let (user, media) = (user.to_owned(), media.to_owned());
+    state
+        .db
+        .read("test.fixture", move |db| {
+            Ok(db
+                .prepare("SELECT id,state FROM playback_sessions WHERE user_id=?1 AND media_id=?2 ORDER BY created_at,rowid")?
+                .query_map([user, media], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+        .await
+        .unwrap()
+}
+/// Fetches a VOD playlist and its first segment with only the URL's grant.
+/// Returns the segment durations and the streams of that first segment.
+async fn vod(state: &AppState, url: &str, segment: &Path) -> (Vec<String>, Vec<String>) {
+    let (status, headers, body) = send(state, url, "GET", Value::Null, &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers[header::CONTENT_TYPE],
+        "application/vnd.apple.mpegurl"
+    );
+    let playlist = String::from_utf8(body.to_vec()).unwrap();
+    assert!(
+        playlist.contains("#EXT-X-PLAYLIST-TYPE:VOD\n") && playlist.ends_with("#EXT-X-ENDLIST\n"),
+        "{playlist}"
+    );
+    let durations = playlist
+        .lines()
+        .filter_map(|line| line.strip_prefix("#EXTINF:"))
+        .map(str::to_owned)
+        .collect();
+    let first = playlist
+        .lines()
+        .find(|line| line.starts_with("segment-"))
+        .unwrap();
+    assert!(first.contains(".ts?grant="), "{first}");
+    let base = url.split_once("index.m3u8").unwrap().0;
+    let (status, _, body) = send(state, &format!("{base}{first}"), "GET", Value::Null, &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    std::fs::write(segment, &body).unwrap();
+    (durations, streams(segment))
+}
+async fn position(state: &AppState, item: &str, headers: &[(&str, &str)]) -> Value {
+    let (status, item) = call(
+        state,
+        &format!("/Items/{item}"),
+        "GET",
+        Value::Null,
+        headers,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{item}");
+    item["UserData"]["PlaybackPositionTicks"].clone()
+}
 
 #[tokio::test]
 async fn watchlist_library_skips_a_single_list_and_restores_folders_per_user() {
@@ -1297,4 +1529,554 @@ async fn quick_connect_requires_review_and_is_single_use() {
         .0,
         StatusCode::UNAUTHORIZED
     );
+}
+
+#[tokio::test]
+async fn local_video_plays_through_each_negotiated_delivery_for_its_own_device_session() {
+    let (temp, state, _) = fixture().await;
+    let (movie_path, _) = local_library(temp.path(), &state).await;
+    let alice_token = login(&state, "alice", DEVICE).await;
+    let second_token = login(&state, "alice", &DEVICE.replace("tv-one", "tv-two")).await;
+    let bob_token = login(&state, "bob", DEVICE).await;
+    let alice = [("X-Emby-Token", alice_token.as_str())];
+    let second = [("X-Emby-Token", second_token.as_str())];
+    let bob = [("X-Emby-Token", bob_token.as_str())];
+    let mut ids = Vec::new();
+    for kind in ["Movie", "Audio"] {
+        let (status, page) = call(
+            &state,
+            &format!("/Items?IncludeItemTypes={kind}"),
+            "GET",
+            Value::Null,
+            &alice,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert_eq!(page["TotalRecordCount"], 1);
+        ids.push(page["Items"][0]["Id"].as_str().unwrap().to_owned());
+    }
+    let (movie, track) = (&ids[0], &ids[1]);
+    let (status, item) = call(
+        &state,
+        &format!("/Items/{movie}"),
+        "GET",
+        Value::Null,
+        &alice,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{item}");
+    let source = &item["MediaSources"][0];
+    let file = source["Id"].as_str().unwrap().to_owned();
+    let generation = source["ETag"].as_str().unwrap().to_owned();
+    assert_eq!(source["Container"], "mkv");
+    assert_eq!(
+        source["MediaStreams"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| format!(
+                "{} {} {}",
+                s["Type"].as_str().unwrap(),
+                s["Index"],
+                s["Codec"].as_str().unwrap()
+            ))
+            .collect::<Vec<_>>(),
+        ["Video 0 h264", "Audio 1 aac", "Audio 2 ac3"]
+    );
+    // The client plays H.264/AAC in `container` files and as HLS.
+    let request = |audio: i64, container: &str| {
+        json!({"MediaSourceId":file,"AudioStreamIndex":audio,"DeviceProfile":{
+            "DirectPlayProfiles":[{"Type":"Video","Container":container,"VideoCodec":"h264","AudioCodec":"aac"}],
+            "TranscodingProfiles":[{"Type":"Video","Container":"ts","Protocol":"hls","VideoCodec":"h264","AudioCodec":"aac"}]}})
+    };
+    let info = format!("/Items/{movie}/PlaybackInfo");
+
+    // Direct play: the original file through its Tag grant or the device login.
+    let (status, direct) = call(&state, &info, "POST", request(1, "mkv"), &alice).await;
+    assert_eq!(status, StatusCode::OK, "{direct}");
+    let direct_id = direct["PlaySessionId"].as_str().unwrap().to_owned();
+    let offer = &direct["MediaSources"][0];
+    let tag = offer["ETag"].as_str().unwrap().to_owned();
+    assert_eq!(offer["Id"], file);
+    assert_eq!(offer["SupportsDirectPlay"], true);
+    assert_eq!(offer["SupportsDirectStream"], false);
+    assert_eq!(offer["SupportsTranscoding"], false);
+    assert!(offer["TranscodingUrl"].is_null());
+    assert_eq!(offer["DefaultAudioStreamIndex"], 1);
+    assert_eq!(
+        offer["DirectStreamUrl"],
+        format!("/api/v1/playback/{direct_id}/stream?grant={tag}")
+    );
+    assert_eq!(
+        playback_state(&state, &direct_id).await,
+        ("direct".into(), "ready".into())
+    );
+    let original = std::fs::read(&movie_path).unwrap();
+    let tagged = format!("/Videos/{movie}/stream?static=true&MediaSourceId={file}&Tag={tag}");
+    let (status, headers, body) = send(&state, &tagged, "GET", Value::Null, &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "video/x-matroska");
+    assert!(body[..] == original[..]);
+    let stream = format!("/Videos/{movie}/stream?PlaySessionId={direct_id}&MediaSourceId={file}");
+    let (status, headers, body) = send(
+        &state,
+        &stream,
+        "GET",
+        Value::Null,
+        &[alice[0], ("Range", "bytes=0-1023")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        headers[header::CONTENT_RANGE],
+        format!("bytes 0-1023/{}", original.len()).as_str()
+    );
+    assert!(body[..] == original[..1024]);
+    for other in [&bob, &second] {
+        assert_eq!(
+            send(&state, &stream, "GET", Value::Null, other).await.0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    // A Tag names one item's direct play session; anything else needs a login.
+    assert_eq!(
+        send(
+            &state,
+            &format!("/Videos/{track}/stream?Tag={tag}"),
+            "GET",
+            Value::Null,
+            &[]
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // Reports update progress, and only for the device session that opened it.
+    assert_eq!(
+        call(
+            &state,
+            "/Sessions/Playing",
+            "POST",
+            json!({"ItemId":movie,"MediaSourceId":file,"PlaySessionId":direct_id,"PositionTicks":0}),
+            &alice
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(playback_state(&state, &direct_id).await.1, "playing");
+    // Clients also send identifiers without hyphens.
+    let progress = json!({"ItemId":movie.replace('-', ""),"PlaySessionId":direct_id.replace('-', ""),"PositionTicks":40_000_000,"IsPaused":true});
+    for other in [&bob, &second] {
+        assert_eq!(
+            call(
+                &state,
+                "/Sessions/Playing/Progress",
+                "POST",
+                progress.clone(),
+                other
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(position(&state, movie, &alice).await, 0);
+    assert_eq!(
+        call(
+            &state,
+            "/Sessions/Playing/Progress",
+            "POST",
+            progress,
+            &alice
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(playback_state(&state, &direct_id).await.1, "paused");
+    assert_eq!(position(&state, movie, &alice).await, 40_000_000);
+    assert_eq!(position(&state, movie, &bob).await, 0);
+    for other in [&bob, &second] {
+        assert_eq!(
+            call(
+                &state,
+                "/Sessions/Playing/Stopped",
+                "POST",
+                json!({"ItemId":movie,"PlaySessionId":direct_id,"PositionTicks":10_000_000}),
+                other
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(
+        call(
+            &state,
+            "/Sessions/Playing/Stopped",
+            "POST",
+            json!({"ItemId":movie,"PlaySessionId":direct_id,"PositionTicks":70_000_000}),
+            &alice
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(playback_state(&state, &direct_id).await.1, "stopped");
+    assert_eq!(position(&state, movie, &alice).await, 70_000_000);
+    // A late report is acknowledged, but it cannot reopen or move a stopped session.
+    assert_eq!(
+        call(
+            &state,
+            "/Sessions/Playing/Progress",
+            "POST",
+            json!({"ItemId":movie,"PlaySessionId":direct_id,"PositionTicks":90_000_000}),
+            &alice
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(playback_state(&state, &direct_id).await.1, "stopped");
+    assert_eq!(position(&state, movie, &alice).await, 70_000_000);
+    assert_eq!(
+        send(&state, &tagged, "GET", Value::Null, &[]).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // Remux: the client rejects Matroska, so the copied H.264/AAC packets
+    // move into an HLS VOD timeline cut at the source keyframes.
+    let (status, remux) = call(&state, &info, "POST", request(1, "mp4"), &alice).await;
+    assert_eq!(status, StatusCode::OK, "{remux}");
+    let remux_id = remux["PlaySessionId"].as_str().unwrap().to_owned();
+    let offer = &remux["MediaSources"][0];
+    let url = offer["TranscodingUrl"].as_str().unwrap().to_owned();
+    assert_eq!(offer["SupportsDirectPlay"], false);
+    assert_eq!(offer["SupportsDirectStream"], false);
+    assert_eq!(offer["SupportsTranscoding"], true);
+    assert_eq!(offer["TranscodingSubProtocol"], "hls");
+    assert_eq!(offer["TranscodingContainer"], "ts");
+    assert_eq!(offer["DirectStreamUrl"], url);
+    assert!(
+        url.starts_with(&format!("/api/v1/playback/{remux_id}/hls/"))
+            && url.contains("/index.m3u8?grant="),
+        "{url}"
+    );
+    assert_eq!(
+        playback_state(&state, &remux_id).await,
+        ("remux".into(), "ready".into())
+    );
+    // The original stream route and Tag serve only direct play sessions.
+    assert_eq!(
+        send(
+            &state,
+            &format!("/Videos/{movie}/stream?PlaySessionId={remux_id}"),
+            "GET",
+            Value::Null,
+            &alice
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    let remux_tag = offer["ETag"].as_str().unwrap();
+    assert_eq!(
+        send(
+            &state,
+            &format!("/Videos/{movie}/stream?Tag={remux_tag}"),
+            "GET",
+            Value::Null,
+            &[]
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (durations, segment) = vod(&state, &url, &temp.path().join("remux.ts")).await;
+    // Copied video is cut at its keyframes, five seconds apart, rather than on
+    // the six-second grid of a video conversion. The first interval also
+    // covers the stream's start offset.
+    assert_eq!(durations.len(), 4, "{durations:?}");
+    assert_eq!(durations[1..3], ["5.000000,"; 2], "{durations:?}");
+    assert_eq!(segment, ["h264 160x90", "aac 1ch"]);
+    for (headers, device) in [(&bob, "tv-one"), (&second, "tv-two"), (&alice, "tv-two")] {
+        assert_eq!(
+            call(
+                &state,
+                &format!("/Videos/ActiveEncodings?DeviceId={device}&PlaySessionId={remux_id}"),
+                "DELETE",
+                Value::Null,
+                headers
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(playback_state(&state, &remux_id).await.1, "ready");
+    assert_eq!(
+        call(
+            &state,
+            &format!("/Videos/ActiveEncodings?DeviceId=tv-one&PlaySessionId={remux_id}"),
+            "DELETE",
+            Value::Null,
+            &alice
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(playback_state(&state, &remux_id).await.1, "stopped");
+    assert_eq!(
+        send(&state, &url, "GET", Value::Null, &[]).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // Audio conversion: the client rejects AC-3, so the video is still copied
+    // on keyframe boundaries while the audio becomes stereo AAC.
+    let (status, converted) = call(&state, &info, "POST", request(2, "mp4"), &alice).await;
+    assert_eq!(status, StatusCode::OK, "{converted}");
+    let converted_id = converted["PlaySessionId"].as_str().unwrap().to_owned();
+    let offer = &converted["MediaSources"][0];
+    assert_eq!(offer["SupportsDirectPlay"], false);
+    assert_eq!(offer["SupportsTranscoding"], true);
+    assert_eq!(offer["DefaultAudioStreamIndex"], 2);
+    assert_eq!(
+        playback_state(&state, &converted_id).await,
+        ("transcode".into(), "ready".into())
+    );
+    let url = offer["TranscodingUrl"].as_str().unwrap();
+    let (durations, segment) = vod(&state, url, &temp.path().join("converted.ts")).await;
+    assert_eq!(durations.len(), 4, "{durations:?}");
+    assert_eq!(durations[1..3], ["5.000000,"; 2], "{durations:?}");
+    assert_eq!(segment, ["h264 160x90", "aac 2ch"]);
+    assert_eq!(
+        call(
+            &state,
+            &format!("/Videos/ActiveEncodings?PlaySessionId={converted_id}"),
+            "DELETE",
+            Value::Null,
+            &alice
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(playback_state(&state, &converted_id).await.1, "stopped");
+
+    // Media segments of the file's current generation.
+    let (media, key) = (movie.clone(), file.clone());
+    state
+        .db
+        .write("test.fixture", move |db| {
+            for (id, kind, start, end) in [
+                ("intro", "Intro", 1.0, 4.0),
+                ("credits", "Credits", 15.0, 17.5),
+            ] {
+                db.execute(
+                    "INSERT INTO media_segments VALUES (?1,?2,?3,?4,?5,?6,?7,'manual',1,1)",
+                    rusqlite::params![id, media, key, generation, kind, start, end],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let intro = json!({"Id":"intro","ItemId":movie,"Type":"Intro","StartTicks":10_000_000,"EndTicks":40_000_000});
+    let credits = json!({"Id":"credits","ItemId":movie,"Type":"Credits","StartTicks":150_000_000,"EndTicks":175_000_000});
+    let (status, segments) = call(
+        &state,
+        &format!("/MediaSegments/{movie}"),
+        "GET",
+        Value::Null,
+        &alice,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{segments}");
+    assert_eq!(
+        segments,
+        json!({"Items":[intro,credits],"TotalRecordCount":2,"StartIndex":0})
+    );
+    let (_, filtered) = call(
+        &state,
+        &format!("/MediaSegments/{movie}?IncludeSegmentTypes=Credits"),
+        "GET",
+        Value::Null,
+        &alice,
+    )
+    .await;
+    assert_eq!(filtered["Items"], json!([credits]));
+}
+
+#[tokio::test]
+async fn universal_audio_streams_a_local_track_and_reports_progress_per_device_session() {
+    let (temp, state, _) = fixture().await;
+    let (_, track_path) = local_library(temp.path(), &state).await;
+    let alice_token = login(&state, "alice", DEVICE).await;
+    let second_token = login(&state, "alice", &DEVICE.replace("tv-one", "tv-two")).await;
+    let bob_token = login(&state, "bob", DEVICE).await;
+    // Audio players often send their token inside the MediaBrowser header.
+    let authorization = format!("{DEVICE}, Token=\"{alice_token}\"");
+    let alice = [("Authorization", authorization.as_str())];
+    let second = [("X-Emby-Token", second_token.as_str())];
+    let bob = [("X-Emby-Token", bob_token.as_str())];
+    let mut ids = Vec::new();
+    for kind in ["Audio", "Movie"] {
+        let (status, page) = call(
+            &state,
+            &format!("/Items?IncludeItemTypes={kind}"),
+            "GET",
+            Value::Null,
+            &alice,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert_eq!(page["TotalRecordCount"], 1);
+        ids.push(page["Items"][0]["Id"].as_str().unwrap().to_owned());
+    }
+    let (track, movie) = (&ids[0], &ids[1]);
+    let universal = |item: &str, container: &str| {
+        format!(
+            "/Audio/{item}/universal?Container={container}&MaxStreamingBitrate=140000000&TranscodingContainer=ts&TranscodingProtocol=hls&AudioCodec=aac"
+        )
+    };
+    let supported = universal(track, "mp3,m4a%7Caac,flac");
+    let original = std::fs::read(&track_path).unwrap();
+    let (status, headers, body) = send(&state, &supported, "GET", Value::Null, &alice).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "audio/mp4");
+    assert!(body[..] == original[..]);
+    // A range request continues this device's playback of the track.
+    let (status, _, body) = send(
+        &state,
+        &supported,
+        "GET",
+        Value::Null,
+        &[alice[0], ("Range", "bytes=0-15")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert!(body[..] == original[..16]);
+    let playback = playbacks(&state, "alice", track).await;
+    assert_eq!(playback.len(), 1);
+    let playback = playback[0].0.clone();
+    // Conversion and video require PlaybackInfo.
+    for path in [universal(track, "mp3"), universal(movie, "mkv,m4a")] {
+        assert_eq!(
+            send(&state, &path, "GET", Value::Null, &alice).await.0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let stream = format!("/Audio/{track}/stream?PlaySessionId={playback}");
+    for other in [&bob, &second] {
+        assert_eq!(
+            send(&state, &stream, "GET", Value::Null, other).await.0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(
+        send(&state, &stream, "GET", Value::Null, &alice).await.0,
+        StatusCode::OK
+    );
+
+    // Reports without a PlaySessionId name this device session's playback.
+    assert_eq!(
+        call(
+            &state,
+            "/Sessions/Playing",
+            "POST",
+            json!({"ItemId":track,"PositionTicks":0}),
+            &alice
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    let progress = json!({"ItemId":track,"PositionTicks":30_000_000});
+    for other in [&bob, &second] {
+        assert_eq!(
+            call(
+                &state,
+                "/Sessions/Playing/Progress",
+                "POST",
+                progress.clone(),
+                other
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            call(
+                &state,
+                "/Sessions/Playing/Progress",
+                "POST",
+                json!({"ItemId":track,"PlaySessionId":playback,"PositionTicks":60_000_000}),
+                other
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(
+        call(
+            &state,
+            "/Sessions/Playing/Progress",
+            "POST",
+            progress,
+            &alice
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(position(&state, track, &alice).await, 30_000_000);
+    // Another user's universal stream is a separate playback with its own progress.
+    assert_eq!(
+        send(&state, &supported, "GET", Value::Null, &bob).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &state,
+            "/Sessions/Playing/Progress",
+            "POST",
+            json!({"ItemId":track,"PositionTicks":90_000_000}),
+            &bob
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(position(&state, track, &bob).await, 90_000_000);
+    assert_eq!(position(&state, track, &alice).await, 30_000_000);
+    assert_eq!(
+        call(
+            &state,
+            "/Sessions/Playing/Stopped",
+            "POST",
+            json!({"ItemId":track,"PositionTicks":50_000_000}),
+            &alice
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(position(&state, track, &alice).await, 50_000_000);
+    assert_eq!(
+        playbacks(&state, "alice", track).await,
+        [(playback.clone(), "stopped".to_owned())]
+    );
+    // The next universal request starts a new playback of the stopped track.
+    assert_eq!(
+        send(&state, &supported, "GET", Value::Null, &alice).await.0,
+        StatusCode::OK
+    );
+    let after = playbacks(&state, "alice", track).await;
+    assert_eq!(after.len(), 2);
+    assert_ne!(after[1].0, playback);
+    assert_eq!(after[1].1, "ready");
 }

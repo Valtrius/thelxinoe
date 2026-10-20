@@ -83,10 +83,16 @@ export async function pullFixtureImage(reference) {
       const category = failureCategory(
         `${error.code ?? ''} ${error.stderr ?? ''}`,
       );
+      // The registry's own words say whose quota ran out and for how long; the
+      // category alone cannot.
+      const detail = String(error.stderr || error.message || '')
+        .trim()
+        .slice(-500);
       evidence.push({
         image,
         attempt,
         category,
+        detail,
         exit_code: error.status ?? null,
         elapsed_ms: Date.now() - started,
       });
@@ -97,7 +103,7 @@ export async function pullFixtureImage(reference) {
         Date.now() - started >= 290000
       )
         throw Error(
-          `Image staging failed: ${image} (${category}); see .local/ci-image-staging.json`,
+          `Image staging failed: ${image} (${category}: ${detail}); see .local/ci-image-staging.json`,
           { cause: error },
         );
       // Parallel CI runs share registry quotas; seconds rarely outlast a 429.

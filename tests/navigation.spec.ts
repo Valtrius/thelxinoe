@@ -434,18 +434,37 @@ for (const role of ['admin', 'user'] as const) {
 
 test('navigation links support new tabs, legacy URLs and Back/Forward across lazy pages', async ({
   page,
-  context,
 }, testInfo) => {
   const fixture = await installUiFixture(page);
   await page.goto('/?section=Movies');
   await expect(page).toHaveURL(/#library\/movies$/);
   await expect(page.locator('.page-header h1')).toHaveText('Movies');
   const settings = page.getByRole('link', { name: 'Settings', exact: true });
-  const popup = context.waitForEvent('page');
+  // A modified click belongs to the browser, which opens the link's own URL in
+  // a new tab. Playwright sometimes never reports such a background tab, so the
+  // test checks that the app leaves the click alone, then keeps the tab closed.
+  await page.evaluate(() =>
+    window.addEventListener(
+      'click',
+      (event) => {
+        Object.assign(window, { modifiedClickHandled: event.defaultPrevented });
+        event.preventDefault();
+      },
+      { once: true },
+    ),
+  );
   await settings.click({ modifiers: ['Control'] });
-  const tab = await popup;
-  await expect.poll(() => tab.url()).toMatch(/#settings\/account$/);
-  await tab.close();
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { modifiedClickHandled: boolean })
+          .modifiedClickHandled,
+    ),
+  ).toBe(false);
+  expect(
+    await settings.evaluate((link) => (link as HTMLAnchorElement).href),
+  ).toMatch(/#settings\/account$/);
+  await expect(page).toHaveURL(/#library\/movies$/);
   await page.getByRole('link', { name: 'Home', exact: true }).click();
   await expect(page.locator('.page-header h1')).toHaveText('Home');
   await page.goBack();

@@ -73,6 +73,9 @@ jobs:
   containers:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -81,6 +84,14 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Fixture images are pinned by digest, so signing in changes only whose
+      # GHCR quota a pull spends: this job's token instead of the runner's
+      # shared address.
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Ensure FFmpeg is available
         timeout-minutes: 8
         run: bash scripts/ci-install-media.sh
@@ -113,6 +124,9 @@ jobs:
   transfers:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -121,6 +135,14 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Fixture images are pinned by digest, so signing in changes only whose
+      # GHCR quota a pull spends: this job's token instead of the runner's
+      # shared address.
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - run: pnpm run ci:transfers
       - name: Clean owned test resources
         if: always()
@@ -149,6 +171,11 @@ jobs:
           cache: pnpm
       - uses: ./.github/actions/setup-rust
       - run: pnpm install --frozen-lockfile
+      # Pinned MPV and FFmpeg for the native playback tests; a miss downloads them again.
+      - uses: actions/cache@v4
+        with:
+          path: .local/ci-tools
+          key: native-tools-${{ hashFiles('scripts/ci-native-tools.json') }}
       - run: pnpm run ci:desktop
       - uses: actions/upload-artifact@v4
         if: always()
