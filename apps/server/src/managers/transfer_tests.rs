@@ -334,6 +334,49 @@ async fn completion_releases_this_server_only_after_the_controller_agrees() {
 }
 
 #[tokio::test]
+async fn a_cancelled_transfer_is_never_reopened_by_a_job_already_under_way() {
+    let t = seeded("radarr", "queued", false).await;
+    t.script("/cancel", json!({"id":t.id,"stage":"cancelled"}));
+    let cancelled = call(
+        &t.state,
+        &format!("/api/v1/admin/transfers/{}/cancel", t.id),
+        "POST",
+        json!({}),
+        &t.cookie,
+    )
+    .await;
+    assert_eq!(cancelled.0, StatusCode::OK, "{}", cancelled.2);
+    // The transfer job read the record before the cancel; its accepted start, or a start the
+    // controller refused because the review is gone, is recorded afterwards.
+    storage::update(
+        &t.state.db,
+        t.id.clone(),
+        Some("running".into()),
+        Some("stop".into()),
+        Some(json!({})),
+        Some(None),
+    )
+    .await
+    .unwrap();
+    storage::outcome(
+        &t.state.db,
+        t.id.clone(),
+        "returned".into(),
+        Some("Review not found; nothing changed".into()),
+        None,
+    )
+    .await
+    .unwrap();
+    let row = t.row().await;
+    assert_eq!((row.state.as_str(), row.error), ("cancelled", None));
+    assert_eq!(
+        t.query::<i64>("SELECT COUNT(*) FROM audit WHERE action='transfer.returned'")
+            .await,
+        0
+    );
+}
+
+#[tokio::test]
 async fn a_controller_outage_while_driving_is_observed_again_not_failed() {
     let t = seeded("radarr", "running", false).await;
     let waited = CONTROLLER_FAILURE

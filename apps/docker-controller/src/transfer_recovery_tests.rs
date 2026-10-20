@@ -194,6 +194,38 @@ async fn an_interrupted_restore_finishes_instead_of_resuming_the_transfer() {
     );
 }
 
+// A cancel while a start holds the service is refused and keeps the review. Once the cancel
+// removed it, a start finds nothing to begin and writes no journal.
+#[tokio::test]
+async fn a_cancel_never_interleaves_with_a_start() {
+    let docker = Docker::new();
+    docker
+        .scope(async {
+            let review = journal("approved", false).review;
+            let path = directory(KEY).join("review.json");
+            store::write_secret(&path, &format!("review:{KEY}"), &review).unwrap();
+            let runtime = Runtime(Default::default());
+            // A start rechecking the original before it journals.
+            let starting = runtime.0.try_service("radarr").unwrap();
+            let refused = cancel(State(runtime.clone()), Path(KEY.into()))
+                .await
+                .expect_err("cancel refused while a start runs");
+            assert_eq!(refused.0, StatusCode::CONFLICT);
+            assert!(path.exists());
+            drop(starting);
+            let cancelled = cancel(State(runtime.clone()), Path(KEY.into()))
+                .await
+                .unwrap();
+            assert_eq!(cancelled.0["stage"], "cancelled");
+            let input = serde_json::from_value(json!({"revision":review.revision})).unwrap();
+            let started = start(State(runtime), Path(KEY.into()), Json(input)).await;
+            assert_eq!(started.err().unwrap().0, StatusCode::NOT_FOUND);
+            assert!(!directory(KEY).exists());
+        })
+        .await;
+    assert_eq!(docker.creates(), 0);
+}
+
 // Once the replacement is being retired a return can only continue. A lost journal
 // acknowledgement in any of its phases resumes from the journal and keeps the replacement's
 // appdata exactly once.

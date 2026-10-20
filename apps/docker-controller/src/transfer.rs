@@ -1029,15 +1029,27 @@ pub(super) async fn start(
     Json(input): Json<StartInput>,
 ) -> Result<Json<Value>> {
     id(&key)?;
-    if directory(&key).join("transfer.json").exists() {
-        let t = read(&key)?;
+    // A repeated start reports the journal it already wrote.
+    let journaled = |t: &Transfer, active: bool| {
         if t.review.revision != input.revision {
             return Err(conflict(
                 "This operation already belongs to another reviewed transfer",
             ));
         }
-        let active = runtime.0.try_service(&t.kind).is_err();
-        return Ok(Json(status(&t, active)));
+        Ok(Json(status(t, active)))
+    };
+    if directory(&key).join("transfer.json").exists() {
+        let t = read(&key)?;
+        return journaled(&t, runtime.0.try_service(&t.kind).is_err());
+    }
+    let guard = runtime
+        .0
+        .try_service(&read_review(&key)?.kind)
+        .map_err(|_| busy())?;
+    // Only the service holder writes the journal. A cancel may have removed the review, or
+    // another start written the journal, before this start took the service.
+    if directory(&key).join("transfer.json").exists() {
+        return journaled(&read(&key)?, false);
     }
     let reviewed = read_review(&key)?;
     if reviewed.revision != input.revision {
@@ -1053,7 +1065,6 @@ pub(super) async fn start(
             "Choose scoped Compose detachment or project-wide retirement",
         ));
     }
-    let guard = runtime.0.try_service(&reviewed.kind).map_err(|_| busy())?;
     if !crate::lease::active() {
         return Err(conflict("The controller writer lease is unavailable"));
     }
@@ -2279,20 +2290,26 @@ pub(super) async fn complete(
     Ok(Json(status(&t, false)))
 }
 
-/// Cancel only before any source mutation.
+/// Cancel only before any source mutation. A start holds the service from before it rereads
+/// the review until its journal is written, so the two never interleave.
 pub(super) async fn cancel(
     State(runtime): State<Runtime>,
     Path(key): Path<String>,
 ) -> Result<Json<Value>> {
+    id(&key)?;
+    let kind = if directory(&key).join("transfer.json").exists() {
+        read(&key)?.kind
+    } else {
+        read_review(&key)?.kind
+    };
+    let _guard = runtime.0.try_service(&kind).map_err(|_| {
+        conflict("The transfer is running; it can be cancelled only before the original changes")
+    })?;
     if !directory(&key).join("transfer.json").exists() {
         read_review(&key)?;
         persisted(std::fs::remove_dir_all(directory(&key)).map_err(Into::into))?;
         return Ok(Json(json!({"id":key,"stage":"cancelled"})));
     }
-    let probe = read(&key)?;
-    let _guard = runtime.0.try_service(&probe.kind).map_err(|_| {
-        conflict("The transfer is running; it can be cancelled only before the original changes")
-    })?;
     let mut t = read(&key)?;
     if t.stage == "cancelled" {
         return Ok(Json(status(&t, false)));

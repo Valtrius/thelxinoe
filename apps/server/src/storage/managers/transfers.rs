@@ -194,7 +194,8 @@ pub(super) async fn approve(
     }).await
 }
 
-/// Record progress without changing ownership.
+/// Record progress of an unfinished transfer without changing ownership. A job that read the
+/// record before it ended never reopens it.
 pub(super) async fn update(
     db: &Database,
     id: String,
@@ -204,12 +205,13 @@ pub(super) async fn update(
     error: Option<Option<String>>,
 ) -> anyhow::Result<()> {
     db.write("managers.transfers.update", move |db| {
-        db.execute("UPDATE service_transfers SET state=COALESCE(?2,state),step=COALESCE(?3,step),progress=COALESCE(?4,progress),error=CASE WHEN ?5 THEN ?6 ELSE error END,updated_at=?7 WHERE id=?1",
+        db.execute(&format!("UPDATE service_transfers SET state=COALESCE(?2,state),step=COALESCE(?3,step),progress=COALESCE(?4,progress),error=CASE WHEN ?5 THEN ?6 ELSE error END,updated_at=?7 WHERE id=?1 AND {ACTIVE}"),
             params![id, state, step, progress.map(|p| p.to_string()), error.is_some(), error.flatten(), now()])?;
         Ok(())
     }).await
 }
 
+/// End a draft or an unfinished transfer. The first outcome stays; later ones change nothing.
 pub(super) async fn outcome(
     db: &Database,
     id: String,
@@ -219,7 +221,9 @@ pub(super) async fn outcome(
 ) -> anyhow::Result<()> {
     db.write("managers.transfers.outcome", move |db| {
         let tx = db.transaction()?;
-        tx.execute("UPDATE service_transfers SET state=?2,error=?3,updated_at=?4,completed_at=CASE WHEN ?2 IN ('cancelled','returned') THEN ?4 ELSE completed_at END WHERE id=?1", params![id, state, error, now()])?;
+        if tx.execute("UPDATE service_transfers SET state=?2,error=?3,updated_at=?4,completed_at=CASE WHEN ?2 IN ('cancelled','returned') THEN ?4 ELSE completed_at END WHERE id=?1 AND state NOT IN ('complete','cancelled','returned')", params![id, state, error, now()])? == 0 {
+            return Ok(());
+        }
         tx.execute("UPDATE jobs SET state='complete' WHERE kind='service.transfer' AND subject=?1 AND ?2 IN ('cancelled','returned') AND state='queued'", params![id, state])?;
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,?2,?3,?4)", params![actor, format!("transfer.{state}"), id, now()])?;
         tx.commit()?;
