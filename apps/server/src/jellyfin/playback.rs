@@ -196,20 +196,11 @@ pub(super) async fn info_source(
     .min();
     let quality = if max.is_some_and(|v| v > 0 && v < dto["Bitrate"].as_i64().unwrap_or(0)) {
         let max = max.unwrap();
-        if max < if video { 2_192_000 } else { 192_000 } {
-            return Err(ApiError::bad(
-                "This client bitrate limit is below the supported conversion quality",
-            ));
-        }
-        if max >= 20_192_000 {
-            "20mbps"
-        } else if max >= 8_192_000 {
-            "8mbps"
-        } else if max >= 4_192_000 {
-            "4mbps"
-        } else {
-            "2mbps"
-        }
+        super::profile::quality_within(max)
+            .or((!video && max >= 192_000).then_some("2mbps"))
+            .ok_or_else(|| {
+                ApiError::bad("This client bitrate limit is below the supported conversion quality")
+            })?
     } else {
         "auto"
     };
@@ -223,22 +214,9 @@ pub(super) async fn info_source(
         Some(field("EnableTranscoding").as_ref() != Some(&json!(false)));
     let planned = thelxinoe_playback::decision(&source, &options)
         .map_err(|e| ApiError::bad(e.to_string()))?;
-    if planned.encoding.video
-        && let Some(max) = max.filter(|n| *n < 8_192_000)
-    {
-        options.quality = if !video && max >= 192_000 {
-            "2mbps"
-        } else if max >= 4_192_000 {
-            "4mbps"
-        } else if max >= 2_192_000 {
-            "2mbps"
-        } else {
-            return Err(ApiError::bad(
-                "This client bitrate limit is below the supported conversion quality",
-            ));
-        }
-        .into();
-        options.capabilities = negotiate(thelxinoe_playback::bitrate(&options.quality)?);
+    if let Some(quality) = super::profile::bounded_quality(&source, &options, max)? {
+        options.quality = quality.into();
+        options.capabilities = negotiate(thelxinoe_playback::bitrate(quality)?);
         options.capabilities.allow_conversion =
             Some(field("EnableTranscoding").as_ref() != Some(&json!(false)));
     }

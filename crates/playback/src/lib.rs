@@ -66,14 +66,25 @@ pub fn picture_rate(width: u64, height: u64) -> u32 {
         .flatten()
         .unwrap_or(8_000_000)
 }
+/// The video rate of a conversion: the requested one, else that of its output picture, within
+/// the client's H.264 level.
+pub fn conversion_rate(options: &Options, probe: &Value) -> Result<u32> {
+    let conversion = options.capabilities.conversion.as_ref();
+    let picture = conversion
+        .map(|c| (u64::from(c.width), u64::from(c.height)))
+        .or_else(|| {
+            probe["streams"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|s| s["codec_type"] == "video" && s["disposition"]["attached_pic"] != 1)
+                .and_then(|s| Some((s["width"].as_u64()?, s["height"].as_u64()?)))
+        });
+    Ok(bitrate(&options.quality)?
+        .unwrap_or_else(|| picture.map_or(8_000_000, |(w, h)| picture_rate(w, h)))
+        .min(conversion.map_or(u32::MAX, |c| level_rate(c.level))))
+}
 pub(crate) fn conversion_args(options: &Options, probe: &Value) -> Result<Vec<String>> {
-    let mut picture = probe["streams"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|s| s["codec_type"] == "video" && s["disposition"]["attached_pic"] != 1)
-        .and_then(|s| Some((s["width"].as_u64()?, s["height"].as_u64()?)));
-    let mut ceiling = u32::MAX;
     let mut filter = if let Some(height) = resolution(&options.quality) {
         format!("scale=w=-2:h='min({height},ih)'")
     } else {
@@ -93,8 +104,6 @@ pub(crate) fn conversion_args(options: &Options, probe: &Value) -> Result<Vec<St
         {
             bail!("Invalid conversion limits");
         }
-        picture = Some((c.width.into(), c.height.into()));
-        ceiling = level_rate(c.level);
         filter = format!(
             "{}{}scale={}:{},setsar=1,fps={:.6}",
             if c.deinterlace {
@@ -139,9 +148,7 @@ pub(crate) fn conversion_args(options: &Options, probe: &Value) -> Result<Vec<St
             );
         }
     }
-    let rate = bitrate(&options.quality)?
-        .unwrap_or_else(|| picture.map_or(8_000_000, |(w, h)| picture_rate(w, h)))
-        .min(ceiling);
+    let rate = conversion_rate(options, probe)?;
     let mut args = [
         "-c:v",
         "libx264",

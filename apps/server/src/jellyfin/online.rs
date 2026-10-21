@@ -654,40 +654,42 @@ pub async fn playback_info(
     let source_rate = source.probe["format"]["bit_rate"]
         .as_str()
         .and_then(|v| v.parse::<i64>().ok());
-    let quality = if max.is_some_and(|max| source_rate.is_none_or(|rate| rate > max)) {
-        match max.unwrap() {
-            n if n >= 20_192_000 => "20mbps",
-            n if n >= 8_192_000 => "8mbps",
-            n if n >= 4_192_000 => "4mbps",
-            n if n >= 2_192_000 => "2mbps",
-            _ => {
-                return Err(ApiError::bad(
-                    "This client bitrate limit is below the supported conversion quality",
-                ));
-            }
-        }
-    } else {
-        rendition.as_deref().unwrap_or("auto")
-    };
-    let mut capabilities = super::profile::negotiate_online(
-        &source,
-        None,
-        profile,
-        false,
-        input["EnableDirectStream"] != false,
-        thelxinoe_playback::bitrate(if rendition.as_deref() == Some(quality) {
-            "auto"
+    let mut quality =
+        if let Some(max) = max.filter(|max| source_rate.is_none_or(|rate| rate > *max)) {
+            super::profile::quality_within(max).ok_or_else(|| {
+                ApiError::bad("This client bitrate limit is below the supported conversion quality")
+            })?
         } else {
-            quality
-        })?,
-    );
-    capabilities.allow_conversion = Some(input["EnableTranscoding"] != false);
-    let options = thelxinoe_playback::Options {
-        quality: quality.into(),
-        audio: None,
-        subtitle: Some("off".into()),
-        capabilities,
+            rendition.as_deref().unwrap_or("auto")
+        };
+    let options_for = |quality: &str| -> Result<thelxinoe_playback::Options> {
+        // The rendition itself converts as Auto.
+        let rate = if rendition.as_deref() == Some(quality) {
+            None
+        } else {
+            thelxinoe_playback::bitrate(quality)?
+        };
+        let mut capabilities = super::profile::negotiate_online(
+            &source,
+            None,
+            profile,
+            false,
+            input["EnableDirectStream"] != false,
+            rate,
+        );
+        capabilities.allow_conversion = Some(input["EnableTranscoding"] != false);
+        Ok(thelxinoe_playback::Options {
+            quality: rate.map_or("auto", |_| quality).into(),
+            audio: None,
+            subtitle: Some("off".into()),
+            capabilities,
+        })
     };
+    if let Some(bounded) = super::profile::bounded_quality(&source, &options_for(quality)?, max)? {
+        quality = bounded;
+    }
+    let mut options = options_for(quality)?;
+    options.quality = quality.into();
     let delivered = selected
         .or_else(|| {
             variants.iter().find(|variant| {
