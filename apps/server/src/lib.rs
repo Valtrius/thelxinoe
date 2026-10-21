@@ -616,10 +616,8 @@ mod job_tests {
             .enqueue("service.transfer", "t", json!({}))
             .await
             .unwrap();
-        assert_eq!(
-            finished(&state, &general).await,
-            ("failed".into(), Some("Library no longer exists".into()))
-        );
+        // A scan of a library that no longer exists has nothing to do.
+        assert_eq!(finished(&state, &general).await, ("complete".into(), None));
         assert_eq!(
             finished(&state, &service).await,
             ("failed".into(), Some("Missing transfer identity".into()))
