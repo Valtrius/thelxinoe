@@ -11,7 +11,6 @@ use tokio::process::Command;
 use crate::error::AppError;
 use crate::models::ExecutableDiagnostic;
 
-#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub async fn detect_named_executable(kind: &str, configured: Option<&str>) -> ExecutableDiagnostic {
@@ -54,12 +53,8 @@ pub(crate) async fn detect_candidates(
         if !seen.insert(key) || !path.is_file() {
             continue;
         }
-        match executable_version(kind, path).await {
+        match executable_version(path).await {
             Ok(version) => {
-                if let Err(error) = validate_executable_version(kind, &version) {
-                    last_error = Some(error);
-                    continue;
-                }
                 return ExecutableDiagnostic {
                     kind: kind.to_string(),
                     detected: true,
@@ -76,16 +71,10 @@ pub(crate) async fn detect_candidates(
     }
     let message = match kind {
         "mpv" => "MPV was not found or could not be started.",
-        "yt-dlp" => "yt-dlp was not found or could not be started.",
-        "streamlink" => "Streamlink was not found or could not be started.",
-        "ffmpeg" => "FFmpeg was not found or could not be started.",
         _ => "The playback executable was not found or could not be started.",
     };
     let action = match kind {
         "mpv" => "Install MPV or select mpv.exe in MPV settings.",
-        "yt-dlp" => "Install yt-dlp or select yt-dlp.exe in MPV settings.",
-        "streamlink" => "Install Streamlink or select streamlink.exe in MPV settings.",
-        "ffmpeg" => "Install FFmpeg or select ffmpeg.exe in MPV settings.",
         _ => "Install or select the executable in MPV settings.",
     };
     ExecutableDiagnostic {
@@ -103,53 +92,11 @@ pub(crate) async fn detect_candidates(
     }
 }
 
-fn validate_executable_version(kind: &str, version: &str) -> Result<(), AppError> {
-    if kind != "streamlink" {
-        return Ok(());
-    }
-    let version_number = version
-        .split_whitespace()
-        .find(|part| {
-            part.chars()
-                .next()
-                .is_some_and(|value| value.is_ascii_digit())
-        })
-        .ok_or_else(|| unsupported_streamlink_version(version))?;
-    let mut parts = version_number.split('.');
-    let major = parts
-        .next()
-        .and_then(|value| value.parse::<u64>().ok())
-        .ok_or_else(|| unsupported_streamlink_version(version))?;
-    let minor = parts
-        .next()
-        .and_then(|value| value.parse::<u64>().ok())
-        .ok_or_else(|| unsupported_streamlink_version(version))?;
-    if (major, minor) < (7, 5) {
-        return Err(unsupported_streamlink_version(version));
-    }
-    Ok(())
-}
-
-fn unsupported_streamlink_version(version: &str) -> AppError {
-    AppError::playback(
-        "streamlink_version_unsupported",
-        "Streamlink 7.5 or newer is required for Twitch playback.",
-        format!(
-            "Update Streamlink so its Twitch plugin always filters embedded ads. Detected: {version}"
-        ),
-    )
-}
-
-async fn executable_version(kind: &str, path: &Path) -> Result<String, AppError> {
+async fn executable_version(path: &Path) -> Result<String, AppError> {
     let mut command = Command::new(path);
-    #[cfg(windows)]
-    command.creation_flags(CREATE_NO_WINDOW);
     command
-        .arg(if matches!(kind, "ffmpeg" | "ffprobe") {
-            "-version"
-        } else {
-            "--version"
-        })
+        .creation_flags(CREATE_NO_WINDOW)
+        .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -199,11 +146,6 @@ async fn executable_version(kind: &str, path: &Path) -> Result<String, AppError>
 fn executable_names(kind: &str) -> &'static [&'static str] {
     match kind {
         "mpv" => &["mpv.exe", "mpv"],
-        "yt-dlp" => &["yt-dlp.exe", "yt-dlp"],
-        "streamlink" => &["streamlink.exe", "streamlink"],
-        "ffmpeg" => &["ffmpeg.exe", "ffmpeg"],
-        "ffprobe" => &["ffprobe.exe"],
-        "deno" => &["deno.exe"],
         _ => &[],
     }
 }
@@ -211,61 +153,32 @@ fn executable_names(kind: &str) -> &'static [&'static str] {
 fn common_paths(kind: &str) -> Vec<PathBuf> {
     let executable = match kind {
         "mpv" => "mpv.exe",
-        "yt-dlp" => "yt-dlp.exe",
-        "streamlink" => "streamlink.exe",
-        "ffmpeg" => "ffmpeg.exe",
         _ => return Vec::new(),
     };
     let mut paths = Vec::new();
     if let Some(program_files) = std::env::var_os("ProgramFiles") {
-        let base = PathBuf::from(program_files);
-        if kind == "streamlink" {
-            paths.push(base.join("Streamlink").join("bin").join(executable));
-            paths.push(base.join("Streamlink").join(executable));
-        } else if kind == "ffmpeg" {
-            paths.push(base.join("ffmpeg").join("bin").join(executable));
-        } else {
-            paths.push(base.join(kind).join(executable));
-        }
+        paths.push(PathBuf::from(program_files).join(kind).join(executable));
     }
     if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-        let base = PathBuf::from(local_app_data).join("Programs");
-        if kind == "streamlink" {
-            paths.push(base.join("Streamlink").join("bin").join(executable));
-            paths.push(base.join("Streamlink").join(executable));
-        } else if kind == "ffmpeg" {
-            paths.push(base.join("ffmpeg").join("bin").join(executable));
-        } else {
-            paths.push(base.join(kind).join(executable));
-        }
+        paths.push(
+            PathBuf::from(local_app_data)
+                .join("Programs")
+                .join(kind)
+                .join(executable),
+        );
     }
     if let Some(user_profile) = std::env::var_os("USERPROFILE") {
-        let current = PathBuf::from(user_profile)
-            .join("scoop")
-            .join("apps")
-            .join(kind)
-            .join("current");
-        if kind == "ffmpeg" {
-            paths.push(current.join("bin").join(executable));
-        } else {
-            paths.push(current.join(executable));
-        }
+        paths.push(
+            PathBuf::from(user_profile)
+                .join("scoop")
+                .join("apps")
+                .join(kind)
+                .join("current")
+                .join(executable),
+        );
     }
     if let Some(chocolatey) = std::env::var_os("ChocolateyInstall") {
         paths.push(PathBuf::from(chocolatey).join("bin").join(executable));
     }
     paths
-}
-
-#[cfg(test)]
-mod tests {
-    use super::validate_executable_version;
-
-    #[test]
-    fn streamlink_requires_automatic_ad_filtering_release() {
-        assert!(validate_executable_version("streamlink", "streamlink 8.4.0").is_ok());
-        assert!(validate_executable_version("streamlink", "streamlink 7.5.0").is_ok());
-        assert!(validate_executable_version("streamlink", "streamlink 7.4.0").is_err());
-        assert!(validate_executable_version("streamlink", "unknown").is_err());
-    }
 }

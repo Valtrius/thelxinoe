@@ -229,20 +229,20 @@ export function source(lab, version) {
 `;
     fault(
       'apps/desktop/src/mpv/runtime.rs',
-      '        stop_runs(replaced).await;\n        let (settings, launch) = tools',
+      '        stop_runs(replaced).await;\n        let (mpv_path, launch) = tools',
       held(
         'playback',
         'anyhow::bail!("Update lab playback preparation released");',
       ) +
-        '        stop_runs(replaced).await;\n        let (settings, launch) = tools',
+        '        stop_runs(replaced).await;\n        let (mpv_path, launch) = tools',
     );
     fault(
       'apps/desktop/src/tools/installation.rs',
-      '        self.install_locked(id, settings).await',
+      '        self.install_locked(id).await',
       held(
         'tools',
         'return Err(AppError::validation("Update lab tool operation released"));',
-      ) + '        self.install_locked(id, settings).await',
+      ) + '        self.install_locked(id).await',
     );
     fault(
       'apps/desktop/src/updates.rs',

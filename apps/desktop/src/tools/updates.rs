@@ -32,7 +32,7 @@ impl ToolManager {
             retry_at: None,
         };
         let mut errors = Vec::new();
-        for tool in ToolId::DESKTOP {
+        for tool in ToolId::ALL {
             if self.closing.load(Ordering::SeqCst) {
                 break;
             }
@@ -72,12 +72,12 @@ impl ToolManager {
         error.map_or(Ok(()), |e| Err(AppError::validation(e)))
     }
 
-    pub fn available_updates(&self, settings: &AppSettings) -> Vec<ToolUpdate> {
+    pub fn available_updates(&self) -> Vec<ToolUpdate> {
         let state = self.state();
-        ToolId::DESKTOP
+        ToolId::ALL
             .into_iter()
             .filter_map(|id| {
-                let p = Self::preference(&state, id, settings);
+                let p = Self::preference(&state, id);
                 if p.source != ToolSource::Managed
                     || id.plugin() && !p.enabled
                     || p.pinned
@@ -102,10 +102,10 @@ impl ToolManager {
             .collect()
     }
 
-    pub async fn update(&self, id: &str, settings: &AppSettings) -> AppResult<()> {
+    pub async fn update(&self, id: &str) -> AppResult<()> {
         let _operation = self.operations.lock().await;
         if !self
-            .available_updates(settings)
+            .available_updates()
             .iter()
             .any(|update| update.package_id == id)
         {
@@ -113,10 +113,10 @@ impl ToolManager {
                 "This update is no longer available under your current tool settings.",
             ));
         }
-        self.install_locked(id, settings).await
+        self.install_locked(id).await
     }
 
-    pub async fn auto_update(&self, settings: &AppSettings) {
+    pub async fn auto_update(&self) {
         let state = self.state();
         let retry_hours = if state.catalog_error.is_some() { 1 } else { 24 };
         let last = state.last_checked.as_deref().and_then(upstream::timestamp);
@@ -137,9 +137,9 @@ impl ToolManager {
         {
             return;
         }
-        for id in ToolId::DESKTOP {
+        for id in ToolId::ALL {
             if let Err(e) = self
-                .auto_update_tool(id, settings, state.last_checked.as_deref())
+                .auto_update_tool(id, state.last_checked.as_deref())
                 .await
             {
                 tracing::warn!(tool=id.key(),code=%e.code,"automatic tool update failed");
@@ -150,13 +150,12 @@ impl ToolManager {
     pub(super) async fn auto_update_tool(
         &self,
         id: ToolId,
-        settings: &AppSettings,
         checked: Option<&str>,
     ) -> AppResult<()> {
         let _operation = self.operations.lock().await;
         // A queued preference change or rollback must take effect before selecting a package.
         let state = self.state();
-        let p = Self::preference(&state, id, settings);
+        let p = Self::preference(&state, id);
         if checked.is_none()
             || state.last_checked.as_deref() != checked
             || state.upstream_checked.get(&id).map(String::as_str) != checked
@@ -172,7 +171,7 @@ impl ToolManager {
                 .iter()
                 .find(|v| v.tool == id && upstream::update_available(v, &p, &state.installed))
         }) {
-            self.install_locked(&package.id, settings).await?;
+            self.install_locked(&package.id).await?;
         }
         Ok(())
     }
@@ -185,8 +184,7 @@ mod tests {
     async fn notifications_cover_every_managed_tool_and_respect_update_selection() {
         let directory = tempfile::tempdir().unwrap();
         let manager = ToolManager::new(directory.path().to_path_buf(), None).unwrap();
-        let settings = AppSettings::default();
-        for tool in ToolId::DESKTOP {
+        for tool in ToolId::ALL {
             let active = format!("{}-old", tool.key());
             fake_install(&manager, tool, &active);
             manager.activate(tool, &active).await.unwrap();
@@ -204,10 +202,7 @@ mod tests {
                 })
                 .unwrap();
         }
-        assert_eq!(
-            manager.available_updates(&settings).len(),
-            ToolId::DESKTOP.len()
-        );
+        assert_eq!(manager.available_updates().len(), ToolId::ALL.len());
         let mut preference = manager.state().tools[&ToolId::Mpv].clone();
         for policy in [UpdatePolicy::Automatic, UpdatePolicy::Manual] {
             preference.update_policy = policy;
@@ -217,11 +212,11 @@ mod tests {
                 .unwrap();
             assert!(
                 !manager
-                    .available_updates(&settings)
+                    .available_updates()
                     .iter()
                     .any(|u| u.tool == ToolId::Mpv)
             );
-            assert!(manager.update("mpv-new", &settings).await.is_err());
+            assert!(manager.update("mpv-new").await.is_err());
         }
         preference.update_policy = UpdatePolicy::Notify;
         preference.pinned = true;
@@ -229,7 +224,7 @@ mod tests {
             .set_preference(ToolId::Mpv, preference.clone())
             .await
             .unwrap();
-        assert!(manager.update("mpv-new", &settings).await.is_err());
+        assert!(manager.update("mpv-new").await.is_err());
         preference.pinned = false;
         manager
             .edit(|state| {
@@ -248,7 +243,7 @@ mod tests {
             .unwrap();
         assert!(
             !manager
-                .available_updates(&settings)
+                .available_updates()
                 .iter()
                 .any(|u| u.tool == ToolId::Mpv)
         );
@@ -270,18 +265,18 @@ mod tests {
             .unwrap();
         assert!(
             !manager
-                .available_updates(&settings)
+                .available_updates()
                 .iter()
                 .any(|u| u.tool == ToolId::Mpv)
         );
-        assert!(manager.update("mpv-new", &settings).await.is_err());
+        assert!(manager.update("mpv-new").await.is_err());
         preference.source = ToolSource::Managed;
         manager
             .set_preference(ToolId::Mpv, preference)
             .await
             .unwrap();
         fake_install(&manager, ToolId::Mpv, "mpv-new");
-        manager.update("mpv-new", &settings).await.unwrap();
+        manager.update("mpv-new").await.unwrap();
         let state = manager.state();
         assert_eq!(state.tools[&ToolId::Mpv].active.as_deref(), Some("mpv-new"));
         assert_eq!(
@@ -290,7 +285,7 @@ mod tests {
         );
         assert!(
             !manager
-                .available_updates(&settings)
+                .available_updates()
                 .iter()
                 .any(|u| u.tool == ToolId::Mpv)
         );
@@ -300,7 +295,7 @@ mod tests {
     async fn automatic_updates_recheck_queued_preference_changes() {
         use std::{future::Future, task::Poll};
 
-        for change in ["pin", "source", "policy", "channel", "rollback", "active"] {
+        for change in ["pin", "source", "policy", "rollback", "active"] {
             let directory = tempfile::tempdir().unwrap();
             let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let events = Arc::clone(&completed);
@@ -313,7 +308,6 @@ mod tests {
                 })),
             )
             .unwrap();
-            let settings = AppSettings::default();
             let checked = "2026-09-12T07:00:00Z";
             for version in ["old", "new"] {
                 fake_install(&manager, ToolId::Mpv, version);
@@ -353,7 +347,6 @@ mod tests {
                     "pin" => p.pinned = true,
                     "source" => p.source = ToolSource::System,
                     "policy" => p.update_policy = UpdatePolicy::Notify,
-                    "channel" => p.channel = "preview".into(),
                     _ => unreachable!(),
                 }
                 manager.set_preference(ToolId::Mpv, p).await
@@ -363,8 +356,7 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
-            let mut automatic =
-                Box::pin(manager.auto_update_tool(ToolId::Mpv, &settings, Some(checked)));
+            let mut automatic = Box::pin(manager.auto_update_tool(ToolId::Mpv, Some(checked)));
             assert!(
                 std::future::poll_fn(|cx| Poll::Ready(automatic.as_mut().poll(cx).is_pending()))
                     .await
@@ -384,7 +376,6 @@ mod tests {
     async fn automatic_update_installs_a_current_eligible_candidate_only() {
         let directory = tempfile::tempdir().unwrap();
         let manager = ToolManager::new(directory.path().to_path_buf(), None).unwrap();
-        let settings = AppSettings::default();
         let checked = "2026-09-12T07:00:00Z";
         for version in ["old", "new"] {
             fake_install(&manager, ToolId::Mpv, version);
@@ -409,7 +400,7 @@ mod tests {
             })
             .unwrap();
         manager
-            .auto_update_tool(ToolId::Mpv, &settings, Some("outdated check"))
+            .auto_update_tool(ToolId::Mpv, Some("outdated check"))
             .await
             .unwrap();
         assert_eq!(
@@ -417,7 +408,7 @@ mod tests {
             Some("old")
         );
         manager
-            .auto_update_tool(ToolId::Mpv, &settings, Some(checked))
+            .auto_update_tool(ToolId::Mpv, Some(checked))
             .await
             .unwrap();
         let state = manager.state();

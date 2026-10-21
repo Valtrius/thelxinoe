@@ -39,11 +39,9 @@ impl ToolManager {
         name: &str,
         text: &str,
         expected: &str,
-        settings: &AppSettings,
     ) -> AppResult<ConfigDocument> {
         let _guard = self.configuration.lock().await;
-        self.save_document_locked(name, text, expected, settings)
-            .await
+        self.save_document_locked(name, text, expected).await
     }
 
     pub(in crate::tools) async fn save_document_locked(
@@ -51,7 +49,6 @@ impl ToolManager {
         name: &str,
         text: &str,
         expected: &str,
-        settings: &AppSettings,
     ) -> AppResult<ConfigDocument> {
         if text.len() > MAX_TEXT as usize || text.contains('\0') {
             return Err(AppError::validation(
@@ -78,9 +75,8 @@ impl ToolManager {
             let validation = async {
                 copy_tree(&self.config_root(), &staging)?;
                 fs::write(staging.join("mpv.conf"), text)?;
-                let (resolved, _lease) =
-                    self.resolve_launch(settings, &[ToolId::Mpv], false).await?;
-                let check = self.probe("mpv", resolved.mpv_path.as_deref()).await;
+                let (mpv_path, _lease) = self.resolve_launch(&[ToolId::Mpv], false).await?;
+                let check = self.probe("mpv", mpv_path.as_deref()).await;
                 let mpv = check.path.filter(|_| check.detected).ok_or_else(|| {
                     AppError::validation(
                         "Select a working MPV executable to validate this configuration.",
@@ -128,7 +124,6 @@ impl ToolManager {
         &self,
         name: &str,
         expected: &str,
-        settings: &AppSettings,
     ) -> AppResult<ConfigDocument> {
         let _guard = self.configuration.lock().await;
         let path = backup_path(&self.config_root().join(document_path(name)?));
@@ -137,7 +132,7 @@ impl ToolManager {
                 "There is no saved backup for this file.",
             ));
         }
-        self.save_document_locked(name, &read_text(&path)?, expected, settings)
+        self.save_document_locked(name, &read_text(&path)?, expected)
             .await
     }
 

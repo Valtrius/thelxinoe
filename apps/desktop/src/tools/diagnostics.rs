@@ -102,9 +102,6 @@ impl ProbeCache {
 impl ToolManager {
     pub fn invalidate_tool_diagnostic(&self, id: ToolId) {
         self.probes.invalidate(id.key());
-        if id == ToolId::Ffmpeg {
-            self.probes.invalidate("ffprobe");
-        }
         self.checks
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -124,18 +121,17 @@ impl ToolManager {
 }
 
 impl ToolManager {
-    pub async fn diagnostic(&self, id: ToolId, settings: &AppSettings) -> ExecutableDiagnostic {
-        self.diagnostic_from(&self.state(), id, settings).await
+    pub async fn diagnostic(&self, id: ToolId) -> ExecutableDiagnostic {
+        self.diagnostic_from(&self.state(), id).await
     }
 
     pub(super) async fn diagnostic_from(
         &self,
         state: &Registry,
         id: ToolId,
-        settings: &AppSettings,
     ) -> ExecutableDiagnostic {
-        let preference = Self::preference(state, id, settings);
-        let path = self.selected_path(state, id, settings);
+        let preference = Self::preference(state, id);
+        let path = self.selected_path(state, id);
         let revision = self
             .checks
             .lock()
@@ -150,21 +146,10 @@ impl ToolManager {
                 })
             });
         }
-        if id == ToolId::Ffmpeg
-            && diagnostic.detected
-            && let Some(path) = &diagnostic.path
-        {
-            let probe = Path::new(path).with_file_name("ffprobe.exe");
-            let check = self.probe("ffprobe", probe.to_str()).await;
-            if !check.detected {
-                diagnostic.warning =
-                    Some("FFprobe is missing or cannot start; downloads are unavailable.".into());
-            }
-        }
         // A slow probe for a previous selection must not replace a newer result.
         let current = self.state();
-        if Self::preference(&current, id, settings).source == preference.source
-            && self.selected_path(&current, id, settings) == path
+        if Self::preference(&current, id).source == preference.source
+            && self.selected_path(&current, id) == path
         {
             let mut checks = self.checks.lock().unwrap_or_else(|e| e.into_inner());
             if checks.revision(id) == revision {
@@ -182,15 +167,10 @@ impl ToolManager {
         diagnostic
     }
 
-    fn cached_check(
-        &self,
-        state: &Registry,
-        id: ToolId,
-        settings: &AppSettings,
-    ) -> Option<ToolCheck> {
-        let preference = Self::preference(state, id, settings);
+    fn cached_check(&self, state: &Registry, id: ToolId) -> Option<ToolCheck> {
+        let preference = Self::preference(state, id);
         let source = preference.source;
-        let path = self.selected_path(state, id, settings);
+        let path = self.selected_path(state, id);
         self.checks
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -214,7 +194,7 @@ impl ToolManager {
             })
     }
 
-    pub fn snapshot(&self, settings: &AppSettings) -> AppResult<ToolsSnapshot> {
+    pub fn snapshot(&self) -> AppResult<ToolsSnapshot> {
         let state = self.state();
         let leases = self
             .leases
@@ -223,13 +203,13 @@ impl ToolManager {
             .clone();
         let mut tools = Vec::new();
         for id in ToolId::ALL {
-            let check = self.cached_check(&state, id, settings);
+            let check = self.cached_check(&state, id);
             let imported_paths = if id.plugin() {
                 self.imported_plugin_paths(id)
             } else {
                 Vec::new()
             };
-            let mut preference = Self::preference(&state, id, settings);
+            let mut preference = Self::preference(&state, id);
             if id.plugin() && !state.tools.contains_key(&id) && imported_paths.is_empty() {
                 preference.enabled = false;
             }
@@ -238,7 +218,7 @@ impl ToolManager {
                 preference,
                 diagnostic: check.as_ref().map(|check| check.diagnostic.clone()),
                 checked_at: check.map(|check| check.checked_at),
-                selected_path: self.selected_path(&state, id, settings),
+                selected_path: self.selected_path(&state, id),
                 imported_paths,
                 versions: state
                     .catalog
@@ -289,35 +269,32 @@ mod tests {
     async fn snapshots_keep_checks_across_metadata_edits_and_invalidate_only_changed_selections() {
         let directory = tempfile::tempdir().unwrap();
         let manager = ToolManager::new(directory.path().to_path_buf(), None).unwrap();
-        let settings = AppSettings::default();
         assert!(
             manager
-                .snapshot(&settings)
+                .snapshot()
                 .unwrap()
                 .tools
                 .iter()
                 .all(|tool| tool.diagnostic.is_none())
         );
-        for id in [ToolId::Mpv, ToolId::Ffmpeg] {
-            manager.checks.lock().unwrap().results.insert(
-                id,
-                ToolCheck {
-                    source: ToolSource::System,
-                    path: None,
-                    checked_at: "2026-01-01T00:00:00Z".into(),
-                    diagnostic: ExecutableDiagnostic {
-                        kind: id.key().into(),
-                        detected: true,
-                        path: Some("cached.exe".into()),
-                        version: Some("cached version".into()),
-                        source: None,
-                        warning: None,
-                        update_available: false,
-                        error: None,
-                    },
+        manager.checks.lock().unwrap().results.insert(
+            ToolId::Mpv,
+            ToolCheck {
+                source: ToolSource::System,
+                path: None,
+                checked_at: "2026-01-01T00:00:00Z".into(),
+                diagnostic: ExecutableDiagnostic {
+                    kind: "mpv".into(),
+                    detected: true,
+                    path: Some("cached.exe".into()),
+                    version: Some("cached version".into()),
+                    source: None,
+                    warning: None,
+                    update_available: false,
+                    error: None,
                 },
-            );
-        }
+            },
+        );
         let mut preference = ToolPreference {
             pinned: true,
             ..Default::default()
@@ -332,7 +309,7 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        let snapshot = manager.snapshot(&settings).unwrap();
+        let snapshot = manager.snapshot().unwrap();
         assert!(snapshot.tools[0].diagnostic.as_ref().unwrap().detected);
         assert_eq!(
             snapshot.tools[0].checked_at.as_deref(),
@@ -344,19 +321,13 @@ mod tests {
             .set_preference(ToolId::Mpv, preference.clone())
             .await
             .unwrap();
-        let snapshot = manager.snapshot(&settings).unwrap();
-        assert!(snapshot.tools[0].diagnostic.is_none());
-        assert!(snapshot.tools[3].diagnostic.as_ref().unwrap().detected);
+        assert!(manager.snapshot().unwrap().tools[0].diagnostic.is_none());
         preference.source = ToolSource::System;
         manager
             .set_preference(ToolId::Mpv, preference)
             .await
             .unwrap();
-        assert!(
-            manager.snapshot(&settings).unwrap().tools[0]
-                .diagnostic
-                .is_none()
-        );
+        assert!(manager.snapshot().unwrap().tools[0].diagnostic.is_none());
     }
 
     #[tokio::test]

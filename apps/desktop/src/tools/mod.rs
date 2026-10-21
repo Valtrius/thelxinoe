@@ -21,7 +21,7 @@ mod upstream;
 
 use crate::{
     error::{AppError, AppResult},
-    models::{AppSettings, ExecutableDiagnostic},
+    models::ExecutableDiagnostic,
     tools::discovery::detect_named_executable,
 };
 use fs2::FileExt;
@@ -302,7 +302,7 @@ mod tests {
                 state.catalog = Some(Catalog {
                     packages: vec![
                         providers::test_package(ToolId::Mpv),
-                        providers::test_package(ToolId::Deno),
+                        providers::test_package(ToolId::Uosc),
                     ],
                 });
                 state.last_checked = Some(crate::utils::utc_now());

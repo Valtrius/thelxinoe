@@ -284,7 +284,6 @@ pub async fn desktop_update_install(app: tauri::AppHandle) -> Result<Value, Stri
         .map_err(|_| "A desktop update operation is running")?;
     install(&app, false).await
 }
-#[cfg(windows)]
 async fn playback_active(app: &tauri::AppHandle) -> bool {
     app.state::<crate::mpv::DesktopPlayback>()
         .player
@@ -294,11 +293,9 @@ async fn playback_active(app: &tauri::AppHandle) -> bool {
 async fn install(app: &tauri::AppHandle, wait_for_playback: bool) -> Result<Value, String> {
     let runtime = app.state::<Runtime>();
     let result = async {
-        #[cfg(windows)]
         let playback = app.state::<crate::mpv::DesktopPlayback>();
         // Also waits for an accepted play request still resolving tools. New
         // playback cannot start after the idle check and before installer exit.
-        #[cfg(windows)]
         let _playback_guard = loop {
             let guard = playback.player.restart_guard().await;
             if !playback_active(app).await {
@@ -311,8 +308,6 @@ async fn install(app: &tauri::AppHandle, wait_for_playback: bool) -> Result<Valu
             change(app, json!({"phase":"waiting"}));
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         };
-        #[cfg(not(windows))]
-        let _ = wait_for_playback;
         let prepared = runtime.prepared.lock().await;
         let pending = prepared
             .as_ref()
