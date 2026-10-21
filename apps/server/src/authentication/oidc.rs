@@ -14,9 +14,9 @@ pub(super) fn router() -> Router<AppState> {
         .route("/api/v1/auth/oidc/start", post(start))
         .route("/api/v1/auth/oidc/callback", get(callback))
 }
-fn http() -> Result<openidconnect::reqwest::Client> {
-    openidconnect::reqwest::Client::builder()
-        .redirect(openidconnect::reqwest::redirect::Policy::none())
+fn http() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(anyhow::Error::from)
@@ -56,10 +56,11 @@ async fn metadata(discovery: &str, expected: Option<&str>) -> Result<CoreProvide
     if !response.status().is_success() {
         return Err(ApiError::bad("OIDC discovery failed"));
     }
-    let bytes = response.bytes().await.map_err(anyhow::Error::from)?;
-    if bytes.len() > 1024 * 1024 {
-        return Err(ApiError::bad("OIDC discovery is too large"));
-    }
+    // Discovery runs on every unauthenticated sign-in start, so a wrong or hostile URL must
+    // not get to make the server buffer whatever it sends.
+    let (_, _, bytes) = crate::bounded::response(response)
+        .await
+        .map_err(|_| ApiError::bad("OIDC discovery is too large or incomplete"))?;
     let metadata: CoreProviderMetadata = serde_json::from_slice(&bytes)
         .map_err(|_| ApiError::bad("Invalid OIDC discovery document"))?;
     if expected.is_some_and(|iss| iss != metadata.issuer().as_str()) {
@@ -82,10 +83,9 @@ async fn metadata(discovery: &str, expected: Option<&str>) -> Result<CoreProvide
     if !response.status().is_success() {
         return Err(ApiError::bad("OIDC signing keys are unavailable"));
     }
-    let bytes = response.bytes().await.map_err(anyhow::Error::from)?;
-    if bytes.len() > 1024 * 1024 {
-        return Err(ApiError::bad("OIDC signing keys are too large"));
-    }
+    let (_, _, bytes) = crate::bounded::response(response)
+        .await
+        .map_err(|_| ApiError::bad("OIDC signing keys are too large or incomplete"))?;
     let keys: CoreJsonWebKeySet =
         serde_json::from_slice(&bytes).map_err(|_| ApiError::bad("Invalid OIDC signing keys"))?;
     Ok(metadata.set_jwks(keys))
@@ -326,13 +326,14 @@ async fn complete(
         Some(ClientSecret::new(secret)),
     )
     .set_redirect_uri(RedirectUrl::new(pending.redirect).map_err(anyhow::Error::from)?);
+    let http = http()?;
     let response = client
         .exchange_code(AuthorizationCode::new(
             input.code.clone().ok_or_else(ApiError::unauthorized)?,
         ))
         .map_err(|_| ApiError::bad("OIDC code exchange is unavailable"))?
         .set_pkce_verifier(PkceCodeVerifier::new(pending.pkce))
-        .request_async(&http()?)
+        .request_async(&|request| crate::bounded::oauth(http.clone(), request))
         .await
         .map_err(|_| ApiError::bad("OIDC code exchange failed"))?;
     let id_token = response
@@ -480,4 +481,37 @@ async fn callback(
         .headers_mut()
         .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // A discovery URL that never stops sending is refused once it passes 1 MiB, instead of
+    // being buffered until the request times out.
+    #[tokio::test]
+    async fn endless_discovery_is_refused_once_it_grows_too_large() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let _ = socket.read(&mut [0; 1024]).await;
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n")
+                .await
+                .unwrap();
+            let chunk = vec![b' '; 64 * 1024];
+            while socket.write_all(&chunk).await.is_ok() {}
+        });
+        let started = std::time::Instant::now();
+        let error = metadata(
+            &format!("http://{address}/.well-known/openid-configuration"),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(error.2, "OIDC discovery is too large or incomplete");
+    }
 }

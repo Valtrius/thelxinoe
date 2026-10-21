@@ -3,7 +3,7 @@
 #[path = "../storage/online/youtube.rs"]
 mod storage;
 
-use super::{bounded_response, google, oauth, quota, redirect_uri};
+use super::{google, oauth, quota, redirect_uri};
 use crate::{
     AppState,
     error::{ApiError, Result},
@@ -70,7 +70,7 @@ pub(super) async fn access(state: &AppState, user: &str) -> Result<Access> {
         .clone()
         .ok_or_else(|| ApiError::conflict("Reconnect your YouTube account"))?;
     let client = oauth::client(state, google(state).await?, redirect_uri(state)?)?;
-    let transport = |request| oauth::send(state.online.http.clone(), request);
+    let transport = |request| crate::bounded::oauth(state.online.http.clone(), request);
     let token = match client
         .exchange_refresh_token(&RefreshToken::new(refresh))
         .request_async(&transport)
@@ -164,7 +164,7 @@ pub(super) async fn get(
         .send()
         .await
         .map_err(|_| ApiError::conflict("YouTube is temporarily unavailable"))?;
-    let (status, _, bytes) = bounded_response(response)
+    let (status, _, bytes) = crate::bounded::response(response)
         .await
         .map_err(|_| ApiError::conflict("YouTube returned an invalid response"))?;
     let data: Value = serde_json::from_slice(&bytes)

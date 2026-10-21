@@ -107,7 +107,7 @@ pub(crate) async fn artwork_bytes(
         .send()
         .await
         .map_err(|_| ApiError::not_found())?;
-    let (status, _, bytes) = bounded_response(response)
+    let (status, _, bytes) = crate::bounded::response(response)
         .await
         .map_err(|_| ApiError::not_found())?;
     if !status.is_success() {
@@ -398,26 +398,6 @@ async fn disconnect(State(state): State<AppState>, headers: HeaderMap) -> Result
         )
         .await?;
     Ok(Json(json!({"disconnected":true})))
-}
-async fn bounded_response(
-    mut response: reqwest::Response,
-) -> std::result::Result<(axum::http::StatusCode, HeaderMap, Vec<u8>), std::io::Error> {
-    let status = response.status();
-    let headers = response.headers().clone();
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| std::io::Error::other("Online provider response failed"))?
-    {
-        if bytes.len() + chunk.len() > 1024 * 1024 {
-            return Err(std::io::Error::other(
-                "Online provider response exceeds limit",
-            ));
-        }
-        bytes.extend(chunk);
-    }
-    Ok((status, headers, bytes))
 }
 
 #[cfg(test)]

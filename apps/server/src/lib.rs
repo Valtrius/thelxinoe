@@ -11,6 +11,7 @@ pub mod authentication;
 mod auto_delete;
 mod avatars;
 pub mod backups;
+mod bounded;
 pub mod config;
 mod cookies;
 pub mod error;

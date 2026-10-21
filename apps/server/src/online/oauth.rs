@@ -3,7 +3,7 @@
 #[path = "../storage/online/oauth.rs"]
 mod storage;
 
-use super::{Google, bounded_response, google, quota, redirect_uri};
+use super::{Google, google, quota, redirect_uri};
 use crate::{
     AppState,
     cookies::{self, Cookie},
@@ -224,7 +224,7 @@ async fn finish(state: &AppState, attempt: Attempt, input: Callback, csrf: &str)
     let verifier = String::from_utf8(verifier)
         .map_err(|_| ApiError::bad("Invalid stored authorization attempt"))?;
     let client = client(state, config, attempt.redirect.clone())?;
-    let transport = |request| send(state.online.http.clone(), request);
+    let transport = |request| crate::bounded::oauth(state.online.http.clone(), request);
     let token=client.exchange_code(AuthorizationCode::new(code)).set_pkce_verifier(PkceCodeVerifier::new(verifier)).request_async(&transport).await.map_err(|_|ApiError::bad("Google could not complete account linking; verify the Web application client and callback URL"))?;
     let scope = token
         .scopes()
@@ -259,7 +259,7 @@ async fn finish(state: &AppState, attempt: Attempt, input: Callback, csrf: &str)
         .send()
         .await
         .map_err(|_| ApiError::bad("YouTube account lookup failed"))?;
-    let (status, _, bytes) = bounded_response(response)
+    let (status, _, bytes) = crate::bounded::response(response)
         .await
         .map_err(|_| ApiError::bad("YouTube account lookup failed"))?;
     if !status.is_success() {
@@ -304,22 +304,4 @@ async fn finish(state: &AppState, attempt: Attempt, input: Callback, csrf: &str)
         ));
     }
     Ok(())
-}
-pub(super) async fn send(
-    http: reqwest::Client,
-    request: oauth2::HttpRequest,
-) -> std::result::Result<oauth2::HttpResponse, std::io::Error> {
-    let (parts, body) = request.into_parts();
-    let response = http
-        .request(parts.method, parts.uri.to_string())
-        .headers(parts.headers)
-        .body(body)
-        .send()
-        .await
-        .map_err(|_| std::io::Error::other("OAuth provider request failed"))?;
-    let (status, headers, body) = bounded_response(response).await?;
-    let mut response = axum::http::Response::new(body);
-    *response.status_mut() = status;
-    *response.headers_mut() = headers;
-    Ok(response)
 }
