@@ -1342,11 +1342,11 @@ scenario: try {
       [revokedRun, services.recyclarr.id, revokedActor],
     );
     fixtureSQL(
-      "INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?, 'recyclarr.sync', ?, ?, 'queued', unixepoch()+3,unixepoch())",
+      "INSERT INTO jobs(id,kind,subject,payload,state,available_at,created_at) VALUES (?, 'recyclarr.sync', ?, ?, 'queued', unixepoch()+3,unixepoch())",
       [
         randomUUID(),
+        revokedRun,
         JSON.stringify({ id: revokedRun, preview: false }),
-        `recyclarr:${revokedRun}`,
       ],
     );
     fixtureSQL("UPDATE users SET role='user' WHERE id=?", [revokedActor]);

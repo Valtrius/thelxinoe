@@ -43,37 +43,6 @@ pub(super) async fn home_for(p: Principal, db: &Database) -> anyhow::Result<Valu
     }).await
 }
 
-pub(super) async fn queue_get(
-    db: &Database,
-    client: String,
-    p: Principal,
-) -> anyhow::Result<Value> {
-    db.read("user_media.queue_get", move |db| {
-        let mut value=queue_value(db,&p,&client)?;
-        let tracks=db.prepare("SELECT c.id,c.kind,c.title,c.available FROM json_each(?1) j JOIN media_cards c ON c.id=j.value ORDER BY CAST(j.key AS INTEGER)")?.query_map([value["items"].to_string()],card)?.collect::<std::result::Result<Vec<_>,_>>()?;
-        value["tracks"]=json!(tracks);Ok(value)
-    }).await
-}
-
-pub(super) async fn queue_put(
-    db: &Database,
-    client: String,
-    input: SaveQueue,
-    principal: Principal,
-) -> anyhow::Result<(i32, Value)> {
-    db.write("user_media.queue_put", move|db|{
-        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let previous=queue_value(&tx,&principal,&client)?;
-        if previous["revision"].as_i64()!=Some(input.revision) {return Ok((409,Value::Null));}
-        if !validate_tracks(&tx,&input.items)? {return Ok((400,Value::Null));}
-        let count:i64=tx.query_row("SELECT COUNT(*) FROM music_queues WHERE user_id=?1",[&principal.user.id],|r|r.get(0))?;
-        if input.revision==0 && count>=100 {return Ok((400,Value::Null));}
-        tx.execute("INSERT INTO music_queues(user_id,client_id,revision,items,current_index,position,updated_at) VALUES (?1,?2,?3,?4,?5,0,?6) ON CONFLICT(user_id,client_id) DO UPDATE SET revision=excluded.revision,items=excluded.items,current_index=excluded.current_index,position=0,completed=0,updated_at=excluded.updated_at",params![principal.user.id,client,input.revision+1,serde_json::to_string(&input.items)?,input.current_index as i64,now()])?;
-        let value=queue_value(&tx,&principal,&client)?;
-        tx.commit()?;Ok((200,value))
-    }).await
-}
-
 /// A shelf card; seasons and episodes also name their series.
 fn shelf_card(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     let mut value = card(row)?;
@@ -100,12 +69,4 @@ pub(crate) fn validate_tracks(db: &rusqlite::Connection, items: &[String]) -> an
         }
     }
     Ok(true)
-}
-
-pub(crate) fn queue_value(
-    db: &rusqlite::Connection,
-    p: &Principal,
-    client: &str,
-) -> anyhow::Result<Value> {
-    Ok(db.query_row("SELECT revision,items,current_index,position,completed FROM music_queues WHERE user_id=?1 AND client_id=?2",params![p.user.id,client],|r|Ok(json!({"revision":r.get::<_,i64>(0)?,"items":serde_json::from_str::<Value>(&r.get::<_,String>(1)?).unwrap_or_default(),"current_index":r.get::<_,i64>(2)?,"position":r.get::<_,f64>(3)?,"completed":r.get::<_,bool>(4)?}))).optional()?.unwrap_or_else(||json!({"revision":0,"items":[],"current_index":0,"position":0})))
 }

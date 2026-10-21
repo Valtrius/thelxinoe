@@ -26,14 +26,10 @@ pub async fn mpv_play(
         .unwrap_or_else(|| vec![choice.clone()]);
     let index = choices
         .iter()
-        .position(|c| {
-            if let Some(queue) = &choice.queue_context {
-                c.queue_context
-                    .as_ref()
-                    .is_some_and(|q| q["index"] == queue["index"])
-            } else {
-                c.id == choice.id
-            }
+        .enumerate()
+        .position(|(index, c)| match choice.queue_index {
+            Some(queue_index) => index == queue_index,
+            None => c.id == choice.id,
         })
         .unwrap_or(0);
     choices = choices.into_iter().skip(index).collect();

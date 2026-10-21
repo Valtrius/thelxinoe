@@ -11,7 +11,7 @@ async fn activity_summary_tracks_real_operations_and_respects_audience() {
         db.execute("INSERT INTO stack_provisions(id,kind,actor_id,state,created_at,updated_at) VALUES ('radarr','radarr','bob','installing',1,1)", [])?;
         db.execute("INSERT INTO tool_jobs(id,tool,action,manual,revision,stage,created_at,updated_at) VALUES ('tool','ffmpeg','install',1,0,'waiting',1,1)", [])?;
         db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Movies','movies','/movies')", [])?;
-        db.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES ('scan','library.scan','{\"root_id\":\"root\",\"secret\":\"PRIVATE-TOKEN\"}','scan','running',1,1)", [])?;
+        db.execute("INSERT INTO jobs(id,kind,subject,payload,state,available_at,created_at) VALUES ('scan','library.scan','root','{\"root_id\":\"root\",\"secret\":\"PRIVATE-TOKEN\"}','running',1,1)", [])?;
         db.execute("INSERT INTO settings(key,value) VALUES ('product.controller','{\"items\":[{\"id\":\"product\",\"stage\":\"preparing\"}]}'),('backups.controller','{\"items\":[{\"id\":\"backup\",\"stage\":\"snapshotting\"}]}')", [])?;
         db.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES ('alice','private-video','Private video')", [])?;
         db.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) VALUES ('private-video','g','downloading','{}',1,1)", [])?;
@@ -238,7 +238,7 @@ async fn older_request_updates_remain_reachable_for_members_and_administrators()
 #[tokio::test]
 async fn attention_is_private_live_and_diagnostics_exclude_secret_material() {
     let (_temp, state, alice) = fixture().await;
-    state.db.write("test.fixture", |db|{db.execute("UPDATE users SET role='admin' WHERE id='bob'",[])?;db.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,completed_at,error,created_at) VALUES ('failed','metadata.match','{\"secret\":\"PRIVATE-TOKEN\"}','test','failed',1,?1,'https://private/?ApiKey=PRIVATE-TOKEN',1)",[thelxinoe_core::now()])?;Ok(())}).await.unwrap();
+    state.db.write("test.fixture", |db|{db.execute("UPDATE users SET role='admin' WHERE id='bob'",[])?;db.execute("INSERT INTO jobs(id,kind,subject,payload,state,available_at,completed_at,error,created_at) VALUES ('failed','metadata.match','media','{\"secret\":\"PRIVATE-TOKEN\"}','failed',1,?1,'https://private/?ApiKey=PRIVATE-TOKEN',1)",[thelxinoe_core::now()])?;Ok(())}).await.unwrap();
     let token =
         crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
             .await
@@ -487,6 +487,47 @@ async fn domain_events_push_attention_to_affected_users() {
     .unwrap();
     watcher.abort();
     assert_eq!(pushed, vec![Some("alice".to_owned())]);
+}
+
+// Attention is observed every few seconds and after every change. Observing an
+// unchanged summary must not take the writer, and a change pushes only to its user.
+#[tokio::test]
+async fn attention_observation_writes_only_changes_for_affected_users() {
+    let (_temp, state, _alice) = fixture().await;
+    let pushed = |state: crate::AppState| async move {
+        state
+            .db
+            .read("test.events", |db| {
+                Ok(db
+                    .prepare(
+                        "SELECT user_id FROM events WHERE kind='attention.changed' ORDER BY id",
+                    )?
+                    .query_map([], |r| r.get::<_, Option<String>>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?)
+            })
+            .await
+            .unwrap()
+    };
+    state.db.write("test.fixture", |db| {
+        db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at) VALUES ('lidarr','Lidarr','lidarr','container',8686,'g',X'00','/music','1',1)", [])?;
+        db.execute("INSERT INTO acquisition_requests(id,user_id,service_id,generation,external_id,title,state,created_at,updated_at) VALUES ('alice-request','alice','lidarr','g','album-a','Album A','denied',1,1)", [])?;
+        Ok(())
+    }).await.unwrap();
+    // After a start, clients refresh on reconnect; the first observation only records.
+    super::operations::observe(&state).await.unwrap();
+    assert!(pushed(state.clone()).await.is_empty());
+    let writes = state.db.metrics().writes.completed;
+    super::operations::observe(&state).await.unwrap();
+    assert_eq!(state.db.metrics().writes.completed, writes);
+    assert!(pushed(state.clone()).await.is_empty());
+    state.db.write("test.change", |db| {
+        db.execute("INSERT INTO acquisition_requests(id,user_id,service_id,generation,external_id,title,state,created_at,updated_at) VALUES ('bob-request','bob','lidarr','g','album-b','Album B','failed',1,1)", [])?;
+        Ok(())
+    }).await.unwrap();
+    super::operations::observe(&state).await.unwrap();
+    assert_eq!(pushed(state.clone()).await, vec![Some("bob".to_owned())]);
+    super::operations::observe(&state).await.unwrap();
+    assert_eq!(pushed(state.clone()).await, vec![Some("bob".to_owned())]);
 }
 
 // Playback adds and removes cache files while the overview measures them.

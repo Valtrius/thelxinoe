@@ -97,7 +97,6 @@ pub async fn stream(
             &state,
             p,
             core::Create {
-                queue: None,
                 media_id: media.into(),
                 file_id: Some(source.id),
                 position: Some(0.0),

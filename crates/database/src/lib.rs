@@ -4,7 +4,7 @@ pub use runtime::{AccessError, Metrics, Options, WorkStats};
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::{
-    path::{Path, PathBuf},
+    path::Path,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -12,13 +12,14 @@ use std::{
 /// Fresh schema identity, also used by signed releases and backups. A released
 /// schema is frozen in `schemas/<version>.sql`; changing `schema.sql` afterwards
 /// needs the next version, its upgrade in `MIGRATIONS` and a new frozen copy.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 /// The oldest released schema this build upgrades in place.
 pub const MIGRATION_BASE: u32 = 1;
 /// `MIGRATIONS[i]` upgrades schema `MIGRATION_BASE + i` to the next version. Each runs
 /// inside the opening transaction with foreign keys off, so a table can be rebuilt with
 /// SQLite's documented procedure; every reference is checked before the upgrade commits.
-const MIGRATIONS: &[&str] = &[];
+/// Until a schema ships, its frozen copy and its upgrade may still change together.
+const MIGRATIONS: &[&str] = &[include_str!("../migrations/2.sql")];
 const _: () = assert!(MIGRATIONS.len() as u32 == SCHEMA_VERSION - MIGRATION_BASE);
 const APPLICATION_ID: u32 = 0x544c584e; // TLXN
 const SCHEMA: &str = include_str!("../schema.sql");
@@ -51,7 +52,7 @@ pub fn verify_snapshot(path: &Path) -> Result<u32> {
 pub struct Database {
     runtime: Arc<runtime::Runtime>,
     #[cfg(test)]
-    path: Arc<PathBuf>,
+    path: Arc<std::path::PathBuf>,
 }
 
 fn connection(path: &Path, read_only: bool) -> Result<Connection> {
@@ -216,16 +217,6 @@ impl Database {
         let (writes, reads) = tokio::join!(self.runtime.writer.join(), self.runtime.readers.join());
         writes?;
         reads
-    }
-
-    pub async fn backup(&self, destination: PathBuf) -> Result<()> {
-        self.read("database.backup", move |conn| {
-            anyhow::ensure!(!destination.exists(), "Backup destination already exists");
-            conn.backup(rusqlite::MAIN_DB, &destination, None)?;
-            verify_snapshot(&destination)?;
-            Ok(())
-        })
-        .await
     }
 
     #[cfg(test)]

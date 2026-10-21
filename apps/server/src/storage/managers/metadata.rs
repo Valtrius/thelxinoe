@@ -124,7 +124,8 @@ pub(super) async fn update_metadata_write_media(
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute("UPDATE media SET metadata=?1 WHERE id=?2",params![stored,media])?;
         tx.execute("INSERT INTO metadata_bindings(media_id,service_id,service_generation,external_id,manager_entity_id,refreshed_at) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(media_id) DO UPDATE SET service_id=excluded.service_id,service_generation=excluded.service_generation,external_id=excluded.external_id,manager_entity_id=excluded.manager_entity_id,refreshed_at=excluded.refreshed_at",params![media,service_id,generation,external,manager_entity_id,refreshed_at])?;
-        tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'metadata.refresh',?2,?3)",params![actor,media,now()])?;
+        // Only people's refreshes are audited; the automatic ones repeat every six hours.
+        if actor.is_some() { tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'metadata.refresh',?2,?3)",params![actor,media,now()])?; }
         tx.commit()?;
         Ok(())
     }).await
@@ -260,6 +261,29 @@ pub(super) async fn replace_track_metadata(
                 "UPDATE media SET metadata=?1 WHERE id=?2",
                 params![metadata, media],
             )?;
+        }
+        tx.commit()?;
+        Ok(())
+    })
+    .await
+}
+
+/// Queues each media's refresh unless one was queued for it since `since`, so each
+/// managed title refreshes at most once per period.
+pub(super) async fn queue_managed_refreshes(
+    refreshes: Vec<(String, Value)>,
+    since: i64,
+    db: &Database,
+) -> anyhow::Result<()> {
+    db.write("managers.metadata.queue_managed_refreshes", move |db| {
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        for (media, payload) in refreshes {
+            if thelxinoe_jobs::newest(&tx, "metadata.refresh", &media)?
+                .is_some_and(|job| job.created_at >= since)
+            {
+                continue;
+            }
+            thelxinoe_jobs::enqueue_in(&tx, "metadata.refresh", &media, &payload, 0)?;
         }
         tx.commit()?;
         Ok(())

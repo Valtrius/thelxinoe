@@ -17,6 +17,7 @@ mod grants;
 mod history;
 mod jellyfin;
 pub mod library;
+pub mod maintenance;
 mod managers;
 #[path = "storage/media_resources.rs"]
 mod media_resources;
@@ -75,6 +76,8 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub events: tokio::sync::broadcast::Sender<()>,
     pub(crate) attention: Arc<tokio::sync::Notify>,
+    /// What attention observation last saw, so only changes are pushed.
+    pub(crate) attention_digests: Arc<tokio::sync::Mutex<operations::AttentionDigests>>,
     pub password_slots: Arc<tokio::sync::Semaphore>,
     pub dummy_hash: Arc<String>,
     pub playback: Arc<thelxinoe_playback::Pipelines>,
@@ -132,6 +135,7 @@ impl AppState {
             config: Arc::new(config),
             events: tokio::sync::broadcast::channel(128).0,
             attention: Arc::new(tokio::sync::Notify::new()),
+            attention_digests: Arc::new(Default::default()),
             password_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             compatibility_audio: Arc::new(tokio::sync::Mutex::new(())),
             online: Arc::new(online::Runtime::new()?),
@@ -222,6 +226,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/events", get(realtime::events))
         .route("/api/v1/me/home", get(user_media::home))
+        .route(
+            "/api/v1/me/queue/{client}",
+            get(user_media::legacy_queue).put(user_media::legacy_queue),
+        )
         .route("/api/v1/timezones", get(timezones::list))
         .route(
             "/api/v1/me/appearance",
@@ -230,10 +238,6 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/me/preferences",
             get(timezones::get).put(timezones::update),
-        )
-        .route(
-            "/api/v1/me/queue/{client}",
-            get(user_media::queue_get).put(user_media::queue_put),
         )
         .route("/api/v1/me/history", get(history::mine))
         .route("/api/v1/me/statistics", get(statistics::mine))
@@ -288,10 +292,7 @@ pub fn router(state: AppState) -> Router {
             get(playback::subtitle),
         )
         .route("/api/v1/catalog/{id}/playback", get(playback::media_info))
-        .route(
-            "/api/v1/admin/jobs",
-            get(realtime::jobs).post(realtime::enqueue),
-        )
+        .route("/api/v1/admin/jobs", get(realtime::jobs))
         .route(
             "/api/v1/admin/settings",
             get(accounts::settings).put(accounts::save_settings),
@@ -412,7 +413,6 @@ async fn run_general_jobs(state: AppState) -> anyhow::Result<()> {
         if let Some(job) = job {
             state.notify_attention();
             match job.kind.as_str() {
-                "checkpoint" => queue.checkpoint(&job).await?,
                 "manager.request" => {
                     let result = managers::acquire(&state, &job).await;
                     queue

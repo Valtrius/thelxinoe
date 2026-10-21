@@ -1,4 +1,3 @@
-import { api } from './api';
 import type { MediaChoice } from './playback';
 export type Card = MediaChoice & {
   kind: string;
@@ -10,96 +9,33 @@ export type Card = MediaChoice & {
   position?: number;
   duration?: number;
 };
-export type SavedQueue = {
-  revision: number;
-  items: string[];
-  current_index: number;
-  position: number;
-  tracks?: Card[];
-  completed?: boolean;
-};
-export function clientId(): string {
-  let id = localStorage.getItem('thelxinoe-client-id');
-  if (!id || !/^[0-9a-f-]{36}$/.test(id)) {
-    id = crypto.randomUUID();
-    localStorage.setItem('thelxinoe-client-id', id);
-  }
-  return id;
-}
+/** The choice's place in its queue: its `queueIndex`, or else the first entry
+ * for the same media. */
 export function choiceIndex(items: MediaChoice[], choice: MediaChoice): number {
   return Math.max(
     0,
-    items.findIndex((item) =>
-      choice.queue_context
-        ? item.queue_context?.index === choice.queue_context.index
-        : item.id === choice.id,
+    items.findIndex((item, index) =>
+      choice.queueIndex === undefined
+        ? item.id === choice.id
+        : index === choice.queueIndex,
     ),
   );
 }
-export async function persistQueue(choice: MediaChoice): Promise<MediaChoice> {
-  if (choice.kind !== 'track' || choice.queue_context) return choice;
-  const client = clientId(),
-    path = `/me/queue/${client}`;
-  const previous = await api<SavedQueue>(path);
+/** A track plays from the start with its queue, or a queue of itself. Each
+ * entry carries its own place, so a track listed twice keeps its position. */
+export function musicQueue(choice: MediaChoice): MediaChoice {
+  if (choice.kind !== 'track') return choice;
   const items = choice.queue?.length ? choice.queue : [choice];
-  const index = choice.queueIndex ?? choiceIndex(items, choice);
-  const saved = await api<SavedQueue>(path, 'PUT', {
-    revision: previous.revision,
-    items: items.map((i) => i.id),
-    current_index: index,
-  });
-  const queue = items.map((item, index) => ({
-    ...item,
-    queue: undefined,
-    kind: 'track',
-    queue_context: { client_id: client, revision: saved.revision, index },
-  }));
+  const index = choiceIndex(items, choice);
   return {
     ...choice,
     position: 0,
-    queue_context: queue[index].queue_context,
-    queue,
+    queueIndex: index,
+    queue: items.map((item, queueIndex) => ({
+      ...item,
+      queue: undefined,
+      kind: 'track',
+      queueIndex,
+    })),
   };
-}
-export function restoreQueue(
-  saved: SavedQueue,
-  index = saved.current_index,
-): MediaChoice | undefined {
-  const client = clientId();
-  const queue = saved.items
-    .map((id, index) => {
-      const track = saved.tracks?.find((t) => t.id === id);
-      return track?.available
-        ? {
-            ...track,
-            queue_context: {
-              client_id: client,
-              revision: saved.revision,
-              index,
-            },
-          }
-        : undefined;
-    })
-    .filter(
-      (
-        item,
-      ): item is Card & {
-        queue_context: { client_id: string; revision: number; index: number };
-      } => !!item,
-    );
-  const chosen = queue.find((i) => i.queue_context.index >= index) ?? queue[0];
-  if (saved.completed && queue.length) {
-    const replay = queue.map((item) => ({ ...item, queue_context: undefined }));
-    return { ...replay[0], position: 0, queue: replay };
-  }
-  return chosen
-    ? {
-        ...chosen,
-        position:
-          chosen.queue_context.index === saved.current_index
-            ? saved.position
-            : 0,
-        queue,
-      }
-    : undefined;
 }

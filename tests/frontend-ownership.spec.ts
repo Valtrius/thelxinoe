@@ -235,8 +235,7 @@ for (const exit of ['replace', 'close', 'revoke'] as const) {
     const held = responseGate();
     const prepared: string[] = [],
       stopped: string[] = [];
-    let heldStop = false,
-      sequence = 0;
+    let heldStop = false;
     const tracks = ['Q0', 'A', 'B'].map((id) => ({
       id,
       title: `Track ${id}`,
@@ -275,16 +274,6 @@ for (const exit of ['replace', 'close', 'revoke'] as const) {
     });
     await page.route('**/api/v1/catalog?**', (route) =>
       route.fulfill({ json: { items: tracks } }),
-    );
-    await page.route('**/api/v1/me/queue/**', (route) =>
-      route.fulfill({
-        json: {
-          revision: ++sequence,
-          items: [],
-          current_index: 0,
-          position: 0,
-        },
-      }),
     );
     await page.route('**/api/v1/catalog/*/playback', (route) =>
       route.fulfill({

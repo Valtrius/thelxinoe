@@ -187,7 +187,7 @@ pub(super) async fn approve(
             return Ok(Approval::Busy);
         }
         tx.execute("UPDATE service_transfers SET state='queued',step='stop',declarations=?2,approved_by=?3,approved_at=?4,updated_at=?4,error=NULL WHERE id=?1", params![id, declarations.to_string(), actor, now()])?;
-        tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'service.transfer',?2,?3,'queued',?4,?4) ON CONFLICT(dedupe_key) DO NOTHING", params![thelxinoe_core::id(), json!({"id":id}).to_string(), format!("transfer:{id}"), now()])?;
+        if thelxinoe_jobs::newest(&tx, "service.transfer", &id)?.is_none() { thelxinoe_jobs::enqueue_in(&tx, "service.transfer", &id, &json!({"id":id}), 0)?; }
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'transfer.approve',?2,?3)", params![actor, id, now()])?;
         tx.commit()?;
         Ok(Approval::Queued)
@@ -220,7 +220,7 @@ pub(super) async fn outcome(
     db.write("managers.transfers.outcome", move |db| {
         let tx = db.transaction()?;
         tx.execute("UPDATE service_transfers SET state=?2,error=?3,updated_at=?4,completed_at=CASE WHEN ?2 IN ('cancelled','returned') THEN ?4 ELSE completed_at END WHERE id=?1", params![id, state, error, now()])?;
-        tx.execute("UPDATE jobs SET state='complete' WHERE kind='service.transfer' AND json_extract(payload,'$.id')=?1 AND ?2 IN ('cancelled','returned') AND state='queued'", params![id, state])?;
+        tx.execute("UPDATE jobs SET state='complete' WHERE kind='service.transfer' AND subject=?1 AND ?2 IN ('cancelled','returned') AND state='queued'", params![id, state])?;
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,?2,?3,?4)", params![actor, format!("transfer.{state}"), id, now()])?;
         tx.commit()?;
         Ok(())
@@ -395,9 +395,14 @@ pub(super) async fn recovery(
 }
 
 fn queue(db: &rusqlite::Connection, transfer: &str, delay: i64) -> rusqlite::Result<()> {
-    let changed = db.execute("UPDATE jobs SET state='queued',available_at=?2,started_at=NULL,error=NULL WHERE kind='service.transfer' AND json_extract(payload,'$.id')=?1", params![transfer, now() + delay])?;
-    if changed == 0 {
-        db.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'service.transfer',?2,?3,'queued',?4,?4)", params![thelxinoe_core::id(), json!({"id":transfer}).to_string(), format!("transfer:{transfer}"), now() + delay])?;
+    if !thelxinoe_jobs::requeue(db, "service.transfer", transfer, delay)? {
+        thelxinoe_jobs::enqueue_in(
+            db,
+            "service.transfer",
+            transfer,
+            &json!({"id":transfer}),
+            delay,
+        )?;
     }
     Ok(())
 }

@@ -12,11 +12,22 @@ use axum::{
     http::HeaderMap,
 };
 use rusqlite::{OptionalExtension, params};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use thelxinoe_core::{Principal, now};
 
-pub(crate) use storage::card;
+pub(crate) use storage::{card, validate_tracks};
+/// Released desktops (API 1) save the music queue before they play a track. They get
+/// an empty queue that is never stored, until API_MIN_VERSION drops them.
+pub async fn legacy_queue(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>> {
+    security::principal(&state, &headers).await?;
+    Ok(Json(
+        json!({"revision":0,"items":[],"current_index":0,"position":0}),
+    ))
+}
 pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -100,56 +111,30 @@ pub(crate) async fn home_for(state: &AppState, principal: &Principal) -> Result<
     let result = storage::home_for(p, &state.db).await?;
     Ok(result)
 }
-#[derive(Clone, Deserialize, Serialize)]
-pub struct QueueContext {
-    pub client_id: String,
-    pub revision: i64,
-    pub index: usize,
-}
-pub(crate) fn valid_client(id: &str) -> bool {
-    id.len() == 36 && uuid::Uuid::parse_str(id).is_ok()
-}
-pub(crate) use storage::queue_value;
-pub(crate) use storage::validate_tracks;
-pub async fn queue_get(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(client): Path<String>,
-) -> Result<Json<Value>> {
-    let p = security::principal(&state, &headers).await?;
-    if !valid_client(&client) {
-        return Err(ApiError::bad("Invalid client identifier"));
-    }
-    Ok(Json(storage::queue_get(&state.db, client, p).await?))
-}
-#[derive(Deserialize)]
-pub struct SaveQueue {
-    revision: i64,
-    items: Vec<String>,
-    current_index: usize,
-}
-pub async fn queue_put(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(client): Path<String>,
-    Json(input): Json<SaveQueue>,
-) -> Result<Json<Value>> {
-    let p = security::principal(&state, &headers).await?;
-    if !valid_client(&client)
-        || input.items.len() > 500
-        || input.current_index >= input.items.len().max(1)
-    {
-        return Err(ApiError::bad("Invalid music queue"));
-    }
-    let principal = p.clone();
-    let result = storage::queue_put(&state.db, client, input, principal).await?;
-    match result.0 {
-        409 => Err(ApiError::conflict(
-            "This queue changed in another window; reload it before editing",
-        )),
-        400 => Err(ApiError::bad(
-            "Choose up to 500 catalog tracks and at most 100 client queues",
-        )),
-        _ => Ok(Json(result.1)),
+
+#[cfg(test)]
+mod tests {
+    use crate::test_support::{call, fixture};
+    use axum::http::StatusCode;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn released_desktops_still_get_an_empty_queue_before_playing_music() {
+        let (_temp, state, cookie) = fixture().await;
+        let path = "/api/v1/me/queue/9f7a3a8e-1d2c-4b5e-8f6a-0c1d2e3f4a5b";
+        for (method, body) in [
+            ("GET", json!(null)),
+            (
+                "PUT",
+                json!({"revision":0,"items":["track"],"current_index":0}),
+            ),
+        ] {
+            let (status, _, queue) = call(&state, path, method, body, &cookie).await;
+            assert_eq!(status, StatusCode::OK, "{method}");
+            assert_eq!(queue["revision"], 0);
+            assert_eq!(queue["items"], json!([]));
+        }
+        let (status, _, _) = call(&state, path, "GET", json!(null), "").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 }

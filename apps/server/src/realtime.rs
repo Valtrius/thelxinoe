@@ -60,25 +60,3 @@ pub async fn jobs(State(state): State<AppState>, headers: HeaderMap) -> Result<J
     let rows = storage::jobs(&state.db).await?;
     Ok(Json(json!({"items":rows})))
 }
-#[derive(Deserialize)]
-pub struct Enqueue {
-    key: String,
-}
-pub async fn enqueue(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(input): Json<Enqueue>,
-) -> Result<Json<Value>> {
-    security::require(&state, &headers, Capability::ManageServer).await?;
-    if input.key.len() > 100 || input.key.is_empty() {
-        return Err(ApiError::bad("Invalid job key"));
-    }
-    let id = thelxinoe_jobs::Queue(state.db.clone())
-        .enqueue(
-            "checkpoint".into(),
-            json!({"message":"Server checkpoint"}),
-            format!("checkpoint:{}", input.key),
-        )
-        .await?;
-    Ok(Json(json!({"id":id})))
-}

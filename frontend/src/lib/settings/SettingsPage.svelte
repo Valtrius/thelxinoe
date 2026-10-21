@@ -636,13 +636,6 @@
         )}{:then { default: ActivitySettings }}<ActivitySettings
           {jobs}
           loading={loadingData('jobs')}
-          checkpoint={() =>
-            act(async () => {
-              await api('/admin/jobs', 'POST', {
-                key: crypto.randomUUID(),
-              });
-              await loadSettings();
-            })}
         />{:catch caught}{@render failed(caught)}{/await}{/if}
   {/if}
 {/snippet}

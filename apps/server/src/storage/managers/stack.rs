@@ -14,7 +14,7 @@ pub(super) async fn install(
     key: String,
     credential: Option<Vec<u8>>,
 ) -> anyhow::Result<bool> {
-    db.write("managers.stack.install", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;if tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE kind=?1 UNION ALL SELECT 1 FROM manager_services WHERE kind=?1 AND enabled=1 UNION ALL SELECT 1 FROM support_services WHERE kind=?1 UNION ALL SELECT 1 FROM recyclarr_connections WHERE ?1='recyclarr' UNION ALL SELECT 1 FROM service_transfers WHERE kind=?1 AND state NOT IN ('review','complete','cancelled','returned'))",[&input.kind],|r|r.get::<_,bool>(0))?{return Ok(false);}tx.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,created_at,updated_at,native_url,hold) VALUES (?1,?2,?3,?4,?5,'queued',?6,?6,?7,'setup')",params![key,input.kind,p.user.id,input.host_port,credential,now(),input.native_url])?;tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'stack.install',?2,?3,'queued',?4,?4)",params![id(),json!({"id":key}).to_string(),format!("stack:{key}"),now()])?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'stack.install',?2,?3)",params![p.user.id,key,now()])?;tx.commit()?;Ok(true)}).await
+    db.write("managers.stack.install", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;if tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE kind=?1 UNION ALL SELECT 1 FROM manager_services WHERE kind=?1 AND enabled=1 UNION ALL SELECT 1 FROM support_services WHERE kind=?1 UNION ALL SELECT 1 FROM recyclarr_connections WHERE ?1='recyclarr' UNION ALL SELECT 1 FROM service_transfers WHERE kind=?1 AND state NOT IN ('review','complete','cancelled','returned'))",[&input.kind],|r|r.get::<_,bool>(0))?{return Ok(false);}tx.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,created_at,updated_at,native_url,hold) VALUES (?1,?2,?3,?4,?5,'queued',?6,?6,?7,'setup')",params![key,input.kind,p.user.id,input.host_port,credential,now(),input.native_url])?;thelxinoe_jobs::enqueue_in(&tx,"stack.install",&key,&json!({"id":key}),0)?;tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'stack.install',?2,?3)",params![p.user.id,key,now()])?;tx.commit()?;Ok(true)}).await
 }
 
 pub(super) async fn action_read_service(
@@ -53,9 +53,11 @@ pub(super) async fn action_write_stack_provisions(
         tx.execute("UPDATE stack_provisions SET container_id=?1,updated_at=?2 WHERE id=?3", params![container,now(),key])?;
         if state == "blocked" || replaced {
             tx.execute("UPDATE stack_provisions SET state='connecting',hold='setup',error=NULL WHERE id=?1",[&key])?;
-            if tx.execute("UPDATE jobs SET state='queued',error=NULL,available_at=?1,started_at=NULL WHERE kind='stack.install' AND json_extract(payload,'$.id')=?2 AND state IN ('failed','complete')",params![now(),key])? == 0 {
-                // A transferred service never had an installation job; one that is already queued keeps it.
-                tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) SELECT ?1,'stack.install',?2,?3,'queued',?4,?4 WHERE NOT EXISTS(SELECT 1 FROM jobs WHERE kind='stack.install' AND json_extract(payload,'$.id')=?5)",params![id(),json!({"id":key}).to_string(),format!("stack:{key}"),now(),key])?;
+            // A transferred service never had an installation job; one that is already queued keeps it.
+            match thelxinoe_jobs::newest(&tx,"stack.install",&key)?.map(|job|job.state) {
+                Some(state) if state=="queued"||state=="running" => {}
+                Some(_) => {thelxinoe_jobs::requeue(&tx,"stack.install",&key,0)?;}
+                None => {thelxinoe_jobs::enqueue_in(&tx,"stack.install",&key,&json!({"id":key}),0)?;}
             }
         }tx.commit()?;Ok(())}).await
 }
@@ -67,7 +69,7 @@ pub(super) async fn begin_retirement(
 ) -> anyhow::Result<bool> {
     db.write("managers.stack.begin_retirement", move |db| {
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let ready: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE id=?1 AND state IN ('complete','blocked','retiring') AND (hold IS NULL OR hold='setup') AND (operation IS NULL OR operation=?2)) AND NOT EXISTS(SELECT 1 FROM jobs WHERE kind='stack.install' AND json_extract(payload,'$.id')=?1 AND state IN ('queued','running')) AND NOT EXISTS(SELECT 1 FROM service_updates WHERE service_id=?1 AND state NOT IN ('committed','rolled-back','blocked'))", params![key,operation], |r|r.get(0))?;
+        let ready: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE id=?1 AND state IN ('complete','blocked','retiring') AND (hold IS NULL OR hold='setup') AND (operation IS NULL OR operation=?2)) AND NOT EXISTS(SELECT 1 FROM jobs WHERE kind='stack.install' AND subject=?1 AND state IN ('queued','running')) AND NOT EXISTS(SELECT 1 FROM service_updates WHERE service_id=?1 AND state NOT IN ('committed','rolled-back','blocked'))", params![key,operation], |r|r.get(0))?;
         if ready {
             tx.execute("UPDATE stack_provisions SET state='retiring',updated_at=?1,operation=?3 WHERE id=?2",params![now(),key,operation])?;
             // Normal workers stop before the controller removes or retires the container.
@@ -113,8 +115,8 @@ pub(super) async fn retire(
             tx.execute("DELETE FROM service_updates WHERE service_id=?1",[&key])?;
         }
         tx.execute("DELETE FROM service_update_policy WHERE service_id=?1",[&key])?;
-        tx.execute("UPDATE jobs SET state='complete',error=NULL WHERE kind='stack.install' AND json_extract(payload,'$.id')=?1",[&key])?;
-        tx.execute("UPDATE jobs SET state='complete',error='Installation retired' WHERE kind='recyclarr.sync' AND json_extract(payload,'$.id') IN (SELECT id FROM recyclarr_runs WHERE provision_id=?1)",[&key])?;
+        tx.execute("UPDATE jobs SET state='complete',error=NULL WHERE kind='stack.install' AND subject=?1",[&key])?;
+        tx.execute("UPDATE jobs SET state='complete',error='Installation retired' WHERE kind='recyclarr.sync' AND subject IN (SELECT id FROM recyclarr_runs WHERE provision_id=?1)",[&key])?;
         tx.execute("DELETE FROM stack_provisions WHERE id=?1 AND state='retiring'",[&key])?;
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,?2,?3,?4)",params![actor,if remove {"stack.remove"} else {"stack.retire"},key,now()])?;
         tx.commit()?;
@@ -227,10 +229,11 @@ pub(super) async fn complete_setup(db: &Database, key: String) -> anyhow::Result
 
 pub(super) async fn retry(db: &Database, key: String) -> anyhow::Result<bool> {
     db.write("managers.stack.retry", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let ready=tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions p JOIN jobs j ON json_extract(j.payload,'$.id')=p.id WHERE p.id=?1 AND p.state='blocked' AND p.hold='setup' AND j.kind='stack.install' AND j.state='failed')",[&key],|r|r.get::<_,bool>(0))?;
+        // Finished jobs are pruned after a week, so a long-blocked installation may have none.
+        let ready=tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions p WHERE p.id=?1 AND p.state='blocked' AND p.hold='setup') AND NOT EXISTS(SELECT 1 FROM jobs WHERE kind='stack.install' AND subject=?1 AND state IN ('queued','running','complete'))",[&key],|r|r.get::<_,bool>(0))?;
         if !ready {return Ok(false);}
         tx.execute("UPDATE stack_provisions SET state=CASE WHEN container_id IS NULL THEN 'queued' ELSE 'connecting' END,error=NULL,updated_at=?1 WHERE id=?2",params![now(),key])?;
-        tx.execute("UPDATE jobs SET state='queued',error=NULL,available_at=?1 WHERE kind='stack.install' AND json_extract(payload,'$.id')=?2",params![now(),key])?;
+        if !thelxinoe_jobs::requeue(&tx,"stack.install",&key,0)? { thelxinoe_jobs::enqueue_in(&tx,"stack.install",&key,&json!({"id":key}),0)?; }
         tx.commit()?;Ok(true)
     }).await
 }

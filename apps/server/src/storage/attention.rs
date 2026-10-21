@@ -1,7 +1,9 @@
 use super::{
     ActivityItem, ActivityState, AttentionItem, AttentionSummary, AttentionTarget, Severity,
 };
-use rusqlite::{OptionalExtension, params};
+use rusqlite::params;
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use thelxinoe_core::{Principal, Role, now};
 use thelxinoe_database::Database;
 
@@ -13,7 +15,7 @@ fn collect(
     let mut items = Vec::new();
     if admin {
         let sql = "SELECT 'job:'||id,'error','A background job failed.','jobs',id,CAST(completed_at AS TEXT)||':'||attempts,1 FROM jobs WHERE state='failed' AND completed_at>?1
-          AND NOT EXISTS(SELECT 1 FROM acquisition_requests r WHERE r.id=json_extract(jobs.payload,'$.request_id') AND r.state IN ('available','requested','denied','cancelled'))
+          AND NOT EXISTS(SELECT 1 FROM acquisition_requests r WHERE jobs.kind='manager.request' AND r.id=jobs.subject AND r.state IN ('available','requested','denied','cancelled'))
           UNION ALL SELECT 'service:'||id,'error','An integration is unavailable.','services',kind,generation,0 FROM manager_services WHERE enabled=1 AND error IS NOT NULL
           UNION ALL SELECT 'support:'||id,'error','A support service is unavailable.','services',kind,generation,0 FROM support_services WHERE error IS NOT NULL
           UNION ALL SELECT 'update:'||u.id,CASE WHEN u.state IN ('runtime-failure','recovery-required') THEN 'error' ELSE 'warning' END,'A service update needs attention.','services',s.kind,u.state||':'||u.updated_at,0 FROM service_updates u JOIN stack_provisions s ON s.id=u.service_id WHERE u.state IN ('blocked','failed','incompatible','unable-to-verify','runtime-failure','recovery-required')
@@ -173,12 +175,12 @@ fn collect_activity(
           CASE WHEN json_extract(j.value,'$.stage') IN ('restore-queued','restoring','restore-activating','release-handoff') THEN 'Restoring backup' ELSE 'Creating encrypted backup' END,NULL
           FROM settings s,json_each(s.value,'$.items') j WHERE s.key='backups.controller' AND COALESCE(json_extract(j.value,'$.needs_attention'),0)=0 AND json_extract(j.value,'$.stage') IN ('queued','quiescing','snapshotting','encrypting','restore-queued','restoring','restore-activating','release-handoff','rollback-copying','rollback-activating')
           UNION ALL SELECT 'backup-wait:'||json_extract(value,'$.id'),'backups',json_extract(value,'$.id'),'queued','Automatic backup waiting for idle',NULL FROM settings WHERE key='backups.automatic' AND json_extract(value,'$.state')='waiting'
-          UNION ALL SELECT 'job:'||id,'jobs',id,state,CASE kind WHEN 'library.scan' THEN 'Scanning library' WHEN 'manager.request' THEN 'Acquiring requested media' WHEN 'recyclarr.sync' THEN 'Synchronizing Recyclarr configuration' WHEN 'stack.install' THEN 'Installing service' WHEN 'service.update' THEN 'Updating service' WHEN 'checkpoint' THEN 'Creating server checkpoint' ELSE 'Refreshing media metadata' END,json_extract(payload,'$.media_id')
-          FROM jobs WHERE state IN ('queued','running') AND (kind IN ('library.scan','manager.request','recyclarr.sync','stack.install','service.update','checkpoint') OR (kind IN ('metadata.match','metadata.refresh') AND json_extract(payload,'$.actor_id') IS NOT NULL))
-          UNION ALL SELECT 'scan:'||j.id,r.kind,r.id,j.state,'Scanning '||r.name,NULL FROM jobs j JOIN library_roots r ON r.id=json_extract(j.payload,'$.root_id') WHERE j.kind='library.scan' AND j.state IN ('queued','running')
+          UNION ALL SELECT 'job:'||id,'jobs',id,state,CASE kind WHEN 'library.scan' THEN 'Scanning library' WHEN 'manager.request' THEN 'Acquiring requested media' WHEN 'recyclarr.sync' THEN 'Synchronizing Recyclarr configuration' WHEN 'stack.install' THEN 'Installing service' WHEN 'service.update' THEN 'Updating service' ELSE 'Refreshing media metadata' END,json_extract(payload,'$.media_id')
+          FROM jobs WHERE state IN ('queued','running') AND (kind IN ('library.scan','manager.request','recyclarr.sync','stack.install','service.update') OR (kind IN ('metadata.match','metadata.refresh') AND json_extract(payload,'$.actor_id') IS NOT NULL))
+          UNION ALL SELECT 'scan:'||j.id,r.kind,r.id,j.state,'Scanning '||r.name,NULL FROM jobs j JOIN library_roots r ON r.id=j.subject WHERE j.kind='library.scan' AND j.state IN ('queued','running')
           UNION ALL SELECT 'recyclarr:'||id,'services','recyclarr',state,'Synchronizing Recyclarr configuration',NULL FROM jobs WHERE kind='recyclarr.sync' AND state IN ('queued','running')
           UNION ALL SELECT 'media:'||o.id,r.kind,o.media_id,'running','Applying media changes',o.media_id FROM media_operations o JOIN media m ON m.id=o.media_id JOIN library_roots r ON r.id=m.root_id WHERE o.state='executing'
-          UNION ALL SELECT 'metadata:'||j.id,r.kind,m.id,j.state,'Refreshing media metadata',m.id FROM jobs j JOIN media m ON m.id=json_extract(j.payload,'$.media_id') JOIN library_roots r ON r.id=m.root_id WHERE j.kind IN ('metadata.match','metadata.refresh') AND j.state IN ('queued','running') AND json_extract(j.payload,'$.actor_id') IS NOT NULL
+          UNION ALL SELECT 'metadata:'||j.id,r.kind,m.id,j.state,'Refreshing media metadata',m.id FROM jobs j JOIN media m ON m.id=j.subject JOIN library_roots r ON r.id=m.root_id WHERE j.kind IN ('metadata.match','metadata.refresh') AND j.state IN ('queued','running') AND json_extract(j.payload,'$.actor_id') IS NOT NULL
           UNION ALL SELECT 'analysis:'||media_id||':'||file_id,'analysis',media_id,state,'Analyzing episode',media_id FROM segment_analysis WHERE state='running'
           UNION ALL SELECT 'connection:'||json_extract(value,'$.id'),'services',json_extract(value,'$.source_kind'),CASE WHEN json_extract(value,'$.state') IN ('connecting','cleaning') THEN 'running' ELSE 'queued' END,
           CASE WHEN json_extract(value,'$.cleanup')=1 THEN 'Disconnecting service connection' ELSE 'Connecting services' END,NULL
@@ -208,8 +210,8 @@ fn collect_activity(
             });
         }
     }
-    let sql = "SELECT 'download:'||d.video_id,CASE WHEN d.state IN ('queued','waiting_for_space') THEN 'queued' ELSE 'running' END,CASE d.state WHEN 'waiting_for_space' THEN 'Video download waiting for space' WHEN 'queued' THEN 'Video download queued' WHEN 'deleting' THEN 'Removing downloaded video' ELSE 'Downloading video' END
-      FROM youtube_downloads d JOIN youtube_download_requests r ON r.video_id=d.video_id WHERE r.user_id=?1 AND d.state IN ('queued','waiting_for_space','downloading','deleting')
+    let sql = "SELECT 'download:'||d.video_id,CASE WHEN d.state IN ('queued','waiting_for_space') THEN 'queued' ELSE 'running' END,CASE d.state WHEN 'waiting_for_space' THEN 'Video download waiting for space' WHEN 'queued' THEN 'Video download queued' ELSE 'Downloading video' END
+      FROM youtube_downloads d JOIN youtube_download_requests r ON r.video_id=d.video_id WHERE r.user_id=?1 AND d.state IN ('queued','waiting_for_space','downloading')
       AND NOT EXISTS(SELECT 1 FROM settings WHERE key='online.youtube.enabled' AND value='false')
       UNION ALL SELECT 'account:twitch',CASE WHEN phase='connecting' THEN 'running' ELSE 'queued' END,CASE WHEN phase='connecting' THEN 'Connecting Twitch account' ELSE 'Waiting for Twitch authorization' END FROM twitch_attempts WHERE user_id=?1 AND expires_at>?2
       UNION ALL SELECT 'sync:youtube',CASE WHEN y.failures>0 OR y.last_turn<=json_extract(s.value,'$.last_turn') THEN 'queued' ELSE 'running' END,CASE WHEN y.failures>0 THEN 'YouTube synchronization waiting to retry' ELSE 'Synchronizing YouTube' END
@@ -267,22 +269,23 @@ pub(super) async fn summary(
     .await
 }
 
-pub(super) async fn observe(db: &Database) -> anyhow::Result<Vec<String>> {
-    db.write("attention.observe", |db| {
-        let tx = db.transaction()?;
-        let users = tx.prepare("SELECT id,role FROM users")?.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut changed = Vec::new();
-        for (user,role) in users {
-            let value = serde_json::to_string(&collect_summary(&tx,&user,role=="admin")?)?;
-            let previous = tx.query_row("SELECT value FROM attention_snapshots WHERE user_id=?1",[&user],|r|r.get::<_,String>(0)).optional()?;
-            if previous.as_ref()!=Some(&value) {
-                tx.execute("INSERT INTO attention_snapshots VALUES (?1,?2) ON CONFLICT(user_id) DO UPDATE SET value=excluded.value",params![user,value])?;
-                changed.push(user);
-            }
-        }
-        tx.commit()?;
-        Ok(changed)
-    }).await
+/// A digest of every user's summary, read in one snapshot. Comparing digests finds
+/// whose attention changed without writing anything.
+pub(super) async fn digests(db: &Database) -> anyhow::Result<HashMap<String, [u8; 32]>> {
+    db.read("attention.digests", |db| {
+        let users = db
+            .prepare("SELECT id,role FROM users")?
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        users
+            .into_iter()
+            .map(|(user, role)| {
+                let summary = serde_json::to_vec(&collect_summary(db, &user, role == "admin")?)?;
+                Ok((user, Sha256::digest(&summary).into()))
+            })
+            .collect()
+    })
+    .await
 }
 
 pub(super) async fn acknowledge(

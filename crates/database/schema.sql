@@ -132,8 +132,8 @@ CREATE TABLE audit (
 CREATE TABLE jobs (
     id TEXT NOT NULL PRIMARY KEY,
     kind TEXT NOT NULL,
+    subject TEXT NOT NULL,
     payload TEXT NOT NULL,
-    dedupe_key TEXT NOT NULL UNIQUE,
     state TEXT NOT NULL CHECK(state IN ('queued','running','complete','failed')),
     attempts INTEGER NOT NULL DEFAULT 0,
     available_at INTEGER NOT NULL,
@@ -141,11 +141,6 @@ CREATE TABLE jobs (
     completed_at INTEGER,
     error TEXT,
     created_at INTEGER NOT NULL
-) STRICT;
-
-CREATE TABLE job_effects (
-    job_id TEXT NOT NULL PRIMARY KEY REFERENCES jobs(id),
-    value TEXT NOT NULL
 ) STRICT;
 
 CREATE TABLE events (
@@ -268,18 +263,6 @@ CREATE TABLE playlist_favorites (
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
     PRIMARY KEY(user_id, playlist_id)
-) STRICT;
-
-CREATE TABLE music_queues (
-    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    client_id TEXT NOT NULL,
-    revision INTEGER NOT NULL,
-    items TEXT NOT NULL,
-    current_index INTEGER NOT NULL DEFAULT 0,
-    position REAL NOT NULL DEFAULT 0,
-    updated_at INTEGER NOT NULL,
-    completed INTEGER NOT NULL DEFAULT 0 CHECK(completed IN (0,1)),
-    PRIMARY KEY(user_id, client_id)
 ) STRICT;
 
 CREATE TABLE compat_devices (
@@ -410,7 +393,7 @@ CREATE TABLE youtube_state (
 CREATE TABLE youtube_downloads (
     video_id TEXT NOT NULL PRIMARY KEY,
     generation TEXT NOT NULL,
-    state TEXT NOT NULL CHECK(state IN ('queued','waiting_for_space','downloading','ready','extractor_authentication_required','network_blocked','unavailable','failed','deleting')),
+    state TEXT NOT NULL CHECK(state IN ('queued','waiting_for_space','downloading','ready','extractor_authentication_required','network_blocked','unavailable','failed')),
     tools TEXT NOT NULL,
     path TEXT,
     size INTEGER,
@@ -503,9 +486,6 @@ CREATE TABLE playback_sessions (
     sequence INTEGER NOT NULL DEFAULT -1,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    client_id TEXT,
-    queue_revision INTEGER,
-    queue_index INTEGER,
     youtube_video_id TEXT REFERENCES youtube_media(video_id),
     streaming INTEGER NOT NULL DEFAULT 0 CHECK(streaming IN (0,1)),
     live_media_id TEXT REFERENCES live_media(id),
@@ -891,11 +871,6 @@ CREATE TABLE attention_seen (
     PRIMARY KEY(user_id,source)
 ) STRICT;
 
-CREATE TABLE attention_snapshots (
-    user_id TEXT NOT NULL PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    value TEXT NOT NULL
-) STRICT;
-
 CREATE TABLE seerr_request_states (
     service_id TEXT NOT NULL REFERENCES support_services(id) ON DELETE CASCADE,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -1050,6 +1025,7 @@ CREATE TABLE playback_history (
 CREATE INDEX sessions_user ON sessions(user_id);
 
 CREATE INDEX jobs_ready ON jobs(state, available_at);
+CREATE INDEX jobs_subject ON jobs(kind, subject, created_at);
 
 CREATE INDEX media_parent ON media(parent_id);
 

@@ -99,7 +99,6 @@ pub async fn media_info(
 }
 #[derive(Deserialize)]
 pub struct Create {
-    pub queue: Option<crate::user_media::QueueContext>,
     pub media_id: String,
     pub file_id: Option<String>,
     pub position: Option<f64>,
@@ -122,27 +121,8 @@ pub(crate) async fn create_with_delivery(
     mut input: Create,
     vod: bool,
 ) -> Result<Value> {
-    if let Some(queue) = &input.queue {
-        if !crate::user_media::valid_client(&queue.client_id) || queue.index >= 500 {
-            return Err(ApiError::bad("Invalid queue context"));
-        }
-        let user = p.clone();
-        let queue = queue.clone();
-        let media = input.media_id.clone();
-        let matches = storage::queue_matches(user, queue, media, &state.db).await?;
-        if !matches {
-            return Err(ApiError::conflict(
-                "The music queue changed; reload it before playing",
-            ));
-        }
-    }
     if crate::online::live::domain(&input.media_id) {
         let _lease = state.media_operations.read().await;
-        if input.queue.is_some() {
-            return Err(ApiError::bad(
-                "Live channels are not part of the local library",
-            ));
-        }
         return crate::online::streams::create_with_delivery(
             state,
             p,
@@ -156,11 +136,6 @@ pub(crate) async fn create_with_delivery(
     let online_video = input.media_id.strip_prefix("youtube:").map(str::to_owned);
     let source = if let Some(video) = &online_video {
         crate::online::downloads::authorize(state, p, video).await?;
-        if input.queue.is_some() {
-            return Err(ApiError::bad(
-                "Online media is not part of the local library",
-            ));
-        }
         match crate::online::downloads::source(state, video).await {
             Ok(value) => value,
             Err(error) if error.0 == axum::http::StatusCode::CONFLICT => {
@@ -246,7 +221,6 @@ pub(crate) async fn create_with_delivery(
             src,
             options,
             position: input.position,
-            queue: input.queue.clone(),
         },
     )
     .await?;

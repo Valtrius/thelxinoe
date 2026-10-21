@@ -114,9 +114,6 @@ pub(crate) fn record(
            state=excluded.state",
         params![playback, now(), position, state, seconds],
     )?;
-    // A prefetched session does not advance the saved queue until its own first
-    // progress report. A late stop from an earlier item cannot rewind it.
-    tx.execute("UPDATE music_queues SET current_index=p.queue_index,position=?2,updated_at=?3,completed=(p.queue_index=json_array_length(music_queues.items)-1 AND ?2>=p.duration*0.99) FROM playback_sessions p WHERE p.id=?1 AND music_queues.user_id=p.user_id AND music_queues.client_id=p.client_id AND music_queues.revision=p.queue_revision AND music_queues.current_index<=p.queue_index",params![playback,position,now()])?;
     Ok(())
 }
 

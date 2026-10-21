@@ -67,6 +67,7 @@ impl Seeded {
             &thelxinoe_jobs::Job {
                 id: "job".into(),
                 kind: "service.transfer".into(),
+                subject: self.id.clone(),
                 payload: json!({"id":self.id}),
                 state: "running".into(),
                 attempts: 1,

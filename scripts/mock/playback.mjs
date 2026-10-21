@@ -73,26 +73,6 @@ export async function prepareSample() {
 
 export async function playbackApi(s, c) {
   const { path, method, body, json, fail } = c;
-  const queue = path.match(/^\/me\/queue\/([^/]+)$/);
-  if (queue) {
-    s.queues[queue[1]] ??= {
-      revision: 0,
-      items: [],
-      current_index: 0,
-      position: 0,
-    };
-    const q = s.queues[queue[1]];
-    if (method === 'PUT') {
-      Object.assign(q, body);
-      q.revision++;
-    }
-    return json({
-      ...q,
-      tracks: q.items
-        .map((id) => s.library.find((item) => item.id === id))
-        .filter(Boolean),
-    });
-  }
   const source = path.match(/^\/catalog\/([^/]+)\/playback$/);
   if (
     method === 'GET' &&

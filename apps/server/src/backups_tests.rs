@@ -135,7 +135,7 @@ async fn busy_or_closed_windows_skip_the_backup_and_release_updates() {
             .await
             .unwrap();
         state.db.write("test.backup_busy", |db| {
-            db.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES ('busy','library.scan','{}','busy','running',1,1)",[])?;
+            db.execute("INSERT INTO jobs(id,kind,subject,payload,state,available_at,created_at) VALUES ('busy','library.scan','root','{}','running',1,1)",[])?;
             Ok(())
         }).await.unwrap();
         tick(&state).await.unwrap();

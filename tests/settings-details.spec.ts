@@ -682,10 +682,6 @@ test('activity and audit filters preserve real actions and older-page queries', 
   await page.getByLabel('Job state', { exact: true }).selectOption('failed');
   await expect(page.getByText('Guide sync', { exact: true })).toBeVisible();
   await expect(page.getByText('Library scan', { exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Run checkpoint' }).click();
-  await expect
-    .poll(() => fixture.writes.some((write) => write.path === '/admin/jobs'))
-    .toBe(true);
   await page
     .getByRole('navigation', { name: 'Settings navigation' })
     .getByRole('link', { name: 'Audit', exact: true })

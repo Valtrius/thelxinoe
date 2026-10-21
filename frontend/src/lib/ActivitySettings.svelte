@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { RefreshCw } from '@lucide/svelte';
   import type { Job } from './api';
   import { attention, acknowledgeAttention } from './attention';
   import { activity } from './activity';
@@ -14,11 +13,9 @@
 
   let {
     jobs,
-    checkpoint,
     loading = false,
   }: {
     jobs: Job[];
-    checkpoint: () => Promise<void>;
     loading?: boolean;
   } = $props();
   let state = $state<'all' | Job['state']>('all');
@@ -54,9 +51,6 @@
           >{label}</option
         >{/each}
     </select>
-    <Button size="form" variant="secondary" onclick={checkpoint}
-      ><RefreshCw size={15} /> Run checkpoint</Button
-    >
   {/snippet}
   <p class="m-0 px-5.5 py-2.5 text-xs text-muted compact:px-4">
     <span role="status"

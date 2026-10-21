@@ -72,7 +72,7 @@ async fn managed(kind: &'static str) -> (tempfile::TempDir, AppState, String, St
         let table = if kind == "radarr" { "manager_services" } else { "support_services" };
         db.execute(&format!("INSERT INTO {table}(id,name,kind,container_id,port,generation,credential,media_source,version,checked_at,operational) VALUES ('integration','Saved service',?1,'old',7878,'old-generation',X'01','/media','1',1,1)"),[kind])?;
         db.execute("INSERT INTO stack_provisions(id,kind,actor_id,host_port,credential,state,container_id,service_id,created_at,updated_at) VALUES (?1,?2,'alice',17878,X'01','complete','old','integration',1,1)",params![insert_key,kind])?;
-        db.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES ('install','stack.install',?1,'install','complete',1,1)",[json!({"id":insert_key}).to_string()])?;
+        db.execute("INSERT INTO jobs(id,kind,subject,payload,state,available_at,created_at) VALUES ('install','stack.install',?2,?1,'complete',1,1)",[json!({"id":insert_key}).to_string(),insert_key.to_string()])?;
         Ok(())
     }).await.unwrap();
     (temp, state, cookie, key)

@@ -177,7 +177,8 @@ async fn match_item(
     }
     let job = thelxinoe_jobs::Queue(state.db.clone())
         .enqueue(
-            "metadata.match".into(),
+            "metadata.match",
+            &media_id,
             json!({
                 "media_id":media_id,
                 "kind":kind,
@@ -186,7 +187,6 @@ async fn match_item(
                 "external_id":input.external_id,
                 "actor_id":principal.user.id
             }),
-            format!("metadata:{media_id}:{}", id()),
         )
         .await?;
     Ok(Json(json!({"job_id":job})))
@@ -205,11 +205,12 @@ async fn refresh(
     if manager_kind(&kind).is_none() {
         return Err(ApiError::bad("Refresh local movie, show or music metadata"));
     }
+    // A refresh already waiting for this media returns its job instead of adding one.
     let job = thelxinoe_jobs::Queue(state.db.clone())
         .enqueue(
-            "metadata.refresh".into(),
+            "metadata.refresh",
+            &media_id,
             json!({"media_id":media_id,"kind":kind,"actor_id":principal.user.id}),
-            format!("refresh:{media_id}:{}", now() / 10),
         )
         .await?;
     Ok(Json(json!({"job_id":job})))
@@ -721,16 +722,14 @@ pub(super) async fn enqueue_managed_refreshes(state: &AppState) -> Result<()> {
     let cutoff = now() - 6 * 3600;
     let freshness = now() - 60;
     let targets = storage::enqueue_managed_refreshes(cutoff, freshness, &state.db).await?;
-    let queue = thelxinoe_jobs::Queue(state.db.clone());
-    for (media, kind, service, generation, external) in targets {
-        queue
-            .enqueue(
-                "metadata.refresh".into(),
-                json!({"media_id":media,"kind":kind,"service_id":service,"service_generation":generation,"external_id":external}),
-                format!("manager-metadata:{media}:{}", now() / (6 * 3600)),
-            )
-            .await?;
-    }
+    let refreshes = targets
+        .into_iter()
+        .map(|(media, kind, service, generation, external)| {
+            let payload = json!({"media_id":media,"kind":kind,"service_id":service,"service_generation":generation,"external_id":external});
+            (media, payload)
+        })
+        .collect();
+    storage::queue_managed_refreshes(refreshes, cutoff, &state.db).await?;
     Ok(())
 }
 

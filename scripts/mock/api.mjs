@@ -155,7 +155,6 @@ export function createMockState() {
     twitch: streams('twitch'),
     kick: streams('kick'),
     approvals: {},
-    queues: {},
     playback: {},
     segmentsByMedia: {},
     operations: {},
@@ -231,8 +230,7 @@ export async function installMockApi(page, currentState, events) {
             events.emit(change, change === 'preferences.changed' ? value : {});
           if (
             !['/me/appearance', '/playback'].includes(path) &&
-            !path.startsWith('/playback/') &&
-            !path.startsWith('/me/queue/')
+            !path.startsWith('/playback/')
           )
             s.audit.unshift({
               id: `audit-${++s.sequence}`,
