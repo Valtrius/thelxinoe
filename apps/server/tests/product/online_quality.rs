@@ -330,6 +330,175 @@ pub(super) fn without_index(file: &[u8]) -> Vec<u8> {
 }
 
 #[tokio::test]
+async fn jellyfin_live_playback_describes_tracks_and_delivers_playable_hls() {
+    let (temp, state, _) = crate::test_support::fixture().await;
+    tool_runtime::install(&state.tools.runtime, &state.config.state.join("tools"));
+    let playlist = temp.path().join("live.m3u8");
+    run(&[
+        "-v",
+        "error",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=s=160x90:r=24",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=sample_rate=48000",
+        "-t",
+        "6",
+        "-c:v",
+        "libx264",
+        "-threads",
+        "2",
+        "-g",
+        "48",
+        "-sc_threshold",
+        "0",
+        "-c:a",
+        "aac",
+        "-f",
+        "hls",
+        "-hls_time",
+        "2",
+        "-hls_list_size",
+        "0",
+        playlist.to_str().unwrap(),
+    ]);
+    let files = std::fs::read_dir(temp.path())
+        .unwrap()
+        .filter_map(|entry| {
+            let entry = entry.unwrap();
+            entry.file_type().unwrap().is_file().then(|| {
+                (
+                    entry.file_name().to_string_lossy().into_owned(),
+                    std::fs::read(entry.path()).unwrap(),
+                )
+            })
+        })
+        .collect();
+    let (proxy, task) = proxy(files);
+    let mut prepared = select(
+        &json!({"is_live":true,"formats":[
+            {"url":"https://r1.googlevideo.com/live.m3u8","height":90,"width":160,"fps":24,
+             "vcodec":"h264","acodec":"aac","protocol":"m3u8_native","ext":"mp4"}
+        ]}),
+        Some(proxy),
+    )
+    .unwrap();
+    prepared.probe = prepared
+        .source
+        .probe(&state.tools.runtime.media().unwrap())
+        .await
+        .unwrap();
+    state
+        .online
+        .streams
+        .prepared
+        .lock()
+        .await
+        .insert("twitch:123".into(), prepared);
+    state.db.write("test.fixture", |db| {
+        db.execute("INSERT INTO twitch_streams(user_id,channel_id,login,display_name,title,category,viewers,started_at,snapshot,active) VALUES('alice','123','channel','Live channel','Live','Game',10,'2026-10-21T10:00:00Z','s',1)", [])?;
+        Ok(())
+    }).await.unwrap();
+    let token = crate::test_support::issue_session(
+        &state.db,
+        "alice".into(),
+        "jellyfin".into(),
+        "Live TV".into(),
+    )
+    .await
+    .unwrap();
+    let get = async |path: &str, range: Option<&str>| api(&state, &token, path, None, range).await;
+    let (status, bytes) = get("/Items?ParentId=d7df0f21-caa6-45a0-9798-267150600002", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let items: Value = serde_json::from_slice(&bytes).unwrap();
+    let item = items["Items"][0]["Id"].as_str().unwrap();
+    let path = format!("/Items/{item}/PlaybackInfo");
+    for (container, convert) in [("ts", false), ("mp4", false), ("ts", true)] {
+        let (status, bytes) = api(&state, &token, &path, Some(json!({
+            "MediaSourceId":item,"EnableDirectPlay":true,"EnableDirectStream":!convert,"EnableTranscoding":true,
+            "DeviceProfile":{"TranscodingProfiles":[{"Type":"Video","Protocol":"hls","Container":container,"VideoCodec":"h264","AudioCodec":"aac"}]}
+        })), None).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
+        let response: Value = serde_json::from_slice(&bytes).unwrap();
+        let source = &response["MediaSources"][0];
+        assert_media_streams(source);
+        assert_eq!(source["IsInfiniteStream"], true);
+        assert_eq!(source["TranscodingContainer"], container);
+        assert_eq!(source["SupportsDirectPlay"], false);
+        let url = source["TranscodingUrl"].as_str().unwrap();
+        let (status, bytes) = get(url, None).await;
+        assert_eq!(status, StatusCode::OK);
+        let playlist = String::from_utf8(bytes).unwrap();
+        assert!(playlist.starts_with("#EXTM3U"), "{playlist}");
+        let mut bytes = Vec::new();
+        if container == "mp4" {
+            let init = playlist
+                .lines()
+                .find(|line| line.starts_with("#EXT-X-MAP:"))
+                .unwrap()
+                .split('"')
+                .nth(1)
+                .unwrap();
+            let (status, body) = get(&resolve(url, init), None).await;
+            assert_eq!(status, StatusCode::OK);
+            bytes.extend(body);
+        }
+        let segment = playlist
+            .lines()
+            .find(|line| line.starts_with("segment-"))
+            .unwrap();
+        let (status, body) = get(&resolve(url, segment), None).await;
+        assert_eq!(status, StatusCode::OK);
+        bytes.extend(body);
+        let file = temp.path().join(format!("delivered.{container}"));
+        std::fs::write(&file, bytes).unwrap();
+        assert!(!hashes(&file, "v").is_empty());
+        assert!(!hashes(&file, "a").is_empty());
+        assert_eq!(api(&state, &token, "/Sessions/Playing/Stopped", Some(json!({"ItemId":item,"PlaySessionId":response["PlaySessionId"],"PositionTicks":10_000_000})), None).await.0, StatusCode::NO_CONTENT);
+        assert_eq!(get(url, None).await.0, StatusCode::UNAUTHORIZED);
+    }
+    task.abort();
+}
+
+fn assert_media_streams(source: &Value) {
+    // Required fields in Jellyfin Kotlin SDK 1.7.1's MediaStream, used by Wholphin.
+    // https://github.com/jellyfin/jellyfin-sdk-kotlin/blob/v1.7.1/jellyfin-model/src/commonMain/kotlin-generated/org/jellyfin/sdk/model/api/MediaStream.kt
+    let streams = source["MediaStreams"].as_array().unwrap();
+    assert_eq!(streams.len(), 2);
+    for stream in streams {
+        assert!(stream["Type"].is_string());
+        assert!(stream["Index"].is_i64());
+        for field in [
+            "IsInterlaced",
+            "IsDefault",
+            "IsForced",
+            "IsHearingImpaired",
+            "IsExternal",
+            "IsTextSubtitleStream",
+            "SupportsExternalStream",
+        ] {
+            assert!(
+                stream[field].is_boolean(),
+                "Missing required {field}: {stream}"
+            );
+        }
+        if stream["Type"] == "Audio" {
+            assert_eq!(stream["SampleRate"], 48000);
+            assert_eq!(source["DefaultAudioStreamIndex"], stream["Index"]);
+        }
+    }
+}
+
+#[tokio::test]
 async fn jellyfin_provider_qualities_preserve_8k_and_60fps_packets_and_enforce_client_limits() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter("thelxinoe_playback=debug,thelxinoe_server=info")
@@ -395,6 +564,7 @@ async fn jellyfin_provider_qualities_preserve_8k_and_60fps_packets_and_enforce_c
             String::from_utf8_lossy(&bytes)
         );
         let session: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_media_streams(&session["MediaSources"][0]);
         let sid = session["PlaySessionId"].as_str().unwrap();
         let mode: String = state
             .db
