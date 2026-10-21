@@ -43,32 +43,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       actions: read
-      # Draft releases are only visible with write access.
-      contents: write
+      contents: read
     steps:
-      - name: Keep an assembled draft unless reassembly was requested
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          TAG: ${{ needs.version.outputs.version }}
-          REASSEMBLE: ${{ inputs.reassemble }}
-        run: |
-          # SHA256SUMS is uploaded last, so only a complete draft has it.
-          if ! state=$(gh release view "$TAG" --repo "$REPOSITORY" --json isDraft,assets \
-            --jq '"\(.isDraft) \(any(.assets[]; .name == "SHA256SUMS"))"' 2>"$RUNNER_TEMP/release.err"); then
-            grep -q "release not found" "$RUNNER_TEMP/release.err" || { cat "$RUNNER_TEMP/release.err"; exit 1; }
-            state=
-          fi
-          case "$state" in
-            false*)
-              echo "::error::$TAG is already published; increment the product version."
-              exit 1 ;;
-            "true true")
-              if [ "$REASSEMBLE" != true ]; then
-                echo "::error::The $TAG draft is already complete. Review or publish it; to replace it run Assemble release draft from the tag with reassemble enabled."
-                exit 1
-              fi ;;
-          esac
       - name: Require a green Build and verify run of this tree
         env:
           GH_TOKEN: ${{ github.token }}

@@ -92,19 +92,23 @@ pub fn read_secret<T: DeserializeOwned>(path: &Path, scope: &str) -> anyhow::Res
         &store.decrypt(scope, &std::fs::read(path)?)?,
     )?)
 }
-/// One atomic pointer commits both descriptor and Compose image pins.
+/// One atomic pointer commits the descriptor.
 pub fn commit_generation(
     root: &Path,
     generation: u64,
     descriptor: &serde_json::Value,
-    compose: &serde_json::Value,
 ) -> anyhow::Result<()> {
     let name = format!("generations/{generation}");
     let directory = root.join(&name);
     anyhow::ensure!(!directory.exists(), "Generation already exists");
     std::fs::create_dir_all(&directory)?;
     write_json(&directory.join("desired-state.json"), descriptor)?;
-    write_json(&directory.join("compose.override.yaml"), compose)?;
+    // Nothing reads it any more, but a release restore can bring back a 0.0.3 or
+    // older controller, whose backups fail without it.
+    write_json(
+        &directory.join("compose.override.yaml"),
+        &serde_json::json!({}),
+    )?;
     for (name, target) in [
         ("desired-state.json", "current/desired-state.json"),
         ("compose.override.yaml", "current/compose.override.yaml"),

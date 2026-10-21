@@ -253,99 +253,6 @@ fn immutable(c: &Value) -> Result<String> {
     }
     Ok(value.into())
 }
-fn compose_service(c: &Value) -> Result<Value> {
-    let config = &c["Config"];
-    let host = &c["HostConfig"];
-    let volumes=c["Mounts"].as_array().ok_or_else(unavailable)?.iter().map(|m|json!({"type":"bind","source":m["Source"],"target":m["Destination"],"read_only":m["RW"]==false})).collect::<Vec<_>>();
-    let ports = host["PortBindings"]
-        .as_object()
-        .into_iter()
-        .flatten()
-        .flat_map(|(port, bindings)| {
-            bindings.as_array().into_iter().flatten().map(move |b| {
-                let (target, protocol) = port.split_once('/').unwrap_or((port, "tcp"));
-                json!({"target":target.parse::<u16>().unwrap_or(0),"published":b["HostPort"],"host_ip":b["HostIp"],"protocol":protocol})
-            })
-        })
-        .collect::<Vec<_>>();
-    let mut value = json!({"image":immutable(c)?,"container_name":c["Name"].as_str().unwrap_or("").trim_start_matches('/'),"environment":config["Env"],"labels":config["Labels"],"volumes":volumes,"ports":ports,"restart":host["RestartPolicy"]["Name"],"read_only":host["ReadonlyRootfs"],"cap_drop":host["CapDrop"],"security_opt":host["SecurityOpt"],"user":config["User"]});
-    for (source, target) in [
-        ("Cmd", "command"),
-        ("Entrypoint", "entrypoint"),
-        ("WorkingDir", "working_dir"),
-    ] {
-        if !config[source].is_null() {
-            value[target] = config[source].clone();
-        }
-    }
-    if let Some(health) = config["Healthcheck"].as_object() {
-        let mut converted = json!({"test":health.get("Test")});
-        for (source, target) in [
-            ("Interval", "interval"),
-            ("Timeout", "timeout"),
-            ("StartPeriod", "start_period"),
-            ("StartInterval", "start_interval"),
-        ] {
-            if let Some(nanos) = health
-                .get(source)
-                .and_then(Value::as_u64)
-                .filter(|v| *v > 0)
-            {
-                converted[target] = json!(format!("{nanos}ns"));
-            }
-        }
-        if let Some(retries) = health.get("Retries") {
-            converted["retries"] = retries.clone();
-        }
-        value["healthcheck"] = converted;
-    }
-    for (source, target) in [
-        ("CapAdd", "cap_add"),
-        ("ExtraHosts", "extra_hosts"),
-        ("Init", "init"),
-        ("PidsLimit", "pids_limit"),
-    ] {
-        if !host[source].is_null() {
-            value[target] = host[source].clone();
-        }
-    }
-    for (source, target) in [
-        ("Memory", "mem_limit"),
-        ("MemorySwap", "memswap_limit"),
-        ("CpuShares", "cpu_shares"),
-    ] {
-        if host[source].as_i64().is_some_and(|v| v != 0) {
-            value[target] = host[source].clone();
-        }
-    }
-    if let Some(nanos) = host["NanoCpus"].as_u64().filter(|v| *v > 0) {
-        value["cpus"] = json!(nanos as f64 / 1_000_000_000.0);
-    }
-    if host["NetworkMode"] == "none" {
-        value["network_mode"] = json!("none");
-    } else {
-        value["networks"] = json!(["media"]);
-    }
-    if let Some(tmpfs) = host["Tmpfs"].as_object() {
-        value["tmpfs"] = json!(
-            tmpfs
-                .iter()
-                .map(|(path, options)| format!("{path}:{}", options.as_str().unwrap_or("")))
-                .collect::<Vec<_>>()
-        );
-    }
-    value.as_object_mut().unwrap().retain(|_, v| !v.is_null());
-    escape_compose(&mut value);
-    Ok(value)
-}
-fn escape_compose(value: &mut Value) {
-    match value {
-        Value::String(text) => *text = text.replace('$', "$$"),
-        Value::Array(items) => items.iter_mut().for_each(escape_compose),
-        Value::Object(items) => items.values_mut().for_each(escape_compose),
-        _ => (),
-    }
-}
 async fn bootstrap() -> Result<Deployment> {
     static INITIALIZE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _initializing = INITIALIZE.lock().await;
@@ -427,19 +334,10 @@ async fn bootstrap() -> Result<Deployment> {
             "Deployment state must be outside every media mount",
         ));
     }
-    let project = controller["Config"]["Labels"]["com.docker.compose.project"]
-        .as_str()
-        .unwrap_or("thelxinoe");
-    let compose = json!({"name":project,"services":{"server":compose_service(&server)?,"controller":compose_service(&controller)?},"networks":{"media":{"external":true,"name":network}}});
-    persisted(store::write_json(
-        &root.join("compose.yaml"),
-        &json!({"name":project,"services":{}}),
-    ))?;
     persisted(store::commit_generation(
         &root,
         generation,
         &serde_json::to_value(&d).map_err(|_| unavailable())?,
-        &compose,
     ))?;
     Ok(d)
 }

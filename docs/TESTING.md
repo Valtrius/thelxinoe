@@ -68,7 +68,7 @@ development containers that bind-mount the worktree first.
 
 Run `node scripts/test-container-identity.mjs` to build and verify default/custom
 UID/GID deployments with real Linux file permissions, managed-service updates,
-a transfer from another identity, product validation and saved Compose recreation. It removes its
+a transfer from another identity, product validation and Compose recreation. It removes its
 disposable containers/volumes and writes `.local/container-identity-result.json`.
 Use `--built` with current `thelxinoe-service-{server,controller}:local` images.
 CI does not run it yet: it reads `RepoDigests` of locally built images, which Docker
