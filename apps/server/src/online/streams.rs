@@ -28,6 +28,9 @@ use tokio::sync::Mutex;
 /// The revision of byte-range HLS playlists, which the server writes on request.
 const INDEXED: &str = "source";
 
+/// A rendition's video and audio addresses.
+type Rendition = (String, Option<String>);
+
 #[derive(Default)]
 pub(crate) struct Runtime {
     prepared: Mutex<HashMap<String, Prepared>>,
@@ -35,6 +38,8 @@ pub(crate) struct Runtime {
     pending: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
     /// Fragment indexes by signed address, which changes with each extraction.
     indexes: Mutex<HashMap<String, (i64, Arc<index::Index>)>>,
+    /// Codec probes of renditions by their video and audio addresses.
+    probes: Mutex<HashMap<Rendition, (i64, Value)>>,
     sessions: Mutex<HashMap<String, Session>>,
     pub(super) relay: super::relay::Relay,
 }
@@ -308,9 +313,19 @@ fn denied() -> ApiError {
         "The media provider denied access from this server's network; try again later".into(),
     )
 }
+/// A rendition's codecs, probed once while its address lasts: choosing a live rendition
+/// compares several, and playback start considers them again.
 async fn inspect_codecs(state: &AppState, source: &RemoteSource) -> Result<Value> {
+    let key = (source.video.clone(), source.audio.clone());
+    {
+        let mut probes = state.online.streams.probes.lock().await;
+        probes.retain(|_, (expires, _)| *expires > now());
+        if let Some((_, probe)) = probes.get(&key) {
+            return Ok(probe.clone());
+        }
+    }
     crate::tools::require(state, &["ffmpeg"]).await?;
-    source
+    let probe = source
         .probe(&state.tools.runtime.media()?)
         .await
         .map_err(|error| {
@@ -319,7 +334,14 @@ async fn inspect_codecs(state: &AppState, source: &RemoteSource) -> Result<Value
             } else {
                 ApiError::conflict("Could not inspect public media codecs")
             }
-        })
+        })?;
+    let mut probes = state.online.streams.probes.lock().await;
+    if probes.len() >= 128 {
+        probes.clear();
+    }
+    let expires = expiry(&source.video).map_or(now() + 300, |at| at - 600);
+    probes.insert(key, (expires, probe.clone()));
+    Ok(probe)
 }
 /// When a signed address expires, from its `expire` parameter.
 fn expiry(address: &str) -> Option<i64> {
@@ -917,6 +939,13 @@ pub(crate) async fn maintain(state: &AppState, candidates: &[String], active: &[
         .online
         .streams
         .indexes
+        .lock()
+        .await
+        .retain(|_, (expires, _)| *expires > now());
+    state
+        .online
+        .streams
+        .probes
         .lock()
         .await
         .retain(|_, (expires, _)| *expires > now());
