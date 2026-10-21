@@ -60,3 +60,12 @@ DROP TABLE music_queues;
 ALTER TABLE playback_sessions DROP COLUMN client_id;
 ALTER TABLE playback_sessions DROP COLUMN queue_revision;
 ALTER TABLE playback_sessions DROP COLUMN queue_index;
+
+-- A missing file's scan time is when it went missing; maintenance prunes it a month later.
+-- Files already missing start that month at the upgrade.
+UPDATE media_files SET scanned_at=CAST(strftime('%s','now') AS INTEGER) WHERE present=0;
+
+-- Playback maintenance closes stale history every ten seconds and reads only open rows.
+-- Statistics read each played item from its own source by key instead of through a view.
+CREATE INDEX playback_history_open ON playback_history(playback_id) WHERE ended_at IS NULL;
+DROP VIEW statistics_metadata;

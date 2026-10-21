@@ -239,4 +239,25 @@ mod tests {
         let single = audit(Some("alice"), Some("user.create")).await.unwrap();
         assert_eq!(actions(&single), ["user.create"]);
     }
+
+    // Playback maintenance runs this on the writer every 10 seconds; history only grows.
+    #[tokio::test]
+    async fn closing_stale_history_reads_only_open_rows() {
+        let (_temp, state, _) = fixture().await;
+        let plan = state
+            .db
+            .write("test.plan", |db| {
+                Ok(crate::test_support::query_plan(
+                    db,
+                    super::storage::FINISH_STALE,
+                )?)
+            })
+            .await
+            .unwrap();
+        assert!(
+            plan.iter().all(|step| !step.starts_with("SCAN")
+                || step.ends_with("USING INDEX playback_history_open")),
+            "{plan:#?}"
+        );
+    }
 }

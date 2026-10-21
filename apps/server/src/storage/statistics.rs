@@ -72,25 +72,53 @@ pub(super) fn record_at(
         params![playback, at, counter],
     )?;
 
+    let source = source(&media);
     // Prepared/prefetched or cancelled media has not been played. In particular,
     // restoring a nonzero resume position alone does not count as a new start.
     if input.state != "playing"
         && seconds == 0.0
-        && !tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM playback_statistics WHERE user_id=?1 AND media_id=?2)",
-            params![user, media],
-            |r| r.get::<_, bool>(0),
-        )?
+        && tx
+            .query_row(&source.statistic("1"), params![user, media], |_| Ok(()))
+            .optional()?
+            .is_none()
     {
         return Ok(0.0);
     }
-    let snapshot = tx.query_row(
-        "SELECT platform,media_title,COALESCE(NULLIF(channel_id,''),media_id),COALESCE(NULLIF(channel_name,''),media_title),category_name,content_type FROM statistics_metadata WHERE media_id=?1 AND (user_id=?2 OR user_id IS NULL)", params![media,user],
-        |r| Ok(Snapshot {platform:r.get(0)?,title:r.get(1)?,channel:r.get(2)?,name:r.get(3)?,category:r.get(4)?,content_type:r.get(5)?}),
-    ).optional()?.or(tx.query_row(
-        "SELECT platform,media_title,channel_id,channel_name,category_name,content_type FROM playback_statistics WHERE user_id=?1 AND media_id=?2",params![user,media],
-        |r| Ok(Snapshot {platform:r.get(0)?,title:r.get(1)?,channel:r.get(2)?,name:r.get(3)?,category:r.get(4)?,content_type:r.get(5)?}),
-    ).optional()?);
+    let read = |r: &rusqlite::Row<'_>| {
+        Ok(Snapshot {
+            platform: r.get(0)?,
+            title: r.get(1)?,
+            channel: r.get(2)?,
+            name: r.get(3)?,
+            category: r.get(4)?,
+            content_type: r.get(5)?,
+        })
+    };
+    let snapshot = match tx
+        .query_row(source.metadata, params![user, source.key], read)
+        .optional()?
+    {
+        // An item without a channel counts as its own channel.
+        Some(mut s) => {
+            if s.channel.is_empty() {
+                s.channel = media.clone();
+            }
+            if s.name.is_empty() {
+                s.name = s.title.clone();
+            }
+            Some(s)
+        }
+        // Media that is gone keeps the details its statistics already recorded.
+        None => tx
+            .query_row(
+                &source.statistic(
+                    "platform,media_title,channel_id,channel_name,category_name,content_type",
+                ),
+                params![user, media],
+                read,
+            )
+            .optional()?,
+    };
     let Some(s) = snapshot else {
         return Ok(seconds);
     };
@@ -112,6 +140,56 @@ pub(super) fn record_at(
         cursor = end;
     }
     Ok(seconds)
+}
+
+/// Where a played item's statistics come from, chosen by its ID prefix so each progress
+/// report reads single rows by key instead of scanning every source.
+pub(super) struct Source<'a> {
+    /// The platforms its statistics are filed under, as SQL.
+    platforms: &'static str,
+    /// Reads platform, title, channel, channel name, category and content type for user
+    /// ?1 and the item's key ?2 in its source.
+    pub(super) metadata: &'static str,
+    key: &'a str,
+}
+
+pub(super) fn source(media: &str) -> Source<'_> {
+    if let Some(video) = media.strip_prefix("youtube:") {
+        Source {
+            platforms: "'youtube'",
+            metadata: "SELECT 'youtube',title,channel_id,channel_title,'',CASE WHEN broadcast='live' THEN 'live' WHEN broadcast='upcoming' THEN 'upcoming' WHEN is_short=1 THEN 'short' WHEN broadcast='replay' THEN 'live_replay' ELSE 'upload' END FROM youtube_videos WHERE user_id=?1 AND video_id=?2",
+            key: video,
+        }
+    } else if let Some(channel) = media.strip_prefix("twitch:") {
+        Source {
+            platforms: "'twitch'",
+            metadata: "SELECT 'twitch',title,channel_id,display_name,category,'live' FROM twitch_streams WHERE user_id=?1 AND channel_id=?2",
+            key: channel,
+        }
+    } else if let Some(slug) = media.strip_prefix("kick:") {
+        Source {
+            platforms: "'kick'",
+            metadata: "SELECT 'kick',title,slug,slug,category,'live' FROM kick_channels WHERE user_id=?1 AND slug=?2",
+            key: slug,
+        }
+    } else {
+        // Library media is the same for every user, so ?1 goes unused.
+        Source {
+            platforms: "'movies','shows','music'",
+            metadata: "SELECT CASE m.kind WHEN 'movie' THEN 'movies' WHEN 'episode' THEN 'shows' ELSE 'music' END,m.title,COALESCE(grandparent.id,parent.id,m.id),COALESCE(grandparent.title,parent.title,m.title),CASE WHEN m.kind='track' THEN COALESCE(parent.title,'') ELSE '' END,m.kind FROM media_cards m LEFT JOIN media_cards parent ON parent.id=m.parent_id LEFT JOIN media_cards grandparent ON grandparent.id=parent.parent_id WHERE m.id=?2 AND m.kind IN ('movie','episode','track')",
+            key: media,
+        }
+    }
+}
+
+impl Source<'_> {
+    /// Reads `columns` of user ?1's statistics for item ?2.
+    pub(super) fn statistic(&self, columns: &str) -> String {
+        format!(
+            "SELECT {columns} FROM playback_statistics WHERE user_id=?1 AND platform IN ({}) AND media_id=?2",
+            self.platforms
+        )
+    }
 }
 
 pub(crate) fn delete_provider(

@@ -68,7 +68,7 @@ struct Snapshot {
 pub(crate) use storage::record;
 
 #[cfg(test)]
-use storage::record_at;
+use storage::{record_at, source};
 
 pub(crate) use storage::delete_provider;
 

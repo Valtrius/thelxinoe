@@ -421,3 +421,68 @@ async fn statistics_provider_data_erasure_is_user_scoped_and_cannot_be_undone_by
         5.0
     );
 }
+
+#[tokio::test]
+async fn statistics_read_each_items_details_from_its_own_source() {
+    let (_temp, state, _) = fixture().await;
+    state.db.write("test.fixture", |db| {
+        db.execute_batch("
+            INSERT INTO library_roots(id,name,kind,path) VALUES ('root','Shows','shows','/media');
+            INSERT INTO media(id,root_id,kind,parent_id,evidence_key,title,created_at) VALUES
+                ('show','root','show',NULL,'show','Show',1),
+                ('season','root','season','show','season','Season 1',1),
+                ('episode','root','episode','season','episode','Pilot',1);
+            INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,scanned_at) VALUES ('file','root','/media/pilot.mkv','g',1,'1','f','{}',1);
+            INSERT INTO youtube_media VALUES ('clip');
+            INSERT INTO youtube_videos(user_id,video_id,title,is_short) VALUES ('alice','clip','A short',1);
+            INSERT INTO kick_channels(user_id,slug,generation,title,category) VALUES ('alice','streamer','g','Live now','Chatting');
+            INSERT INTO live_media VALUES ('kick:streamer','Live now');")?;
+        let tx = db.transaction()?;
+        let at = Utc::now().timestamp_millis();
+        for (id, media, video, live) in [
+            ("episode", Some("episode"), None, None),
+            ("clip", None, Some("clip"), None),
+            ("kick", None, None, Some("kick:streamer")),
+        ] {
+            tx.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,media_id,file_id,generation,edition,state,mode,options,duration,created_at,updated_at,youtube_video_id,live_media_id,streaming) SELECT ?1,'alice',id,?2,IIF(?2 IS NULL,NULL,'file'),'g','','ready','direct','{}',0,?5,?5,?3,?4,?4 IS NOT NULL FROM sessions WHERE user_id='alice' LIMIT 1", params![id, media, video, live, at / 1000 - 60])?;
+            record_at(&tx, id, &Progress{sequence:0,position:0.0,state:"playing".into(),active_seconds:Some(0.0)}, at)?;
+        }
+        let rows = tx.prepare("SELECT media_id,platform,media_title,channel_id,channel_name,category_name,content_type FROM playback_statistics ORDER BY media_id")?
+            .query_map([], |r| (0..7).map(|i| r.get::<_, String>(i)).collect::<rusqlite::Result<Vec<_>>>())?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        assert_eq!(rows, [
+            ["episode", "shows", "Pilot", "show", "Show", "", "episode"],
+            ["kick:streamer", "kick", "Live now", "streamer", "streamer", "Chatting", "live"],
+            ["youtube:clip", "youtube", "A short", "youtube:clip", "A short", "", "short"],
+        ]);
+        Ok(())
+    }).await.unwrap();
+}
+
+// Every progress report runs these on the writer, so each reads its rows by key.
+#[tokio::test]
+async fn progress_reports_read_statistics_sources_by_key() {
+    let (_temp, state, _) = fixture().await;
+    state
+        .db
+        .write("test.plans", |db| {
+            for media in ["episode", "youtube:clip", "twitch:42", "kick:streamer"] {
+                let source = source(media);
+                let plan = crate::test_support::query_plan(db, source.metadata)?;
+                assert!(
+                    plan.iter().all(|step| step.starts_with("SEARCH")),
+                    "{media}: {plan:#?}"
+                );
+                // The user's statistics for one item are found by their whole key.
+                let plan = crate::test_support::query_plan(db, &source.statistic("1"))?;
+                assert!(
+                    plan.len() == 1
+                        && plan[0].ends_with("(user_id=? AND platform=? AND media_id=?)"),
+                    "{media}: {plan:#?}"
+                );
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+}

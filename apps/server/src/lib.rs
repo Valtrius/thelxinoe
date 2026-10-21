@@ -341,56 +341,172 @@ pub async fn run_jobs(state: AppState) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run_service_job(state: AppState, job: thelxinoe_jobs::Job) -> anyhow::Result<()> {
-    let result = match job.kind.as_str() {
-        "stack.install" => managers::provision(&state, &job).await.map(|()| true),
-        "service.transfer" => managers::transfer(&state, &job).await,
-        "recyclarr.sync" => managers::recyclarr::run_job(&state, &job).await,
-        _ => managers::update_service(&state, &job).await,
-    };
+/// The first wait after a job lane's database access failed; repeated failures wait longer.
+const JOB_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Waits before a job lane retries failed bookkeeping, longer while failures repeat. A
+/// database that is shutting down ends the lane instead.
+async fn back_off(error: anyhow::Error, delay: &mut std::time::Duration) -> anyhow::Result<()> {
+    if matches!(
+        error.downcast_ref(),
+        Some(thelxinoe_database::AccessError::Closed)
+    ) {
+        return Err(error);
+    }
+    tracing::warn!(retry_in = ?delay, "Job bookkeeping failed and will be retried: {error:#}");
+    tokio::time::sleep(*delay).await;
+    *delay = (*delay * 2).min(std::time::Duration::from_secs(60));
+    Ok(())
+}
+
+/// Runs one claimed job and records its outcome on that job alone. Neither its error or
+/// panic nor a failed event stops its lane, the other lane or the jobs running beside it.
+async fn run_job(state: AppState, job: thelxinoe_jobs::Job) {
+    use futures_util::FutureExt;
+    let result = std::panic::AssertUnwindSafe(handle_job(&state, &job))
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|panic| {
+            let reason = panic
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("unknown cause");
+            Err(anyhow::anyhow!("The job stopped unexpectedly: {reason}"))
+        });
+    // A job that queued itself again has nothing to record yet.
     if !matches!(result, Ok(false)) {
-        Queue(state.db.clone())
-            .finish(&job, result.err().map(|e| e.to_string()))
-            .await?;
+        let error = result.err().map(|e| e.to_string());
+        let mut delay = JOB_RETRY;
+        while let Err(failed) = Queue(state.db.clone()).finish(&job, error.clone()).await {
+            if back_off(failed, &mut delay).await.is_err() {
+                return;
+            }
+        }
+    }
+    if let Err(error) = state.emit(None, "jobs.changed", json!({"id":job.id})).await {
+        tracing::warn!(job = %job.id, "Job change could not be announced: {error:#}");
+    }
+}
+
+/// Returns false when the job queued itself again instead of finishing.
+async fn handle_job(state: &AppState, job: &thelxinoe_jobs::Job) -> anyhow::Result<bool> {
+    match job.kind.as_str() {
+        "stack.install" => managers::provision(state, job).await.map(|()| true),
+        "service.transfer" => managers::transfer(state, job).await,
+        "recyclarr.sync" => managers::recyclarr::run_job(state, job).await,
+        "service.update" => managers::update_service(state, job).await,
+        "manager.request" => managers::acquire(state, job).await.map(|()| true),
+        "metadata.match" | "metadata.refresh" => managers::run_metadata(state, &job.payload)
+            .await
+            .map(|()| true),
+        "library.scan" => scan_library(state, job).await.map(|()| true),
+        #[cfg(test)]
+        "test.panic" => panic!("test job panicked"),
+        _ => anyhow::bail!("Unknown job type"),
+    }
+}
+
+async fn scan_library(state: &AppState, job: &thelxinoe_jobs::Job) -> anyhow::Result<()> {
+    let roots = thelxinoe_catalog::roots(&state.db).await?;
+    let Some(root) = roots
+        .into_iter()
+        .find(|r| Some(r.id.as_str()) == job.payload["root_id"].as_str())
+    else {
+        anyhow::bail!("Library no longer exists");
+    };
+    let keys = media_resources::for_root(&state.db, &root.id).await?;
+    let _files = state
+        .media_resources
+        .read(&keys.iter().map(String::as_str).collect::<Vec<_>>())
+        .await;
+    state
+        .emit(None, "catalog.scan.started", json!({"root_id":root.id}))
+        .await?;
+    let scanned = match state.tools.runtime.media() {
+        Ok(tools) => {
+            thelxinoe_catalog::index_with_progress(
+                &state.db,
+                root.clone(),
+                tools,
+                |completed, total| {
+                    let state = state.clone();
+                    let root_id = root.id.clone();
+                    async move {
+                        state
+                            .emit(
+                                None,
+                                "catalog.scan.progress",
+                                json!({"root_id":root_id,"completed":completed,"total":total}),
+                            )
+                            .await
+                            .map(|_| ())
+                    }
+                },
+            )
+            .await
+        }
+        Err(error) => Err(error),
+    };
+    // Probing can take minutes; only the write and the reconcile after it
+    // hold the media lease, so playback reports never queue behind a scan.
+    let _lease = state.media_operations.read().await;
+    let result = match scanned {
+        Ok(scanned) => scanned.commit(&state.db).await,
+        Err(error) => Err(error),
+    };
+    match &result {
+        Ok(_) => managers::reconcile_after_scan(state).await,
+        Err(error) => storage::run_jobs(error.to_string(), root, &state.db).await?,
     }
     state
-        .emit(None, "jobs.changed", json!({"id":job.id}))
+        .emit(
+            None,
+            "catalog.changed",
+            json!({"root_id":job.payload["root_id"]}),
+        )
         .await?;
-    Ok(())
+    result.map(|_| ())
 }
 
 async fn run_service_jobs(state: AppState) -> anyhow::Result<()> {
     let queue = Queue(state.db.clone());
     let mut running = tokio::task::JoinSet::new();
+    let mut delay = JOB_RETRY;
     loop {
-        managers::recyclarr::tick(&state).await?;
-        while let Some(result) = running.try_join_next() {
-            result??;
-        }
+        // Each job records its own outcome, so a finished task has nothing left to report.
+        while running.try_join_next().is_some() {}
         if running.len() >= 6 {
-            if let Some(result) = running.join_next().await {
-                result??;
-            }
+            running.join_next().await;
             continue;
         }
-        // Every service job needs the controller, which a release validation holds.
-        let job = {
-            let _gate = state.release_gate.read().await;
-            if state
-                .release_quiescing
-                .load(std::sync::atomic::Ordering::SeqCst)
-                || product::validating(&state)
-            {
-                None
-            } else {
-                queue.claim_services().await?
+        let claimed = match managers::recyclarr::tick(&state).await {
+            // Every service job needs the controller, which a release validation holds.
+            Ok(()) => {
+                let _gate = state.release_gate.read().await;
+                if state
+                    .release_quiescing
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    || product::validating(&state)
+                {
+                    Ok(None)
+                } else {
+                    queue.claim_services().await
+                }
             }
+            Err(error) => Err(error),
         };
-        if let Some(job) = job {
-            state.notify_attention();
-            running.spawn(run_service_job(state.clone(), job));
-        } else {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        match claimed {
+            Ok(Some(job)) => {
+                delay = JOB_RETRY;
+                state.notify_attention();
+                running.spawn(run_job(state.clone(), job));
+            }
+            Ok(None) => {
+                delay = JOB_RETRY;
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            Err(error) => back_off(error, &mut delay).await?,
         }
     }
 }
@@ -398,91 +514,30 @@ async fn run_service_jobs(state: AppState) -> anyhow::Result<()> {
 async fn run_general_jobs(state: AppState) -> anyhow::Result<()> {
     state.tools.wait_ready().await;
     let queue = Queue(state.db.clone());
+    let mut delay = JOB_RETRY;
     loop {
-        let job = {
+        let claimed = {
             let _gate = state.release_gate.read().await;
             if state
                 .release_quiescing
                 .load(std::sync::atomic::Ordering::SeqCst)
             {
-                None
+                Ok(None)
             } else {
-                queue.claim_general().await?
+                queue.claim_general().await
             }
         };
-        if let Some(job) = job {
-            state.notify_attention();
-            match job.kind.as_str() {
-                "manager.request" => {
-                    let result = managers::acquire(&state, &job).await;
-                    queue
-                        .finish(&job, result.err().map(|e| e.to_string()))
-                        .await?;
-                }
-                "metadata.match" | "metadata.refresh" => {
-                    let result = managers::run_metadata(&state, &job.payload).await;
-                    queue
-                        .finish(&job, result.err().map(|e| e.to_string()))
-                        .await?;
-                }
-                "library.scan" => {
-                    let roots = thelxinoe_catalog::roots(&state.db).await?;
-                    if let Some(root) = roots
-                        .into_iter()
-                        .find(|r| Some(r.id.as_str()) == job.payload["root_id"].as_str())
-                    {
-                        let keys = media_resources::for_root(&state.db, &root.id).await?;
-                        let _files = state
-                            .media_resources
-                            .read(&keys.iter().map(String::as_str).collect::<Vec<_>>())
-                            .await;
-                        state
-                            .emit(None, "catalog.scan.started", json!({"root_id":root.id}))
-                            .await?;
-                        let scanned = match state.tools.runtime.media() {
-                            Ok(tools) => thelxinoe_catalog::index_with_progress(&state.db, root.clone(), tools, |completed, total| {
-                            let state = state.clone();
-                            let root_id = root.id.clone();
-                            async move { state.emit(None, "catalog.scan.progress", json!({"root_id":root_id,"completed":completed,"total":total})).await.map(|_| ()) }
-                        }).await,
-                            Err(error) => Err(error),
-                        };
-                        // Probing can take minutes; only the write and the reconcile after it
-                        // hold the media lease, so playback reports never queue behind a scan.
-                        let _lease = state.media_operations.read().await;
-                        let result = match scanned {
-                            Ok(scanned) => scanned.commit(&state.db).await,
-                            Err(error) => Err(error),
-                        };
-                        let succeeded = result.is_ok();
-                        let error = result.err().map(|e| e.to_string());
-                        if let Some(error) = error.clone() {
-                            storage::run_jobs(error, root, &state.db).await?;
-                        }
-                        queue.finish(&job, error).await?;
-                        if succeeded {
-                            managers::reconcile_after_scan(&state).await;
-                        }
-                        state
-                            .emit(
-                                None,
-                                "catalog.changed",
-                                json!({"root_id":job.payload["root_id"]}),
-                            )
-                            .await?;
-                    } else {
-                        queue
-                            .finish(&job, Some("Library no longer exists".into()))
-                            .await?;
-                    }
-                }
-                _ => queue.finish(&job, Some("Unknown job type".into())).await?,
+        match claimed {
+            Ok(Some(job)) => {
+                delay = JOB_RETRY;
+                state.notify_attention();
+                run_job(state.clone(), job).await;
             }
-            state
-                .emit(None, "jobs.changed", json!({"id":job.id}))
-                .await?;
-        } else {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            Ok(None) => {
+                delay = JOB_RETRY;
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            Err(error) => back_off(error, &mut delay).await?,
         }
     }
 }
@@ -491,4 +546,98 @@ pub async fn not_found() -> (StatusCode, Json<serde_json::Value>) {
         StatusCode::NOT_FOUND,
         Json(json!({"error":{"code":"not_found","message":"Unknown API endpoint"}})),
     )
+}
+
+#[cfg(test)]
+mod job_tests {
+    use crate::{AppState, test_support::fixture};
+    use serde_json::json;
+    use thelxinoe_jobs::Queue;
+
+    async fn finished(state: &AppState, id: &str) -> (String, Option<String>) {
+        for _ in 0..200 {
+            let job = id.to_owned();
+            let row = state
+                .db
+                .read("test.job", move |c| {
+                    Ok(
+                        c.query_row("SELECT state,error FROM jobs WHERE id=?1", [job], |r| {
+                            Ok((r.get::<_, String>(0)?, r.get(1)?))
+                        })?,
+                    )
+                })
+                .await
+                .unwrap();
+            if !["queued", "running"].contains(&row.0.as_str()) {
+                return row;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("Job {id} did not finish");
+    }
+
+    #[tokio::test]
+    async fn a_panicking_job_fails_alone_and_both_lanes_keep_working() {
+        let (_temp, state, _) = fixture().await;
+        let queue = Queue(state.db.clone());
+        let lanes = tokio::spawn(super::run_jobs(state.clone()));
+        let panicking = queue.enqueue("test.panic", "a", json!({})).await.unwrap();
+        assert_eq!(
+            finished(&state, &panicking).await,
+            (
+                "failed".into(),
+                Some("The job stopped unexpectedly: test job panicked".into())
+            )
+        );
+        let general = queue
+            .enqueue("library.scan", "gone", json!({"root_id":"gone"}))
+            .await
+            .unwrap();
+        let service = queue
+            .enqueue("service.transfer", "t", json!({}))
+            .await
+            .unwrap();
+        assert_eq!(
+            finished(&state, &general).await,
+            ("failed".into(), Some("Library no longer exists".into()))
+        );
+        assert_eq!(
+            finished(&state, &service).await,
+            ("failed".into(), Some("Missing transfer identity".into()))
+        );
+        assert!(!lanes.is_finished());
+        lanes.abort();
+    }
+
+    #[tokio::test]
+    async fn a_failed_claim_waits_and_retries_instead_of_stopping_the_lanes() {
+        let (_temp, state, _) = fixture().await;
+        let queue = Queue(state.db.clone());
+        let job = queue.enqueue("test.unknown", "a", json!({})).await.unwrap();
+        state
+            .db
+            .write("test.fail_claims", |c| {
+                c.execute_batch("CREATE TEMP TRIGGER reject_claim BEFORE UPDATE ON jobs BEGIN SELECT RAISE(ABORT,'test claim failure'); END;")?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let lanes = tokio::spawn(super::run_jobs(state.clone()));
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(!lanes.is_finished());
+        state
+            .db
+            .write("test.allow_claims", |c| {
+                c.execute_batch("DROP TRIGGER reject_claim")?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            finished(&state, &job).await,
+            ("failed".into(), Some("Unknown job type".into()))
+        );
+        assert!(!lanes.is_finished());
+        lanes.abort();
+    }
 }
