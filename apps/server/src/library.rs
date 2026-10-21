@@ -95,6 +95,8 @@ pub async fn remove_root(
     Path(root_id): Path<String>,
 ) -> Result<Json<Value>> {
     let p = security::require(&state, &headers, Capability::ManageLibrary).await?;
+    // It forgets every user's progress and favorites in the folder, as deleting a user does.
+    crate::authentication::require_fresh(&state, &p).await?;
     let _lease = state.media_operations.write().await;
     if !storage::remove_root(&state.db, p, root_id.clone()).await? {
         return Err(ApiError::not_found());
@@ -691,6 +693,23 @@ mod root_tests {
             call(&state, &path, "DELETE", Value::Null, &bob).await.0,
             StatusCode::FORBIDDEN
         );
+        // Like deleting a user, it forgets everyone's progress, so it needs a recent sign-in.
+        let verified = |at: i64| {
+            state.db.write("test.verified", move |db| {
+                db.execute(
+                    "UPDATE sessions SET verified_at=?1 WHERE user_id='alice'",
+                    [at],
+                )?;
+                Ok(())
+            })
+        };
+        verified(thelxinoe_core::now() - 301).await.unwrap();
+        let (status, _, body) = call(&state, &path, "DELETE", Value::Null, &alice).await;
+        assert_eq!(
+            (status, body["error"]["code"].as_str()),
+            (StatusCode::FORBIDDEN, Some("verification_required"))
+        );
+        verified(thelxinoe_core::now()).await.unwrap();
         assert_eq!(
             call(&state, &path, "DELETE", Value::Null, &alice).await.0,
             StatusCode::OK

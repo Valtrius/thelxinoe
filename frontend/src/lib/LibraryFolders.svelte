@@ -7,6 +7,7 @@
   import FormField from './ui/FormField.svelte';
   import ConfirmDialog from './providers/components/ui/ConfirmDialog.svelte';
   import { reveal } from './ui/reveal';
+  import { withVerification } from './authentication';
   import {
     cardBlockClass,
     cardTableClass,
@@ -104,7 +105,10 @@
     busy = true;
     removalError = '';
     try {
-      await removeRoot(root.id);
+      const removed = await withVerification(async () => {
+        await removeRoot(root.id);
+      });
+      if (!removed) return;
       removing = null;
       await load();
     } catch (caught) {
