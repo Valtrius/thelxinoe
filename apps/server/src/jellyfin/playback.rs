@@ -217,7 +217,7 @@ pub(super) async fn info_source(
         quality: quality.into(),
         audio,
         subtitle,
-        capabilities: negotiate(thelxinoe_playback::bitrate(quality)?.unwrap_or(8_000_000)),
+        capabilities: negotiate(thelxinoe_playback::bitrate(quality)?),
     };
     options.capabilities.allow_conversion =
         Some(field("EnableTranscoding").as_ref() != Some(&json!(false)));
@@ -238,7 +238,7 @@ pub(super) async fn info_source(
             ));
         }
         .into();
-        options.capabilities = negotiate(thelxinoe_playback::bitrate(&options.quality)?.unwrap());
+        options.capabilities = negotiate(thelxinoe_playback::bitrate(&options.quality)?);
         options.capabilities.allow_conversion =
             Some(field("EnableTranscoding").as_ref() != Some(&json!(false)));
     }

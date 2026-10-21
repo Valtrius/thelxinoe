@@ -125,6 +125,7 @@
   } from './lib/native-playback';
   import { dismissToastByKey, showToast } from './lib/providers/toasts';
   import { youtubeVideoIdFromInput } from './lib/providers/youtube-video-input';
+  import { playbackProgress } from './lib/providers/youtube-progress';
   import {
     providers,
     loadProviders,
@@ -351,6 +352,16 @@
               detail: event.payload,
             }),
           );
+        const progress =
+          event.kind === 'playback.changed'
+            ? playbackProgress(
+                event.payload as Parameters<typeof playbackProgress>[0],
+              )
+            : null;
+        if (progress)
+          window.dispatchEvent(
+            new CustomEvent('thelxinoe-youtube-progress', { detail: progress }),
+          );
         if (event.kind === 'appearance.changed')
           acceptAppearance(
             (event.payload as { appearance: Appearance }).appearance,
@@ -394,6 +405,12 @@
             })
             .catch((e) => (error = String(e)));
         }
+        // Progress reports arrive every few seconds while something plays. They
+        // move a playing video's card in place; lists reload when playback
+        // pauses or stops.
+        const progressReport =
+          event.kind === 'playback.changed' &&
+          (event.payload as { state?: string }).state === 'playing';
         if (
           [
             'media-state.changed',
@@ -404,7 +421,8 @@
             'online.account.changed',
             'online.configuration.changed',
             'online.download.changed',
-          ].includes(event.kind)
+          ].includes(event.kind) &&
+          !progressReport
         )
           mediaRevision++;
         if (event.kind === 'catalog.changed') {
@@ -412,14 +430,11 @@
           const root = (event.payload as { root_id?: string }).root_id;
           if (root) delete scans[root];
         }
-        // Progress reports arrive every few seconds while something plays; library
-        // pages only change when playback pauses or stops.
         if (
           ['media-state.changed', 'catalog.status.changed'].includes(
             event.kind,
           ) ||
-          (event.kind === 'playback.changed' &&
-            (event.payload as { state?: string }).state !== 'playing')
+          (event.kind === 'playback.changed' && !progressReport)
         )
           catalogRevision++;
         if (event.kind === 'catalog.scan.progress') {

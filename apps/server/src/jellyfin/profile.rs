@@ -1,7 +1,7 @@
 //! Translate the tested Jellyfin device profile into supported delivery paths.
 use serde_json::Value;
 use std::collections::BTreeMap;
-use thelxinoe_playback::{Capabilities, Conversion, Source};
+use thelxinoe_playback::{Capabilities, Conversion, Source, level_rate, picture_rate};
 
 type Properties = BTreeMap<String, String>;
 pub fn matches(value: &Value, wanted: &str) -> bool {
@@ -236,13 +236,33 @@ fn hls(
                     })
         })
 }
+/// The lowest H.264 level that holds a picture, by its macroblocks per frame and per second.
+fn level(width: u32, height: u32, frame_rate: f64) -> Option<u32> {
+    let blocks = u64::from(width.div_ceil(16)) * u64::from(height.div_ceil(16));
+    [
+        (30, 1_620, 40_500),
+        (31, 3_600, 108_000),
+        (32, 5_120, 216_000),
+        (41, 8_192, 245_760),
+        (42, 8_704, 522_240),
+        (50, 22_080, 589_824),
+        (51, 36_864, 983_040),
+        (52, 36_864, 2_073_600),
+        (60, 139_264, 4_177_920),
+        (61, 139_264, 8_355_840),
+        (62, 139_264, 16_711_680),
+    ]
+    .into_iter()
+    .find(|(_, frame, second)| blocks <= *frame && blocks as f64 * frame_rate <= *second as f64)
+    .map(|(level, ..)| level)
+}
 pub fn negotiate(
     source: &Source,
     audio_index: Option<i64>,
     profile: &Value,
     direct: bool,
     remux: bool,
-    video_bitrate: u32,
+    video_bitrate: Option<u32>,
 ) -> Capabilities {
     negotiate_for_container(
         source,
@@ -260,7 +280,7 @@ pub fn negotiate_online(
     profile: &Value,
     direct: bool,
     remux: bool,
-    video_bitrate: u32,
+    video_bitrate: Option<u32>,
 ) -> Capabilities {
     let candidates = ["mp4", "ts"].map(|container| {
         negotiate_for_container(
@@ -294,7 +314,7 @@ fn negotiate_for_container(
     profile: &Value,
     direct: bool,
     remux: bool,
-    video_bitrate: u32,
+    video_bitrate: Option<u32>,
     output_container: &str,
 ) -> Capabilities {
     let video = source.video_codec().unwrap_or("");
@@ -376,33 +396,40 @@ fn negotiate_for_container(
             .get("Height")
             .and_then(|v| v.parse::<f64>().ok())
             .unwrap_or(1080.0);
-        let frame_rate = values
+        let source_rate = values
             .get("VideoFramerate")
             .and_then(|v| v.parse::<f64>().ok())
             .unwrap_or(30.0)
-            .clamp(1.0, 30.0)
-            .min(upper("VideoFramerate", 30.0));
-        'candidate: for (max_width, max_height, level) in [
-            (1920.0, 1080.0, 41),
-            (1280.0, 720.0, 31),
-            (720.0, 480.0, 30),
-        ] {
+            .clamp(1.0, 60.0);
+        // The source picture when the client takes it, else the largest smaller one it does.
+        'candidate: for ((max_width, max_height), most) in [
+            (7680.0, 4320.0),
+            (3840.0, 2160.0),
+            (2560.0, 1440.0),
+            (1920.0, 1080.0),
+            (1280.0, 720.0),
+            (720.0, 480.0),
+        ]
+        .into_iter()
+        .flat_map(|size| [(size, 60.0), (size, 30.0)])
+        {
+            let frame_rate = source_rate.min(most).min(upper("VideoFramerate", 60.0));
             let scale = (upper("Width", max_width) / width)
                 .min(upper("Height", max_height) / height)
                 .min(1.0);
             let width = ((width * scale / 2.0).floor().max(1.0) as u32) * 2;
             let height = ((height * scale / 2.0).floor().max(1.0) as u32) * 2;
+            let Some(level) = level(width, height, frame_rate) else {
+                continue;
+            };
             converted.insert("Width".into(), width.to_string());
             converted.insert("Height".into(), height.to_string());
             converted.insert("VideoLevel".into(), level.to_string());
             converted.insert(
                 "VideoBitrate".into(),
                 video_bitrate
-                    .min(match level {
-                        30 => 10_000_000,
-                        31 => 14_000_000,
-                        _ => 20_000_000,
-                    })
+                    .unwrap_or_else(|| picture_rate(width.into(), height.into()))
+                    .min(level_rate(level))
                     .to_string(),
             );
             converted.insert("VideoFramerate".into(), frame_rate.to_string());
@@ -550,7 +577,7 @@ mod tests {
     #[test]
     fn unsupported_depth_resolution_level_and_channels_require_a_supported_conversion() {
         let (source, profile) = fixture();
-        let caps = negotiate(&source, Some(1), &profile, true, true, 8_000_000);
+        let caps = negotiate(&source, Some(1), &profile, true, true, Some(8_000_000));
         let conversion = caps.conversion.as_ref().unwrap();
         assert_eq!(
             (conversion.width, conversion.height, conversion.level),
@@ -567,7 +594,7 @@ mod tests {
         let mut denied = profile;
         denied["TranscodingProfiles"][0]["Type"] = json!("Audio");
         let options = Options {
-            capabilities: negotiate(&source, Some(1), &denied, true, true, 8_000_000),
+            capabilities: negotiate(&source, Some(1), &denied, true, true, Some(8_000_000)),
             ..options
         };
         assert!(plan(&source, &options).is_err());
@@ -582,10 +609,10 @@ mod tests {
         source.probe["streams"][0]["height"] = json!(180);
         source.probe["streams"][1]["channels"] = json!(2);
         profile["CodecProfiles"].as_array_mut().unwrap().push(json!({"Type":"Video","Codec":"h264","ApplyConditions":[{"Property":"VideoProfile","Condition":"Equals","Value":"High 10"}],"Conditions":[{"Property":"Width","Condition":"LessThanEqual","Value":"160","IsRequired":true}]}));
-        let caps = negotiate(&source, Some(1), &profile, true, true, 8_000_000);
+        let caps = negotiate(&source, Some(1), &profile, true, true, Some(8_000_000));
         assert_eq!(caps.containers, vec!["mkv"]);
         profile["CodecProfiles"][2]["ApplyConditions"] = json!([]);
-        let caps = negotiate(&source, Some(1), &profile, true, true, 8_000_000);
+        let caps = negotiate(&source, Some(1), &profile, true, true, Some(8_000_000));
         assert!(caps.containers.is_empty());
         let conversion = caps.conversion.unwrap();
         assert_eq!((conversion.width, conversion.height), (160, 90));

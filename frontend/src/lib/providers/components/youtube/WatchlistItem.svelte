@@ -6,6 +6,7 @@
   import type { YoutubeVideoActions } from '../../youtube-video-actions';
 
   import { youtubeVideoPresentation } from '../../youtube-video-presentation';
+  import { withNativePosition } from '../../../native-playback';
   import {
     Download,
     Eye,
@@ -49,8 +50,9 @@
     onReorderStart?: (event: PointerEvent) => void;
   } = $props();
 
+  const current = $derived(withNativePosition(video));
   const presentation = $derived(
-    youtubeVideoPresentation(video, {
+    youtubeVideoPresentation(current, {
       mpvReady,
       ytdlpReady,
       ffmpegReady,
@@ -75,7 +77,7 @@
   const downloadLabel = $derived(
     presentation.downloadLabel ??
       (downloadReady
-        ? (presentation.downloadFormatLabel ?? activeDownload?.quality)
+        ? (presentation.downloadFormatLabel ?? 'Downloaded')
         : null),
   );
   let thumbnailAspectRatio = $state(16 / 9);
@@ -188,7 +190,7 @@
         <span
           class="absolute bottom-2 left-1 border border-accent/45 bg-black/75 px-1.5 py-0.5 font-mono text-[0.6rem] text-accent"
         >
-          {formatClock(video.positionSeconds)}
+          {formatClock(current.positionSeconds)}
         </span>
       {/if}
       {#if tracksVideoProgress && video.durationSeconds}

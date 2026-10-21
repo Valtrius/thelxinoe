@@ -146,6 +146,19 @@ test('auto-delete policies save on change and Audit owns scheduled deletions and
   await expect(
     videos.getByLabel('Unpinned storage limit (GB)', { exact: true }),
   ).toHaveValue('125');
+  const limit = videos.getByLabel('Unpinned storage limit (GB)', {
+    exact: true,
+  });
+  await limit.fill('10');
+  await limit.blur();
+  expect(
+    await limit.evaluate(
+      (input: HTMLInputElement) => input.validity.rangeUnderflow,
+    ),
+  ).toBe(true);
+  expect(policies[2].storage_limit_bytes).toBe(125_000_000_000);
+  await limit.fill('125');
+  await limit.blur();
   await videos.scrollIntoViewIfNeeded();
   await page.screenshot({
     path: testInfo.outputPath('auto-delete-after-watching.png'),
@@ -1187,6 +1200,7 @@ for (const admin of [false, true]) {
             youtube_downloads: false,
             youtube_daily_quota: 10000,
             youtube_network: 'auto',
+            youtube_download_quality: 'best',
             youtube_network_status: {
               ipv4: true,
               ipv6: true,

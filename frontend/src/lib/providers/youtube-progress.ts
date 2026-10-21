@@ -79,3 +79,31 @@ export function applyYoutubeProgress(
     },
   };
 }
+
+// Each playback report carries the position, so a page moves the video's card
+// instead of reloading its lists. Live streams have no duration to measure.
+export function playbackProgress(payload: {
+  id?: string;
+  media_id?: string;
+  position?: number;
+  duration?: number;
+  watched?: boolean;
+}): YoutubeProgressEvent | null {
+  if (
+    !payload.media_id?.startsWith('youtube:') ||
+    payload.position === undefined ||
+    !payload.duration
+  )
+    return null;
+  return {
+    sessionId: payload.id,
+    videoId: payload.media_id.slice('youtube:'.length),
+    positionSeconds: payload.position,
+    durationSeconds: payload.duration,
+    watchedPercentage: Math.min(
+      100,
+      Math.max(0, (payload.position / payload.duration) * 100),
+    ),
+    isWatched: payload.watched ?? false,
+  };
+}

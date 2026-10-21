@@ -646,7 +646,7 @@ pub async fn playback_info(
                 profile,
                 false,
                 input["EnableDirectStream"] != false,
-                8_000_000,
+                None,
             )
         },
     )
@@ -679,8 +679,7 @@ pub async fn playback_info(
             "auto"
         } else {
             quality
-        })?
-        .unwrap_or(8_000_000),
+        })?,
     );
     capabilities.allow_conversion = Some(input["EnableTranscoding"] != false);
     let options = thelxinoe_playback::Options {

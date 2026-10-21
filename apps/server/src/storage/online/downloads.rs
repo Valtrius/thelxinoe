@@ -81,7 +81,7 @@ pub(super) async fn configure(db: &Database, enabled: bool, p: Principal) -> any
 }
 
 pub(super) async fn status(db: &Database, video: String) -> anyhow::Result<Option<Value>> {
-    db.read("online.downloads.status", move |db| Ok(db.query_row("SELECT state,size,error,downloaded_bytes,total_bytes,eta_seconds,media_kind FROM youtube_downloads WHERE video_id=?1",[video],|r|Ok(json!({"state":r.get::<_,String>(0)?,"size":r.get::<_,Option<i64>>(1)?,"error":r.get::<_,Option<String>>(2)?,"downloaded_bytes":r.get::<_,i64>(3)?,"total_bytes":r.get::<_,Option<i64>>(4)?,"eta_seconds":r.get::<_,Option<i64>>(5)?,"media_kind":r.get::<_,Option<String>>(6)?}))).optional()?)).await
+    db.read("online.downloads.status", move |db| Ok(db.query_row("SELECT state,size,error,downloaded_bytes,total_bytes,eta_seconds,media_kind,probe FROM youtube_downloads WHERE video_id=?1",[video],|r|{let format=super::format(r.get::<_,Option<String>>(7)?.as_deref());Ok(json!({"state":r.get::<_,String>(0)?,"size":r.get::<_,Option<i64>>(1)?,"error":r.get::<_,Option<String>>(2)?,"downloaded_bytes":r.get::<_,i64>(3)?,"total_bytes":r.get::<_,Option<i64>>(4)?,"eta_seconds":r.get::<_,Option<i64>>(5)?,"media_kind":r.get::<_,Option<String>>(6)?,"width":format.width,"height":format.height,"frame_rate":format.frame_rate}))}).optional()?)).await
 }
 
 pub(super) async fn request_for(
@@ -165,7 +165,7 @@ pub(super) async fn publish_progress(
     db: &Database,
 ) -> anyhow::Result<(Option<Value>, Vec<String>)> {
     db.read("online.downloads.publish_progress", move|db|{
-        let progress=db.query_row("SELECT generation,state,size,downloaded_bytes,total_bytes,eta_seconds,media_kind FROM youtube_downloads WHERE video_id=?1",[&id],|r|Ok(json!({"video_id":id,"generation":r.get::<_,String>(0)?,"state":r.get::<_,String>(1)?,"size":r.get::<_,Option<i64>>(2)?,"downloaded_bytes":r.get::<_,i64>(3)?,"total_bytes":r.get::<_,Option<i64>>(4)?,"eta_seconds":r.get::<_,Option<i64>>(5)?,"media_kind":r.get::<_,Option<String>>(6)?}))).optional()?;
+        let progress=db.query_row("SELECT generation,state,size,downloaded_bytes,total_bytes,eta_seconds,media_kind,probe FROM youtube_downloads WHERE video_id=?1",[&id],|r|{let format=super::format(r.get::<_,Option<String>>(7)?.as_deref());Ok(json!({"video_id":id,"generation":r.get::<_,String>(0)?,"state":r.get::<_,String>(1)?,"size":r.get::<_,Option<i64>>(2)?,"downloaded_bytes":r.get::<_,i64>(3)?,"total_bytes":r.get::<_,Option<i64>>(4)?,"eta_seconds":r.get::<_,Option<i64>>(5)?,"media_kind":r.get::<_,Option<String>>(6)?,"width":format.width,"height":format.height,"frame_rate":format.frame_rate}))}).optional()?;
         let users=db.prepare("SELECT user_id FROM youtube_videos WHERE video_id=?1")?.query_map([id],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok((progress,users))
     }).await
@@ -177,12 +177,13 @@ pub(super) async fn publish_download(
     value: Value,
     video: String,
     generation: String,
+    root: PathBuf,
     db: &Database,
 ) -> anyhow::Result<bool> {
     db.write("online.downloads.publish_download", move |db| {
+        ensure!(db.query_row("SELECT EXISTS(SELECT 1 FROM youtube_downloads WHERE video_id=?1 AND generation=?2 AND state='downloading')",params![video,generation],|r|r.get::<_,bool>(0))?,"Download was cancelled");
+        if !crate::auto_delete::make_room(db,&root,&video,metadata.len() as i64)? {return Ok(false);}
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        ensure!(metadata.len() as i64<=crate::auto_delete::download_limit(&tx,&video)?,"Downloaded file exceeds the storage limit");
-        if metadata.len() as i64>crate::auto_delete::available_budget(&tx,&video)? {return Ok(false);}
         let changed=tx.execute("UPDATE youtube_downloads SET path=?3,size=?4,modified=?5,probe=?6,state='ready',error=NULL,completed_at=?7,updated_at=?7 WHERE video_id=?1 AND generation=?2 AND state='downloading'",params![video,generation,target.to_string_lossy(),metadata.len() as i64,metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos().to_string(),serde_json::to_string(&value)?,now()])?;
         ensure!(changed==1,"Download was cancelled");tx.commit()?;Ok(true)
     }).await

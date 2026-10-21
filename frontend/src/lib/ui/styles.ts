@@ -50,5 +50,12 @@ export const cardBlockClass = 'px-5.5 py-4 compact:px-4';
 export const groupHeadingClass =
   'px-5.5 pt-4 pb-1 text-[10px] font-semibold tracking-[0.12em] text-muted uppercase compact:px-4';
 
+// A toolbar button's menu opens under its button, which on a phone can sit
+// too far left for the menu to fit. Compact layouts center the menu in the
+// toolbar instead: the button's wrapper takes `compact:static`, so the nearest
+// positioned ancestor is the toolbar.
+export const toolbarMenuClass =
+  'compact:right-auto compact:left-1/2 compact:max-w-full compact:-translate-x-1/2';
+
 export const statsClass =
   'my-5 grid grid-cols-[repeat(auto-fit,minmax(135px,1fr))] gap-3 [&>div]:border [&>div]:border-line [&>div]:bg-surface-soft [&>div]:p-5 [&_strong]:text-2xl [&_strong]:leading-normal [&_strong]:font-medium [&_strong]:tracking-[-0.04em] [&_small]:mt-1.5 [&_small]:text-[10px] [&_small]:tracking-[0.05em] [&_small]:uppercase';

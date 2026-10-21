@@ -14,7 +14,7 @@ pub(super) async fn home_feed(
         let sql = format!("{select}, {played} AS last_played FROM {from} WHERE {recorded} AND (COALESCE(v.is_short,0)=0 OR v.broadcast='replay') AND s.position>1 ORDER BY last_played DESC,v.video_id LIMIT 50");
         let continue_watching = db.prepare(&sql)?.query_map([&user], |row| {
             let mut item = video(row, &grant)?;
-            item["last_played"] = json!(row.get::<_,i64>(25)?);
+            item["last_played"] = json!(row.get::<_,i64>("last_played")?);
             Ok(item)
         })?.collect::<rusqlite::Result<Vec<_>>>()?;
         let sql = format!("{VIDEO_SELECT} WHERE {recorded} AND (v.is_short=0 OR v.broadcast='replay') AND COALESCE(s.position,0)<=1 AND EXISTS(SELECT 1 FROM youtube_subscriptions sub WHERE sub.user_id=v.user_id AND sub.channel_id=v.channel_id AND sub.active=1) ORDER BY v.published_at DESC,v.video_id LIMIT 50");
@@ -58,7 +58,7 @@ pub(super) async fn list(
     }).await
 }
 
-pub(in super::super) const VIDEO_SELECT: &str = "SELECT v.video_id,v.channel_id,v.channel_title,v.title,v.published_at,v.duration,v.broadcast,v.available,v.metadata_at,v.privacy,COALESCE(s.watched,0),COALESCE(s.position,0),COALESCE(s.pinned,0),c.thumbnail_url,v.scheduled_start,v.actual_start,v.actual_end,d.state,d.size,d.requested_at,d.error,d.downloaded_bytes,d.total_bytes,d.eta_seconds,d.media_kind FROM youtube_videos v LEFT JOIN youtube_state s USING(user_id,video_id) LEFT JOIN youtube_subscriptions c ON c.user_id=v.user_id AND c.channel_id=v.channel_id LEFT JOIN youtube_downloads d ON d.video_id=v.video_id";
+pub(in super::super) const VIDEO_SELECT: &str = "SELECT v.video_id,v.channel_id,v.channel_title,v.title,v.published_at,v.duration,v.broadcast,v.available,v.metadata_at,v.privacy,COALESCE(s.watched,0),COALESCE(s.position,0),COALESCE(s.pinned,0),c.thumbnail_url,v.scheduled_start,v.actual_start,v.actual_end,d.state,d.size,d.requested_at,d.error,d.downloaded_bytes,d.total_bytes,d.eta_seconds,d.media_kind,d.probe FROM youtube_videos v LEFT JOIN youtube_state s USING(user_id,video_id) LEFT JOIN youtube_subscriptions c ON c.user_id=v.user_id AND c.channel_id=v.channel_id LEFT JOIN youtube_downloads d ON d.video_id=v.video_id";
 
 pub(in super::super) fn video(row: &rusqlite::Row<'_>, grant: &str) -> rusqlite::Result<Value> {
     let id: String = row.get(0)?;
@@ -66,9 +66,12 @@ pub(in super::super) fn video(row: &rusqlite::Row<'_>, grant: &str) -> rusqlite:
     let position: f64 = row.get(11)?;
     let broadcast: String = row.get(6)?;
     let status: Option<String> = row.get(17)?;
-    let download = status.map(|status| -> rusqlite::Result<Value> { Ok(json!({
+    let download = status.map(|status| -> rusqlite::Result<Value> {
+        let format = super::super::downloads::format(row.get::<_,Option<String>>(25)?.as_deref());
+        Ok(json!({
         "videoId":id,"status":match status.as_str(){"ready"=>"ready","queued"=>"queued","waiting_for_space"=>"waiting_for_space","downloading"=>"downloading","processing"=>"processing",_=>"failed"},
-        "fileSizeBytes":row.get::<_,Option<i64>>(18)?.unwrap_or(0),"pinned":row.get::<_,bool>(12)?,"quality":"1080p",
+        "fileSizeBytes":row.get::<_,Option<i64>>(18)?.unwrap_or(0),"pinned":row.get::<_,bool>(12)?,
+        "widthPixels":format.width,"heightPixels":format.height,"frameRate":format.frame_rate,
         "downloadedBytes":row.get::<_,Option<i64>>(21)?.unwrap_or(0),"totalBytes":row.get::<_,Option<i64>>(22)?,"etaSeconds":row.get::<_,Option<i64>>(23)?,"mediaKind":row.get::<_,Option<String>>(24)?,"requestedAt":date(row.get::<_,Option<i64>>(19)?.unwrap_or(0)),"errorMessage":row.get::<_,Option<String>>(20)?
     })) }).transpose()?;
     Ok(json!({

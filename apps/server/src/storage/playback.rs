@@ -150,8 +150,11 @@ pub(super) async fn report(
         let position=if duration==0.0 {input.position}else{input.position.min(duration)};
         let seconds=crate::statistics::record(&tx,&key,&input)?;
         tx.execute("UPDATE playback_sessions SET position=?1,sequence=?2,state=?3,updated_at=?4 WHERE id=?5",params![position,input.sequence,input.state,now(),key])?;
+        // Clients move a playing video's progress from the event instead of reloading their lists.
+        let mut change=json!({"id":key,"state":input.state,"media_id":media,"position":position,"duration":duration});
         if let Some(video)=media.strip_prefix("youtube:") {
             crate::online::downloads::record_state(&tx,&user,video,position,duration)?;
+            change["watched"]=json!(tx.query_row("SELECT watched FROM youtube_state WHERE user_id=?1 AND video_id=?2",params![user,video],|r|r.get::<_,bool>(0)).optional()?.unwrap_or(false));
         } else if !crate::online::live::domain(&media) {
             tx.execute("INSERT INTO edition_progress VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(user_id,media_id,edition) DO UPDATE SET position=excluded.position,duration=excluded.duration,updated_at=excluded.updated_at",params![user,media,edition,position,duration,now()])?;
             tx.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES (?1,?2,?3,?4) ON CONFLICT(user_id,media_id) DO UPDATE SET watched=MAX(watched,excluded.watched),updated_at=excluded.updated_at",params![user,media,position>=duration*0.9,now()])?;
@@ -159,7 +162,7 @@ pub(super) async fn report(
         crate::history::record(&tx,&key,position,&input.state,seconds)?;
         let resource=format!("playback:{key}");
         if stopped {tx.execute("DELETE FROM playback_grants WHERE resource=?1",[resource])?;} else {tx.execute("UPDATE playback_grants SET expires_at=?1 WHERE resource=?2 AND expires_at>?3",params![now()+120,resource,now()])?;}
-        crate::storage::record_event(&tx, Some(&user), "playback.changed", &json!({"id":key,"state":input.state}))?;
+        crate::storage::record_event(&tx, Some(&user), "playback.changed", &change)?;
         tx.commit()?;Ok(Some(true))
     }).await
 }

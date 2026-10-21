@@ -49,7 +49,7 @@
             bind:value={value.quality}
             ><option value="auto">Auto</option><option value="original"
               >Original</option
-            >{#each [360, 480, 720, 1080, 1440, 2160] as height (height)}<option
+            >{#each [4320, 2160, 1440, 1080, 720, 480, 360] as height (height)}<option
                 value={`${height}p`}>{height}p</option
               >{/each}</select
           >

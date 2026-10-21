@@ -27,6 +27,21 @@ async fn seed(state: &AppState, video: &'static str, size: usize, age: i64) -> P
     path
 }
 
+/// Sets the unpinned limit below the smallest one the API accepts, for byte-sized fixtures.
+async fn limit(state: &AppState, bytes: i64) {
+    state
+        .db
+        .write("test.limit", move |db| {
+            db.execute(
+                "UPDATE retention_policies SET storage_limit_bytes=?1 WHERE domain='videos'",
+                [bytes],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
 async fn api(state: &AppState, cookie: &str, path: &str, method: &str, body: Value) -> Value {
     let response = call(state, path, method, body, cookie).await;
     assert_eq!(response.0, StatusCode::OK, "{path}: {}", response.2);
@@ -67,15 +82,22 @@ async fn auto_delete_shared_downloads_respect_pins_capacity_watched_users_and_fi
         json!({"pinned":true}),
     )
     .await;
-    policy["storage_limit_bytes"] = json!(4);
-    api(
-        &state,
-        &cookie,
-        "/api/v1/admin/retention/policy/videos",
-        "POST",
-        policy.clone(),
-    )
-    .await;
+    policy["storage_limit_bytes"] = json!(39_999_999_999_i64);
+    assert_eq!(
+        call(
+            &state,
+            "/api/v1/admin/retention/policy/videos",
+            "POST",
+            policy.clone(),
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST,
+        "the unpinned limit holds at least 40 GB"
+    );
+    policy["storage_limit_bytes"] = json!(100_000_000_000_i64);
+    limit(&state, 4).await;
     api(
         &state,
         &cookie,
@@ -114,7 +136,6 @@ async fn auto_delete_shared_downloads_respect_pins_capacity_watched_users_and_fi
 
     policy["enabled"] = json!(true);
     policy["grace_seconds"] = json!(86400);
-    policy["storage_limit_bytes"] = json!(1000);
     api(
         &state,
         &cookie,
@@ -123,6 +144,7 @@ async fn auto_delete_shared_downloads_respect_pins_capacity_watched_users_and_fi
         policy.clone(),
     )
     .await;
+    limit(&state, 1000).await;
     api(
         &state,
         &cookie,
@@ -245,15 +267,7 @@ async fn auto_delete_shared_downloads_respect_pins_capacity_watched_users_and_fi
         json!({}),
     )
     .await;
-    policy["storage_limit_bytes"] = json!(1);
-    api(
-        &state,
-        &cookie,
-        "/api/v1/admin/retention/policy/videos",
-        "POST",
-        policy,
-    )
-    .await;
+    limit(&state, 1).await;
     api(
         &state,
         &cookie,
@@ -376,23 +390,7 @@ async fn auto_delete_shared_downloads_respect_pins_capacity_watched_users_and_fi
         changed.exists(),
         "changed file identities are blocked, never retried destructively"
     );
-    let mut recovery_policy = api(&state, &cookie, "/api/v1/admin/retention", "GET", json!({}))
-        .await["policies"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|p| p["domain"] == "videos")
-        .unwrap()
-        .clone();
-    recovery_policy["storage_limit_bytes"] = json!(1000);
-    api(
-        &state,
-        &cookie,
-        "/api/v1/admin/retention/policy/videos",
-        "POST",
-        recovery_policy,
-    )
-    .await;
+    limit(&state, 1000).await;
     let interrupted = seed(&state, "interrupted", 4, 7).await;
     for viewer in [&cookie, &bob] {
         api(
@@ -499,7 +497,7 @@ async fn downloads_waiting_for_space_are_retried_when_capacity_changes() {
     let (_temp, state, _cookie) = fixture().await;
     seed(&state, "playing0001", 10, 1).await;
     state.db.write("test.waiting", |db| {
-        db.execute("UPDATE retention_policies SET storage_limit_bytes=15 WHERE domain='videos'", [])?;
+        db.execute("UPDATE retention_policies SET storage_limit_bytes=10 WHERE domain='videos'", [])?;
         // Playback keeps the only ready download from eviction, so nothing fits.
         db.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,generation,edition,state,mode,options,duration,created_at,updated_at,youtube_video_id) SELECT 'playing','alice',id,'g','public','playing','direct','{}',100,?1,?1,'playing0001' FROM sessions WHERE user_id='alice' LIMIT 1", [now()])?;
         db.execute("INSERT INTO youtube_media(video_id) VALUES ('waiting0001')", [])?;
@@ -571,4 +569,53 @@ async fn downloads_waiting_for_space_are_retried_when_capacity_changes() {
     // Admitted once playback stops protecting the other file; the fixture's empty tool
     // bundle then fails the download itself.
     assert!(claimed && status == "failed" && after > events, "{status}");
+}
+
+// A finished download makes room by evicting older unpinned downloads, never itself. When
+// playback keeps too much space for it, nothing is evicted; a pinned one always fits.
+#[tokio::test]
+async fn finished_downloads_evict_older_ones_to_fit_the_limit() {
+    let (_temp, state, _cookie) = fixture().await;
+    let oldest = seed(&state, "oldvideo001", 6, 1).await;
+    let playing = seed(&state, "playing0001", 6, 2).await;
+    limit(&state, 20).await;
+    state.db.write("test.room", |db| {
+        db.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,generation,edition,state,mode,options,duration,created_at,updated_at,youtube_video_id) SELECT 'playing','alice',id,'g','public','playing','direct','{}',100,?1,?1,'playing0001' FROM sessions WHERE user_id='alice' LIMIT 1", [now()])?;
+        db.execute("INSERT INTO youtube_videos(user_id,video_id,title,privacy) VALUES ('alice','pinned00001','Pinned','public')", [])?;
+        db.execute("INSERT INTO youtube_state(user_id,video_id,pinned,updated_at) VALUES ('alice','pinned00001',1,1)", [])?;
+        Ok(())
+    }).await.unwrap();
+    assert_eq!(
+        crate::auto_delete::budget(&state.db, "newvideo001".into())
+            .await
+            .unwrap(),
+        Some(14),
+        "only the download being played can't make room"
+    );
+    assert_eq!(
+        crate::auto_delete::budget(&state.db, "pinned00001".into())
+            .await
+            .unwrap(),
+        None
+    );
+    let room = async |video: &'static str, size: i64| {
+        let root = state.config.cache.join("youtube");
+        state
+            .db
+            .write("test.make_room", move |db| {
+                crate::auto_delete::make_room(db, &root, video, size)
+            })
+            .await
+            .unwrap()
+    };
+    assert!(!room("newvideo001", 15).await);
+    assert!(
+        oldest.exists(),
+        "nothing is evicted for a download that can't fit"
+    );
+    assert!(room("pinned00001", 1_000).await);
+    assert!(oldest.exists(), "pinned downloads are outside the limit");
+    assert!(room("newvideo001", 12).await);
+    assert!(!oldest.exists());
+    assert!(playing.exists());
 }

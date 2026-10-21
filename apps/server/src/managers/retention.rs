@@ -72,6 +72,12 @@ async fn policy(
     {
         return Err(ApiError::bad("Invalid auto-delete policy"));
     }
+    if domain == "videos" && input.storage_limit_bytes < crate::auto_delete::MIN_STORAGE_LIMIT_BYTES
+    {
+        return Err(ApiError::bad(
+            "The unpinned storage limit must be at least 40 GB",
+        ));
+    }
     // Scheduled deletions are the only place to keep media before it goes, so they last a day.
     if input.grace_seconds < 86400 {
         return Err(ApiError::bad("Delete after must be at least 1 day"));

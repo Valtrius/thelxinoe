@@ -339,8 +339,8 @@ export function qualityOptions(
   return [
     automatic,
     { value: 'original', label: `Original${height ? ` (${height}p)` : ''}` },
-    ...[2160, 1440, 1080, 720, 480, 360]
-      .filter((value) => value <= (height ?? 1080))
+    ...[4320, 2160, 1440, 1080, 720, 480, 360]
+      .filter((value) => !height || value <= height)
       .map((value) => ({ value: `${value}p`, label: `${value}p` })),
   ];
 }

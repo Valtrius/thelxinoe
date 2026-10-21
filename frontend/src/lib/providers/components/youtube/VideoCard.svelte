@@ -10,6 +10,7 @@
   } from '../../../ui/styles';
 
   import { youtubeVideoPresentation } from '../../youtube-video-presentation';
+  import { withNativePosition } from '../../../native-playback';
 
   import { Download } from '@lucide/svelte';
   import type {
@@ -18,12 +19,7 @@
     YoutubeWatchlist,
     YoutubeVideo,
   } from '../../types';
-  import {
-    formatBytes,
-    formatClock,
-    relativeTime,
-    youtubeThumbnailUrl,
-  } from '../../utils';
+  import { formatClock, relativeTime, youtubeThumbnailUrl } from '../../utils';
 
   let {
     actions,
@@ -65,8 +61,9 @@
     onShortcutDeleteCancel: () => void;
   } = $props();
 
+  const current = $derived(withNativePosition(video));
   const presentation = $derived(
-    youtubeVideoPresentation(video, {
+    youtubeVideoPresentation(current, {
       mpvReady,
       ytdlpReady,
       ffmpegReady,
@@ -181,7 +178,7 @@
       <span
         class="absolute bottom-3 left-2 border border-accent/45 bg-black/75 px-2 py-1 font-mono text-[0.62rem] text-accent"
       >
-        {formatClock(video.positionSeconds)}
+        {formatClock(current.positionSeconds)}
       </span>
     {/if}
     {#if isLaunching}<span
@@ -197,16 +194,10 @@
         class={`${signalBadgeClass} absolute top-2 left-2`}>Replay</span
       >{/if}
     {#if downloadReady && activeDownload}<span
-        class={`${downloadBadgeClass} absolute left-2 flex flex-col items-start gap-0.5 ${isLaunching || isPlaying || video.isLive || video.isUpcoming || video.isLiveReplay ? 'top-10' : 'top-2'}`}
+        class={`${downloadBadgeClass} absolute left-2 flex items-center gap-1 ${isLaunching || isPlaying || video.isLive || video.isUpcoming || video.isLiveReplay ? 'top-10' : 'top-2'}`}
         title={readyDownloadTitle ?? undefined}
-      >
-        <span class="flex items-center gap-1"
-          ><Download class="size-3" />{formatBytes(
-            activeDownload.fileSizeBytes,
-          )}</span
-        >
-        {#if downloadFormatLabel}<span>{downloadFormatLabel}</span>{/if}
-      </span>{:else if downloadLabel}<span
+        ><Download class="size-3" />{downloadFormatLabel ?? 'Downloaded'}</span
+      >{:else if downloadLabel}<span
         class={`${downloadBadgeClass} absolute left-2 ${isLaunching || isPlaying || video.isLive || video.isUpcoming || video.isLiveReplay ? 'top-10' : 'top-2'}`}
         title={activeDownload?.errorMessage ?? downloadLabel}
         >{downloadLabel}</span
@@ -218,9 +209,9 @@
         barClass="shadow-[0_0_12px_var(--success)]"
       />
     {/if}
-    {#if tracksVideoProgress && video.watchedPercentage > 0}
+    {#if tracksVideoProgress && current.watchedPercentage > 0}
       <ProgressBar
-        value={video.watchedPercentage}
+        value={current.watchedPercentage}
         class="absolute inset-x-0 bottom-0 bg-white/12"
         barClass="shadow-accent-glow"
       />

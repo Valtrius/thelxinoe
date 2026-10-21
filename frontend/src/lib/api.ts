@@ -130,16 +130,43 @@ export class Events {
   private socket?: WebSocket;
   private timer?: ReturnType<typeof setTimeout>;
   private closed = false;
+  // Each connection attempt; a stalled or replaced one no longer reports.
+  private attempt = 0;
   private cursor = 0;
   private initialized = false;
   private epoch?: string;
   private retry = 500;
+  // Phones suspend background pages and can leave their connection stalled.
+  // Reconnect as soon as the page or the network is back, not after a backoff.
+  private resume = () => {
+    if (
+      this.closed ||
+      document.visibilityState !== 'visible' ||
+      this.socket?.readyState === WebSocket.OPEN
+    )
+      return;
+    this.retry = 500;
+    void this.connect();
+  };
   constructor(
     private receive: (event: ServerEvent) => void,
     private status: (connected: boolean) => void = () => {},
-  ) {}
+  ) {
+    document.addEventListener('visibilitychange', this.resume);
+    window.addEventListener('pageshow', this.resume);
+    window.addEventListener('online', this.resume);
+  }
   async connect() {
     if (this.closed) return;
+    clearTimeout(this.timer);
+    const attempt = ++this.attempt;
+    const current = () => !this.closed && attempt === this.attempt;
+    this.socket?.close();
+    this.socket = undefined;
+    // An attempt that has not opened by now has stalled; start another.
+    this.timer = setTimeout(() => {
+      if (current()) this.retryLater();
+    }, 10000);
     let ticket: string;
     try {
       const issued = await api<{
@@ -148,6 +175,7 @@ export class Events {
         epoch?: string;
         version?: string;
       }>('/auth/event-ticket', 'POST');
+      if (!current()) return;
       ticket = issued.ticket;
       if (
         !this.initialized ||
@@ -163,17 +191,18 @@ export class Events {
           new CustomEvent('thelxinoe-web-update', { detail: issued.version }),
         );
     } catch {
-      if (!this.closed)
-        this.timer = setTimeout(() => void this.connect(), 15000);
+      if (current()) this.retryLater();
       return;
     }
-    if (this.closed) return;
     const url = new URL(`${serverUrl() || location.origin}/api/v1/events`);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     url.searchParams.set('since', String(this.cursor));
     url.searchParams.set('ticket', ticket);
-    this.socket = new WebSocket(url);
-    this.socket.onopen = () => {
+    const socket = new WebSocket(url);
+    this.socket = socket;
+    socket.onopen = () => {
+      if (!current()) return;
+      clearTimeout(this.timer);
       this.retry = 500;
       this.status(true);
       this.receive({
@@ -182,24 +211,33 @@ export class Events {
         payload: {},
       });
     };
-    this.socket.onmessage = (message) => {
+    socket.onmessage = (message) => {
+      if (!current()) return;
       const event = JSON.parse(message.data) as ServerEvent;
       if (event.id > this.cursor) {
         this.cursor = event.id;
         this.receive(event);
       }
     };
-    this.socket.onclose = () => {
-      this.status(false);
-      if (!this.closed) {
-        this.timer = setTimeout(() => this.connect(), this.retry);
-        this.retry = Math.min(this.retry * 2, 15000);
-      }
+    socket.onclose = () => {
+      if (current()) this.retryLater();
     };
+  }
+  private retryLater() {
+    this.attempt++;
+    this.socket?.close();
+    this.socket = undefined;
+    this.status(false);
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => void this.connect(), this.retry);
+    this.retry = Math.min(this.retry * 2, 15000);
   }
   close() {
     this.closed = true;
     clearTimeout(this.timer);
     this.socket?.close();
+    document.removeEventListener('visibilitychange', this.resume);
+    window.removeEventListener('pageshow', this.resume);
+    window.removeEventListener('online', this.resume);
   }
 }

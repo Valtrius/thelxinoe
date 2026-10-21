@@ -901,16 +901,24 @@ test('desktop trailers resolve through the server and launch MPV with the same v
       __TAURI_INTERNALS__: unknown;
       __TAURI_EVENT_PLUGIN_INTERNALS__: unknown;
       recordNativeLaunch: (payload: unknown) => Promise<void>;
+      emitNative: (event: string, payload: unknown) => void;
     };
     bridge.isTauri = true;
     bridge.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
     let callback = 0;
+    const callbacks = new Map<number, (event: unknown) => void>();
+    const listeners = new Map<string, number>();
+    bridge.emitNative = (event, payload) =>
+      callbacks.get(listeners.get(event)!)?.({ event, id: 0, payload });
     bridge.__TAURI_INTERNALS__ = {
       metadata: {
         currentWindow: { label: 'main' },
         currentWebview: { label: 'main' },
       },
-      transformCallback: () => ++callback,
+      transformCallback: (handler: (event: unknown) => void) => {
+        callbacks.set(++callback, handler);
+        return callback;
+      },
       unregisterCallback() {},
       async invoke(command: string, args: Record<string, unknown> = {}) {
         if (command === 'server_url') return location.origin;
@@ -934,13 +942,17 @@ test('desktop trailers resolve through the server and launch MPV with the same v
         }
         if (command === 'tools_get') return { tools: [], mpv: {} };
         if (command === 'plugin:app|version') return version;
-        if (command === 'plugin:event|listen') return ++callback;
+        if (command === 'plugin:event|listen') {
+          listeners.set(String(args.event), Number(args.handler));
+          return args.handler;
+        }
         return false;
       },
     };
   }, current);
   await page.goto('/#discover/movie/11');
-  await page.getByRole('link', { name: 'Watch trailer' }).click();
+  const trailer = page.getByRole('link', { name: 'Watch trailer' });
+  await trailer.click();
   await expect
     .poll(() => launches)
     .toMatchObject([
@@ -954,6 +966,27 @@ test('desktop trailers resolve through the server and launch MPV with the same v
         music: false,
       },
     ]);
+  // Like a YouTube card, the trailer shows it is starting until MPV shows it.
+  await expect(trailer.locator('[data-launching]')).toBeVisible();
+  const { run } = launches[0] as { run: string };
+  await page.evaluate(
+    (run) =>
+      (
+        window as unknown as {
+          emitNative: (event: string, payload: unknown) => void;
+        }
+      ).emitNative('mpv-state', {
+        run,
+        media_id: 'youtube:xwdamnfS6IM',
+        title: 'Arrival · Official Trailer',
+        status: 'playing',
+        music: false,
+        video_ready: true,
+        error: null,
+      }),
+    run,
+  );
+  await expect(trailer.locator('[data-launching]')).toHaveCount(0);
   await expect(page.locator('video')).toHaveCount(0);
   await expect(page).toHaveURL(/#discover\/movie\/11$/);
   expect(page.context().pages()).toHaveLength(1);
