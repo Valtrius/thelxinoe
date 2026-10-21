@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 pub mod operation_locks;
 pub mod resource_locks;
 pub mod service_release;
+pub mod service_update;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The API this build speaks as a client. The web build reads it from here too.

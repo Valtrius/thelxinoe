@@ -256,29 +256,60 @@ pub(super) async fn finish_totp(
     })
     .await
 }
-fn revoke_other(c: &Connection, p: &Principal) -> Result<()> {
+/// What else goes when a user's credentials are invalidated.
+#[derive(Clone, Copy)]
+pub(crate) enum Revoke<'a> {
+    /// Every other session; the caller's own keeps a bounded lifetime.
+    OtherSessions(&'a str),
+    /// Every session.
+    Sessions,
+    /// Every session and every sign-in method.
+    Everything,
+}
+/// The one place a user's credentials are invalidated, so every path that should revoke a
+/// credential table does, including tables added later.
+pub(crate) fn invalidate(c: &Connection, user: &str, revoke: Revoke) -> Result<()> {
     c.execute(
         "UPDATE users SET auth_version=auth_version+1 WHERE id=?1",
-        [&p.user.id],
+        [user],
     )?;
-    c.execute(
-        "DELETE FROM sessions WHERE user_id=?1 AND id<>?2",
-        params![p.user.id, p.session_id],
-    )?;
-    c.execute(
-        "UPDATE sessions SET remembered_device_id=NULL,expires_at=MIN(expires_at,?2) WHERE id=?1",
-        params![p.session_id, now() + 30 * 86400],
-    )?;
-    c.execute(
+    match revoke {
+        Revoke::OtherSessions(keep) => {
+            c.execute(
+                "DELETE FROM sessions WHERE user_id=?1 AND id<>?2",
+                params![user, keep],
+            )?;
+            c.execute(
+                "UPDATE sessions SET remembered_device_id=NULL,expires_at=MIN(expires_at,?2) WHERE id=?1",
+                params![keep, now() + 30 * 86400],
+            )?;
+        }
+        Revoke::Sessions | Revoke::Everything => {
+            c.execute("DELETE FROM sessions WHERE user_id=?1", [user])?;
+        }
+    }
+    for sql in [
         "DELETE FROM auth_remembered_devices WHERE user_id=?1",
-        [&p.user.id],
-    )?;
-    c.execute("DELETE FROM auth_attempts WHERE user_id=?1", [&p.user.id])?;
-    c.execute(
+        "DELETE FROM auth_attempts WHERE user_id=?1",
         "DELETE FROM auth_desktop_requests WHERE user_id=?1 OR target_user_id=?1",
-        [&p.user.id],
-    )?;
+    ] {
+        c.execute(sql, [user])?;
+    }
+    if matches!(revoke, Revoke::Everything) {
+        for sql in [
+            "DELETE FROM auth_passkeys WHERE user_id=?1",
+            "DELETE FROM auth_totp WHERE user_id=?1",
+            "DELETE FROM auth_oidc_identities WHERE user_id=?1",
+            "DELETE FROM auth_client_passwords WHERE user_id=?1",
+            "DELETE FROM auth_recovery WHERE user_id=?1",
+        ] {
+            c.execute(sql, [user])?;
+        }
+    }
     Ok(())
+}
+fn revoke_other(c: &Connection, p: &Principal) -> Result<()> {
+    invalidate(c, &p.user.id, Revoke::OtherSessions(&p.session_id))
 }
 fn audit(c: &Connection, p: &Principal, action: &str, target: &str) -> Result<()> {
     c.execute(
@@ -351,7 +382,7 @@ pub(super) async fn remove_method(
         match kind.as_str(){
             "password"=>{tx.execute("UPDATE users SET password_hash=NULL WHERE id=?1",[&p.user.id])?;},
             "totp"=>{tx.execute("DELETE FROM auth_totp WHERE user_id=?1",[&p.user.id])?;},
-            "passkey"=>{if tx.execute("DELETE FROM auth_passkeys WHERE id=?1 AND user_id=?2",params![key,p.user.id])?!=1{return Err(Fault::Unauthorized.into());}},
+            "passkey"=>{if tx.execute("DELETE FROM auth_passkeys WHERE id=?1 AND user_id=?2",params![key,p.user.id])?!=1{return Err(Fault::State("passkey_missing","This passkey was already removed.").into());}},
             "oidc"=>{tx.execute("DELETE FROM auth_oidc_identities WHERE user_id=?1",[&p.user.id])?;},
             _=>return Err(Fault::Conflict.into())
         }
@@ -626,23 +657,8 @@ pub(super) async fn recovery(
         if p.as_ref().is_some_and(|p| p.user.id == user) {
             return Err(Fault::SelfRecovery.into());
         }
-        tx.execute(
-            "UPDATE users SET password_hash=NULL,auth_version=auth_version+1 WHERE id=?1",
-            [&user],
-        )?;
-        for sql in [
-            "DELETE FROM sessions WHERE user_id=?1",
-            "DELETE FROM auth_passkeys WHERE user_id=?1",
-            "DELETE FROM auth_totp WHERE user_id=?1",
-            "DELETE FROM auth_oidc_identities WHERE user_id=?1",
-            "DELETE FROM auth_remembered_devices WHERE user_id=?1",
-            "DELETE FROM auth_client_passwords WHERE user_id=?1",
-            "DELETE FROM auth_attempts WHERE user_id=?1",
-            "DELETE FROM auth_desktop_requests WHERE user_id=?1 OR target_user_id=?1",
-            "DELETE FROM auth_recovery WHERE user_id=?1",
-        ] {
-            tx.execute(sql, [&user])?;
-        }
+        tx.execute("UPDATE users SET password_hash=NULL WHERE id=?1", [&user])?;
+        invalidate(&tx, &user, Revoke::Everything)?;
         tx.execute(
             "INSERT INTO auth_recovery VALUES(?1,?2,?3)",
             params![hash, user, now() + 600],

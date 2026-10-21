@@ -33,7 +33,8 @@ pub(super) async fn enqueue(
     actor: Option<String>,
 ) -> anyhow::Result<bool> {
     db.write("managers.updates.enqueue", move|db|{let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let available=tx.query_row("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE id=?1 AND state='complete' AND hold IS NULL AND (service_id IS NOT NULL OR kind='recyclarr')) AND NOT EXISTS(SELECT 1 FROM service_updates WHERE service_id=?1 AND state IN ('queued','submitting','preparing','snapshotting','preflight','ready','queued-activate','activating','recovery-snapshot','isolated-live-validation','rollback-copying','rollback-activating','recovery-required','queued-recover'))",[&service],|r|r.get::<_,bool>(0))?;
+        // Any unfinished attempt owns the service, whatever stage its controller reports.
+        let available=tx.query_row(&format!("SELECT EXISTS(SELECT 1 FROM stack_provisions WHERE id=?1 AND state='complete' AND hold IS NULL AND (service_id IS NOT NULL OR kind='recyclarr')) AND NOT EXISTS(SELECT 1 FROM service_updates WHERE service_id=?1 AND state NOT IN ({}))",thelxinoe_core::service_update::sql(thelxinoe_core::service_update::FINISHED)),[&service],|r|r.get::<_,bool>(0))?;
         if !available{return Ok(false);}
         tx.execute("INSERT INTO service_updates(id,service_id,actor_id,state,created_at,updated_at,automatic,candidate) VALUES (?1,?2,?3,'queued',?4,?4,?5,(SELECT candidate FROM service_update_policy WHERE service_id=?2))",params![key,service,actor,now(),actor.is_none()])?;
         tx.execute("INSERT INTO jobs(id,kind,payload,dedupe_key,state,available_at,created_at) VALUES (?1,'service.update',?2,?3,'queued',?4,?4)",params![id(),json!({"id":key,"action":"preflight"}).to_string(),format!("update:{key}:preflight"),now()])?;

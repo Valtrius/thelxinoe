@@ -554,3 +554,29 @@ async fn server_and_service_update_policies_reject_manual_and_accept_notify() {
         }
     }
 }
+
+// An attempt the controller is activating owns its service until it finishes, whatever
+// stage it reports, so no second update can start beside it.
+#[tokio::test]
+async fn an_update_in_any_unfinished_stage_blocks_another() {
+    let (_temp, state, _cookie) = fixture().await;
+    let service = managed(&state, "notify").await;
+    for (stage, blocks) in [
+        ("replacement-created", true),
+        ("creating-replacement", true),
+        ("ready", true),
+        ("runtime-failure", false),
+        ("committed", false),
+    ] {
+        let (insert, existing) = (service.clone(), id());
+        state.db.write("test.stage", move |db| {
+            db.execute("DELETE FROM service_updates", [])?;
+            db.execute("INSERT INTO service_updates(id,service_id,actor_id,state,created_at,updated_at,automatic) VALUES (?1,?2,'alice',?3,1,1,0)",params![existing,insert,stage])?;
+            Ok(())
+        }).await.unwrap();
+        let started = storage::enqueue(service.clone(), id(), &state.db, None)
+            .await
+            .unwrap();
+        assert_eq!(started, !blocks, "{stage}");
+    }
+}

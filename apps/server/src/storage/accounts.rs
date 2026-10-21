@@ -88,54 +88,74 @@ pub(super) async fn check_credentials(
     .await
 }
 
-pub(super) async fn allow_password_attempt(db: &Database, address: String) -> anyhow::Result<bool> {
-    db.write("accounts.allow_password_attempt", move |db|{
-        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        tx.execute("DELETE FROM login_attempts WHERE window_start<?1",[now()-900])?;
-        let count:i64=tx.query_row("INSERT INTO login_attempts VALUES (?1,1,?2) ON CONFLICT(address) DO UPDATE SET count=count+1 RETURNING count",params![address,now()],|r|r.get(0))?;
-        tx.commit()?;Ok(count<=20)
-    }).await
+/// A rate limit: at most `max` attempts per key in a `window` of seconds that starts with
+/// the key's first attempt.
+#[derive(Clone, Copy)]
+pub(crate) struct Budget {
+    max: i64,
+    window: i64,
 }
-
-/// Count one more attempt in the account's window and return the new total.
-pub(super) async fn reserve_account_attempt(db: &Database, key: String) -> anyhow::Result<i64> {
-    db.write("accounts.reserve_account_attempt", move |db| {
+/// Every budget, in one place. Attempts per client address, or per user where a session
+/// already identifies one.
+pub(crate) const PER_CLIENT: Budget = Budget {
+    max: 20,
+    window: 900,
+};
+/// Failed proofs per account, whatever addresses they come from.
+pub(crate) const PER_ACCOUNT: Budget = Budget {
+    max: 10,
+    window: 900,
+};
+/// Quick Connect codes one device may start.
+pub(crate) const QUICK_CONNECT_START: Budget = Budget {
+    max: 10,
+    window: 300,
+};
+/// Quick Connect code lookups per user.
+pub(crate) const QUICK_CONNECT_LOOKUP: Budget = Budget {
+    max: 20,
+    window: 300,
+};
+/// Counts an attempt against `key` in the same write that checks it, so concurrent
+/// attempts can't all pass. Returns whether the attempt is within `budget`.
+pub(crate) fn throttle(
+    c: &rusqlite::Connection,
+    key: &str,
+    budget: Budget,
+) -> rusqlite::Result<bool> {
+    let now = now();
+    // Windows restart per key; rows past the longest window are gone for good.
+    c.execute(
+        "DELETE FROM login_attempts WHERE window_start<?1",
+        [now - PER_CLIENT.window.max(PER_ACCOUNT.window)],
+    )?;
+    let count: i64 = c.query_row(
+        "INSERT INTO login_attempts(address,count,window_start) VALUES (?1,1,?2) ON CONFLICT(address) DO UPDATE SET count=CASE WHEN window_start<=?2-?3 THEN 1 ELSE count+1 END,window_start=CASE WHEN window_start<=?2-?3 THEN ?2 ELSE window_start END RETURNING count",
+        params![key, now, budget.window],
+        |r| r.get(0),
+    )?;
+    Ok(count <= budget.max)
+}
+/// Gives back an attempt `throttle` counted, for a proof that succeeded.
+pub(crate) fn refund(c: &rusqlite::Connection, key: &str) -> rusqlite::Result<()> {
+    c.execute(
+        "UPDATE login_attempts SET count=MAX(count-1,0) WHERE address=?1",
+        [key],
+    )?;
+    Ok(())
+}
+pub(super) async fn throttled(db: &Database, key: String, budget: Budget) -> anyhow::Result<bool> {
+    db.write("accounts.throttle", move |db| {
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        tx.execute("DELETE FROM login_attempts WHERE window_start<?1", [now() - 900])?;
-        let count = tx.query_row(
-            "INSERT INTO login_attempts VALUES (?1,1,?2) ON CONFLICT(address) DO UPDATE SET count=count+1 RETURNING count",
-            params![key, now()],
-            |r| r.get(0),
-        )?;
+        let allowed = throttle(&tx, &key, budget)?;
         tx.commit()?;
-        Ok(count)
+        Ok(allowed)
     })
     .await
 }
-
-pub(super) async fn release_account_attempt(db: &Database, key: String) -> anyhow::Result<()> {
-    db.write("accounts.release_account_attempt", move |db| {
-        db.execute(
-            "UPDATE login_attempts SET count=MAX(count-1,0) WHERE address=?1",
-            [key],
-        )?;
-        Ok(())
-    })
-    .await
-}
-
-pub(super) async fn record_account_failure(db: &Database, key: String) -> anyhow::Result<()> {
-    db.write("accounts.record_account_failure", move |db| {
-        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        tx.execute("DELETE FROM login_attempts WHERE window_start<?1", [now() - 900])?;
-        tx.execute(
-            "INSERT INTO login_attempts VALUES (?1,1,?2) ON CONFLICT(address) DO UPDATE SET count=count+1",
-            params![key, now()],
-        )?;
-        tx.commit()?;
-        Ok(())
-    })
-    .await
+pub(super) async fn refunded(db: &Database, key: String) -> anyhow::Result<()> {
+    db.write("accounts.refund", move |db| Ok(refund(db, &key)?))
+        .await
 }
 
 pub(super) async fn logout(db: &Database, p: thelxinoe_core::Principal) -> anyhow::Result<()> {

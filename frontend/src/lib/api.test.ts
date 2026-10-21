@@ -75,6 +75,33 @@ describe('server transport', () => {
     await api('/library').catch(() => undefined);
     expect(expired).toBe(1);
   });
+  it('signs out only when the server says the session ended', async () => {
+    const target = new EventTarget();
+    vi.stubGlobal('window', target);
+    let expired = 0;
+    target.addEventListener('thelxinoe-session-expired', () => expired++);
+    const refusal = (code: string) => ({
+      ok: false,
+      status: 401,
+      json: async () => ({ error: { code, message: 'Refused' } }),
+    });
+    // An expired Quick Connect approval or a removed passkey isn't the session ending.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValueOnce(refusal('unauthenticated')),
+    );
+    const failed = await api('/auth/quick-connect/approve', 'POST', {}).catch(
+      (error: unknown) => error,
+    );
+    expect(String(failed)).toBe('Refused');
+    expect(expired).toBe(0);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValueOnce(refusal('session_expired')),
+    );
+    await api('/library').catch(() => undefined);
+    expect(expired).toBe(1);
+  });
   it('shows server explanations without an error-type prefix', () => {
     const error = new ApiError(409, 'conflict', 'Radarr rejected the API key');
     expect(String(error)).toBe('Radarr rejected the API key');

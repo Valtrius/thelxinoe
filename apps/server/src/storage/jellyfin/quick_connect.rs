@@ -10,10 +10,9 @@ pub(super) async fn initiate(
     db.write("jellyfin.quick_connect.initiate", move|db|{
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute("DELETE FROM quick_connect WHERE expires_at<=?1",[now()])?;
-        tx.execute("INSERT INTO login_attempts(address,count,window_start) VALUES (?1,1,?2) ON CONFLICT(address) DO UPDATE SET count=CASE WHEN window_start<?2-300 THEN 1 ELSE count+1 END,window_start=CASE WHEN window_start<?2-300 THEN ?2 ELSE window_start END",params![scope,now()])?;
-        let count:i64=tx.query_row("SELECT count FROM login_attempts WHERE address=?1",[scope],|r|r.get(0))?;
+        let allowed=crate::accounts::throttle(&tx,&scope,crate::accounts::QUICK_CONNECT_START)?;
         let total:i64=tx.query_row("SELECT COUNT(*) FROM quick_connect",[],|r|r.get(0))?;
-        if count>10 || total>=1000 {tx.commit()?;return Ok(None);}
+        if !allowed || total>=1000 {tx.commit()?;return Ok(None);}
         for _ in 0..16 {
             let secret=thelxinoe_auth::token();
             let hash=thelxinoe_auth::digest(&secret);
@@ -57,9 +56,7 @@ pub(super) async fn inspect(
     db.write("jellyfin.quick_connect.inspect", move|db|{
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let scope=format!("quick-connect-lookup:{uid}");
-        tx.execute("INSERT INTO login_attempts(address,count,window_start) VALUES (?1,1,?2) ON CONFLICT(address) DO UPDATE SET count=CASE WHEN window_start<?2-300 THEN 1 ELSE count+1 END,window_start=CASE WHEN window_start<?2-300 THEN ?2 ELSE window_start END",params![scope,now()])?;
-        let count:i64=tx.query_row("SELECT count FROM login_attempts WHERE address=?1",[scope],|r|r.get(0))?;
-        if count>20{tx.commit()?;return Ok(None);}
+        if !crate::accounts::throttle(&tx,&scope,crate::accounts::QUICK_CONNECT_LOOKUP)? {tx.commit()?;return Ok(None);}
         let row=tx.query_row("SELECT device_name,client,version FROM quick_connect WHERE code_hash=?1 AND expires_at>?2 AND user_id IS NULL",params![code,now()],|r|Ok(json!({"device":r.get::<_,String>(0)?,"client":r.get::<_,String>(1)?,"version":r.get::<_,String>(2)?}))).optional()?;
         tx.commit()?;Ok(row)
     }).await

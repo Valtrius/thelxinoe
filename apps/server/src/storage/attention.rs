@@ -146,6 +146,14 @@ fn collect_activity(
 ) -> anyhow::Result<Vec<ActivityItem>> {
     let mut items = Vec::new();
     if admin {
+        // Updates show as running until they finish or wait for a decision.
+        let settled = thelxinoe_core::service_update::sql(
+            &[
+                thelxinoe_core::service_update::FINISHED,
+                thelxinoe_core::service_update::WAITING,
+            ]
+            .concat(),
+        );
         let sql = "SELECT 'setup:'||id,'services',kind,CASE WHEN state='queued' THEN 'queued' ELSE 'running' END,
           CASE state WHEN 'queued' THEN 'Service installation queued' WHEN 'installing' THEN 'Installing service' WHEN 'connecting' THEN 'Connecting service API' ELSE 'Retiring service installation' END,NULL
           FROM stack_provisions WHERE state IN ('queued','installing','connecting','retiring') AND error IS NULL
@@ -154,7 +162,7 @@ fn collect_activity(
           FROM service_transfers WHERE state IN ('queued','running','committed','recovery')
           UNION ALL SELECT 'update:'||u.id,'services',s.kind,CASE WHEN u.state IN ('queued','queued-activate','queued-recover') THEN 'queued' ELSE 'running' END,
           CASE WHEN u.state IN ('queued-recover','recovery-snapshot','rollback-copying','rollback-activating') THEN 'Recovering service update' WHEN u.state IN ('activating','queued-activate') THEN 'Activating service update' ELSE 'Preparing service update' END,NULL
-          FROM service_updates u JOIN stack_provisions s ON s.id=u.service_id WHERE u.state IN ('queued','submitting','preparing','snapshotting','preflight','queued-activate','recovery-snapshot','isolated-live-validation','rollback-copying','rollback-activating','activating','queued-recover') AND u.error IS NULL
+          FROM service_updates u JOIN stack_provisions s ON s.id=u.service_id WHERE u.state NOT IN ({settled}) AND u.error IS NULL
           AND NOT EXISTS(SELECT 1 FROM service_updates n WHERE n.service_id=u.service_id AND (n.created_at>u.created_at OR (n.created_at=u.created_at AND n.rowid>u.rowid)))
           UNION ALL SELECT 'tool:'||id,'server',tool,CASE WHEN stage IN ('queued','waiting') THEN 'queued' ELSE 'running' END,
           CASE stage WHEN 'waiting' THEN 'Tool replacement waiting for idle' WHEN 'queued' THEN 'Tool operation queued' WHEN 'downloading' THEN 'Downloading tool' WHEN 'verifying' THEN 'Verifying tool' WHEN 'validating' THEN 'Validating tool' WHEN 'activating' THEN 'Activating tool' WHEN 'checking' THEN 'Checking tool updates' ELSE 'Installing tool' END,NULL
@@ -174,8 +182,8 @@ fn collect_activity(
           UNION ALL SELECT 'analysis:'||media_id||':'||file_id,'analysis',media_id,state,'Analyzing episode',media_id FROM segment_analysis WHERE state='running'
           UNION ALL SELECT 'connection:'||json_extract(value,'$.id'),'services',json_extract(value,'$.source_kind'),CASE WHEN json_extract(value,'$.state') IN ('connecting','cleaning') THEN 'running' ELSE 'queued' END,
           CASE WHEN json_extract(value,'$.cleanup')=1 THEN 'Disconnecting service connection' ELSE 'Connecting services' END,NULL
-          FROM settings WHERE key LIKE 'services.connection.%' AND json_extract(value,'$.state') IN ('pending','disconnecting','connecting','cleaning') AND (json_extract(value,'$.enabled')=1 OR json_extract(value,'$.cleanup')=1)";
-        for row in db.prepare(sql)?.query_map([], |r| {
+          FROM settings WHERE key LIKE 'services.connection.%' AND json_extract(value,'$.state') IN ('pending','disconnecting','connecting','cleaning') AND (json_extract(value,'$.enabled')=1 OR json_extract(value,'$.cleanup')=1)".replace("{settled}", &settled);
+        for row in db.prepare(&sql)?.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,

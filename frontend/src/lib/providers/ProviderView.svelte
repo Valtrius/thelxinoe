@@ -159,6 +159,22 @@
     );
     return () => clearInterval(timer);
   });
+  // YouTube's daily quota resets at midnight Pacific time after the server's quota day.
+  function quotaReset(day: string): string | null {
+    const [year, month, date] = day.split('-').map(Number);
+    if (!year || !month || !date) return null;
+    // Pacific midnight is 07:00 UTC in summer and 08:00 UTC in winter.
+    for (const hour of [7, 8]) {
+      const at = new Date(Date.UTC(year, month - 1, date + 1, hour));
+      const pacific = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Los_Angeles',
+        hour: 'numeric',
+        hourCycle: 'h23',
+      }).format(at);
+      if (Number(pacific) === 0) return at.toISOString();
+    }
+    return null;
+  }
   const syncStatus = $derived.by((): SyncStatus => {
     const sync = rawAccount?.sync;
     const kickError = kick?.items.find((c) => c.error)?.error;
@@ -176,6 +192,10 @@
       completed: 0,
       lastSuccessAt: iso(last),
       stale: !!error || !last,
+      quotaPausedUntil:
+        platform === 'youtube' && rawAccount?.quota?.blocked
+          ? quotaReset(rawAccount.quota.day)
+          : null,
       error: error ? normalizeError(error) : null,
     };
   });

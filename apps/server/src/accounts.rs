@@ -236,8 +236,9 @@ pub(crate) async fn check_credentials(
         expected_hash,
     })
 }
+pub(crate) use storage::{QUICK_CONNECT_LOOKUP, QUICK_CONNECT_START, throttle};
 pub(crate) async fn allow_password_attempt(state: &AppState, address: String) -> Result<()> {
-    let allowed = storage::allow_password_attempt(&state.db, address).await?;
+    let allowed = storage::throttled(&state.db, address, storage::PER_CLIENT).await?;
     if !allowed {
         return Err(ApiError(
             axum::http::StatusCode::TOO_MANY_REQUESTS,
@@ -247,13 +248,11 @@ pub(crate) async fn allow_password_attempt(state: &AppState, address: String) ->
     }
     Ok(())
 }
-/// Failed proofs allowed per account in the 15-minute window, whatever addresses they come from.
-const ACCOUNT_FAILURE_LIMIT: i64 = 10;
 /// Counts an attempt against the account before its proof is checked, in the same write
 /// that checks the limit, so concurrent guesses can't all pass it. A proof that succeeds
 /// gives its attempt back with `release_account_attempt`.
 pub(crate) async fn reserve_account_attempt(state: &AppState, key: &str) -> Result<()> {
-    if storage::reserve_account_attempt(&state.db, key.to_owned()).await? > ACCOUNT_FAILURE_LIMIT {
+    if !storage::throttled(&state.db, key.to_owned(), storage::PER_ACCOUNT).await? {
         return Err(ApiError(
             axum::http::StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",
@@ -263,11 +262,12 @@ pub(crate) async fn reserve_account_attempt(state: &AppState, key: &str) -> Resu
     Ok(())
 }
 pub(crate) async fn release_account_attempt(state: &AppState, key: String) -> Result<()> {
-    storage::release_account_attempt(&state.db, key).await?;
+    storage::refunded(&state.db, key).await?;
     Ok(())
 }
+/// Counts a failed proof against the account without refusing it (a remembered device).
 pub(crate) async fn record_account_failure(state: &AppState, key: String) -> Result<()> {
-    storage::record_account_failure(&state.db, key).await?;
+    storage::throttled(&state.db, key, storage::PER_ACCOUNT).await?;
     Ok(())
 }
 
@@ -449,4 +449,41 @@ pub async fn save_settings(
     Ok(Json(
         json!({"ok":true,"timezone":value.timezone,"time_format":value.time_format,"video_transcoding":policy.video_transcoding,"audio_transcoding":policy.audio_transcoding}),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::storage::{PER_ACCOUNT, refund, throttle};
+
+    // Attempts count in the same write that checks them; a refund gives one back, and a key's
+    // window restarts once it has passed.
+    #[tokio::test]
+    async fn a_budget_refuses_past_its_limit_until_its_window_restarts() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = thelxinoe_database::Database::open(temp.path().join("db")).unwrap();
+        let outcomes = db
+            .write("test.throttle", |c| {
+                let mut outcomes = Vec::new();
+                for _ in 0..10 {
+                    outcomes.push(throttle(c, "account", PER_ACCOUNT)?);
+                }
+                outcomes.push(throttle(c, "account", PER_ACCOUNT)?);
+                refund(c, "account")?;
+                refund(c, "account")?;
+                outcomes.push(throttle(c, "account", PER_ACCOUNT)?);
+                outcomes.push(throttle(c, "other", PER_ACCOUNT)?);
+                c.execute(
+                    "UPDATE login_attempts SET window_start=window_start-900",
+                    [],
+                )?;
+                outcomes.push(throttle(c, "account", PER_ACCOUNT)?);
+                Ok(outcomes)
+            })
+            .await
+            .unwrap();
+        assert_eq!(&outcomes[..10], [true; 10]);
+        // Refused at eleven, back under the limit after two refunds, other keys unaffected,
+        // and a fresh window after fifteen minutes.
+        assert_eq!(&outcomes[10..], [false, true, true, true]);
+    }
 }

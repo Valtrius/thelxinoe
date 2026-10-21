@@ -129,7 +129,7 @@ export type OnlineAccount = {
   linking_available?: boolean;
   linking_url?: string | null;
   downloads_enabled?: boolean;
-  quota?: { blocked: boolean };
+  quota?: { blocked: boolean; day: string };
   account: {
     status: string;
     display_name: string;

@@ -85,14 +85,20 @@ pub async fn approve(
     let p = security::principal(&state, &headers).await?;
     crate::authentication::require_fresh(&state, &p).await?;
     let hash = thelxinoe_auth::digest(&input.code);
-    let grant = crate::grants::resolve(
-        &state,
-        input.confirmation.as_deref().unwrap_or_default(),
-        &format!("quick-connect:{hash}"),
-        true,
-    )
-    .await?
-    .ok_or_else(ApiError::unauthorized)?;
+    let confirmation = input
+        .confirmation
+        .as_deref()
+        .ok_or_else(|| ApiError::bad("Look up the code on this device before approving it"))?;
+    let grant =
+        crate::grants::resolve(&state, confirmation, &format!("quick-connect:{hash}"), true)
+            .await?
+            .ok_or_else(|| {
+                ApiError(
+                    axum::http::StatusCode::GONE,
+                    "quick_connect_expired",
+                    "This approval expired or was already used; look up the code again".into(),
+                )
+            })?;
     if grant.session_id != p.session_id {
         return Err(ApiError::forbidden());
     }

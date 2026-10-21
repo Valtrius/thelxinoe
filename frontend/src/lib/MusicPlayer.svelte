@@ -2,6 +2,7 @@
   import SectionHeading from './ui/SectionHeading.svelte';
   import Notice from './ui/Notice.svelte';
   import FormField from './ui/FormField.svelte';
+  import SeekRange from './SeekRange.svelte';
   import { formControlClass } from './ui/styles';
   import { twMerge } from 'tailwind-merge';
   import { onDestroy, untrack } from 'svelte';
@@ -141,15 +142,14 @@
           onclick={() => void queue?.skip()}>Next track</Button
         ><span>{time(musicState.position)} / {time(musicState.duration)}</span
         ><FormField class="min-w-45 flex-1"
-          >Music position<input
+          >Music position<SeekRange
             class={twMerge(formControlClass, 'w-full p-0')}
             aria-label="Music position"
-            type="range"
             min="0"
             max={musicState.duration}
             step="0.1"
-            value={musicState.position}
-            onchange={(e) => queue?.seek(Number(e.currentTarget.value))}
+            position={musicState.position}
+            onseek={(to) => queue?.seek(to)}
           /></FormField
         >
       </div>

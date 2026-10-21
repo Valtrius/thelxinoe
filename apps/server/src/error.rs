@@ -19,6 +19,15 @@ impl ApiError {
             "Please sign in".into(),
         )
     }
+    /// The request's own session is missing, expired or revoked: the only 401 after which
+    /// clients sign out. Other refusals keep their own codes.
+    pub fn session_expired() -> Self {
+        Self(
+            StatusCode::UNAUTHORIZED,
+            "session_expired",
+            "Please sign in".into(),
+        )
+    }
     pub fn forbidden() -> Self {
         Self(
             StatusCode::FORBIDDEN,

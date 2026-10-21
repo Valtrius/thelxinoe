@@ -69,7 +69,8 @@ pub(super) async fn scan_with_progress_write_media_files(
     db.write("catalog.scan_with_progress_write_media_files", move|c|{
         let tx=c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let missing:Vec<(String,String)>=tx.prepare("SELECT id,path,fingerprint FROM media_files WHERE root_id=?1 AND present=1")?.query_map([&root.id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))?.collect::<std::result::Result<Vec<_>,_>>()?.into_iter().filter(|(_,path,_)|!current_paths.contains(path)).map(|(id,_,hash)|(id,hash)).collect();
-        tx.execute("UPDATE media_files SET present=0 WHERE root_id=?1",[&root.id])?;
+        // Only files that are gone change; an unchanged library writes almost nothing.
+        for (missing_id,_) in &missing {tx.execute("UPDATE media_files SET present=0 WHERE id=?1",[missing_id])?;}
         // Files that couldn't be read this time keep their previous entry until a later scan.
         for path in &retained {tx.execute("UPDATE media_files SET present=1 WHERE root_id=?1 AND path=?2",params![root.id,path])?;}
         for file in indexed {
@@ -81,7 +82,9 @@ pub(super) async fn scan_with_progress_write_media_files(
             let candidates:Vec<_>=missing.iter().filter(|(_,hash)|hash==&file.fingerprint).collect();
             let source_file=if old.is_some(){Some(&file_id)}else if candidates.len()==1 && fingerprint_counts.get(&file.fingerprint)==Some(&1){Some(&candidates[0].0)}else{None};
             let moved:Vec<String>=if let Some(source)=source_file{tx.prepare("SELECT media_id FROM media_sources WHERE file_id=?1")?.query_map([source],|r|r.get(0))?.collect::<std::result::Result<_,_>>()?}else{Vec::new()};
-            tx.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,edition,present,scanned_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,1,?10) ON CONFLICT(path) DO UPDATE SET generation=excluded.generation,size=excluded.size,modified=excluded.modified,fingerprint=excluded.fingerprint,probe=excluded.probe,edition=excluded.edition,present=1,scanned_at=excluded.scanned_at,ownership=CASE WHEN generation=excluded.generation THEN ownership ELSE 'unresolved' END",params![file_id,root.id,file.path,generation,file.size,file.modified,file.fingerprint,file.probe.to_string(),file.edition,now()])?;
+            let changed=tx.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,edition,present,scanned_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,1,?10) ON CONFLICT(path) DO UPDATE SET generation=excluded.generation,size=excluded.size,modified=excluded.modified,fingerprint=excluded.fingerprint,probe=excluded.probe,edition=excluded.edition,present=1,scanned_at=excluded.scanned_at,ownership=CASE WHEN generation=excluded.generation THEN ownership ELSE 'unresolved' END WHERE media_files.generation IS NOT excluded.generation OR media_files.size IS NOT excluded.size OR media_files.modified IS NOT excluded.modified OR media_files.fingerprint IS NOT excluded.fingerprint OR media_files.probe IS NOT excluded.probe OR media_files.edition IS NOT excluded.edition OR media_files.present=0",params![file_id,root.id,file.path,generation,file.size,file.modified,file.fingerprint,file.probe.to_string(),file.edition,now()])?;
+            // An unchanged file keeps its row and its media links as they are.
+            if changed==0 {continue;}
             tx.execute("DELETE FROM media_sources WHERE file_id=?1",[&file_id])?;
             tx.execute("DELETE FROM local_trailers WHERE file_id=?1",[&file_id])?;
             if !moved.is_empty() {for media_id in moved {tx.execute("INSERT OR IGNORE INTO media_sources VALUES (?1,?2)",params![media_id,file_id])?;}continue;}

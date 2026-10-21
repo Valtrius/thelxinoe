@@ -1,5 +1,6 @@
 <script lang="ts">
   import Button from './ui/Button.svelte';
+  import SeekRange from './SeekRange.svelte';
   import { twMerge } from 'tailwind-merge';
   import { onDestroy, onMount, tick, untrack } from 'svelte';
   import { PlaybackActivity } from './playback-activity';
@@ -129,9 +130,7 @@
   let sideTap: { side: -1 | 1; time: number; seeking: boolean } | undefined;
   let tapSeek:
     { revision: number; target: number; resume: boolean } | undefined;
-  // The seek bar keeps the value under the pointer until it is released;
-  // playback updates would otherwise replace it and seek back on release.
-  // Releasing where the drag began fires no change event, so release clears it.
+  // The held seek-bar value while dragging, for the labels that follow it.
   let scrub = $state<number | null>(null);
   // Touch cannot hover: a tap over hidden controls only reveals them, and the
   // :hover it leaves on a tapped control must not keep them shown.
@@ -1155,26 +1154,19 @@
     ]}
   >
     {#if !active?.live}
-      <input
+      <SeekRange
         class="seek player-range w-full focus-visible:outline-2 focus-visible:outline-offset-2"
-        style:--range-fill={fraction(scrub ?? position)}
-        style:--range-buffer={fraction(bufferedTo)}
+        style={`--range-fill:${fraction(scrub ?? position)};--range-buffer:${fraction(bufferedTo)}`}
         data-sidebar-resize="xy"
         aria-label="Playback position"
         aria-valuetext={`${time(scrub ?? position)} of ${time(active?.duration ?? 0)}`}
-        type="range"
         min="0"
         max={active?.duration || 1}
         step="0.1"
-        value={scrub ?? position}
+        {position}
+        bind:scrub
         disabled={busy || !active}
-        oninput={(event) => (scrub = Number(event.currentTarget.value))}
-        onchange={(event) => {
-          scrub = null;
-          void seek(Number(event.currentTarget.value));
-        }}
-        onpointerup={() => setTimeout(() => (scrub = null))}
-        onpointercancel={() => (scrub = null)}
+        onseek={(to) => void seek(to)}
       />
     {/if}
     <div

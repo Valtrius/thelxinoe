@@ -335,11 +335,11 @@ pub async fn principal(state: &AppState, headers: &HeaderMap) -> Result<Principa
     } else if let Some(token) = cookie {
         (token, "web")
     } else {
-        return Err(ApiError::unauthorized());
+        return Err(ApiError::session_expired());
     };
     thelxinoe_auth::resolve(&state.db, raw, transport)
         .await?
-        .ok_or_else(ApiError::unauthorized)
+        .ok_or_else(ApiError::session_expired)
 }
 pub async fn require(
     state: &AppState,

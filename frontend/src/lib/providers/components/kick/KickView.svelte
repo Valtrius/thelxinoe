@@ -52,6 +52,7 @@
   let channels = $state<KickChannel[]>([]);
   let loading = $state(true);
   let error = $state<AppError | null>(null);
+  let lastSyncErrorFingerprint = $state<string | null>(null);
   let channelInput = $state('');
   let adding = $state(false);
   let removalTarget = $state<KickChannel | null>(null);
@@ -151,9 +152,14 @@
   $effect(() => {
     const syncError = syncStatus.error;
     if (!syncError) {
+      lastSyncErrorFingerprint = null;
       dismissToastByKey('kick-sync-error');
       return;
     }
+    // Each poll derives a new status; only a different error shows the toast again.
+    const fingerprint = `${syncError.code}:${syncError.message}:${syncError.technical}`;
+    if (fingerprint === lastSyncErrorFingerprint) return;
+    lastSyncErrorFingerprint = fingerprint;
     showToast({
       key: 'kick-sync-error',
       tone: syncStatus.rateLimitedUntil ? 'warning' : 'error',

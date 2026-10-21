@@ -4,6 +4,77 @@ use process_wrap::tokio::*;
 use std::{ffi::OsString, path::Path, process::Stdio, time::Duration};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
+/// A managed tool's process tree, ended when its owner drops it. process-wrap's
+/// kill-on-drop only signals the leader, so on Unix a still-running tool's whole process
+/// group is killed here, Deno and FFmpeg descendants included; on Windows the job object
+/// does the same when its handle closes.
+pub(super) struct Tree(Box<dyn ChildWrapper>);
+impl std::ops::Deref for Tree {
+    type Target = Box<dyn ChildWrapper>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for Tree {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+impl Drop for Tree {
+    fn drop(&mut self) {
+        // A tool that exited was reaped; its group may already belong to someone else.
+        if !matches!(self.0.try_wait(), Ok(Some(_))) {
+            let _ = self.0.start_kill();
+        }
+    }
+}
+
+/// Starts a managed tool isolated in `home`: a cleared environment pointing every
+/// configuration and cache directory at it, no console window, and its whole process
+/// tree owned by the returned handle. `configure` adds arguments and pipes.
+pub(super) fn spawn_isolated(
+    executable: &Path,
+    home: &Path,
+    configure: impl FnOnce(&mut tokio::process::Command),
+) -> anyhow::Result<Tree> {
+    let mut command = CommandWrap::with_new(executable, |cmd| {
+        cmd.env_clear().current_dir(home);
+        for key in [
+            "HOME",
+            "USERPROFILE",
+            "APPDATA",
+            "LOCALAPPDATA",
+            "XDG_CONFIG_HOME",
+            "XDG_CACHE_HOME",
+            "TMP",
+            "TEMP",
+            "TMPDIR",
+            "DENO_DIR",
+        ] {
+            cmd.env(key, home);
+        }
+        #[cfg(windows)]
+        for key in ["SystemRoot", "WINDIR"] {
+            if let Some(value) = std::env::var_os(key) {
+                cmd.env(key, value);
+            }
+        }
+        cmd.env("LANG", "C.UTF-8");
+        configure(cmd);
+    });
+    command.wrap(KillOnDrop);
+    #[cfg(unix)]
+    command.wrap(ProcessGroup::leader());
+    #[cfg(windows)]
+    {
+        command.wrap(CreationFlags(
+            windows::Win32::System::Threading::CREATE_NO_WINDOW,
+        ));
+        command.wrap(JobObject);
+    }
+    Ok(Tree(command.spawn()?))
+}
+
 pub(super) struct Output {
     pub success: bool,
     pub stdout: Vec<u8>,
@@ -79,48 +150,13 @@ pub(super) async fn run_progress(
     output_limit: usize,
     progress: Option<tokio::sync::mpsc::Sender<String>>,
 ) -> anyhow::Result<Output> {
-    let mut command = CommandWrap::with_new(executable, |cmd| {
+    let mut child = spawn_isolated(executable, home.path(), |cmd| {
         cmd.args(args)
-            .env_clear()
-            .current_dir(home.path())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        for key in [
-            "HOME",
-            "USERPROFILE",
-            "APPDATA",
-            "LOCALAPPDATA",
-            "XDG_CONFIG_HOME",
-            "XDG_CACHE_HOME",
-            "TMP",
-            "TEMP",
-            "TMPDIR",
-            "DENO_DIR",
-        ] {
-            cmd.env(key, home.path());
-        }
-        #[cfg(windows)]
-        for key in ["SystemRoot", "WINDIR"] {
-            if let Some(value) = std::env::var_os(key) {
-                cmd.env(key, value);
-            }
-        }
-        cmd.env("LANG", "C.UTF-8");
-    });
-    command.wrap(KillOnDrop);
-    #[cfg(unix)]
-    command.wrap(ProcessGroup::leader());
-    #[cfg(windows)]
-    {
-        command.wrap(CreationFlags(
-            windows::Win32::System::Threading::CREATE_NO_WINDOW,
-        ));
-        command.wrap(JobObject);
-    }
-    let mut child = command
-        .spawn()
-        .context("Could not start managed online tool")?;
+    })
+    .context("Could not start managed online tool")?;
     let stdout = child.stdout().take().context("Missing tool stdout")?;
     let stderr = child.stderr().take().context("Missing tool stderr")?;
     let result = tokio::time::timeout(timeout, async {
@@ -151,6 +187,42 @@ pub(super) async fn run_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Dropping a running tool, as a cancelled request does, ends what it started too.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_a_tool_ends_its_descendants() {
+        use tokio::io::AsyncBufReadExt;
+        let home = tempfile::tempdir().unwrap();
+        let mut child = spawn_isolated(Path::new("/bin/sh"), home.path(), |cmd| {
+            cmd.args(["-c", "/bin/sleep 30 & echo $!; wait"])
+                .stdout(Stdio::piped());
+        })
+        .unwrap();
+        let mut line = String::new();
+        tokio::io::BufReader::new(child.stdout().take().unwrap())
+            .read_line(&mut line)
+            .await
+            .unwrap();
+        let descendant: u32 = line.trim().parse().unwrap();
+        // A killed process may linger as a zombie where nothing reaps orphans.
+        let running = |pid: u32| {
+            std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+                stat.rsplit(") ")
+                    .next()
+                    .is_some_and(|s| !s.starts_with('Z'))
+            })
+        };
+        assert!(running(descendant));
+        drop(child);
+        for _ in 0..50 {
+            if !running(descendant) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(!running(descendant));
+    }
     #[tokio::test]
     async fn reports_progress_before_process_output_completes() {
         use tokio::io::AsyncWriteExt;
