@@ -262,6 +262,33 @@ async fn settled_updates_keep_only_what_the_newest_commit_can_recover_to() {
         .await;
 }
 
+// A preflight's copies are gone before its settled stage reaches the journal: the server
+// activates as soon as it reads `ready`, and the copy removal still holds the service gate.
+#[tokio::test]
+async fn a_settled_preflight_drops_its_copies_before_publishing() {
+    let fixture = Docker::new();
+    fixture
+        .scope(async {
+            let d: Deployment = fixture.backup_deployment();
+            let (_, mut u): (Deployment, Update) = fixture.update();
+            for leaf in ["snapshot", "clone", "scratch-data"] {
+                std::fs::create_dir_all(path(&u.id).join(leaf)).unwrap();
+                std::fs::write(path(&u.id).join(leaf).join("config.xml"), "api-key").unwrap();
+            }
+            u.stage = "ready".into();
+            // The publishing write fails, so whatever was removed went first.
+            fixture.fault(Fault::JournalBefore("ready"));
+            assert!(publish(&d, &u).await.is_err());
+            for leaf in ["snapshot", "clone", "scratch-data"] {
+                assert!(
+                    !path(&u.id).join(leaf).exists(),
+                    "{leaf} outlived the preflight"
+                );
+            }
+        })
+        .await;
+}
+
 // An activation that stopped after its boundary, before its replacement was recorded, no
 // longer leaves the service stuck: startup moves it to the replacement, the original stays
 // stopped, and the attempt no longer blocks removal.

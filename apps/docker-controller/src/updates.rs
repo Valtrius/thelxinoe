@@ -248,7 +248,6 @@ pub(super) async fn preflight(
             u.stage = "blocked".into();
             u.classification = "unable-to-verify".into();
             u.error = Some(error.1.to_string());
-            let _ = write(&u);
             // The old container has not changed its spec or appdata during preflight.
             if cleanup_candidate(&u).await.is_ok()
                 && verified(&u.old, &d).await.is_ok()
@@ -256,8 +255,8 @@ pub(super) async fn preflight(
             {
                 let _ = save(&u.old);
             }
+            let _ = publish(&d, &u).await;
         }
-        remove_copies(&d, &u).await;
     });
     Ok(Json(result))
 }
@@ -565,6 +564,12 @@ async fn check(d: &Deployment, u: &mut Update) -> Result<()> {
     }
     cleanup_candidate(u).await?;
     save(&u.old)?;
+    publish(d, u).await
+}
+/// A settled preflight drops its copies before it says so. The service gate is held until
+/// then, so a stage the server can act on must mean the gate is about to be free.
+async fn publish(d: &Deployment, u: &Update) -> Result<()> {
+    remove_copies(d, u).await;
     write(u)
 }
 async fn candidate(d: &Deployment, u: &mut Update, config: &str) -> Result<()> {
