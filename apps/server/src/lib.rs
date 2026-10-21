@@ -436,16 +436,22 @@ async fn run_general_jobs(state: AppState) -> anyhow::Result<()> {
                             .media_resources
                             .read(&keys.iter().map(String::as_str).collect::<Vec<_>>())
                             .await;
-                        let _lease = state.media_operations.read().await;
                         state
                             .emit(None, "catalog.scan.started", json!({"root_id":root.id}))
                             .await?;
-                        let result = match state.tools.runtime.media() {
-                            Ok(tools) => thelxinoe_catalog::scan_with_progress(&state.db, root.clone(), tools, |completed, total| {
+                        let scanned = match state.tools.runtime.media() {
+                            Ok(tools) => thelxinoe_catalog::index_with_progress(&state.db, root.clone(), tools, |completed, total| {
                             let state = state.clone();
                             let root_id = root.id.clone();
                             async move { state.emit(None, "catalog.scan.progress", json!({"root_id":root_id,"completed":completed,"total":total})).await.map(|_| ()) }
                         }).await,
+                            Err(error) => Err(error),
+                        };
+                        // Probing can take minutes; only the write and the reconcile after it
+                        // hold the media lease, so playback reports never queue behind a scan.
+                        let _lease = state.media_operations.read().await;
+                        let result = match scanned {
+                            Ok(scanned) => scanned.commit(&state.db).await,
                             Err(error) => Err(error),
                         };
                         let succeeded = result.is_ok();

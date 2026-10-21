@@ -298,10 +298,10 @@ async fn checked_totp_step(
     code: &str,
 ) -> Result<u64> {
     let throttle = format!("totp-account:{}", account.id);
-    accounts::allow_account_attempt(state, &throttle).await?;
+    accounts::reserve_account_attempt(state, &throttle).await?;
     let step = totp_step(state, account, code);
-    if step.is_err() {
-        accounts::record_account_failure(state, throttle).await?;
+    if step.is_ok() {
+        accounts::release_account_attempt(state, throttle).await?;
     }
     step
 }
@@ -313,7 +313,7 @@ async fn checked_password(
     password: String,
 ) -> Result<bool> {
     let throttle = format!("password-account:{}", account.username.to_ascii_lowercase());
-    accounts::allow_account_attempt(state, &throttle).await?;
+    accounts::reserve_account_attempt(state, &throttle).await?;
     let slot = state
         .password_slots
         .clone()
@@ -322,8 +322,8 @@ async fn checked_password(
         .map_err(anyhow::Error::from)?;
     let valid = password.len() <= 256
         && thelxinoe_auth::verify_password_with_permit(password, hash, slot).await?;
-    if !valid {
-        accounts::record_account_failure(state, throttle).await?;
+    if valid {
+        accounts::release_account_attempt(state, throttle).await?;
     }
     Ok(valid)
 }

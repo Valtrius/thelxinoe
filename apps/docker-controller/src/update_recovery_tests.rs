@@ -205,3 +205,132 @@ async fn copy_workers_report_their_own_failure() {
         })
         .await;
 }
+
+// Settled attempts keep only what the newest committed one can recover to: its recovery
+// copy and stopped original. Everything an older commit or a preflight left goes.
+#[tokio::test]
+async fn settled_updates_keep_only_what_the_newest_commit_can_recover_to() {
+    const OLDER: &str = "00000000-0000-0000-0000-000000000001";
+    const NEWER: &str = "00000000-0000-0000-0000-000000000002";
+    const BLOCKED: &str = "00000000-0000-0000-0000-000000000003";
+    let fixture = Docker::new();
+    fixture
+        .scope(async {
+            let d: Deployment = fixture.backup_deployment();
+            store::write_json(&store::root().join("desired-state.json"), &d).unwrap();
+            store::write_json(&store::root().join("generations/1/desired-state.json"), &d).unwrap();
+            let (_, template): (Deployment, Update) = fixture.update();
+            for (key, stage, original) in [
+                // The fixture's stopped original is what the older commit retained.
+                (OLDER, "committed", "original"),
+                (NEWER, "committed", "newer-prior"),
+                (BLOCKED, "blocked", "newer-prior"),
+            ] {
+                let mut u = template.clone();
+                u.id = key.into();
+                u.stage = stage.into();
+                u.old.container = original.into();
+                u.activation_crossed = stage == "committed";
+                // Only an activation takes a recovery copy.
+                let leaves: &[&str] = if stage == "committed" {
+                    &["snapshot", "clone", "scratch-data", "recovery"]
+                } else {
+                    &["snapshot", "clone", "scratch-data"]
+                };
+                for leaf in leaves {
+                    std::fs::create_dir_all(path(key).join(leaf)).unwrap();
+                    std::fs::write(path(key).join(leaf).join("config.xml"), "api-key").unwrap();
+                }
+                write(&u).unwrap();
+                // Journal times order the commits.
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            settle().await.unwrap();
+            let left = |key: &str| {
+                ["snapshot", "clone", "scratch-data", "recovery"]
+                    .into_iter()
+                    .filter(|leaf| path(key).join(leaf).exists())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(left(OLDER), Vec::<&str>::new());
+            assert_eq!(left(NEWER), ["recovery"]);
+            assert_eq!(left(BLOCKED), Vec::<&str>::new());
+            assert!(!fixture.names().contains(&"/service".to_owned()));
+            // Journals stay, so a lost reply still finds its outcome.
+            assert!(read(OLDER).is_ok() && read(NEWER).is_ok());
+        })
+        .await;
+}
+
+// A preflight's copies are gone before its settled stage reaches the journal: the server
+// activates as soon as it reads `ready`, and the copy removal still holds the service gate.
+#[tokio::test]
+async fn a_settled_preflight_drops_its_copies_before_publishing() {
+    let fixture = Docker::new();
+    fixture
+        .scope(async {
+            let d: Deployment = fixture.backup_deployment();
+            let (_, mut u): (Deployment, Update) = fixture.update();
+            for leaf in ["snapshot", "clone", "scratch-data"] {
+                std::fs::create_dir_all(path(&u.id).join(leaf)).unwrap();
+                std::fs::write(path(&u.id).join(leaf).join("config.xml"), "api-key").unwrap();
+            }
+            u.stage = "ready".into();
+            // The publishing write fails, so whatever was removed went first.
+            fixture.fault(Fault::JournalBefore("ready"));
+            assert!(publish(&d, &u).await.is_err());
+            for leaf in ["snapshot", "clone", "scratch-data"] {
+                assert!(
+                    !path(&u.id).join(leaf).exists(),
+                    "{leaf} outlived the preflight"
+                );
+            }
+        })
+        .await;
+}
+
+// An activation that stopped after its boundary, before its replacement was recorded, no
+// longer leaves the service stuck: startup moves it to the replacement, the original stays
+// stopped, and the attempt no longer blocks removal.
+#[tokio::test]
+async fn an_interrupted_activation_moves_the_service_to_its_replacement() {
+    let fixture = Docker::new();
+    fixture
+        .scope(async {
+            let (deployment, mut update) = fixture.update();
+            store::write_json(&store::root().join("desired-state.json"), &deployment).unwrap();
+            write(&update).unwrap();
+            let mut updating = update.old.clone();
+            updating.phase = "updating".into();
+            updating.active_update = Some(update.id.clone());
+            save(&updating).unwrap();
+            let container = prepare_replacement(&deployment, &mut update).await.unwrap();
+            // The boundary is journaled and the replacement started; then the controller stops.
+            update.stage = "activating".into();
+            update.activation_crossed = true;
+            write(&update).unwrap();
+            start(&container).await.unwrap();
+            settle().await.unwrap();
+            let service = load(&update.service).unwrap();
+            assert_eq!(
+                (service.container.as_str(), service.phase.as_str()),
+                (container.as_str(), "active")
+            );
+            assert_eq!(service.image, update.candidate);
+            let raw = engine(&format!("/containers/{container}/json"))
+                .await
+                .unwrap();
+            assert!(policy::matches(&service.expected, &raw));
+            let settled = read(&update.id).unwrap();
+            assert_eq!(settled.stage, "runtime-failure");
+            assert_eq!(
+                removable_updates(&update.service).unwrap(),
+                [update.id.clone()]
+            );
+            assert!(!fixture.running("original"));
+            // A later start changes nothing.
+            settle().await.unwrap();
+            assert_eq!(load(&update.service).unwrap().container, container);
+        })
+        .await;
+}

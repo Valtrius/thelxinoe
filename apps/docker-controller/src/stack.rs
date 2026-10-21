@@ -35,6 +35,12 @@ pub async fn retain_worker_image() -> anyhow::Result<()> {
         .map(|_| ())
         .map_err(|(_, message)| anyhow::anyhow!(message))
 }
+/// Settle interrupted service-update activations and prune what settled ones no longer need.
+pub async fn settle_updates() -> anyhow::Result<()> {
+    updates::settle()
+        .await
+        .map_err(|(_, message)| anyhow::anyhow!(message))
+}
 pub async fn recover_backups() -> anyhow::Result<()> {
     backups::recover_interrupted()
         .await

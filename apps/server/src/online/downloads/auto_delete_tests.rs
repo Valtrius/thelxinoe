@@ -446,3 +446,43 @@ async fn auto_delete_shared_downloads_respect_pins_capacity_watched_users_and_fi
     std::fs::create_dir_all(&evidence).unwrap();
     std::fs::write(evidence.join("result.json"),serde_json::to_vec_pretty(&json!({"passed":true,"capacity":capacity,"final":final_state,"manual_file_preserved":manual.exists()})).unwrap()).unwrap();
 }
+
+// A ready download whose copy went missing or changed no longer gets stuck: playback falls
+// back to streaming, a missing copy can be removed, and a changed file is never deleted.
+#[tokio::test]
+async fn downloads_missing_or_changed_on_disk_stop_claiming_their_rows() {
+    let (_temp, state, _cookie) = fixture().await;
+    let missing = seed(&state, "missing0001", 10, 1).await;
+    let changed = seed(&state, "changed0001", 10, 2).await;
+    let removed = seed(&state, "removed0001", 10, 3).await;
+    std::fs::remove_file(&missing).unwrap();
+    std::fs::write(&changed, b"replaced by someone else").unwrap();
+    std::fs::remove_dir_all(removed.parent().unwrap()).unwrap();
+    for video in ["missing0001", "changed0001"] {
+        let error = crate::online::downloads::source(&state, video)
+            .await
+            .unwrap_err();
+        assert_eq!(error.0, StatusCode::CONFLICT, "{video}");
+    }
+    assert!(changed.exists());
+    let root = state.config.cache.join("youtube");
+    let states = state
+        .db
+        .write("test.remove", move |db| {
+            crate::auto_delete::remove_ready(db, &root, "removed0001")?;
+            Ok(db
+                .prepare("SELECT video_id,state FROM youtube_downloads ORDER BY video_id")?
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        states,
+        [
+            ("changed0001".to_owned(), "failed".to_owned()),
+            ("missing0001".to_owned(), "failed".to_owned()),
+            ("removed0001".to_owned(), "ready".to_owned()),
+        ]
+    );
+}

@@ -217,7 +217,22 @@ async fn refresh(
 
 async fn exact_entity(connection: &Connection<'_>, kind: &str, external: &str) -> Result<Value> {
     let endpoint = entity_kind(kind);
-    let existing = connection.get(endpoint).await?;
+    // Ask for this one item, not the whole library. A version that ignores the filter
+    // returns its library, and the exact match below still holds.
+    let filter = match endpoint {
+        "movie" => "tmdbId",
+        "series" => "tvdbId",
+        "artist" => "mbId",
+        _ => "foreignAlbumId",
+    };
+    let existing = connection
+        .call(
+            reqwest::Method::GET,
+            endpoint,
+            &[(filter, external.to_owned())],
+            None,
+        )
+        .await?;
     if let Some(row) = existing
         .as_array()
         .into_iter()
@@ -550,21 +565,18 @@ async fn update_show(
     actor: Option<&str>,
 ) -> anyhow::Result<()> {
     let refreshed_at = now();
-    let previous_media = media_id.to_owned();
-    let current_service = service.id.clone();
-    let current_generation = service.generation.clone();
-    let current_external = external.to_owned();
-    let binding_changed = storage::update_show_read_metadata_bindings(
-        previous_media,
-        current_service,
-        current_generation,
-        current_external,
-        &state.db,
-    )
-    .await?;
-    if binding_changed {
-        let changed_show = media_id.to_owned();
-        storage::update_show_write_manager_episode_mappings(changed_show, &state.db).await?;
+    let previous =
+        storage::update_show_read_metadata_bindings(media_id.to_owned(), &state.db).await?;
+    // Another service or series starts the episode mappings over. A new generation of the
+    // same service (a saved setting, a recreated container) keeps them, manual ones included.
+    let mut moved_generation = None;
+    if let Some((previous_service, previous_generation, previous_external)) = previous {
+        if previous_service != service.id || previous_external != external {
+            let changed_show = media_id.to_owned();
+            storage::update_show_write_manager_episode_mappings(changed_show, &state.db).await?;
+        } else if previous_generation != service.generation {
+            moved_generation = Some(previous_generation);
+        }
     }
     let entity = row["id"].as_i64().filter(|v| *v > 0);
     let episodes = if let Some(series) = entity {
@@ -645,12 +657,15 @@ async fn update_show(
         })
         .collect::<Vec<_>>();
     storage::update_show_write_manager_episodes(
-        refreshed_at,
-        service_id,
-        service_generation,
-        series_external,
-        show_id,
-        saved,
+        storage::ShowEpisodes {
+            refreshed_at,
+            service_id,
+            service_generation,
+            series_external,
+            show_id,
+            saved,
+            moved_generation,
+        },
         &state.db,
     )
     .await
@@ -977,3 +992,7 @@ pub(super) async fn serve_artwork(
         .insert("content-type", content_type.parse().unwrap());
     Ok(response)
 }
+
+#[cfg(test)]
+#[path = "metadata_tests.rs"]
+mod tests;

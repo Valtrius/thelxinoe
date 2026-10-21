@@ -332,8 +332,12 @@ async fn rollback_original(d: &Deployment, r: &mut Record, copy: bool) -> Result
             if engine(&format!("/containers/{}/json", c.container)).await?["State"]["Running"]
                 != false
             {
+                // Whatever it wrote since is kept: no later recovery may copy over it.
+                r.rollback_phase = Some(RollbackPhase::Activating);
+                r.stage = "recovery-required".into();
+                record(r)?;
                 return Err(conflict(
-                    "A component resumed before recovery; explicit recovery is required",
+                    "A component resumed before recovery; its current data was kept",
                 ));
             }
         }
@@ -616,24 +620,15 @@ pub(super) async fn restore(
                 .join(manifest.deployment.generation.to_string())
                 .join("desired-state.json"),
         ))?;
-        // Archives from before a service's record was rewritten without the
-        // short ID alias still describe the same layout.
-        let layout = |services: &[Managed]| -> Result<Value> {
-            let mut value = serde_json::to_value(services).map_err(|_| unavailable())?;
-            for service in value.as_array_mut().into_iter().flatten() {
-                service["expected"] =
-                    policy::recorded(&service["expected"], service["container"].as_str());
-            }
-            Ok(value)
-        };
+        // Services update, install and go away between backups, so only the components
+        // being restored are matched below; the live registry stays authoritative for them.
         if manifest.format != 1
             || manifest.deployment.id != d.id
             || serde_json::to_value(&manifest.deployment).map_err(|_| unavailable())?
                 != serde_json::to_value(&accepted).map_err(|_| unavailable())?
-            || layout(&manifest.services)? != layout(&current_services)?
         {
             return Err(conflict(
-                "Restore requires a previously accepted deployment and the same managed-service layout",
+                "Restore requires a backup of a previously accepted deployment",
             ));
         }
         let selected = selection(&manifest, &current_services, chosen.as_deref());
@@ -648,11 +643,10 @@ pub(super) async fn restore(
                     "A selected service can't be backed up or restored now; check it in Media services",
                 )
             })?;
-            if (key != "server" && archived.container != live.container)
-                || archived.source != live.source
-            {
+            // Updates replace a service's container; its configuration stays where it was.
+            if archived.source != live.source {
                 return Err(conflict(
-                    "Restore requires a previously accepted deployment and the same managed-service layout",
+                    "This service's configuration moved since the backup; it can't be restored over",
                 ));
             }
         }
@@ -730,14 +724,6 @@ pub(super) async fn restore(
                     &format!("r{i}"),
                 )
                 .await?;
-            }
-            // The compatible descriptor is authenticated in the archive and remains the accepted generation.
-            for s in manifest
-                .services
-                .iter()
-                .filter(|s| r.components.iter().any(|c| c.key == s.id))
-            {
-                save(s)?;
             }
             if change_release {
                 r.stage = "release-handoff".into();
@@ -863,121 +849,26 @@ pub(super) async fn recover_interrupted() -> Result<()> {
         return Ok(());
     }
     for entry in std::fs::read_dir(root()).map_err(|_| unavailable())? {
-        let entry = entry.map_err(|_| unavailable())?;
-        if !entry.path().join("operation.json").exists() {
+        let journal = entry
+            .map_err(|_| unavailable())?
+            .path()
+            .join("operation.json");
+        if !journal.exists() {
             continue;
         }
-        let mut r: Record = persisted(store::read(&entry.path().join("operation.json")))?;
-        validate_record(&r)?;
-        if r.stage == "release-handoff" {
-            match r
-                .release_restore
-                .as_deref()
-                .and_then(product::recovery_stage)
-                .as_deref()
-            {
-                Some("restored") => {
-                    let d = bootstrap().await?;
-                    let server = r
-                        .components
-                        .iter_mut()
-                        .find(|c| c.key == "server")
-                        .ok_or_else(unavailable)?;
-                    server.container = d.server["Id"].as_str().ok_or_else(unavailable)?.into();
-                    if let Err(error) = restart(&r.components).await {
-                        r.error = Some(error.1.to_string());
-                        record(&r)?;
-                        continue;
-                    }
-                    r.stage = "restored".into();
-                    r.error = None;
-                    record(&r)?;
-                    continue;
-                }
-                Some(_) => continue,
-                None => {
-                    r.stage = "restoring".into();
-                    record(&r)?;
-                }
+        // One operation never keeps the controller from starting: its journal says why it
+        // stopped, and the next start tries again.
+        if let Err(error) = recover_operation(&journal).await {
+            eprintln!(
+                "Backup recovery of {} stopped: {}",
+                journal.display(),
+                error.1
+            );
+            if let Ok(mut r) = persisted(store::read::<Record>(&journal)) {
+                r.error = Some(error.1.to_string());
+                let _ = record(&r);
             }
         }
-        if !matches!(
-            r.stage.as_str(),
-            "queued"
-                | "quiescing"
-                | "snapshotting"
-                | "encrypting"
-                | "restore-queued"
-                | "restoring"
-                | "restore-activating"
-                | "rollback-activating"
-                | "rollback-copying"
-                | "recovery-required"
-        ) {
-            continue;
-        }
-        id(&r.id)?;
-        if r.recovery.is_none()
-            || matches!(
-                r.stage.as_str(),
-                "restore-activating" | "rollback-activating"
-            )
-        {
-            let terminal = if r.stage == "restore-activating" {
-                "restored"
-            } else {
-                failure_stage(&r)
-            };
-            if terminal != "restored" {
-                r.rollback_phase = Some(RollbackPhase::Activating);
-                r.stage = "rollback-activating".into();
-            }
-            record(&r)?;
-            let cleanup = async {
-                let d = bootstrap().await?;
-                remove_interrupted_workers(&d, &r).await
-            }
-            .await;
-            let restarting = restart(&r.components).await;
-            match cleanup.and(restarting) {
-                Ok(()) => {
-                    r.stage = terminal.into();
-                    r.error = Some(
-                        "Controller interrupted the operation; component startup recovered".into(),
-                    );
-                }
-                Err(error) => r.error = Some(error.1.to_string()),
-            }
-            record(&r)?;
-            continue;
-        }
-        let d = bootstrap().await?;
-        let (_, current, _) = inspect(&d).await?;
-        // A restore may cover only some components; each one must still be the same.
-        if r.components.iter().any(|a| {
-            !current
-                .iter()
-                .any(|b| a.key == b.key && a.container == b.container && a.source == b.source)
-        }) {
-            return Err(conflict("Interrupted backup component layout changed"));
-        }
-        remove_interrupted_workers(&d, &r).await?;
-        let terminal = failure_stage(&r);
-        let copy = matches!(
-            r.stage.as_str(),
-            "restoring" | "recovery-required" | "rollback-copying"
-        );
-        if let Err(error) = rollback_original(&d, &mut r, copy).await {
-            if r.rollback_phase != Some(RollbackPhase::Activating) {
-                return Err(error);
-            }
-            r.error = Some(error.1.to_string());
-            record(&r)?;
-            continue;
-        }
-        r.stage = terminal.into();
-        r.error = Some("Controller interrupted the operation; component startup recovered".into());
-        record(&r)?;
     }
     // Includes operations that finished before a crash interrupted their cleanup.
     for entry in std::fs::read_dir(root()).map_err(|_| unavailable())? {
@@ -985,10 +876,131 @@ pub(super) async fn recover_interrupted() -> Result<()> {
             .map_err(|_| unavailable())?
             .path()
             .join("operation.json");
-        if journal.is_file() {
-            discard_plaintext(&persisted(store::read::<Record>(&journal))?)?;
+        if journal.is_file()
+            && let Err(error) =
+                persisted(store::read::<Record>(&journal)).and_then(|r| discard_plaintext(&r))
+        {
+            eprintln!(
+                "Backup cleanup of {} failed: {}",
+                journal.display(),
+                error.1
+            );
         }
     }
+    Ok(())
+}
+async fn recover_operation(journal: &FsPath) -> Result<()> {
+    let mut r: Record = persisted(store::read(journal))?;
+    validate_record(&r)?;
+    if r.stage == "release-handoff" {
+        match r
+            .release_restore
+            .as_deref()
+            .and_then(product::recovery_stage)
+            .as_deref()
+        {
+            Some("restored") => {
+                let d = bootstrap().await?;
+                let server = r
+                    .components
+                    .iter_mut()
+                    .find(|c| c.key == "server")
+                    .ok_or_else(unavailable)?;
+                server.container = d.server["Id"].as_str().ok_or_else(unavailable)?.into();
+                if let Err(error) = restart(&r.components).await {
+                    r.error = Some(error.1.to_string());
+                    record(&r)?;
+                    return Ok(());
+                }
+                r.stage = "restored".into();
+                r.error = None;
+                record(&r)?;
+                return Ok(());
+            }
+            Some(_) => return Ok(()),
+            None => {
+                r.stage = "restoring".into();
+                record(&r)?;
+            }
+        }
+    }
+    if !matches!(
+        r.stage.as_str(),
+        "queued"
+            | "quiescing"
+            | "snapshotting"
+            | "encrypting"
+            | "restore-queued"
+            | "restoring"
+            | "restore-activating"
+            | "rollback-activating"
+            | "rollback-copying"
+            | "recovery-required"
+    ) {
+        return Ok(());
+    }
+    id(&r.id)?;
+    if r.recovery.is_none()
+        || matches!(
+            r.stage.as_str(),
+            "restore-activating" | "rollback-activating"
+        )
+    {
+        let terminal = if r.stage == "restore-activating" {
+            "restored"
+        } else {
+            failure_stage(&r)
+        };
+        if terminal != "restored" {
+            r.rollback_phase = Some(RollbackPhase::Activating);
+            r.stage = "rollback-activating".into();
+        }
+        record(&r)?;
+        let cleanup = async {
+            let d = bootstrap().await?;
+            remove_interrupted_workers(&d, &r).await
+        }
+        .await;
+        let restarting = restart(&r.components).await;
+        match cleanup.and(restarting) {
+            Ok(()) => {
+                r.stage = terminal.into();
+                r.error = Some(
+                    "Controller interrupted the operation; component startup recovered".into(),
+                );
+            }
+            Err(error) => r.error = Some(error.1.to_string()),
+        }
+        record(&r)?;
+        return Ok(());
+    }
+    let d = bootstrap().await?;
+    let (_, current, _) = inspect(&d).await?;
+    // A restore may cover only some components; each one must still be the same.
+    if r.components.iter().any(|a| {
+        !current
+            .iter()
+            .any(|b| a.key == b.key && a.container == b.container && a.source == b.source)
+    }) {
+        return Err(conflict("Interrupted backup component layout changed"));
+    }
+    remove_interrupted_workers(&d, &r).await?;
+    let terminal = failure_stage(&r);
+    let copy = matches!(
+        r.stage.as_str(),
+        "restoring" | "recovery-required" | "rollback-copying"
+    );
+    if let Err(error) = rollback_original(&d, &mut r, copy).await {
+        if r.rollback_phase != Some(RollbackPhase::Activating) {
+            return Err(error);
+        }
+        r.error = Some(error.1.to_string());
+        record(&r)?;
+        return Ok(());
+    }
+    r.stage = terminal.into();
+    r.error = Some("Controller interrupted the operation; component startup recovered".into());
+    record(&r)?;
     Ok(())
 }
 

@@ -61,7 +61,8 @@ fn download(db: &Connection, video: &str) -> anyhow::Result<Option<Download>> {
 }
 
 fn usage(db: &Connection) -> anyhow::Result<VideoUsage> {
-    let (unpinned_bytes,pinned_bytes)=db.query_row("SELECT COALESCE(SUM(CASE WHEN EXISTS(SELECT 1 FROM youtube_state s WHERE s.video_id=d.video_id AND s.pinned=1) THEN 0 ELSE d.size END),0),COALESCE(SUM(CASE WHEN EXISTS(SELECT 1 FROM youtube_state s WHERE s.video_id=d.video_id AND s.pinned=1) THEN d.size ELSE 0 END),0) FROM youtube_downloads d WHERE d.state='ready'",[],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    // A download whose file changed can't be removed here; it doesn't hold space hostage.
+    let (unpinned_bytes,pinned_bytes)=db.query_row("SELECT COALESCE(SUM(CASE WHEN EXISTS(SELECT 1 FROM youtube_state s WHERE s.video_id=d.video_id AND s.pinned=1) THEN 0 ELSE d.size END),0),COALESCE(SUM(CASE WHEN EXISTS(SELECT 1 FROM youtube_state s WHERE s.video_id=d.video_id AND s.pinned=1) THEN d.size ELSE 0 END),0) FROM youtube_downloads d WHERE d.state='ready' AND NOT EXISTS(SELECT 1 FROM video_retention_candidates c WHERE c.video_id=d.video_id AND c.generation=d.generation AND c.state='blocked')",[],|r|Ok((r.get(0)?,r.get(1)?)))?;
     let waiting = db.query_row(
         "SELECT COUNT(*) FROM youtube_downloads WHERE state='waiting_for_space'",
         [],
@@ -168,11 +169,23 @@ fn delete_file(root: &Path, d: &Download) -> anyhow::Result<()> {
         .canonicalize()
         .context("Download storage is unavailable")?;
     let directory = root.join(&d.video).join(&d.generation);
+    let path = directory.join("media.mp4");
+    // A download whose files are already gone has nothing left to delete. A file that is
+    // still there but changed is never deleted.
+    for gone in [&directory, &path] {
+        match std::fs::symlink_metadata(gone) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let _ = std::fs::remove_dir(&directory);
+                let _ = std::fs::remove_dir(root.join(&d.video));
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
     ensure!(
         directory.canonicalize().ok().as_ref() == Some(&directory),
         "Download directory identity changed"
     );
-    let path = directory.join("media.mp4");
     ensure!(d.path.as_ref().is_some_and(|recorded|Path::new(recorded).canonicalize().ok().as_ref()==Some(&path)),"Recorded download path changed");
     let metadata = std::fs::symlink_metadata(&path).context("Downloaded file is unavailable")?;
     ensure!(

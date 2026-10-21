@@ -163,6 +163,67 @@ async fn partial_backup_restart_recovery_preserves_new_writes() {
     }
 }
 
+// A component that resumed during an interrupted restore keeps what it wrote, and no
+// operation's recovery keeps the controller from starting.
+#[tokio::test]
+async fn startup_never_overwrites_a_resumed_component_or_stops_on_recovery() {
+    let fixture = Docker::new();
+    fixture
+        .scope(async {
+            let d: Deployment = fixture.backup_deployment();
+            store::write_json(&store::root().join("desired-state.json"), &d).unwrap();
+            store::write_json(&store::root().join("generations/1/desired-state.json"), &d).unwrap();
+            let (_, mut components, _) = inspect(&d).await.unwrap();
+            components[0].running = true;
+            let key = thelxinoe_core::id();
+            let r = Record {
+                id: key.clone(),
+                stage: "restoring".into(),
+                created_at: 1,
+                error: None,
+                components,
+                recovery: Some(format!("recovery-{}", thelxinoe_core::id())),
+                recovery_ready: true,
+                rollback_phase: Some(RollbackPhase::Copying),
+                release_restore: None,
+                automatic: false,
+                contents: vec![],
+                excluded: vec![],
+            };
+            private_dir(&work(&key)).unwrap();
+            record(&r).unwrap();
+            let broken = thelxinoe_core::id();
+            private_dir(&work(&broken)).unwrap();
+            std::fs::write(work(&broken).join("operation.json"), "{unreadable").unwrap();
+            // Its restart policy brought the component back before the controller did.
+            updates::start("original").await.unwrap();
+            std::fs::write(
+                fixture.root().join("appdata/marker"),
+                "written-after-resume",
+            )
+            .unwrap();
+            recover_interrupted().await.unwrap();
+            let refused: Record = store::read(&work(&key).join("operation.json")).unwrap();
+            assert!(
+                refused.rollback_phase == Some(RollbackPhase::Activating),
+                "{}: {:?}",
+                refused.stage,
+                refused.error
+            );
+            assert!(refused.error.as_deref().unwrap().contains("resumed"));
+            recover_interrupted().await.unwrap();
+            let settled: Record = store::read(&work(&key).join("operation.json")).unwrap();
+            assert_eq!(settled.stage, "restore-failed");
+            assert_eq!(fixture.copies(), 0);
+            assert_eq!(
+                std::fs::read_to_string(fixture.root().join("appdata/marker")).unwrap(),
+                "written-after-resume"
+            );
+            assert!(fixture.running("original"));
+        })
+        .await;
+}
+
 #[tokio::test]
 async fn automatic_rotation_spares_manual_imported_and_unfinished_backups() {
     let fixture = Docker::new();
@@ -357,6 +418,42 @@ async fn backups_leave_held_services_running_and_restore_every_owned_service_by_
             assert!(fixture.running("held"));
             assert_eq!(fixture.started_at("held"), held_started);
             assert_eq!(plaintext(&key), Vec::<String>::new());
+            // A service update since the backup replaced the container and image; its
+            // configuration restores into the updated service, whose record stays current.
+            let source = fixture.root().join("transferred");
+            let updated = json!({"Id":"transferred-v2","Name":"/transferred","Image":"sha256:image2",
+                "Config":{"Image":"image2","Labels":{"app.thelxinoe.deployment":"deployment","app.thelxinoe.managed-id":TRANSFERRED}},
+                "HostConfig":{},"Mounts":[{"Type":"bind","Source":source,"Destination":"/config","RW":true}],
+                "State":{"Running":true,"StartedAt":"2026-10-02T00:00:00Z"},
+                "NetworkSettings":{"Networks":{"media":{}}}});
+            fixture.insert("transferred-v2", updated.clone());
+            assert!(
+                request(reqwest::Method::DELETE, "/containers/transferred?force=true", None)
+                    .await
+                    .is_ok()
+            );
+            let mut service = load(TRANSFERRED).unwrap();
+            (service.container, service.image) = ("transferred-v2".into(), "image2".into());
+            service.expected = policy::fingerprint(&updated);
+            save(&service).unwrap();
+            std::fs::write(source.join("marker"), "written-after-update").unwrap();
+            assert_eq!(
+                restore_with(Some(vec![TRANSFERRED.to_owned()])).await.unwrap().0["stage"],
+                "restore-queued"
+            );
+            finished("restored").await;
+            // Captured, restored, then written by the restarted service in this fixture.
+            assert_eq!(fixture.copies(), 3 + 6 + 2 + 2);
+            assert_ne!(
+                std::fs::read_to_string(source.join("marker")).unwrap(),
+                "written-after-update"
+            );
+            let current = load(TRANSFERRED).unwrap();
+            assert_eq!(
+                (current.container.as_str(), current.image.as_str()),
+                ("transferred-v2", "image2")
+            );
+            assert!(fixture.running("transferred-v2"));
         })
         .await;
 }

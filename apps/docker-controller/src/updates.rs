@@ -138,7 +138,10 @@ pub(super) async fn retained_originals(d: &Deployment, service: &Managed) -> Res
         if update.service != service.id
             || update.old.container == service.container
             || !update.activation_crossed
-            || !matches!(update.stage.as_str(), "committed" | "runtime-failure")
+            || !matches!(
+                update.stage.as_str(),
+                "activating" | "committed" | "runtime-failure"
+            )
         {
             continue;
         }
@@ -169,7 +172,7 @@ pub(super) fn removable_updates(service: &str) -> Result<Vec<String>> {
             if update.service == service {
                 if !matches!(
                     update.stage.as_str(),
-                    "committed" | "rolled-back" | "blocked"
+                    "committed" | "rolled-back" | "blocked" | "runtime-failure"
                 ) {
                     return Err(conflict(
                         "Finish or recover the service update before removal",
@@ -245,7 +248,6 @@ pub(super) async fn preflight(
             u.stage = "blocked".into();
             u.classification = "unable-to-verify".into();
             u.error = Some(error.1.to_string());
-            let _ = write(&u);
             // The old container has not changed its spec or appdata during preflight.
             if cleanup_candidate(&u).await.is_ok()
                 && verified(&u.old, &d).await.is_ok()
@@ -253,6 +255,7 @@ pub(super) async fn preflight(
             {
                 let _ = save(&u.old);
             }
+            let _ = publish(&d, &u).await;
         }
     });
     Ok(Json(result))
@@ -561,6 +564,12 @@ async fn check(d: &Deployment, u: &mut Update) -> Result<()> {
     }
     cleanup_candidate(u).await?;
     save(&u.old)?;
+    publish(d, u).await
+}
+/// A settled preflight drops its copies before it says so. The service gate is held until
+/// then, so a stage the server can act on must mean the gate is about to be free.
+async fn publish(d: &Deployment, u: &Update) -> Result<()> {
+    remove_copies(d, u).await;
     write(u)
 }
 async fn candidate(d: &Deployment, u: &mut Update, config: &str) -> Result<()> {
@@ -709,6 +718,10 @@ pub(super) async fn activate(
             u.error = Some(error.1.to_string());
             if u.activation_crossed {
                 u.stage = "runtime-failure".into();
+                let _ = write(&u);
+                if let Err(error) = settle_crossed(&d, &mut u).await {
+                    eprintln!("Service update {} needs recovery: {}", u.id, error.1);
+                }
             } else if rollback(&d, &mut u).await.is_ok() {
                 u.stage = "rolled-back".into();
             } else {
@@ -717,7 +730,10 @@ pub(super) async fn activate(
             if let Err(error) = write(&u) {
                 eprintln!("Service update recovery journal failed: {}", error.1);
             }
+        } else {
+            retire_older(&d, &u).await;
         }
+        remove_copies(&d, &u).await;
     });
     Ok(Json(result))
 }
@@ -930,7 +946,172 @@ pub(super) async fn recover(
     u.stage = "rolled-back".into();
     u.error = None;
     write(&u)?;
+    remove_copies(&d, &u).await;
     Ok(Json(public(&u)))
+}
+
+/// Copies an attempt no longer needs. Its preflight copies go once it settles, and a rolled
+/// back attempt keeps nothing. A committed attempt keeps its recovery copy and stopped
+/// original until a newer update of the service commits.
+async fn remove_copies(d: &Deployment, u: &Update) {
+    let leaves: &[&str] = match u.stage.as_str() {
+        "ready" | "blocked" | "committed" | "runtime-failure" => {
+            &["snapshot", "clone", "scratch-data"]
+        }
+        "rolled-back" => &["snapshot", "clone", "scratch-data", "recovery"],
+        _ => &[],
+    };
+    for leaf in leaves {
+        let directory = path(&u.id).join(leaf);
+        if directory.exists()
+            && let Err(error) =
+                removal::delete_directory(d, &u.service, &store::root(), &directory).await
+        {
+            eprintln!("Service update {} kept its {leaf} copy: {}", u.id, error.1);
+        }
+    }
+}
+
+/// Committed attempts of `newer`'s service other than it, newest last by journal time.
+fn committed_before(newer: &Update) -> Vec<Update> {
+    let Ok(entries) = std::fs::read_dir(store::root().join("updates")) else {
+        return vec![];
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            read_listed(&entry.file_name().to_string_lossy())
+                .ok()
+                .flatten()
+        })
+        .filter(|u| u.id != newer.id && u.service == newer.service && u.stage == "committed")
+        .collect()
+}
+
+/// Once an update commits, older committed attempts of the service can't be recovered to:
+/// their recovery copies and stopped originals go. Anything running or changed is kept.
+async fn retire_older(d: &Deployment, newer: &Update) {
+    for older in committed_before(newer) {
+        let retired = match verified(&older.old, d).await {
+            Ok(raw) if raw["State"]["Running"] == false => request(
+                Method::DELETE,
+                &format!("/containers/{}?v=false", older.old.container),
+                None,
+            )
+            .await
+            .map(|_| ())
+            .or_else(|error| {
+                if error.0 == StatusCode::NOT_FOUND {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            }),
+            Err((StatusCode::NOT_FOUND, _)) => Ok(()),
+            Ok(_) => Err(conflict("It is running")),
+            Err(error) => Err(error),
+        };
+        if let Err(error) = retired {
+            eprintln!(
+                "Service update {} kept its original {}: {}",
+                older.id, older.old.container, error.1
+            );
+            continue;
+        }
+        let recovery = path(&older.id).join("recovery");
+        if recovery.exists()
+            && let Err(error) =
+                removal::delete_directory(d, &older.service, &store::root(), &recovery).await
+        {
+            eprintln!(
+                "Service update {} kept its recovery copy: {}",
+                older.id, error.1
+            );
+        }
+    }
+}
+
+/// An activation that crossed its boundary but never recorded its replacement: the
+/// controller stopped, or the replacement couldn't be inspected after its start. Docker may
+/// have run the replacement, so nothing rolls back automatically: the service moves to it,
+/// as `replace` would have, and the attempt ends as a runtime failure for explicit review.
+/// The stopped original is kept and never started.
+async fn settle_crossed(d: &Deployment, u: &mut Update) -> Result<()> {
+    if !u.activation_crossed
+        || !matches!(u.stage.as_str(), "activating" | "runtime-failure")
+        || u.old.kind == "recyclarr"
+    {
+        return Ok(());
+    }
+    let current = load(&u.service)?;
+    if current.phase == "updating" && current.active_update.as_deref() == Some(u.id.as_str()) {
+        let intent = u
+            .replacement_intent
+            .clone()
+            .ok_or_else(|| conflict("The replacement's creation intent is missing"))?;
+        let container = intent
+            .find(d)
+            .await?
+            .ok_or_else(|| conflict("The replacement no longer exists"))?;
+        let raw = engine(&format!("/containers/{container}/json")).await?;
+        verify_recorded(d, &intent.service, &raw).await?;
+        let mut accepted = u.old.clone();
+        accepted.container = container.clone();
+        accepted.image = u.candidate.clone();
+        accepted.spec = intent.service.spec;
+        accepted.expected = policy::fingerprint(&raw);
+        accepted.phase = "active".into();
+        save(&accepted)?;
+        u.replacement = Some(container);
+        u.error = Some(
+            "Activation was interrupted after the replacement could start; it was kept without its health check".into(),
+        );
+    }
+    if u.stage == "activating" {
+        u.stage = "runtime-failure".into();
+        u.error
+            .get_or_insert_with(|| "Activation was interrupted".into());
+    }
+    write(u)
+}
+
+/// Startup: settle activations interrupted after their boundary, then remove copies earlier
+/// attempts left behind. The newest committed attempt of each service keeps what its
+/// recovery needs.
+pub(super) async fn settle() -> Result<()> {
+    let root = store::root().join("updates");
+    if !root.exists() {
+        return Ok(());
+    }
+    let d = bootstrap().await?;
+    let mut newest = std::collections::BTreeMap::<String, (std::time::SystemTime, Update)>::new();
+    for entry in std::fs::read_dir(root)
+        .map_err(|_| unavailable())?
+        .flatten()
+    {
+        let Some(mut u) = read_listed(&entry.file_name().to_string_lossy())? else {
+            continue;
+        };
+        if let Err(error) = settle_crossed(&d, &mut u).await {
+            eprintln!("Service update {} needs recovery: {}", u.id, error.1);
+        }
+        remove_copies(&d, &u).await;
+        if u.stage == "committed" {
+            let time = entry
+                .path()
+                .join("update.json")
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .map_err(|_| unavailable())?;
+            if newest.get(&u.service).is_none_or(|(seen, _)| time > *seen) {
+                newest.insert(u.service.clone(), (time, u));
+            }
+        }
+    }
+    for (_, u) in newest.values() {
+        retire_older(&d, u).await;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

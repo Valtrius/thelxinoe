@@ -536,3 +536,153 @@ async fn auto_delete_waits_at_least_a_day() {
         assert_eq!(status, expected, "{grace}: {body}");
     }
 }
+
+// A due deletion that meets a busy manager stays scheduled, changes nothing upstream and
+// runs on a later pass once the manager is idle.
+#[tokio::test]
+async fn a_busy_manager_postpones_a_due_deletion_instead_of_blocking_it() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let (temp, mut state, _cookie) = fixture().await;
+    let media = temp.path().join("media");
+    std::fs::create_dir_all(media.join("movies")).unwrap();
+    let file = media.join("movies/one.mp4");
+    std::fs::write(&file, b"watched fixture movie").unwrap();
+    let media = media.canonicalize().unwrap();
+    let file = file.canonicalize().unwrap();
+    Arc::get_mut(&mut state.config).unwrap().media = media.clone();
+    let busy = Arc::new(AtomicBool::new(true));
+    let exclusions = Arc::new(AtomicUsize::new(0));
+    let (queue, created, removed) = (busy.clone(), exclusions.clone(), file.clone());
+    let movie = json!({"id":1,"tmdbId":603,"hasFile":true,"title":"One","year":1999});
+    let listed = movie.clone();
+    let stub = Router::new()
+        .route(
+            "/api/v3/movie",
+            get(move || {
+                let listed = listed.clone();
+                async move { Json(json!([listed])) }
+            }),
+        )
+        .route(
+            "/api/v3/movie/1",
+            get(move || {
+                let movie = movie.clone();
+                async move { Json(movie) }
+            })
+            .put(|Json(body): Json<Value>| async move { Json(body) }),
+        )
+        .route(
+            "/api/v3/moviefile",
+            get(|| async { Json(json!([{"id":11,"movieId":1,"path":"/media/movies/one.mp4"}])) }),
+        )
+        .route(
+            "/api/v3/moviefile/11",
+            get(|| async { Json(json!({"id":11,"movieId":1,"path":"/media/movies/one.mp4"})) })
+                .delete(move || {
+                    let removed = removed.clone();
+                    async move {
+                        std::fs::remove_file(&removed).unwrap();
+                        Json(json!({}))
+                    }
+                }),
+        )
+        .route("/api/v3/command", get(|| async { Json(json!([])) }))
+        .route(
+            "/api/v3/queue",
+            get(move || {
+                let queue = queue.clone();
+                async move { Json(json!({"totalRecords":u8::from(queue.load(Ordering::SeqCst))})) }
+            }),
+        )
+        .route(
+            "/api/v3/exclusions",
+            get(|| async { Json(json!([])) }).post(move || {
+                let created = created.clone();
+                async move {
+                    created.fetch_add(1, Ordering::SeqCst);
+                    Json(json!({"id":7}))
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move { axum::serve(listener, stub).await.unwrap() });
+    let container = "a".repeat(64);
+    let evidence = json!({"id":container,"name":"localhost","running":true,"mounts":[{"kind":"bind","source":"/physical","destination":"/media","writable":true}],"networks":[{"id":"network","address":"127.0.0.1"}]});
+    let mut server_evidence = evidence.clone();
+    server_evidence["mounts"][0]["destination"] = json!(media.to_string_lossy());
+    let media_source = crate::managers::storage_paths::evidence(
+        &server_evidence,
+        &evidence,
+        &media.to_string_lossy(),
+    )
+    .unwrap();
+    state.managers.docker.lock().unwrap().extend([
+        ("containers/self".into(), server_evidence),
+        (format!("containers/{container}"), evidence),
+    ]);
+    let credential = state
+        .secrets
+        .encrypt("manager:radarr", b"fixture-key")
+        .unwrap();
+    let meta = std::fs::metadata(&file).unwrap();
+    let modified = meta
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        .to_string();
+    let hash = thelxinoe_catalog::fingerprint(&mut std::fs::File::open(&file).unwrap()).unwrap();
+    let stored = file.to_string_lossy().to_string();
+    let root = media.join("movies").to_string_lossy().to_string();
+    state.db.write("test.fixture", move |db| {
+        db.execute("INSERT INTO manager_services(id,name,kind,container_id,port,generation,credential,media_source,defaults,version,enabled,checked_at) VALUES ('radarr','Fixture','radarr',?1,?2,'g',?3,?4,'{}','1',1,1)",params![container,port,credential,media_source])?;
+        crate::test_support::own(db)?;
+        db.execute("INSERT INTO library_roots(id,name,kind,path) VALUES ('movies','Movies','movies',?1)",[root])?;
+        db.execute("INSERT INTO media(id,root_id,kind,evidence_key,title,created_at) VALUES ('one','movies','movie','one','One',1)",[])?;
+        db.execute("INSERT INTO media_files(id,root_id,path,generation,size,modified,fingerprint,probe,ownership,scanned_at) VALUES ('one','movies',?1,'first',?2,?3,?4,'{}','unmanaged',1)",params![stored,meta.len() as i64,modified,hash])?;
+        db.execute("INSERT INTO media_sources VALUES ('one','one')",[])?;
+        db.execute("INSERT INTO media_state(user_id,media_id,watched,updated_at) VALUES ('alice','one',1,1)",[])?;
+        db.execute("INSERT INTO settings(key,value) VALUES ('manager.retention.radarr','true')",[])?;
+        db.execute("UPDATE retention_policies SET enabled=1,trigger_users='[\"alice\"]',grace_seconds=3600 WHERE domain='movies'",[])?;
+        Ok(())
+    }).await.unwrap();
+    assert_eq!(evaluate_all(&state, None).await.unwrap(), 1);
+    let candidate = state
+        .db
+        .write("test.due", |db| {
+            db.execute("UPDATE retention_candidates SET due_at=1", [])?;
+            Ok(
+                db.query_row("SELECT id FROM retention_candidates", [], |r| {
+                    r.get::<_, String>(0)
+                })?,
+            )
+        })
+        .await
+        .unwrap();
+    let states = || {
+        state.db.read("test.states", |db| {
+            Ok(db.query_row("SELECT c.state,o.state,c.error FROM retention_candidates c JOIN media_operations o ON o.id=c.operation_id", [], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?)))?)
+        })
+    };
+    assert!(delete_locked(&state, &candidate, None, true).await.is_err());
+    let (waiting, operation, error) = states().await.unwrap();
+    assert_eq!(
+        (waiting.as_str(), operation.as_str()),
+        ("pending", "pending")
+    );
+    assert!(error.unwrap().contains("queue"));
+    assert_eq!(exclusions.load(Ordering::SeqCst), 0);
+    assert!(file.exists());
+    busy.store(false, Ordering::SeqCst);
+    delete_locked(&state, &candidate, None, true).await.unwrap();
+    let (done, operation, _) = states().await.unwrap();
+    assert_eq!(
+        (done.as_str(), operation.as_str()),
+        ("complete", "complete")
+    );
+    assert_eq!(exclusions.load(Ordering::SeqCst), 1);
+    assert!(!file.exists());
+    server.abort();
+}

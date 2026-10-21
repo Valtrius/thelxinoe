@@ -167,11 +167,14 @@ async fn delete_locked(
     let operation = storage::delete_locked_read_retention_candidates(lookup, &state.db)
         .await?
         .ok_or_else(ApiError::not_found)?;
-    let result = operations::execute_locked(state, operation, actor, automatic).await;
+    let result = operations::execute_locked(state, operation.clone(), actor, automatic).await;
     if let Err(error) = result {
+        // While its operation is still pending nothing was changed: the deletion stays
+        // scheduled and the next pass tries again. Only an attempt that started blocks it.
+        let retry = storage::operation_pending(operation, &state.db).await?;
         let key = key.to_owned();
         let message = error.2.clone();
-        storage::delete_locked_write_retention_candidates(key, message, &state.db).await?;
+        storage::delete_locked_write_retention_candidates(key, message, retry, &state.db).await?;
         return Err(error);
     }
     Ok(())

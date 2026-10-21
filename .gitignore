@@ -12,3 +12,6 @@ release-desktop/
 apps/desktop/gen/
 apps/desktop/icons/
 .serena
+
+# Agent worktrees
+.claude/worktrees/

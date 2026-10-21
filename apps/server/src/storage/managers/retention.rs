@@ -133,17 +133,33 @@ pub(super) async fn delete_locked_read_retention_candidates(
     .await
 }
 
+pub(super) async fn operation_pending(operation: String, db: &Database) -> anyhow::Result<bool> {
+    db.read("managers.retention.operation_pending", move |db| {
+        Ok(db
+            .query_row(
+                "SELECT state='pending' FROM media_operations WHERE id=?1",
+                [operation],
+                |r| r.get::<_, bool>(0),
+            )
+            .optional()?
+            .unwrap_or(false))
+    })
+    .await
+}
+
+/// Record why a deletion didn't run; it stays pending when `retry`, otherwise it is blocked.
 pub(super) async fn delete_locked_write_retention_candidates(
     key: String,
     message: String,
+    retry: bool,
     db: &Database,
 ) -> anyhow::Result<()> {
     db.write(
         "managers.retention.delete_locked_write_retention_candidates",
         move |db| {
             db.execute(
-                "UPDATE retention_candidates SET state='blocked',error=?1 WHERE id=?2",
-                params![message, key],
+                "UPDATE retention_candidates SET state=CASE WHEN ?3 THEN state ELSE 'blocked' END,error=?1 WHERE id=?2",
+                params![message, key, retry],
             )?;
             Ok(())
         },
