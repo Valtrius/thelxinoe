@@ -1542,6 +1542,178 @@ async fn quick_connect_requires_review_and_is_single_use() {
 }
 
 #[tokio::test]
+async fn downloaded_watchlist_video_plays_through_jellyfin_urls_and_stops() {
+    let (temp, state, first_party) = fixture().await;
+    let (movie, _) = local_library(temp.path(), &state).await;
+    let video = "download001";
+    let root = state.config.cache.join("youtube");
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("download.mkv");
+    std::fs::copy(movie, &path).unwrap();
+    let original = std::fs::read(&path).unwrap();
+    let probe = String::from_utf8(run(
+        "ffprobe",
+        &[
+            "-v",
+            "error",
+            "-show_format",
+            "-show_streams",
+            "-of",
+            "json",
+            path.to_str().unwrap(),
+        ],
+    ))
+    .unwrap();
+    let metadata = std::fs::metadata(&path).unwrap();
+    let modified = metadata
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        .to_string();
+    let bearer = format!("Bearer {first_party}");
+    let (status, lists) = call(
+        &state,
+        "/api/v1/online/youtube/watchlists",
+        "GET",
+        Value::Null,
+        &[("Authorization", &bearer)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let list = lists[0]["id"].as_i64().unwrap();
+    state.db.write("test.fixture", move |db| {
+        for user in ["alice", "bob"] {
+            db.execute("INSERT INTO youtube_subscriptions(user_id,channel_id,title,snapshot,active) VALUES(?1,'channel','Channel','s',1)", [user])?;
+            db.execute("INSERT INTO youtube_videos(user_id,video_id,channel_id,title,privacy,duration) VALUES(?1,?2,'channel','Downloaded video','public',18)", rusqlite::params![user,video])?;
+        }
+        db.execute("INSERT INTO youtube_watchlist_items(user_id,watchlist_id,video_id,manual_position,added_at) VALUES('alice',?1,?2,0,1)", rusqlite::params![list,video])?;
+        db.execute("INSERT INTO youtube_media(video_id) VALUES(?1)", [video])?;
+        db.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,path,size,modified,probe,requested_at,updated_at) VALUES(?1,'download-generation','ready','{}',?2,?3,?4,?5,1,1)", rusqlite::params![video,path.to_string_lossy(),metadata.len() as i64,modified,probe])?;
+        Ok(())
+    }).await.unwrap();
+    let alice_token = login(&state, "alice", DEVICE).await;
+    let second_token = login(&state, "alice", &DEVICE.replace("tv-one", "tv-two")).await;
+    let bob_token = login(&state, "bob", DEVICE).await;
+    let alice = [("X-Emby-Token", alice_token.as_str())];
+    let bob = [("X-Emby-Token", bob_token.as_str())];
+    let second = [("X-Emby-Token", second_token.as_str())];
+    let (status, page) = call(
+        &state,
+        "/Items?ParentId=d7df0f21-caa6-45a0-9798-267150600004",
+        "GET",
+        Value::Null,
+        &alice,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let item = page["Items"][0]["Id"].as_str().unwrap();
+    let (_, page) = call(
+        &state,
+        "/Items?IncludeItemTypes=Video",
+        "GET",
+        Value::Null,
+        &bob,
+    )
+    .await;
+    let bob_item = page["Items"][0]["Id"].as_str().unwrap();
+    assert_ne!(item, bob_item);
+    let info = format!("/Items/{item}/PlaybackInfo");
+    let (status, session) = call(&state, &info, "POST", json!({"MediaSourceId":item,"AudioStreamIndex":1,"DeviceProfile":{
+        "DirectPlayProfiles":[{"Type":"Video","Container":"mkv","VideoCodec":"h264","AudioCodec":"aac"}]
+    }}), &alice).await;
+    assert_eq!(status, StatusCode::OK, "{session}");
+    let source = &session["MediaSources"][0];
+    assert_eq!(source["SupportsDirectPlay"], true);
+    let sid = session["PlaySessionId"].as_str().unwrap();
+    let file = source["Id"].as_str().unwrap();
+    let tag = source["ETag"].as_str().unwrap();
+    let stream =
+        format!("/Videos/{item}/stream?Static=true&MediaSourceId={file}&PlaySessionId={sid}");
+    // Wholphin builds this URL instead of using DirectStreamUrl, for both players.
+    let tagged = format!("{stream}&Tag={tag}");
+    let (status, _, body) = send(&state, &tagged, "GET", Value::Null, &[]).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(body.as_ref(), original);
+    let (status, headers, body) = send(
+        &state,
+        &stream,
+        "GET",
+        Value::Null,
+        &[alice[0], ("Range", "bytes=0-1023")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        headers[header::CONTENT_RANGE],
+        format!("bytes 0-1023/{}", original.len())
+    );
+    assert_eq!(body.as_ref(), &original[..1024]);
+    assert_eq!(
+        send(&state, &tagged, "HEAD", Value::Null, &[]).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(
+            &state,
+            &tagged.replace(item, &item.replace('-', "")),
+            "GET",
+            Value::Null,
+            &[]
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    for auth in [&bob, &second] {
+        assert_eq!(
+            send(&state, &stream, "GET", Value::Null, auth).await.0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    for invalid in [
+        tagged.replace(item, bob_item),
+        tagged.replace(file, "other000001"),
+        tagged.replace(sid, "00000000-0000-0000-0000-000000000000"),
+    ] {
+        assert_eq!(
+            send(&state, &invalid, "GET", Value::Null, &[]).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    assert_eq!(
+        call(
+            &state,
+            "/Sessions/Playing/Progress",
+            "POST",
+            json!({"ItemId":item,"PlaySessionId":sid,"PositionTicks":40_000_000}),
+            &alice
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(position(&state, item, &alice).await, 40_000_000);
+    let stop = format!("/Videos/ActiveEncodings?PlaySessionId={sid}&DeviceId=tv-one");
+    for auth in [&bob, &second] {
+        assert_eq!(
+            call(&state, &stop, "DELETE", Value::Null, auth).await.0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(
+        call(&state, &stop, "DELETE", Value::Null, &alice).await.0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(playback_state(&state, sid).await.1, "stopped");
+    assert_eq!(
+        send(&state, &tagged, "GET", Value::Null, &[]).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
 async fn local_video_plays_through_each_negotiated_delivery_for_its_own_device_session() {
     let (temp, state, _) = fixture().await;
     let (movie_path, _) = local_library(temp.path(), &state).await;

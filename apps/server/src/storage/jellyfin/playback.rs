@@ -39,7 +39,7 @@ pub(super) async fn stop_encoding(
     device: Option<String>,
     db: &Database,
 ) -> anyhow::Result<Option<String>> {
-    db.read("jellyfin.playback.stop_encoding", move|db|Ok(db.query_row("SELECT s.media_id FROM playback_sessions s JOIN compat_playbacks c ON c.playback_id=s.id JOIN compat_devices d ON d.session_id=s.auth_session_id WHERE s.id=?1 AND s.user_id=?2 AND s.auth_session_id=?3 AND (?4 IS NULL OR d.device_id=?4)",params![key,user,auth,device],|r|r.get::<_,String>(0)).optional()?)).await
+    db.read("jellyfin.playback.stop_encoding", move|db|Ok(db.query_row("SELECT COALESCE(s.media_id,'youtube:'||s.youtube_video_id,s.live_media_id) FROM playback_sessions s JOIN compat_playbacks c ON c.playback_id=s.id JOIN compat_devices d ON d.session_id=s.auth_session_id WHERE s.id=?1 AND s.user_id=?2 AND s.auth_session_id=?3 AND (?4 IS NULL OR d.device_id=?4)",params![key,user,auth,device],|r|r.get::<_,String>(0)).optional()?)).await
 }
 
 pub(super) async fn stream_tag(
@@ -49,7 +49,25 @@ pub(super) async fn stream_tag(
     explicit: Option<String>,
     db: &Database,
 ) -> anyhow::Result<Option<String>> {
-    db.read("jellyfin.playback.stream_tag", move|db|Ok(db.query_row("SELECT s.id FROM playback_grants g JOIN playback_sessions s ON g.resource='playback:'||s.id JOIN compat_playbacks c ON c.playback_id=s.id WHERE g.token_hash=?1 AND s.media_id=?2 AND s.mode='direct' AND (?3 IS NULL OR s.file_id=?3) AND (?4 IS NULL OR s.id=?4)",params![hash,media,file,explicit],|r|r.get::<_,String>(0)).optional()?)).await
+    db.read("jellyfin.playback.stream_tag", move |db| {
+        Ok(db
+            .query_row(
+                "SELECT s.id FROM playback_grants g
+             JOIN playback_sessions s ON g.resource='playback:'||s.id
+             JOIN compat_playbacks c ON c.playback_id=s.id
+             WHERE g.token_hash=?1 AND s.mode='direct' AND s.streaming=0
+             AND (s.media_id=?2 OR EXISTS (
+                 SELECT 1 FROM compat_online_items i
+                 WHERE i.id=?2 AND i.user_id=s.user_id AND i.youtube_video_id=s.youtube_video_id
+             ))
+             AND (?3 IS NULL OR COALESCE(s.file_id,s.youtube_video_id)=?3)
+             AND (?4 IS NULL OR s.id=?4)",
+                params![hash, media, file, explicit],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?)
+    })
+    .await
 }
 
 pub(super) async fn stream(
@@ -60,5 +78,19 @@ pub(super) async fn stream(
     file: Option<String>,
     db: &Database,
 ) -> anyhow::Result<bool> {
-    db.read("jellyfin.playback.stream", move|db|Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM playback_sessions WHERE id=?1 AND user_id=?2 AND auth_session_id=?3 AND media_id=?4 AND mode='direct' AND (?5 IS NULL OR file_id=?5))",params![key,uid,auth,media,file],|r|r.get::<_,bool>(0))?)).await
+    db.read("jellyfin.playback.stream", move |db| {
+        Ok(db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM playback_sessions s
+             WHERE s.id=?1 AND s.user_id=?2 AND s.auth_session_id=?3
+             AND s.mode='direct' AND s.streaming=0
+             AND (s.media_id=?4 OR EXISTS (
+                 SELECT 1 FROM compat_online_items i
+                 WHERE i.id=?4 AND i.user_id=s.user_id AND i.youtube_video_id=s.youtube_video_id
+             ))
+             AND (?5 IS NULL OR COALESCE(s.file_id,s.youtube_video_id)=?5))",
+            params![key, uid, auth, media, file],
+            |r| r.get::<_, bool>(0),
+        )?)
+    })
+    .await
 }

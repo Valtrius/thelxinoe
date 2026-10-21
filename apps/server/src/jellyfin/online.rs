@@ -526,18 +526,21 @@ fn source_dto(dto: &Value) -> Value {
         source[field] = json!(false);
     }
     for stream in source["MediaStreams"].as_array_mut().unwrap() {
-        for field in [
-            "IsExternal",
-            "IsInterlaced",
-            "IsForced",
-            "IsHearingImpaired",
-            "IsTextSubtitleStream",
-            "SupportsExternalStream",
-        ] {
-            stream[field] = json!(false);
-        }
+        stream_flags(stream);
     }
     source
+}
+fn stream_flags(stream: &mut Value) {
+    for field in [
+        "IsExternal",
+        "IsInterlaced",
+        "IsForced",
+        "IsHearingImpaired",
+        "IsTextSubtitleStream",
+        "SupportsExternalStream",
+    ] {
+        stream[field] = json!(false);
+    }
 }
 pub async fn playback_info(
     state: &AppState,
@@ -721,12 +724,34 @@ pub async fn playback_info(
     dto["ETag"] = playback["grant"].clone();
     dto["RunTimeTicks"] = json!(catalog::ticks(playback["duration"].as_f64().unwrap_or(0.0)));
     dto["IsInfiniteStream"] = playback["live"].clone();
-    dto["MediaStreams"] = json!(playback["probe"]["streams"].as_array().into_iter().flatten().filter(|stream| ["video", "audio"].contains(&stream["codec_type"].as_str().unwrap_or(""))).map(|stream| {
-        let video = stream["codec_type"] == "video";
-        let encoded = playback["encoding"][if video { "video" } else { "audio" }] == true;
-        let conversion=&playback["options"]["capabilities"]["conversion"];
-        let rate=stream["avg_frame_rate"].as_str().and_then(|s|s.split_once('/')).and_then(|(a,b)|Some(a.parse::<f64>().ok()?/b.parse::<f64>().ok()?)).filter(|r|r.is_finite());
-        json!({"Type": if video { "Video" } else { "Audio" }, "Index": stream["index"], "Codec": if encoded { json!(if video { "h264" } else { "aac" }) } else { stream["codec_name"].clone() }, "IsDefault": true, "Width": if encoded && video {conversion["width"].clone()}else{stream["width"].clone()}, "Height": if encoded && video {conversion["height"].clone()}else{stream["height"].clone()},"AverageFrameRate":if encoded && video {conversion["frame_rate"].clone()}else{json!(rate)},"RealFrameRate":if encoded && video {conversion["frame_rate"].clone()}else{json!(rate)}, "Channels": if encoded && !video { json!(2) } else { stream["channels"].clone() }, "SampleRate": stream["sample_rate"]})
-    }).collect::<Vec<_>>());
+    dto["MediaStreams"] = json!(
+        playback["probe"]["streams"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|stream| {
+                ["video", "audio"].contains(&stream["codec_type"].as_str().unwrap_or(""))
+            })
+            .map(|stream| {
+                let video = stream["codec_type"] == "video";
+                let encoded = playback["encoding"][if video { "video" } else { "audio" }] == true;
+                let conversion = &playback["options"]["capabilities"]["conversion"];
+                let rate = stream["avg_frame_rate"]
+                    .as_str()
+                    .and_then(|s| s.split_once('/'))
+                    .and_then(|(a, b)| Some(a.parse::<f64>().ok()? / b.parse::<f64>().ok()?))
+                    .filter(|r| r.is_finite());
+                let sample_rate = if encoded && !video {
+                    Some(48000)
+                } else {
+                    stream["sample_rate"].as_str().and_then(|r| r.parse::<u32>().ok())
+                };
+                let mut dto = json!({"Type": if video { "Video" } else { "Audio" }, "Index": stream["index"], "Codec": if encoded { json!(if video { "h264" } else { "aac" }) } else { stream["codec_name"].clone() }, "IsDefault": true, "Width": if encoded && video {conversion["width"].clone()}else{stream["width"].clone()}, "Height": if encoded && video {conversion["height"].clone()}else{stream["height"].clone()},"AverageFrameRate":if encoded && video {conversion["frame_rate"].clone()}else{json!(rate)},"RealFrameRate":if encoded && video {conversion["frame_rate"].clone()}else{json!(rate)}, "Channels": if encoded && !video { json!(2) } else { stream["channels"].clone() }, "SampleRate": sample_rate});
+                stream_flags(&mut dto);
+                dto["IsInterlaced"] = json!(video && !encoded && !["progressive", "unknown", ""].contains(&stream["field_order"].as_str().unwrap_or("")));
+                dto
+            })
+            .collect::<Vec<_>>()
+    );
     Ok(json!({"MediaSources":[dto],"PlaySessionId":sid}))
 }
