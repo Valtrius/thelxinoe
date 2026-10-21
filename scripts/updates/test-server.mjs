@@ -801,6 +801,8 @@ export async function serverScenarios({
       // The server reports the restarted controller once it observes it again.
       await until(preflightRetired);
       expect((await api('/health')).version).toBe(lab.next);
+      // A rejected command keeps the server fenced until it sees the controller settled.
+      await until(async () => (await request('/auth/me')).status() !== 503);
     },
   );
   await scenario(
