@@ -308,11 +308,22 @@ pub async fn stream(
     Query(grant): Query<Grant>,
     request: Request,
 ) -> Result<Response> {
-    let (_, session) = from_grant(&state, &id, &grant.grant).await?;
+    let (p, _) = from_grant(&state, &id, &grant.grant).await?;
+    serve_file(&state, &p, &id, request).await
+}
+/// Serves the local file of `p`'s play session `id`, byte ranges included, for callers that
+/// have already authorized the request.
+pub(crate) async fn serve_file(
+    state: &AppState,
+    p: &Principal,
+    id: &str,
+    request: Request,
+) -> Result<Response> {
+    let session = session(state, p, id).await?;
     if session.streaming {
         return Err(ApiError::not_found());
     }
-    let src = current_source(&state, &session).await?;
+    let src = current_source(state, &session).await?;
     let mut response = tower_http::services::ServeFile::new(&src.path)
         .oneshot(request)
         .await

@@ -7,10 +7,7 @@ use crate::{
     error::{ApiError, Result},
     playback as core,
 };
-use axum::{
-    extract::{Path, Request, State},
-    response::Response,
-};
+use axum::{extract::Request, response::Response};
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 use thelxinoe_core::Principal;
@@ -424,12 +421,7 @@ pub async fn stream(
     if !valid {
         return Err(ApiError::not_found());
     }
-    let grant = crate::grants::issue(&state, p, &format!("playback:{id}"), 120).await?;
-    core::stream(
-        State(state),
-        Path(id),
-        axum::extract::Query(core::Grant { grant }),
-        request,
-    )
-    .await
+    // The client's token and the play session check above authorize it; a grant per range
+    // request would only add a write.
+    core::serve_file(&state, p, &id, request).await
 }
