@@ -1,5 +1,6 @@
 //! Database operations for maintenance.
 use rusqlite::params;
+use thelxinoe_auth::lifetime;
 use thelxinoe_database::Database;
 
 /// Rows a pass deletes per table, so other writes interleave with a large backlog.
@@ -20,6 +21,15 @@ pub(super) async fn prune(db: &Database, now: i64) -> anyhow::Result<usize> {
         // An expired session ends what it owned, as signing out does.
         removed += c.execute(
             "DELETE FROM sessions WHERE rowid IN (SELECT rowid FROM sessions WHERE expires_at<?1 LIMIT ?2)",
+            params![now, BATCH],
+        )?;
+        // Sign-in already refuses these; a device left unused or past the cap is forgotten.
+        removed += c.execute(
+            "DELETE FROM auth_remembered_devices WHERE rowid IN (SELECT rowid FROM auth_remembered_devices WHERE last_seen<=?1 OR created_at<=?2 LIMIT ?3)",
+            params![now - lifetime::REMEMBERED_IDLE, now - lifetime::MAX, BATCH],
+        )?;
+        removed += c.execute(
+            "DELETE FROM auth_known_browsers WHERE rowid IN (SELECT rowid FROM auth_known_browsers WHERE expires_at<=?1 LIMIT ?2)",
             params![now, BATCH],
         )?;
         // Each tool keeps its latest run, however old.

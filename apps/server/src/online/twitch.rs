@@ -3,7 +3,6 @@
 #[path = "../storage/online/twitch.rs"]
 mod storage;
 
-use super::bounded_response;
 use crate::{
     AppState,
     error::{ApiError, Result},
@@ -121,7 +120,7 @@ async fn response(
     request: reqwest::RequestBuilder,
 ) -> Result<(axum::http::StatusCode, HeaderMap, Value)> {
     let response = request.send().await.map_err(|_| provider_error())?;
-    let (status, headers, bytes) = bounded_response(response)
+    let (status, headers, bytes) = crate::bounded::response(response)
         .await
         .map_err(|_| provider_error())?;
     let value = serde_json::from_slice(&bytes).map_err(|_| provider_error())?;

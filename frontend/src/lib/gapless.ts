@@ -9,6 +9,7 @@ import {
   playbackRequest,
   replayGain,
   scheduleBuffer,
+  sessionRefused,
   type MediaChoice,
   type MediaInfo,
   type Playback,
@@ -290,7 +291,7 @@ export class GaplessQueue {
           : undefined,
       );
     return entry.reports.catch((e) => {
-      if (!this.closed) {
+      if (!this.closed && sessionRefused(e)) {
         this.failed(e);
         void this.close();
       }
@@ -316,7 +317,7 @@ export class GaplessQueue {
           ),
         );
     } catch (e) {
-      if (!this.closed) {
+      if (!this.closed && sessionRefused(e)) {
         this.failed(e);
         await this.close();
       }

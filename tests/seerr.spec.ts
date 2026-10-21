@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { current } from './helpers/versions';
 import { execFileSync } from 'node:child_process';
-import { installUiFixture } from './helpers/ui-fixture';
+import { installServerEvents, installUiFixture } from './helpers/ui-fixture';
 
 test('Recyclarr installs with one click and no dialog', async ({
   page,
@@ -159,7 +159,7 @@ test('Recyclarr installs with one click and no dialog', async ({
   expect(fixture.unexpected).toEqual([]);
 });
 
-test('Recyclarr sync uses only button progress and retains failures', async ({
+test('Recyclarr sync follows server events with only button progress and retains failures', async ({
   page,
 }, testInfo) => {
   const fixture = await installUiFixture(page, {
@@ -167,9 +167,11 @@ test('Recyclarr sync uses only button progress and retains failures', async ({
     settingsSection: 'services',
     owned: ['recyclarr'],
   });
+  const events = await installServerEvents(page);
   let state = 'queued';
   let run = '';
   let syncs = 0;
+  let reads = 0;
   await page.clock.install({ time: new Date('2026-01-01T00:00:00Z') });
   await page.route('**/api/v1/admin/stack', (route) =>
     route.fulfill({
@@ -199,8 +201,9 @@ test('Recyclarr sync uses only button progress and retains failures', async ({
       },
     }),
   );
-  await page.route('**/api/v1/admin/recyclarr', (route) =>
-    route.fulfill({
+  await page.route('**/api/v1/admin/recyclarr', (route) => {
+    reads++;
+    return route.fulfill({
       json: {
         settings: { provision_id: 'managed-recyclarr', paused: false, hour: 4 },
         runs: run
@@ -214,8 +217,8 @@ test('Recyclarr sync uses only button progress and retains failures', async ({
           : [],
         timezone: 'UTC',
       },
-    }),
-  );
+    });
+  });
   await page.route('**/api/v1/admin/recyclarr/sync', (route) => {
     run = `sync-${++syncs}`;
     return route.fulfill({ json: { id: run } });
@@ -235,10 +238,14 @@ test('Recyclarr sync uses only button progress and retains failures', async ({
     'idle',
   );
   await page.clock.pauseAt(new Date('2026-01-01T01:00:00Z'));
+  await expect.poll(events.connected).toBe(true);
   await sync.click();
+  // Job events refresh the run.
   for (const progress of ['queued', 'running', 'retrying']) {
     state = progress;
-    await page.clock.runFor(4000);
+    const before = reads;
+    events.send('jobs.changed');
+    await expect.poll(() => reads).toBeGreaterThan(before);
     await expect(sync).toBeDisabled();
     await expect(sync.locator('svg.animate-spin')).toBeVisible();
     await expect(region.getByRole('status')).toHaveCount(0);
@@ -259,8 +266,12 @@ test('Recyclarr sync uses only button progress and retains failures', async ({
       contentType: 'image/png',
     });
   }
+  // Nothing polls it.
+  const settled = reads;
+  await page.clock.runFor(60_000);
+  expect(reads).toBe(settled);
   state = 'complete';
-  await page.clock.runFor(4000);
+  events.send('recyclarr.changed');
   await expect(sync).toBeEnabled();
   await expect(region.getByRole('status')).toHaveCount(0);
   state = 'blocked';

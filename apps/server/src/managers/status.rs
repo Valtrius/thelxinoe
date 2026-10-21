@@ -213,7 +213,8 @@ struct QueuePage {
 /// episodes change only when titles are reread, so queue polls share them.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Inventory {
-    kind: String,
+    /// The service the titles were read from.
+    service: String,
     titles: Arc<BTreeMap<i64, Title>>,
     episodes: Arc<BTreeMap<i64, Vec<Episode>>>,
     queue: Vec<QueueItem>,
@@ -224,7 +225,7 @@ pub(crate) struct Inventory {
 }
 impl Inventory {
     fn new(
-        kind: &str,
+        service: &str,
         titles: Vec<Title>,
         episodes: BTreeMap<i64, Vec<Episode>>,
         queue: Vec<QueueItem>,
@@ -245,7 +246,7 @@ impl Inventory {
         let mut hasher = DefaultHasher::new();
         (&titles, &episodes).hash(&mut hasher);
         Self {
-            kind: kind.to_owned(),
+            service: service.to_owned(),
             titles: Arc::new(titles),
             episodes: Arc::new(episodes),
             queue,
@@ -256,17 +257,25 @@ impl Inventory {
     }
 }
 
-/// Every operational Radarr and Sonarr inventory, keyed by service ID.
+/// The operational Radarr and Sonarr inventories by manager kind; there is at most one
+/// service of each kind.
 #[derive(Clone, Default)]
 pub(crate) struct Snapshot {
     services: BTreeMap<String, Arc<Inventory>>,
 }
 impl Snapshot {
+    /// The inventory read from one service.
+    fn service(&self, id: &str) -> Option<&Inventory> {
+        self.services
+            .values()
+            .map(Arc::as_ref)
+            .find(|inventory| inventory.service == id)
+    }
     /// Cheap change detection over what viewers can see: queue stages and progress
     /// in coarse steps, so a running download does not refresh every page each poll.
     fn fingerprint(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
-        for (id, inventory) in &self.services {
+        for (kind, inventory) in &self.services {
             let queue = inventory
                 .queue
                 .iter()
@@ -278,7 +287,7 @@ impl Snapshot {
                     Some((r.id, r.movie_id, r.episode_id, stage as u8, step))
                 })
                 .collect::<Vec<_>>();
-            (id, &inventory.kind, inventory.library, queue).hash(&mut hasher);
+            (kind, &inventory.service, inventory.library, queue).hash(&mut hasher);
         }
         hasher.finish()
     }
@@ -393,13 +402,13 @@ async fn refresh(
     for (id, kind) in &services {
         if let Some(current) = previous
             .services
-            .get(id)
-            .filter(|inventory| &inventory.kind == kind)
+            .get(kind)
+            .filter(|inventory| &inventory.service == id)
         {
-            next.services.insert(id.clone(), current.clone());
+            next.services.insert(kind.clone(), current.clone());
         }
     }
-    for (id, _) in services {
+    for (id, kind) in services {
         let tracker = trackers.entry(id.clone()).or_default();
         // A failing manager waits out its backoff; an explicit refresh tries it now.
         if !force
@@ -409,7 +418,7 @@ async fn refresh(
         {
             continue;
         }
-        let current = next.services.get(&id).cloned();
+        let current = next.services.get(&kind).cloned();
         let polled = async {
             let s = service(state, &id).await?;
             let c = Connection::open(state, &s).await?;
@@ -419,7 +428,7 @@ async fn refresh(
         match polled {
             Ok(inventory) => {
                 tracker.recovered();
-                next.services.insert(id, Arc::new(inventory));
+                next.services.insert(kind, Arc::new(inventory));
             }
             Err(error) => {
                 if tracker.error.as_deref() != Some(error.2.as_str()) {
@@ -435,7 +444,7 @@ async fn refresh(
                             .is_some_and(|at| at.elapsed() >= STALE_QUEUE)
                 }) {
                     next.services.insert(
-                        id,
+                        kind,
                         Arc::new(Inventory {
                             queue: Vec::new(),
                             ..(*current).clone()
@@ -524,7 +533,7 @@ async fn poll(
             }
             tracker.signatures = signatures;
             tracker.refreshed = Some(std::time::Instant::now());
-            Inventory::new(&c.kind, titles, episodes, queue)
+            Inventory::new(&c.grant.service, titles, episodes, queue)
         }
     };
     tracker.queue = keys;
@@ -906,7 +915,6 @@ impl Ref {
 
 #[derive(Clone, Copy)]
 struct Found<'a> {
-    service: &'a str,
     inventory: &'a Inventory,
     title: &'a Title,
 }
@@ -917,21 +925,11 @@ fn manager(kind: &str) -> Option<&'static str> {
         _ => None,
     }
 }
-fn inventories<'a>(
-    snapshot: &'a Snapshot,
-    manager: &str,
-) -> impl Iterator<Item = (&'a str, &'a Inventory)> {
-    snapshot
-        .services
-        .iter()
-        .filter(move |(_, inventory)| inventory.kind == manager)
-        .map(|(id, inventory)| (id.as_str(), inventory.as_ref()))
-}
 /// The bound manager title, else the one with the same provider identity.
 fn find<'a>(snapshot: &'a Snapshot, manager: &str, link: &Link) -> Option<Found<'a>> {
     if let (Some(service), Some(entity)) = (&link.service_id, link.entity_id)
-        && let Some((service, inventory)) = snapshot.services.get_key_value(service)
-        && inventory.kind == manager
+        && let Some(inventory) = snapshot.services.get(manager)
+        && inventory.service == *service
         && let Some(title) = inventory.titles.get(&entity)
         && link.external_id.as_deref().is_none_or(|external| {
             let current = if manager == "radarr" {
@@ -942,11 +940,7 @@ fn find<'a>(snapshot: &'a Snapshot, manager: &str, link: &Link) -> Option<Found<
             current.map(|v| v.to_string()).as_deref() == Some(external)
         })
     {
-        return Some(Found {
-            service,
-            inventory,
-            title,
-        });
+        return Some(Found { inventory, title });
     }
     let by_tvdb = (manager == "sonarr").then_some(link.tvdb_id).flatten();
     by_tvdb
@@ -957,16 +951,14 @@ fn find<'a>(snapshot: &'a Snapshot, manager: &str, link: &Link) -> Option<Found<
         })
 }
 fn find_ref<'a>(snapshot: &'a Snapshot, manager: &str, reference: Ref) -> Option<Found<'a>> {
-    inventories(snapshot, manager).find_map(|(service, inventory)| {
-        let id = match reference {
-            Ref::Tmdb(id) => inventory.by_tmdb.get(&id),
-            Ref::Tvdb(id) => inventory.by_tvdb.get(&id),
-        }?;
-        Some(Found {
-            service,
-            inventory,
-            title: inventory.titles.get(id)?,
-        })
+    let inventory = snapshot.services.get(manager)?;
+    let id = match reference {
+        Ref::Tmdb(id) => inventory.by_tmdb.get(&id),
+        Ref::Tvdb(id) => inventory.by_tvdb.get(&id),
+    }?;
+    Some(Found {
+        inventory,
+        title: inventory.titles.get(id)?,
     })
 }
 /// A confirmed mapping in this series first, else the same season and episode numbers.
@@ -979,7 +971,7 @@ fn episode_for<'a>(
     let list = found.inventory.episodes.get(&found.title.id)?;
     mapped
         .iter()
-        .filter(|(service, _)| service == found.service)
+        .filter(|(service, _)| *service == found.inventory.service)
         .find_map(|(_, id)| list.iter().find(|e| e.id == *id))
         .or_else(|| {
             let (season, number) = (season?, number?);
@@ -1014,7 +1006,7 @@ fn artwork_url(found: Found<'_>, kind: &str, grant: &str) -> Option<String> {
     found.title.image(kind).map(|_| {
         format!(
             "/api/v1/catalog/titles/{}/{}/artwork/{kind}?grant={grant}",
-            found.service, found.title.id
+            found.inventory.service, found.title.id
         )
     })
 }
@@ -1110,7 +1102,7 @@ pub(crate) async fn virtual_titles(
     let Some(manager) = manager(kind).filter(|_| matches!(kind, "movie" | "show")) else {
         return Ok(Vec::new());
     };
-    if inventories(&snapshot, manager).next().is_none() {
+    if !snapshot.services.contains_key(manager) {
         return Ok(Vec::new());
     }
     let linked = storage::linked(&state.db, kind.to_owned()).await?;
@@ -1136,50 +1128,41 @@ fn virtual_items(
     let Some(manager) = manager(kind) else {
         return Vec::new();
     };
+    let Some(inventory) = snapshot.services.get(manager) else {
+        return Vec::new();
+    };
     let q = q.map(str::to_lowercase);
     let mut items = Vec::new();
-    // Several Radarr or Sonarr services (HD and 4K) can want the same title; it is
-    // one card, from the first service that lists it.
-    let mut shown = HashSet::new();
-    for (service, inventory) in inventories(snapshot, manager) {
-        for title in inventory.titles.values() {
-            let known = linked.entities.contains(&(service.to_owned(), title.id))
-                || title.tmdb_id.is_some_and(|id| linked.tmdb.contains(&id))
-                || (manager == "sonarr"
-                    && title.tvdb_id.is_some_and(|id| linked.tvdb.contains(&id)));
-            if !title.monitored
-                || known
-                || q.as_deref()
-                    .is_some_and(|q| !title.title.to_lowercase().contains(q))
-            {
-                continue;
-            }
-            let Some(reference) = title.reference(manager) else {
-                continue;
-            };
-            if shown.contains(&reference) {
-                continue;
-            }
-            let found = Found {
-                service,
-                inventory,
-                title,
-            };
-            let status = if manager == "radarr" {
-                movie_status(inventory, title, false, now)
-            } else {
-                show_status(found, &HashSet::new(), now)
-            };
-            if !matches!(
-                status.state,
-                Phase::Missing | Phase::Upcoming | Phase::Downloading | Phase::Queued
-            ) {
-                continue;
-            }
-            items.push(json!({"id":reference,"kind":kind,"title":title.title,"year":title.year,"available":false,"virtual":true,
-                "artwork_url":artwork_url(found,"poster",grant),"status":status.for_viewer(admin),"watched":false}));
-            shown.insert(reference);
+    for title in inventory.titles.values() {
+        let known = linked
+            .entities
+            .contains(&(inventory.service.clone(), title.id))
+            || title.tmdb_id.is_some_and(|id| linked.tmdb.contains(&id))
+            || (manager == "sonarr" && title.tvdb_id.is_some_and(|id| linked.tvdb.contains(&id)));
+        if !title.monitored
+            || known
+            || q.as_deref()
+                .is_some_and(|q| !title.title.to_lowercase().contains(q))
+        {
+            continue;
         }
+        let Some(reference) = title.reference(manager) else {
+            continue;
+        };
+        let found = Found { inventory, title };
+        let status = if manager == "radarr" {
+            movie_status(inventory, title, false, now)
+        } else {
+            show_status(found, &HashSet::new(), now)
+        };
+        if !matches!(
+            status.state,
+            Phase::Missing | Phase::Upcoming | Phase::Downloading | Phase::Queued
+        ) {
+            continue;
+        }
+        items.push(json!({"id":reference,"kind":kind,"title":title.title,"year":title.year,"available":false,"virtual":true,
+            "artwork_url":artwork_url(found,"poster",grant),"status":status.for_viewer(admin),"watched":false}));
     }
     items
 }
@@ -1445,8 +1428,7 @@ async fn artwork(
         return Err(ApiError::not_found());
     }
     let local = snapshot(&state)
-        .services
-        .get(&service_id)
+        .service(&service_id)
         .and_then(|inventory| inventory.titles.get(&entity))
         .and_then(|title| title.image(&kind))
         .map(str::to_owned)
@@ -1478,8 +1460,8 @@ async fn artwork(
 /// What decides which cached title artwork is still wanted: each service's titles.
 fn artwork_key(snapshot: &Snapshot) -> u64 {
     let mut hasher = DefaultHasher::new();
-    for (id, inventory) in &snapshot.services {
-        (id, inventory.library).hash(&mut hasher);
+    for inventory in snapshot.services.values() {
+        (&inventory.service, inventory.library).hash(&mut hasher);
     }
     hasher.finish()
 }
@@ -1504,7 +1486,7 @@ fn artwork_wanted(name: &str, snapshot: &Snapshot, configured: &HashSet<String>)
     if !configured.contains(service) {
         return false;
     }
-    let Some(inventory) = snapshot.services.get(service) else {
+    let Some(inventory) = snapshot.service(service) else {
         return true;
     };
     inventory

@@ -21,6 +21,20 @@ use std::{
 use thelxinoe_core::{Principal, Role, User, id, now};
 use thelxinoe_database::Database;
 
+/// How long sign-in credentials last, in seconds.
+pub mod lifetime {
+    const DAY: i64 = 86400;
+    /// A session ends after going this long unused; each use pushes its end back.
+    pub const SESSION_IDLE: i64 = 30 * DAY;
+    /// The longest a session or a remembered device lasts, however much it's used. Browsers
+    /// keep no cookie longer than this either.
+    pub const MAX: i64 = 400 * DAY;
+    /// A remembered device asks for two-step sign-in again after going this long unused.
+    pub const REMEMBERED_IDLE: i64 = 90 * DAY;
+    /// A browser or client stays known to an account this long after it last signed in.
+    pub const KNOWN: i64 = MAX;
+}
+
 pub fn token() -> String {
     let mut bytes = [0; 32];
     OsRng.fill_bytes(&mut bytes);
@@ -125,6 +139,8 @@ pub fn validate_credentials(username: &str, password: &str) -> Result<()> {
     }
     Ok(())
 }
+/// Runs password work on the blocking pool. The `permit`, one of the server's password slots,
+/// is held until the work ends, even if the caller stops waiting for it.
 async fn password_work<T: Send + 'static>(
     permit: Option<tokio::sync::OwnedSemaphorePermit>,
     work: impl FnOnce() -> Result<T> + Send + 'static,
@@ -135,16 +151,7 @@ async fn password_work<T: Send + 'static>(
     })
     .await?
 }
-pub async fn password_hash(password: String) -> Result<String> {
-    hash_password(password, None).await
-}
-pub async fn password_hash_with_permit(
-    password: String,
-    permit: tokio::sync::OwnedSemaphorePermit,
-) -> Result<String> {
-    hash_password(password, Some(permit)).await
-}
-async fn hash_password(
+pub async fn password_hash(
     password: String,
     permit: Option<tokio::sync::OwnedSemaphorePermit>,
 ) -> Result<String> {
@@ -156,17 +163,7 @@ async fn hash_password(
     })
     .await
 }
-pub async fn verify_password(password: String, hash: String) -> Result<bool> {
-    check_password(password, hash, None).await
-}
-pub async fn verify_password_with_permit(
-    password: String,
-    hash: String,
-    permit: tokio::sync::OwnedSemaphorePermit,
-) -> Result<bool> {
-    check_password(password, hash, Some(permit)).await
-}
-async fn check_password(
+pub async fn verify_password(
     password: String,
     hash: String,
     permit: Option<tokio::sync::OwnedSemaphorePermit>,
@@ -302,6 +299,67 @@ mod tests {
         db.shutdown().await?;
         Ok(())
     }
+    // A session in use keeps going until the cap, a remembered one included, and its device
+    // stays in use with it; left unused, it ends.
+    #[tokio::test]
+    async fn using_a_session_slides_its_end_up_to_the_cap() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let db = Database::open(temp.path().join("auth.db"))?;
+        db.write("test.fixture", |db| {
+            db.execute("INSERT INTO users(id,username,password_hash,role,created_at) VALUES ('user','reader','unused','user',1)", [])?;
+            db.execute("INSERT INTO auth_remembered_devices(id,user_id,token_hash,name,created_at,last_seen) VALUES ('laptop','user','remembered','Laptop',1,1)", [])?;
+            Ok(())
+        })
+        .await?;
+        let token = issue_session(
+            &db,
+            SessionAuthorization::Verified {
+                user_id: "user".into(),
+                auth_version: 0,
+                verified_at: 0,
+                remembered_device_id: Some("laptop".into()),
+            },
+            "device".into(),
+            "test".into(),
+        )
+        .await?
+        .unwrap();
+        let set = |sql: &'static str| {
+            let db = db.clone();
+            async move {
+                db.write("test.age", move |db| Ok(db.execute(sql, [now()])?))
+                    .await
+            }
+        };
+        let ends = || async {
+            db.read("test.ends", |db| {
+                Ok(db.query_row(
+                    "SELECT s.expires_at-?1,s.created_at,d.last_seen FROM sessions s JOIN auth_remembered_devices d ON d.id=s.remembered_device_id",
+                    [now()],
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
+                )?)
+            })
+            .await
+        };
+        let near = |left: i64, expected: i64| (left - expected).abs() <= 5;
+        assert!(near(ends().await?.0, lifetime::SESSION_IDLE));
+        // A day before its end, using it pushes the end back by a whole idle lifetime.
+        set("UPDATE sessions SET last_seen=?1-29*86400,expires_at=?1+86400").await?;
+        assert!(resolve(&db, &token, "device").await?.is_some());
+        let (left, _, device) = ends().await?;
+        assert!(near(left, lifetime::SESSION_IDLE), "{left}");
+        assert!(near(device, now()));
+        // Near the cap, use can't push it past.
+        set("UPDATE sessions SET created_at=?1-399*86400,last_seen=?1-120").await?;
+        assert!(resolve(&db, &token, "device").await?.is_some());
+        let (left, created, _) = ends().await?;
+        assert!(near(left + now(), created + lifetime::MAX));
+        assert!(left < lifetime::SESSION_IDLE);
+        set("UPDATE sessions SET expires_at=?1-1").await?;
+        assert!(resolve(&db, &token, "device").await?.is_none());
+        db.shutdown().await?;
+        Ok(())
+    }
     #[test]
     fn secret_is_persistent_authenticated_and_bound_to_scope() -> Result<()> {
         let dir = tempfile::tempdir()?;
@@ -318,11 +376,11 @@ mod tests {
     }
     #[tokio::test]
     async fn passwords_are_salted_and_verified() -> Result<()> {
-        let a = password_hash("long passphrase".into()).await?;
-        let b = password_hash("long passphrase".into()).await?;
+        let a = password_hash("long passphrase".into(), None).await?;
+        let b = password_hash("long passphrase".into(), None).await?;
         assert_ne!(a, b);
-        assert!(verify_password("long passphrase".into(), a.clone()).await?);
-        assert!(!verify_password("wrong".into(), a).await?);
+        assert!(verify_password("long passphrase".into(), a.clone(), None).await?);
+        assert!(!verify_password("wrong".into(), a, None).await?);
         Ok(())
     }
     #[test]

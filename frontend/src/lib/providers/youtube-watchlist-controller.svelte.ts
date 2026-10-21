@@ -1,10 +1,7 @@
 import { SvelteDate, SvelteMap, SvelteSet } from 'svelte/reactivity';
 import { api, normalizeError } from './api';
 import { dismissToastByKey, showToast } from './toasts';
-import {
-  KeyedAsyncQueue,
-  watchlistVideoTransitionedToWatched,
-} from './youtube-watchlists';
+import { KeyedAsyncQueue } from './youtube-watchlists';
 import type {
   AppError,
   YoutubeVideo,
@@ -26,11 +23,6 @@ export function createYoutubeWatchlists(savedSelectedWatchlistId: number) {
   );
   const downloadBusyIds = new SvelteSet<string>();
   const pendingManualWatchedVideoIds = new SvelteSet<string>();
-  const deferredWatchlistRemovals = new SvelteMap<
-    string,
-    { timer: number; deadline: number; version: number }
-  >();
-  const autoRemoveVersions = new SvelteMap<string, number>();
   const watchlistMembershipIntent = new SvelteMap<string, boolean>();
   const watchlistMembershipQueue = new KeyedAsyncQueue();
   const localAdditions = new SvelteMap<
@@ -80,51 +72,6 @@ export function createYoutubeWatchlists(savedSelectedWatchlistId: number) {
   const watchlistUpdateVersions = new SvelteMap<number, number>();
   const watchlistUpdateQueues = new SvelteMap<number, Promise<void>>();
   let watchlistLoadSequence = 0;
-  const activeRemovals = new SvelteSet<Promise<boolean>>();
-
-  function trackRemoval(videoId: string, version: number) {
-    const operation = removeFromAutoRemoveWatchlists(videoId, version);
-    activeRemovals.add(operation);
-    void operation.finally(() => activeRemovals.delete(operation));
-    return operation;
-  }
-  function takeDeferredWatchlistRemovals(): Array<{
-    videoId: string;
-    remainingDelay: number;
-    version: number;
-  }> {
-    const removals = [...deferredWatchlistRemovals].map(
-      ([videoId, removal]) => ({
-        videoId,
-        remainingDelay: Math.max(0, removal.deadline - Date.now()),
-        version: removal.version,
-      }),
-    );
-    for (const removal of deferredWatchlistRemovals.values()) {
-      window.clearTimeout(removal.timer);
-    }
-    deferredWatchlistRemovals.clear();
-    return removals;
-  }
-
-  async function flushWatchlistRemovals(): Promise<boolean> {
-    const removals = takeDeferredWatchlistRemovals();
-    const results = await Promise.allSettled([
-      ...activeRemovals,
-      ...removals.map(({ videoId, version }) => trackRemoval(videoId, version)),
-    ]);
-    const saved = results.every(
-      (result) => result.status === 'fulfilled' && result.value,
-    );
-    if (!saved) {
-      for (const { videoId, remainingDelay } of removals) {
-        if (hasAutoRemoveWatchlistItem(videoId)) {
-          scheduleDeferredWatchlistRemoval(videoId, remainingDelay);
-        }
-      }
-    }
-    return saved;
-  }
 
   async function loadWatchlists(
     preferredId = selectedWatchlistId,
@@ -194,141 +141,8 @@ export function createYoutubeWatchlists(savedSelectedWatchlistId: number) {
     }));
   }
 
-  function hasAutoRemoveWatchlistItem(videoId: string) {
-    return displayedWatchlists.some(
-      (watchlist) =>
-        watchlist.autoRemoveWatched &&
-        watchlist.items.some((item) => item.video.videoId === videoId),
-    );
-  }
-
   function membershipKey(watchlistId: number, videoId: string) {
     return `${watchlistId}:${videoId}`;
-  }
-
-  function nextAutoRemoveVersion(videoId: string) {
-    const version = (autoRemoveVersions.get(videoId) ?? 0) + 1;
-    autoRemoveVersions.set(videoId, version);
-    return version;
-  }
-
-  function cancelDeferredWatchlistRemoval(videoId: string): number | null {
-    const removal = deferredWatchlistRemovals.get(videoId);
-    if (!removal) return null;
-    window.clearTimeout(removal.timer);
-    deferredWatchlistRemovals.delete(videoId);
-    return Math.max(0, removal.deadline - Date.now());
-  }
-
-  function invalidateDeferredWatchlistRemoval(videoId: string): number | null {
-    const remainingDelay = cancelDeferredWatchlistRemoval(videoId);
-    nextAutoRemoveVersion(videoId);
-    return remainingDelay;
-  }
-
-  function scheduleDeferredWatchlistRemoval(
-    videoId: string,
-    delayMs = manualWatchFilterDelayMs,
-  ) {
-    cancelDeferredWatchlistRemoval(videoId);
-    const version = nextAutoRemoveVersion(videoId);
-    const timer = window.setTimeout(() => {
-      deferredWatchlistRemovals.delete(videoId);
-      if (hasAutoRemoveWatchlistItem(videoId))
-        void trackRemoval(videoId, version);
-    }, delayMs);
-    deferredWatchlistRemovals.set(videoId, {
-      timer,
-      deadline: Date.now() + delayMs,
-      version,
-    });
-  }
-
-  async function removeFromAutoRemoveWatchlists(
-    videoId: string,
-    version: number,
-  ): Promise<boolean> {
-    error = null;
-    watchlistLoadSequence += 1;
-    const snapshots = displayedWatchlists
-      .filter(
-        (watchlist) =>
-          watchlist.autoRemoveWatched &&
-          watchlist.items.some((item) => item.video.videoId === videoId),
-      )
-      .map((watchlist) => ({
-        watchlistId: watchlist.id,
-        manualPosition: watchlist.items.find(
-          (item) => item.video.videoId === videoId,
-        )!.manualPosition,
-      }));
-    if (snapshots.length === 0) return true;
-
-    try {
-      const outcomes = await Promise.all(
-        snapshots.map(async ({ watchlistId }) => {
-          const key = membershipKey(watchlistId, videoId);
-          const removed = await watchlistMembershipQueue.run(key, async () => {
-            if (autoRemoveVersions.get(videoId) !== version) return false;
-            await api.removeYoutubeVideoFromWatchlist(watchlistId, videoId);
-            return true;
-          });
-          if (!removed) return { watchlistId, stale: true };
-          return {
-            watchlistId,
-            stale: autoRemoveVersions.get(videoId) !== version,
-          };
-        }),
-      );
-
-      const removalWasInvalidated =
-        autoRemoveVersions.get(videoId) !== version ||
-        outcomes.some((outcome) => outcome.stale);
-      if (removalWasInvalidated) {
-        await Promise.all(
-          snapshots.map(async ({ watchlistId, manualPosition }) => {
-            const key = membershipKey(watchlistId, videoId);
-            if (watchlistMembershipIntent.get(key) === false) return;
-            await watchlistMembershipQueue.run(key, async () => {
-              if (watchlistMembershipIntent.get(key) === false) return;
-              await api.addYoutubeVideoToWatchlist(
-                watchlistId,
-                videoId,
-                manualPosition,
-              );
-            });
-          }),
-        );
-        await loadWatchlists(selectedWatchlistId, false);
-        return true;
-      }
-
-      for (const { watchlistId } of snapshots) {
-        localAdditions.delete(membershipKey(watchlistId, videoId));
-        watchlistMembershipIntent.set(
-          membershipKey(watchlistId, videoId),
-          false,
-        );
-      }
-      watchlists = watchlists.map((watchlist) => {
-        if (
-          !snapshots.some((snapshot) => snapshot.watchlistId === watchlist.id)
-        ) {
-          return watchlist;
-        }
-        return {
-          ...watchlist,
-          items: watchlist.items.filter(
-            (item) => item.video.videoId !== videoId,
-          ),
-        };
-      });
-      return true;
-    } catch (caught) {
-      await loadWatchlists(selectedWatchlistId, false);
-      error = normalizeError(caught);
-      return false;
-    }
   }
 
   async function addToWatchlist(
@@ -543,39 +357,20 @@ export function createYoutubeWatchlists(savedSelectedWatchlistId: number) {
     }
   }
 
+  // A watched video stays in an auto-remove watchlist, faded, until the server
+  // removes it a few seconds later and its event reloads the lists.
   function applyProgress(progress: YoutubeProgressEvent): boolean {
     const manual = pendingManualWatchedVideoIds.delete(progress.videoId);
-    const remove = watchlistVideoTransitionedToWatched(
-      displayedWatchlists,
-      progress.videoId,
-      progress.isWatched,
-    );
-    if (!progress.isWatched)
-      invalidateDeferredWatchlistRemoval(progress.videoId);
     updateWatchlistVideo(progress.videoId, (video) => ({
       ...video,
       positionSeconds: progress.positionSeconds,
       watchedPercentage: progress.watchedPercentage,
       isWatched: progress.isWatched,
     }));
-    if (remove) {
-      if (manual) scheduleDeferredWatchlistRemoval(progress.videoId);
-      else {
-        for (const watchlist of watchlists) {
-          if (watchlist.autoRemoveWatched) {
-            localAdditions.delete(
-              membershipKey(watchlist.id, progress.videoId),
-            );
-          }
-        }
-        void loadWatchlists();
-      }
-    }
     return manual;
   }
   function reset() {
     watchlistLoadSequence += 1;
-    takeDeferredWatchlistRemovals();
     pendingManualWatchedVideoIds.clear();
     localAdditions.clear();
     localOrders.clear();
@@ -601,12 +396,8 @@ export function createYoutubeWatchlists(savedSelectedWatchlistId: number) {
     get pendingManualWatchedVideoIds() {
       return pendingManualWatchedVideoIds;
     },
-    flushWatchlistRemovals,
     loadWatchlists,
     updateWatchlistVideo,
-    hasAutoRemoveWatchlistItem,
-    invalidateDeferredWatchlistRemoval,
-    scheduleDeferredWatchlistRemoval,
     addToWatchlist,
     isAddingToWatchlist(watchlistId: number, videoId: string) {
       return (

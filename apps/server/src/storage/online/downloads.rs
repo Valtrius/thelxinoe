@@ -136,13 +136,17 @@ pub(super) async fn recover_downloads(db: &Database) -> anyhow::Result<()> {
     .await
 }
 
+/// The next download to attempt, other than the `parked` ones, and whether it was waiting
+/// for space.
 pub(super) async fn claim_download(
     db: &Database,
-) -> anyhow::Result<Option<(String, String, String)>> {
-    db.write("online.downloads.claim_download", |db| {
+    parked: Vec<String>,
+) -> anyhow::Result<Option<(String, String, String, bool)>> {
+    let parked = serde_json::to_string(&parked)?;
+    db.write("online.downloads.claim_download", move |db| {
         let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let row=tx.query_row("SELECT video_id,generation,tools FROM youtube_downloads d WHERE state IN ('queued','waiting_for_space') AND (EXISTS(SELECT 1 FROM youtube_video_state s WHERE s.video_id=d.video_id AND (s.watchlist=1 OR s.pinned=1)) OR EXISTS(SELECT 1 FROM youtube_download_requests r WHERE r.video_id=d.video_id)) ORDER BY updated_at LIMIT 1",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional()?;
-        if let Some((video,_,_))=&row {tx.execute("UPDATE youtube_downloads SET state='downloading',updated_at=?2 WHERE video_id=?1",params![video,now()])?;}
+        let row=tx.query_row("SELECT video_id,generation,tools,state='waiting_for_space' FROM youtube_downloads d WHERE state IN ('queued','waiting_for_space') AND video_id NOT IN (SELECT value FROM json_each(?1)) AND (EXISTS(SELECT 1 FROM youtube_video_state s WHERE s.video_id=d.video_id AND (s.watchlist=1 OR s.pinned=1)) OR EXISTS(SELECT 1 FROM youtube_download_requests r WHERE r.video_id=d.video_id)) ORDER BY updated_at LIMIT 1",[parked],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,bool>(3)?))).optional()?;
+        if let Some((video,..))=&row {tx.execute("UPDATE youtube_downloads SET state='downloading',updated_at=?2 WHERE video_id=?1",params![video,now()])?;}
         tx.commit()?;Ok(row)
     }).await
 }

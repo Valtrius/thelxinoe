@@ -92,7 +92,7 @@ async fn start(
     accounts::allow_password_attempt(&state, format!("passkey:{}", context.bucket())).await?;
     if input.purpose == "verify" {
         let p = security::principal(&state, &headers).await?;
-        let account = storage::account(&state.db, p.user.id.clone(), false)
+        let account = storage::account(&state.db, p.user.id.clone())
             .await?
             .ok_or_else(ApiError::unauthorized)?;
         let passkeys = credentials(&state, &account.id).await?;
@@ -180,7 +180,7 @@ async fn finish(
     if !authentication.user_verified() {
         return Err(ApiError::unauthorized());
     }
-    let account = storage::account(&state.db, user.clone(), false)
+    let account = storage::account(&state.db, user.clone())
         .await?
         .ok_or_else(unknown_passkey)?;
     if verify && a.version != Some(account.version) {
@@ -220,7 +220,9 @@ async fn finish(
                 device_name: None,
             }
             .credentials(),
+            &headers,
             context.secure,
+            None,
         )
         .await
     }
@@ -257,7 +259,7 @@ async fn register_start(
         let p = security::principal(&state, &headers).await?;
         require_fresh(&state, &p).await?;
         (
-            storage::account(&state.db, p.user.id.clone(), false)
+            storage::account(&state.db, p.user.id.clone())
                 .await?
                 .ok_or_else(ApiError::unauthorized)?,
             Some(p),

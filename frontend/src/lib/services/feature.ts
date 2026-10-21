@@ -434,7 +434,7 @@ export type TransferView = {
     stage: string;
     boundary_at: number | null;
     completed: boolean;
-    source: { stopped: boolean; restart_disabled: boolean; removed: boolean };
+    source: { restart_disabled: boolean; removed: boolean };
     command?: { operation: string; phase: string; state: string } | null;
   } | null;
 };

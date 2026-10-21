@@ -14,9 +14,9 @@ pub(super) fn router() -> Router<AppState> {
         .route("/api/v1/auth/oidc/start", post(start))
         .route("/api/v1/auth/oidc/callback", get(callback))
 }
-fn http() -> Result<openidconnect::reqwest::Client> {
-    openidconnect::reqwest::Client::builder()
-        .redirect(openidconnect::reqwest::redirect::Policy::none())
+fn http() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(anyhow::Error::from)
@@ -56,10 +56,11 @@ async fn metadata(discovery: &str, expected: Option<&str>) -> Result<CoreProvide
     if !response.status().is_success() {
         return Err(ApiError::bad("OIDC discovery failed"));
     }
-    let bytes = response.bytes().await.map_err(anyhow::Error::from)?;
-    if bytes.len() > 1024 * 1024 {
-        return Err(ApiError::bad("OIDC discovery is too large"));
-    }
+    // Discovery runs on every unauthenticated sign-in start, so a wrong or hostile URL must
+    // not get to make the server buffer whatever it sends.
+    let (_, _, bytes) = crate::bounded::response(response)
+        .await
+        .map_err(|_| ApiError::bad("OIDC discovery is too large or incomplete"))?;
     let metadata: CoreProviderMetadata = serde_json::from_slice(&bytes)
         .map_err(|_| ApiError::bad("Invalid OIDC discovery document"))?;
     if expected.is_some_and(|iss| iss != metadata.issuer().as_str()) {
@@ -82,10 +83,9 @@ async fn metadata(discovery: &str, expected: Option<&str>) -> Result<CoreProvide
     if !response.status().is_success() {
         return Err(ApiError::bad("OIDC signing keys are unavailable"));
     }
-    let bytes = response.bytes().await.map_err(anyhow::Error::from)?;
-    if bytes.len() > 1024 * 1024 {
-        return Err(ApiError::bad("OIDC signing keys are too large"));
-    }
+    let (_, _, bytes) = crate::bounded::response(response)
+        .await
+        .map_err(|_| ApiError::bad("OIDC signing keys are too large or incomplete"))?;
     let keys: CoreJsonWebKeySet =
         serde_json::from_slice(&bytes).map_err(|_| ApiError::bad("Invalid OIDC signing keys"))?;
     Ok(metadata.set_jwks(keys))
@@ -216,7 +216,7 @@ async fn start(
         require_fresh(&state, p.as_ref().unwrap()).await?;
     }
     let account = if let Some(p) = &p {
-        storage::account(&state.db, p.user.id.clone(), false).await?
+        storage::account(&state.db, p.user.id.clone()).await?
     } else {
         None
     };
@@ -270,7 +270,12 @@ async fn start(
         .url();
     let mut response = Json(json!({"url":url.to_string()})).into_response();
     // Only this one-use binding crosses the identity-provider redirect; the app session remains Strict.
-    response.headers_mut().append(header::SET_COOKIE,format!("thelxinoe_oidc={binding}; HttpOnly; SameSite=Lax; Path=/api/v1/auth/oidc; Max-Age=300{}",if context.secure{"; Secure"}else{""}).parse().unwrap());
+    cookies::set(
+        response.headers_mut(),
+        &Cookie::Oidc,
+        &binding,
+        context.secure,
+    );
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
@@ -291,7 +296,7 @@ async fn complete(
     let a = storage::attempt(&state.db, digest(&input.state), "oidc".into(), false)
         .await
         .map_err(failure)?;
-    let binding = cookie_value(headers, "thelxinoe_oidc").ok_or_else(ApiError::unauthorized)?;
+    let binding = cookies::get(headers, &Cookie::Oidc).ok_or_else(ApiError::unauthorized)?;
     if a.binding.as_deref() != Some(&digest(&binding)) {
         return Err(ApiError::unauthorized());
     }
@@ -321,13 +326,14 @@ async fn complete(
         Some(ClientSecret::new(secret)),
     )
     .set_redirect_uri(RedirectUrl::new(pending.redirect).map_err(anyhow::Error::from)?);
+    let http = http()?;
     let response = client
         .exchange_code(AuthorizationCode::new(
             input.code.clone().ok_or_else(ApiError::unauthorized)?,
         ))
         .map_err(|_| ApiError::bad("OIDC code exchange is unavailable"))?
         .set_pkce_verifier(PkceCodeVerifier::new(pending.pkce))
-        .request_async(&http()?)
+        .request_async(&|request| crate::bounded::oauth(http.clone(), request))
         .await
         .map_err(|_| ApiError::bad("OIDC code exchange failed"))?;
     let id_token = response
@@ -378,12 +384,14 @@ async fn complete(
                 device_name: None,
             }
             .credentials(),
+            headers,
             secure,
+            None,
         )
         .await?
     } else {
         let user = a.user.ok_or_else(ApiError::unauthorized)?;
-        let account = storage::account(&state.db, user, false)
+        let account = storage::account(&state.db, user)
             .await?
             .ok_or_else(ApiError::unauthorized)?;
         if a.version != Some(account.version) {
@@ -454,7 +462,9 @@ async fn callback(
     headers: HeaderMap,
     Query(input): Query<Callback>,
 ) -> Response {
-    let result = match security::request_context(&state.config, &headers, peer) {
+    let context = security::request_context(&state.config, &headers, peer);
+    let secure = context.as_ref().is_ok_and(|c| c.secure);
+    let result = match context {
         Ok(context) => complete(&state, &headers, &input, context.secure).await,
         Err(e) => Err(e),
     };
@@ -466,14 +476,42 @@ async fn callback(
             axum::response::Redirect::to(&format!("/?{}", url.query().unwrap())).into_response()
         }
     };
-    response.headers_mut().append(
-        header::SET_COOKIE,
-        "thelxinoe_oidc=; HttpOnly; SameSite=Lax; Path=/api/v1/auth/oidc; Max-Age=0"
-            .parse()
-            .unwrap(),
-    );
+    cookies::clear(response.headers_mut(), &Cookie::Oidc, secure);
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // A discovery URL that never stops sending is refused once it passes 1 MiB, instead of
+    // being buffered until the request times out.
+    #[tokio::test]
+    async fn endless_discovery_is_refused_once_it_grows_too_large() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let _ = socket.read(&mut [0; 1024]).await;
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n")
+                .await
+                .unwrap();
+            let chunk = vec![b' '; 64 * 1024];
+            while socket.write_all(&chunk).await.is_ok() {}
+        });
+        let started = std::time::Instant::now();
+        let error = metadata(
+            &format!("http://{address}/.well-known/openid-configuration"),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(error.2, "OIDC discovery is too large or incomplete");
+    }
 }

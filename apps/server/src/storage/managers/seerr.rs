@@ -49,6 +49,3 @@ pub(super) async fn auto_approve(db: &Database, user: String) -> anyhow::Result<
     })
     .await
 }
-pub(super) async fn managers(db: &Database) -> anyhow::Result<Vec<String>> {
-    db.read("seerr.managers", |db| Ok(db.prepare("SELECT id FROM manager_services WHERE operational=1 AND kind IN ('radarr','sonarr') ORDER BY kind")?.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?)).await
-}

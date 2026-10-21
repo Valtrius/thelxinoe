@@ -105,6 +105,10 @@ test('poster and video density stay independent across settings, all views and r
     await expect(group).toContainText('12 columns');
     await expect(smaller).toBeDisabled();
   }
+  // Rapid clicks save their last value once input pauses.
+  await expect
+    .poll(fixture.savedAppearance)
+    .toMatchObject({ poster_columns: 12, video_columns: 12 });
   await page.reload();
   await expect(poster).toContainText('12 columns');
   await expect(video).toContainText('12 columns');

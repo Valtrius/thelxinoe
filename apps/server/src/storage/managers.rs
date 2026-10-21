@@ -10,6 +10,22 @@ pub(super) async fn list(db: &Database) -> anyhow::Result<Vec<Value>> {
     db.read("managers.list", |db| { let urls = access::launch_urls(db)?; let native = access::native_urls(db)?; Ok(db.prepare("SELECT id,name,kind,container_id,port,version,defaults,checked_at,error,url_base,COALESCE((SELECT value='true' FROM settings WHERE key='manager.retention.'||manager_services.id),EXISTS(SELECT 1 FROM stack_provisions WHERE service_id=manager_services.id AND origin='installed')),operational,verified,engine,container_name FROM manager_services WHERE enabled=1 ORDER BY kind,name")?.query_map([],|r|Ok(json!({"id":r.get::<_,String>(0)?,"name":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"container_id":r.get::<_,String>(3)?,"port":r.get::<_,u16>(4)?,"version":r.get::<_,String>(5)?,"defaults":serde_json::from_str::<Value>(&r.get::<_,String>(6)?).unwrap_or(Value::Null),"checked_at":r.get::<_,i64>(7)?,"error":r.get::<_,Option<String>>(8)?,"url_base":r.get::<_,String>(9)?,"retention_enabled":r.get::<_,bool>(10)?,"operational":r.get::<_,bool>(11)?,"verified":r.get::<_,bool>(12)?,"engine":r.get::<_,String>(13)?,"container_name":r.get::<_,String>(14)?,"native_url":native.get(&r.get::<_,String>(0)?),"access_url":if r.get::<_,bool>(11)? {urls.get(&r.get::<_,String>(0)?)} else {None}})))?.collect::<rusqlite::Result<Vec<_>>>()?)}).await
 }
 
+pub(super) async fn service_for_kind(
+    kind: String,
+    db: &Database,
+) -> anyhow::Result<Option<String>> {
+    db.read("managers.service_for_kind", move |db| {
+        Ok(db
+            .query_row(
+                "SELECT id FROM manager_services WHERE operational=1 AND kind=?1",
+                [kind],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?)
+    })
+    .await
+}
+
 pub(super) async fn register_with_actor_read_manager_services(
     kind: String,
     db: &Database,

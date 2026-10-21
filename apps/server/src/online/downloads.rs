@@ -16,8 +16,9 @@ use axum::{
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     path::PathBuf,
-    time::{Duration, UNIX_EPOCH},
+    time::{Duration, Instant, UNIX_EPOCH},
 };
 use thelxinoe_core::{Capability, Principal, now};
 use thelxinoe_playback::Source;
@@ -171,37 +172,87 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
     // The exclusive server state lock means a prior downloading owner is gone.
     storage::recover_downloads(&state.db).await?;
     state.tools.wait_ready().await;
+    let mut parked = Parked::new();
     loop {
         if enabled(&state).await? {
-            let job = storage::claim_download(&state.db).await?;
-            if let Some((video, generation, bundle)) = job {
-                let outcome = download(&state, &video, &generation, &bundle).await;
-                let status = outcome.unwrap_or("failed");
-                if status != "ready" {
-                    // No playback can reference a generation until it is ready.
-                    let path = state
-                        .config
-                        .cache
-                        .join("youtube")
-                        .join(&video)
-                        .join(&generation);
-                    if let Ok(root) = state.config.cache.join("youtube").canonicalize() {
-                        let expected = root.join(&video).join(&generation);
-                        if path.canonicalize().ok().as_ref() == Some(&expected) {
-                            let _ = tokio::fs::remove_dir_all(&expected).await;
-                        }
-                    }
-                }
-                let completed_video = video.clone();
-                storage::finish_download(status, video, generation, &state.db).await?;
-                publish_progress(&state, &completed_video).await?;
-                state
-                    .emit(None, "online.download.changed", json!({}))
-                    .await?;
-            }
+            next(&state, &mut parked).await?;
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
+}
+
+/// Free disk space a download needs to start.
+const START_SPACE: u64 = 3 * 1024 * 1024 * 1024;
+/// A download is bounded by its progress, not its length, so slow links still finish:
+/// yt-dlp reports progress every second while bytes arrive, and reports its retries.
+const STALLED: Duration = Duration::from_secs(300);
+/// A safety bound only: a 2 GB download at about 400 kbit/s.
+const LONGEST: Duration = Duration::from_secs(12 * 3600);
+/// A download waiting for space is tried again after this long even when its capacity looks
+/// unchanged, for changes `capacity` can't see.
+const RECHECK: Duration = Duration::from_secs(300);
+/// Downloads waiting for space, by video: the capacity they last waited at, and when to try
+/// them again regardless.
+type Parked = HashMap<String, (Capacity, Instant)>;
+type Capacity = ([i64; 4], bool);
+
+async fn capacity(state: &AppState) -> anyhow::Result<Capacity> {
+    Ok((
+        crate::auto_delete::capacity(&state.db).await?,
+        fs2::available_space(&state.config.cache).is_ok_and(|free| free > START_SPACE),
+    ))
+}
+
+/// Attempts the next download. One waiting for space is only tried again once the capacity
+/// it waits on changes, and a retry that still waits announces nothing.
+async fn next(state: &AppState, parked: &mut Parked) -> anyhow::Result<()> {
+    if !parked.is_empty() {
+        let current = capacity(state).await?;
+        parked.retain(|_, (seen, until)| *seen == current && Instant::now() < *until);
+    }
+    let job = storage::claim_download(&state.db, parked.keys().cloned().collect()).await?;
+    let Some((video, generation, bundle, waiting)) = job else {
+        return Ok(());
+    };
+    let admitted = crate::auto_delete::admit(state, &video, &generation).await;
+    let status = match admitted {
+        Ok(true) => download(state, &video, &generation, &bundle)
+            .await
+            .unwrap_or("failed"),
+        Ok(false) => "waiting_for_space",
+        Err(_) => "failed",
+    };
+    if status != "ready" {
+        // No playback can reference a generation until it is ready.
+        let path = state
+            .config
+            .cache
+            .join("youtube")
+            .join(&video)
+            .join(&generation);
+        if let Ok(root) = state.config.cache.join("youtube").canonicalize() {
+            let expected = root.join(&video).join(&generation);
+            if path.canonicalize().ok().as_ref() == Some(&expected) {
+                let _ = tokio::fs::remove_dir_all(&expected).await;
+            }
+        }
+    }
+    storage::finish_download(status, video.clone(), generation, &state.db).await?;
+    if status == "waiting_for_space" {
+        parked.insert(
+            video.clone(),
+            (capacity(state).await?, Instant::now() + RECHECK),
+        );
+        // A retry that still can't start changed nothing clients see.
+        if waiting && matches!(admitted, Ok(false)) {
+            return Ok(());
+        }
+    }
+    publish_progress(state, &video).await?;
+    state
+        .emit(None, "online.download.changed", json!({}))
+        .await?;
+    Ok(())
 }
 
 fn parse_progress(line: &str) -> Option<(i64, Option<i64>, Option<i64>, &'static str)> {
@@ -249,9 +300,6 @@ async fn download(
     generation: &str,
     bundle: &str,
 ) -> anyhow::Result<&'static str> {
-    if !crate::auto_delete::admit(state, video, generation).await? {
-        return Ok("waiting_for_space");
-    }
     state
         .emit(None, "online.download.changed", json!({}))
         .await?;
@@ -270,7 +318,7 @@ async fn download(
         .join(generation);
     tokio::fs::create_dir_all(&directory).await?;
     let directory = directory.canonicalize()?;
-    if fs2::available_space(&directory)? <= 3 * 1024 * 1024 * 1024 {
+    if fs2::available_space(&directory)? <= START_SPACE {
         return Ok("waiting_for_space");
     }
     let target = directory.join("media.mp4");
@@ -315,7 +363,8 @@ async fn download(
             state.tools.temporary()?,
             &bundle.yt_dlp.path,
             &args,
-            Duration::from_secs(1800),
+            STALLED,
+            LONGEST,
             1024 * 1024,
             Some(progress_tx),
         );

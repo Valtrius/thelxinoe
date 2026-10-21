@@ -42,6 +42,11 @@ pub(crate) async fn admit(state: &AppState, video: &str, generation: &str) -> an
     .await
 }
 
+/// Changes when admitting a download that waits for space may have a different outcome.
+pub(crate) async fn capacity(db: &Database) -> anyhow::Result<[i64; 4]> {
+    storage::capacity(db).await
+}
+
 pub(crate) async fn budget(db: &Database, video: String) -> anyhow::Result<i64> {
     storage::budget(db, video).await
 }

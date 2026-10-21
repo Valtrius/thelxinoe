@@ -188,6 +188,119 @@ async fn cleanup_cannot_remove_a_run_published_after_its_snapshot() {
     pipelines.stop("new").await;
 }
 
+// A seek drops the request preparing a segment mid-conversion. Its partial output must go
+// with it, or it counts against the run's work and cache limits until playback stops.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_abandoned_segment_leaves_no_partial_output() {
+    use std::io::Write;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let tools = thelxinoe_tools::Runtime::new(root.to_path_buf());
+    tool_runtime::install(&tools, root);
+    // A pipe holding the first nine seconds of an 18-second µ-law WAV, small enough for its
+    // buffer: converting the second segment starts writing output, then waits for input
+    // that never comes.
+    let media = root.join("source.wav");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&media)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut pipe = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&media)
+        .unwrap();
+    let rate = 4000u32;
+    let mut wav = Vec::new();
+    for chunk in [
+        &b"RIFF"[..],
+        &(36 + rate * 18).to_le_bytes(),
+        b"WAVEfmt ",
+        &16u32.to_le_bytes(),
+        &7u16.to_le_bytes(),
+        &1u16.to_le_bytes(),
+        &rate.to_le_bytes(),
+        &rate.to_le_bytes(),
+        &1u16.to_le_bytes(),
+        &8u16.to_le_bytes(),
+        b"data",
+        &(rate * 18).to_le_bytes(),
+    ] {
+        wav.extend_from_slice(chunk);
+    }
+    wav.resize(wav.len() + rate as usize * 9, 0xff);
+    pipe.write_all(&wav).unwrap();
+    let meta = std::fs::metadata(&media).unwrap();
+    let source = Source {
+        id: "source".into(),
+        media_id: "media".into(),
+        generation: "generation".into(),
+        edition: "default".into(),
+        path: media,
+        root: root.into(),
+        size: meta.len(),
+        modified: meta
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .to_string(),
+        probe: serde_json::json!({"format":{"duration":"18"},"streams":[{"index":0,"codec_type":"audio","codec_name":"pcm_s16le"}]}),
+    };
+    let options = Options {
+        quality: "auto".into(),
+        audio: None,
+        subtitle: None,
+        capabilities: Capabilities::default(),
+    };
+    let pipelines = Arc::new(Pipelines::open(&root.join("cache"), tools).await.unwrap());
+    let (revision, _) = pipelines
+        .start_vod("session", &source, &options, "transcode")
+        .await
+        .unwrap();
+    let directory = pipelines
+        .file("session", &revision, "index.m3u8")
+        .await
+        .unwrap()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let request = {
+        let pipelines = pipelines.clone();
+        let revision = revision.clone();
+        tokio::spawn(async move {
+            pipelines
+                .file("session", &revision, "segment-000001.ts")
+                .await
+        })
+    };
+    let partial = directory.join("segment-000001.tmp");
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while !partial.exists() {
+            assert!(!request.is_finished(), "The conversion ended early");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("The conversion never wrote its output");
+    request.abort();
+    assert!(request.await.unwrap_err().is_cancelled());
+    let left: Vec<_> = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "index.m3u8")
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+    pipelines.stop("session").await;
+    drop(pipe);
+}
+
 // A remux reads the whole file once to find its keyframes; later starts of the same file
 // generation reuse the index instead of reading it again.
 #[tokio::test]

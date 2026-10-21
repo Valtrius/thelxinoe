@@ -792,25 +792,11 @@
   async function markUnwatched(video: YoutubeVideo) {
     watchlistController.pendingManualWatchedVideoIds.delete(video.videoId);
     const remainingDelay = cancelDeferredWatchedRemoval(video.videoId);
-    const remainingWatchlistDelay =
-      watchlistController.invalidateDeferredWatchlistRemoval(video.videoId);
     const succeeded = await mutate(() =>
       api.markYoutubeUnwatched(video.videoId),
     );
-    if (!succeeded) {
-      if (remainingDelay !== null) {
-        scheduleDeferredWatchedRemoval(video.videoId, remainingDelay);
-      }
-      if (
-        remainingWatchlistDelay !== null &&
-        watchlistController.hasAutoRemoveWatchlistItem(video.videoId)
-      ) {
-        watchlistController.scheduleDeferredWatchlistRemoval(
-          video.videoId,
-          remainingWatchlistDelay,
-        );
-      }
-    }
+    if (!succeeded && remainingDelay !== null)
+      scheduleDeferredWatchedRemoval(video.videoId, remainingDelay);
   }
 
   function applyDownload(download: YoutubeDownload) {

@@ -5,6 +5,7 @@ mod proxy;
 mod storage;
 
 use super::*;
+use crate::cookies::{self, Cookie};
 use axum::{
     Extension,
     extract::Request,
@@ -213,7 +214,7 @@ fn within(path: &str, base: &str) -> bool {
                 .is_some_and(|tail| tail.starts_with('/')))
 }
 
-pub(super) fn check_reported_base(kind: &str, base: &str, status: &Value) -> Result<()> {
+fn check_reported_base(kind: &str, base: &str, status: &Value) -> Result<()> {
     if matches!(kind, "radarr" | "sonarr" | "lidarr" | "prowlarr")
         && !status["appName"]
             .as_str()
@@ -244,42 +245,57 @@ fn url_base_mismatch(kind: &str, reported: &str, base: &str) -> ApiError {
     ))
 }
 
-pub(super) async fn check_connection(c: &Connection<'_>) -> Result<()> {
-    let status = c.get("system/status").await?;
-    if c.kind != "bazarr" {
-        return check_reported_base(&c.kind, &c.url_base, &status);
-    }
-    if !status["data"]["bazarr_version"]
+/// Confirm that `c` reaches the expected application, accepts its credentials and uses
+/// the connection's URL Base, and return the version it reports. Every check of a
+/// service's identity goes through here. NZBGet's JSON-RPC needs `credentials`; the
+/// other services authenticate with the connection's API key.
+pub(super) async fn verify_endpoint(
+    c: &Connection<'_>,
+    credentials: Option<&support::Credentials>,
+) -> Result<String> {
+    let version = match c.kind.as_str() {
+        "nzbget" => {
+            let credentials = credentials.ok_or_else(unavailable)?;
+            support::rpc(c, credentials, "version", json!([])).await?
+        }
+        "seerr" => {
+            let version = c.get("status").await?["version"].clone();
+            // Its status is public, and a Seerr still being set up has no administrator
+            // its API key could act as, so only an initialized one can prove the key.
+            if c.get("settings/public").await?["initialized"] == true {
+                c.get("settings/main").await?;
+            }
+            version
+        }
+        "bazarr" => {
+            let version = c.get("system/status").await?["data"]["bazarr_version"].clone();
+            if !version.as_str().is_some_and(|v| !v.is_empty()) {
+                return Err(failures::identity("bazarr", &Value::Null));
+            }
+            let settings = c.get("system/settings").await?;
+            let reported = settings["general"]["base_url"]
+                .as_str()
+                .map(|v| v.trim_end_matches('/'));
+            if reported != Some(c.url_base.as_str()) {
+                return Err(url_base_mismatch(
+                    "bazarr",
+                    reported.unwrap_or_default(),
+                    &c.url_base,
+                ));
+            }
+            version
+        }
+        _ => {
+            let status = c.get("system/status").await?;
+            check_reported_base(&c.kind, &c.url_base, &status)?;
+            status["version"].clone()
+        }
+    };
+    version
         .as_str()
-        .is_some_and(|v| !v.is_empty())
-    {
-        return Err(failures::identity("bazarr", &Value::Null));
-    }
-    let settings = c.get("system/settings").await?;
-    let reported = settings["general"]["base_url"]
-        .as_str()
-        .map(|v| v.trim_end_matches('/'));
-    if reported != Some(c.url_base.as_str()) {
-        return Err(url_base_mismatch(
-            "bazarr",
-            reported.unwrap_or_default(),
-            &c.url_base,
-        ));
-    }
-    Ok(())
-}
-
-fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
-    let mut values = headers
-        .get_all(header::COOKIE)
-        .iter()
-        .filter_map(|h| h.to_str().ok())
-        .flat_map(|h| h.split(';'))
-        .filter_map(|part| part.trim().split_once('='))
-        .filter(|(key, _)| *key == name)
-        .map(|(_, value)| value.to_owned());
-    let first = values.next()?;
-    values.next().is_none().then_some(first)
+        .filter(|v| !v.is_empty() && v.len() < 100)
+        .map(str::to_owned)
+        .ok_or_else(|| failures::identity(&c.kind, &Value::Null))
 }
 
 fn resource(s: &Destination, purpose: &str) -> String {
@@ -288,8 +304,11 @@ fn resource(s: &Destination, purpose: &str) -> String {
         s.id, s.access_revision, s.container
     )
 }
-fn grant_cookie(s: &Destination) -> String {
-    format!("thelxinoe_service_{}", s.id)
+fn grant_cookie(s: &Destination) -> Cookie<'_> {
+    Cookie::Service {
+        id: &s.id,
+        mount: mount(&s.kind, &s.url_base),
+    }
 }
 fn upstream_cookie_prefix(s: &Destination) -> String {
     format!("thelxinoe_native_{}_", s.id)
@@ -324,8 +343,8 @@ async fn authorize(
 ) -> Result<Authorization> {
     // A native API key or Authorization header never authenticates the gateway.
     let candidates = [
-        cookie(headers, "thelxinoe_session").map(Authorization::Session),
-        cookie(headers, &grant_cookie(s)).map(Authorization::Grant),
+        cookies::get(headers, &Cookie::Session).map(Authorization::Session),
+        cookies::get(headers, &grant_cookie(s)).map(Authorization::Grant),
     ];
     let mut denied = ApiError::unauthorized();
     for auth in candidates.into_iter().flatten() {
@@ -360,12 +379,9 @@ fn check_origin(
 
 async fn ready(state: &AppState, s: &Destination) -> Result<()> {
     let (connection, credentials) = connection(state, s).await?;
-    if let Some(credentials) = credentials {
-        support::version(&connection, &credentials).await?;
-        Ok(())
-    } else {
-        check_connection(&connection).await
-    }
+    verify_endpoint(&connection, credentials.as_ref())
+        .await
+        .map(|_| ())
 }
 
 pub(crate) async fn fallback(State(state): State<AppState>, request: Request) -> Response {
@@ -572,16 +588,11 @@ async fn exchange(
     let token = crate::grants::issue(&state, &p, &resource(&s, "browser"), 8 * 60 * 60).await?;
     let base = mount(&s.kind, &s.url_base);
     let mut response = Json(json!({"path":format!("{base}/")})).into_response();
-    response.headers_mut().insert(
-        header::SET_COOKIE,
-        format!(
-            "{}={token}; HttpOnly; SameSite=Strict; Path={}/; Max-Age=28800{}",
-            grant_cookie(&s),
-            base,
-            if context.secure { "; Secure" } else { "" }
-        )
-        .parse()
-        .unwrap(),
+    cookies::set(
+        response.headers_mut(),
+        &grant_cookie(&s),
+        &token,
+        context.secure,
     );
     response
         .headers_mut()

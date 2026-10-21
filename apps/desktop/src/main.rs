@@ -162,6 +162,10 @@ fn credential(app: &tauri::AppHandle) -> Result<keyring::Entry, String> {
 fn remembered_credential(app: &tauri::AppHandle) -> Result<keyring::Entry, String> {
     keyring::Entry::new(&app.config().identifier, "server-remember").map_err(|e| e.to_string())
 }
+/// Marks this desktop as one that signed in before, so others' failed guesses can't lock it out.
+fn known_credential(app: &tauri::AppHandle) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(&app.config().identifier, "server-known").map_err(|e| e.to_string())
+}
 #[tauri::command]
 async fn open_auth_browser(app: tauri::AppHandle, url: String) -> Result<(), String> {
     let response = backend_request(app.clone(), "/auth/methods".into(), "GET".into(), None).await?;
@@ -285,9 +289,11 @@ async fn change_server(app: tauri::AppHandle, value: String) -> Result<String, S
         Ok(()) | Err(keyring::Error::NoEntry) => {}
         Err(e) => return Err(e.to_string()),
     }
-    match remembered_credential(&app)?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => {}
-        Err(e) => return Err(e.to_string()),
+    for entry in [remembered_credential(&app)?, known_credential(&app)?] {
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(e) => return Err(e.to_string()),
+        }
     }
     std::fs::write(config_path(&app)?, &origin).map_err(|e| e.to_string())?;
     Ok(origin)
@@ -318,10 +324,15 @@ async fn backend_request(
         value["transport"] = Value::String("device".into());
         value["device_name"] = Value::String("Windows desktop".into());
         if path == "/auth/login" {
-            match remembered_credential(&app)?.get_password() {
-                Ok(raw) => value["remember_token"] = Value::String(raw),
-                Err(keyring::Error::NoEntry) => {}
-                Err(e) => return Err(e.to_string()),
+            for (field, entry) in [
+                ("remember_token", remembered_credential(&app)?),
+                ("known_token", known_credential(&app)?),
+            ] {
+                match entry.get_password() {
+                    Ok(raw) => value[field] = Value::String(raw),
+                    Err(keyring::Error::NoEntry) => {}
+                    Err(e) => return Err(e.to_string()),
+                }
             }
         }
     }
@@ -362,13 +373,16 @@ async fn backend_request(
         }
         if let Some(object) = value.as_object_mut() {
             object.remove("token");
-            if let Some(raw) = object
-                .remove("remember_token")
-                .and_then(|v| v.as_str().map(str::to_owned))
-            {
-                remembered_credential(&app)?
-                    .set_password(&raw)
-                    .map_err(|e| e.to_string())?;
+            for (field, entry) in [
+                ("remember_token", remembered_credential(&app)?),
+                ("known_token", known_credential(&app)?),
+            ] {
+                if let Some(raw) = object
+                    .remove(field)
+                    .and_then(|v| v.as_str().map(str::to_owned))
+                {
+                    entry.set_password(&raw).map_err(|e| e.to_string())?;
+                }
             }
         }
     }

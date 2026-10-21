@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { installUiFixture } from './helpers/ui-fixture';
+import { installServerEvents, installUiFixture } from './helpers/ui-fixture';
 
 test('auto-delete policies save on change and Audit owns scheduled deletions and outcomes', async ({
   page,
@@ -235,6 +235,74 @@ test('auto-delete policies save on change and Audit owns scheduled deletions and
   expect(fixture.errors).toEqual([]);
 });
 
+test('auto-delete usage and server tools refresh from server events instead of polling', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'retention',
+  });
+  const events = await installServerEvents(page);
+  let waiting = 1;
+  let retentionReads = 0;
+  await page.route('**/api/v1/admin/retention', (route) => {
+    retentionReads++;
+    return route.fulfill({
+      json: {
+        policies: [
+          {
+            domain: 'videos',
+            enabled: false,
+            grace_seconds: 86400,
+            exclude_specials: true,
+            trigger_users: [],
+            storage_limit_bytes: 100_000_000_000,
+          },
+        ],
+        items: [],
+        users: [],
+        video_usage: { unpinned_bytes: 0, pinned_bytes: 0, waiting },
+      },
+    });
+  });
+  let toolReads = 0;
+  await page.route('**/api/v1/admin/tools', (route) => {
+    toolReads++;
+    return route.fulfill({ json: { items: [], supported: false } });
+  });
+  await page.clock.install();
+  await page.goto('/');
+  await expect.poll(events.connected).toBe(true);
+  const usage = page.getByRole('status').filter({ hasText: 'waiting for' });
+  await expect(usage).toContainText('1 download waiting');
+  waiting = 2;
+  events.send('online.download.changed');
+  await expect(usage).toContainText('2 downloads waiting');
+  // Every refresh so far came from an event; nothing polls.
+  const reads = retentionReads;
+  await page.clock.runFor(65_000);
+  expect(retentionReads).toBe(reads);
+  waiting = 0;
+  events.send('retention.changed');
+  await expect(usage).toHaveCount(0);
+
+  await page
+    .getByRole('navigation', { name: 'Settings navigation' })
+    .getByRole('link', { name: 'Server', exact: true })
+    .click();
+  await expect(
+    page.getByRole('region', { name: 'Server tools' }),
+  ).toBeVisible();
+  await expect.poll(() => toolReads).toBeGreaterThan(0);
+  const tools = toolReads;
+  await page.clock.runFor(35_000);
+  expect(toolReads).toBe(tools);
+  events.send('tools.changed');
+  await expect.poll(() => toolReads).toBe(tools + 1);
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 test('administration overview shows loading until health and devices arrive and on refresh', async ({
   page,
 }, testInfo) => {
@@ -294,6 +362,128 @@ test('administration overview shows loading until health and devices arrive and 
     body: await page.screenshot(),
     contentType: 'image/png',
   });
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
+test('library folders are added, renamed, and removed only after confirming', async ({
+  page,
+}, testInfo) => {
+  const fixture = await installUiFixture(page, {
+    role: 'admin',
+    settingsSection: 'server',
+  });
+  type Root = {
+    id: string;
+    name: string;
+    kind: string;
+    path: string;
+    last_scan: number | null;
+    scan_error: string | null;
+  };
+  let roots: Root[] = [
+    {
+      id: 'movies',
+      name: 'Movies',
+      kind: 'movies',
+      path: '/media/movies',
+      last_scan: 1791648000,
+      scan_error: null,
+    },
+  ];
+  const writes: string[] = [];
+  await page.route('**/api/v1/catalog/roots**', (route) => {
+    const request = route.request();
+    const method = request.method();
+    const path = new URL(request.url()).pathname.replace('/api/v1', '');
+    if (method === 'GET')
+      return route.fulfill({ json: { items: roots, media_mount: '/media' } });
+    writes.push(`${method} ${path} ${request.postData() ?? ''}`.trim());
+    const body = request.postDataJSON();
+    if (method === 'POST') {
+      if (body.path.startsWith('/media/movies'))
+        return route.fulfill({
+          status: 409,
+          json: { error: { message: 'Library roots cannot overlap' } },
+        });
+      roots.push({ id: 'shows', ...body, last_scan: null, scan_error: null });
+      return route.fulfill({ json: { id: 'shows' } });
+    }
+    const id = path.split('/').at(-1);
+    if (method === 'PATCH') {
+      roots.find((root) => root.id === id)!.name = body.name;
+      return route.fulfill({ json: { saved: true } });
+    }
+    roots = roots.filter((root) => root.id !== id);
+    return route.fulfill({ json: { deleted: true } });
+  });
+  await page.goto('/');
+  const folders = page.locator('#server-library');
+  await expect(folders.getByRole('row')).toHaveCount(2);
+
+  await folders.getByRole('button', { name: 'Add folder' }).click();
+  const form = folders.getByRole('form', { name: 'Add a library folder' });
+  await form.getByLabel('Name').fill('  Shows ');
+  await form.getByLabel('Media type').selectOption('shows');
+  await expect(form.getByLabel('Folder')).toHaveAttribute(
+    'placeholder',
+    '/media/movies',
+  );
+  await expect(form).toContainText('inside /media');
+  await testInfo.attach('library-folder-add', {
+    body: await folders.screenshot(),
+    contentType: 'image/png',
+  });
+  // A folder inside another library is refused with the server's reason.
+  await form.getByLabel('Folder').fill('/media/movies/shows');
+  await form.getByRole('button', { name: 'Add folder' }).click();
+  await expect(folders.getByRole('alert')).toContainText(
+    'Library roots cannot overlap',
+  );
+  await form.getByLabel('Folder').fill('/media/shows');
+  await form.getByRole('button', { name: 'Add folder' }).click();
+  await expect(form).toHaveCount(0);
+  await expect(folders.getByRole('alert')).toHaveCount(0);
+  await expect(folders.getByRole('row')).toHaveCount(3);
+  await expect(folders.getByText('Shows · /media/shows')).toBeVisible();
+
+  // Only the name is editable; the location and media type stay.
+  await folders.getByRole('button', { name: 'Rename Movies' }).click();
+  const name = folders.getByLabel('New name for Movies');
+  await expect(name).toBeFocused();
+  await expect(name).toHaveValue('Movies');
+  await name.fill('Films');
+  await folders.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(name).toHaveCount(0);
+  await expect(
+    folders.getByRole('button', { name: 'Scan Films' }),
+  ).toBeVisible();
+  await expect(folders.getByText('Movies · /media/movies')).toBeVisible();
+
+  // Removing asks first, and cancelling keeps the folder.
+  await folders.getByRole('button', { name: 'Remove Films' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Remove Films?' });
+  await expect(dialog).toContainText("Files on disk aren't touched");
+  await testInfo.attach('library-folder-removal', {
+    body: await page.screenshot(),
+    contentType: 'image/png',
+  });
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(folders.getByRole('row')).toHaveCount(3);
+  await folders.getByRole('button', { name: 'Remove Films' }).click();
+  await dialog.getByRole('button', { name: 'Remove folder' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(folders.getByRole('row')).toHaveCount(2);
+  await expect(folders.getByRole('button', { name: 'Scan Films' })).toHaveCount(
+    0,
+  );
+  expect(writes).toEqual([
+    'POST /catalog/roots {"name":"Shows","kind":"shows","path":"/media/movies/shows"}',
+    'POST /catalog/roots {"name":"Shows","kind":"shows","path":"/media/shows"}',
+    'PATCH /catalog/roots/movies {"name":"Films"}',
+    'DELETE /catalog/roots/movies',
+  ]);
   expect(fixture.errors).toEqual([]);
   expect(fixture.unexpected).toEqual([]);
 });

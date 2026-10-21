@@ -48,21 +48,30 @@ const localChanges = new Map<number, Partial<Appearance>>();
 const failedChanges = new Set<number>();
 let loadFailed = false;
 let initialChanges: Partial<Appearance>[] | undefined;
-let queuedDuration:
+// A change after a pause saves at once. Changes that follow it merge into one
+// save once input pauses, so a slider drag saves where it starts and stops.
+let queued:
   { current: number; id: number; change: Partial<Appearance> } | undefined;
+let saveTimer: ReturnType<typeof setTimeout> | undefined;
+const savePause = 250;
 let changeId = 0;
 videoMuted.subscribe((muted) => {
   if (owner)
     localStorage.setItem(`thelxinoe-video-muted:${owner}`, String(muted));
 });
-function merge(value: Appearance, change: Partial<Appearance>): Appearance {
+function merge<T extends Partial<Appearance>>(
+  value: T,
+  change: Partial<Appearance>,
+): T {
   return {
     ...value,
     ...change,
-    provider_preferences: {
-      ...value.provider_preferences,
-      ...change.provider_preferences,
-    },
+    ...(change.provider_preferences && {
+      provider_preferences: {
+        ...value.provider_preferences,
+        ...change.provider_preferences,
+      },
+    }),
   };
 }
 function updateError() {
@@ -126,7 +135,7 @@ appearance.subscribe((value) => {
 export async function loadAppearance(userId: string) {
   localChanges.clear();
   failedChanges.clear();
-  queuedDuration = undefined;
+  queued = undefined;
   loadFailed = false;
   updateError();
   initialChanges = [];
@@ -187,7 +196,7 @@ export function resetAppearance() {
   loadFailed = false;
   updateError();
   initialChanges = undefined;
-  queuedDuration = undefined;
+  queued = undefined;
   appearance.set({ ...defaults, theme: get(appearance).theme });
 }
 export function updateAppearance(change: Partial<Appearance>) {
@@ -195,38 +204,38 @@ export function updateAppearance(change: Partial<Appearance>) {
   if (change.animation_duration_ms !== undefined) motionLoaded = true;
   appearance.update((value) => merge(value, change));
   if (!owner) return;
-  const current = generation;
   const id = ++changeId;
-  localChanges.set(id, change);
-  const durationOnly =
-    change.animation_duration_ms !== undefined &&
-    Object.keys(change).length === 1;
-  if (durationOnly && queuedDuration?.current === current) {
-    localChanges.delete(queuedDuration.id);
-    queuedDuration.id = id;
-    queuedDuration.change = change;
-    return;
+  if (queued?.current === generation) {
+    localChanges.delete(queued.id);
+    change = merge(queued.change, change);
   }
-  const job = { current, id, change };
-  queuedDuration = durationOnly ? job : undefined;
-  pending = pending.then(async () => {
-    if (queuedDuration === job) queuedDuration = undefined;
-    const { current, id, change } = job;
-    if (current !== generation) return;
-    try {
-      await api('/me/appearance', 'PATCH', change);
-      if (current === generation) {
-        acceptedRevision++;
-        acknowledgeSavedChange(id, change);
-        updateError();
-      }
-    } catch {
-      if (current === generation) {
-        failedChanges.add(id);
-        updateError();
-      }
-    } finally {
-      if (!failedChanges.has(id)) localChanges.delete(id);
+  queued = { current: generation, id, change };
+  localChanges.set(id, change);
+  if (saveTimer === undefined) pending = pending.then(save);
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveTimer = undefined;
+    pending = pending.then(save);
+  }, savePause);
+}
+async function save() {
+  const job = queued;
+  queued = undefined;
+  if (!job || job.current !== generation) return;
+  const { current, id, change } = job;
+  try {
+    await api('/me/appearance', 'PATCH', change);
+    if (current === generation) {
+      acceptedRevision++;
+      acknowledgeSavedChange(id, change);
+      updateError();
     }
-  });
+  } catch {
+    if (current === generation) {
+      failedChanges.add(id);
+      updateError();
+    }
+  } finally {
+    if (!failedChanges.has(id)) localChanges.delete(id);
+  }
 }

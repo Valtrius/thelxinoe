@@ -38,11 +38,10 @@
   onMount(() => {
     const update = () => void refresh();
     update();
+    // Every tool status and progress change emits tools.changed.
     window.addEventListener('thelxinoe-tools', update);
-    const timer = setInterval(update, 15000);
     return () => {
       alive = false;
-      clearInterval(timer);
       window.removeEventListener('thelxinoe-tools', update);
     };
   });

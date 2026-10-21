@@ -211,6 +211,10 @@ where
             }
         }
         if done + 1 == total || last_progress.elapsed() >= std::time::Duration::from_secs(1) {
+            // A library removed during its scan stops probing; the commit checks again.
+            if !storage::root_exists(root.id.clone(), db).await? {
+                bail!(storage::REMOVED);
+            }
             progress(done + 1, total).await?;
             last_progress = std::time::Instant::now();
         }

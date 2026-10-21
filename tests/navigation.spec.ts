@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { installUiFixture } from './helpers/ui-fixture';
+import { installServerEvents, installUiFixture } from './helpers/ui-fixture';
 import { responseGate } from './helpers/response-gate';
 
 test.afterEach(async ({ page }) => {
@@ -397,6 +397,105 @@ test('YouTube watchlist deep links reveal the selected list and Back restores it
     body: await page.screenshot(),
     contentType: 'image/png',
   });
+});
+
+test('the server alone removes a watched video from an auto-remove watchlist', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, { section: 'YouTube' });
+  const events = await installServerEvents(page);
+  await page.route('**/api/v1/online/youtube', (route) =>
+    route.fulfill({
+      json: {
+        configured: true,
+        account: { status: 'connected', display_name: 'Viewer', updated_at: 0 },
+        sync: {},
+      },
+    }),
+  );
+  const video = {
+    videoId: 'finished01',
+    channelId: 'channel',
+    channelName: 'Fixture channel',
+    title: 'Finished video',
+    publishedAt: '2026-09-21T00:00:00Z',
+    durationSeconds: 60,
+    broadcastState: 'none',
+    isLive: false,
+    isUpcoming: false,
+    isLiveReplay: false,
+    positionSeconds: 0,
+    watchedPercentage: 0,
+    isWatched: false,
+  };
+  let items = [{ video, addedAt: video.publishedAt, manualPosition: 0 }];
+  await page.route('**/api/v1/online/youtube/watchlists', (route) =>
+    route.fulfill({
+      json: [
+        {
+          id: 1,
+          name: 'Watch Later',
+          isDefault: true,
+          autoDownload: false,
+          autoRemoveWatched: true,
+          sortMode: 'manual',
+          sortDirection: 'desc',
+          createdAt: '',
+          updatedAt: '',
+          items,
+        },
+      ],
+    }),
+  );
+  await page.route('**/api/v1/online/youtube/browse', (route) =>
+    route.fulfill({
+      json: {
+        items: [],
+        page: 0,
+        pageSize: 60,
+        hasMore: false,
+        channels: [],
+        counts: {
+          all: 0,
+          unwatched: 0,
+          inProgress: 0,
+          watched: 0,
+          shorts: 0,
+          live: 0,
+          liveReplays: 0,
+          upcoming: 0,
+          subscribedChannelCount: 1,
+        },
+      },
+    }),
+  );
+  await page.route(
+    `**/api/v1/online/youtube/videos/${video.videoId}`,
+    (route) => route.fulfill({ json: {} }),
+  );
+  await page.clock.install();
+  await page.goto('/#online/youtube/watchlists/1');
+  await expect.poll(events.connected).toBe(true);
+  const row = page.locator(`[data-watchlist-video-id="${video.videoId}"]`);
+  await row.hover();
+  await row.getByRole('button', { name: 'Mark watched', exact: true }).click();
+  // The watched video stays listed past the removal delay; the client never
+  // deletes it itself.
+  const unwatch = row.getByRole('button', {
+    name: 'Mark unwatched',
+    exact: true,
+  });
+  await expect(unwatch).toBeAttached();
+  await page.clock.runFor(8000);
+  await expect(unwatch).toBeAttached();
+  items = [];
+  events.send('youtube.changed');
+  await expect(row).toHaveCount(0);
+  expect(fixture.writes.filter(({ method }) => method === 'DELETE')).toEqual(
+    [],
+  );
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
 });
 
 for (const role of ['admin', 'user'] as const) {

@@ -200,7 +200,7 @@ async fn response(
     request: reqwest::RequestBuilder,
 ) -> Result<(axum::http::StatusCode, HeaderMap, Value)> {
     let response = request.send().await.map_err(|_| failure())?;
-    let (status, headers, bytes) = super::bounded_response(response)
+    let (status, headers, bytes) = crate::bounded::response(response)
         .await
         .map_err(|_| failure())?;
     let value = serde_json::from_slice(&bytes).map_err(|_| failure())?;
@@ -400,7 +400,7 @@ pub(super) async fn run(state: AppState) -> anyhow::Result<()> {
 
 async fn presentation_metadata(state: &AppState, path: &str, key: &str, id: u64) -> Result<Value> {
     let access = token(state).await?;
-    let (status, headers, bytes) = super::bounded_response(
+    let (status, headers, bytes) = crate::bounded::response(
         state
             .online
             .http

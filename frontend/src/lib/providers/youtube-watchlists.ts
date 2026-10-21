@@ -17,21 +17,6 @@ export function sortedYoutubeWatchlistItems(watchlist: YoutubeWatchlist) {
   });
 }
 
-export function watchlistVideoTransitionedToWatched(
-  watchlists: YoutubeWatchlist[],
-  videoId: string,
-  nextIsWatched: boolean,
-): boolean {
-  if (!nextIsWatched) return false;
-  return watchlists.some(
-    (watchlist) =>
-      watchlist.autoRemoveWatched &&
-      watchlist.items.some(
-        (item) => item.video.videoId === videoId && !item.video.isWatched,
-      ),
-  );
-}
-
 export class KeyedAsyncQueue {
   private tails = new Map<string, Promise<void>>();
 

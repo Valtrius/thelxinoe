@@ -219,6 +219,12 @@ export function capabilities(probe: Probe = {}) {
 export function mediaUrl(path: string) {
   return `${serverUrl()}${path}`;
 }
+// The server answers for a session it no longer plays with a 4xx. A dropped
+// connection or a server error is transient: playback goes on and the next
+// report catches up.
+export function sessionRefused(error: unknown) {
+  return error instanceof ApiError && error.status < 500;
+}
 export type Preparation = {
   signal: AbortSignal;
   waiting?: (value: boolean) => void;

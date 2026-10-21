@@ -176,7 +176,6 @@ function view(
             boundary_at: at >= 7 ? 1789984800 : null,
             completed: state === 'complete',
             source: {
-              stopped: at >= 4,
               restart_disabled: at >= 4,
               removed: false,
             },
@@ -436,7 +435,7 @@ test('a failure after production offers evidence-based recovery choices', async 
       stage: 'recovering',
       boundary_at: 1789984800,
       completed: false,
-      source: { stopped: true, restart_disabled: true, removed: false },
+      source: { restart_disabled: true, removed: false },
       command: {
         operation: 'operation-1',
         phase: 'starting-original',

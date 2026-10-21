@@ -84,7 +84,6 @@ async fn edit(
     if input.port == 0 || (!access::supported(&record.kind) && !input.url_base.is_empty()) {
         return Err(ApiError::bad("Choose a valid internal port and URL Base"));
     }
-    access::validate_base(&record.kind, &input.url_base)?;
     let manager = matches!(record.kind.as_str(), "radarr" | "sonarr" | "lidarr");
     let scope = format!("{}:{key}", if manager { "manager" } else { "support" });
     let plaintext = state.secrets.decrypt(&scope, &record.credential)?;
@@ -134,56 +133,23 @@ async fn edit(
             )));
         }
     }
-    let (base, media_source) =
-        support::api_evidence(&state, &container, input.port, &record.kind).await?;
-    let c = Connection::validation(
+    let endpoint = inspect_endpoint(
         &state,
-        base.clone(),
-        input.url_base.clone(),
-        credentials.secret.clone(),
-        record.kind.clone(),
-    );
-    let observed = docker(&state, &format!("containers/{container}")).await?;
-    let container_name = observed["name"]
-        .as_str()
-        .unwrap_or_default()
-        .trim_start_matches('/')
-        .to_owned();
-    let version = if observed["running"] == false {
-        if test {
+        &record.kind,
+        &container,
+        input.port,
+        &input.url_base,
+        &credentials,
+        test || input.allow_unverified,
+    )
+    .await?;
+    if test {
+        if endpoint.stopped() {
             return Err(ApiError::conflict(format!(
-                "The {container_name} container is stopped; start it before testing the connection"
+                "The {} container is stopped; start it before testing the connection",
+                endpoint.container_name
             )));
         }
-        if !input.allow_unverified {
-            return Err(failures::stopped(&container_name));
-        }
-        "Unverified".to_owned()
-    } else {
-        let version = if manager {
-            let status = c.get("system/status").await?;
-            if !status["appName"]
-                .as_str()
-                .is_some_and(|name| name.eq_ignore_ascii_case(&record.kind))
-            {
-                return Err(failures::identity(&record.kind, &status["appName"]));
-            }
-            status["version"]
-                .as_str()
-                .filter(|v| !v.is_empty() && v.len() < 100)
-                .ok_or_else(|| failures::identity(&record.kind, &Value::Null))?
-                .to_owned()
-        } else {
-            support::version(&c, &credentials).await?
-        };
-        if record.kind == "seerr" {
-            c.get("settings/main").await?;
-        } else if record.kind != "nzbget" {
-            access::check_connection(&c).await?;
-        }
-        version
-    };
-    if test {
         return Ok(Json(json!({"healthy":true})));
     }
     let plaintext = if manager {
@@ -194,14 +160,14 @@ async fn edit(
     let encrypted = state.secrets.encrypt(&scope, &plaintext)?;
     let saved = storage::Saved {
         container,
-        container_name,
         port: input.port,
         url_base: input.url_base,
-        media_source,
-        verified: observed["running"] == true,
-        version,
-        engine: observed["engine"].as_str().unwrap_or_default().to_owned(),
-        evidence: connection_evidence(&observed, &base),
+        verified: endpoint.verified(),
+        engine: endpoint.engine(),
+        evidence: endpoint.evidence(),
+        container_name: endpoint.container_name,
+        media_source: endpoint.media_source,
+        version: endpoint.version,
         credential: encrypted,
     };
     if !storage::save(&state.db, key.clone(), record, saved, actor.user.id).await? {

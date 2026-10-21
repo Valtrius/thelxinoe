@@ -16,6 +16,7 @@ fn directory(key: &str) -> PathBuf {
 fn host(d: &Deployment, key: &str, leaf: &str) -> String {
     format!("{}/transfers/{key}/{leaf}", d.appdata_source)
 }
+/// A request made against evidence that changed since; it is refused before any effect.
 fn stale(message: impl Into<std::borrow::Cow<'static, str>>) -> crate::docker::Failure {
     (StatusCode::PRECONDITION_FAILED, message.into())
 }
@@ -28,7 +29,7 @@ fn busy() -> crate::docker::Failure {
 }
 /// Outcomes that end a transfer; nothing remains to recover after them.
 fn terminal(stage: &str) -> bool {
-    matches!(stage, "complete" | "returned" | "cancelled" | "stale")
+    matches!(stage, "complete" | "returned" | "cancelled")
 }
 /// Supplementary single files are copied into a folder under this name and mounted from there.
 const SUPPLEMENTARY_FILE: &str = "file";
@@ -67,15 +68,16 @@ pub(super) struct Review {
     #[serde(default)]
     recyclarr: Value,
     blockers: Vec<String>,
-    evidence_revision: String,
     /// One digest per reviewed component, to name what changed before a stale start.
     #[serde(default)]
     parts: BTreeMap<String, String>,
+    /// The digest of `parts` and the deployment: what the administrator approved.
     pub revision: String,
     created_at: i64,
 }
 
-/// The Docker and file journal of one transfer.
+/// The Docker and file journal of one transfer. Journals from earlier releases may carry
+/// fields that are no longer kept; reading ignores them.
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct Transfer {
     pub id: String,
@@ -85,7 +87,6 @@ pub(super) struct Transfer {
     pub error: Option<String>,
     source_running: bool,
     restart_disabled: bool,
-    stopped: bool,
     snapshot: Option<Value>,
     source_state: Option<Value>,
     qualification: Option<Value>,
@@ -99,7 +100,6 @@ pub(super) struct Transfer {
     activations: Vec<Value>,
     activated: bool,
     committed: bool,
-    completed: bool,
     #[serde(default)]
     recovery: Value,
     /// The current or last recovery command.
@@ -111,10 +111,14 @@ pub(super) struct Transfer {
     original_removed: bool,
     #[serde(default)]
     worker: Option<String>,
-    declarations: Value,
-    compose_mode: Option<String>,
     created_at: i64,
     updated_at: i64,
+}
+impl Transfer {
+    /// Completion is final: nothing moves a transfer out of `complete`.
+    fn completed(&self) -> bool {
+        self.stage == "complete"
+    }
 }
 
 /// One approved recovery, bound to the server's operation identity. Each phase is journaled
@@ -359,26 +363,7 @@ async fn inspect(d: &Deployment, input: &ReviewInput, key: String) -> Result<Rev
     if target_version.release_cmp(&source_version) == std::cmp::Ordering::Less {
         blockers.push("The qualified image is older than the running application; downgrades are never applied".into());
     }
-    let mut others = Vec::new();
-    for row in engine("/containers/json?all=true")
-        .await?
-        .as_array()
-        .ok_or_else(unavailable)?
-        .iter()
-        .take(500)
-    {
-        let id = row["Id"].as_str().ok_or_else(unavailable)?;
-        // This deployment's transfer workers only ever mount a source read-only.
-        let worker = row["Labels"]["app.thelxinoe.transfer"].is_string()
-            && row["Labels"]["app.thelxinoe.managed-id"].is_null()
-            && row["Labels"]["app.thelxinoe.deployment"] == d.id.as_str();
-        if id != input.container_id
-            && !worker
-            && let Ok(other) = engine(&format!("/containers/{id}/json")).await
-        {
-            others.push(other);
-        }
-    }
+    let others = others(d, &input.container_id).await?;
     // A configuration folder must not contain any server media, including secondary mounts.
     let server_media: Vec<String> = d.server["Mounts"]
         .as_array()
@@ -594,7 +579,6 @@ async fn inspect(d: &Deployment, input: &ReviewInput, key: String) -> Result<Rev
             Err(error) => blockers.push(error.1.into_owned()),
         }
     }
-    let evidence_revision = digest(&json!([automation, compose, layout]));
     let parts: BTreeMap<String, String> = [
         ("container", digest(&policy::fingerprint(&raw))),
         (
@@ -607,7 +591,7 @@ async fn inspect(d: &Deployment, input: &ReviewInput, key: String) -> Result<Rev
             digest(&json!([source_identity, (target.uid, target.gid)])),
         ),
         ("network", digest(&json!([aliases, published]))),
-        ("automation", evidence_revision.clone()),
+        ("automation", digest(&json!([automation, compose, layout]))),
         ("settings", digest(&transformations)),
         ("recyclarr", digest(&recyclarr_targets)),
         ("blockers", digest(&json!(blockers))),
@@ -615,22 +599,7 @@ async fn inspect(d: &Deployment, input: &ReviewInput, key: String) -> Result<Rev
     .into_iter()
     .map(|(name, value)| (name.to_owned(), value))
     .collect();
-    let revision = digest(&json!([
-        policy::fingerprint(&raw),
-        source_image,
-        decision,
-        target_version,
-        layout,
-        source_identity,
-        (target.uid, target.gid),
-        aliases,
-        published,
-        evidence_revision,
-        transformations,
-        recyclarr_targets,
-        blockers,
-        d.id,
-    ]));
+    let revision = digest(&json!([parts, d.id]));
     Ok(Review {
         id: key,
         kind: kind.into(),
@@ -656,11 +625,35 @@ async fn inspect(d: &Deployment, input: &ReviewInput, key: String) -> Result<Rev
         transformations,
         recyclarr: recyclarr_targets,
         blockers,
-        evidence_revision,
         parts,
         revision,
         created_at: thelxinoe_core::now(),
     })
+}
+
+/// Every container except the source, inspected.
+async fn others(d: &Deployment, source: &str) -> Result<Vec<Value>> {
+    let mut others = Vec::new();
+    for row in engine("/containers/json?all=true")
+        .await?
+        .as_array()
+        .ok_or_else(unavailable)?
+        .iter()
+        .take(500)
+    {
+        let id = row["Id"].as_str().ok_or_else(unavailable)?;
+        // This deployment's transfer workers only ever mount a source read-only.
+        let worker = row["Labels"]["app.thelxinoe.transfer"].is_string()
+            && row["Labels"]["app.thelxinoe.managed-id"].is_null()
+            && row["Labels"]["app.thelxinoe.deployment"] == d.id.as_str();
+        if id != source
+            && !worker
+            && let Ok(other) = engine(&format!("/containers/{id}/json")).await
+        {
+            others.push(other);
+        }
+    }
+    Ok(others)
 }
 
 /// Application settings the transfer changes in the copied configuration only.
@@ -1018,8 +1011,6 @@ async fn access_check(
 pub(super) struct StartInput {
     revision: String,
     #[serde(default)]
-    declarations: Value,
-    #[serde(default)]
     compose_mode: Option<String>,
 }
 /// Persist transfer intent, recheck the reviewed source, then run the transfer in the background.
@@ -1029,15 +1020,27 @@ pub(super) async fn start(
     Json(input): Json<StartInput>,
 ) -> Result<Json<Value>> {
     id(&key)?;
-    if directory(&key).join("transfer.json").exists() {
-        let t = read(&key)?;
+    // A repeated start reports the journal it already wrote.
+    let journaled = |t: &Transfer, active: bool| {
         if t.review.revision != input.revision {
             return Err(conflict(
                 "This operation already belongs to another reviewed transfer",
             ));
         }
-        let active = runtime.0.try_service(&t.kind).is_err();
-        return Ok(Json(status(&t, active)));
+        Ok(Json(status(t, active)))
+    };
+    if directory(&key).join("transfer.json").exists() {
+        let t = read(&key)?;
+        return journaled(&t, runtime.0.try_service(&t.kind).is_err());
+    }
+    let guard = runtime
+        .0
+        .try_service(&read_review(&key)?.kind)
+        .map_err(|_| busy())?;
+    // Only the service holder writes the journal. A cancel may have removed the review, or
+    // another start written the journal, before this start took the service.
+    if directory(&key).join("transfer.json").exists() {
+        return journaled(&read(&key)?, false);
     }
     let reviewed = read_review(&key)?;
     if reviewed.revision != input.revision {
@@ -1053,7 +1056,6 @@ pub(super) async fn start(
             "Choose scoped Compose detachment or project-wide retirement",
         ));
     }
-    let guard = runtime.0.try_service(&reviewed.kind).map_err(|_| busy())?;
     if !crate::lease::active() {
         return Err(conflict("The controller writer lease is unavailable"));
     }
@@ -1096,7 +1098,6 @@ pub(super) async fn start(
         stage: "approved".into(),
         error: None,
         restart_disabled: false,
-        stopped: false,
         snapshot: None,
         source_state: None,
         qualification: None,
@@ -1107,14 +1108,11 @@ pub(super) async fn start(
         activations: vec![],
         activated: false,
         committed: false,
-        completed: false,
         recovery: Value::Null,
         command: None,
         generations: vec![],
         original_removed: false,
         worker: None,
-        declarations: input.declarations,
-        compose_mode: input.compose_mode,
         created_at: now,
         updated_at: now,
     };
@@ -1144,6 +1142,7 @@ pub(super) async fn resume(
                 | "creating"
                 | "activating"
                 | "recovering"
+                | "restoring"
         )
     };
     let probe = read(&key)?;
@@ -1158,10 +1157,10 @@ pub(super) async fn resume(
     let result = status(&t, true);
     crate::recovery::spawn(async move {
         let _guard = guard;
-        if t.stage == "recovering" {
-            run_command(&d, &mut t).await;
-        } else {
-            run(&d, &mut t).await;
+        match t.stage.as_str() {
+            "recovering" => run_command(&d, &mut t).await,
+            "restoring" => restore_automatically(&d, &mut t).await,
+            _ => run(&d, &mut t).await,
         }
     });
     Ok(Json(result))
@@ -1170,32 +1169,47 @@ pub(super) async fn resume(
 async fn run(d: &Deployment, t: &mut Transfer) {
     if let Err(error) = execute(d, t).await {
         t.error = Some(error.1.to_string());
-        if error.0 == StatusCode::PRECONDITION_FAILED && !t.restart_disabled {
-            t.stage = "stale".into();
-        } else if t.boundary_at.is_none() {
-            // Before the production boundary the original returns automatically when safe.
-            match restore_original(d, t).await {
-                Ok(()) => t.stage = "returned".into(),
-                Err(restore) => {
-                    t.stage = "failed".into();
-                    t.error = Some(format!(
-                        "{}; restoring the original also failed: {}",
-                        error.1, restore.1
-                    ));
-                }
-            }
-        } else {
-            t.stage = "recovery-required".into();
-        }
         t.worker = None;
-        if let Err(write_error) = write(t) {
-            eprintln!("Transfer journal failed: {}", write_error.1);
+        if t.boundary_at.is_some() {
+            t.stage = "recovery-required".into();
+            return record(t);
         }
+        // Before the production boundary the original returns automatically when safe. The
+        // restore is journaled first, so a restart finishes it instead of resuming the
+        // transfer that just failed.
+        t.stage = "restoring".into();
+        record(t);
+        restore_automatically(d, t).await;
+    }
+}
+
+/// Give the original back after a failure before the boundary; `t.error` says what failed.
+async fn restore_automatically(d: &Deployment, t: &mut Transfer) {
+    match restore_original(d, t).await {
+        Ok(()) => t.stage = "returned".into(),
+        Err(restore) => {
+            t.stage = "failed".into();
+            t.error = Some(format!(
+                "{}; restoring the original also failed: {}",
+                t.error.as_deref().unwrap_or("The transfer failed"),
+                restore.1
+            ));
+        }
+    }
+    record(t);
+    if t.stage == "returned" {
+        discard_snapshot(d, t).await;
+    }
+}
+
+/// Journal from a background task, where a failed write can only be logged.
+fn record(t: &mut Transfer) {
+    if let Err(error) = write(t) {
+        eprintln!("Transfer journal failed: {}", error.1);
     }
 }
 
 async fn execute(d: &Deployment, t: &mut Transfer) -> Result<()> {
-    let kind = t.kind.clone();
     if t.stage == "approved" {
         let original = source(t).await?;
         if original["State"]["Running"] == true {
@@ -1226,7 +1240,6 @@ async fn execute(d: &Deployment, t: &mut Transfer) -> Result<()> {
         if stopped["State"]["Running"] != false {
             return Err(conflict("The original did not stop; nothing was copied"));
         }
-        t.stopped = true;
         t.stage = "copying".into();
         write(t)?;
     }
@@ -1236,11 +1249,7 @@ async fn execute(d: &Deployment, t: &mut Transfer) -> Result<()> {
         write(t)?;
     }
     if t.stage == "validating" {
-        if kind == "recyclarr" {
-            validate_recyclarr(d, t).await?;
-        } else {
-            validate(d, t).await?;
-        }
+        validate(d, t).await?;
         t.stage = "building".into();
         write(t)?;
     }
@@ -1316,7 +1325,8 @@ async fn source(t: &Transfer) -> Result<Value> {
     Ok(raw)
 }
 
-async fn clear(d: &Deployment, t: &Transfer, leaf: &str) -> Result<()> {
+/// Remove a transfer folder whose copied files keep their original owners.
+async fn discard(d: &Deployment, t: &Transfer, leaf: &str) -> Result<()> {
     let path = directory(&t.id).join(leaf);
     if path.exists() {
         run_worker(
@@ -1331,8 +1341,22 @@ async fn clear(d: &Deployment, t: &Transfer, leaf: &str) -> Result<()> {
             600,
         )
         .await?;
+        persisted(std::fs::remove_dir(&path).map_err(Into::into))?;
     }
-    persisted(std::fs::create_dir_all(&path).map_err(Into::into))
+    Ok(())
+}
+async fn clear(d: &Deployment, t: &Transfer, leaf: &str) -> Result<()> {
+    discard(d, t, leaf).await?;
+    persisted(std::fs::create_dir_all(directory(&t.id).join(leaf)).map_err(Into::into))
+}
+/// Nothing uses the snapshot once a transfer ended, and it can hold gigabytes. Preserved
+/// generations stay: they are the only copy of what a replacement wrote.
+async fn discard_snapshot(d: &Deployment, t: &Transfer) {
+    for leaf in ["snapshot", "supplementary"] {
+        if let Err(error) = discard(d, t, leaf).await {
+            eprintln!("Transfer {} kept its {leaf} copy: {}", t.id, error.1);
+        }
+    }
 }
 
 async fn copy(
@@ -1497,7 +1521,7 @@ fn target_env(r: &Review, identity: (u32, u32)) -> Vec<String> {
 }
 
 /// Mounts at the replacement's container paths; `media` replaces retained media for validation.
-fn mounts(d: &Deployment, t: &Transfer, appdata: &str, media: Option<&str>) -> Vec<Value> {
+fn mounts(t: &Transfer, appdata: &str, media: Option<&str>) -> Vec<Value> {
     let mut mounts = vec![json!({"Type":"bind","Source":appdata,"Target":"/config"})];
     for (index, m) in t.review.layout.retained.iter().enumerate() {
         match (media, m.role.as_str()) {
@@ -1510,7 +1534,6 @@ fn mounts(d: &Deployment, t: &Transfer, appdata: &str, media: Option<&str>) -> V
         }
     }
     mounts.extend(supplementary_mounts(t, appdata));
-    let _ = d;
     mounts
 }
 /// The managed copies of supplementary folders and files, read-only at their container paths.
@@ -1624,7 +1647,8 @@ async fn cleanup_containers(t: &Transfer, keep: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Disposable validation: an independent copy, synthetic media and no route anywhere.
+/// Disposable validation of an independent copy of the snapshot, with no route anywhere.
+/// Every record the application starts from must survive it running against the copy.
 async fn validate(d: &Deployment, t: &mut Transfer) -> Result<()> {
     cleanup_containers(t, None).await?;
     clear(d, t, "validation").await?;
@@ -1651,10 +1675,42 @@ async fn validate(d: &Deployment, t: &mut Transfer) -> Result<()> {
     }
     t.source_state = Some(before.clone());
     write(t)?;
+    let image = t.review.decision.image().to_owned();
+    crate::docker::ensure_pinned_image(&image).await?;
+    let (baseline, checks) = if t.kind == "recyclarr" {
+        qualify_recyclarr(d, t, &appdata, &image).await?
+    } else {
+        let checks = qualify_service(d, t, &appdata, &before, &image).await?;
+        (before.clone(), checks)
+    };
+    let after = inspect_state(d, t, "inspect-after", &appdata).await?;
+    let preservation = compare(&baseline, &after)?;
+    cleanup_containers(t, None).await?;
+    clear(d, t, "validation").await?;
+    let _ = std::fs::remove_dir(directory(&t.id).join("validation"));
+    t.qualification = Some(json!({
+        "snapshot_digest":t.snapshot.as_ref().and_then(|s| s.get("digest")).cloned(),
+        "image":image,"transformations":digest(&t.review.transformations),
+        "versions":{"source":t.review.source_version.text,"target":t.review.target_version.text},
+        "formats":{"source":before["format"],"target":after["format"]},
+        "checks":checks,"preservation":preservation,"passed":true,"at":thelxinoe_core::now(),
+    }));
+    Ok(())
+}
+
+/// A candidate starts twice over the prepared copy with synthetic media, and the contract
+/// checks it from inside its namespace after each start.
+async fn qualify_service(
+    d: &Deployment,
+    t: &mut Transfer,
+    appdata: &str,
+    before: &Value,
+    image: &str,
+) -> Result<Vec<Value>> {
     prepare(
         d,
         t,
-        &appdata,
+        appdata,
         &directory(&t.id).join("validation/appdata"),
         "validation",
     )
@@ -1688,14 +1744,12 @@ async fn validate(d: &Deployment, t: &mut Transfer) -> Result<()> {
         },
     )
     .await?;
-    let image = t.review.decision.image().to_owned();
-    crate::docker::ensure_pinned_image(&image).await?;
     let mut spec = json!({"Image":image,"Env":target_env(&t.review, identity),
         "Labels":{"app.thelxinoe.transfer":t.id,"app.thelxinoe.deployment":d.id,"app.thelxinoe.role":"candidate"},
         "Healthcheck":{"Test":["NONE"]},
         "HostConfig":{"NetworkMode":"none","CapDrop":["ALL"],"CapAdd":["CHOWN","DAC_OVERRIDE","FOWNER","SETUID","SETGID","KILL"],
             "SecurityOpt":["no-new-privileges:true"],
-            "ExtraHosts":peer_hosts(&t.review),"Mounts":mounts(d,t,&appdata,Some(&media))}});
+            "ExtraHosts":peer_hosts(&t.review),"Mounts":mounts(t,appdata,Some(&media))}});
     crate::docker::limit(&mut spec, 2 << 30, 2, 256);
     if matches!(t.kind.as_str(), "seerr" | "recyclarr") {
         spec["User"] = json!(format!("{}:{}", identity.0, identity.1));
@@ -1745,19 +1799,7 @@ async fn validate(d: &Deployment, t: &mut Transfer) -> Result<()> {
     let removed = updates::remove(&candidate).await;
     let checks = outcome?;
     removed?;
-    let after = inspect_state(d, t, "inspect-after", &appdata).await?;
-    let preservation = compare(&before, &after)?;
-    cleanup_containers(t, None).await?;
-    clear(d, t, "validation").await?;
-    let _ = std::fs::remove_dir(directory(&t.id).join("validation"));
-    t.qualification = Some(json!({
-        "snapshot_digest":t.snapshot.as_ref().and_then(|s| s.get("digest")).cloned(),
-        "image":image,"transformations":digest(&t.review.transformations),
-        "versions":{"source":t.review.source_version.text,"target":t.review.target_version.text},
-        "formats":{"source":before["format"],"target":after["format"]},
-        "checks":checks,"preservation":preservation,"passed":true,"at":thelxinoe_core::now(),
-    }));
-    Ok(())
+    Ok(checks)
 }
 
 /// Known peer names resolve only to loopback fixtures inside the isolated namespace.
@@ -1820,40 +1862,19 @@ fn compare(before: &Value, after: &Value) -> Result<Value> {
     Ok(json!({"tables":tables,"schema_changed":schema_changed}))
 }
 
-/// Recyclarr qualification: its copied configuration synchronizes only synthetic targets.
-async fn validate_recyclarr(d: &Deployment, t: &mut Transfer) -> Result<()> {
-    cleanup_containers(t, None).await?;
-    clear(d, t, "validation").await?;
-    let appdata = host(d, &t.id, "validation/appdata");
-    persisted(
-        std::fs::create_dir_all(directory(&t.id).join("validation/appdata")).map_err(Into::into),
-    )?;
-    copy(
-        d,
-        t,
-        "validation-copy",
-        json!({"Type":"bind","Source":host(d,&t.id,"snapshot"),"Target":"/source","ReadOnly":true}),
-        appdata.clone(),
-    )
-    .await?;
-    let before = inspect_state(d, t, "inspect-before", &appdata).await?;
-    if let Some(problem) = before["blockers"].as_array().and_then(|b| b.first()) {
-        return Err(conflict(
-            problem
-                .as_str()
-                .unwrap_or("Unsupported Recyclarr configuration")
-                .to_owned(),
-        ));
-    }
-    t.source_state = Some(before.clone());
-    write(t)?;
-    let image = t.review.decision.image().to_owned();
-    crate::docker::ensure_pinned_image(&image).await?;
+/// Recyclarr's copied configuration synchronizes only synthetic targets. Preparation points
+/// it at them, so preserved records are compared from the prepared state.
+async fn qualify_recyclarr(
+    d: &Deployment,
+    t: &mut Transfer,
+    appdata: &str,
+    image: &str,
+) -> Result<(Value, Vec<Value>)> {
     let secret = thelxinoe_core::id().replace('-', "");
     let prepared = prepare_with(
         d,
         t,
-        &appdata,
+        appdata,
         &directory(&t.id).join("validation/appdata"),
         "validation",
         vec![
@@ -1867,12 +1888,11 @@ async fn validate_recyclarr(d: &Deployment, t: &mut Transfer) -> Result<()> {
     )
     .await?;
     let fixtures = prepared["fixtures"].as_array().cloned().unwrap_or_default();
-    // Preparation points the copy at fixtures; synchronization must not change it further.
-    let prepared_state = inspect_state(d, t, "inspect-prepared", &appdata).await?;
+    let prepared_state = inspect_state(d, t, "inspect-prepared", appdata).await?;
     let evidence = recyclarr::qualify_transfer(
         d,
         &t.id,
-        &image,
+        image,
         &directory(&t.id).join("validation"),
         &host(d, &t.id, "validation"),
         &fixtures,
@@ -1880,19 +1900,7 @@ async fn validate_recyclarr(d: &Deployment, t: &mut Transfer) -> Result<()> {
         t.review.target_identity,
     )
     .await?;
-    let after = inspect_state(d, t, "inspect-after", &appdata).await?;
-    let preservation = compare(&prepared_state, &after)?;
-    cleanup_containers(t, None).await?;
-    clear(d, t, "validation").await?;
-    let _ = std::fs::remove_dir(directory(&t.id).join("validation"));
-    t.qualification = Some(json!({
-        "snapshot_digest":t.snapshot.as_ref().and_then(|s| s.get("digest")).cloned(),
-        "image":image,"transformations":digest(&t.review.transformations),
-        "versions":{"source":t.review.source_version.text,"target":t.review.target_version.text},
-        "formats":{"source":before["format"],"target":after["format"]},
-        "checks":[evidence],"preservation":preservation,"passed":true,"at":thelxinoe_core::now(),
-    }));
-    Ok(())
+    Ok((prepared_state, vec![evidence]))
 }
 
 /// Production appdata comes from the untouched snapshot plus approved transformations only.
@@ -1981,13 +1989,13 @@ async fn build(d: &Deployment, t: &mut Transfer) -> Result<()> {
     Ok(())
 }
 
-fn target_spec(d: &Deployment, t: &Transfer, name: &str) -> Result<Value> {
+fn target_spec(d: &Deployment, t: &Transfer) -> Result<Value> {
     let template = templates::find(&t.kind).ok_or_else(unavailable)?;
     let identity = t.review.target_identity;
     let appdata = format!("{}/services/{}/appdata", d.appdata_source, t.id);
     let mut spec = json!({"Image":t.review.decision.image(),"Env":target_env(&t.review, identity),
         "Labels":{"app.thelxinoe.managed-id":t.id,"app.thelxinoe.deployment":d.id,"app.thelxinoe.kind":t.kind,"app.thelxinoe.transfer":t.id},
-        "HostConfig":{"Mounts":mounts(d,t,&appdata,None),"NetworkMode":d.network,"RestartPolicy":{"Name":"unless-stopped"}},
+        "HostConfig":{"Mounts":mounts(t,&appdata,None),"NetworkMode":d.network,"RestartPolicy":{"Name":"unless-stopped"}},
         "NetworkingConfig":{"EndpointsConfig":{d.network.clone():{"Aliases":t.review.aliases}}}});
     if let (Some(port), Some(published)) = (template.port, t.review.published) {
         spec["HostConfig"]["PortBindings"] = json!({format!("{port}/tcp"):[{"HostIp":"127.0.0.1","HostPort":published.to_string()}]});
@@ -2001,7 +2009,6 @@ fn target_spec(d: &Deployment, t: &Transfer, name: &str) -> Result<Value> {
         spec["HostConfig"]["CapDrop"] = json!(["ALL"]);
         spec["HostConfig"]["SecurityOpt"] = json!(["no-new-privileges:true"]);
     }
-    let _ = name;
     Ok(spec)
 }
 
@@ -2028,7 +2035,7 @@ async fn create(d: &Deployment, t: &mut Transfer) -> Result<()> {
                     image: t.review.decision.image().to_owned(),
                     phase: "transferring".into(),
                     active_update: None,
-                    spec: target_spec(d, t, &name)?,
+                    spec: target_spec(d, t)?,
                     expected: Value::Null,
                     hold: Some("transfer".into()),
                     origin: "transferred".into(),
@@ -2176,11 +2183,11 @@ pub(super) fn status(t: &Transfer, active: bool) -> Value {
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
     });
     json!({"id":t.id,"kind":t.kind,"stage":t.stage,"error":t.error,"revision":t.review.revision,
-        "source":{"container_id":t.review.original["Id"],"running_before":t.source_running,"restart_disabled":t.restart_disabled,"stopped":t.stopped,
+        "source":{"container_id":t.review.original["Id"],"running_before":t.source_running,"restart_disabled":t.restart_disabled,
             "appdata":t.review.layout.appdata,"removed":t.original_removed},
         "snapshot":t.snapshot,"qualification":t.qualification,
         "production":t.production.as_ref().map(|p| json!({"digest":p["digest"],"generation":p["generation"],"access":p["access"],"at":p["at"]})),
-        "replacement":t.replacement,"boundary_at":t.boundary_at,"activations":t.activations,"activated":t.activated,"committed":t.committed,"completed":t.completed,
+        "replacement":t.replacement,"boundary_at":t.boundary_at,"activations":t.activations,"activated":t.activated,"committed":t.committed,"completed":t.completed(),
         "recovery":t.recovery,"command":t.command,"generations":t.generations,"progress":progress,"operation_active":active,"updated_at":t.updated_at,
         // Preserved identities are needed only for post-activation checks.
         "source_records":if t.boundary_at.is_some() {t.source_state.as_ref().map(|s| s["records"].clone())} else {None}})
@@ -2235,7 +2242,7 @@ pub(super) async fn complete(
     let probe = read(&key)?;
     let _guard = runtime.0.service(&probe.kind).await;
     let mut t = read(&key)?;
-    if t.completed {
+    if t.completed() {
         return Ok(Json(status(&t, false)));
     }
     if terminal(&t.stage) || t.stage == "recovering" {
@@ -2255,27 +2262,33 @@ pub(super) async fn complete(
     s.hold = None;
     s.phase = "active".into();
     save(&s)?;
-    t.completed = true;
     t.stage = "complete".into();
     t.recovery = Value::Null;
     write(&mut t)?;
+    discard_snapshot(&d, &t).await;
     Ok(Json(status(&t, false)))
 }
 
-/// Cancel only before any source mutation.
+/// Cancel only before any source mutation. A start holds the service from before it rereads
+/// the review until its journal is written, so the two never interleave.
 pub(super) async fn cancel(
     State(runtime): State<Runtime>,
     Path(key): Path<String>,
 ) -> Result<Json<Value>> {
+    id(&key)?;
+    let kind = if directory(&key).join("transfer.json").exists() {
+        read(&key)?.kind
+    } else {
+        read_review(&key)?.kind
+    };
+    let _guard = runtime.0.try_service(&kind).map_err(|_| {
+        conflict("The transfer is running; it can be cancelled only before the original changes")
+    })?;
     if !directory(&key).join("transfer.json").exists() {
         read_review(&key)?;
         persisted(std::fs::remove_dir_all(directory(&key)).map_err(Into::into))?;
         return Ok(Json(json!({"id":key,"stage":"cancelled"})));
     }
-    let probe = read(&key)?;
-    let _guard = runtime.0.try_service(&probe.kind).map_err(|_| {
-        conflict("The transfer is running; it can be cancelled only before the original changes")
-    })?;
     let mut t = read(&key)?;
     if t.stage == "cancelled" {
         return Ok(Json(status(&t, false)));
@@ -2302,7 +2315,7 @@ pub(super) async fn restore(
     if t.stage == "returned" {
         return Ok(Json(status(&t, false)));
     }
-    if t.boundary_at.is_some() || !matches!(t.stage.as_str(), "failed" | "stale") {
+    if t.boundary_at.is_some() || !matches!(t.stage.as_str(), "failed" | "restoring") {
         return Err(conflict(
             "Only a failed transfer before production activation restores automatically",
         ));
@@ -2310,13 +2323,14 @@ pub(super) async fn restore(
     restore_original(&d, &mut t).await?;
     t.stage = "returned".into();
     write(&mut t)?;
+    discard_snapshot(&d, &t).await;
     Ok(Json(status(&t, false)))
 }
 
 /// Recovery applies after the production boundary to a transfer that hasn't ended and
 /// isn't already running a recovery command.
 fn plannable(t: &Transfer) -> Result<()> {
-    if t.boundary_at.is_none() || t.completed {
+    if t.boundary_at.is_none() || t.completed() {
         return Err(conflict(
             "Recovery plans apply to activated transfers that are not complete",
         ));
@@ -2404,17 +2418,13 @@ pub(super) async fn recovery_plan(
     )
     .await
     .unwrap_or_else(|error| json!({"known":[],"uncertain":[format!("Live effects couldn't be inventoried: {}",error.1)]}));
-    let current_evidence = digest(&json!([
-        t.review.automation,
-        t.review.compose,
-        t.review.layout
-    ]));
+    // Checked live, as the return checks it before the replacement stops.
+    let back = returnable(&d, &t).await.err().map(|error| error.1);
     let evidence = json!({"images":{"source":t.review.source_image,"replacement":t.review.decision.image()},
         "versions":{"source":t.review.source_version.text,"replacement":t.review.target_version.text},
         "generations":{"source_appdata":t.review.layout.appdata,"snapshot":t.snapshot.as_ref().map(|s| &s["digest"]),
             "activated":t.production.as_ref().map(|p| &p["digest"]),"preserved":t.generations,"activations":t.activations},
-        "boundary_at":t.boundary_at,"containers":{"replacement":replacement,"original":original},"effects":effects,
-        "automation_revision":current_evidence});
+        "boundary_at":t.boundary_at,"containers":{"replacement":replacement,"original":original},"effects":effects});
     let cannot_undo = [
         "Downloads, imports and file changes the replacement made",
         "Notifications or webhooks it sent",
@@ -2431,15 +2441,13 @@ pub(super) async fn recovery_plan(
         "The replacement container no longer exists",
     );
     let (snapshot, snapshot_reason) = starts(t.snapshot.is_some(), "The transfer has no snapshot");
-    let back = original["present"] == true && original["unchanged"] == true;
     let options = json!([
         {"action":"repair","label":"Repair and continue","available":repair,"unavailable":repair_reason,
             "description":"Keep the replacement's latest appdata, repeat the required checks and finish the transfer when healthy"},
         {"action":"restore_snapshot","label":"Restore the transfer snapshot into a new candidate","available":snapshot,"unavailable":snapshot_reason,
             "description":"Preserve the current appdata as a generation and activate an independent replacement built from the snapshot taken when the original stopped. Reviewed setup runs again for the new appdata",
             "requires":["state_loss","reconciliation"]},
-        {"action":"return_original","label":"Return to the original","available":back,
-            "unavailable":if back {Value::Null} else {json!("The original container is missing or its configuration changed")},
+        {"action":"return_original","label":"Return to the original","available":back.is_none(),"unavailable":back,
             "description":"Stop and remove the replacement, keeping its appdata as a generation, then restart the original. The service ends Connected with this failed transfer recorded",
             "requires":["state_loss","reconciliation","automation"]},
         {"action":"suspend","label":"Suspend for manual resolution","available":true,
@@ -2564,8 +2572,9 @@ async fn run_command(d: &Deployment, t: &mut Transfer) {
         }
     }
     t.worker = None;
-    if let Err(error) = write(t) {
-        eprintln!("Transfer journal failed: {}", error.1);
+    record(t);
+    if t.stage == "returned" {
+        discard_snapshot(d, t).await;
     }
 }
 
@@ -2627,9 +2636,28 @@ async fn repair(d: &Deployment, t: &mut Transfer) -> Result<()> {
     Ok(())
 }
 
+/// The original may run again: still as reviewed, stopped, and nothing else can restart,
+/// recreate or write it.
+async fn returnable(d: &Deployment, t: &Transfer) -> Result<()> {
+    let raw = source(t).await?;
+    if raw["State"]["Running"] != false {
+        return Err(conflict(
+            "The original is running beside the replacement; stop it before recovery",
+        ));
+    }
+    let controller = std::env::var("HOSTNAME").unwrap_or_default();
+    let others = others(d, &original_id(t)?).await?;
+    match plan::restart_threat(&raw, &t.review.layout.appdata, &others, &controller) {
+        Some(threat) => Err(conflict(threat)),
+        None => Ok(()),
+    }
+}
+
 /// Single writer: the replacement stops and is retired before the original starts again.
 async fn return_original(d: &Deployment, t: &mut Transfer) -> Result<()> {
     if phase(t) == "accepted" {
+        // Checked before anything stops, so a refused return leaves the replacement running.
+        returnable(d, t).await?;
         advance(t, "stopping-replacement")?;
     }
     if phase(t) == "stopping-replacement" {
@@ -2637,27 +2665,8 @@ async fn return_original(d: &Deployment, t: &mut Transfer) -> Result<()> {
         advance(t, "checking-original")?;
     }
     if phase(t) == "checking-original" {
-        let raw = source(t).await?;
-        if raw["State"]["Running"] != false {
-            return Err(conflict(
-                "The original is running beside the replacement; stop it before recovery",
-            ));
-        }
-        let current = inspect(
-            d,
-            &ReviewInput {
-                kind: t.kind.clone(),
-                container_id: original_id(t)?,
-                service_id: t.review.service.clone(),
-            },
-            t.id.clone(),
-        )
-        .await?;
-        if current.evidence_revision != t.review.evidence_revision {
-            return Err(conflict(
-                "Automation around the original changed; review its evidence before restarting it",
-            ));
-        }
+        // Again with the replacement stopped, right before the irreversible steps.
+        returnable(d, t).await?;
         advance(t, "retiring-replacement")?;
     }
     if phase(t) == "retiring-replacement" {
@@ -2810,7 +2819,7 @@ pub(super) async fn remove_original(
     let probe = read(&key)?;
     let _guard = runtime.0.service(&probe.kind).await;
     let mut t = read(&key)?;
-    if !t.completed {
+    if !t.completed() {
         return Err(conflict(
             "Remove the original only after the transfer completes",
         ));
@@ -2884,7 +2893,8 @@ mod tests {
         assert_eq!(changed_parts(&reviewed, &reviewed), "the deployment");
     }
 
-    /// A journal after the production boundary, in `stage`.
+    /// A journal after the production boundary, in `stage`, as 0.0.3 wrote it: with fields
+    /// later releases no longer keep.
     fn journal(stage: &str) -> Transfer {
         let version = json!({"numbers":[1],"build":null,"text":"1"});
         let mount = json!({"kind":"bind","source":"/srv/config","destination":"/config","writable":true,"role":"appdata"});
@@ -2958,11 +2968,23 @@ mod tests {
     }
 
     #[test]
+    fn journals_from_earlier_releases_still_read_and_drop_unused_fields() {
+        let complete = journal("complete");
+        assert!(complete.completed());
+        assert!(!journal("committed").completed());
+        let rewritten = serde_json::to_value(&complete).unwrap();
+        for field in ["stopped", "completed", "declarations", "compose_mode"] {
+            assert!(rewritten.get(field).is_none(), "{field}");
+        }
+        assert!(rewritten["review"].get("evidence_revision").is_none());
+    }
+
+    #[test]
     fn recovery_is_planned_only_for_an_unfinished_transfer_after_the_boundary() {
         assert!(plannable(&journal("recovery-required")).is_ok());
         assert!(plannable(&journal("suspended")).is_ok());
         // A lost reply after a return must never offer starting the replacement again.
-        for stage in ["returned", "recovering", "complete", "cancelled", "stale"] {
+        for stage in ["returned", "recovering", "complete", "cancelled"] {
             assert!(plannable(&journal(stage)).is_err(), "{stage}");
         }
         let mut before = journal("failed");

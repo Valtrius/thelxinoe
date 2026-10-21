@@ -607,37 +607,6 @@ async fn explicit_cors_and_api_compatibility_preserve_authentication() {
 }
 
 #[tokio::test]
-async fn remote_quality_uses_the_trusted_client_address() {
-    let (_temp, state) = fixture().await;
-    for (address, remote) in [
-        ("192.168.1.9", false),
-        ("127.0.0.1", false),
-        ("::ffff:192.168.1.9", false),
-        ("2001:4860:4860::8888", true),
-        ("8.8.8.8", true),
-    ] {
-        let headers = axum::http::HeaderMap::from_iter([(
-            "x-forwarded-for".parse::<axum::http::HeaderName>().unwrap(),
-            address.parse().unwrap(),
-        )]);
-        let context = thelxinoe_server::security::request_context(
-            &state.config,
-            &headers,
-            "10.0.0.2:1234".parse().unwrap(),
-        )
-        .unwrap();
-        assert_eq!(context.remote(), remote);
-        let untrusted = thelxinoe_server::security::request_context(
-            &state.config,
-            &headers,
-            "192.168.1.2:1234".parse().unwrap(),
-        )
-        .unwrap();
-        assert!(!untrusted.remote());
-    }
-}
-
-#[tokio::test]
 async fn concurrent_library_additions_serialize_overlap_checks_and_job_writes() {
     let (_temp, state) = fixture().await;
     let cookie = setup(&state).await;
@@ -1200,6 +1169,115 @@ async fn concurrent_guesses_cannot_pass_the_account_limit_together() {
     )
     .await;
     assert_eq!(login.0, StatusCode::TOO_MANY_REQUESTS);
+}
+/// The `name=value` of a cookie a response sets, and the attributes it sets it with.
+fn set_cookie(headers: &axum::http::HeaderMap, name: &str) -> Option<(String, String)> {
+    headers
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find(|line| line.starts_with(&format!("{name}=")))
+        .and_then(|line| line.split_once("; "))
+        .map(|(pair, attributes)| (pair.to_owned(), attributes.to_owned()))
+}
+async fn sign_in(
+    state: &AppState,
+    password: &str,
+    cookie: Option<&str>,
+    address: &str,
+) -> (StatusCode, axum::http::HeaderMap, Value) {
+    request(
+        state,
+        "/api/v1/auth/login",
+        "POST",
+        json!({"username":"admin","password":password}),
+        cookie,
+        &client(address),
+    )
+    .await
+}
+async fn lock_out_admin(state: &AppState) {
+    for n in 0..10 {
+        let address = format!("203.0.113.{n}");
+        let (status, ..) = sign_in(state, "not the password", None, &address).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+}
+#[tokio::test]
+async fn a_browser_that_signed_in_before_is_not_locked_out_by_others() {
+    let (_temp, state) = fixture().await;
+    let (status, headers, _) = request(
+        &state,
+        "/api/v1/setup",
+        "POST",
+        json!({"username":"admin","password":"a good long password"}),
+        None,
+        &client("198.51.100.7"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (known, attributes) = set_cookie(&headers, "thelxinoe_known").unwrap();
+    assert_eq!(
+        attributes,
+        "HttpOnly; SameSite=Strict; Path=/; Max-Age=34560000; Secure"
+    );
+    lock_out_admin(&state).await;
+    let made_up = format!("thelxinoe_known={}", "f".repeat(64));
+    for cookie in [None, Some(made_up.as_str())] {
+        let (status, ..) = sign_in(&state, "a good long password", cookie, "198.51.100.8").await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    }
+    let (status, headers, body) =
+        sign_in(&state, "a good long password", Some(&known), "198.51.100.7").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(set_cookie(&headers, "thelxinoe_session").is_some());
+    // It keeps its token, refreshed, and its own mistakes don't lock it out either.
+    assert_eq!(set_cookie(&headers, "thelxinoe_known").unwrap().0, known);
+    let (status, ..) = sign_in(&state, "not the password", Some(&known), "198.51.100.7").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+#[tokio::test]
+async fn a_known_browser_still_needs_the_authenticator_code() {
+    let (_temp, state) = fixture().await;
+    let cookie = setup(&state).await;
+    let (_, enrollment) = post(
+        &state,
+        "/api/v1/me/auth/totp/start",
+        json!({}),
+        Some(&cookie),
+    )
+    .await;
+    let secret = enrollment["secret"].as_str().unwrap().to_owned();
+    let (status, _) = post(
+        &state,
+        "/api/v1/me/auth/totp/confirm",
+        json!({"code":totp_code(&secret, 0)}),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    // Both factors make this browser known.
+    let (_, _, challenge) = sign_in(&state, "a good long password", None, "198.51.100.7").await;
+    assert_eq!(challenge["totp_required"], true);
+    let (status, headers, _) = request(
+        &state,
+        "/api/v1/auth/totp",
+        "POST",
+        json!({"attempt":challenge["attempt"],"code":totp_code(&secret, 1)}),
+        None,
+        &client("198.51.100.7"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (known, _) = set_cookie(&headers, "thelxinoe_known").unwrap();
+    lock_out_admin(&state).await;
+    let (status, ..) = sign_in(&state, "a good long password", None, "198.51.100.8").await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    let (status, headers, body) =
+        sign_in(&state, "a good long password", Some(&known), "198.51.100.7").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["totp_required"], true);
+    assert!(set_cookie(&headers, "thelxinoe_session").is_none());
 }
 #[tokio::test]
 async fn failed_reverification_passwords_count_against_the_account() {

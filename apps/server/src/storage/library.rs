@@ -35,6 +35,76 @@ pub(super) async fn add_root(
     .await
 }
 
+pub(super) async fn rename_root(
+    db: &Database,
+    p: thelxinoe_core::Principal,
+    root_id: String,
+    name: String,
+) -> anyhow::Result<bool> {
+    db.write("library.rename_root", move |db| {
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if tx.execute(
+            "UPDATE library_roots SET name=?2 WHERE id=?1",
+            params![root_id, name],
+        )? == 0
+        {
+            return Ok(false);
+        }
+        tx.execute(
+            "INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'library.rename',?2,?3)",
+            params![p.user.id, root_id, now()],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    })
+    .await
+}
+
+pub(super) async fn remove_root(
+    db: &Database,
+    p: thelxinoe_core::Principal,
+    root_id: String,
+) -> anyhow::Result<bool> {
+    db.write("library.remove_root", move |db| {
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if !tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM library_roots WHERE id=?1)",
+            [&root_id],
+            |r| r.get::<_, bool>(0),
+        )? {
+            return Ok(false);
+        }
+        // Queued work for the library has nothing left to act on. A running scan finds the
+        // library gone and stops without writing.
+        tx.execute(
+            "UPDATE jobs SET state='complete',completed_at=?2 WHERE state='queued' AND ((kind='library.scan' AND subject=?1) OR (kind IN ('metadata.match','metadata.refresh') AND subject IN (SELECT id FROM media WHERE root_id=?1)))",
+            params![root_id, now()],
+        )?;
+        // Rows that refer to the library's entries and files without cascading go first.
+        // Everyone's state for the entries cascades with them; playback history keeps its
+        // own copy of each title.
+        for statement in [
+            "DELETE FROM retention_candidates WHERE media_id IN (SELECT id FROM media WHERE root_id=?1)",
+            "DELETE FROM media_operations WHERE media_id IN (SELECT id FROM media WHERE root_id=?1)",
+            "DELETE FROM media_sources WHERE media_id IN (SELECT id FROM media WHERE root_id=?1)",
+            "DELETE FROM local_trailers WHERE media_id IN (SELECT id FROM media WHERE root_id=?1)",
+            "DELETE FROM manager_bindings WHERE file_id IN (SELECT id FROM media_files WHERE root_id=?1)",
+            "DELETE FROM media WHERE root_id=?1",
+            "DELETE FROM media_files WHERE root_id=?1",
+            "DELETE FROM library_roots WHERE id=?1",
+        ] {
+            tx.execute(statement, [&root_id])?;
+        }
+        tx.execute(
+            "INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'library.remove',?2,?3)",
+            params![p.user.id, root_id, now()],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    })
+    .await
+}
+
 pub(super) async fn enqueue_scan(root_id: String, db: &Database) -> anyhow::Result<String> {
     // A scan already waiting covers this request; one that is running may miss the change.
     db.write("library.enqueue_scan", move |db| {

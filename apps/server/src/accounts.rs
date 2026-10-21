@@ -3,11 +3,12 @@ mod storage;
 
 use crate::{
     AppState,
+    cookies::{self, Cookie},
     error::{ApiError, Result},
     security,
 };
 use axum::{
-    Json,
+    Extension, Json,
     extract::{ConnectInfo, Path, State},
     http::{HeaderMap, header},
     response::{IntoResponse, Response},
@@ -17,8 +18,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use thelxinoe_auth::{
-    SessionAuthorization, digest, issue_session, password_hash_with_permit, user_row,
-    validate_credentials, verify_password_with_permit,
+    SessionAuthorization, digest, issue_session, password_hash, token, user_row,
+    validate_credentials, verify_password,
 };
 use thelxinoe_core::{Capability, Role, id, now};
 
@@ -32,6 +33,18 @@ pub struct Credentials {
     pub(crate) device_name: Option<String>,
     #[serde(default)]
     pub(crate) remember_token: Option<String>,
+    #[serde(default)]
+    pub(crate) known_token: Option<String>,
+}
+impl Credentials {
+    /// The known-browser token a sign-in presents: a device sends it in the body, a browser
+    /// in its cookie.
+    fn known(&self, headers: &HeaderMap) -> Option<String> {
+        self.known_token
+            .clone()
+            .or_else(|| cookies::get(headers, &Cookie::Known))
+            .filter(|token| token.len() == 64)
+    }
 }
 
 pub async fn setup_status(State(state): State<AppState>) -> Result<Json<Value>> {
@@ -40,24 +53,23 @@ pub async fn setup_status(State(state): State<AppState>) -> Result<Json<Value>> 
         json!({"setup_required":count==0,"version":thelxinoe_core::VERSION}),
     ))
 }
+/// Issues the session a completed sign-in earned and answers with it: in a cookie for the web,
+/// or in the body for a device, whose native transport stores and strips it. A device
+/// remembered for two-step sign-in gets its `remember` token the same way, and whatever
+/// signed in gets or refreshes its known-browser token (see `check_credentials`).
 pub(crate) async fn respond_session(
     state: &AppState,
     authorization: SessionAuthorization,
     c: &Credentials,
+    headers: &HeaderMap,
     secure: bool,
+    remember: Option<&str>,
 ) -> Result<Response> {
     let transport = c.transport.as_deref().unwrap_or("web");
     if !matches!(transport, "web" | "device") {
         return Err(ApiError::bad("Unsupported credential transport"));
     }
     let user_id = authorization.user_id().to_owned();
-    let remembered = matches!(
-        &authorization,
-        SessionAuthorization::Verified {
-            remembered_device_id: Some(_),
-            ..
-        }
-    );
     let raw = issue_session(
         &state.db,
         authorization,
@@ -75,22 +87,36 @@ pub(crate) async fn respond_session(
     )
     .await?
     .ok_or_else(ApiError::unauthorized)?;
-    let user = storage::respond_session(&state.db, user_id).await?;
+    let presented = c.known(headers);
+    let fresh = token();
+    let (user, kept) = storage::signed_in(
+        &state.db,
+        user_id,
+        presented.as_deref().map(digest),
+        digest(&fresh),
+    )
+    .await?;
+    let known = presented.filter(|_| kept).unwrap_or(fresh);
     let user = crate::avatars::profile(state, user).await?;
-    let mut response =
-        Json(json!({"user":user,"token":if transport=="device"{Some(&raw)}else{None}}))
-            .into_response();
-    if transport == "web" {
-        response.headers_mut().insert(
-            header::SET_COOKIE,
-            if remembered {
-                crate::authentication::session_cookie(&raw, secure)
-            } else {
-                security::cookie(&raw, secure)
-            }
-            .parse()
-            .unwrap(),
-        );
+    let device = transport == "device";
+    let mut body = json!({"user":user,"token":device.then_some(&raw)});
+    if device {
+        if let Some(remember) = remember {
+            body["remember_token"] = json!(remember);
+        }
+        if !kept {
+            body["known_token"] = json!(known);
+        }
+    }
+    let mut response = Json(body).into_response();
+    if !device {
+        let out = response.headers_mut();
+        cookies::set(out, &Cookie::Session, &raw, secure);
+        if let Some(remember) = remember {
+            cookies::set(out, &Cookie::Remember, remember, secure);
+        }
+        // Set again even when kept, so the browser keeps it as long as the server does.
+        cookies::set(out, &Cookie::Known, &known, secure);
     }
     response
         .headers_mut()
@@ -135,7 +161,7 @@ pub async fn setup(
                 "Authentication is busy. Try again shortly.".into(),
             )
         })?;
-    let hash = password_hash_with_permit(c.password.clone(), slot).await?;
+    let hash = password_hash(c.password.clone(), Some(slot)).await?;
     let user_id = id();
     let uid = user_id.clone();
     let username = c.username.clone();
@@ -153,7 +179,9 @@ pub async fn setup(
             expected_hash: hash,
         },
         &c,
+        &headers,
         context.secure,
+        None,
     )
     .await
 }
@@ -164,49 +192,34 @@ pub async fn login(
     Json(c): Json<Credentials>,
 ) -> Result<Response> {
     let context = security::request_context(&state.config, &headers, peer)?;
-    let remembered = c.remember_token.clone().or_else(|| {
-        headers
-            .get(header::COOKIE)?
-            .to_str()
-            .ok()?
-            .split(';')
-            .find_map(|part| part.trim().strip_prefix("thelxinoe_remember="))
-            .map(str::to_owned)
-    });
-    let user = check_credentials(
-        &state,
-        context.address,
-        &c.username,
-        &c.password,
-        remembered,
-    )
-    .await?;
+    let known = c.known(&headers).map(|token| digest(&token));
+    let user = check_credentials(&state, context.address, &c.username, &c.password, known).await?;
     crate::authentication::password_login(&state, user, &c, &headers, context.secure).await
 }
+/// Checks a password sign-in. `known` is the hash of the known-browser token or client
+/// identity the attempt presents, if any.
 pub(crate) async fn check_credentials(
     state: &AppState,
     address: std::net::IpAddr,
     username: &str,
     password: &str,
-    remembered: Option<String>,
+    known: Option<String>,
 ) -> Result<SessionAuthorization> {
     allow_password_attempt(state, security::client_bucket(address)).await?;
     if password.len() > 256 || username.len() > 64 {
         return Err(ApiError::unauthorized());
     }
-    // Keyed by name whether or not the account exists, so throttling reveals nothing. A device
-    // remembered after two-step sign-in to this account isn't locked out by others' failed
-    // guesses; its own failures still count, and the per-address limit still applies.
-    let throttle = format!("password-account:{}", username.to_ascii_lowercase());
-    let trusted = match remembered.filter(|token| token.len() == 64) {
-        Some(token) => {
-            storage::remembered_device(&state.db, username.to_owned(), digest(&token)).await?
+    // Failures count against the name whether or not the account exists, so throttling
+    // reveals nothing. A browser or client that already signed in to this account counts
+    // against its own budget instead, so others' guesses can't lock its owner out; that's
+    // all it skips, and the per-address limit applies to everyone.
+    let throttle = match known {
+        Some(hash) if storage::known(&state.db, username.to_owned(), hash.clone()).await? => {
+            format!("password-known:{hash}")
         }
-        None => false,
+        _ => format!("password-account:{}", username.to_ascii_lowercase()),
     };
-    if !trusted {
-        reserve_account_attempt(state, &throttle).await?;
-    }
+    reserve_account_attempt(state, &throttle).await?;
     let slot = state
         .password_slots
         .clone()
@@ -219,17 +232,11 @@ pub(crate) async fn check_credentials(
         .as_ref()
         .map(|r| r.1.clone())
         .unwrap_or_else(|| state.dummy_hash.as_ref().clone());
-    let valid = verify_password_with_permit(password.to_owned(), hash, slot).await?;
+    let valid = verify_password(password.to_owned(), hash, Some(slot)).await?;
     if !valid || record.is_none() {
-        // An untrusted attempt already counts; a remembered device's failures count here.
-        if trusted {
-            record_account_failure(state, throttle).await?;
-        }
         return Err(ApiError::unauthorized());
     }
-    if !trusted {
-        release_account_attempt(state, throttle).await?;
-    }
+    release_account_attempt(state, throttle).await?;
     let (user_id, expected_hash) = record.unwrap();
     Ok(SessionAuthorization::Password {
         user_id,
@@ -265,11 +272,6 @@ pub(crate) async fn release_account_attempt(state: &AppState, key: String) -> Re
     storage::refunded(&state.db, key).await?;
     Ok(())
 }
-/// Counts a failed proof against the account without refusing it (a remembered device).
-pub(crate) async fn record_account_failure(state: &AppState, key: String) -> Result<()> {
-    storage::throttled(&state.db, key, storage::PER_ACCOUNT).await?;
-    Ok(())
-}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -298,7 +300,7 @@ pub async fn change_password(
         .acquire_owned()
         .await
         .map_err(anyhow::Error::from)?;
-    let hash = password_hash_with_permit(input.new_password, slot).await?;
+    let hash = password_hash(input.new_password, Some(slot)).await?;
     crate::authentication::set_password(
         &state,
         principal.clone(),
@@ -321,17 +323,16 @@ pub async fn me(State(state): State<AppState>, headers: HeaderMap) -> Result<Jso
         json!({"user":crate::avatars::profile(&state, user).await?}),
     ))
 }
-pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
+pub async fn logout(
+    State(state): State<AppState>,
+    Extension(context): Extension<security::RequestContext>,
+    headers: HeaderMap,
+) -> Result<Response> {
     let p = security::principal(&state, &headers).await?;
     storage::logout(&state.db, p).await?;
     state.notify_events();
     let mut response = Json(json!({"ok":true})).into_response();
-    response.headers_mut().insert(
-        header::SET_COOKIE,
-        "thelxinoe_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
-            .parse()
-            .unwrap(),
-    );
+    cookies::clear(response.headers_mut(), &Cookie::Session, context.secure);
     Ok(response)
 }
 pub async fn sessions(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
@@ -376,7 +377,7 @@ pub async fn create_user(
         .acquire_owned()
         .await
         .map_err(anyhow::Error::from)?;
-    let hash = password_hash_with_permit(std::mem::take(&mut user.password), slot).await?;
+    let hash = password_hash(std::mem::take(&mut user.password), Some(slot)).await?;
     let result = storage::create_user(&state.db, user, p, hash).await?;
     result
         .map(|id| Json(json!({"id":id})))

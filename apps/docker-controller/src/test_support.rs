@@ -22,7 +22,8 @@ pub(crate) enum Fault {
 }
 struct Engine {
     containers: BTreeMap<String, Value>,
-    fault: Option<Fault>,
+    /// Pending faults; each fires once, the first time its condition matches.
+    faults: Vec<Fault>,
     disconnected: bool,
     creates: usize,
     deletes: usize,
@@ -51,7 +52,7 @@ impl Docker {
             root,
             engine: Arc::new(Mutex::new(Engine {
                 containers: BTreeMap::from([("original".into(), original)]),
-                fault: None,
+                faults: Vec::new(),
                 disconnected: false,
                 creates: 0,
                 deletes: 0,
@@ -76,8 +77,9 @@ impl Docker {
         (serde_json::from_value(json!({"id":"deployment","generation":1,"version":"test","server":{},"controller":{},"network":"media","media_source":"/media","appdata_source":"/state"})).unwrap(),
         serde_json::from_value(json!({"id":"22222222-2222-2222-2222-222222222222","service":"11111111-1111-1111-1111-111111111111","candidate":"candidate-image","stage":"isolated-live-validation","classification":"compatible","error":null,"old":{"id":"11111111-1111-1111-1111-111111111111","kind":"radarr","container":"original","name":"service","image":"old-image","phase":"active","spec":{"Image":"old-image","Labels":old["Config"]["Labels"],"HostConfig":{}},"expected":crate::policy::fingerprint(&old)},"was_running":true,"snapshot_complete":true,"recovery_complete":false,"activation_crossed":false,"candidate_container":null,"replacement":null})).unwrap())
     }
+    /// Add a fault; several can be pending at once.
     pub(crate) fn fault(&self, fault: Fault) {
-        self.engine.lock().unwrap().fault = Some(fault);
+        self.engine.lock().unwrap().faults.push(fault);
     }
     pub(crate) fn backup_deployment<D: DeserializeOwned>(&self) -> D {
         let mut engine = self.engine.lock().unwrap();
@@ -105,7 +107,7 @@ impl Docker {
     pub(crate) fn reconnect(&self) {
         let mut e = self.engine.lock().unwrap();
         e.disconnected = false;
-        e.fault = None;
+        e.faults.clear();
     }
     pub(crate) fn names(&self) -> Vec<String> {
         self.engine
@@ -151,39 +153,33 @@ impl Docker {
         }
     }
 }
+impl Engine {
+    /// Consume the first pending fault that matches; true when one did.
+    fn take(&mut self, matches: impl Fn(Fault) -> bool) -> bool {
+        let found = self.faults.iter().position(|fault| matches(*fault));
+        found.map(|index| self.faults.remove(index)).is_some()
+    }
+}
 impl DockerContext {
     pub(crate) fn fail_write(&self, bytes: &[u8]) -> bool {
-        let mut e = self.engine.lock().unwrap();
-        if e.fault == Some(Fault::JournalWrite)
-            && serde_json::from_slice::<Value>(bytes)
-                .is_ok_and(|v| v["stage"] == "replacement-created")
-        {
-            e.fault = None;
-            return true;
-        }
-        if let Some(Fault::JournalBefore(stage)) = e.fault
-            && serde_json::from_slice::<Value>(bytes).is_ok_and(|v| v["stage"] == stage)
-        {
-            e.fault = None;
-            return true;
-        }
-        false
+        let Ok(journal) = serde_json::from_slice::<Value>(bytes) else {
+            return false;
+        };
+        self.engine.lock().unwrap().take(|fault| match fault {
+            Fault::JournalWrite => journal["stage"] == "replacement-created",
+            Fault::JournalBefore(stage) => journal["stage"] == stage,
+            _ => false,
+        })
     }
     pub(crate) fn fail_after_write(&self, bytes: &[u8]) -> bool {
-        let mut e = self.engine.lock().unwrap();
-        if let Some(Fault::JournalAfter(stage)) = e.fault
-            && serde_json::from_slice::<Value>(bytes).is_ok_and(|v| v["stage"] == stage)
-        {
-            e.fault = None;
-            return true;
-        }
-        if let Some(Fault::PhaseAfter(phase)) = e.fault
-            && serde_json::from_slice::<Value>(bytes).is_ok_and(|v| v["command"]["phase"] == phase)
-        {
-            e.fault = None;
-            return true;
-        }
-        false
+        let Ok(journal) = serde_json::from_slice::<Value>(bytes) else {
+            return false;
+        };
+        self.engine.lock().unwrap().take(|fault| match fault {
+            Fault::JournalAfter(stage) => journal["stage"] == stage,
+            Fault::PhaseAfter(phase) => journal["command"]["phase"] == phase,
+            _ => false,
+        })
     }
     pub(crate) fn request(
         &self,
@@ -249,16 +245,12 @@ impl DockerContext {
                 _ => "replacement".into(),
             };
             e.containers.insert(id.clone(),json!({"Id":id,"Name":format!("/{name}"),"Image":spec["Image"],"Config":config,"HostConfig":spec["HostConfig"],"State":{"Running":false,"StartedAt":"0001-01-01T00:00:00Z"},"NetworkSettings":{"Networks":{"media":{}}}}));
-            match e.fault {
-                Some(Fault::CreateReplyAndInspection) => {
-                    e.disconnected = true;
-                    return Err(unavailable());
-                }
-                Some(Fault::CreateReply) => {
-                    e.fault = None;
-                    return Err(unavailable());
-                }
-                _ => {}
+            if e.take(|fault| fault == Fault::CreateReplyAndInspection) {
+                e.disconnected = true;
+                return Err(unavailable());
+            }
+            if e.take(|fault| fault == Fault::CreateReply) {
+                return Err(unavailable());
             }
             return Ok(json!({"Id":id}));
         }
@@ -293,8 +285,7 @@ impl DockerContext {
             e.containers.get_mut(id).unwrap()["HostConfig"]["RestartPolicy"] =
                 body.unwrap()["RestartPolicy"].clone();
         } else if action == "start" {
-            if matches!(e.fault,Some(Fault::StartBefore(target)) if target == id) {
-                e.fault = None;
+            if e.take(|fault| matches!(fault, Fault::StartBefore(target) if target == id)) {
                 return Err(unavailable());
             }
             e.starts += 1;
@@ -374,8 +365,7 @@ impl DockerContext {
                 )
                 .unwrap();
             }
-            if matches!(e.fault,Some(Fault::StartReply(target)) if target == id) {
-                e.fault = None;
+            if e.take(|fault| matches!(fault, Fault::StartReply(target) if target == id)) {
                 return Err(unavailable());
             }
         } else {

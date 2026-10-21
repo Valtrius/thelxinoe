@@ -14,7 +14,7 @@ import { freezeClock } from './helpers/clock';
 // Exercise the real player with decoded media and a controlled server boundary.
 // This suite starts its own Vite server and never touches an account or deployment.
 const title = 'A journey through the mountains';
-let mp4: Buffer, segment: Buffer, shortSegment: Buffer;
+let mp4: Buffer, segment: Buffer, shortSegment: Buffer, wav: Buffer;
 // Separate video and audio files shaped like YouTube's: an initialization
 // segment, a `sidx` fragment index, then keyframe-aligned fragments.
 let original: Record<'video' | 'audio', Buffer>;
@@ -182,6 +182,26 @@ test.beforeAll(() => {
     ],
     { input: mp4, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
   );
+  // PCM fits the gapless music player's in-memory decoding.
+  wav = execFileSync(
+    'ffmpeg',
+    [
+      '-v',
+      'error',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=440:sample_rate=8000',
+      '-t',
+      '30',
+      '-c:a',
+      'pcm_s16le',
+      '-f',
+      'wav',
+      'pipe:1',
+    ],
+    { windowsHide: true },
+  );
   shortSegment = execFileSync(
     'ffmpeg',
     [
@@ -229,10 +249,12 @@ async function fixture(
     stalled?: boolean;
     tools?: 'metadata' | 'playback';
     music?: boolean;
+    gapless?: boolean;
     native?: boolean;
     nativeTools?: boolean;
     nativeRestore?: boolean;
     indexed?: boolean;
+    failProgress?: 'network' | number;
   } = {},
 ) {
   const metadata = gate(!!options.hold),
@@ -259,8 +281,12 @@ async function fixture(
       position: number;
       active_seconds: number;
     }[],
+    // Progress requests fail while this is set, and are counted either way.
+    failProgress: options.failProgress,
+    progressAttempts: 0,
     errors: [] as string[],
     savedVolume: 0.31,
+    volumeSaves: [] as number[],
     savedHeight: options.playerHeight ?? null,
     fail: options.fail ?? false,
     toolsPreparing: !!options.tools,
@@ -411,6 +437,8 @@ async function fixture(
     if (path.endsWith('/me/appearance')) {
       if (route.request().method() === 'PATCH') {
         const change = route.request().postDataJSON();
+        if (change.audio_volume !== undefined)
+          state.volumeSaves.push(change.audio_volume);
         state.savedVolume = change.audio_volume ?? state.savedVolume;
         if ('player_height' in change) state.savedHeight = change.player_height;
       }
@@ -443,7 +471,16 @@ async function fixture(
       await metadata.promise;
       return route.fulfill({
         json: {
-          sources: [],
+          sources: options.gapless
+            ? [
+                {
+                  id: 'fixture-file',
+                  size: wav.length,
+                  duration: 30,
+                  tracks: [{ kind: 'audio', codec: 'pcm_s16le' }],
+                },
+              ]
+            : [],
           preferences: { quality: 'auto', subtitles: false },
           progress: [],
           watched: false,
@@ -487,9 +524,11 @@ async function fixture(
           live: options.live ?? false,
           url: options.indexed
             ? '/api/v1/playback/fixture/hls/source/index.m3u8?grant=fixture'
-            : options.mode === 'remux'
-              ? '/fixture/index.m3u8'
-              : '/fixture/video.mp4',
+            : options.gapless
+              ? '/fixture/track.wav'
+              : options.mode === 'remux'
+                ? '/fixture/index.m3u8'
+                : '/fixture/video.mp4',
           position: input.position ?? 0,
           duration: 60,
           timeline_start: 0,
@@ -573,8 +612,19 @@ async function fixture(
         })
         .catch(() => {});
     }
-    if (path.endsWith('/progress'))
+    if (path.endsWith('/progress')) {
+      state.progressAttempts++;
+      if (state.failProgress === 'network')
+        return route.abort('internetdisconnected');
+      if (state.failProgress)
+        return route.fulfill({
+          status: state.failProgress,
+          json: {
+            error: { code: 'fixture', message: 'Playback session refused.' },
+          },
+        });
       state.progress.push(route.request().postDataJSON());
+    }
     return route.fulfill({ json: {} });
   });
   await page.route(
@@ -613,6 +663,9 @@ async function fixture(
           : mp4,
       });
     },
+  );
+  await page.route('**/fixture/track.wav', (route) =>
+    route.fulfill({ contentType: 'audio/wav', body: wav }),
   );
   await page.route('**/fixture/subtitles.vtt', (route) =>
     route.fulfill({
@@ -952,6 +1005,39 @@ test('music waits for tools and starts its streaming fallback automatically', as
   expect(state.errors).toEqual([]);
 });
 
+test('failed progress reports keep the gapless music queue playing until the server refuses the session', async ({
+  page,
+}) => {
+  const state = await fixture(page, {
+    music: true,
+    gapless: true,
+    failProgress: 'network',
+  });
+  const music = page.getByRole('region', { name: 'Music player' });
+  await expect(music).toContainText('Track 1 of 1 · Gapless');
+  await expect.poll(() => state.progressAttempts).toBeGreaterThan(0);
+  const position = () =>
+    music
+      .getByLabel('Music position')
+      .evaluate((input: HTMLInputElement) => Number(input.value));
+  const at = await position();
+  await expect.poll(position).toBeGreaterThan(at + 0.5);
+  state.failProgress = 503;
+  const attempts = state.progressAttempts;
+  await music.getByRole('button', { name: 'Pause', exact: true }).click();
+  await expect.poll(() => state.progressAttempts).toBeGreaterThan(attempts);
+  await music.getByRole('button', { name: 'Play', exact: true }).click();
+  const resumed = await position();
+  await expect.poll(position).toBeGreaterThan(resumed + 0.5);
+  await expect(music.getByRole('alert')).toHaveCount(0);
+  state.failProgress = 404;
+  await music.getByRole('button', { name: 'Pause', exact: true }).click();
+  await expect(music.getByRole('alert')).toContainText(
+    'Playback session refused.',
+  );
+  expect(state.errors).toEqual([]);
+});
+
 for (const close of [false, true]) {
   test(`native player ${close ? 'cancels' : 'automatically starts'} pending preparation`, async ({
     page,
@@ -1050,6 +1136,62 @@ test('web playback records active time but excludes paused time and seeking', as
   await expect.poll(() => state.progress.at(-1)?.state).toBe('stopped');
   expect(state.progress.at(-1)!.active_seconds).toBe(seconds);
   expect(state.progress.at(-1)!.position).toBeGreaterThanOrEqual(45);
+  expect(state.errors).toEqual([]);
+});
+
+test('failed progress reports keep web playback going until the server refuses the session', async ({
+  page,
+}) => {
+  const state = await fixture(page, { failProgress: 'network' });
+  const video = page.locator('video');
+  const playing = () =>
+    video.evaluate((element: HTMLVideoElement) =>
+      element.paused ? -1 : element.currentTime,
+    );
+  await decoded(page);
+  await expect.poll(() => state.progressAttempts).toBeGreaterThan(0);
+  const at = await playing();
+  await expect.poll(playing).toBeGreaterThan(at + 0.5);
+  // A server error is skipped like a dropped connection.
+  state.failProgress = 503;
+  const attempts = state.progressAttempts;
+  await video.evaluate((element: HTMLVideoElement) => element.pause());
+  await video.evaluate((element: HTMLVideoElement) => element.play());
+  await expect.poll(() => state.progressAttempts).toBeGreaterThan(attempts);
+  const resumed = await playing();
+  await expect.poll(playing).toBeGreaterThan(resumed + 0.5);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  // Later reports still arrive once the server answers again.
+  state.failProgress = undefined;
+  await video.evaluate((element: HTMLVideoElement) => element.pause());
+  await expect.poll(() => state.progress.at(-1)?.state).toBe('paused');
+  // A session the server refuses ends playback.
+  state.failProgress = 404;
+  await video.evaluate((element: HTMLVideoElement) => element.play());
+  await expect(page.getByRole('alert')).toContainText(
+    'Playback session refused.',
+  );
+  await expect.poll(playing).toBe(-1);
+  expect(state.errors).toEqual([]);
+});
+
+test('a volume drag saves where it starts and where it stops', async ({
+  page,
+}) => {
+  const state = await fixture(page);
+  await decoded(page);
+  // One input per frame, as a pointer drag delivers them.
+  await page
+    .getByRole('slider', { name: 'Playback volume' })
+    .evaluate(async (input: HTMLInputElement) => {
+      for (let step = 1; step <= 30; step++) {
+        input.value = String(step / 50);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        await new Promise(requestAnimationFrame);
+      }
+    });
+  await expect.poll(() => state.savedVolume).toBe(0.6);
+  expect(state.volumeSaves).toEqual([0.02, 0.6]);
   expect(state.errors).toEqual([]);
 });
 

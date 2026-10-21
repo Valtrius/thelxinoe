@@ -377,6 +377,21 @@ pub(super) async fn admit(
     }).await
 }
 
+/// What admitting a download depends on: the limit, the space unpinned downloads hold, the
+/// pins that exempt videos from it and the playback that keeps files from eviction.
+pub(super) async fn capacity(db: &Database) -> anyhow::Result<[i64; 4]> {
+    db.read("auto_delete.capacity", |db| {
+        let pinned = db.query_row(
+            "SELECT COUNT(*) FROM youtube_state WHERE pinned=1",
+            [],
+            |r| r.get(0),
+        )?;
+        let playing = db.query_row("SELECT COUNT(*) FROM playback_sessions WHERE youtube_video_id IS NOT NULL AND state IN ('ready','playing','paused') AND updated_at>?1",[now()-120],|r|r.get(0))?;
+        Ok([policy(db)?.limit, usage(db)?.unpinned_bytes, pinned, playing])
+    })
+    .await
+}
+
 pub(super) async fn budget(db: &Database, video: String) -> anyhow::Result<i64> {
     db.read("auto_delete.budget", move |db| available_budget(db, &video))
         .await

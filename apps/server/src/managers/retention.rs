@@ -105,7 +105,8 @@ async fn evaluate_all(state: &AppState, actor: Option<String>) -> Result<usize> 
     if !enabled {
         return Ok(0);
     };
-    let observed = bindings::observe(state).await?;
+    // Music is never retained, so Lidarr's library is not read.
+    let observed = bindings::observe(state, &["radarr", "sonarr"]).await?;
     let _lease = state.media_operations.write().await;
     let _guard = state.managers.guard.lock().await;
     bindings::reconcile_observation(state, &observed).await?;
@@ -179,10 +180,18 @@ async fn delete_locked(
     }
     Ok(())
 }
+/// Finding new candidates reads whole manager libraries, and every candidate waits at
+/// least a day, so this runs less often than due deletions are checked.
+const EVALUATE_EVERY: std::time::Duration = std::time::Duration::from_secs(600);
+
 pub(crate) async fn run(state: AppState) -> anyhow::Result<()> {
+    let mut evaluated: Option<std::time::Instant> = None;
     loop {
-        if let Err(error) = evaluate_all(&state, None).await {
-            tracing::warn!(?error, "Watched deletion evaluation will retry");
+        if evaluated.is_none_or(|at| at.elapsed() >= EVALUATE_EVERY) {
+            evaluated = Some(std::time::Instant::now());
+            if let Err(error) = evaluate_all(&state, None).await {
+                tracing::warn!(?error, "Watched deletion evaluation will retry");
+            }
         }
         if let Err(error) = crate::auto_delete::evaluate(&state).await {
             tracing::warn!(%error, "Video deletion evaluation will retry");

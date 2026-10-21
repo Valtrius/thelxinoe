@@ -88,14 +88,16 @@ const STEPS: [(&str, &str, &str); 12] = [
     ("complete", "Complete the transfer", "backend"),
 ];
 /// Map the controller journal onto the guided steps.
-fn controller_step(stage: &str) -> &'static str {
-    match stage {
+fn controller_step(stage: &str) -> Option<&'static str> {
+    Some(match stage {
         "approved" | "stopping" => "stop",
         "copying" => "copy",
         "validating" => "validate",
         "building" | "creating" | "activating" => "activate",
+        // Giving the original back keeps the step that failed.
+        "restoring" => return None,
         _ => "commit",
-    }
+    })
 }
 fn steps(t: &storage::Row) -> Vec<Value> {
     let blocked = t.review["blockers"]
@@ -153,13 +155,13 @@ fn actions(t: &storage::Row, controller: &Value) -> Value {
     let stage = controller["stage"].as_str().unwrap_or("");
     let boundary = controller["boundary_at"].is_number();
     // An outcome the controller already reached leaves nothing to retry or recover.
-    let ended = matches!(stage, "complete" | "returned" | "cancelled" | "stale");
+    let ended = matches!(stage, "complete" | "returned" | "cancelled");
     json!({
         "approve": t.state == "review" && t.review["blockers"].as_array().is_none_or(Vec::is_empty),
         "cancel": t.state == "review" || (t.state == "queued" && matches!(stage, "" | "approved") && controller["source"]["restart_disabled"] != true),
         "retry": t.state == "failed" && t.replacement_id.is_some() && !ended,
         // Before the boundary the controller restores, or already restored, the original.
-        "restore": t.state == "failed" && !boundary && matches!(stage, "failed" | "stale" | "returned"),
+        "restore": t.state == "failed" && !boundary && matches!(stage, "failed" | "restoring" | "returned"),
         "recovery": matches!(t.state.as_str(), "failed" | "suspended") && boundary && controller["completed"] != true
             && !ended && stage != "recovering",
         "remove_original": t.state == "complete" && controller["source"]["removed"] != true,
@@ -239,9 +241,14 @@ async fn services(State(state): State<AppState>, headers: HeaderMap) -> Result<J
             .filter(|r| r["kind"] == kind && r["state"] != "review")
             .max_by_key(|r| r["updated_at"].as_i64())
             .cloned();
-        // Owned is published only when the controller agrees on the committed transfer.
+        // While its transfer holds it, Owned is published only when the controller agrees on
+        // the committed transfer. Completion released that hold with the controller's agreement.
         let agreed =
-            match ownership.as_ref().and_then(|o| o["transfer_id"].as_str()) {
+            match ownership
+                .as_ref()
+                .filter(|o| o["hold"] == "transfer")
+                .and_then(|o| o["transfer_id"].as_str())
+            {
                 None => true,
                 Some(id) => controller.as_ref().is_some_and(|c| {
                     c["items"].as_array().into_iter().flatten().any(|t| {
@@ -498,7 +505,6 @@ async fn recyclarr_targets(
     plan: &Value,
     blockers: &mut Vec<String>,
 ) -> Result<Value> {
-    let configured = plan["inspection"]["recyclarr"].clone();
     let managers = super::storage::list(&state.db).await?;
     let mut targets = Vec::new();
     for imported in plan["recyclarr"]["targets"]
@@ -536,7 +542,6 @@ async fn recyclarr_targets(
         blockers
             .push("Recyclarr needs at least one configured Owned Radarr or Sonarr target".into());
     }
-    let _ = configured;
     Ok(json!(targets))
 }
 
@@ -985,22 +990,6 @@ async fn reconcile(state: &AppState, t: &storage::Row, status: &Value) -> Result
                     true
                 }
             }
-            ("stale", "queued" | "running") => {
-                storage::outcome(
-                    &state.db,
-                    t.id.clone(),
-                    "returned".into(),
-                    Some(format!(
-                        "{}; nothing changed",
-                        status["error"]
-                            .as_str()
-                            .unwrap_or("The reviewed deployment changed")
-                    )),
-                    None,
-                )
-                .await?;
-                true
-            }
             ("cancelled", "queued" | "running") => {
                 storage::outcome(&state.db, t.id.clone(), "cancelled".into(), None, None).await?;
                 true
@@ -1118,7 +1107,7 @@ async fn drive(state: &AppState, t: &storage::Row) -> Result<bool> {
             let started = controller_call(
                 state,
                 &format!("/transfers/{}/start", t.id),
-                Some(json!({"revision":t.review["plan"]["revision"],"declarations":t.declarations,"compose_mode":t.choices["compose_mode"]})),
+                Some(json!({"revision":t.review["plan"]["revision"],"compose_mode":t.choices["compose_mode"]})),
             )
             .await;
             match started {
@@ -1168,7 +1157,7 @@ async fn drive(state: &AppState, t: &storage::Row) -> Result<bool> {
                 storage::fail(
                     &state.db,
                     t.id.clone(),
-                    Some(controller_step(&stage).into()),
+                    controller_step(&stage).map(Into::into),
                     status["error"]
                         .as_str()
                         .unwrap_or("The transfer failed")
@@ -1183,7 +1172,7 @@ async fn drive(state: &AppState, t: &storage::Row) -> Result<bool> {
             &state.db,
             t.id.clone(),
             None,
-            Some(controller_step(&stage).into()),
+            controller_step(&stage).map(Into::into),
             Some(status["progress"].clone()),
             None,
         )

@@ -32,15 +32,6 @@ impl RequestContext {
     pub fn bucket(&self) -> String {
         client_bucket(self.address)
     }
-    pub fn remote(&self) -> bool {
-        match self.address {
-            IpAddr::V4(ip) => !(ip.is_private() || ip.is_loopback() || ip.is_link_local()),
-            IpAddr::V6(ip) => ip.to_ipv4_mapped().map_or_else(
-                || !(ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local()),
-                |ip| !(ip.is_private() || ip.is_loopback() || ip.is_link_local()),
-            ),
-        }
-    }
 }
 pub fn request_context(
     config: &Config,
@@ -322,18 +313,11 @@ pub async fn principal(state: &AppState, headers: &HeaderMap) -> Result<Principa
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "));
-    let cookie = headers
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| {
-            s.split(';')
-                .map(str::trim)
-                .find_map(|s| s.strip_prefix("thelxinoe_session="))
-        });
+    let cookie = crate::cookies::get(headers, &crate::cookies::Cookie::Session);
     let (raw, transport) = if let Some(token) = bearer {
         (token, "device")
-    } else if let Some(token) = cookie {
-        (token, "web")
+    } else if let Some(token) = &cookie {
+        (token.as_str(), "web")
     } else {
         return Err(ApiError::session_expired());
     };
@@ -351,12 +335,6 @@ pub async fn require(
         return Err(ApiError::forbidden());
     }
     Ok(p)
-}
-pub fn cookie(raw: &str, secure: bool) -> String {
-    format!(
-        "thelxinoe_session={raw}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000{}",
-        if secure { "; Secure" } else { "" }
-    )
 }
 
 #[cfg(test)]

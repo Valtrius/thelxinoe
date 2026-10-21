@@ -102,30 +102,70 @@ export async function mediaApi(s, c) {
         (name, i) => ({ id: `collection-${i}`, name, count: 8 }),
       ),
     });
-  s.scannedAt ??= {
-    movies: now() - 3600,
-    shows: now() - 3600,
-    music: now() - 3600,
-  };
+  s.roots ??= ['movies', 'shows', 'music'].map((kind) => ({
+    id: `root-${kind}`,
+    name: kind,
+    kind,
+    path: `/media/${kind}`,
+    last_scan: now() - 3600,
+    scan_error: null,
+  }));
+  const scanSoon = (root) =>
+    setTimeout(() => {
+      root.last_scan = now();
+      c.emit('catalog.changed', { root_id: root.id });
+    }, 1500);
+  if (path === '/catalog/roots' && method === 'POST') {
+    const inside = (child, parent) =>
+      child === parent || child.startsWith(`${parent}/`);
+    if (!body.name?.trim() || !inside(body.path, '/media'))
+      return fail(400, 'Enter a library name and a folder inside /media');
+    if (
+      s.roots.some(
+        (root) => inside(body.path, root.path) || inside(root.path, body.path),
+      )
+    )
+      return fail(409, 'Library roots cannot overlap');
+    const root = {
+      id: `root-${++s.sequence}`,
+      name: body.name,
+      kind: body.kind,
+      path: body.path,
+      last_scan: null,
+      scan_error: null,
+    };
+    s.roots.push(root);
+    scanSoon(root);
+    return json({ id: root.id });
+  }
   if (path === '/catalog/roots')
     return json({
       media_mount: '/media',
-      items: ['movies', 'shows', 'music'].map((kind) => ({
-        id: `root-${kind}`,
-        name: kind,
-        kind,
-        path: `/media/${kind}`,
-        last_scan: s.scannedAt[kind],
-        scan_error: null,
-      })),
+      items: [...s.roots].sort((a, b) => a.name.localeCompare(b.name)),
     });
-  const scan = path.match(/^\/catalog\/roots\/root-([^/]+)\/scan$/);
-  if (scan) {
-    setTimeout(() => {
-      s.scannedAt[scan[1]] = now();
-      c.emit('catalog.changed', { root_id: `root-${scan[1]}` });
-    }, 1500);
-    return json({ job_id: 'mock-scan' });
+  const folder = path.match(/^\/catalog\/roots\/([^/]+)(\/scan)?$/);
+  if (folder) {
+    const root = s.roots.find((root) => root.id === folder[1]);
+    if (!root) return fail(404, 'Library not found');
+    if (folder[2]) {
+      scanSoon(root);
+      return json({ job_id: 'mock-scan' });
+    }
+    if (method === 'PATCH') {
+      root.name = body.name;
+      return json({ saved: true });
+    }
+    if (method !== 'DELETE') return fail(405, 'Unsupported method');
+    s.roots = s.roots.filter((other) => other !== root);
+    // The kind's titles leave the library with its last folder.
+    const kinds = {
+      movies: ['movie'],
+      shows: ['show', 'season', 'episode'],
+      music: ['artist', 'album', 'track'],
+    }[root.kind];
+    if (!s.roots.some((other) => other.kind === root.kind))
+      s.library = s.library.filter((item) => !kinds.includes(item.kind));
+    return json({ deleted: true });
   }
   const catalog = path.match(/^\/catalog\/([^/]+)(?:\/(.*))?$/);
   if (catalog) {

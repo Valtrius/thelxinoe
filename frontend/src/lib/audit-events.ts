@@ -116,6 +116,8 @@ const labels: Record<string, string> = {
   'request.monitor': 'Changed monitoring',
   'request.auto_approve': 'Changed request auto-approval',
   'library.add': 'Added a library',
+  'library.rename': 'Renamed a library',
+  'library.remove': 'Removed a library',
   'metadata.override': 'Edited metadata',
   'metadata.refresh': 'Refreshed metadata',
   'episode.map': 'Mapped an episode',

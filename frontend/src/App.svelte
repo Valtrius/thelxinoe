@@ -430,7 +430,18 @@
           };
           scans[scan.root_id] = scan;
         }
-        if (event.kind === 'jobs.changed') settingsRevision++;
+        // Settings pages reload the data these events change instead of polling.
+        if (
+          [
+            'jobs.changed',
+            'stack.changed',
+            'recyclarr.changed',
+            'retention.changed',
+            'online.download.changed',
+            'users.changed',
+          ].includes(event.kind)
+        )
+          settingsRevision++;
       },
       (value) => {
         if (!ownsSession()) return;

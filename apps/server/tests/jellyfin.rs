@@ -24,7 +24,7 @@ async fn fixture() -> (tempfile::TempDir, AppState, String) {
     let state = AppState::open(configuration::config(temp.path()))
         .await
         .unwrap();
-    let hash = thelxinoe_auth::password_hash("a long test-only password".into())
+    let hash = thelxinoe_auth::password_hash("a long test-only password".into(), None)
         .await
         .unwrap();
     state
@@ -232,6 +232,15 @@ async fn local_library(root: &Path, state: &AppState) -> (PathBuf, PathBuf) {
             .unwrap();
     }
     (movie, track)
+}
+async fn grants(state: &AppState) -> i64 {
+    state
+        .db
+        .read("test.fixture", |db| {
+            Ok(db.query_row("SELECT COUNT(*) FROM playback_grants", [], |r| r.get(0))?)
+        })
+        .await
+        .unwrap()
 }
 async fn playback_state(state: &AppState, id: &str) -> (String, String) {
     let id = id.to_owned();
@@ -1619,6 +1628,7 @@ async fn local_video_plays_through_each_negotiated_delivery_for_its_own_device_s
     assert_eq!(headers[header::CONTENT_TYPE], "video/x-matroska");
     assert!(body[..] == original[..]);
     let stream = format!("/Videos/{movie}/stream?PlaySessionId={direct_id}&MediaSourceId={file}");
+    let issued = grants(&state).await;
     let (status, headers, body) = send(
         &state,
         &stream,
@@ -1633,6 +1643,8 @@ async fn local_video_plays_through_each_negotiated_delivery_for_its_own_device_s
         format!("bytes 0-1023/{}", original.len()).as_str()
     );
     assert!(body[..] == original[..1024]);
+    // Range requests are served on the play session; none mints a grant on the writer.
+    assert_eq!(grants(&state).await, issued);
     for other in [&bob, &second] {
         assert_eq!(
             send(&state, &stream, "GET", Value::Null, other).await.0,

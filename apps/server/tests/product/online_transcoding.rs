@@ -312,6 +312,12 @@ async fn recorded_videos_play_original_files_and_conversion_follows_server_polic
         .probe(&state.tools.runtime.media().unwrap())
         .await
         .unwrap();
+    let rendition = live
+        .formats
+        .iter()
+        .find(|format| format.height == 90)
+        .unwrap()
+        .descriptor();
     state
         .online
         .streams
@@ -319,6 +325,32 @@ async fn recorded_videos_play_original_files_and_conversion_follows_server_polic
         .lock()
         .await
         .insert("abcdefghijk".into(), live);
+    // Choosing a live rendition again reuses its codec probe instead of reading the
+    // provider's playlist each time.
+    upstream(proxy).await;
+    for selection in 0..2 {
+        negotiate_source(
+            &state,
+            "abcdefghijk",
+            &["h264".into()],
+            None,
+            Some(&rendition),
+            |_| thelxinoe_playback::Capabilities {
+                video: vec!["h264".into()],
+                audio: vec!["aac".into()],
+                hls: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let probes = upstream(proxy)
+            .await
+            .iter()
+            .filter(|request| request["path"] == "/90.m3u8")
+            .count();
+        assert_eq!(probes, usize::from(selection == 0), "selection {selection}");
+    }
     for height in [180, 90] {
         let input = json!({"media_id":"youtube:abcdefghijk","position":0,"options":{"quality":format!("{height}p"),"capabilities":browser(json!(["h264"]),json!(["aac"]))}});
         let response = call(&state, "/api/v1/playback", "POST", input, &cookie).await;

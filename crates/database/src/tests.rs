@@ -467,6 +467,36 @@ fn schema_2_gives_already_missing_files_a_month_from_the_upgrade() -> Result<()>
     Ok(())
 }
 
+// Sessions remembered at schema 1 never ended; the upgrade gives them the idle end and cap.
+#[test]
+fn schema_2_bounds_sessions_that_never_ended() -> Result<()> {
+    let day = 86400;
+    let session = |id: &str, created: i64, expires: i64, seen: i64| {
+        format!(
+            "INSERT INTO sessions(id,user_id,token_hash,transport,name,created_at,expires_at,last_seen) VALUES ('{id}','u','{id}','web','Browser',{created},{expires},{seen});"
+        )
+    };
+    let seed = [
+        "INSERT INTO users(id,username,role,created_at) VALUES ('u','u','user',1);".into(),
+        session("plain", 1000 * day, 1030 * day, 1010 * day),
+        session("in-use", 1000 * day, 253402300799, 1200 * day),
+        session("old", 1000 * day, 253402300799, 1500 * day),
+    ]
+    .concat();
+    let (_temp, conn) = upgraded(1, &seed)?;
+    let ends = conn
+        .prepare("SELECT id,expires_at FROM sessions ORDER BY id")?
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let expected = [
+        ("in-use", 1230 * day),
+        ("old", 1400 * day),
+        ("plain", 1030 * day),
+    ];
+    assert_eq!(ends, expected.map(|(id, end)| (id.to_owned(), end)));
+    Ok(())
+}
+
 #[test]
 fn upgrades_run_in_order_from_the_stored_version() -> Result<()> {
     let conn = Connection::open_in_memory()?;

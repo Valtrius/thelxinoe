@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
-use thelxinoe_auth::SessionAuthorization;
+use thelxinoe_auth::{SessionAuthorization, lifetime};
 use thelxinoe_core::{Principal, now};
 use thelxinoe_database::Database;
 
@@ -71,8 +71,8 @@ fn account_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
             .map(|s| (s, r.get::<_, bool>(5).unwrap_or(false))),
     })
 }
-pub(super) async fn account(db: &Database, user: String, by_name: bool) -> Result<Option<Account>> {
-    db.read("authentication.account", move |c| Ok(c.query_row(if by_name {"SELECT u.id,u.username,u.password_hash,u.auth_version,t.secret,t.enabled FROM users u LEFT JOIN auth_totp t ON t.user_id=u.id WHERE u.username=?1"} else {"SELECT u.id,u.username,u.password_hash,u.auth_version,t.secret,t.enabled FROM users u LEFT JOIN auth_totp t ON t.user_id=u.id WHERE u.id=?1"}, [user], account_row).optional()?)).await
+pub(super) async fn account(db: &Database, user: String) -> Result<Option<Account>> {
+    db.read("authentication.account", move |c| Ok(c.query_row("SELECT u.id,u.username,u.password_hash,u.auth_version,t.secret,t.enabled FROM users u LEFT JOIN auth_totp t ON t.user_id=u.id WHERE u.id=?1", [user], account_row).optional()?)).await
 }
 #[derive(Serialize)]
 pub(super) struct PasskeyInfo {
@@ -214,7 +214,7 @@ pub(super) async fn remembered(
     user: String,
     hash: String,
 ) -> Result<Option<String>> {
-    db.write("authentication.remembered.resolve",move |c|Ok(c.query_row("UPDATE auth_remembered_devices SET last_seen=?3 WHERE user_id=?1 AND token_hash=?2 RETURNING id",params![user,hash,now()],|r|r.get(0)).optional()?)).await
+    db.write("authentication.remembered.resolve",move |c|Ok(c.query_row("UPDATE auth_remembered_devices SET last_seen=?3 WHERE user_id=?1 AND token_hash=?2 AND last_seen>?3-?4 AND created_at>?3-?5 RETURNING id",params![user,hash,now(),lifetime::REMEMBERED_IDLE,lifetime::MAX],|r|r.get(0)).optional()?)).await
 }
 pub(super) struct Remember {
     pub id: String,
@@ -256,10 +256,40 @@ pub(super) async fn finish_totp(
     })
     .await
 }
+/// Records that whatever holds `presented` (a hash) signed in to `user`, and returns whether
+/// it keeps that token, refreshed. Otherwise it gets `fresh`, which also takes over the other
+/// accounts `presented` was known to, so a token another account planted is never kept.
+pub(crate) fn know(
+    c: &Connection,
+    user: &str,
+    presented: Option<&str>,
+    fresh: &str,
+) -> Result<bool> {
+    let now = now();
+    let expires = now + lifetime::KNOWN;
+    if let Some(presented) = presented {
+        if c.execute(
+            "UPDATE auth_known_browsers SET expires_at=?3 WHERE token_hash=?1 AND user_id=?2 AND expires_at>?4",
+            params![presented, user, expires, now],
+        )? == 1
+        {
+            return Ok(true);
+        }
+        c.execute(
+            "UPDATE auth_known_browsers SET token_hash=?2 WHERE token_hash=?1",
+            params![presented, fresh],
+        )?;
+    }
+    c.execute(
+        "INSERT INTO auth_known_browsers(token_hash,user_id,expires_at) VALUES(?1,?2,?3) ON CONFLICT DO UPDATE SET expires_at=excluded.expires_at",
+        params![fresh, user, expires],
+    )?;
+    Ok(false)
+}
 /// What else goes when a user's credentials are invalidated.
 #[derive(Clone, Copy)]
 pub(crate) enum Revoke<'a> {
-    /// Every other session; the caller's own keeps a bounded lifetime.
+    /// Every other session; the caller's own stays, no longer remembered.
     OtherSessions(&'a str),
     /// Every session.
     Sessions,
@@ -280,8 +310,8 @@ pub(crate) fn invalidate(c: &Connection, user: &str, revoke: Revoke) -> Result<(
                 params![user, keep],
             )?;
             c.execute(
-                "UPDATE sessions SET remembered_device_id=NULL,expires_at=MIN(expires_at,?2) WHERE id=?1",
-                params![keep, now() + 30 * 86400],
+                "UPDATE sessions SET remembered_device_id=NULL WHERE id=?1",
+                [keep],
             )?;
         }
         Revoke::Sessions | Revoke::Everything => {
@@ -290,6 +320,7 @@ pub(crate) fn invalidate(c: &Connection, user: &str, revoke: Revoke) -> Result<(
     }
     for sql in [
         "DELETE FROM auth_remembered_devices WHERE user_id=?1",
+        "DELETE FROM auth_known_browsers WHERE user_id=?1",
         "DELETE FROM auth_attempts WHERE user_id=?1",
         "DELETE FROM auth_desktop_requests WHERE user_id=?1 OR target_user_id=?1",
     ] {

@@ -3,16 +3,17 @@
 #[path = "../storage/online/oauth.rs"]
 mod storage;
 
-use super::{Google, bounded_response, google, quota, redirect_uri};
+use super::{Google, google, quota, redirect_uri};
 use crate::{
     AppState,
+    cookies::{self, Cookie},
     error::{ApiError, Result},
     security,
 };
 use axum::{
     Json,
     extract::{Query, State},
-    http::{HeaderMap, header},
+    http::HeaderMap,
     response::{IntoResponse, Redirect, Response},
 };
 use oauth2::{
@@ -25,7 +26,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thelxinoe_core::now;
 pub(super) const SCOPE: &str = "https://www.googleapis.com/auth/youtube.readonly";
-const COOKIE: &str = "thelxinoe_youtube_oauth";
 #[cfg(test)]
 pub(crate) mod tests;
 type Client = BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>;
@@ -93,7 +93,12 @@ pub async fn start(State(state): State<AppState>, headers: HeaderMap) -> Result<
         )
         .await?;
     let mut response = Json(json!({"url":url.as_str()})).into_response();
-    response.headers_mut().insert(header::SET_COOKIE,format!("{COOKIE}={browser}; HttpOnly; SameSite=Lax; Path=/api/v1/online/youtube/callback; Max-Age=600{}",if state.config.public_url.as_ref().is_some_and(|u|u.scheme()=="https"){"; Secure"}else{""}).parse().unwrap());
+    cookies::set(
+        response.headers_mut(),
+        &Cookie::YoutubeLink,
+        &browser,
+        secure(&state),
+    );
     Ok(response)
 }
 #[derive(Deserialize)]
@@ -114,19 +119,12 @@ async fn consume(state: &AppState, headers: &HeaderMap, csrf: &str) -> Result<At
     if !(32..=256).contains(&csrf.len()) {
         return Err(ApiError::bad("Authorization attempt is invalid or expired"));
     }
-    let browser = headers
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| {
-            v.split(';')
-                .map(str::trim)
-                .find_map(|v| v.strip_prefix(&format!("{COOKIE}=")))
-        })
+    let browser = cookies::get(headers, &Cookie::YoutubeLink)
         .filter(|v| v.len() == 64)
         .ok_or_else(|| {
             ApiError::bad("Continue account linking in the browser where you started")
         })?;
-    let browser_hash = thelxinoe_auth::digest(browser);
+    let browser_hash = thelxinoe_auth::digest(&browser);
     let hash = thelxinoe_auth::digest(csrf);
     let attempt = storage::consume(browser_hash, hash, &state.db).await?;
     attempt
@@ -156,15 +154,16 @@ pub async fn callback(
         }
     };
     let mut response = Redirect::to(&format!("/?youtube_link={status}")).into_response();
-    response.headers_mut().insert(
-        header::SET_COOKIE,
-        format!(
-            "{COOKIE}=; HttpOnly; SameSite=Lax; Path=/api/v1/online/youtube/callback; Max-Age=0"
-        )
-        .parse()
-        .unwrap(),
-    );
+    cookies::clear(response.headers_mut(), &Cookie::YoutubeLink, secure(&state));
     Ok(response)
+}
+/// The link cookie crosses Google's redirect to the public URL, so that URL decides Secure.
+fn secure(state: &AppState) -> bool {
+    state
+        .config
+        .public_url
+        .as_ref()
+        .is_some_and(|u| u.scheme() == "https")
 }
 async fn complete(state: &AppState, headers: &HeaderMap, input: Callback) -> Result<()> {
     let csrf = input
@@ -225,7 +224,7 @@ async fn finish(state: &AppState, attempt: Attempt, input: Callback, csrf: &str)
     let verifier = String::from_utf8(verifier)
         .map_err(|_| ApiError::bad("Invalid stored authorization attempt"))?;
     let client = client(state, config, attempt.redirect.clone())?;
-    let transport = |request| send(state.online.http.clone(), request);
+    let transport = |request| crate::bounded::oauth(state.online.http.clone(), request);
     let token=client.exchange_code(AuthorizationCode::new(code)).set_pkce_verifier(PkceCodeVerifier::new(verifier)).request_async(&transport).await.map_err(|_|ApiError::bad("Google could not complete account linking; verify the Web application client and callback URL"))?;
     let scope = token
         .scopes()
@@ -260,7 +259,7 @@ async fn finish(state: &AppState, attempt: Attempt, input: Callback, csrf: &str)
         .send()
         .await
         .map_err(|_| ApiError::bad("YouTube account lookup failed"))?;
-    let (status, _, bytes) = bounded_response(response)
+    let (status, _, bytes) = crate::bounded::response(response)
         .await
         .map_err(|_| ApiError::bad("YouTube account lookup failed"))?;
     if !status.is_success() {
@@ -305,22 +304,4 @@ async fn finish(state: &AppState, attempt: Attempt, input: Callback, csrf: &str)
         ));
     }
     Ok(())
-}
-pub(super) async fn send(
-    http: reqwest::Client,
-    request: oauth2::HttpRequest,
-) -> std::result::Result<oauth2::HttpResponse, std::io::Error> {
-    let (parts, body) = request.into_parts();
-    let response = http
-        .request(parts.method, parts.uri.to_string())
-        .headers(parts.headers)
-        .body(body)
-        .send()
-        .await
-        .map_err(|_| std::io::Error::other("OAuth provider request failed"))?;
-    let (status, headers, body) = bounded_response(response).await?;
-    let mut response = axum::http::Response::new(body);
-    *response.status_mut() = status;
-    *response.headers_mut() = headers;
-    Ok(response)
 }

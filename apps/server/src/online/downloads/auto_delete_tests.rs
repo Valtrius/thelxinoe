@@ -289,21 +289,22 @@ async fn auto_delete_shared_downloads_respect_pins_capacity_watched_users_and_fi
         db.execute("UPDATE youtube_downloads SET state='queued',path=NULL,size=NULL,modified=NULL,probe=NULL,completed_at=NULL WHERE video_id='waiting0001'", [])?;
         Ok(())
     }).await.unwrap();
-    let (waiting_id, waiting_generation, bundle) =
-        storage::claim_download(&state.db).await.unwrap().unwrap();
+    let (waiting_id, waiting_generation, _, _) = storage::claim_download(&state.db, Vec::new())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         waiting_id, "waiting0001",
         "An explicit download does not require a pin or watchlist"
     );
-    let status = download(&state, &waiting_id, &waiting_generation, &bundle)
-        .await
-        .unwrap();
-    assert_eq!(
-        status, "waiting_for_space",
+    assert!(
+        !crate::auto_delete::admit(&state, &waiting_id, &waiting_generation)
+            .await
+            .unwrap(),
         "Protected playback makes the new download wait before starting a process"
     );
     storage::finish_download(
-        status,
+        "waiting_for_space",
         waiting_id.clone(),
         waiting_generation.clone(),
         &state.db,
@@ -341,7 +342,11 @@ async fn auto_delete_shared_downloads_respect_pins_capacity_watched_users_and_fi
     )
     .await;
     assert!(!playing.exists());
-    let (_, generation, _) = storage::claim_download(&state.db).await.unwrap().unwrap();
+    let (_, generation, _, waiting) = storage::claim_download(&state.db, Vec::new())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(waiting);
     assert_eq!(generation, waiting_generation);
     assert!(
         crate::auto_delete::admit(&state, &waiting_id, &generation)
@@ -485,4 +490,85 @@ async fn downloads_missing_or_changed_on_disk_stop_claiming_their_rows() {
             ("removed0001".to_owned(), "ready".to_owned()),
         ]
     );
+}
+
+// A download waiting for space is tried again when the capacity it waits on changes, or
+// after a while, not on every pass; and a retry that still waits announces nothing.
+#[tokio::test]
+async fn downloads_waiting_for_space_are_retried_when_capacity_changes() {
+    let (_temp, state, _cookie) = fixture().await;
+    seed(&state, "playing0001", 10, 1).await;
+    state.db.write("test.waiting", |db| {
+        db.execute("UPDATE retention_policies SET storage_limit_bytes=15 WHERE domain='videos'", [])?;
+        // Playback keeps the only ready download from eviction, so nothing fits.
+        db.execute("INSERT INTO playback_sessions(id,user_id,auth_session_id,generation,edition,state,mode,options,duration,created_at,updated_at,youtube_video_id) SELECT 'playing','alice',id,'g','public','playing','direct','{}',100,?1,?1,'playing0001' FROM sessions WHERE user_id='alice' LIMIT 1", [now()])?;
+        db.execute("INSERT INTO youtube_media(video_id) VALUES ('waiting0001')", [])?;
+        db.execute("INSERT INTO youtube_videos(user_id,video_id,title,privacy) VALUES ('alice','waiting0001','Waiting','public')", [])?;
+        db.execute("INSERT INTO youtube_download_requests VALUES ('alice','waiting0001',1)", [])?;
+        db.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,requested_at,updated_at) VALUES ('waiting0001','g','queued','{}',1,1)", [])?;
+        Ok(())
+    }).await.unwrap();
+    // The download's state, whether it was claimed since `mark`, and the events so far.
+    let observe = async || {
+        state
+            .db
+            .read("test.observe", |db| {
+                Ok((
+                    db.query_row(
+                        "SELECT state,updated_at>1 FROM youtube_downloads WHERE video_id='waiting0001'",
+                        [],
+                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)),
+                    )?,
+                    db.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0))?,
+                ))
+            })
+            .await
+            .unwrap()
+    };
+    let mark = async || {
+        state
+            .db
+            .write("test.mark", |db| {
+                db.execute("UPDATE youtube_downloads SET updated_at=1", [])?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+    };
+    let mut parked = Parked::new();
+    next(&state, &mut parked).await.unwrap();
+    let (_, events) = observe().await;
+    assert_eq!(observe().await.0, ("waiting_for_space".into(), true));
+    mark().await;
+    for _ in 0..3 {
+        next(&state, &mut parked).await.unwrap();
+    }
+    assert_eq!(
+        observe().await,
+        (("waiting_for_space".into(), false), events),
+        "Unchanged capacity leaves a waiting download alone"
+    );
+    for (_, until) in parked.values_mut() {
+        *until = Instant::now();
+    }
+    next(&state, &mut parked).await.unwrap();
+    assert_eq!(
+        observe().await,
+        (("waiting_for_space".into(), true), events),
+        "A late retry that still waits announces nothing"
+    );
+    mark().await;
+    state
+        .db
+        .write("test.stop", |db| {
+            db.execute("UPDATE playback_sessions SET state='stopped'", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    next(&state, &mut parked).await.unwrap();
+    let ((status, claimed), after) = observe().await;
+    // Admitted once playback stops protecting the other file; the fixture's empty tool
+    // bundle then fails the download itself.
+    assert!(claimed && status == "failed" && after > events, "{status}");
 }

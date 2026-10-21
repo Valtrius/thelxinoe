@@ -32,6 +32,8 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
     let add_count = adds.clone();
     let searches = Arc::new(AtomicUsize::new(0));
     let search_count = searches.clone();
+    let whole_library = Arc::new(AtomicUsize::new(0));
+    let whole_library_reads = whole_library.clone();
     let stub = Router::new()
         .route(
             "/services/radarr/api/v3/system/status",
@@ -60,10 +62,17 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
         )
         .route(
             "/services/radarr/api/v3/movie",
-            get(move || {
-                let m = get_movies.clone();
-                async move { Json(json!(*m.lock().await)) }
-            })
+            get(
+                move |axum::extract::Query(query): axum::extract::Query<
+                    std::collections::HashMap<String, String>,
+                >| {
+                    if !query.contains_key("tmdbId") {
+                        whole_library_reads.fetch_add(1, Ordering::SeqCst);
+                    }
+                    let m = get_movies.clone();
+                    async move { Json(json!(*m.lock().await)) }
+                },
+            )
             .post(move |Json(mut body): Json<Value>| {
                 let m = post_movies.clone();
                 let count = add_count.clone();
@@ -222,6 +231,11 @@ async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_a
     acquire(&state, &job).await.unwrap();
     assert_eq!(adds.load(Ordering::SeqCst), 1);
     assert_eq!(searches.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        whole_library.load(Ordering::SeqCst),
+        0,
+        "A request looks up its own title, not the whole library"
+    );
     let rows = call(
         &state,
         "/api/v1/acquisition/requests",
@@ -939,4 +953,70 @@ async fn provisioning_is_admin_only_durable_and_never_puts_credentials_in_jobs()
         accepted, 1,
         "Concurrent requests must enqueue exactly one update"
     );
+}
+
+#[tokio::test]
+async fn connecting_an_initialized_seerr_checks_its_api_key() {
+    let (_temp, state, _) = fixture().await;
+    let token =
+        crate::test_support::issue_session(&state.db, "bob".into(), "web".into(), "Admin".into())
+            .await
+            .unwrap();
+    state
+        .db
+        .write("test.fixture", |db| {
+            db.execute("UPDATE users SET role='admin' WHERE id='bob'", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let admin = format!("thelxinoe_session={token}");
+    // Seerr's status is public; only its settings prove the key.
+    let stub = Router::new().fallback(
+        |request: axum::http::Request<axum::body::Body>| async move {
+            let key = request
+                .headers()
+                .get("x-api-key")
+                .and_then(|v| v.to_str().ok());
+            match (request.uri().path(), key) {
+                ("/api/v1/status", _) => (StatusCode::OK, Json(json!({"version":"2.7"}))),
+                ("/api/v1/settings/public", _) => {
+                    (StatusCode::OK, Json(json!({"initialized":true})))
+                }
+                ("/api/v1/settings/main", Some("correct-seerr-key")) => {
+                    (StatusCode::OK, Json(json!({})))
+                }
+                _ => (StatusCode::FORBIDDEN, Json(Value::Null)),
+            }
+        },
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move { axum::serve(listener, stub).await.unwrap() });
+    let container = "d".repeat(64);
+    let inspection = json!({"id":container,"name":"seerr","running":true,"mounts":[],"networks":[{"id":"network","address":"127.0.0.1"}]});
+    state.managers.docker.lock().unwrap().extend([
+        ("containers/self".into(), inspection.clone()),
+        (format!("containers/{container}"), inspection),
+    ]);
+    let register = |secret: &str| json!({"name":"Seerr","kind":"seerr","container_id":container,"port":port,"credentials":{"secret":secret}});
+    let wrong = call(
+        &state,
+        "/api/v1/admin/support",
+        "POST",
+        register("wrong-seerr-key"),
+        &admin,
+    )
+    .await;
+    assert_eq!(wrong.0, StatusCode::CONFLICT, "{}", wrong.2);
+    let right = call(
+        &state,
+        "/api/v1/admin/support",
+        "POST",
+        register("correct-seerr-key"),
+        &admin,
+    )
+    .await;
+    assert_eq!(right.0, StatusCode::OK, "{}", right.2);
+    server.abort();
 }
