@@ -9,6 +9,8 @@ import unittest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "apps/server/src/online/streamlink_worker.py"
 MODULE = '''
+import json
+from pathlib import Path
 from types import SimpleNamespace as S
 class Stream:
     def __init__(self, name, width, height, fps, codecs):
@@ -19,7 +21,9 @@ class Stream:
     def to_url(self): return self.url
 class Streamlink:
     def set_option(self, *args): pass
-    def streams(self, address):
+    def streams(self, address, options=None):
+        with Path(__file__).with_name('requests.jsonl').open('a') as log:
+            log.write(json.dumps([address, options and dict(options)]) + '\\n')
         variants = {
             '1080p': Stream('1080p', 1920, 1080, 29.97, ['avc1.640028', 'mp4a.40.2']),
             '1080p60': Stream('1080p60', 1920, 1080, 59.94, ['avc1.64002a', 'mp4a.40.2']),
@@ -36,15 +40,27 @@ class Streamlink:
 class ProviderVariants(unittest.TestCase):
     def test_worker_preserves_all_provider_variants_and_exact_frame_rates(self):
         with tempfile.TemporaryDirectory() as directory:
-            Path(directory, "streamlink.py").write_text(MODULE)
+            package = Path(directory, "streamlink")
+            package.mkdir()
+            Path(package, "__init__.py").write_text(MODULE)
+            Path(package, "options.py").write_text("class Options(dict): pass\n")
             code = "import sys; sys.path.insert(0, sys.argv[1]); " + SCRIPT.read_text()
             result = subprocess.run(
                 [sys.executable, "-I", "-B", "-u", "-c", code, directory],
-                input=json.dumps({"provider": "twitch", "channel": "fixture"}) + "\n",
+                input="".join(json.dumps({"provider": provider, "channel": "fixture"}) + "\n"
+                              for provider in ("twitch", "kick")),
                 text=True, capture_output=True, timeout=10,
             )
+            requests = [json.loads(line)
+                        for line in Path(package, "requests.jsonl").read_text().splitlines()]
         self.assertEqual(result.returncode, 0, result.stderr)
+        # Twitch lists its H.265 and AV1 renditions only when asked; Kick takes no options.
+        self.assertEqual(requests, [
+            ["https://www.twitch.tv/fixture", {"supported-codecs": ["h264", "h265", "av1"]}],
+            ["https://kick.com/fixture", None],
+        ])
         frames = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual(frames[2], frames[1])
         formats = frames[1]["formats"]
         self.assertEqual(len(formats), 6)
         self.assertEqual({f["height"] for f in formats}, {720, 1080, 1440, 2160, 4320})
