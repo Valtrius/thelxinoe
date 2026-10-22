@@ -85,7 +85,9 @@ pub struct Metrics {
     pub writes: WorkStats,
 }
 
-type Work = Box<dyn FnOnce(&mut Connection) -> bool + Send>;
+// Work returns whether its connection is still usable, and the reply to its
+// caller, which the worker sends once the counters include the operation.
+type Work = Box<dyn FnOnce(&mut Connection) -> (bool, Box<dyn FnOnce() + Send>) + Send>;
 struct Job {
     operation: &'static str,
     submitted: Instant,
@@ -150,7 +152,7 @@ impl Lane {
                             counters.active.fetch_add(1, Ordering::Relaxed);
                             let waited = micros(job.submitted.elapsed());
                             let started = Instant::now();
-                            let healthy = (job.work)(&mut conn);
+                            let (healthy, reply) = (job.work)(&mut conn);
                             let elapsed = micros(started.elapsed());
                             counters.active.fetch_sub(1, Ordering::Relaxed);
                             counters.completed.fetch_add(1, Ordering::Relaxed);
@@ -164,6 +166,7 @@ impl Lane {
                                 execution_micros = elapsed,
                                 "Database operation completed"
                             );
+                            reply();
                             if !healthy {
                                 break;
                             }
@@ -217,8 +220,12 @@ impl Lane {
                 if result.is_err() {
                     counters.failed.fetch_add(1, Ordering::Relaxed);
                 }
-                let _ = reply.send(result);
-                healthy
+                (
+                    healthy,
+                    Box::new(move || {
+                        let _ = reply.send(result);
+                    }),
+                )
             }),
         });
         response.await.map_err(|_| AccessError::WorkerStopped)?

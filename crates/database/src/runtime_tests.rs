@@ -272,3 +272,20 @@ async fn panic_and_unfinished_transactions_roll_back_before_connection_reuse() -
     assert_eq!(db.metrics().writes.failed, 2);
     Ok(())
 }
+
+// Callers read the metrics right after an operation, as tests that check an
+// operation did not write do.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_operation_is_counted_before_its_caller_resumes() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let db = Database::open(temp.path().join("db"))?;
+    let writes = db.metrics().writes.completed;
+    let reads = db.metrics().reads.completed;
+    for count in 1..=20000 {
+        db.write("test.count", |_| Ok(())).await?;
+        assert_eq!(db.metrics().writes.completed, writes + count);
+        db.read("test.count", |_| Ok(())).await?;
+        assert_eq!(db.metrics().reads.completed, reads + count);
+    }
+    Ok(())
+}
