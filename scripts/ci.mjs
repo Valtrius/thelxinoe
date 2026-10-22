@@ -69,11 +69,6 @@ async function group(name, action) {
     failures.push(name);
     console.error(`${name}: ${error.message}`);
   } finally {
-    try {
-      browserRuntime?.close();
-    } catch (error) {
-      failures.push(`browser cleanup: ${error.message}`);
-    }
     const errors = cleanupResources(resources, process.env.THELXINOE_CI_RUN_ID);
     if (errors.length) {
       failures.push(`${name} cleanup`);
