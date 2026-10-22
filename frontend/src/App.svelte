@@ -281,23 +281,26 @@
         await initializeTransport();
         serverAddress = serverUrl();
         if (!(await checkServer())) break;
+        let current: User | null = null;
         if (!setup) {
           try {
-            user = (await api<{ user: User }>('/auth/me')).user;
+            current = (await api<{ user: User }>('/auth/me')).user;
           } catch (e) {
             if (!(e instanceof ApiError) || e.status !== 401) throw e;
-            user = null;
           }
         }
+        if (current && returnToService(current)) return;
+        // Everything the session shows is read after the event cursor, so the
+        // first connection replays any change those reads missed.
+        if (current) await startEvents();
+        user = current;
         if (user) {
-          if (returnToService()) return;
           await Promise.all([
             loadAppearance(user.id),
             loadDisplayPreferences(),
             loadProviders(),
           ]);
           restoreNavigation();
-          startEvents();
           if (desktop) {
             const music = (await invoke<NativeView[]>('mpv_sessions')).find(
               (view) => view.music,
@@ -472,7 +475,9 @@
         if (value && user) void refreshAppearance(user.id);
       },
     );
-    events.connect();
+    const prepared = events.prepare();
+    void events.connect();
+    return prepared;
   }
   async function prepareSignIn(address: string) {
     teardownSession();
@@ -483,12 +488,12 @@
     return checkServer();
   }
   async function signedIn(current: User) {
-    user = current;
     setup = false;
-    if (returnToService()) return;
-    // The shell, and its first page, render as soon as `user` is set: the event
-    // cursor must be requested before that page reads its data.
-    startEvents();
+    if (returnToService(current)) return;
+    // The shell, and its first page, render and read their data as soon as
+    // `user` is set: capture the event cursor before that.
+    await startEvents();
+    user = current;
     await Promise.all([
       loadAppearance(user.id),
       loadDisplayPreferences(),
@@ -496,9 +501,9 @@
     ]);
     restoreNavigation();
   }
-  function returnToService() {
+  function returnToService(current: User) {
     const kind = new URLSearchParams(location.search).get('service');
-    if (!desktop && user?.role === 'admin' && hasNativeAccess(kind)) {
+    if (!desktop && current.role === 'admin' && hasNativeAccess(kind)) {
       location.replace(`/services/${kind}`);
       return true;
     }

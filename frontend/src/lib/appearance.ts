@@ -43,6 +43,8 @@ let owner = '';
 let motionLoaded = false;
 let generation = 0;
 let acceptedRevision = 0;
+// Appearances accepted from the server, by a read or an event.
+let received = 0;
 let pending = Promise.resolve();
 const localChanges = new Map<number, Partial<Appearance>>();
 const failedChanges = new Set<number>();
@@ -107,6 +109,7 @@ function acknowledgeSavedChange(id: number, change: Partial<Appearance>) {
 export function acceptAppearance(value: Appearance) {
   motionLoaded = true;
   acceptedRevision++;
+  received++;
   let next = { ...defaults, ...value };
   for (const change of initialChanges ?? []) next = merge(next, change);
   for (const change of localChanges.values()) next = merge(next, change);
@@ -146,10 +149,13 @@ export async function loadAppearance(userId: string) {
     localStorage.getItem(`thelxinoe-video-muted:${userId}`) === 'true',
   );
   const current = ++generation;
+  const before = received;
   try {
     const value = await api<Appearance>('/me/appearance');
     if (current === generation) {
-      acceptAppearance(value);
+      // The event stream is open while this loads: an appearance it delivered,
+      // or a refresh it started, is newer.
+      if (received === before) acceptAppearance(value);
       loadFailed = false;
       updateError();
     }
