@@ -14,7 +14,7 @@
   import { statsClass } from './lib/ui/styles';
   import { onMount, tick, untrack } from 'svelte';
   import { SvelteURL } from 'svelte/reactivity';
-  import { players, preloadPage } from './lib/pages';
+  import { players, prefetchVideoPlayer, preloadPage } from './lib/pages';
   import { playerFrameReveal } from './lib/player-reveal';
   import FeatureOutlet from './lib/FeatureOutlet.svelte';
   import PageLoading from './lib/ui/PageLoading.svelte';
@@ -125,6 +125,7 @@
   } from './lib/native-playback';
   import { dismissToastByKey, showToast } from './lib/providers/toasts';
   import { youtubeVideoIdFromInput } from './lib/providers/youtube-video-input';
+  import { forgetSeerrStatus } from './lib/seerr/status';
   import { playbackProgress } from './lib/providers/youtube-progress';
   import {
     providers,
@@ -234,6 +235,10 @@
   $effect(() => {
     const id = attentionUserId;
     if (id) return connectAttention(id);
+  });
+  // Desktop videos play in MPV; only the browser needs the video player.
+  $effect(() => {
+    if (attentionUserId && !desktop) void prefetchVideoPlayer();
   });
   let accountRevision = $state(0);
   let scans = $state<Record<string, { completed: number; total: number }>>({});
@@ -375,6 +380,8 @@
           accountRevision++;
           settingsRevision++;
         }
+        if (['stack.changed', 'server.reconnected'].includes(event.kind))
+          forgetSeerrStatus();
         if (['tools.changed', 'server.reconnected'].includes(event.kind))
           window.dispatchEvent(new Event('thelxinoe-tools'));
         if (['product.changed', 'server.reconnected'].includes(event.kind))
@@ -479,13 +486,15 @@
     user = current;
     setup = false;
     if (returnToService()) return;
+    // The shell, and its first page, render as soon as `user` is set: the event
+    // cursor must be requested before that page reads its data.
+    startEvents();
     await Promise.all([
       loadAppearance(user.id),
       loadDisplayPreferences(),
       loadProviders(),
     ]);
     restoreNavigation();
-    startEvents();
   }
   function returnToService() {
     const kind = new URLSearchParams(location.search).get('service');

@@ -118,6 +118,14 @@ export async function prefetchSettings(
     await inBackground(() => settingsPages[key]()).catch(() => {});
   }
 }
+// The browser's video player, with hls.js, stays out of the first load. It
+// loads once the first page has had a few seconds to itself, so starting a
+// video rarely waits for its code.
+export async function prefetchVideoPlayer() {
+  await new Promise((resolve) => setTimeout(resolve, 5000));
+  await pageSettled();
+  await inBackground(() => players.video()).catch(() => {});
+}
 export async function preloadPage(route: AppRoute) {
   if (route.section === 'Settings') {
     await Promise.all([

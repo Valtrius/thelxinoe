@@ -134,6 +134,10 @@ export class Events {
   private attempt = 0;
   private cursor = 0;
   private initialized = false;
+  private ticketRequested = false;
+  // The first ticket is requested before any page reads its data, so a socket
+  // opened from its cursor replays every change those pages have missed.
+  private startupCursor = true;
   private epoch?: string;
   private retry = 500;
   // Phones suspend background pages and can leave their connection stalled.
@@ -168,6 +172,8 @@ export class Events {
       if (current()) this.retryLater();
     }, 10000);
     let ticket: string;
+    const firstTicket = !this.ticketRequested;
+    this.ticketRequested = true;
     try {
       const issued = await api<{
         ticket: string;
@@ -184,6 +190,7 @@ export class Events {
       ) {
         this.cursor = issued.cursor ?? 0;
         this.initialized = true;
+        if (!firstTicket) this.startupCursor = false;
       }
       this.epoch = issued.epoch;
       if (!desktop && issued.version && issued.version !== clientVersion)
@@ -205,11 +212,13 @@ export class Events {
       clearTimeout(this.timer);
       this.retry = 500;
       this.status(true);
-      this.receive({
-        id: this.cursor,
-        kind: 'server.reconnected',
-        payload: {},
-      });
+      if (!this.startupCursor)
+        this.receive({
+          id: this.cursor,
+          kind: 'server.reconnected',
+          payload: {},
+        });
+      this.startupCursor = false;
     };
     socket.onmessage = (message) => {
       if (!current()) return;

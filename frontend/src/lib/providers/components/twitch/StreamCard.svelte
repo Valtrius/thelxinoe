@@ -2,12 +2,14 @@
   import { desktop } from '../../../api';
   import { Copy, ExternalLink, MessageSquareText, Radio } from '@lucide/svelte';
   import type { TwitchLiveStream } from '../../types';
+  import { twitchPreview, twitchPreviewSet } from '../../utils';
   import LiveCard from '../ui/LiveCard.svelte';
   import LiveCardBadge from '../ui/LiveCardBadge.svelte';
   import CardShortcutButton from '../ui/CardShortcutButton.svelte';
 
   let {
     stream,
+    thumbnailSizes,
     playbackReady,
     isPlaying,
     isLaunching,
@@ -17,6 +19,8 @@
     onChat,
   }: {
     stream: TwitchLiveStream;
+    /** The card's rendered width, for picking the preview's size. */
+    thumbnailSizes: string;
     playbackReady: boolean;
     isPlaying: boolean;
     isLaunching: boolean;
@@ -27,7 +31,10 @@
   } = $props();
 
   const thumbnail = $derived(
-    stream.thumbnailUrl?.replace('{width}', '640').replace('{height}', '360'),
+    stream.thumbnailUrl ? twitchPreview(stream.thumbnailUrl, 640) : undefined,
+  );
+  const thumbnailSrcset = $derived(
+    stream.thumbnailUrl ? twitchPreviewSet(stream.thumbnailUrl) : undefined,
   );
 </script>
 
@@ -37,6 +44,8 @@
   displayName={stream.displayName}
   title={stream.title}
   thumbnailUrl={thumbnail}
+  {thumbnailSrcset}
+  {thumbnailSizes}
   profileImageUrl={stream.profileImageUrl}
   statistics={stream}
   {isPlaying}

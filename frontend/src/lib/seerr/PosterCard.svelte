@@ -3,12 +3,18 @@
   import {
     artwork,
     availability,
+    posterSet,
     title,
     year,
     kind,
     type Media,
   } from './types';
-  let { item, open } = $props<{ item: Media; open: (item: Media) => void }>();
+  let { item, open, sizes } = $props<{
+    item: Media;
+    open: (item: Media) => void;
+    /** The poster's rendered width, for picking its image size. */
+    sizes: string;
+  }>();
   let failed = $state(false);
   const status = $derived(availability(item.mediaInfo?.status));
 </script>
@@ -24,6 +30,8 @@
     {#if artwork(item.posterPath) && !failed}<img
         class="size-full object-cover"
         src={artwork(item.posterPath)}
+        srcset={posterSet(item.posterPath)}
+        {sizes}
         alt=""
         loading="lazy"
         onerror={() => (failed = true)}

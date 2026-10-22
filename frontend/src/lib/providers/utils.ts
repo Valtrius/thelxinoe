@@ -118,6 +118,42 @@ export function youtubeThumbnailUrl(value?: string | null): string | null {
   }
 }
 
+// Channel avatars are rendered at whatever size their `=sN` option names; the
+// API's medium avatar, 240 px, is far larger than most cards show it.
+const youtubeAvatarSize = /=s\d+(?=-|$)/;
+
+export function youtubeAvatarSet(url: string): string | undefined {
+  try {
+    const { hostname } = new URL(url);
+    if (
+      !['yt3.ggpht.com', 'yt3.googleusercontent.com'].includes(hostname) ||
+      !youtubeAvatarSize.test(url)
+    )
+      return undefined;
+  } catch {
+    return undefined;
+  }
+  return [36, 72, 108, 176, 240]
+    .map((size) => `${url.replace(youtubeAvatarSize, `=s${size}`)} ${size}w`)
+    .join();
+}
+
+// Twitch renders a stream preview at whatever size its URL names, whether the
+// API's `{width}x{height}` template or a size the server already filled in.
+const twitchPreviewSize = /-(?:\{width\}|\d+)x(?:\{height\}|\d+)(\.\w+)$/;
+
+export function twitchPreview(url: string, width: number): string {
+  return url.replace(twitchPreviewSize, `-${width}x${(width * 9) / 16}$1`);
+}
+
+export function twitchPreviewSet(url: string): string | undefined {
+  return twitchPreviewSize.test(url)
+    ? [320, 480, 640]
+        .map((width) => `${twitchPreview(url, width)} ${width}w`)
+        .join()
+    : undefined;
+}
+
 export function twitchUrl(login: string): string {
   return `https://www.twitch.tv/${login}`;
 }

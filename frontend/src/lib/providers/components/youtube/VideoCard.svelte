@@ -19,11 +19,17 @@
     YoutubeWatchlist,
     YoutubeVideo,
   } from '../../types';
-  import { formatClock, relativeTime, youtubeThumbnailUrl } from '../../utils';
+  import {
+    formatClock,
+    relativeTime,
+    youtubeAvatarSet,
+    youtubeThumbnailUrl,
+  } from '../../utils';
 
   let {
     actions,
     video,
+    avatarSizes,
     mpvReady,
     ytdlpReady,
     ffmpegReady,
@@ -43,6 +49,8 @@
   }: {
     actions: YoutubeVideoActions;
     video: YoutubeVideo;
+    /** The channel avatar's on-screen width, for picking its image size. */
+    avatarSizes: string;
     mpvReady: boolean;
     ytdlpReady: boolean;
     ffmpegReady: boolean;
@@ -223,6 +231,8 @@
       <img
         class="size-9 shrink-0 rounded-full border border-line object-cover"
         src={video.channelThumbnailUrl}
+        srcset={youtubeAvatarSet(video.channelThumbnailUrl)}
+        sizes={avatarSizes}
         alt=""
         loading="lazy"
       />

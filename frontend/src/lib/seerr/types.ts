@@ -67,6 +67,17 @@ export function artwork(path?: string | null, size = 'w500') {
     ? `https://image.tmdb.org/t/p/${size}${path}`
     : '';
 }
+// TMDB serves each image at fixed widths; with `sizes`, the browser downloads
+// the smallest one its layout and pixel density need.
+function artworkSet(path: string | null | undefined, widths: number[]) {
+  return artwork(path)
+    ? widths.map((width) => `${artwork(path, `w${width}`)} ${width}w`).join()
+    : undefined;
+}
+export const posterSet = (path?: string | null) =>
+  artworkSet(path, [92, 154, 185, 342, 500]);
+export const backdropSet = (path?: string | null) =>
+  artworkSet(path, [300, 780, 1280]);
 export function availability(status?: number) {
   return (
     (

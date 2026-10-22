@@ -75,6 +75,36 @@ describe('server transport', () => {
     await vi.advanceTimersByTimeAsync(30000);
     expect(Socket.all).toHaveLength(2);
   });
+  it('asks pages to reload only after changes the first cursor may miss', async () => {
+    page();
+    const receive = vi.fn();
+    const events = new Events(receive);
+    await events.connect();
+    // Pages read their data after the first ticket: it already covers them.
+    Socket.all[0].open();
+    expect(receive).not.toHaveBeenCalled();
+    Socket.all[0].close();
+    await vi.advanceTimersByTimeAsync(500);
+    Socket.all[1].open();
+    expect(receive).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'server.reconnected' }),
+    );
+    events.close();
+  });
+  it('reloads pages when the first ticket failed', async () => {
+    const fetch = vi.fn();
+    page(fetch);
+    fetch.mockRejectedValueOnce(new TypeError('Network connection was lost'));
+    const receive = vi.fn();
+    const events = new Events(receive);
+    await events.connect();
+    await vi.advanceTimersByTimeAsync(500);
+    Socket.all[0].open();
+    expect(receive).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'server.reconnected' }),
+    );
+    events.close();
+  });
   it('replaces a connection that stalls before opening', async () => {
     page();
     const status = vi.fn();

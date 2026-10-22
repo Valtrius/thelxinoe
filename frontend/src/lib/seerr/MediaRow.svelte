@@ -47,6 +47,7 @@
     {#each items as item (`${item.mediaType}:${item.id}`)}<PosterCard
         {item}
         {open}
+        sizes="(max-width: 1046px) 136px, (max-width: 1415px) 13vw, 184px"
       />{/each}
   </div>
 </section>

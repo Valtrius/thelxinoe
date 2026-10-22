@@ -15,6 +15,8 @@
     displayName,
     title,
     thumbnailUrl,
+    thumbnailSrcset,
+    thumbnailSizes,
     profileImageUrl,
     statistics,
     isPlaying,
@@ -33,6 +35,8 @@
     displayName: string;
     title: string;
     thumbnailUrl?: string | null;
+    thumbnailSrcset?: string;
+    thumbnailSizes?: string;
     profileImageUrl?: string | null;
     statistics?: { viewerCount: number; startedAt: string } | null;
     isPlaying: boolean;
@@ -75,6 +79,8 @@
         <img
           class={`size-full object-cover ${mediaCardThumbnailClass}`}
           src={thumbnailUrl}
+          srcset={thumbnailSrcset}
+          sizes={thumbnailSizes}
           alt=""
           loading="lazy"
         />

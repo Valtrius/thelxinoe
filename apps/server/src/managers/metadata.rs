@@ -961,7 +961,14 @@ pub(super) async fn serve_artwork(
     path: std::path::PathBuf,
     request: Request<Body>,
 ) -> Result<Response> {
-    let signature = tokio::fs::read(&path)
+    use tokio::io::AsyncReadExt;
+    // The type only needs the signature; the file itself streams from disk.
+    let mut signature = Vec::with_capacity(4);
+    tokio::fs::File::open(&path)
+        .await
+        .map_err(|_| ApiError::not_found())?
+        .take(4)
+        .read_to_end(&mut signature)
         .await
         .map_err(|_| ApiError::not_found())?;
     let content_type = if signature.starts_with(b"\x89PNG") {
