@@ -411,6 +411,8 @@ async fn web_files(root: &std::path::Path, mut request: Request) -> Response {
         // Asset names carry a content hash. A chunk missing after an update is
         // a plain uncached 404, never index.html served in its place.
         ServeDir::new(root)
+            .precompressed_br()
+            .precompressed_gzip()
             .oneshot(request)
             .await
             .unwrap()
@@ -421,7 +423,13 @@ async fn web_files(root: &std::path::Path, mut request: Request) -> Response {
         request.headers_mut().remove(header::IF_MODIFIED_SINCE);
         request.headers_mut().remove(header::IF_NONE_MATCH);
         ServeDir::new(root)
-            .not_found_service(ServeFile::new(root.join("index.html")))
+            .precompressed_br()
+            .precompressed_gzip()
+            .not_found_service(
+                ServeFile::new(root.join("index.html"))
+                    .precompressed_br()
+                    .precompressed_gzip(),
+            )
             .oneshot(request)
             .await
             .unwrap()
@@ -437,6 +445,10 @@ async fn web_files(root: &std::path::Path, mut request: Request) -> Response {
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, cache.parse().unwrap());
+    // Release builds ship `.br` and `.gz` copies chosen by Accept-Encoding.
+    response
+        .headers_mut()
+        .append(header::VARY, header::ACCEPT_ENCODING.into());
     response
 }
 
@@ -643,6 +655,62 @@ mod web_cache_tests {
             response.headers()[header::CACHE_CONTROL],
             "public, max-age=31536000, immutable"
         );
+    }
+
+    #[tokio::test]
+    async fn precompressed_copies_follow_accept_encoding() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("assets")).unwrap();
+        for (name, body) in [
+            ("index.html", "html"),
+            ("index.html.br", "html br"),
+            ("index.html.gz", "html gzip"),
+            ("assets/base.js", "js"),
+            ("assets/base.js.br", "js br"),
+            ("assets/base.js.gz", "js gzip"),
+        ] {
+            std::fs::write(directory.path().join(name), body).unwrap();
+        }
+        for path in ["/assets/base.js", "/", "/library/movies"] {
+            for (accepted, encoding, body) in [
+                ("gzip, deflate, br", Some("br"), " br"),
+                ("gzip", Some("gzip"), " gzip"),
+                ("", None, ""),
+            ] {
+                let response = web_files(
+                    directory.path(),
+                    Request::builder()
+                        .uri(path)
+                        .header(header::ACCEPT_ENCODING, accepted)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await;
+                assert_eq!(
+                    response
+                        .headers()
+                        .get(header::CONTENT_ENCODING)
+                        .and_then(|v| v.to_str().ok()),
+                    encoding,
+                    "{path} {accepted}"
+                );
+                assert_eq!(response.headers()[header::VARY], "accept-encoding");
+                let script = path.starts_with("/assets/");
+                assert_eq!(
+                    response.headers()[header::CONTENT_TYPE],
+                    if script {
+                        "text/javascript"
+                    } else {
+                        "text/html"
+                    }
+                );
+                assert_eq!(
+                    to_bytes(response.into_body(), 4096).await.unwrap().as_ref(),
+                    format!("{}{body}", if script { "js" } else { "html" }).as_bytes(),
+                    "{path} {accepted}"
+                );
+            }
+        }
     }
 
     #[tokio::test]

@@ -12,6 +12,8 @@ mod auto_delete;
 mod avatars;
 pub mod backups;
 mod bounded;
+#[cfg(test)]
+mod compression_tests;
 pub mod config;
 mod cookies;
 pub mod error;
@@ -68,6 +70,10 @@ use std::sync::Arc;
 use thelxinoe_auth::SecretStore;
 use thelxinoe_database::Database;
 use thelxinoe_jobs::Queue;
+use tower_http::compression::{
+    CompressionLayer,
+    predicate::{Predicate, SizeAbove},
+};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -312,7 +318,40 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             security::guard,
         ))
+        .layer(CompressionLayer::new().compress_when(SizeAbove::new(1024).and(compressible)))
         .with_state(state)
+}
+/// API data, web documents and playlists compress. Media, images, downloads and
+/// proxied service pages pass through as they are.
+fn compressible(
+    _: StatusCode,
+    _: axum::http::Version,
+    headers: &HeaderMap,
+    extensions: &axum::http::Extensions,
+) -> bool {
+    if extensions
+        .get::<managers::access::NativeResponse>()
+        .is_some()
+    {
+        return false;
+    }
+    let Some(kind) = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+    let kind = kind.split(';').next().unwrap_or_default().trim();
+    match kind.to_ascii_lowercase().split_once('/') {
+        Some(("text", subtype)) => subtype != "event-stream",
+        Some(("application", subtype)) => {
+            matches!(subtype, "json" | "javascript" | "xml" | "vnd.apple.mpegurl")
+                || subtype.ends_with("+json")
+                || subtype.ends_with("+xml")
+        }
+        Some(("image", "svg+xml")) => true,
+        _ => false,
+    }
 }
 async fn health() -> Json<serde_json::Value> {
     Json(

@@ -14,7 +14,12 @@
   import { statsClass } from './lib/ui/styles';
   import { onMount, tick, untrack } from 'svelte';
   import { SvelteURL } from 'svelte/reactivity';
-  import { players, prefetchVideoPlayer, preloadPage } from './lib/pages';
+  import {
+    players,
+    prefetchVideoPlayer,
+    preloadFirstPage,
+    preloadPage,
+  } from './lib/pages';
   import { playerFrameReveal } from './lib/player-reveal';
   import FeatureOutlet from './lib/FeatureOutlet.svelte';
   import PageLoading from './lib/ui/PageLoading.svelte';
@@ -188,13 +193,12 @@
   let events: Events | undefined;
   let navigationReady = $state(false);
   let settingsRevision = $state(0);
-  function restoreNavigation() {
-    if (!user) return;
+  function savedRoute(current: User): AppRoute {
     let saved: AppRoute = { ...homeRoute };
     try {
       const value = JSON.parse(
         localStorage.getItem(
-          `thelxinoe:${serverUrl()}:${user.id}:navigation`,
+          `thelxinoe:${serverUrl()}:${current.id}:navigation`,
         ) ?? 'null',
       );
       if (value)
@@ -203,7 +207,7 @@
           value.settingsSection === 'updates'
             ? desktop
               ? 'connection'
-              : user.role === 'admin'
+              : current.role === 'admin'
                 ? 'server'
                 : 'account'
             : value.settingsSection,
@@ -211,12 +215,11 @@
     } catch {
       /* Ignore obsolete device navigation. */
     }
-    route = allowedRoute(
-      readRoute(new URL(location.href), saved),
-      user,
-      desktop,
-      $providers,
-    );
+    return readRoute(new URL(location.href), saved);
+  }
+  function restoreNavigation() {
+    if (!user) return;
+    route = allowedRoute(savedRoute(user), user, desktop, $providers);
     writeLocation(route, true);
     navigationReady = true;
   }
@@ -254,6 +257,10 @@
   }
   async function checkServer() {
     updateRequired = '';
+    // Read beside the version check; the answers only count once it passes.
+    const state = api<{ setup_required: boolean }>('/setup');
+    const methods = api<AuthOptions>('/auth/methods').catch(() => null);
+    state.catch(() => {});
     const contract = await api<{
       api_version: number;
       api_min?: number;
@@ -268,9 +275,8 @@
         'This client cannot use the server’s API version. Update the client or connect to a compatible server.';
       return false;
     }
-    setup = (await api<{ setup_required: boolean }>('/setup')).setup_required;
-    if (!setup)
-      authOptions = await api<AuthOptions>('/auth/methods').catch(() => null);
+    setup = (await state).setup_required;
+    if (!setup) authOptions = await methods;
     return true;
   }
   async function boot() {
@@ -280,16 +286,19 @@
       try {
         await initializeTransport();
         serverAddress = serverUrl();
-        if (!(await checkServer())) break;
-        let current: User | null = null;
-        if (!setup) {
-          try {
-            current = (await api<{ user: User }>('/auth/me')).user;
-          } catch (e) {
+        // The session is read beside the server checks, which decide whether it counts.
+        const session = api<{ user: User }>('/auth/me').then(
+          ({ user }) => user,
+          (e) => {
             if (!(e instanceof ApiError) || e.status !== 401) throw e;
-          }
-        }
+            return null;
+          },
+        );
+        session.catch(() => {});
+        if (!(await checkServer())) break;
+        const current = setup ? null : await session;
         if (current && returnToService(current)) return;
+        if (current) preloadFirstPage(savedRoute(current));
         // Everything the session shows is read after the event cursor, so the
         // first connection replays any change those reads missed.
         if (current) await startEvents();
@@ -490,6 +499,7 @@
   async function signedIn(current: User) {
     setup = false;
     if (returnToService(current)) return;
+    preloadFirstPage(savedRoute(current));
     // The shell, and its first page, render and read their data as soon as
     // `user` is set: capture the event cursor before that.
     await startEvents();

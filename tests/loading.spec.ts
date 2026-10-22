@@ -421,6 +421,54 @@ for (const startup of [
   });
 }
 
+test('a restored session reads the server and the session together and loads its page code meanwhile', async ({
+  page,
+}) => {
+  const fixture = await installUiFixture(page, { section: 'Playlists' });
+  const health = responseGate();
+  const ticket = responseGate();
+  const asked = new Set<string>();
+  const code: string[] = [];
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path.startsWith('/assets/')) code.push(path);
+  });
+  await page.route('**/api/v1/health', async (route) => {
+    await health.promise;
+    await route.fallback();
+  });
+  for (const path of ['setup', 'auth/methods', 'auth/me'])
+    await page.route(`**/api/v1/${path}`, async (route) => {
+      asked.add(path);
+      await route.fallback();
+    });
+  await page.route('**/api/v1/auth/event-ticket', async (route) => {
+    await ticket.promise;
+    await route.fallback();
+  });
+  await page.route('**/api/v1/playlists', (route) =>
+    route.fulfill({ json: { items: [] } }),
+  );
+  try {
+    await page.goto('/');
+    await expect.poll(() => asked.size).toBe(3);
+    health.release();
+    // The page's code downloads while the session's data waits.
+    await expect
+      .poll(() => code.some((path) => /\/Playlists-[\w-]+\.js$/.test(path)))
+      .toBe(true);
+    ticket.release();
+    await expect(
+      page.getByRole('button', { name: 'New playlist', exact: true }),
+    ).toBeVisible();
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.unexpected).toEqual([]);
+  } finally {
+    health.release();
+    ticket.release();
+  }
+});
+
 test('an appearance change delivered during startup outlasts the older first read', async ({
   page,
 }) => {
