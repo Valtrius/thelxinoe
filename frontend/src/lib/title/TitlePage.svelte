@@ -16,12 +16,16 @@
   import ContentSkeleton from '../ui/ContentSkeleton.svelte';
   import Notice from '../ui/Notice.svelte';
   import MediaRow from '../seerr/MediaRow.svelte';
+  import { compactViewport } from '../responsive';
+  import { forgetSeerrStatus, seerrStatus } from '../seerr/status';
   import RequestButton, {
     type ProfileRef,
   } from '../seerr/RequestButton.svelte';
   import {
     artwork,
     availability,
+    backdropSet,
+    posterSet,
     kind as seerrKind,
     seasonRequested,
     type Media,
@@ -188,9 +192,7 @@
   async function loadSeerr(id: number, request: number) {
     try {
       unreachable = false;
-      const state = await api<{ configured: boolean; ready: boolean }>(
-        '/seerr/status',
-      );
+      const state = await seerrStatus();
       if (!state.configured || !state.ready) return;
       const path = `/seerr/${kind === 'show' ? 'tv' : 'movie'}/${id}`;
       const media = await api<Media>(path);
@@ -206,6 +208,7 @@
         })
         .catch(() => {});
     } catch {
+      forgetSeerrStatus();
       // Seerr adds artwork, cast and requests; the library page works without it.
       if (request === generation) unreachable = true;
     }
@@ -395,6 +398,8 @@
     >
       {#if backdrop}<img
           src={backdrop}
+          srcset={backdropSet(seerr?.backdropPath)}
+          sizes="100vw"
           alt=""
           class="absolute inset-0 -z-2 size-full object-cover object-top opacity-45"
         />{/if}
@@ -404,10 +409,13 @@
       <div
         class="flex min-h-95 items-end gap-7 p-8 compact:min-h-80 compact:gap-4 compact:p-5"
       >
-        {#if poster}<img
+        <!-- Hidden images still download: compact layouts leave the poster out. -->
+        {#if poster && !compactViewport.current}<img
             src={poster}
+            srcset={posterSet(seerr?.posterPath)}
+            sizes="10rem"
             alt=""
-            class="w-40 shrink-0 border border-white/15 shadow-xl compact:hidden"
+            class="w-40 shrink-0 border border-white/15 shadow-xl"
           />{/if}
         <div class="max-w-190 min-w-0 py-1">
           <p

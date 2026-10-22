@@ -75,6 +75,78 @@ describe('server transport', () => {
     await vi.advanceTimersByTimeAsync(30000);
     expect(Socket.all).toHaveLength(2);
   });
+  it('asks pages to reload when their data may predate the cursor', async () => {
+    page();
+    const receive = vi.fn();
+    const events = new Events(receive);
+    await events.connect();
+    Socket.all[0].open();
+    expect(receive).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'server.reconnected' }),
+    );
+    events.close();
+  });
+  it('replays instead of reloading data read after the prepared cursor', async () => {
+    page();
+    const receive = vi.fn();
+    const events = new Events(receive);
+    await events.prepare();
+    void events.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(Socket.all[0].url).toContain('since=100');
+    Socket.all[0].open();
+    expect(receive).not.toHaveBeenCalled();
+    // A later connection may have missed changes the server no longer replays.
+    Socket.all[0].close();
+    await vi.advanceTimersByTimeAsync(500);
+    Socket.all[1].open();
+    expect(receive).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'server.reconnected' }),
+    );
+    events.close();
+  });
+  it('reloads pages when the prepared ticket failed', async () => {
+    const fetch = vi.fn();
+    page(fetch);
+    fetch.mockRejectedValueOnce(new TypeError('Network connection was lost'));
+    const receive = vi.fn();
+    const events = new Events(receive);
+    await events.prepare();
+    await events.connect();
+    await vi.advanceTimersByTimeAsync(500);
+    Socket.all[0].open();
+    expect(receive).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'server.reconnected' }),
+    );
+    events.close();
+  });
+  it('stops waiting for a prepared ticket that stalls, then reloads pages', async () => {
+    const fetch = vi.fn();
+    page(fetch);
+    let answer!: () => void;
+    const answered = new Promise<void>((resolve) => (answer = resolve));
+    const respond = fetch.getMockImplementation()!;
+    fetch.mockImplementationOnce(async () => {
+      await answered;
+      return respond();
+    });
+    const receive = vi.fn();
+    const events = new Events(receive);
+    let ready = false;
+    void events.prepare().then(() => (ready = true));
+    void events.connect();
+    await vi.advanceTimersByTimeAsync(9999);
+    expect(ready).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(ready).toBe(true);
+    answer();
+    await vi.advanceTimersByTimeAsync(500);
+    Socket.all.at(-1)!.open();
+    expect(receive).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'server.reconnected' }),
+    );
+    events.close();
+  });
   it('replaces a connection that stalls before opening', async () => {
     page();
     const status = vi.fn();

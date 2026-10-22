@@ -96,7 +96,7 @@ pub(crate) async fn artwork_bytes(
     let address = artwork_url(address).ok_or_else(ApiError::not_found)?;
     let _slot = state
         .online
-        .slots
+        .artwork
         .acquire()
         .await
         .map_err(|_| ApiError::not_found())?;
@@ -157,6 +157,9 @@ pub struct Runtime {
     token: String,
     api: String,
     slots: tokio::sync::Semaphore,
+    // Images have their own slots: a page of thumbnails neither waits behind
+    // API calls nor holds them back.
+    artwork: tokio::sync::Semaphore,
     refresh: tokio::sync::Mutex<()>,
     pub(crate) extraction: tokio::sync::Semaphore,
     streamlink: streamlink_worker::Pool,
@@ -178,6 +181,7 @@ impl Runtime {
             token: "https://oauth2.googleapis.com/token".into(),
             api: "https://www.googleapis.com/youtube/v3".into(),
             slots: tokio::sync::Semaphore::new(4),
+            artwork: tokio::sync::Semaphore::new(16),
             refresh: tokio::sync::Mutex::new(()),
             extraction: tokio::sync::Semaphore::new(2),
             streamlink: streamlink_worker::Pool::default(),

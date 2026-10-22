@@ -1,4 +1,3 @@
-import Hls from 'hls.js';
 import { api, ApiError, serverUrl } from './api';
 import { captureSession } from './session';
 
@@ -90,11 +89,37 @@ export type MediaInfo = {
   progress: { edition: string; position: number; duration: number }[];
   watched: boolean;
 };
+// The check `Hls.isSupported()` makes, without loading hls.js: the app shell
+// imports this module, while only the browser's video player needs the library.
+function hlsSupported() {
+  const scope = globalThis as typeof globalThis & {
+    ManagedMediaSource?: typeof MediaSource;
+    WebKitMediaSource?: typeof MediaSource;
+    WebKitSourceBuffer?: typeof SourceBuffer;
+  };
+  const source =
+    scope.ManagedMediaSource ?? scope.MediaSource ?? scope.WebKitMediaSource;
+  const buffer = scope.SourceBuffer ?? scope.WebKitSourceBuffer;
+  return (
+    !!source &&
+    (!buffer ||
+      (typeof buffer.prototype?.appendBuffer === 'function' &&
+        typeof buffer.prototype.remove === 'function')) &&
+    typeof source.isTypeSupported === 'function' &&
+    [
+      'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+      'video/mp4;codecs=av01.0.01M.08',
+      'video/mp4;codecs=vp09.00.50.08',
+      'audio/mp4;codecs=mp4a.40.2',
+      'audio/mp4;codecs=fLaC',
+    ].some((type) => source.isTypeSupported(type))
+  );
+}
 export function capabilities(probe: Probe = {}) {
   const media = document.createElement('video');
   const supports = (type: string) => !!media.canPlayType(type);
   const nativeHls = supports('application/vnd.apple.mpegurl');
-  const mseHls = Hls.isSupported();
+  const mseHls = hlsSupported();
   const source =
     globalThis.MediaSource ??
     (

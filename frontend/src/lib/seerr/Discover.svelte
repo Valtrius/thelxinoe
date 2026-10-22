@@ -12,6 +12,7 @@
     Ban,
   } from '@lucide/svelte';
   import { api, type User } from '../api';
+  import { forgetSeerrStatus, seerrStatus } from './status';
   import { attention, acknowledgeAttention } from '../attention';
   import AttentionDot from '../ui/AttentionDot.svelte';
   import Button from '../ui/Button.svelte';
@@ -25,6 +26,8 @@
   import type { MediaChoice } from '../playback';
   import {
     artwork,
+    backdropSet,
+    posterSet,
     title,
     kind,
     year,
@@ -197,9 +200,7 @@
     for (const feed of feeds) feed.loading = true;
     error = '';
     try {
-      const state = await api<{ configured: boolean; ready: boolean }>(
-        '/seerr/status',
-      );
+      const state = await seerrStatus();
       if (!active) return;
       configured = state.configured;
       if (!configured) return;
@@ -218,6 +219,7 @@
               feed.error = '';
             }
           } catch (caught) {
+            forgetSeerrStatus();
             if (active) feed.error = String(caught);
           } finally {
             if (active) feed.loading = false;
@@ -492,6 +494,8 @@
                 {#if artwork(request.detail?.posterPath)}<img
                     class="aspect-2/3 w-13 shrink-0 object-cover"
                     src={artwork(request.detail?.posterPath, 'w185')}
+                    srcset={posterSet(request.detail?.posterPath)}
+                    sizes="3.25rem"
                     alt=""
                   />{/if}<span
                   ><strong class="block text-sm"
@@ -608,6 +612,7 @@
           {#each filtered as item (`${item.mediaType}:${item.id}`)}<PosterCard
               {item}
               {open}
+              sizes="(max-width: 720px) 34vw, 19rem"
             />{/each}
         </div>{/if}
       {#if page < pages}<div class="mt-7 flex justify-center">
@@ -627,6 +632,9 @@
           ><img
             class="absolute inset-0 size-full object-cover object-center opacity-45"
             src={artwork(featured.backdropPath, 'w1280')}
+            srcset={backdropSet(featured.backdropPath)}
+            sizes="100vw"
+            fetchpriority="high"
             alt=""
           /><span
             class="absolute inset-0 bg-linear-to-r from-background via-background/65 to-transparent"

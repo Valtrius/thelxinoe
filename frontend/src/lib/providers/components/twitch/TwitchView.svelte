@@ -443,6 +443,7 @@
             >
               <StreamCard
                 {stream}
+                thumbnailSizes={`${Math.ceil(100 / cardColumns)}vw`}
                 {playbackReady}
                 isPlaying={activeChannelLogins.has(stream.login.toLowerCase())}
                 isLaunching={launchingChannelLogins.has(

@@ -122,9 +122,9 @@ test('failed duration saves remain visible through initial loading and reconnect
       return route.fulfill({ json: saved });
     }
     const snapshot = { ...saved };
-    reads++;
-    if (reads === 1) await initial.promise;
-    if (reads === 2) await reconnect.promise;
+    const read = ++reads;
+    if (read === 1) await initial.promise;
+    if (read === 2) await reconnect.promise;
     return route.fulfill({ json: snapshot });
   });
   try {

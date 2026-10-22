@@ -126,6 +126,13 @@ export function missingWebCode() {
     .finally(() => (codeCheck = undefined)));
 }
 export type ServerEvent = { id: number; kind: string; payload: unknown };
+const stallTimeout = 10000;
+type EventTicket = {
+  ticket: string;
+  cursor?: number;
+  epoch?: string;
+  version?: string;
+};
 export class Events {
   private socket?: WebSocket;
   private timer?: ReturnType<typeof setTimeout>;
@@ -134,6 +141,13 @@ export class Events {
   private attempt = 0;
   private cursor = 0;
   private initialized = false;
+  // The ticket `prepare` requested, until a connection uses it.
+  private prepared?: Promise<EventTicket>;
+  // A prepared ticket that answered after pages had started reading.
+  private late?: Promise<EventTicket>;
+  // Whether pages may hold data from before the cursor, and must reload once
+  // the socket opens.
+  private stale = true;
   private epoch?: string;
   private retry = 500;
   // Phones suspend background pages and can leave their connection stalled.
@@ -156,6 +170,26 @@ export class Events {
     window.addEventListener('pageshow', this.resume);
     window.addEventListener('online', this.resume);
   }
+  // Captures the event cursor, waiting no longer than a connection may stall.
+  // Data read after a timely ticket is covered by the first connection's
+  // replay, so that connection asks no page to reload.
+  async prepare() {
+    const ticket = (this.prepared ??= api<EventTicket>(
+      '/auth/event-ticket',
+      'POST',
+    ));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      ticket.catch(() => {}),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          this.late = ticket;
+          resolve();
+        }, stallTimeout);
+      }),
+    ]);
+    clearTimeout(timer);
+  }
   async connect() {
     if (this.closed) return;
     clearTimeout(this.timer);
@@ -166,15 +200,13 @@ export class Events {
     // An attempt that has not opened by now has stalled; start another.
     this.timer = setTimeout(() => {
       if (current()) this.retryLater();
-    }, 10000);
+    }, stallTimeout);
     let ticket: string;
+    const prepared = this.prepared;
+    this.prepared = undefined;
     try {
-      const issued = await api<{
-        ticket: string;
-        cursor?: number;
-        epoch?: string;
-        version?: string;
-      }>('/auth/event-ticket', 'POST');
+      const issued = await (prepared ??
+        api<EventTicket>('/auth/event-ticket', 'POST'));
       if (!current()) return;
       ticket = issued.ticket;
       if (
@@ -184,6 +216,7 @@ export class Events {
       ) {
         this.cursor = issued.cursor ?? 0;
         this.initialized = true;
+        this.stale = !prepared || prepared === this.late;
       }
       this.epoch = issued.epoch;
       if (!desktop && issued.version && issued.version !== clientVersion)
@@ -205,11 +238,13 @@ export class Events {
       clearTimeout(this.timer);
       this.retry = 500;
       this.status(true);
-      this.receive({
-        id: this.cursor,
-        kind: 'server.reconnected',
-        payload: {},
-      });
+      if (this.stale)
+        this.receive({
+          id: this.cursor,
+          kind: 'server.reconnected',
+          payload: {},
+        });
+      this.stale = true;
     };
     socket.onmessage = (message) => {
       if (!current()) return;

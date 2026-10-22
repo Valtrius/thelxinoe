@@ -14,7 +14,7 @@
   import { statsClass } from './lib/ui/styles';
   import { onMount, tick, untrack } from 'svelte';
   import { SvelteURL } from 'svelte/reactivity';
-  import { players, preloadPage } from './lib/pages';
+  import { players, prefetchVideoPlayer, preloadPage } from './lib/pages';
   import { playerFrameReveal } from './lib/player-reveal';
   import FeatureOutlet from './lib/FeatureOutlet.svelte';
   import PageLoading from './lib/ui/PageLoading.svelte';
@@ -125,6 +125,7 @@
   } from './lib/native-playback';
   import { dismissToastByKey, showToast } from './lib/providers/toasts';
   import { youtubeVideoIdFromInput } from './lib/providers/youtube-video-input';
+  import { forgetSeerrStatus } from './lib/seerr/status';
   import { playbackProgress } from './lib/providers/youtube-progress';
   import {
     providers,
@@ -235,6 +236,10 @@
     const id = attentionUserId;
     if (id) return connectAttention(id);
   });
+  // Desktop videos play in MPV; only the browser needs the video player.
+  $effect(() => {
+    if (attentionUserId && !desktop) void prefetchVideoPlayer();
+  });
   let accountRevision = $state(0);
   let scans = $state<Record<string, { completed: number; total: number }>>({});
   let serverAddress = $state('');
@@ -276,23 +281,26 @@
         await initializeTransport();
         serverAddress = serverUrl();
         if (!(await checkServer())) break;
+        let current: User | null = null;
         if (!setup) {
           try {
-            user = (await api<{ user: User }>('/auth/me')).user;
+            current = (await api<{ user: User }>('/auth/me')).user;
           } catch (e) {
             if (!(e instanceof ApiError) || e.status !== 401) throw e;
-            user = null;
           }
         }
+        if (current && returnToService(current)) return;
+        // Everything the session shows is read after the event cursor, so the
+        // first connection replays any change those reads missed.
+        if (current) await startEvents();
+        user = current;
         if (user) {
-          if (returnToService()) return;
           await Promise.all([
             loadAppearance(user.id),
             loadDisplayPreferences(),
             loadProviders(),
           ]);
           restoreNavigation();
-          startEvents();
           if (desktop) {
             const music = (await invoke<NativeView[]>('mpv_sessions')).find(
               (view) => view.music,
@@ -375,6 +383,8 @@
           accountRevision++;
           settingsRevision++;
         }
+        if (['stack.changed', 'server.reconnected'].includes(event.kind))
+          forgetSeerrStatus();
         if (['tools.changed', 'server.reconnected'].includes(event.kind))
           window.dispatchEvent(new Event('thelxinoe-tools'));
         if (['product.changed', 'server.reconnected'].includes(event.kind))
@@ -465,7 +475,9 @@
         if (value && user) void refreshAppearance(user.id);
       },
     );
-    events.connect();
+    const prepared = events.prepare();
+    void events.connect();
+    return prepared;
   }
   async function prepareSignIn(address: string) {
     teardownSession();
@@ -476,20 +488,22 @@
     return checkServer();
   }
   async function signedIn(current: User) {
-    user = current;
     setup = false;
-    if (returnToService()) return;
+    if (returnToService(current)) return;
+    // The shell, and its first page, render and read their data as soon as
+    // `user` is set: capture the event cursor before that.
+    await startEvents();
+    user = current;
     await Promise.all([
       loadAppearance(user.id),
       loadDisplayPreferences(),
       loadProviders(),
     ]);
     restoreNavigation();
-    startEvents();
   }
-  function returnToService() {
+  function returnToService(current: User) {
     const kind = new URLSearchParams(location.search).get('service');
-    if (!desktop && user?.role === 'admin' && hasNativeAccess(kind)) {
+    if (!desktop && current.role === 'admin' && hasNativeAccess(kind)) {
       location.replace(`/services/${kind}`);
       return true;
     }

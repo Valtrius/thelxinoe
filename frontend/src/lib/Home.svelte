@@ -11,6 +11,7 @@
     type KickFeed,
   } from './providers/api';
   import type { YoutubeVideo, TwitchLiveStream } from './providers/types';
+  import { twitchPreview, twitchPreviewSet } from './providers/utils';
   import { LatestRequest } from './latest-request';
   import Button from './ui/Button.svelte';
   import Notice from './ui/Notice.svelte';
@@ -63,6 +64,7 @@
     name: string;
     title: string;
     thumbnail?: string | null;
+    thumbnailSet?: string;
     avatar?: string | null;
     category?: string | null;
     viewerCount: number;
@@ -140,8 +142,11 @@
         name: stream.displayName,
         title: stream.title,
         thumbnail: stream.thumbnailUrl
-          ?.replace('{width}', '640')
-          .replace('{height}', '360'),
+          ? twitchPreview(stream.thumbnailUrl, 640)
+          : undefined,
+        thumbnailSet: stream.thumbnailUrl
+          ? twitchPreviewSet(stream.thumbnailUrl)
+          : undefined,
         avatar: stream.profileImageUrl,
         category: stream.gameName,
         viewerCount: stream.viewerCount,
@@ -357,11 +362,23 @@
   }
   onMount(() => {
     const changed = () => progressRefresh++;
-    const timer = setInterval(refreshSources, 60_000);
+    // A hidden page skips its refreshes and catches up once it shows again.
+    let missed = false;
+    const timer = setInterval(() => {
+      if (document.hidden) missed = true;
+      else refreshSources();
+    }, 60_000);
+    const shown = () => {
+      if (document.hidden || !missed) return;
+      missed = false;
+      refreshSources();
+    };
     window.addEventListener('thelxinoe-youtube-progress', changed);
+    document.addEventListener('visibilitychange', shown);
     return () => {
       clearInterval(timer);
       window.removeEventListener('thelxinoe-youtube-progress', changed);
+      document.removeEventListener('visibilitychange', shown);
       Object.values(requests).forEach((request) => request.invalidate());
     };
   });
@@ -534,6 +551,8 @@
           displayName={stream.name}
           title={stream.title}
           thumbnailUrl={stream.thumbnail}
+          thumbnailSrcset={stream.thumbnailSet}
+          thumbnailSizes="(max-width: 369px) 78vw, (max-width: 720px) 18rem, (max-width: 974px) 14rem, (max-width: 1391px) 23vw, 20rem"
           profileImageUrl={stream.avatar}
           statistics={stream}
           isPlaying={playing.some(

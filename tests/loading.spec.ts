@@ -1,5 +1,6 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type WebSocketRoute } from '@playwright/test';
 import { installUiFixture } from './helpers/ui-fixture';
+import { current } from './helpers/versions';
 import { responseGate } from './helpers/response-gate';
 
 test.afterEach(async ({ page }) => {
@@ -341,3 +342,129 @@ for (const setting of [
     }
   });
 }
+
+for (const startup of [
+  {
+    name: 'a restored session',
+    section: 'Home',
+    read: '**/api/v1/online/providers',
+    event: 'online.configuration.changed',
+  },
+  {
+    name: 'a sign-in',
+    section: 'Movies',
+    read: '**/api/v1/catalog?**',
+    event: 'catalog.changed',
+  },
+] as const) {
+  test(`${startup.name} reads its pages after capturing the event cursor`, async ({
+    page,
+  }) => {
+    const fixture = await installUiFixture(page, {
+      section: startup.section,
+      signedIn: startup.name === 'a restored session',
+    });
+    const ticket = responseGate();
+    let requested = false;
+    let issued = false;
+    let early = 0;
+    let reads = 0;
+    let socket: WebSocketRoute | undefined;
+    await page.routeWebSocket(/\/api\/v1\/events(?:\?|$)/, (route) => {
+      socket = route;
+    });
+    await page.route('**/api/v1/auth/event-ticket', async (route) => {
+      requested = true;
+      await ticket.promise;
+      issued = true;
+      await route.fulfill({
+        json: {
+          ticket: 'startup',
+          cursor: 41,
+          epoch: 'startup',
+          version: current,
+        },
+      });
+    });
+    await page.route(startup.read, async (route) => {
+      reads++;
+      if (!issued) early++;
+      await route.fallback();
+    });
+    try {
+      await page.goto('/');
+      if (startup.name === 'a sign-in') {
+        await page.getByLabel('Username', { exact: true }).fill('admin');
+        await page
+          .getByLabel('Password', { exact: true })
+          .fill('local test passphrase');
+        await page
+          .getByRole('button', { name: 'Sign in', exact: true })
+          .click();
+      }
+      await expect.poll(() => requested).toBe(true);
+      ticket.release();
+      await expect.poll(() => socket?.url() ?? '').toContain('since=41');
+      await expect.poll(() => reads).toBeGreaterThan(0);
+      // The connection replays what those reads missed, so nothing reloads.
+      await page.waitForTimeout(500);
+      expect(reads).toBe(1);
+      socket!.send(
+        JSON.stringify({ id: 42, kind: startup.event, payload: {} }),
+      );
+      await expect.poll(() => reads).toBe(2);
+      expect(early).toBe(0);
+      expect(fixture.errors).toEqual([]);
+    } finally {
+      ticket.release();
+    }
+  });
+}
+
+test('an appearance change delivered during startup outlasts the older first read', async ({
+  page,
+}) => {
+  await installUiFixture(page, { section: 'Home' });
+  const read = responseGate();
+  let socket: WebSocketRoute | undefined;
+  let reads = 0;
+  let answered = false;
+  await page.routeWebSocket(/\/api\/v1\/events(?:\?|$)/, (route) => {
+    socket = route;
+  });
+  await page.route('**/api/v1/auth/event-ticket', (route) =>
+    route.fulfill({
+      json: {
+        ticket: 'startup',
+        cursor: 41,
+        epoch: 'startup',
+        version: current,
+      },
+    }),
+  );
+  await page.route('**/api/v1/me/appearance', async (route) => {
+    if (++reads > 1) return route.fallback();
+    await read.promise;
+    await route.fulfill({ json: { theme: 'light' } });
+    answered = true;
+  });
+  try {
+    await page.goto('/');
+    await expect.poll(() => reads).toBeGreaterThan(0);
+    await expect.poll(() => Boolean(socket)).toBe(true);
+    socket!.send(
+      JSON.stringify({
+        id: 42,
+        kind: 'appearance.changed',
+        payload: { appearance: { theme: 'dark' } },
+      }),
+    );
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    read.release();
+    await expect.poll(() => answered).toBe(true);
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  } finally {
+    read.release();
+  }
+});
