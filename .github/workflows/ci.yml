@@ -53,6 +53,11 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # The FFmpeg build the server image ships; a miss downloads it again.
+      - uses: actions/cache@v4
+        with:
+          path: .local/ci-tools
+          key: ffmpeg-${{ hashFiles('scripts/server-tools.lock.json') }}
       - name: Ensure FFmpeg is available
         timeout-minutes: 8
         run: bash scripts/ci-install-media.sh
@@ -91,6 +96,11 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # The FFmpeg build the server image ships; a miss downloads it again.
+      - uses: actions/cache@v4
+        with:
+          path: .local/ci-tools
+          key: ffmpeg-${{ hashFiles('scripts/server-tools.lock.json') }}
       - name: Ensure FFmpeg is available
         timeout-minutes: 8
         run: bash scripts/ci-install-media.sh
