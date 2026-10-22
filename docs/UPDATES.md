@@ -149,15 +149,9 @@ Both Docker qualifications then require `docker compose up -d`, and `docker comp
 pull && docker compose up -d` after the lab registry's `latest` moves to the
 installed release, to leave the installed containers untouched.
 
-The regular CI includes separate Linux server and Windows desktop lanes. The Linux
-lane runs the release script unit tests, the server lab and the published-release
-update. Local
-`pnpm run ci` runs both qualification lanes separately on Windows, using the same
-entry points as GitHub: `ci:updates:server` and `ci:updates:desktop`.
-The full local run starts independent CI lanes concurrently in separate worktrees,
-with clean dependencies and separate builds. `pnpm run ci:local` retains the live
-summary and lane logs under `.local/ci` and displays an identified completion
-notification; `pnpm run ci:status` prints progress. The Linux lane uses an unused
+CI runs the server lab and the published-release update as separate Linux jobs
+(`pnpm run ci:updates:server` locally) and the desktop lab on Windows
+(`pnpm run ci:updates:desktop`). The Linux lab uses an unused
 desktop placeholder; the Windows lane tests real signed installer bytes.
 
 ## Release setup and operation
