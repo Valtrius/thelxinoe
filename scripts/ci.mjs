@@ -113,16 +113,18 @@ async function images() {
     server: process.env.THELXINOE_SERVER_IMAGE,
     controller: process.env.THELXINOE_CONTROLLER_IMAGE,
   };
-  if (!references.server || !references.controller)
-    Object.assign(references, fixtureImages());
+  const named = !references.server || !references.controller;
+  if (named) Object.assign(references, fixtureImages());
   process.env.THELXINOE_SERVER_IMAGE = references.server;
   process.env.THELXINOE_CONTROLLER_IMAGE = references.controller;
   if (Object.values(references).every(imageExists)) return references;
-  // Images built here are removed with this run's other resources.
-  resourceRecord(
-    { images: Object.values(references), closed: false },
-    process.env.THELXINOE_CI_ROOT_RESOURCES,
-  );
+  // Images this run named are removed with its other resources; CI names them
+  // for the whole workflow run, whose runners are discarded.
+  if (named)
+    resourceRecord(
+      { images: Object.values(references), closed: false },
+      process.env.THELXINOE_CI_ROOT_RESOURCES,
+    );
   await stageBuildImages();
   pnpm('run', 'build:containers');
   return references;
