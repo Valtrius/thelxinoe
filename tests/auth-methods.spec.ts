@@ -76,10 +76,6 @@ async function oidcCallback(
 test('the sole administrator cannot recover their own account while events are connected', async ({
   page,
 }, info) => {
-  test.skip(
-    !process.env.THELXINOE_PROXY_TEST,
-    'Requires the real HTTPS server',
-  );
   await login(page, 'admin', 'test-only long passphrase');
   await expect(page.locator('.page-header .connection')).toHaveText(
     'Connected',
@@ -129,10 +125,6 @@ test('the sole administrator cannot recover their own account while events are c
 test('real password, TOTP, passkey, remembered device, client access and administrator recovery', async ({
   browser,
 }, info) => {
-  test.skip(
-    !process.env.THELXINOE_PROXY_TEST,
-    'Requires the isolated real server and HTTPS proxy',
-  );
   test.setTimeout(180000);
   const adminContext = await browser.newContext({
     ignoreHTTPSErrors: true,
@@ -439,10 +431,6 @@ test('real password, TOTP, passkey, remembered device, client access and adminis
 test('generic OIDC explicitly links accounts, verifies identities and binds native browser exchanges', async ({
   browser,
 }, info) => {
-  test.skip(
-    !process.env.THELXINOE_PROXY_TEST,
-    'Requires the real server, HTTPS proxy and disposable OIDC provider',
-  );
   const context = await browser.newContext({
     ignoreHTTPSErrors: true,
     baseURL: info.project.use.baseURL,
@@ -646,10 +634,6 @@ test('generic OIDC explicitly links accounts, verifies identities and binds nati
 test('OIDC completion cannot commit after its provider is disabled or replaced', async ({
   browser,
 }, info) => {
-  test.skip(
-    !process.env.THELXINOE_PROXY_TEST,
-    'Requires the real server and disposable OIDC provider',
-  );
   test.setTimeout(180000);
   const adminContext = await browser.newContext({
     ignoreHTTPSErrors: true,
@@ -813,10 +797,6 @@ test('OIDC completion cannot commit after its provider is disabled or replaced',
 test('OIDC return redirects stay on the application origin after URL normalization', async ({
   browser,
 }, info) => {
-  test.skip(
-    !process.env.THELXINOE_PROXY_TEST,
-    'Requires the real server and disposable OIDC provider',
-  );
   const context = await browser.newContext({
     ignoreHTTPSErrors: true,
     baseURL: info.project.use.baseURL,

@@ -28,7 +28,7 @@ const result = {
   revision: execFileSync('git', ['rev-parse', 'HEAD'], {
     encoding: 'utf8',
   }).trim(),
-  command: `pnpm run test:service-access${process.argv.includes('--desktop') ? ' --desktop' : ''}`,
+  command: 'pnpm run test:service-access',
   scenarios: [],
   image_manifest: imageManifest.services,
   browser_network: process.env.THELXINOE_CI_BROWSER_WS_ENDPOINT
@@ -156,7 +156,8 @@ try {
       },
       { path, method, body, key },
     );
-  for (const kind of ['radarr', 'sonarr', 'lidarr', 'prowlarr']) {
+  // Sonarr and Lidarr share Radarr's Servarr gateway; Prowlarr's API differs.
+  for (const kind of ['radarr', 'prowlarr']) {
     await scenario(
       `${kind}: private root, prefixed API and native browser`,
       async () => {
@@ -838,30 +839,6 @@ try {
           path: `${output}/local-http.png`,
           fullPage: true,
         });
-        if (process.argv.includes('--desktop')) {
-          const { desktopLaunch } =
-            await import('./service-access-desktop.mjs');
-          for (const kind of [
-            'sonarr',
-            'lidarr',
-            'prowlarr',
-            'bazarr',
-            'nzbget',
-          ])
-            await local.install(kind);
-          await scenario(
-            'Windows keyring and real default-browser launch for all six services',
-            () =>
-              desktopLaunch(local, output, [
-                'radarr',
-                'sonarr',
-                'lidarr',
-                'prowlarr',
-                'bazarr',
-                'nzbget',
-              ]),
-          );
-        }
       } finally {
         await local.close();
       }

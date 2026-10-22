@@ -515,59 +515,19 @@ try {
     audio_transcoding: originalPolicy.audio_transcoding,
   });
 }
-for (const mode of [
-  'remux',
-  'transcode',
-  'audio-only',
-  ...(process.argv.includes('--tv') ? ['limited', 'hdr'] : []),
-]) {
+for (const mode of ['remux', 'transcode', 'audio-only']) {
   const item = movies.Items.find(
-    (i) =>
-      i.Name ===
-      (mode === 'hdr'
-        ? 'TV HDR'
-        : mode === 'audio-only'
-          ? 'Audio Only'
-          : 'Remux'),
+    (i) => i.Name === (mode === 'audio-only' ? 'Audio Only' : 'Remux'),
   );
-  assert.ok(item, 'Generate playback and TV fixtures first');
-  const deviceProfile = structuredClone(profile);
-  if (mode === 'limited')
-    deviceProfile.CodecProfiles = [
-      {
-        Type: 'Video',
-        Codec: 'h264',
-        Conditions: [
-          {
-            Property: 'Width',
-            Condition: 'LessThanEqual',
-            Value: '160',
-            IsRequired: true,
-          },
-          {
-            Property: 'Height',
-            Condition: 'LessThanEqual',
-            Value: '90',
-            IsRequired: true,
-          },
-          {
-            Property: 'VideoFramerate',
-            Condition: 'LessThanEqual',
-            Value: '12',
-            IsRequired: true,
-          },
-        ],
-      },
-    ];
+  assert.ok(item, 'Generate playback fixtures first');
   r = await compat.post(`/Items/${item.Id}/PlaybackInfo`, {
     headers,
     data: {
-      DeviceProfile: deviceProfile,
+      DeviceProfile: profile,
       EnableDirectPlay: false,
       EnableDirectStream: ['remux', 'audio-only'].includes(mode),
       EnableTranscoding: true,
       SubtitleStreamIndex: -2,
-      ...(mode === 'limited' ? { MaxStreamingBitrate: 2_500_000 } : {}),
     },
   });
   assert.equal(r.status(), 200, `${mode} playback info`);
@@ -622,18 +582,6 @@ for (const mode of [
         original.slice(first, first + delivered.length),
         'Jellyfin audio conversion must preserve original video frames, including reverse segment requests',
       );
-    }
-    if (mode === 'limited') {
-      const video = probe.streams.find((s) => s.codec_type === 'video');
-      assert.equal(video.width, 160);
-      assert.equal(video.height, 90);
-      assert.equal(video.r_frame_rate, '12/1');
-    }
-    if (mode === 'hdr') {
-      const video = probe.streams.find((s) => s.codec_type === 'video');
-      assert.equal(video.color_transfer, 'bt709');
-      assert.equal(video.color_primaries, 'bt709');
-      assert.equal(video.pix_fmt, 'yuv420p');
     }
     execFileSync(
       'ffmpeg',

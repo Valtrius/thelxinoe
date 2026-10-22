@@ -4,10 +4,6 @@ import { budgets, waitForServerTools } from '../scripts/ci-readiness.mjs';
 test('movie, multi-episode and tagged music scan into browsable libraries with stable identities', async ({
   page,
 }) => {
-  test.skip(
-    !process.env.THELXINOE_PROXY_TEST,
-    'Requires generated media and isolated Compose fixture',
-  );
   const watchTimeout = 15_000;
   test.setTimeout(budgets.provision + 60_000);
   await page.goto('/');

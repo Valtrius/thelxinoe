@@ -5,10 +5,6 @@ test('HTTPS setup, secure login, event replay, CSRF rejection and device revocat
   context,
   request,
 }) => {
-  test.skip(
-    !process.env.THELXINOE_PROXY_TEST,
-    'Requires isolated Compose proxy fixture',
-  );
   await page.goto('/');
   await page.getByLabel('Username', { exact: true }).waitFor();
   const setup = await page
