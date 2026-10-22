@@ -451,7 +451,9 @@ class Proxy(http.server.BaseHTTPRequestHandler):
    data=self.rfile.read(int(self.headers.get('Content-Length',0)))
    c.request(self.command,self.path,body=data,headers=dict(self.headers))
    r=c.getresponse(); body=r.read(); self.send_response(r.status)
-   self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body); c.close()
+   self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(body)))
+   if r.getheader('Content-Encoding'): self.send_header('Content-Encoding',r.getheader('Content-Encoding'))
+   self.end_headers(); self.wfile.write(body); c.close()
   except Exception:
    self.send_error(502)
  do_POST=do_GET
