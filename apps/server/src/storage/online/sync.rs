@@ -113,6 +113,15 @@ pub(super) async fn next_upload_playlist(
     db.read("online.sync.next_upload_playlist", move|db|Ok(db.query_row("SELECT channel_id,uploads FROM youtube_subscriptions WHERE user_id=?1 AND active=1 AND uploads IS NOT NULL AND channel_id>?2 ORDER BY channel_id LIMIT 1",params![owner,after],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?)).await
 }
 
+pub(super) async fn known_videos(
+    owner: String,
+    ids: Vec<String>,
+    db: &Database,
+) -> anyhow::Result<HashMap<String, i64>> {
+    let ids = serde_json::to_string(&ids)?;
+    db.read("online.sync.known_videos", move|db|Ok(db.prepare("SELECT video_id,metadata_at FROM youtube_videos WHERE user_id=?1 AND video_id IN (SELECT value FROM json_each(?2))")?.query_map(params![owner,ids],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?)))?.collect::<rusqlite::Result<_>>()?)).await
+}
+
 pub(super) async fn videos_to_refresh(
     owner: String,
     after: String,

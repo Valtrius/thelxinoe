@@ -13,6 +13,7 @@ use axum::{Json, extract::State, http::HeaderMap};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use thelxinoe_core::{id, now};
 #[cfg(test)]
 pub(super) mod tests;
@@ -398,7 +399,7 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
             )
             .await?;
             let rows = items(&data)?;
-            turn.cursor.ids = rows
+            let ids: Vec<String> = rows
                 .iter()
                 .filter_map(|v| {
                     v["contentDetails"]["videoId"]
@@ -407,6 +408,17 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
                         .map(str::to_owned)
                 })
                 .collect();
+            let known: HashMap<String, i64> =
+                storage::known_videos(user.clone(), ids.clone(), &state.db).await?;
+            // A videos call costs the same for one ID or fifty, so the whole page
+            // is refreshed once anything on it is new or a day old.
+            let stale = ids
+                .iter()
+                .any(|id| known.get(id).is_none_or(|at| *at < now() - 86400));
+            // Uploads are newest first: a known tail means later pages were
+            // already stored by an earlier sync.
+            let caught_up = ids.last().is_some_and(|id| known.contains_key(id));
+            turn.cursor.ids = if stale { ids } else { Vec::new() };
             turn.cursor.pages += 1;
             let page = next_page(&data, &turn.cursor.page)?;
             // Bound initial backfill to 150 uploads / 90 days per channel.
@@ -414,7 +426,7 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
                 let date = timestamp(&v["contentDetails"]["videoPublishedAt"]);
                 date > 0 && date < now() - 90 * 86400
             });
-            turn.cursor.page = if turn.cursor.pages < 3 && !old {
+            turn.cursor.page = if turn.cursor.pages < 3 && !old && !caught_up {
                 page
             } else {
                 String::new()
@@ -422,7 +434,12 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
             if turn.cursor.page.is_empty() {
                 turn.cursor.after = turn.cursor.channel.clone();
             }
-            turn.cursor.phase = "videos".into();
+            turn.cursor.phase = if turn.cursor.ids.is_empty() {
+                "uploads"
+            } else {
+                "videos"
+            }
+            .into();
             save(state, turn, false, storage::Page::CursorOnly).await
         }
         "videos" | "refresh" => {
