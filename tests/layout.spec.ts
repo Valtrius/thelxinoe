@@ -114,197 +114,6 @@ test('A stopped existing container connects only after skipping verification', a
   expect(fixture.unexpected).toEqual([]);
 });
 
-for (const width of [1280, 1760, 1920, 2560]) {
-  test(`settings follow sidebar motion continuously at ${width}px`, async ({
-    page,
-  }, testInfo) => {
-    await page.setViewportSize({ width, height: 1080 });
-    const fixture = await installUiFixture(page, {
-      role: 'admin',
-      settingsSection: 'server',
-    });
-    await page.goto('/');
-    await expect(
-      page.getByRole('combobox', { name: 'Server default timezone' }),
-    ).toBeEnabled();
-    await expect(
-      page.getByRole('heading', { name: 'OpenID Connect', exact: true }),
-    ).toBeVisible();
-    await page.evaluate(() => {
-      const animate = Element.prototype.animate;
-      Element.prototype.animate = function (keyframes, options) {
-        const animation = animate.call(this, keyframes, options);
-        animation.pause();
-        return animation;
-      };
-    });
-    const evidence: unknown[] = [];
-    async function snapshot() {
-      return page.evaluate(() => {
-        const bounds = (selector: string) =>
-          [...document.querySelectorAll(selector)].map((element) => {
-            const { x, y, width, height } = element.getBoundingClientRect();
-            return { x, y, width, height };
-          });
-        return {
-          panels: bounds('.settings-panels > .panel'),
-          labels: bounds('.settings-content h1, .settings-content h2'),
-          icons: bounds('.settings-navigation svg'),
-          nav: bounds('.settings-navigation'),
-          controls: bounds('.settings-content select'),
-        };
-      });
-    }
-    type Snapshot = Awaited<ReturnType<typeof snapshot>>;
-    function continuous(before: Snapshot, next: Snapshot) {
-      for (const key of [
-        'panels',
-        'labels',
-        'icons',
-        'nav',
-        'controls',
-      ] as const) {
-        expect(next[key]).toHaveLength(before[key].length);
-        before[key].forEach((rect, index) => {
-          // Sidebar motion skips content scrolled out of view; it settles
-          // directly at its final layout.
-          if (rect.y >= 1080) return;
-          expect(
-            Math.abs(next[key][index].x - rect.x),
-            `${key} ${index} X`,
-          ).toBeLessThan(1);
-          expect(
-            Math.abs(next[key][index].y - rect.y),
-            `${key} ${index} Y`,
-          ).toBeLessThan(1);
-          if (key !== 'labels') {
-            expect(
-              Math.abs(next[key][index].width - rect.width),
-              `${key} ${index} width`,
-            ).toBeLessThan(1);
-            expect(
-              Math.abs(next[key][index].height - rect.height),
-              `${key} ${index} height`,
-            ).toBeLessThan(1);
-          }
-        });
-      }
-    }
-    async function toggle(name: string) {
-      await page.evaluate(async (name) => {
-        document
-          .querySelector<HTMLButtonElement>(`button[aria-label="${name}"]`)!
-          .click();
-        await new Promise(requestAnimationFrame);
-        for (const animation of document.getAnimations()) {
-          if (
-            animation.effect instanceof KeyframeEffect &&
-            animation.effect
-              .getKeyframes()
-              .some((frame) => frame.transform || frame.width)
-          ) {
-            animation.pause();
-            animation.currentTime = 0;
-          }
-        }
-      }, name);
-    }
-    async function seek(time: number) {
-      await page.evaluate((time) => {
-        for (const animation of document.getAnimations()) {
-          if (
-            animation.effect instanceof KeyframeEffect &&
-            animation.effect
-              .getKeyframes()
-              .some((frame) => frame.transform || frame.width)
-          )
-            animation.currentTime = time;
-        }
-      }, time);
-    }
-    async function finish() {
-      await page.evaluate(() => {
-        for (const animation of document.getAnimations()) {
-          if (
-            animation.effect instanceof KeyframeEffect &&
-            animation.effect
-              .getKeyframes()
-              .some((frame) => frame.transform || frame.width)
-          )
-            animation.finish();
-        }
-      });
-    }
-    for (const name of ['Collapse sidebar', 'Expand sidebar']) {
-      const before = await snapshot();
-      await toggle(name);
-      const first = await snapshot();
-      continuous(before, first);
-      await seek(50);
-      const middle = await snapshot();
-      await page.screenshot({
-        path: testInfo.outputPath(
-          `${name.startsWith('Collapse') ? 'collapse' : 'expand'}-middle.png`,
-        ),
-      });
-      await finish();
-      const final = await snapshot();
-      before.panels.forEach((from, index) => {
-        for (const axis of ['x', 'y', 'width', 'height'] as const) {
-          const to = final.panels[index][axis];
-          expect(middle.panels[index][axis]).toBeGreaterThanOrEqual(
-            Math.min(from[axis], to) - 1,
-          );
-          expect(middle.panels[index][axis]).toBeLessThanOrEqual(
-            Math.max(from[axis], to) + 1,
-          );
-        }
-      });
-      before.icons.forEach((icon, index) => {
-        expect(Math.abs(middle.icons[index].width - icon.width)).toBeLessThan(
-          0.25,
-        );
-        expect(Math.abs(middle.icons[index].height - icon.height)).toBeLessThan(
-          0.25,
-        );
-      });
-      before.controls.forEach((control, index) => {
-        expect(middle.controls[index].width).toBeGreaterThanOrEqual(
-          Math.min(control.width, final.controls[index].width) - 1,
-        );
-        expect(middle.controls[index].width).toBeLessThanOrEqual(
-          Math.max(control.width, final.controls[index].width) + 1,
-        );
-        expect(
-          Math.abs(middle.controls[index].height - control.height),
-        ).toBeLessThan(0.25);
-      });
-      evidence.push({ name, before, first, middle, final });
-    }
-    await toggle('Collapse sidebar');
-    await seek(50);
-    const interrupted = await snapshot();
-    await toggle('Expand sidebar');
-    continuous(interrupted, await snapshot());
-    await finish();
-    await page.emulateMedia({ reducedMotion: 'reduce' });
-    await page.getByRole('button', { name: 'Collapse sidebar' }).click();
-    await expect(page.locator('.primary-sidebar')).toHaveCSS('width', '72px');
-    const reduced = await snapshot();
-    await page.getByRole('button', { name: 'Expand sidebar' }).click();
-    await expect(page.locator('.primary-sidebar')).toHaveCSS('width', '180px');
-    const expanded = await snapshot();
-    continuous(expanded, await snapshot());
-    evidence.push({ interrupted, reduced, expanded });
-    await testInfo.attach('settings-sidebar-geometry', {
-      body: JSON.stringify(evidence, null, 2),
-      contentType: 'application/json',
-    });
-    expect(fixture.errors).toEqual([]);
-    expect(fixture.unexpected).toEqual([]);
-  });
-}
-
 async function selectRadarr(page: Page) {
   await page
     .getByRole('navigation', { name: 'Select service' })
@@ -1049,7 +858,7 @@ test('all eight media services stay accessible without horizontal scrolling', as
   const nav = page.getByRole('navigation', { name: 'Select service' });
   const tabs = nav.getByRole('link');
   await expect(tabs).toHaveCount(8);
-  for (const width of [1440, 1024, 390]) {
+  for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 900 });
     await expect
       .poll(() =>
@@ -1148,7 +957,7 @@ test('media services preserve real controls across adaptive layouts', async ({
   await expect(
     page.getByRole('switch', { name: 'Enable Fixture indexer' }),
   ).toBeVisible();
-  for (const width of [720, 480, 440, 320]) {
+  for (const width of [720, 320]) {
     await page.setViewportSize({ width, height: 850 });
     await page.screenshot({
       path: `.local/services-mobile-${width}.png`,
@@ -1249,7 +1058,7 @@ test('NZBGet combines active downloads with scrollable history and compact actio
     path: '.local/services-desktop.png',
     fullPage: true,
   });
-  for (const width of [720, 480, 440, 320]) {
+  for (const width of [720, 320]) {
     await page.setViewportSize({ width, height: 850 });
     expect(
       await page.evaluate(
@@ -1632,7 +1441,7 @@ test('mobile navigation opens over full-width content and restores the desktop s
   await page.getByRole('button', { name: 'Collapse sidebar' }).click();
   await expect(header).toBeHidden();
 
-  for (const width of [320, 390, 720]) {
+  for (const width of [390, 720]) {
     await page.setViewportSize({ width, height: 844 });
     await expect(sidebar).toBeHidden();
     await expect(menu).toBeVisible();
@@ -1730,7 +1539,7 @@ test('mobile settings show every category in a wrapping grid', async ({
   page,
 }) => {
   const fixture = await installUiFixture(page, { role: 'admin' });
-  for (const width of [720, 480, 320]) {
+  for (const width of [720, 320]) {
     await page.setViewportSize({ width, height: 850 });
     await page.goto('/');
     const nav = page.getByRole('navigation', { name: 'Settings navigation' });

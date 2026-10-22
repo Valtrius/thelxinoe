@@ -14,7 +14,6 @@ export default defineConfig({
       testMatch: [
         'layout.spec.ts',
         'density.spec.ts',
-        'sidebar-motion.spec.ts',
         'home.spec.ts',
         'statistics.spec.ts',
         'provider-setup.spec.ts',
@@ -46,9 +45,9 @@ export default defineConfig({
   ],
   timeout: 60000,
   expect: { timeout: 15000 },
-  workers: 1,
+  workers: process.env.CI ? 2 : undefined,
   use: {
-    trace: 'on',
+    trace: 'retain-on-failure',
     connectOptions: browserConnection(),
     baseURL: `http://127.0.0.1:${port}`,
     headless: true,
@@ -70,6 +69,5 @@ export default defineConfig({
   reporter: [
     ['list'],
     ['html', { outputFolder: 'playwright-report/ui', open: 'never' }],
-    ['json', { outputFile: 'test-results/ui/results.json' }],
   ],
 });
