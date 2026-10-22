@@ -171,6 +171,7 @@ jobs:
         if: failure()
         with:
           name: ${{ matrix.phase }}-test-evidence
+          include-hidden-files: true
           path: |
             playwright-report/
             test-results/
@@ -229,6 +230,7 @@ jobs:
         if: failure()
         with:
           name: ${{ matrix.phase }}-evidence
+          include-hidden-files: true
           path: |
             .local/ci-browser*.log
             test-results/updates/
@@ -250,6 +252,7 @@ jobs:
         if: failure()
         with:
           name: desktop-update-evidence
+          include-hidden-files: true
           path: |
             .local/ci-browser*.log
             test-results/updates/
