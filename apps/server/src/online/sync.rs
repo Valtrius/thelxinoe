@@ -28,6 +28,7 @@ struct Cursor {
     after: String,
     channel: String,
     playlist: String,
+    backfilled: bool,
     ids: Vec<String>,
 }
 struct Turn {
@@ -376,13 +377,14 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
                 let owner = user.clone();
                 let after = turn.cursor.after.clone();
                 let next = storage::next_upload_playlist(owner, after, &state.db).await?;
-                let Some((channel, playlist)) = next else {
+                let Some((channel, playlist, backfilled)) = next else {
                     turn.cursor.phase = "refresh".into();
                     turn.cursor.after.clear();
                     return save(state, turn, false, storage::Page::CursorOnly).await;
                 };
                 turn.cursor.channel = channel;
                 turn.cursor.playlist = playlist;
+                turn.cursor.backfilled = backfilled;
                 turn.cursor.pages = 0;
             }
             let data = youtube::get(
@@ -415,9 +417,10 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
             let stale = ids
                 .iter()
                 .any(|id| known.get(id).is_none_or(|at| *at < now() - 86400));
-            // Uploads are newest first: a known tail means later pages were
-            // already stored by an earlier sync.
-            let caught_up = ids.last().is_some_and(|id| known.contains_key(id));
+            // Uploads are newest first: once the channel was backfilled, a known
+            // tail means later pages were stored by an earlier sync.
+            let caught_up =
+                turn.cursor.backfilled && ids.last().is_some_and(|id| known.contains_key(id));
             turn.cursor.ids = if stale { ids } else { Vec::new() };
             turn.cursor.pages += 1;
             let page = next_page(&data, &turn.cursor.page)?;
@@ -431,16 +434,22 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
             } else {
                 String::new()
             };
-            if turn.cursor.page.is_empty() {
+            let finished = turn.cursor.page.is_empty();
+            if finished {
                 turn.cursor.after = turn.cursor.channel.clone();
             }
-            turn.cursor.phase = if turn.cursor.ids.is_empty() {
-                "uploads"
-            } else {
-                "videos"
+            if !turn.cursor.ids.is_empty() {
+                turn.cursor.phase = "videos".into();
+                return save(state, turn, false, storage::Page::CursorOnly).await;
             }
-            .into();
-            save(state, turn, false, storage::Page::CursorOnly).await
+            let page = if finished {
+                storage::Page::Backfilled {
+                    channel: turn.cursor.channel.clone(),
+                }
+            } else {
+                storage::Page::CursorOnly
+            };
+            save(state, turn, false, page).await
         }
         "videos" | "refresh" => {
             let refresh = turn.cursor.phase == "refresh";
@@ -474,11 +483,24 @@ async fn step(state: &AppState, mut turn: Turn) -> Result<()> {
             )
             .await?;
             let rows = items(&data)?.clone();
+            // The channel's backfill completes with its last page's metadata.
+            let backfilled =
+                (!refresh && turn.cursor.page.is_empty()).then(|| turn.cursor.channel.clone());
             if !refresh {
                 turn.cursor.phase = "uploads".into();
             }
             turn.cursor.ids.clear();
-            save(state, turn, false, storage::Page::Videos { ids, rows }).await
+            save(
+                state,
+                turn,
+                false,
+                storage::Page::Videos {
+                    ids,
+                    rows,
+                    backfilled,
+                },
+            )
+            .await
         }
         "shorts" => save(state, turn, true, storage::Page::CursorOnly).await,
         _ => Err(ApiError::bad("Invalid persisted YouTube sync cursor")),

@@ -363,6 +363,7 @@ CREATE TABLE youtube_subscriptions (
     snapshot TEXT NOT NULL,
     active INTEGER NOT NULL DEFAULT 0 CHECK(active IN (0,1)),
     thumbnail_url TEXT,
+    backfilled INTEGER NOT NULL DEFAULT 0 CHECK(backfilled IN (0,1)),
     PRIMARY KEY(user_id,channel_id)
 ) STRICT;
 

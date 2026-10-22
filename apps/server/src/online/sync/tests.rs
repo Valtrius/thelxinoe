@@ -387,18 +387,28 @@ async fn sync_uploads(state: &AppState) {
     assert_eq!(error, None);
 }
 #[tokio::test]
-async fn known_uploads_skip_metadata_and_older_pages() {
+async fn known_uploads_skip_metadata_and_older_pages_once_backfilled() {
     let (_temp, mut state, _session) = fixture().await;
     connect(&state, "alice").await;
     state.db.write("test.fixture", |db| {
-        db.execute("INSERT INTO youtube_videos(user_id,video_id,channel_id,title,published_at,metadata_at) VALUES ('alice',?1,?2,'Known',?3,?3)", params![VIDEO, CHANNEL, now()])?;
+        db.execute("INSERT INTO youtube_videos(user_id,video_id,channel_id,title,published_at,metadata_at) VALUES ('alice',?1,?2,'Opened by URL',?3,?3)", params![VIDEO, CHANNEL, now()])?;
         Ok(())
     }).await.unwrap();
-    let (requests, server) = upload_sync(&mut state, HashMap::from([("", vec![NEW, VIDEO])])).await;
+    let (requests, server) = upload_sync(
+        &mut state,
+        HashMap::from([("", vec![NEW, VIDEO]), ("page-two", vec![NEXT])]),
+    )
+    .await;
+    // A tail known from elsewhere does not end the first backfill.
     sync_uploads(&state).await;
     assert_eq!(
         std::mem::take(&mut *requests.lock().await),
-        ["playlistItems:".to_owned(), format!("videos:{NEW},{VIDEO}")]
+        [
+            "playlistItems:".to_owned(),
+            format!("videos:{NEW},{VIDEO}"),
+            "playlistItems:page-two".to_owned(),
+            format!("videos:{NEXT}"),
+        ]
     );
     sync_uploads(&state).await;
     assert_eq!(
@@ -421,32 +431,38 @@ async fn known_uploads_skip_metadata_and_older_pages() {
         std::mem::take(&mut *requests.lock().await),
         ["playlistItems:".to_owned(), format!("videos:{NEW},{VIDEO}")]
     );
-    assert_eq!(quota::status(&state).await.unwrap()["used"], 5);
+    assert_eq!(quota::status(&state).await.unwrap()["used"], 7);
     server.abort();
 }
 #[tokio::test]
-async fn backfill_pages_past_a_video_known_from_elsewhere() {
+async fn stored_uploads_past_the_first_page_refresh_daily() {
+    const OLD: &str = "lmnopqrstuv";
     let (_temp, mut state, _session) = fixture().await;
     connect(&state, "alice").await;
+    let (requests, server) = upload_sync(&mut state, HashMap::from([("", vec![VIDEO])])).await;
     state.db.write("test.fixture", |db| {
-        db.execute("INSERT INTO youtube_videos(user_id,video_id,channel_id,title,published_at,metadata_at) VALUES ('alice',?1,?2,'Added by URL',?3,?3)", params![VIDEO, CHANNEL, now()])?;
+        db.execute("UPDATE youtube_subscriptions SET backfilled=1", [])?;
+        for (video, published, metadata) in [(VIDEO, now(), now()), (NEXT, now() - 86400, now() - 86401), (OLD, now() - 120 * 86400, now() - 86401)] {
+            db.execute("INSERT INTO youtube_videos(user_id,video_id,channel_id,title,published_at,metadata_at) VALUES ('alice',?1,?2,'Stored',?3,?4)", params![video, CHANNEL, published, metadata])?;
+        }
         Ok(())
     }).await.unwrap();
-    let (requests, server) = upload_sync(
-        &mut state,
-        HashMap::from([("", vec![VIDEO, NEW]), ("page-two", vec![NEXT])]),
-    )
-    .await;
     sync_uploads(&state).await;
     assert_eq!(
         *requests.lock().await,
-        [
-            "playlistItems:".to_owned(),
-            format!("videos:{VIDEO},{NEW}"),
-            "playlistItems:page-two".to_owned(),
-            format!("videos:{NEXT}"),
-        ]
+        ["playlistItems:".to_owned(), format!("videos:{NEXT}")]
     );
+    let titles = state
+        .db
+        .read("test.fixture", |db| {
+            Ok(db
+                .prepare("SELECT title FROM youtube_videos ORDER BY video_id")?
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(titles, ["Stored", "Upload", "Stored"]);
     server.abort();
 }
 #[tokio::test]
@@ -475,6 +491,7 @@ async fn stale_video_cleanup_keeps_requested_downloads() {
         storage::Page::Videos {
             ids: vec![],
             rows: vec![],
+            backfilled: None,
         },
     )
     .await
