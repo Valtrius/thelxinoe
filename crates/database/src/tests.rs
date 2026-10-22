@@ -497,6 +497,27 @@ fn schema_2_bounds_sessions_that_never_ended() -> Result<()> {
     Ok(())
 }
 
+// CHECK lists are not part of `shape`, so the added flag's is checked here.
+#[test]
+fn schema_3_starts_every_youtube_channel_without_a_backfill() -> Result<()> {
+    let (_temp, conn) = upgraded(
+        2,
+        "INSERT INTO users(id,username,role,created_at) VALUES ('u','u','user',1);
+        INSERT INTO youtube_subscriptions(user_id,channel_id,title,snapshot,active) VALUES ('u','c','Channel','s',1);",
+    )?;
+    let backfilled: i64 = conn.query_row(
+        "SELECT backfilled FROM youtube_subscriptions WHERE channel_id='c'",
+        [],
+        |r| r.get(0),
+    )?;
+    assert_eq!(backfilled, 0);
+    assert!(
+        conn.execute("UPDATE youtube_subscriptions SET backfilled=2", [])
+            .is_err()
+    );
+    Ok(())
+}
+
 #[test]
 fn upgrades_run_in_order_from_the_stored_version() -> Result<()> {
     let conn = Connection::open_in_memory()?;

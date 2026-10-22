@@ -109,8 +109,17 @@ pub(super) async fn next_upload_playlist(
     owner: String,
     after: String,
     db: &Database,
-) -> anyhow::Result<Option<(String, String)>> {
-    db.read("online.sync.next_upload_playlist", move|db|Ok(db.query_row("SELECT channel_id,uploads FROM youtube_subscriptions WHERE user_id=?1 AND active=1 AND uploads IS NOT NULL AND channel_id>?2 ORDER BY channel_id LIMIT 1",params![owner,after],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?)).await
+) -> anyhow::Result<Option<(String, String, bool)>> {
+    db.read("online.sync.next_upload_playlist", move|db|Ok(db.query_row("SELECT channel_id,uploads,backfilled FROM youtube_subscriptions WHERE user_id=?1 AND active=1 AND uploads IS NOT NULL AND channel_id>?2 ORDER BY channel_id LIMIT 1",params![owner,after],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,bool>(2)?))).optional()?)).await
+}
+
+pub(super) async fn known_videos(
+    owner: String,
+    ids: Vec<String>,
+    db: &Database,
+) -> anyhow::Result<HashMap<String, i64>> {
+    let ids = serde_json::to_string(&ids)?;
+    db.read("online.sync.known_videos", move|db|Ok(db.prepare("SELECT video_id,metadata_at FROM youtube_videos WHERE user_id=?1 AND video_id IN (SELECT value FROM json_each(?2))")?.query_map(params![owner,ids],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?)))?.collect::<rusqlite::Result<_>>()?)).await
 }
 
 pub(super) async fn videos_to_refresh(
@@ -118,7 +127,9 @@ pub(super) async fn videos_to_refresh(
     after: String,
     db: &Database,
 ) -> anyhow::Result<Vec<String>> {
-    db.read("online.sync.videos_to_refresh", move|db|Ok(db.prepare("SELECT v.video_id FROM youtube_videos v LEFT JOIN youtube_video_state s USING(user_id,video_id) WHERE v.user_id=?1 AND v.video_id>?2 AND (v.broadcast IN ('live','upcoming') OR s.watchlist=1 OR s.pinned=1) ORDER BY v.video_id LIMIT 50")?.query_map(params![owner,after],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?)).await
+    // Recent uploads past a channel's first page refresh here once a day; the
+    // first page refreshes with its uploads, and older ones age out of the prune.
+    db.read("online.sync.videos_to_refresh", move|db|Ok(db.prepare("SELECT v.video_id FROM youtube_videos v LEFT JOIN youtube_video_state s USING(user_id,video_id) WHERE v.user_id=?1 AND v.video_id>?2 AND (v.broadcast IN ('live','upcoming') OR s.watchlist=1 OR s.pinned=1 OR (v.metadata_at<?3 AND v.published_at>=?4 AND EXISTS(SELECT 1 FROM youtube_subscriptions c WHERE c.user_id=v.user_id AND c.channel_id=v.channel_id AND c.active=1))) ORDER BY v.video_id LIMIT 50")?.query_map(params![owner,after,now()-86400,now()-90*86400],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?)).await
 }
 
 pub(in super::super) fn upsert_video(
@@ -179,6 +190,10 @@ pub(super) enum Page {
     Videos {
         ids: Vec<String>,
         rows: Vec<Value>,
+        backfilled: Option<String>,
+    },
+    Backfilled {
+        channel: String,
     },
 }
 impl Page {
@@ -238,7 +253,11 @@ impl Page {
                 }
                 Ok(())
             }
-            Self::Videos { ids, rows } => {
+            Self::Videos {
+                ids,
+                rows,
+                backfilled,
+            } => {
                 for video in &ids {
                     tx.execute("UPDATE youtube_videos SET available=0,metadata_at=?1 WHERE user_id=?2 AND video_id=?3",params![now(),user,video])?;
                 }
@@ -247,6 +266,13 @@ impl Page {
                 }
                 // Requested downloads cascade from their video, so they keep it too.
                 tx.execute("DELETE FROM youtube_videos WHERE user_id=?1 AND published_at<?2 AND metadata_at<?3 AND NOT EXISTS(SELECT 1 FROM youtube_state s WHERE s.user_id=youtube_videos.user_id AND s.video_id=youtube_videos.video_id) AND NOT EXISTS(SELECT 1 FROM youtube_watchlist_items i WHERE i.user_id=youtube_videos.user_id AND i.video_id=youtube_videos.video_id) AND NOT EXISTS(SELECT 1 FROM youtube_download_requests r WHERE r.user_id=youtube_videos.user_id AND r.video_id=youtube_videos.video_id)",params![user,now()-90*86400,now()-30*86400])?;
+                if let Some(channel) = backfilled {
+                    Self::Backfilled { channel }.apply(tx, user)?;
+                }
+                Ok(())
+            }
+            Self::Backfilled { channel } => {
+                tx.execute("UPDATE youtube_subscriptions SET backfilled=1 WHERE user_id=?1 AND channel_id=?2",params![user,channel])?;
                 Ok(())
             }
         }

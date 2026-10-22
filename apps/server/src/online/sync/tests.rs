@@ -319,6 +319,153 @@ async fn fair_sync_resumes_pages_and_preserves_private_state() {
     assert_eq!(other.2["items"][0]["title"], "Bob-only metadata");
     server.abort();
 }
+const NEW: &str = "bcdefghijkl";
+const NEXT: &str = "cdefghijklm";
+async fn upload_sync(
+    state: &mut AppState,
+    pages: HashMap<&'static str, Vec<&'static str>>,
+) -> (
+    Arc<tokio::sync::Mutex<Vec<String>>>,
+    tokio::task::JoinHandle<()>,
+) {
+    state.db.write("test.fixture", |db| {
+        db.execute("INSERT INTO youtube_subscriptions(user_id,channel_id,title,uploads,snapshot,active) VALUES ('alice',?1,'Channel','UUaaaaaaaaaaaaaaaaaaaaaa','current',1)", [CHANNEL])?;
+        Ok(())
+    }).await.unwrap();
+    let published = (chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339();
+    let requests = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+    let record = requests.clone();
+    let router = axum::Router::new().route("/{endpoint}", get(move |Path(endpoint): Path<String>, Query(query): Query<HashMap<String, String>>| {
+        let record = record.clone();
+        let pages = pages.clone();
+        let published = published.clone();
+        async move {
+            Json(match endpoint.as_str() {
+                "playlistItems" => {
+                    let token = query.get("pageToken").cloned().unwrap_or_default();
+                    record.lock().await.push(format!("playlistItems:{token}"));
+                    let items: Vec<Value> = pages[token.as_str()].iter().map(|id| json!({"contentDetails":{"videoId":id,"videoPublishedAt":published}})).collect();
+                    json!({"items":items,"nextPageToken":if token.is_empty() {"page-two"} else {""}})
+                }
+                "videos" => {
+                    record.lock().await.push(format!("videos:{}", query["id"]));
+                    let items: Vec<Value> = query["id"].split(',').map(|id| json!({"id":id,"snippet":{"channelId":CHANNEL,"title":"Upload","channelTitle":"Channel","publishedAt":published,"liveBroadcastContent":"none"},"contentDetails":{"duration":"PT20M"},"status":{"privacyStatus":"public"}})).collect();
+                    json!({"items":items})
+                }
+                _ => panic!("Unexpected endpoint"),
+            })
+        }
+    }));
+    let server = stub(state, router).await;
+    (requests, server)
+}
+async fn sync_uploads(state: &AppState) {
+    state
+        .db
+        .write("test.fixture", |db| {
+            db.execute(
+                "UPDATE youtube_sync SET cursor='{\"phase\":\"uploads\"}',next_run=0",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    for _ in 0..20 {
+        if !tick(state).await.unwrap() {
+            break;
+        }
+    }
+    let error = state
+        .db
+        .read("test.fixture", |db| {
+            Ok(db.query_row("SELECT error FROM youtube_sync", [], |r| {
+                r.get::<_, Option<String>>(0)
+            })?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(error, None);
+}
+#[tokio::test]
+async fn known_uploads_skip_metadata_and_older_pages_once_backfilled() {
+    let (_temp, mut state, _session) = fixture().await;
+    connect(&state, "alice").await;
+    state.db.write("test.fixture", |db| {
+        db.execute("INSERT INTO youtube_videos(user_id,video_id,channel_id,title,published_at,metadata_at) VALUES ('alice',?1,?2,'Opened by URL',?3,?3)", params![VIDEO, CHANNEL, now()])?;
+        Ok(())
+    }).await.unwrap();
+    let (requests, server) = upload_sync(
+        &mut state,
+        HashMap::from([("", vec![NEW, VIDEO]), ("page-two", vec![NEXT])]),
+    )
+    .await;
+    // A tail known from elsewhere does not end the first backfill.
+    sync_uploads(&state).await;
+    assert_eq!(
+        std::mem::take(&mut *requests.lock().await),
+        [
+            "playlistItems:".to_owned(),
+            format!("videos:{NEW},{VIDEO}"),
+            "playlistItems:page-two".to_owned(),
+            format!("videos:{NEXT}"),
+        ]
+    );
+    sync_uploads(&state).await;
+    assert_eq!(
+        std::mem::take(&mut *requests.lock().await),
+        ["playlistItems:"]
+    );
+    state
+        .db
+        .write("test.fixture", |db| {
+            db.execute(
+                "UPDATE youtube_videos SET metadata_at=?1 WHERE video_id=?2",
+                params![now() - 86401, VIDEO],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    sync_uploads(&state).await;
+    assert_eq!(
+        std::mem::take(&mut *requests.lock().await),
+        ["playlistItems:".to_owned(), format!("videos:{NEW},{VIDEO}")]
+    );
+    assert_eq!(quota::status(&state).await.unwrap()["used"], 7);
+    server.abort();
+}
+#[tokio::test]
+async fn stored_uploads_past_the_first_page_refresh_daily() {
+    const OLD: &str = "lmnopqrstuv";
+    let (_temp, mut state, _session) = fixture().await;
+    connect(&state, "alice").await;
+    let (requests, server) = upload_sync(&mut state, HashMap::from([("", vec![VIDEO])])).await;
+    state.db.write("test.fixture", |db| {
+        db.execute("UPDATE youtube_subscriptions SET backfilled=1", [])?;
+        for (video, published, metadata) in [(VIDEO, now(), now()), (NEXT, now() - 86400, now() - 86401), (OLD, now() - 120 * 86400, now() - 86401)] {
+            db.execute("INSERT INTO youtube_videos(user_id,video_id,channel_id,title,published_at,metadata_at) VALUES ('alice',?1,?2,'Stored',?3,?4)", params![video, CHANNEL, published, metadata])?;
+        }
+        Ok(())
+    }).await.unwrap();
+    sync_uploads(&state).await;
+    assert_eq!(
+        *requests.lock().await,
+        ["playlistItems:".to_owned(), format!("videos:{NEXT}")]
+    );
+    let titles = state
+        .db
+        .read("test.fixture", |db| {
+            Ok(db
+                .prepare("SELECT title FROM youtube_videos ORDER BY video_id")?
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(titles, ["Stored", "Upload", "Stored"]);
+    server.abort();
+}
 #[tokio::test]
 async fn stale_video_cleanup_keeps_requested_downloads() {
     const OLD: &str = "lmnopqrstuv";
@@ -345,6 +492,7 @@ async fn stale_video_cleanup_keeps_requested_downloads() {
         storage::Page::Videos {
             ids: vec![],
             rows: vec![],
+            backfilled: None,
         },
     )
     .await
