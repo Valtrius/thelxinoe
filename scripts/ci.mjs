@@ -401,9 +401,9 @@ async function desktop() {
   );
 }
 
+// The lab serves on host loopback, which a browser on the runner reaches directly.
 async function updatesServer() {
   ensurePlaywright();
-  await browser();
   await group('release-scripts', () =>
     run(process.execPath, ['--test', 'scripts/release-checks.test.mjs']),
   );

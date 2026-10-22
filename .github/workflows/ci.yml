@@ -222,6 +222,8 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - if: matrix.phase == 'updates-server'
+        run: pnpm exec playwright install --with-deps chromium
       - run: node scripts/ci.mjs ${{ matrix.phase }}
         env:
           # A published version whose controller cannot update, while its fix ships.
