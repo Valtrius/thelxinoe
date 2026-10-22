@@ -1,6 +1,7 @@
 use super::*;
 use crate::test_support::fixture;
 
+#[cfg_attr(windows, ignore = "needs the Linux server container environment")]
 #[tokio::test]
 async fn batch_inventory_is_shared_and_does_not_exclude_unrelated_playback() {
     for change in ["none", "service", "candidate-write"] {
@@ -163,6 +164,7 @@ async fn batch_inventory_is_shared_and_does_not_exclude_unrelated_playback() {
     }
 }
 
+#[cfg_attr(windows, ignore = "needs the Linux server container environment")]
 #[tokio::test]
 async fn retention_never_reads_music_libraries() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -576,6 +578,7 @@ async fn auto_delete_waits_at_least_a_day() {
 
 // A due deletion that meets a busy manager stays scheduled, changes nothing upstream and
 // runs on a later pass once the manager is idle.
+#[cfg_attr(windows, ignore = "needs the Linux server container environment")]
 #[tokio::test]
 async fn a_busy_manager_postpones_a_due_deletion_instead_of_blocking_it() {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

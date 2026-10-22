@@ -87,6 +87,7 @@ async fn media_state() -> (tempfile::TempDir, AppState, std::path::PathBuf) {
     (temp, state, media)
 }
 
+#[cfg_attr(windows, ignore = "needs the Linux server container environment")]
 #[tokio::test]
 async fn a_library_over_the_generic_response_limit_reconciles_from_its_list_alone() {
     let (_temp, state, media) = media_state().await;
@@ -132,6 +133,7 @@ async fn a_library_over_the_generic_response_limit_reconciles_from_its_list_alon
     server.abort();
 }
 
+#[cfg_attr(windows, ignore = "needs the Linux server container environment")]
 #[tokio::test]
 async fn reading_managers_does_not_hold_the_manager_lock() {
     let (_temp, state, media) = media_state().await;
@@ -168,6 +170,7 @@ async fn reading_managers_does_not_hold_the_manager_lock() {
     server.abort();
 }
 
+#[cfg_attr(windows, ignore = "needs the Linux server container environment")]
 #[tokio::test]
 async fn series_files_come_with_their_episodes() {
     for sonarr4 in [true, false] {
@@ -242,6 +245,7 @@ async fn series_files_come_with_their_episodes() {
     }
 }
 
+#[cfg_attr(windows, ignore = "needs the Linux server container environment")]
 #[tokio::test]
 async fn claims_are_released_once_no_owned_manager_lists_them() {
     let (_temp, state, media) = media_state().await;

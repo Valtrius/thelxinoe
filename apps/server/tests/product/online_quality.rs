@@ -329,6 +329,7 @@ pub(super) fn without_index(file: &[u8]) -> Vec<u8> {
     output
 }
 
+#[cfg_attr(windows, ignore = "needs the Linux server container environment")]
 #[tokio::test]
 async fn jellyfin_live_playback_describes_tracks_and_delivers_playable_hls() {
     let (temp, state, _) = crate::test_support::fixture().await;
@@ -498,6 +499,7 @@ fn assert_media_streams(source: &Value) {
     }
 }
 
+#[cfg_attr(windows, ignore = "needs the Linux server container environment")]
 #[tokio::test]
 async fn jellyfin_provider_qualities_preserve_8k_and_60fps_packets_and_enforce_client_limits() {
     let _ = tracing_subscriber::fmt()
