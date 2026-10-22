@@ -789,7 +789,7 @@ async fn create_live(
         .insert(sid.clone(), session.clone());
     let revision = match state
         .playback
-        .start_remote(&sid, &prepared.source, &input, &decision)
+        .start_remote(&sid, &prepared.source, &prepared.probe, &input, &decision)
         .await
     {
         Ok((revision, _)) => revision,

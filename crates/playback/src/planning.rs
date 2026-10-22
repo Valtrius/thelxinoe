@@ -31,11 +31,11 @@ impl Encoding {
             }
         })
     }
-    pub(crate) fn args(self, options: &Options) -> Result<Vec<String>> {
+    pub(crate) fn args(self, options: &Options, probe: &Value) -> Result<Vec<String>> {
         if !self.video && !self.audio {
             return Ok(vec!["-c".into(), "copy".into()]);
         }
-        let args = crate::conversion_args(options)?;
+        let args = crate::conversion_args(options, probe)?;
         let mut result = Vec::new();
         let mut index = 0;
         while index < args.len() {

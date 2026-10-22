@@ -75,6 +75,7 @@ async function providerFixture(page: Page, platform: string, admin = true) {
         youtube_downloads: false,
         youtube_daily_quota: 10000,
         youtube_network: 'auto',
+        youtube_download_quality: 'best',
         youtube_network_status: { ipv4: true, ipv6: true, current: 'ipv4' },
         quota: { used: 0, blocked: false },
       });

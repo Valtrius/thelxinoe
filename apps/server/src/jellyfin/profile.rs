@@ -1,7 +1,10 @@
 //! Translate the tested Jellyfin device profile into supported delivery paths.
+use crate::error::ApiError;
 use serde_json::Value;
 use std::collections::BTreeMap;
-use thelxinoe_playback::{Capabilities, Conversion, Source};
+use thelxinoe_playback::{
+    Capabilities, Conversion, Options, Source, conversion_rate, level_rate, picture_rate,
+};
 
 type Properties = BTreeMap<String, String>;
 pub fn matches(value: &Value, wanted: &str) -> bool {
@@ -236,13 +239,66 @@ fn hls(
                     })
         })
 }
+/// The highest conversion quality whose video and 192 kbps audio fit a client's bitrate limit.
+pub fn quality_within(max: i64) -> Option<&'static str> {
+    [
+        (20_192_000, "20mbps"),
+        (8_192_000, "8mbps"),
+        (4_192_000, "4mbps"),
+        (2_192_000, "2mbps"),
+    ]
+    .into_iter()
+    .find(|(least, _)| max >= *least)
+    .map(|(_, quality)| quality)
+}
+/// The quality that keeps a planned video conversion and its audio within the client's limit,
+/// if the requested one doesn't. Auto converts at the rate of its picture, which a source
+/// within the limit can still exceed.
+pub fn bounded_quality(
+    source: &Source,
+    options: &Options,
+    max: Option<i64>,
+) -> crate::error::Result<Option<&'static str>> {
+    let Some(max) = max else {
+        return Ok(None);
+    };
+    let converts =
+        thelxinoe_playback::decision(source, options).is_ok_and(|planned| planned.encoding.video);
+    let rate = conversion_rate(options, &source.probe).map_err(|e| ApiError::bad(e.to_string()))?;
+    if !converts || i64::from(rate) + 192_000 <= max {
+        return Ok(None);
+    }
+    quality_within(max).map(Some).ok_or_else(|| {
+        ApiError::bad("This client bitrate limit is below the supported conversion quality")
+    })
+}
+/// The lowest H.264 level that holds a picture, by its macroblocks per frame and per second.
+fn level(width: u32, height: u32, frame_rate: f64) -> Option<u32> {
+    let blocks = u64::from(width.div_ceil(16)) * u64::from(height.div_ceil(16));
+    [
+        (30, 1_620, 40_500),
+        (31, 3_600, 108_000),
+        (32, 5_120, 216_000),
+        (41, 8_192, 245_760),
+        (42, 8_704, 522_240),
+        (50, 22_080, 589_824),
+        (51, 36_864, 983_040),
+        (52, 36_864, 2_073_600),
+        (60, 139_264, 4_177_920),
+        (61, 139_264, 8_355_840),
+        (62, 139_264, 16_711_680),
+    ]
+    .into_iter()
+    .find(|(_, frame, second)| blocks <= *frame && blocks as f64 * frame_rate <= *second as f64)
+    .map(|(level, ..)| level)
+}
 pub fn negotiate(
     source: &Source,
     audio_index: Option<i64>,
     profile: &Value,
     direct: bool,
     remux: bool,
-    video_bitrate: u32,
+    video_bitrate: Option<u32>,
 ) -> Capabilities {
     negotiate_for_container(
         source,
@@ -260,7 +316,7 @@ pub fn negotiate_online(
     profile: &Value,
     direct: bool,
     remux: bool,
-    video_bitrate: u32,
+    video_bitrate: Option<u32>,
 ) -> Capabilities {
     let candidates = ["mp4", "ts"].map(|container| {
         negotiate_for_container(
@@ -294,7 +350,7 @@ fn negotiate_for_container(
     profile: &Value,
     direct: bool,
     remux: bool,
-    video_bitrate: u32,
+    video_bitrate: Option<u32>,
     output_container: &str,
 ) -> Capabilities {
     let video = source.video_codec().unwrap_or("");
@@ -376,33 +432,40 @@ fn negotiate_for_container(
             .get("Height")
             .and_then(|v| v.parse::<f64>().ok())
             .unwrap_or(1080.0);
-        let frame_rate = values
+        let source_rate = values
             .get("VideoFramerate")
             .and_then(|v| v.parse::<f64>().ok())
             .unwrap_or(30.0)
-            .clamp(1.0, 30.0)
-            .min(upper("VideoFramerate", 30.0));
-        'candidate: for (max_width, max_height, level) in [
-            (1920.0, 1080.0, 41),
-            (1280.0, 720.0, 31),
-            (720.0, 480.0, 30),
-        ] {
+            .clamp(1.0, 60.0);
+        // The source picture when the client takes it, else the largest smaller one it does.
+        'candidate: for ((max_width, max_height), most) in [
+            (7680.0, 4320.0),
+            (3840.0, 2160.0),
+            (2560.0, 1440.0),
+            (1920.0, 1080.0),
+            (1280.0, 720.0),
+            (720.0, 480.0),
+        ]
+        .into_iter()
+        .flat_map(|size| [(size, 60.0), (size, 30.0)])
+        {
+            let frame_rate = source_rate.min(most).min(upper("VideoFramerate", 60.0));
             let scale = (upper("Width", max_width) / width)
                 .min(upper("Height", max_height) / height)
                 .min(1.0);
             let width = ((width * scale / 2.0).floor().max(1.0) as u32) * 2;
             let height = ((height * scale / 2.0).floor().max(1.0) as u32) * 2;
+            let Some(level) = level(width, height, frame_rate) else {
+                continue;
+            };
             converted.insert("Width".into(), width.to_string());
             converted.insert("Height".into(), height.to_string());
             converted.insert("VideoLevel".into(), level.to_string());
             converted.insert(
                 "VideoBitrate".into(),
                 video_bitrate
-                    .min(match level {
-                        30 => 10_000_000,
-                        31 => 14_000_000,
-                        _ => 20_000_000,
-                    })
+                    .unwrap_or_else(|| picture_rate(width.into(), height.into()))
+                    .min(level_rate(level))
                     .to_string(),
             );
             converted.insert("VideoFramerate".into(), frame_rate.to_string());
@@ -550,7 +613,7 @@ mod tests {
     #[test]
     fn unsupported_depth_resolution_level_and_channels_require_a_supported_conversion() {
         let (source, profile) = fixture();
-        let caps = negotiate(&source, Some(1), &profile, true, true, 8_000_000);
+        let caps = negotiate(&source, Some(1), &profile, true, true, Some(8_000_000));
         let conversion = caps.conversion.as_ref().unwrap();
         assert_eq!(
             (conversion.width, conversion.height, conversion.level),
@@ -567,7 +630,7 @@ mod tests {
         let mut denied = profile;
         denied["TranscodingProfiles"][0]["Type"] = json!("Audio");
         let options = Options {
-            capabilities: negotiate(&source, Some(1), &denied, true, true, 8_000_000),
+            capabilities: negotiate(&source, Some(1), &denied, true, true, Some(8_000_000)),
             ..options
         };
         assert!(plan(&source, &options).is_err());
@@ -582,12 +645,56 @@ mod tests {
         source.probe["streams"][0]["height"] = json!(180);
         source.probe["streams"][1]["channels"] = json!(2);
         profile["CodecProfiles"].as_array_mut().unwrap().push(json!({"Type":"Video","Codec":"h264","ApplyConditions":[{"Property":"VideoProfile","Condition":"Equals","Value":"High 10"}],"Conditions":[{"Property":"Width","Condition":"LessThanEqual","Value":"160","IsRequired":true}]}));
-        let caps = negotiate(&source, Some(1), &profile, true, true, 8_000_000);
+        let caps = negotiate(&source, Some(1), &profile, true, true, Some(8_000_000));
         assert_eq!(caps.containers, vec!["mkv"]);
         profile["CodecProfiles"][2]["ApplyConditions"] = json!([]);
-        let caps = negotiate(&source, Some(1), &profile, true, true, 8_000_000);
+        let caps = negotiate(&source, Some(1), &profile, true, true, Some(8_000_000));
         assert!(caps.containers.is_empty());
         let conversion = caps.conversion.unwrap();
         assert_eq!((conversion.width, conversion.height), (160, 90));
+    }
+    #[test]
+    fn conversions_stay_within_the_client_bitrate_limit_even_from_a_smaller_source() {
+        let (mut source, _) = fixture();
+        // A 6 Mbps 4K HEVC source that an H.264 client receives converted.
+        source.probe["streams"][0] = json!({"index":0,"codec_type":"video","codec_name":"hevc","profile":"Main","width":3840,"height":2160,"avg_frame_rate":"30/1","bits_per_raw_sample":"8"});
+        source.probe["format"] = json!({"bit_rate":"6000000","duration":"60"});
+        let profile = json!({"DirectPlayProfiles":[{"Type":"Video","Container":"mkv","VideoCodec":"h264","AudioCodec":"aac"}],"TranscodingProfiles":[{"Type":"Video","Container":"ts","Protocol":"hls","VideoCodec":"h264","AudioCodec":"aac"}]});
+        let options = |source: &Source, quality: &str| Options {
+            quality: quality.into(),
+            audio: Some(1),
+            subtitle: None,
+            capabilities: negotiate(
+                source,
+                Some(1),
+                &profile,
+                true,
+                true,
+                thelxinoe_playback::bitrate(quality).unwrap(),
+            ),
+        };
+        let auto = options(&source, "auto");
+        assert_eq!(conversion_rate(&auto, &source.probe).unwrap(), 25_000_000);
+        assert_eq!(bounded_quality(&source, &auto, None).unwrap(), None);
+        assert_eq!(
+            bounded_quality(&source, &auto, Some(30_000_000)).unwrap(),
+            None
+        );
+        assert_eq!(
+            bounded_quality(&source, &auto, Some(10_000_000)).unwrap(),
+            Some("8mbps")
+        );
+        let bounded = options(&source, "8mbps");
+        assert_eq!(plan(&source, &bounded).unwrap(), "transcode");
+        assert_eq!(conversion_rate(&bounded, &source.probe).unwrap(), 8_000_000);
+        assert!(bounded_quality(&source, &auto, Some(1_000_000)).is_err());
+        // An original the client plays directly needs no bound.
+        source.probe["streams"][0]["codec_name"] = json!("h264");
+        let direct = options(&source, "auto");
+        assert_eq!(plan(&source, &direct).unwrap(), "direct");
+        assert_eq!(
+            bounded_quality(&source, &direct, Some(1_000_000)).unwrap(),
+            None
+        );
     }
 }

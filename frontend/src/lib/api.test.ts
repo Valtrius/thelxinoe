@@ -5,41 +5,59 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
+class Socket {
+  static OPEN = 1;
+  static all: Socket[] = [];
+  readyState = 0;
+  onopen?: () => void;
+  onclose?: () => void;
+  onmessage?: (message: { data: string }) => void;
+  url: string;
+  constructor(url: string | URL) {
+    this.url = String(url);
+    Socket.all.push(this);
+  }
+  open() {
+    this.readyState = Socket.OPEN;
+    this.onopen?.();
+  }
+  close() {
+    this.readyState = 3;
+    this.onclose?.();
+  }
+}
+// A browser page whose sockets and ticket requests are under the test's control.
+function page(fetch = vi.fn()) {
+  vi.useFakeTimers();
+  Socket.all = [];
+  const document = Object.assign(new EventTarget(), {
+    visibilityState: 'visible',
+  });
+  vi.stubGlobal('document', document);
+  vi.stubGlobal('window', new EventTarget());
+  vi.stubGlobal('location', { origin: 'https://media.test' });
+  vi.stubGlobal('WebSocket', Socket);
+  let sequence = 0;
+  vi.stubGlobal(
+    'fetch',
+    fetch.mockImplementation(async () => ({
+      ok: true,
+      json: async () => ({
+        ticket: `ticket${++sequence}`,
+        cursor: sequence === 1 ? 100 : 2000,
+      }),
+    })),
+  );
+  return document;
+}
 describe('server transport', () => {
   it('reconnects with an event cursor and a fresh ticket, then stops cleanly', async () => {
-    vi.useFakeTimers();
-    vi.stubGlobal('location', { origin: 'https://media.test' });
-    let sequence = 0;
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockImplementation(async () => ({
-        ok: true,
-        json: async () => ({
-          ticket: `ticket${++sequence}`,
-          cursor: sequence === 1 ? 100 : 2000,
-        }),
-      })),
-    );
-    class Socket {
-      static all: Socket[] = [];
-      onopen?: () => void;
-      onclose?: () => void;
-      onmessage?: (message: { data: string }) => void;
-      url: string;
-      constructor(url: string | URL) {
-        this.url = String(url);
-        Socket.all.push(this);
-      }
-      close() {
-        this.onclose?.();
-      }
-    }
-    vi.stubGlobal('WebSocket', Socket);
+    page();
     const receive = vi.fn();
     const events = new Events(receive);
     await events.connect();
     expect(Socket.all[0].url).toContain('since=100');
-    Socket.all[0].onopen?.();
+    Socket.all[0].open();
     receive.mockClear();
     Socket.all[0].onmessage?.({
       data: JSON.stringify({ id: 107, kind: 'catalog.changed', payload: {} }),
@@ -56,6 +74,72 @@ describe('server transport', () => {
     events.close();
     await vi.advanceTimersByTimeAsync(30000);
     expect(Socket.all).toHaveLength(2);
+  });
+  it('replaces a connection that stalls before opening', async () => {
+    page();
+    const status = vi.fn();
+    const events = new Events(() => {}, status);
+    await events.connect();
+    await vi.advanceTimersByTimeAsync(9999);
+    expect(Socket.all).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1 + 500);
+    expect(status).toHaveBeenLastCalledWith(false);
+    expect(Socket.all).toHaveLength(2);
+    expect(Socket.all[0].readyState).toBe(3);
+    Socket.all[1].open();
+    expect(status).toHaveBeenLastCalledWith(true);
+    // The stalled socket closing late cannot mark the open one disconnected.
+    Socket.all[0].onclose?.();
+    expect(status).toHaveBeenLastCalledWith(true);
+    events.close();
+  });
+  it('retries a ticket request that never answers', async () => {
+    const fetch = vi.fn();
+    page(fetch);
+    fetch.mockImplementationOnce(() => new Promise(() => {}));
+    const events = new Events(() => {});
+    void events.connect();
+    await vi.advanceTimersByTimeAsync(10500);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(Socket.all).toHaveLength(1);
+    events.close();
+  });
+  it('reconnects as soon as a suspended page is shown again', async () => {
+    const fetch = vi.fn();
+    const document = page(fetch);
+    const status = vi.fn();
+    const events = new Events(() => {}, status);
+    await events.connect();
+    Socket.all[0].open();
+    // A phone drops the connection in the background, and its retries fail
+    // until the next one waits the longest backoff.
+    document.visibilityState = 'hidden';
+    const answer = fetch.getMockImplementation()!;
+    fetch.mockRejectedValue(new TypeError('Network connection was lost'));
+    Socket.all[0].close();
+    await vi.advanceTimersByTimeAsync(500 + 1000 + 2000 + 4000 + 8000);
+    expect(status).toHaveBeenLastCalledWith(false);
+    fetch.mockImplementation(answer);
+    document.visibilityState = 'visible';
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(Socket.all).toHaveLength(2);
+    Socket.all[1].open();
+    expect(status).toHaveBeenLastCalledWith(true);
+    // An open connection is left alone.
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(Socket.all).toHaveLength(2);
+    events.close();
+  });
+  it('stops listening to the page when closed', async () => {
+    const document = page();
+    const events = new Events(() => {});
+    await events.connect();
+    events.close();
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(Socket.all).toHaveLength(1);
   });
   it('reports a proxy error page by status and still expires the session', async () => {
     const target = new EventTarget();

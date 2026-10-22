@@ -10,8 +10,6 @@ use std::{
 use thelxinoe_core::{id, now};
 use thelxinoe_database::Database;
 
-const MAX_DOWNLOAD_BYTES: i64 = 2 * 1024 * 1024 * 1024;
-
 struct Policy {
     watched: bool,
     delay: i64,
@@ -73,6 +71,11 @@ fn usage(db: &Connection) -> anyhow::Result<VideoUsage> {
         pinned_bytes,
         waiting,
     })
+}
+
+/// Space unpinned downloads hold that eviction can't free now, because they're playing.
+fn held(db: &Connection) -> anyhow::Result<i64> {
+    Ok(db.query_row("SELECT COALESCE(SUM(d.size),0) FROM youtube_downloads d WHERE d.state='ready' AND NOT EXISTS(SELECT 1 FROM youtube_state s WHERE s.video_id=d.video_id AND s.pinned=1) AND NOT EXISTS(SELECT 1 FROM video_retention_candidates c WHERE c.video_id=d.video_id AND c.generation=d.generation AND c.state='blocked') AND EXISTS(SELECT 1 FROM playback_sessions p WHERE p.youtube_video_id=d.video_id AND p.state IN ('ready','playing','paused') AND p.updated_at>?1)",[now()-120],|r|r.get(0))?)
 }
 
 fn eligibility(db: &Connection, d: &Download) -> anyhow::Result<Option<Eligibility>> {
@@ -363,17 +366,12 @@ pub(super) async fn action(
 
 pub(super) async fn admit(
     db: &Database,
-    root: PathBuf,
     video: String,
     generation: String,
 ) -> anyhow::Result<bool> {
-    db.write("auto_delete.admit",move|db| {
+    db.read("auto_delete.admit",move|db| {
         ensure!(db.query_row("SELECT EXISTS(SELECT 1 FROM youtube_downloads WHERE video_id=?1 AND generation=?2 AND state='downloading')",params![video,generation],|r|r.get::<_,bool>(0))?,"Download was cancelled");
-        if pinned(db,&video)? {return Ok(true);}
-        let limit=policy(db)?.limit;
-        let reserve=MAX_DOWNLOAD_BYTES.min(limit);
-        evict(db,&root,reserve)?;
-        Ok(usage(db)?.unpinned_bytes.saturating_add(reserve)<=limit)
+        Ok(budget_of(db,&video)?.is_none_or(|bytes|bytes>0))
     }).await
 }
 
@@ -392,24 +390,36 @@ pub(super) async fn capacity(db: &Database) -> anyhow::Result<[i64; 4]> {
     .await
 }
 
-pub(super) async fn budget(db: &Database, video: String) -> anyhow::Result<i64> {
-    db.read("auto_delete.budget", move |db| available_budget(db, &video))
+pub(super) async fn budget(db: &Database, video: String) -> anyhow::Result<Option<i64>> {
+    db.read("auto_delete.budget", move |db| budget_of(db, &video))
         .await
 }
 
-pub(crate) fn available_budget(db: &Connection, video: &str) -> anyhow::Result<i64> {
+/// The most a download may take: unbounded when pinned, else the limit less the space older
+/// downloads keep while playing. Every other unpinned download can be evicted to make room.
+fn budget_of(db: &Connection, video: &str) -> anyhow::Result<Option<i64>> {
     if pinned(db, video)? {
-        return Ok(MAX_DOWNLOAD_BYTES);
+        return Ok(None);
     }
-    Ok((policy(db)?.limit - usage(db)?.unpinned_bytes).clamp(0, MAX_DOWNLOAD_BYTES))
+    Ok(Some(policy(db)?.limit - held(db)?))
 }
 
-pub(crate) fn download_limit(db: &Connection, video: &str) -> anyhow::Result<i64> {
-    Ok(if pinned(db, video)? {
-        MAX_DOWNLOAD_BYTES
-    } else {
-        policy(db)?.limit.min(MAX_DOWNLOAD_BYTES)
-    })
+/// Evicts the oldest unpinned downloads until a finished one of `size` bytes fits the limit.
+/// Nothing is evicted when playback keeps too much space for it to fit.
+pub(crate) fn make_room(
+    db: &mut Connection,
+    root: &Path,
+    video: &str,
+    size: i64,
+) -> anyhow::Result<bool> {
+    let Some(budget) = budget_of(db, video)? else {
+        return Ok(true);
+    };
+    if size > budget {
+        return Ok(false);
+    }
+    evict(db, root, size)?;
+    Ok(usage(db)?.unpinned_bytes.saturating_add(size) <= policy(db)?.limit)
 }
 
 pub(crate) fn remove_ready(db: &Connection, root: &Path, video: &str) -> anyhow::Result<()> {

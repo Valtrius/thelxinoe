@@ -326,7 +326,7 @@ async fn configuration(State(state): State<AppState>, headers: HeaderMap) -> Res
     security::require(&state, &headers, Capability::ManageServer).await?;
     let settings = storage::configuration(&state.db).await?;
     Ok(Json(
-        json!({"google_configured":google(&state).await.is_ok(),"redirect_uri":redirect_uri(&state).ok(),"youtube_downloads":settings.0,"youtube_daily_quota":settings.1,"youtube_network":settings.2,"youtube_network_status":network::status(&state,settings.2),"quota":quota::status(&state).await?}),
+        json!({"google_configured":google(&state).await.is_ok(),"redirect_uri":redirect_uri(&state).ok(),"youtube_downloads":settings.0,"youtube_daily_quota":settings.1,"youtube_network":settings.2,"youtube_network_status":network::status(&state,settings.2),"youtube_download_quality":settings.3,"quota":quota::status(&state).await?}),
     ))
 }
 #[derive(Deserialize)]
@@ -335,6 +335,9 @@ struct Settings {
     youtube_downloads: bool,
     youtube_daily_quota: u32,
     youtube_network: network::Mode,
+    /// Absent keeps the current quality, for clients that don't offer it.
+    #[serde(default)]
+    youtube_download_quality: Option<String>,
 }
 async fn configure(
     State(state): State<AppState>,
@@ -346,6 +349,13 @@ async fn configure(
         return Err(ApiError::bad(
             "Daily quota must be between 1 and 10,000,000 units",
         ));
+    }
+    if input
+        .youtube_download_quality
+        .as_deref()
+        .is_some_and(|quality| !downloads::QUALITIES.contains(&quality))
+    {
+        return Err(ApiError::bad("Unsupported download quality"));
     }
     let changed = if let Some(client) = &input.google {
         client.validate()?;

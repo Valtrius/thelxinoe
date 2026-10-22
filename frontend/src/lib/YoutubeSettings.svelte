@@ -13,6 +13,7 @@
   import AutoSaveForm from './ui/AutoSaveForm.svelte';
   import ProviderIntegrationSwitch from './providers/ProviderIntegrationSwitch.svelte';
   import { providers } from './providers/availability';
+  import type { YoutubeDownloadQuality } from './providers/types';
   let { onConfigured }: { onConfigured?: () => void } = $props();
   type Family = 'ipv4' | 'ipv6';
   type Network = 'auto' | Family;
@@ -22,6 +23,7 @@
     youtube_downloads: boolean;
     youtube_daily_quota: number;
     youtube_network: Network;
+    youtube_download_quality: YoutubeDownloadQuality;
     youtube_network_status: {
       ipv4: boolean;
       ipv6: boolean;
@@ -37,6 +39,7 @@
     downloads = $state(false),
     budget = $state(10000),
     network = $state<Network>('auto'),
+    downloadQuality = $state<YoutubeDownloadQuality>('best'),
     busy = $state(false),
     savingPreferences = $state(false),
     message = $state('');
@@ -45,6 +48,7 @@
     downloads = config.youtube_downloads;
     budget = config.youtube_daily_quota;
     network = config.youtube_network;
+    downloadQuality = config.youtube_download_quality;
   }
   // The server reports no current family only when a fixed family has no route.
   function networkSummary(config: Configuration) {
@@ -78,6 +82,7 @@
         youtube_downloads: downloads,
         youtube_daily_quota: budget,
         youtube_network: network,
+        youtube_download_quality: downloadQuality,
       });
       clientId = '';
       clientSecret = '';
@@ -204,11 +209,13 @@
           youtube_downloads: downloads,
           youtube_daily_quota: budget,
           youtube_network: network,
+          youtube_download_quality: downloadQuality,
         }}
         onRevert={(previous) => {
           downloads = previous.youtube_downloads;
           budget = previous.youtube_daily_quota;
           network = previous.youtube_network;
+          downloadQuality = previous.youtube_download_quality;
         }}
         onsave={async (submitted) => {
           await api('/admin/online', 'PUT', submitted);
@@ -250,6 +257,22 @@
         <SettingRow label="Allow YouTube downloads" for={`${ids}-downloads`}>
           <Switch id={`${ids}-downloads`} bind:checked={downloads} />
         </SettingRow>
+        {#if downloads}<SettingRow
+            label="Download quality"
+            for={`${ids}-download-quality`}
+            control="field"
+          >
+            <select
+              id={`${ids}-download-quality`}
+              class={formControlClass}
+              bind:value={downloadQuality}
+            >
+              <option value="best">Best available</option>
+              {#each ['2160p', '1440p', '1080p', '720p'] as quality (quality)}<option
+                  value={quality}>Up to {quality}</option
+                >{/each}
+            </select>
+          </SettingRow>{/if}
       </AutoSaveForm>{/if}
     {#if message}<p
         role="status"

@@ -28,7 +28,10 @@
   import { sortedYoutubeWatchlistItems } from '../../youtube-watchlists';
   import Button from '../../../ui/Button.svelte';
   import Switch from '../../../ui/Switch.svelte';
-  import { eyebrowTextClass as eyebrowClass } from '../../../ui/styles';
+  import {
+    eyebrowTextClass as eyebrowClass,
+    toolbarMenuClass,
+  } from '../../../ui/styles';
   import WatchlistItem from './WatchlistItem.svelte';
   import { touchDevice } from '../../../responsive';
 
@@ -408,7 +411,7 @@
   <div
     data-sidebar-resize="y"
     data-sidebar-resize-zoom
-    class="flex shrink-0 items-center gap-1.5 border-b border-line p-2"
+    class="flex shrink-0 items-center gap-1.5 border-b border-line p-2 compact:relative"
   >
     {#if onClose}
       <Button
@@ -527,7 +530,7 @@
         </Popover.ContentStatic>
       </Popover.Root>
     </div>
-    <div class="relative">
+    <div class="relative compact:static">
       <Popover.Root
         bind:open={sortMenuOpen}
         onOpenChange={(open) => {
@@ -555,7 +558,7 @@
           <Popover.ContentStatic
             role="dialog"
             aria-label="Sort watchlist"
-            class="absolute top-10 right-0 z-50 w-64 border border-line-strong bg-surface-strong p-3 shadow-xl"
+            class={`absolute top-10 right-0 z-50 w-64 border border-line-strong bg-surface-strong p-3 shadow-xl compact:top-12 ${toolbarMenuClass}`}
           >
             <p class={`${eyebrowClass} mb-2`}>SORT BY</p>
             <div class="flex items-center gap-1 py-1.5">
@@ -599,7 +602,7 @@
         {/if}
       </Popover.Root>
     </div>
-    <div class="relative">
+    <div class="relative compact:static">
       <Popover.Root
         bind:open={settingsOpen}
         onOpenChange={(open) => {
@@ -626,7 +629,7 @@
           <Popover.ContentStatic
             role="dialog"
             aria-label="Watchlist settings"
-            class="absolute top-10 right-0 z-50 w-72 border border-line-strong bg-surface-strong p-3 text-xs shadow-xl"
+            class={`absolute top-10 right-0 z-50 w-72 border border-line-strong bg-surface-strong p-3 text-xs shadow-xl compact:top-12 ${toolbarMenuClass}`}
           >
             <p class={`${eyebrowClass} mb-2`}>WATCHLIST SETTINGS</p>
             {#if !selected.isDefault}

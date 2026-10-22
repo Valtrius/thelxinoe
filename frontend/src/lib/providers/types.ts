@@ -12,7 +12,8 @@ export type YoutubeDurationFilter = 'any' | 'under_10' | '10_plus' | '30_plus';
 export type YoutubePublishedFilter = 'any' | '7_days' | '30_days';
 export type YoutubeDownloadFilter = 'all' | 'downloaded';
 export type YoutubeBroadcastState = 'none' | 'upcoming' | 'live' | 'replay';
-export type YoutubeDownloadQuality = '720p' | '1080p' | '1440p' | 'best';
+export type YoutubeDownloadQuality =
+  'best' | '2160p' | '1440p' | '1080p' | '720p';
 export type YoutubeCardShortcut =
   | 'play_from_beginning'
   | 'play_signed_in'
@@ -191,7 +192,7 @@ export interface YoutubeDownload {
     | 'failed';
   fileSizeBytes: number;
   pinned: boolean;
-  quality: YoutubeDownloadQuality;
+  widthPixels?: number | null;
   heightPixels?: number | null;
   frameRate?: number | null;
   requestedAt: string;

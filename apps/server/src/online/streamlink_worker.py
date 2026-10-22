@@ -5,10 +5,13 @@ import re
 import sys
 
 import streamlink
+from streamlink.options import Options
 
 logging.disable(logging.CRITICAL)
 session = streamlink.Streamlink()
 session.set_option("http-timeout", 15)
+# Twitch lists its H.265 and AV1 renditions, such as 1440p, only to clients that ask for them.
+twitch = Options({"supported-codecs": ["h264", "h265", "av1"]})
 
 
 def formats(streams):
@@ -50,7 +53,7 @@ for line in sys.stdin:
         if provider not in ("twitch", "kick") or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", channel):
             raise ValueError("Invalid channel")
         domain = "www.twitch.tv" if provider == "twitch" else "kick.com"
-        streams = session.streams(f"https://{domain}/{channel}")
+        streams = session.streams(f"https://{domain}/{channel}", twitch if provider == "twitch" else None)
         result = formats(streams)
     except Exception:
         result = {"error": "Public stream extraction failed"}

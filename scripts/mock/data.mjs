@@ -241,7 +241,9 @@ export function videoSeed() {
             status: 'ready',
             fileSizeBytes: 540 * 1024 ** 2,
             pinned: index === 0,
-            quality: '1080p',
+            widthPixels: index === 0 ? 3840 : 1920,
+            heightPixels: index === 0 ? 2160 : 1080,
+            frameRate: index === 0 ? 24000 / 1001 : 60,
             requestedAt: iso(-3600),
           }
         : null,

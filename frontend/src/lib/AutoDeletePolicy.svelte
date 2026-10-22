@@ -245,7 +245,7 @@
               id={`${ids}-limit`}
               class={twMerge(formControlClass, 'w-32')}
               type="number"
-              min="0.001"
+              min="40"
               max="9000000"
               step="any"
               required

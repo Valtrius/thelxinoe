@@ -102,6 +102,9 @@ export function downloadEvent(payload: {
   total_bytes?: number | null;
   eta_seconds?: number | null;
   media_kind?: 'video' | 'audio' | 'media' | null;
+  width?: number | null;
+  height?: number | null;
+  frame_rate?: number | null;
 }): YoutubeDownloadEvent {
   const previous = videos.get(payload.video_id)?.download;
   return {
@@ -115,7 +118,9 @@ export function downloadEvent(payload: {
         : 'failed') as YoutubeDownload['status'],
       fileSizeBytes: payload.size ?? 0,
       pinned: previous?.pinned ?? false,
-      quality: previous?.quality ?? '1080p',
+      widthPixels: payload.width,
+      heightPixels: payload.height,
+      frameRate: payload.frame_rate,
       requestedAt: previous?.requestedAt ?? '',
     },
     downloadedBytes: payload.downloaded_bytes,
@@ -195,7 +200,14 @@ export function kickChannels(feed: KickFeed): KickChannel[] {
 }
 async function getDownload(videoId: string): Promise<YoutubeDownload> {
   const result = await request<{
-    download: { state: string; size?: number; error?: string } | null;
+    download: {
+      state: string;
+      size?: number;
+      error?: string;
+      width?: number | null;
+      height?: number | null;
+      frame_rate?: number | null;
+    } | null;
   }>(`/online/youtube/videos/${videoId}/download`);
   const d = result.download;
   if (!d) throw new Error('This download is no longer available.');
@@ -212,7 +224,9 @@ async function getDownload(videoId: string): Promise<YoutubeDownload> {
       : 'failed') as YoutubeDownload['status'],
     fileSizeBytes: d.size ?? 0,
     pinned: videos.get(videoId)?.download?.pinned ?? false,
-    quality: '1080p',
+    widthPixels: d.width,
+    heightPixels: d.height,
+    frameRate: d.frame_rate,
     requestedAt: new Date().toISOString(),
     errorMessage: d.error,
   };

@@ -54,31 +54,56 @@ pub struct Conversion {
     #[serde(default)]
     pub fit: bool,
 }
-pub(crate) fn conversion_args(options: &Options) -> Result<Vec<String>> {
-    let mut rate = bitrate(&options.quality)?.unwrap_or(8_000_000);
+/// The rate of the smallest listed resolution that holds a picture's short side.
+pub fn picture_rate(width: u64, height: u64) -> u32 {
+    let side = width.min(height);
+    let height = [360, 480, 720, 1080, 1440, 2160]
+        .into_iter()
+        .find(|h| side <= *h)
+        .unwrap_or(4320);
+    bitrate(&format!("{height}p"))
+        .ok()
+        .flatten()
+        .unwrap_or(8_000_000)
+}
+/// The video rate of a conversion: the requested one, else that of its output picture, within
+/// the client's H.264 level.
+pub fn conversion_rate(options: &Options, probe: &Value) -> Result<u32> {
+    let conversion = options.capabilities.conversion.as_ref();
+    let picture = conversion
+        .map(|c| (u64::from(c.width), u64::from(c.height)))
+        .or_else(|| {
+            probe["streams"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|s| s["codec_type"] == "video" && s["disposition"]["attached_pic"] != 1)
+                .and_then(|s| Some((s["width"].as_u64()?, s["height"].as_u64()?)))
+        });
+    Ok(bitrate(&options.quality)?
+        .unwrap_or_else(|| picture.map_or(8_000_000, |(w, h)| picture_rate(w, h)))
+        .min(conversion.map_or(u32::MAX, |c| level_rate(c.level))))
+}
+pub(crate) fn conversion_args(options: &Options, probe: &Value) -> Result<Vec<String>> {
     let mut filter = if let Some(height) = resolution(&options.quality) {
         format!("scale=w=-2:h='min({height},ih)'")
     } else {
-        "scale=w='min(1920,iw)':h=-2".to_owned()
+        // The picture keeps its size; H.264 only needs it even.
+        "scale=w='trunc(iw/2)*2':h='trunc(ih/2)*2'".to_owned()
     };
     let mut extra = Vec::new();
     if let Some(c) = &options.capabilities.conversion {
-        if !(2..=1920).contains(&c.width)
+        if !(2..=7680).contains(&c.width)
             || c.width % 2 != 0
-            || !(2..=1080).contains(&c.height)
+            || !(2..=4320).contains(&c.height)
             || c.height % 2 != 0
             || !c.frame_rate.is_finite()
             || !(1.0..=60.0).contains(&c.frame_rate)
             || !["baseline", "main", "high"].contains(&c.profile.as_str())
-            || ![30, 31, 41].contains(&c.level)
+            || ![30, 31, 32, 41, 42, 50, 51, 52, 60, 61, 62].contains(&c.level)
         {
             bail!("Invalid conversion limits");
         }
-        rate = rate.min(match c.level {
-            30 => 10_000_000,
-            31 => 14_000_000,
-            _ => 20_000_000,
-        });
         filter = format!(
             "{}{}scale={}:{},setsar=1,fps={:.6}",
             if c.deinterlace {
@@ -123,6 +148,7 @@ pub(crate) fn conversion_args(options: &Options) -> Result<Vec<String>> {
             );
         }
     }
+    let rate = conversion_rate(options, probe)?;
     let mut args = [
         "-c:v",
         "libx264",
@@ -154,6 +180,15 @@ pub(crate) fn conversion_args(options: &Options) -> Result<Vec<String>> {
     .collect::<Vec<_>>();
     args.extend(extra);
     Ok(args)
+}
+/// The highest rate a conversion uses at an H.264 level, well within the level's own.
+pub fn level_rate(level: u32) -> u32 {
+    match level {
+        30 => 10_000_000,
+        31 => 14_000_000,
+        32 | 41 | 42 => 20_000_000,
+        _ => 60_000_000,
+    }
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Options {

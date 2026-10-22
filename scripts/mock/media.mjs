@@ -783,7 +783,9 @@ export async function onlineApi(s, c) {
           status: 'ready',
           fileSizeBytes: 540 * 1024 ** 2,
           pinned: false,
-          quality: '1080p',
+          widthPixels: 1920,
+          heightPixels: 1080,
+          frameRate: 30,
           requestedAt: iso(),
         };
     }
@@ -804,7 +806,9 @@ export async function onlineApi(s, c) {
           status: 'ready',
           fileSizeBytes: 540 * 1024 ** 2,
           pinned: false,
-          quality: '1080p',
+          widthPixels: 1920,
+          heightPixels: 1080,
+          frameRate: 30,
           requestedAt: iso(),
         };
       if (method === 'DELETE') video.download = null;

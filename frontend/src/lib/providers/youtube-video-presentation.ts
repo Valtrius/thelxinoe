@@ -72,8 +72,14 @@ export function youtubeVideoPresentation(
   const downloadPercent = totalBytes
     ? Math.min(100, (downloadedBytes / totalBytes) * 100)
     : null;
-  const downloadFormatLabel = activeDownload?.heightPixels
-    ? `${activeDownload.heightPixels}p${activeDownload.frameRate ? Math.round(activeDownload.frameRate) : ''}`
+  // Formats are named like YouTube names them: by the short side, so a vertical
+  // 1080×1920 Short is 1080p, followed by the frame rate, as in 2160p60.
+  const resolution =
+    activeDownload?.widthPixels && activeDownload.heightPixels
+      ? Math.min(activeDownload.widthPixels, activeDownload.heightPixels)
+      : activeDownload?.heightPixels;
+  const downloadFormatLabel = resolution
+    ? `${resolution}p${activeDownload?.frameRate ? Math.round(activeDownload.frameRate) : ''}`
     : null;
   let downloadLabel: string | null = null;
   if (downloadBusy && !activeDownload) downloadLabel = 'Starting download';

@@ -11,6 +11,7 @@ import {
 } from './playback';
 import { toolsApi } from './providers/tools-api';
 import { toolOperationActive } from './providers/tools-presentation';
+import type { YoutubeVideo } from './providers/types';
 
 export type NativeView = {
   run: string;
@@ -36,6 +37,8 @@ export const ended = (status: string) =>
 export const nativeRuns = new SvelteMap<string, NativeView>();
 /** Videos from the click until MPV shows them, by media. */
 export const launchingMedia = new SvelteSet<string>();
+// Video runs by media, so a card only follows the run playing its own video.
+const videoRuns = new SvelteMap<string, NativeView>();
 const reported = new Set<string>();
 const watchers = new Map<string, (view: NativeView) => void>();
 const ignore = (view: NativeView) => void view;
@@ -43,8 +46,14 @@ let failed: (view: NativeView) => void = ignore;
 
 function accept(view: NativeView) {
   reported.add(view.run);
-  if (ended(view.status)) nativeRuns.delete(view.run);
-  else nativeRuns.set(view.run, view);
+  if (ended(view.status)) {
+    nativeRuns.delete(view.run);
+    if (videoRuns.get(view.media_id)?.run === view.run)
+      videoRuns.delete(view.media_id);
+  } else {
+    nativeRuns.set(view.run, view);
+    if (!view.music) videoRuns.set(view.media_id, view);
+  }
   const watcher = watchers.get(view.run);
   if (watcher) watcher(view);
   // The music player shows its own errors.
@@ -65,7 +74,25 @@ export async function connectNativePlayback(
     unlisten();
     failed = ignore;
     nativeRuns.clear();
+    videoRuns.clear();
     reported.clear();
+  };
+}
+
+/**
+ * A YouTube video at the position MPV is playing it on this desktop. MPV reports
+ * twice a second; the server hears every few seconds.
+ */
+export function withNativePosition(video: YoutubeVideo): YoutubeVideo {
+  const view = videoRuns.get(`youtube:${video.videoId}`);
+  if (!view) return video;
+  const duration = video.durationSeconds || view.duration;
+  return {
+    ...video,
+    positionSeconds: view.position,
+    watchedPercentage: duration
+      ? Math.min(100, Math.max(0, (view.position / duration) * 100))
+      : video.watchedPercentage,
   };
 }
 

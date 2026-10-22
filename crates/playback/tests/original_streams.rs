@@ -194,7 +194,7 @@ async fn original_live_and_seekable_online_video_keep_the_original_frames() {
         assert_eq!(planned.mode, "remux");
         let (revision, _) = if live {
             pipeline
-                .start_remote("stream", &remote, &options, &planned)
+                .start_remote("stream", &remote, &source.probe, &options, &planned)
                 .await
                 .unwrap()
         } else {

@@ -6,7 +6,6 @@
     BookmarkCheck,
     ExternalLink,
     Heart,
-    Play,
     Plus,
     Star,
   } from '@lucide/svelte';
@@ -544,7 +543,8 @@
             href={`https://www.youtube.com/watch?v=${trailer.key}`}
             data-playback-title={`${name} · ${trailer.name}`}
             target="_blank"
-            rel="noreferrer"><Play size={13} /> Watch trailer</a
+            rel="noreferrer"
+            ><PlayIcon media={`youtube:${trailer.key}`} size={13} /> Watch trailer</a
           >{/if}{#if tmdbId}<a
             class="inline-flex items-center gap-2 px-3 py-2 text-xs text-muted hover:text-foreground"
             href={`https://www.themoviedb.org/${kind === 'show' ? 'tv' : 'movie'}/${tmdbId}`}

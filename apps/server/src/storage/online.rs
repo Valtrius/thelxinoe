@@ -2,7 +2,9 @@
 use super::*;
 use thelxinoe_database::Database;
 
-pub(super) async fn configuration(db: &Database) -> anyhow::Result<(bool, u32, network::Mode)> {
+pub(super) async fn configuration(
+    db: &Database,
+) -> anyhow::Result<(bool, u32, network::Mode, String)> {
     db.read("online.configuration", |db| {
         let downloads = db
             .query_row(
@@ -30,7 +32,16 @@ pub(super) async fn configuration(db: &Database) -> anyhow::Result<(bool, u32, n
             .optional()?
             .map(|v| network::Mode::parse(&v))
             .unwrap_or_default();
-        Ok((downloads, budget, network))
+        let quality = db
+            .query_row(
+                "SELECT value FROM settings WHERE key='youtube_download_quality'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            .filter(|v| downloads::QUALITIES.contains(&v.as_str()))
+            .unwrap_or_else(|| "best".into());
+        Ok((downloads, budget, network, quality))
     })
     .await
 }
@@ -50,7 +61,8 @@ pub(super) async fn configure(
             tx.execute("DELETE FROM oauth_attempts WHERE provider='youtube'",[])?;
             tx.execute("DELETE FROM youtube_sync",[])?;
         }
-        for (key,value) in [("youtube_downloads",input.youtube_downloads.to_string()),("youtube_daily_quota",input.youtube_daily_quota.to_string()),("youtube_network",input.youtube_network.as_str().to_owned())]{tx.execute("INSERT INTO settings VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,value])?;}
+        let quality=input.youtube_download_quality.map(|quality|("youtube_download_quality",quality));
+        for (key,value) in [("youtube_downloads",input.youtube_downloads.to_string()),("youtube_daily_quota",input.youtube_daily_quota.to_string()),("youtube_network",input.youtube_network.as_str().to_owned())].into_iter().chain(quality){tx.execute("INSERT INTO settings VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,value])?;}
         tx.execute("INSERT INTO audit(actor_id,action,target,created_at) VALUES (?1,'online.configure','youtube',?2)",params![p.user.id,now()])?;
         tx.commit()?;Ok(())
     }).await

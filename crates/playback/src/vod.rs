@@ -364,7 +364,7 @@ impl VodCache {
         } else {
             command.arg("-i").arg(&run.source.path);
         }
-        command.args(run.encoding.args(&run.options)?);
+        command.args(run.encoding.args(&run.options, &run.source.probe)?);
         if remux_video {
             command.arg("-copyts");
         } else if index + 2 < run.boundaries.len() {
@@ -667,7 +667,7 @@ impl VodCache {
                 "-map_metadata",
                 "-1",
             ]);
-            command.args(run.encoding.args(&run.options)?);
+            command.args(run.encoding.args(&run.options, &run.source.probe)?);
             let fragmented = run.options.capabilities.hls_container.as_deref() == Some("mp4");
             if fragmented {
                 command.args([

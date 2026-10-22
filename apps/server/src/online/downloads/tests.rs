@@ -16,7 +16,14 @@ fn progress_accepts_estimates_and_rejects_invalid_byte_counts() {
         parse_progress("THELXINOE_PROGRESS:25\tNA\t50\tNA\tnone\topus"),
         Some((25, Some(50), None, "audio"))
     );
-    for input in ["NaN", "inf", "-1", "9999999999999"] {
+    assert_eq!(
+        parse_progress("THELXINOE_PROGRESS:25\t250000000000")
+            .unwrap()
+            .1,
+        Some(250_000_000_000),
+        "a download has no size of its own"
+    );
+    for input in ["NaN", "inf", "-1", "1e19"] {
         assert!(parse_progress(&format!("THELXINOE_PROGRESS:{input}\t100")).is_none());
     }
     assert!(parse_progress("unrelated extractor output").is_none());
@@ -222,6 +229,37 @@ async fn both_admin_configuration_routes_control_the_same_download_policy() {
         .2;
     assert_eq!(online["youtube_network"], "ipv6");
     assert!(online["youtube_network_status"]["ipv6"].is_boolean());
+    assert_eq!(online["youtube_download_quality"], "best");
+    for (body, status) in [
+        (json!({"youtube_download_quality":"1440p"}), StatusCode::OK),
+        (json!({}), StatusCode::OK),
+        (
+            json!({"youtube_download_quality":"1081p"}),
+            StatusCode::BAD_REQUEST,
+        ),
+    ] {
+        let mut settings =
+            json!({"youtube_downloads":false,"youtube_daily_quota":10000,"youtube_network":"ipv6"});
+        settings
+            .as_object_mut()
+            .unwrap()
+            .extend(body.as_object().unwrap().clone());
+        assert_eq!(
+            call(&state, "/api/v1/admin/online", "PUT", settings, &cookie)
+                .await
+                .0,
+            status
+        );
+    }
+    assert_eq!(
+        call(&state, "/api/v1/admin/online", "GET", json!({}), &cookie)
+            .await
+            .2["youtube_download_quality"],
+        "1440p",
+        "clients without the quality keep it"
+    );
+    assert_eq!(format_sort("1440p"), "res:1440,fps,hdr:sdr");
+    assert_eq!(format_sort("best"), "res,fps,hdr:sdr");
     // An unknown family is rejected instead of silently selecting one.
     assert!(
         call(
@@ -310,6 +348,28 @@ async fn public_file_sharing_keeps_progress_private_and_retention_fenced() {
         .await
         .0,
         StatusCode::OK
+    );
+    // The report's event carries the position, so clients move the card in place.
+    let change: Value = state
+        .db
+        .read("test.fixture", |db| {
+            Ok(serde_json::from_str(&db.query_row(
+                "SELECT payload FROM events WHERE kind='playback.changed' AND user_id='alice' ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get::<_, String>(0),
+            )?)?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(change["media_id"], format!("youtube:{VIDEO}"));
+    assert_eq!(
+        (
+            change["state"].as_str(),
+            change["position"].as_f64(),
+            change["duration"].as_f64(),
+            change["watched"].as_bool()
+        ),
+        (Some("playing"), Some(35.0), Some(100.0), Some(false))
     );
     assert_eq!(
         call(
@@ -408,5 +468,97 @@ async fn public_file_sharing_keeps_progress_private_and_retention_fenced() {
             .unwrap(),
         0,
         "Online metadata never enters the local catalog"
+    );
+}
+
+#[test]
+fn format_reads_the_video_picture_rather_than_cover_art() {
+    let probe = json!({"streams":[
+        {"index":0,"codec_type":"video","codec_name":"mjpeg","width":1280,"height":720,"avg_frame_rate":"0/0","disposition":{"attached_pic":1}},
+        {"index":1,"codec_type":"audio","codec_name":"opus"},
+        {"index":2,"codec_type":"video","codec_name":"vp9","width":3840,"height":2160,"avg_frame_rate":"24000/1001","disposition":{"attached_pic":0}}
+    ]})
+    .to_string();
+    let found = format(Some(&probe));
+    assert_eq!((found.width, found.height), (Some(3840), Some(2160)));
+    assert!((found.frame_rate.unwrap() - 23.976).abs() < 0.001);
+    // A stream without an average rate still has its nominal one.
+    let nominal = json!({"streams":[{"codec_type":"video","width":1920,"height":1080,"avg_frame_rate":"0/0","r_frame_rate":"60/1"}]}).to_string();
+    assert_eq!(format(Some(&nominal)).frame_rate, Some(60.0));
+    for missing in [
+        None,
+        Some("not json"),
+        Some(r#"{"streams":[{"codec_type":"audio"}]}"#),
+    ] {
+        let found = format(missing);
+        assert_eq!(
+            (found.width, found.height, found.frame_rate),
+            (None, None, None)
+        );
+    }
+}
+
+#[tokio::test]
+async fn ready_downloads_name_their_format_in_lists_status_and_progress() {
+    let (_temp, state, alice) = fixture().await;
+    state.db.write("test.fixture", |db| {
+        db.execute("INSERT INTO youtube_videos(user_id,video_id,title) VALUES('alice',?1,'Video')", [VIDEO])?;
+        db.execute("INSERT INTO youtube_downloads(video_id,generation,state,tools,path,size,probe,requested_at,updated_at,completed_at) VALUES(?1,'g','ready','{}','/media.webm',100,?2,1,1,1)", params![VIDEO, json!({"format":{"duration":"100"},"streams":[{"index":0,"codec_type":"video","width":3840,"height":2160,"avg_frame_rate":"60/1"}]}).to_string()])?;
+        Ok(())
+    }).await.unwrap();
+    let listed = state
+        .db
+        .read("test.fixture", |db| {
+            super::super::browse::one(db, "alice", VIDEO, "grant")
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            &listed["download"]["widthPixels"],
+            &listed["download"]["heightPixels"],
+            &listed["download"]["frameRate"]
+        ),
+        (&json!(3840), &json!(2160), &json!(60.0))
+    );
+    assert!(
+        listed["download"].get("quality").is_none(),
+        "No format is guessed"
+    );
+    let status = call(
+        &state,
+        &format!("/api/v1/online/youtube/videos/{VIDEO}/download"),
+        "GET",
+        Value::Null,
+        &alice,
+    )
+    .await;
+    assert_eq!(status.0, StatusCode::OK, "{}", status.2);
+    assert_eq!(
+        (
+            &status.2["download"]["height"],
+            &status.2["download"]["frame_rate"]
+        ),
+        (&json!(2160), &json!(60.0))
+    );
+    publish_progress(&state, VIDEO).await.unwrap();
+    let progress: Value = state
+        .db
+        .read("test.fixture", |db| {
+            Ok(serde_json::from_str(&db.query_row(
+                "SELECT payload FROM events WHERE kind='online.download.progress'",
+                [],
+                |r| r.get::<_, String>(0),
+            )?)?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            &progress["width"],
+            &progress["height"],
+            &progress["frame_rate"]
+        ),
+        (&json!(3840), &json!(2160), &json!(60.0))
     );
 }

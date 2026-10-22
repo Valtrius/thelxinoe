@@ -49,6 +49,40 @@ pub(super) async fn enabled(state: &AppState) -> anyhow::Result<bool> {
     )
 }
 
+/// A downloaded file's picture size and frame rate, read from its stored probe.
+#[derive(Default)]
+pub(super) struct Format {
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub frame_rate: Option<f64>,
+}
+pub(super) fn format(probe: Option<&str>) -> Format {
+    let Some(probe) = probe.and_then(|probe| serde_json::from_str::<Value>(probe).ok()) else {
+        return Format::default();
+    };
+    // Cover art is a still picture, not the video.
+    let Some(stream) = probe["streams"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|s| s["codec_type"] == "video" && s["disposition"]["attached_pic"] != 1)
+    else {
+        return Format::default();
+    };
+    let rate = |key: &str| {
+        stream[key]
+            .as_str()
+            .and_then(|v| v.split_once('/'))
+            .and_then(|(a, b)| Some(a.parse::<f64>().ok()? / b.parse::<f64>().ok()?))
+            .filter(|rate| rate.is_finite() && *rate > 0.0)
+    };
+    Format {
+        width: stream["width"].as_i64(),
+        height: stream["height"].as_i64(),
+        frame_rate: rate("avg_frame_rate").or_else(|| rate("r_frame_rate")),
+    }
+}
+
 pub async fn remove(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -186,8 +220,6 @@ const START_SPACE: u64 = 3 * 1024 * 1024 * 1024;
 /// A download is bounded by its progress, not its length, so slow links still finish:
 /// yt-dlp reports progress every second while bytes arrive, and reports its retries.
 const STALLED: Duration = Duration::from_secs(300);
-/// A safety bound only: a 2 GB download at about 400 kbit/s.
-const LONGEST: Duration = Duration::from_secs(12 * 3600);
 /// A download waiting for space is tried again after this long even when its capacity looks
 /// unchanged, for changes `capacity` can't see.
 const RECHECK: Duration = Duration::from_secs(300);
@@ -255,6 +287,19 @@ async fn next(state: &AppState, parked: &mut Parked) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Download qualities: the best picture, or the best within a resolution.
+pub(super) const QUALITIES: [&str; 5] = ["best", "2160p", "1440p", "1080p", "720p"];
+
+/// yt-dlp's preference among a video's formats: the largest picture within the quality,
+/// measured by its short side so portrait videos match, at its highest frame rate. SDR wins
+/// only over HDR of the same picture, as some videos reach 8K only in HDR.
+fn format_sort(quality: &str) -> String {
+    match quality.strip_suffix('p') {
+        Some(height) => format!("res:{height},fps,hdr:sdr"),
+        None => "res,fps,hdr:sdr".into(),
+    }
+}
+
 fn parse_progress(line: &str) -> Option<(i64, Option<i64>, Option<i64>, &'static str)> {
     let parts = line
         .strip_prefix("THELXINOE_PROGRESS:")?
@@ -266,7 +311,7 @@ fn parse_progress(line: &str) -> Option<(i64, Option<i64>, Option<i64>, &'static
             .get(index)?
             .parse::<f64>()
             .ok()
-            .filter(|n| n.is_finite() && *n >= 0.0 && *n <= 64.0 * 1024.0 * 1024.0 * 1024.0)
+            .filter(|n| n.is_finite() && *n >= 0.0 && *n < i64::MAX as f64)
             .map(|n| n as i64)
     };
     Some((
@@ -304,6 +349,7 @@ async fn download(
         .emit(None, "online.download.changed", json!({}))
         .await?;
     let budget = crate::auto_delete::budget(&state.db, video.to_owned()).await?;
+    let quality = super::storage::configuration(&state.db).await?.3;
     let mut bundle: tools::OnlineSnapshot = serde_json::from_str(bundle)?;
     state.tools.runtime.restore_online(&mut bundle)?;
     tools::verify(&bundle.ffmpeg).await?;
@@ -341,9 +387,9 @@ async fn download(
                 "--no-warnings",
                 "--no-simulate",
                 "--match-filter",
-                "!is_live & duration <= 21600",
+                "!is_live",
                 "-f",
-                "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[ext=mp4]",
+                "bv*+ba/b",
                 "--merge-output-format",
                 "mp4",
                 "--ffmpeg-location",
@@ -351,7 +397,10 @@ async fn download(
             .map(Into::into),
         );
         args.push(bundle.ffmpeg.path.clone().into_os_string());
-        args.extend(["--max-filesize".into(), budget.to_string().into()]);
+        args.extend(["--format-sort".into(), format_sort(&quality).into()]);
+        if let Some(budget) = budget {
+            args.extend(["--max-filesize".into(), budget.to_string().into()]);
+        }
         args.push("-o".into());
         args.push(target.clone().into_os_string());
         args.extend([
@@ -364,7 +413,7 @@ async fn download(
             &bundle.yt_dlp.path,
             &args,
             STALLED,
-            LONGEST,
+            Duration::MAX,
             1024 * 1024,
             Some(progress_tx),
         );
@@ -386,9 +435,8 @@ async fn download(
                     let interested=storage::has_interest(&state.db, video, generation).await?;
                     ensure!(interested&&enabled(state).await?,"Download cancelled after its interest or permission changed");
                     if fs2::available_space(&directory)?<=1024*1024*1024 {return Ok("waiting_for_space");}
-                    let mut entries=tokio::fs::read_dir(&directory).await?;let mut bytes=0u64;
-                    while let Some(entry)=entries.next_entry().await? {let meta=entry.metadata().await?;ensure!(meta.is_file(),"Unexpected download output");bytes=bytes.saturating_add(meta.len());}
-                    ensure!(bytes<=6*1024*1024*1024,"Download temporary files exceed limit");
+                    let mut entries=tokio::fs::read_dir(&directory).await?;
+                    while let Some(entry)=entries.next_entry().await? {ensure!(entry.metadata().await?.is_file(),"Unexpected download output");}
                 }
             }
         };
@@ -410,10 +458,6 @@ async fn download(
         });
     }
     let metadata = tokio::fs::metadata(&target).await?;
-    ensure!(
-        metadata.len() <= 2 * 1024 * 1024 * 1024,
-        "Download exceeds size limit"
-    );
     let probe = process::run(
         state.tools.temporary()?,
         &bundle.ffprobe.path,
@@ -443,7 +487,17 @@ async fn download(
     let video = video.to_owned();
     let generation = generation.to_owned();
     Ok(
-        if storage::publish_download(target, metadata, value, video, generation, &state.db).await? {
+        if storage::publish_download(
+            target,
+            metadata,
+            value,
+            video,
+            generation,
+            state.config.cache.join("youtube"),
+            &state.db,
+        )
+        .await?
+        {
             "ready"
         } else {
             "waiting_for_space"

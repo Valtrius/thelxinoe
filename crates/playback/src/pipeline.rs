@@ -42,6 +42,7 @@ enum Input<'a> {
     Local(&'a Source),
     Remote {
         source: &'a RemoteSource,
+        probe: &'a serde_json::Value,
         audio_codec: Option<&'a str>,
     },
 }
@@ -105,6 +106,7 @@ impl Pipelines {
         &self,
         id: &str,
         source: &RemoteSource,
+        probe: &serde_json::Value,
         options: &Options,
         decision: &crate::Decision,
     ) -> Result<(String, f64)> {
@@ -117,6 +119,7 @@ impl Pipelines {
             id,
             Input::Remote {
                 source,
+                probe,
                 audio_codec: decision.audio_codec.as_deref(),
             },
             options,
@@ -211,7 +214,11 @@ impl Pipelines {
             );
         }
         command.args(["-sn", "-dn", "-map_metadata", "-1"]);
-        command.args(encoding.args(options)?);
+        let probe = match &input {
+            Input::Local(source) => &source.probe,
+            Input::Remote { probe, .. } => *probe,
+        };
+        command.args(encoding.args(options, probe)?);
         if encoding.video {
             command.args([
                 "-force_key_frames",
