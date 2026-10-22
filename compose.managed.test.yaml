@@ -1,7 +1,7 @@
 name: thelxinoe-managed-v3
 services:
   controller:
-    image: thelxinoe-controller:0.0.4
+    image: thelxinoe-controller:0.0.5
     network_mode: none
     volumes:
       - runtime:/run/thelxinoe
@@ -12,7 +12,7 @@ services:
     cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
     labels: {app.thelxinoe.component: controller}
   server:
-    image: thelxinoe-server:0.0.4
+    image: thelxinoe-server:0.0.5
     ports: ["127.0.0.1:19090:8484"]
     environment:
       THELXINOE_PUBLIC_URL: https://localhost:24443
