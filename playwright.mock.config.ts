@@ -24,7 +24,7 @@ export default defineConfig({
     viewport: { width: 1440, height: 1000 },
     actionTimeout: 15000,
     navigationTimeout: 15000,
-    trace: 'on',
+    trace: 'retain-on-failure',
   },
   webServer: {
     command: 'node scripts/dev-mock.mjs',
@@ -36,6 +36,5 @@ export default defineConfig({
   reporter: [
     ['list'],
     ['html', { outputFolder: 'playwright-report/mock', open: 'never' }],
-    ['json', { outputFile: 'test-results/mock/results.json' }],
   ],
 });

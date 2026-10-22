@@ -5,6 +5,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+#[cfg_attr(windows, ignore = "needs the Linux server container environment")]
 #[tokio::test]
 async fn requests_need_approval_keep_keys_private_and_resume_without_duplicate_adds() {
     let (temp, mut state, alice) = fixture().await;

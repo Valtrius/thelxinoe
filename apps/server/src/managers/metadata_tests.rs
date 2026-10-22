@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 // A refresh asks Radarr for its one movie by TMDB ID instead of downloading the library.
+#[cfg_attr(windows, ignore = "needs the Linux server container environment")]
 #[tokio::test]
 async fn a_refresh_looks_up_its_title_by_external_id() {
     let (temp, mut state, _cookie) = fixture().await;
@@ -81,6 +82,7 @@ async fn a_refresh_looks_up_its_title_by_external_id() {
 
 // Saving a setting gives the service a new generation. The next refresh keeps the admin's
 // episode mappings, a two-episode one included, and drops the old generation's episodes.
+#[cfg_attr(windows, ignore = "needs the Linux server container environment")]
 #[tokio::test]
 async fn a_new_generation_keeps_manual_episode_mappings() {
     let (temp, mut state, _cookie) = fixture().await;

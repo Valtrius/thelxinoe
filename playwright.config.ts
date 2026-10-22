@@ -6,35 +6,28 @@ export default defineConfig({
   timeout: 60000,
   expect: { timeout: 15000 },
   use: {
-    trace: 'on',
+    trace: 'retain-on-failure',
     connectOptions: browserConnection(),
-    baseURL: process.env.THELXINOE_TEST_URL ?? 'http://127.0.0.1:8484',
+    baseURL: process.env.THELXINOE_TEST_URL ?? 'https://localhost:9443',
     headless: true,
-    ignoreHTTPSErrors: !!process.env.THELXINOE_PROXY_TEST,
+    ignoreHTTPSErrors: true,
   },
-  projects: process.env.THELXINOE_INTERACTION_TEST
-    ? [{ name: 'interactions', testMatch: 'interactions.spec.ts' }]
-    : process.env.THELXINOE_UI_TEST
-      ? [{ name: 'appearance', testMatch: 'appearance.spec.ts' }]
-      : process.env.THELXINOE_PROXY_TEST
-        ? [
-            { name: 'proxy', testMatch: 'proxy.spec.ts' },
-            {
-              name: 'authentication',
-              testMatch: 'auth-methods.spec.ts',
-              dependencies: ['proxy'],
-            },
-            {
-              name: 'catalog',
-              testMatch: 'library.spec.ts',
-              dependencies: ['proxy'],
-            },
-          ]
-        : [{ name: 'setup', testMatch: 'setup.spec.ts' }],
+  projects: [
+    { name: 'proxy', testMatch: 'proxy.spec.ts' },
+    {
+      name: 'authentication',
+      testMatch: 'auth-methods.spec.ts',
+      dependencies: ['proxy'],
+    },
+    {
+      name: 'catalog',
+      testMatch: 'library.spec.ts',
+      dependencies: ['proxy'],
+    },
+  ],
   outputDir: 'test-results/e2e',
   reporter: [
     ['list'],
     ['html', { outputFolder: 'playwright-report/e2e', open: 'never' }],
-    ['json', { outputFile: 'test-results/e2e/results.json' }],
   ],
 });

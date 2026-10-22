@@ -40,7 +40,11 @@ export async function startBrowser({ resourceDirectory } = {}) {
   );
   const close = () => {
     try {
-      writeFileSync('.local/ci-browser.log', docker('logs', name));
+      writeFileSync(
+        '.local/ci-browser.log',
+        `${docker('inspect', '--format', '{{json .State}}', name)}
+${docker('logs', name)}`,
+      );
     } catch {
       /* Startup may have failed before the container existed. */
     }

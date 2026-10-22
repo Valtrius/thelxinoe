@@ -106,17 +106,15 @@ pnpm run dev
 
 Open http://127.0.0.1:5173 and create the first administrator. The server runs on port 8484; development state stays in `.local`. Ctrl+C stops both processes.
 
-| Command                | Purpose                                                                                                                        |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `pnpm run dev:web`     | Frontend only                                                                                                                  |
-| `pnpm run dev:mock`    | UI preview with switchable admin and user views and disposable mock data on a free port; no server or Docker required          |
-| `pnpm run dev:desktop` | Windows app; requires a running server                                                                                         |
-| `pnpm run dev:fresh`   | Windows: new empty profile at http://127.0.0.1:18486; previous runs remain in `.local/dev-runs`                                |
-| `pnpm run dev:online`  | Windows: reuse the saved online profile at https://localhost:22443, with LAN access and UDP discovery; containers keep running |
-| `pnpm run validate`    | Formatting, lint, Rust/web checks, product tests and web build                                                                 |
-| `pnpm run ci`          | Parallel local [CI phases](scripts/ci.mjs), including Docker fixtures and Windows desktop checks                               |
-| `pnpm run ci:local`    | Windows CI with a completion notification, live summary and lane logs under `.local/ci`                                        |
-| `pnpm run ci:status`   | Latest local CI lane results and report paths                                                                                  |
+| Command                | Purpose                                                                                                                            |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm run dev:web`     | Frontend only                                                                                                                      |
+| `pnpm run dev:mock`    | UI preview with switchable admin and user views and disposable mock data on a free port; no server or Docker required              |
+| `pnpm run dev:desktop` | Windows app; requires a running server                                                                                             |
+| `pnpm run dev:fresh`   | Windows: new empty profile at http://127.0.0.1:18486; previous runs remain in `.local/dev-runs`                                    |
+| `pnpm run dev:online`  | Windows: reuse the saved online profile at https://localhost:22443, with LAN access and UDP discovery; containers keep running     |
+| `pnpm run validate`    | Formatting, lint, Rust/web checks, product tests and web build                                                                     |
+| `pnpm run ci`          | Every [CI phase](scripts/ci.mjs) for this platform, or only the phases given, including Docker fixtures and Windows desktop checks |
 
 New `dev:online` profiles use separate controller storage, even when a data folder is reused after a reset. Keep `server/controller-storage-id` with the saved database and key so later launches reconnect to the same controller state.
 

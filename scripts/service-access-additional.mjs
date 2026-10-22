@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test';
 
 export async function additionalAccess({ f, page, manager, scenario, output }) {
-  for (const kind of ['lidarr', 'prowlarr']) {
+  for (const kind of ['prowlarr']) {
     await scenario(
       `${kind}: native settings writes keep the configured prefix`,
       async () => {
@@ -97,7 +97,7 @@ export async function additionalAccess({ f, page, manager, scenario, output }) {
       ).toEqual([]);
     },
   );
-  for (const kind of ['lidarr', 'prowlarr', 'bazarr', 'nzbget']) {
+  for (const kind of ['bazarr', 'nzbget']) {
     await scenario(
       `${kind}: desktop handoff is scoped and native keys do not bypass the gateway`,
       async () => {

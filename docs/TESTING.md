@@ -2,147 +2,31 @@
 
 Run from the repository root after `pnpm install --frozen-lockfile`. Install Rust 1.96+, Node 24+, pnpm 10.33.2, FFmpeg/FFprobe, Docker (Linux containers) and Playwright Chromium (`pnpm exec playwright install chromium`).
 
-Follow the [testing rules in AGENTS.md](../AGENTS.md#testing). Prefer complete application workflows; extend an existing scenario when possible.
+Prefer complete application workflows; extend an existing scenario when possible.
 
 ```sh
-pnpm run validate
-pnpm run ci
-pnpm run ci:local # Windows: parallel lanes, saved summary, completion notification
-pnpm run ci:status # Latest local run: lane status and result paths
-pnpm run test:ui:layout
-pnpm run test:ui:player
-pnpm run test:service-access
-pnpm run ci:transfers # Real-container ownership transfers
+pnpm run validate          # Formatting, lint, Rust/web checks, unit tests and web build
+pnpm run test:ui           # Browser checks against routed fixtures
+pnpm run test:ui:mock      # Browser checks against the mock server
+pnpm run ci <phase...>     # CI phases, for example `services media`
 ```
 
-[Scripts](../package.json) and [CI runner](../scripts/ci.mjs) define the checks.
+[`scripts/ci.mjs`](../scripts/ci.mjs) defines the phases and GitHub Actions runs each
+as its own job. Container phases build this revision's images when they are missing.
 On Windows, Linux checks require Docker Desktop running Linux containers.
-Use `pnpm run ci:status` to locate the latest report, then run these commands
-from the originating worktree when needed:
 
-```sh
-node scripts/ci-local.mjs --stop <run-directory>
-node scripts/ci-local.mjs --recover <run-directory> # After a coordinator crash
-pnpm run ci:clean <finished-run-directory>
-```
+Playwright saves an HTML report under `playwright-report/` and traces of failed
+tests under `test-results/`. CI uploads both when a job fails. Container fixtures
+save their results, screenshots and service logs under `.local/`. Native service
+traces are omitted because service responses contain API keys.
 
-## Test artifacts
+No other container may mount the transfer fixture folders: the transfer review
+refuses a configuration with a second writer, so stop development containers that
+bind-mount the worktree before `pnpm run ci transfers`.
 
-Native Radarr/Sonarr/Lidarr/Prowlarr/Bazarr/NZBGet checks use fresh Docker storage and save safe results and
-screenshots in `test-results/service-access`. The [runner](../scripts/test-service-access.mjs)
-builds uniquely tagged images; pass `--built` only after setting
-`THELXINOE_SERVER_IMAGE` and `THELXINOE_CONTROLLER_IMAGE` to the current built
-references (the legacy `thelxinoe-service-{server,controller}:local` defaults
-remain available for manual fixtures). Native browser traces are omitted
-because service responses contain API keys.
-
-On Windows with Linux Docker available, `pnpm run test:service-access --desktop`
-also builds an isolated Tauri profile and verifies the OS browser handoff from a
-real keyring session. It opens the fixture in the default browser. The regular
-container CI lane runs the portable service/browser checks.
-
-Playwright saves an HTML report under `playwright-report/{e2e,ui}`
-and machine-readable results and traces under `test-results/{e2e,ui}`,
-including successful runs. Open a report with, for example,
-`pnpm exec playwright show-report playwright-report/ui`. CI uploads these artifacts
-even when a test fails. The standalone Docker scripts save their fixture
-results and screenshots under `.local/` as specified in each script.
-
-Ownership transfers are qualified against real containers by
-[`scripts/test-transfers.mjs`](../scripts/test-transfers.mjs) (`pnpm run ci:transfers`,
-or `pnpm run test:transfers` with `THELXINOE_SERVER_IMAGE` and
-`THELXINOE_CONTROLLER_IMAGE` set to built images). It starts every supported service
-from its pinned image with bind-mounted and Docker-volume configuration, populates
-records, connects it and takes ownership through the public API. It checks that the
-original stays stopped and unchanged, that record identities survive in the replacement
-and that the disposable validation copy reached none of the egress sentinels. It also
-covers a controller restart during a transfer and a stale review, recreation of
-transferred services, a return to the original followed by a new takeover, a snapshot
-restore interrupted by a controller restart and supplementary file mounts. Narrow a run with
-`--kinds=radarr,sonarr`, `--storage=bind` or `--scenarios=matrix` (also `interruption`,
-`recovery` and `storage`). Results are
-written to `test-results/transfers/result.json` and the qualification artifact
-`.local/transfer-qualification.json`. No other container may mount the fixture
-folders: the transfer review refuses a configuration with a second writer, so stop
-development containers that bind-mount the worktree first.
-
-Run `node scripts/test-container-identity.mjs` to build and verify default/custom
-UID/GID deployments with real Linux file permissions, managed-service updates,
-a transfer from another identity, product validation and Compose recreation. It removes its
-disposable containers/volumes and writes `.local/container-identity-result.json`.
-Use `--built` with current `thelxinoe-service-{server,controller}:local` images.
-CI does not run it yet: it reads `RepoDigests` of locally built images, which Docker
-Engine's classic image store leaves empty, so a Linux lane needs a registry push first.
-The managed-stack and service-update scripts in the table below are manual too. They
-expect a prepared `compose.managed.test.yaml` stack at `https://localhost:24443`
-(fixed project, ports and image tags) and depend on each other's results; CI covers
-service update preflight and commit in `test-service-connections.mjs`.
-
-## Browser fixtures
-
-All integration fixtures below mutate accounts, files or containers. Use their dedicated deployments. The scripts define ports, credentials and assertions; do not point them at a personal instance. Generated media and results stay under `.local`.
-
-```powershell
-node scripts/fixtures.mjs
-docker compose build
-docker compose -f compose.test.yaml up -d --wait
-docker compose -f compose.test.yaml cp .local/fixtures/. server:/media
-docker compose -f compose.test.yaml exec -T --user 0 server chown -R 10001:10001 /media
-$env:THELXINOE_PROXY_TEST = '1'
-$env:THELXINOE_TEST_URL = 'https://localhost:9443'
-pnpm run test:e2e
-# Add appearance checks to this same disposable catalog fixture:
-$env:THELXINOE_UI_TEST = '1'
-pnpm run test:e2e
-```
-
-First-run tests: start `pnpm run dev:fresh`, set `THELXINOE_TEST_URL` to its displayed URL, clear `THELXINOE_PROXY_TEST`/`THELXINOE_UI_TEST`, and run `pnpm run test:e2e`. Provider interaction tests use a separate fresh instance on port 19487 with `THELXINOE_INTERACTION_TEST=1` and `pnpm exec playwright test --workers=1`. Catalog watcher checks add and remove files inside the Linux fixture volume, so Docker Desktop runs exercise watching without waiting for periodic reconciliation.
-
-For playback, generate `node scripts/playback-fixtures.mjs`, set `THELXINOE_TEST_HTTP_PORT=18686`, `THELXINOE_TEST_HTTPS_PORT=20443`, `THELXINOE_TEST_SUBNET=172.31.252.0/24`, then run:
-
-```sh
-docker compose -p thelxinoe-playback -f compose.test.yaml up -d --wait
-docker compose -p thelxinoe-playback -f compose.test.yaml cp .local/fixtures/. server:/media
-docker compose -p thelxinoe-playback -f compose.test.yaml exec -T --user 0 server chown -R 10001:10001 /media
-node scripts/test-playback.mjs
-node scripts/test-playback-tracks.mjs
-node scripts/test-user-media.mjs
-```
-
-| Area                              | Fixture / executable checks                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Shared mounts and managed stack   | [stack](../scripts/test-managed-stack.mjs), [wiring](../scripts/test-managed-wiring.mjs), [UI](../scripts/test-managed-ui.mjs), [stages and transfers](../scripts/service-access-ownership.mjs), [transfer matrix](../scripts/test-transfers.mjs)                                                                                                                                                                                                                                                      |
-| Acquisition and external services | [Compose](../compose.acquisition.test.yaml), [fixture generator](../scripts/acquisition-fixtures.mjs), [acquisition](../scripts/test-acquisition.mjs), [download setup](../scripts/configure-acquisition-downloads.mjs), [downloads/import](../scripts/test-acquisition-downloads.mjs), [files](../scripts/test-manager-files.mjs), [TV/music](../scripts/test-manager-tv-music.mjs), [support services](../scripts/test-support-services.mjs), [connections](../scripts/test-service-connections.mjs) |
-| Service updates                   | [preflights](../scripts/test-service-preflights.mjs), [commit](../scripts/test-service-update-commit.mjs), [rollback](../scripts/test-service-update-rollback.mjs), [deployment recreation](../scripts/test-container-identity.mjs), [local acceptance](../scripts/test-local-acceptance.mjs)                                                                                                                                                                                                          |
-| Retention and segments            | [retention](../scripts/test-retention.mjs), [segment fixtures](../scripts/generate-segment-fixtures.mjs), [segments](../scripts/test-segments.mjs), [native segments](../scripts/test-native-segments.mjs)                                                                                                                                                                                                                                                                                             |
-| Administration/backups            | [Compose](../compose.operations.test.yaml), [admin UI](../scripts/test-admin-ui.mjs), [backup/restore](../scripts/test-operations.mjs), [interruption recovery](../scripts/test-backup-interruption.mjs)                                                                                                                                                                                                                                                                                               |
-
-## Providers and clients
-
-Use [compose.online.yaml](../compose.online.yaml) for live accounts, with setup on each provider page. [test-youtube.mjs](../scripts/test-youtube.mjs) replaces Google credentials and clears fixture data: run it only on a separate disposable `compose.test.yaml` project at HTTP 18888 / HTTPS 22443 / subnet `172.31.254.0/24`, before linking real accounts.
-
-```sh
-node scripts/test-youtube-playback.mjs
-node scripts/test-youtube-stream.mjs
-node scripts/test-twitch-playback.mjs
-node scripts/test-kick-playback.mjs CURRENTLY_LIVE_CHANNEL
-```
-
-Live scripts need configured applications, a linked YouTube/Twitch account and available public media. Browser decoding checks do not establish long-running live/ad behavior. Startup measurements: [Twitch browser](../scripts/benchmark-online-player.mjs), [YouTube browser](../scripts/benchmark-youtube-player.mjs) (pass watchlist video IDs), [native](../scripts/benchmark-native-player.mjs), [Streamlink](../scripts/benchmark-online-startup.py), [YouTube extraction](../scripts/benchmark-youtube-startup.py). Select an idle development instance with `THELXINOE_BENCHMARK_URL`; native measurements also need `THELXINOE_BENCHMARK_CDP`.
-
-Windows: build with `pnpm run build:desktop`, set `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9223` and a separate `WEBVIEW2_USER_DATA_FOLDER`, then launch `target/release/thelxinoe-desktop.exe`. Run [test-desktop.mjs](../scripts/test-desktop.mjs) against the proxy fixture or [test-native-playback.mjs](../scripts/test-native-playback.mjs) against the playback fixture. Close the test app afterward. Upstream MPV/plugin qualification: `cargo test -p thelxinoe-desktop qualify_upstream_packages -- --ignored --nocapture`. The desktop CI lane runs the MPV IPC and plugin-loading tests against the MPV and FFmpeg builds pinned in [ci-native-tools.json](../scripts/ci-native-tools.json); a pin that no longer matches its download fails the lane until a new build is pinned.
-
-TV: generate playback fixtures, then `node scripts/tv-fixtures.mjs`. Start `compose.test.yaml` as `thelxinoe-compat` with HTTP 18787 / HTTPS 21443 / subnet `172.31.253.0/24`, then `node scripts/test-jellyfin.mjs --tv`. An Android TV emulator reaches the host at `http://10.0.2.2:18787`; [test-tv-quick-connect.mjs](../scripts/test-tv-quick-connect.mjs) approves its displayed code. Repeat login/Quick Connect, browsing, direct/remux/transcode, seek/resume/subtitles, music, playlists and online playback in actual clients. Protocol tests alone do not establish client compatibility; check UDP discovery on a real LAN.
-
-## Release checks
-
-Use the [local update lab and automated qualification](UPDATES.md) for server and
-Windows updates. The automated suites are included in CI and retain inspectable
-evidence. Continue to qualify the applicable real playback, TV and provider
-workflows above when changing their protocols.
-The optional `node scripts/test-pwa-remote.mjs` checks PWA installation, offline
-reconnect and remote HTTPS playback against the existing `compose.test.yaml`
-fixture (default `https://localhost:9443`).
+Use the [update lab](UPDATES.md) for server and Windows updates. Protocol tests
+alone do not establish client compatibility: repeat login, browsing, playback and
+discovery in actual clients when changing their protocols.
 
 ## Why isolated coverage remains
 

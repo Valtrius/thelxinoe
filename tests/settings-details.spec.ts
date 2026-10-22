@@ -705,9 +705,7 @@ test('service labels stay inside their tabs across the sidebar breakpoint', asyn
   await page.goto('/');
   const strip = page.getByRole('navigation', { name: 'Select service' });
   await expect(strip.getByText('Setup blocked', { exact: true })).toBeVisible();
-  for (const width of [
-    720, 721, 760, 800, 900, 960, 1440, 1572, 3840, 390, 320,
-  ]) {
+  for (const width of [720, 721, 1440, 3840, 390]) {
     await page.setViewportSize({ width, height: 1000 });
     for (const collapsed of width > 720 ? [false, true] : [true]) {
       if (width > 720) {

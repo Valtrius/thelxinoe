@@ -58,15 +58,10 @@ async function adoptReplacement(f, kind, image) {
   return f.services[kind];
 }
 
+// test-transfers.mjs transfers every kind; these cover the kind-specific
+// review blockers and the Connected stage before a transfer.
 export async function ownershipAccess({ f, scenario, output }) {
-  for (const kind of [
-    'radarr',
-    'sonarr',
-    'lidarr',
-    'prowlarr',
-    'bazarr',
-    'nzbget',
-  ]) {
+  for (const kind of ['radarr', 'sonarr', 'nzbget']) {
     await scenario(
       kind +
         ': a Connected service is validation-only until its transfer completes',

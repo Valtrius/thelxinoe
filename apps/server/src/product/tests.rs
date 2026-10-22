@@ -342,6 +342,7 @@ async fn resume(state: &AppState) {
 
 // One click must survive a busy registry, Docker or controller outage, a restart
 // and a newer discovery; only a definitive refusal fails it.
+#[cfg_attr(windows, ignore = "needs the Linux server container environment")]
 #[tokio::test]
 async fn queued_installs_wait_through_transient_failures_and_keep_their_release() {
     let (_temp, state, cookie) = fixture().await;
