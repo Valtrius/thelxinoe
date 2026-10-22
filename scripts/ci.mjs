@@ -225,7 +225,11 @@ async function media() {
           THELXINOE_TEST_URL: `https://localhost:${env.THELXINOE_TEST_HTTPS_PORT}`,
         },
       });
-      await qualifyHostRecovery(catalog, 'test-results/e2e/host-recovery.json');
+      await qualifyHostRecovery(
+        catalog,
+        `http://127.0.0.1:${env.THELXINOE_TEST_HTTP_PORT}`,
+        'test-results/e2e/host-recovery.json',
+      );
     } finally {
       catalog.close();
     }

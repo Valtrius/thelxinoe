@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 
-export async function qualifyHostRecovery(fixture, output) {
+export async function qualifyHostRecovery(fixture, baseURL, output) {
   let locked = false;
   try {
     fixture.compose(
@@ -31,17 +31,14 @@ export async function qualifyHostRecovery(fixture, output) {
   const token = link.hash.slice('#recovery='.length);
   fixture.compose('up', '-d', '--wait', 'server');
   const api = (path, body) =>
-    fetch(
-      `http://127.0.0.1:${process.env.THELXINOE_TEST_HTTP_PORT}/api/v1${path}`,
-      {
-        method: 'POST',
-        headers: {
-          'X-Thelxinoe-Client': '1',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
+    fetch(`${baseURL}/api/v1${path}`, {
+      method: 'POST',
+      headers: {
+        'X-Thelxinoe-Client': '1',
+        'Content-Type': 'application/json',
       },
-    );
+      body: JSON.stringify(body),
+    });
   const password = 'host recovery fixture passphrase';
   const info = await api('/auth/recovery/info', { token });
   assert.equal(info.status, 200);
