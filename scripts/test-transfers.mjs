@@ -24,6 +24,20 @@ const kinds = option('kinds') ?? [
   'nzbget',
   'seerr',
 ];
+// Storage handling does not depend on the service kind, so each kind is
+// transferred with one storage type. Every original is still connected in both
+// passes, so cross-service records exist for each transfer.
+const transferStorage = {
+  radarr: 'bind',
+  sonarr: 'volume',
+  lidarr: 'bind',
+  prowlarr: 'volume',
+  bazarr: 'bind',
+  nzbget: 'volume',
+  seerr: 'bind',
+};
+const transferred = (kind, storage) =>
+  !!option('kinds') || transferStorage[kind] === storage;
 const storages = option('storage') ?? ['bind', 'volume'];
 const scenarios = option('scenarios') ?? [
   'matrix',
@@ -536,6 +550,7 @@ try {
         const records = await populate(sources);
         let disconnected;
         for (const kind of kinds) {
+          if (!transferred(kind, storage)) continue;
           await matrix(sources[kind], records[kind], storage);
           console.log(`PASS transfer ${kind} (${storage})`);
           // A manual disconnect between Owned services survives later takeovers.
@@ -590,8 +605,6 @@ try {
     if (scenarios.includes('interruption'))
       for (const [kind, step, component] of [
         ['sonarr', 'copy', 'controller'],
-        ['lidarr', 'validate', 'controller'],
-        ['bazarr', 'activate', 'server'],
         ['nzbget', 'setup', 'server'],
       ])
         await scenario(

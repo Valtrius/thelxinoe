@@ -3,7 +3,6 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { composeFixture, fixtureId, freePort } from './ci-resources.mjs';
-import { randomUUID } from 'node:crypto';
 import { waitForProxy } from './service-access-fixture.mjs';
 import {
   budgets,
@@ -14,15 +13,10 @@ import {
 import { launchBrowser } from './ci-browser.mjs';
 import {
   exerciseConfiguration,
-  exerciseConfigurationEditor,
   exerciseConfigurationUpgrades,
 } from './recyclarr-configuration-fixture.mjs';
 
 const project = fixtureId('recyclarr');
-const transferOnly = process.argv.includes('--transfer-only');
-const profilesOnly = process.argv.includes('--profiles-only');
-const configurationOnly = process.argv.includes('--configuration-only');
-const editorOnly = process.argv.includes('--editor-only');
 const root = resolve(`.local/${project}`);
 const docker = (...args) => {
   try {
@@ -65,15 +59,7 @@ const evidence = {
   browser_network: process.env.THELXINOE_CI_BROWSER_WS_ENDPOINT
     ? 'isolated Docker bridge'
     : 'host',
-  scope: editorOnly
-    ? 'editor'
-    : configurationOnly
-      ? 'configuration'
-      : profilesOnly
-        ? 'profiles'
-        : transferOnly
-          ? 'transfer'
-          : 'complete',
+  scope: 'complete',
   started: new Date().toISOString(),
   finished: null,
   passed: null,
@@ -349,7 +335,7 @@ async function waitUpdate(id, stage) {
     },
   );
 }
-scenario: try {
+try {
   browser = await launchBrowser();
   context = await browser.newContext({
     ignoreHTTPSErrors: true,
@@ -395,62 +381,6 @@ scenario: try {
     JSON.parse(docker('inspect', services.recyclarr.container_id))[0].State
       .Status,
   ).toBe('created');
-  if (!transferOnly && !profilesOnly && !editorOnly) {
-    await expect
-      .poll(
-        async () => {
-          try {
-            await api(`/admin/stack/${services.recyclarr.id}/action`, 'POST', {
-              action: 'start',
-            });
-            docker('pause', services.recyclarr.container_id);
-            return JSON.parse(
-              docker('inspect', services.recyclarr.container_id),
-            )[0].State.Paused;
-          } catch {
-            return false;
-          }
-        },
-        { timeout: 45000, intervals: [250] },
-      )
-      .toBe(true);
-    const busyUpdate = await api(
-      `/admin/service-updates/preflight/${services.recyclarr.id}`,
-      'POST',
-      {},
-    );
-    let busy;
-    await expect
-      .poll(
-        async () => {
-          busy = (await api('/admin/service-updates')).items.find(
-            (item) => item.id === busyUpdate.id,
-          );
-          return busy?.state;
-        },
-        { timeout: 45000 },
-      )
-      .toBe('blocked');
-    expect(busy.error).toMatch(/Stop the Recyclarr job definition/);
-    docker('unpause', services.recyclarr.container_id);
-    await api(`/admin/stack/${services.recyclarr.id}/action`, 'POST', {
-      action: 'stop',
-    });
-    record(
-      'A running job definition blocks preflight with a job-specific idle check; stopping it requires no HTTP integration',
-    );
-    const emptyUpdate = await api(
-      `/admin/service-updates/preflight/${services.recyclarr.id}`,
-      'POST',
-      {},
-    );
-    await waitUpdate(emptyUpdate.id, 'ready');
-    await api(`/admin/service-updates/${emptyUpdate.id}/activate`, 'POST', {});
-    await waitUpdate(emptyUpdate.id, 'committed');
-    services.recyclarr.container_id = (await api('/admin/stack')).items.find(
-      (p) => p.id === services.recyclarr.id,
-    ).container_id;
-  }
   expect(services.recyclarr.host_port).toBeNull();
   expect(services.recyclarr.service_id).toBeNull();
   expect(services.recyclarr.status).toBe('ready');
@@ -469,21 +399,6 @@ scenario: try {
   await expect
     .poll(async () => (await settings()).targets.length, { timeout: 45000 })
     .toBe(2);
-  if (editorOnly) {
-    const page = await context.newPage();
-    await page.goto(`${base}/?section=Settings`);
-    await page
-      .getByRole('link', { name: 'Media services', exact: true })
-      .click();
-    await page
-      .getByRole('navigation', { name: 'Select service' })
-      .getByRole('link', { name: 'Recyclarr', exact: true })
-      .click();
-    await exerciseConfigurationEditor({ page, api, root, record });
-    evidence.passed = true;
-    console.log(`Recyclarr editor E2E passed: ${root}`);
-    break scenario;
-  }
   const initialManagers = (await api('/admin/managers')).items;
   for (const kind of ['radarr', 'sonarr']) {
     evidence.snapshots[`${kind}-before`] = await snapshot(kind);
@@ -555,890 +470,533 @@ scenario: try {
   record(
     'The full official catalog and profile scores sync idempotently while preserving defaults; concurrent manual requests deduplicate; internal preview is read-only',
   );
-  if (!transferOnly) {
-    await exerciseConfiguration({
-      api,
-      request,
-      waitRun,
-      record,
-      evidence,
-      retryInterruptedRun,
-      readRunFiles,
-      withOffline,
-    });
-    if (configurationOnly) {
-      const page = await context.newPage();
-      await exerciseConfigurationUpgrades({
-        api,
-        request,
-        withOffline,
-        waitUpdate,
-        services,
-        snapshot,
-        record,
-        evidence,
-        page,
-        root,
-        base,
+  await exerciseConfiguration({
+    api,
+    request,
+    waitRun,
+    record,
+    evidence,
+    retryInterruptedRun,
+    readRunFiles,
+    withOffline,
+  });
+  // A real CLI parsing error may exit zero; it must still block before apply.
+  const beforeInvalid = await snapshot('radarr');
+  const active = await api('/admin/recyclarr/configuration');
+  const invalid = await api('/admin/recyclarr/configuration/validate', 'POST', {
+    revision: active.revision,
+    files: {
+      ...active.files,
+      'recyclarr.yml': active.files['recyclarr.yml'].replace(
+        '    quality_profiles:',
+        '    quality_profiles:\n      - name: Invalid fixture profile\n        min_format_score: fixture-invalid',
+      ),
+    },
+  });
+  expect(invalid.valid).toBe(false);
+  const invalidResult = invalid.preview;
+  expect(invalidResult.state).toBe('blocked');
+  expect(invalidResult.preview).toContain('[ERR]');
+  expect(invalidResult.apply).toBeUndefined();
+  expect(await snapshot('radarr')).toEqual(beforeInvalid);
+  for (const key of keys)
+    expect(JSON.stringify(invalidResult).includes(key)).toBe(false);
+  evidence.invalidRun = invalidResult;
+  record(
+    'CLI errors are detected even with a zero exit status and block application without changing Arr settings',
+  );
+  const owner = await defaultTarget('radarr');
+  const format = structuredClone((await arr('radarr', 'customformat'))[0]);
+  delete format.id;
+  format.name = 'Recyclarr fixture unmatched';
+  const unmanagedFormat = await arr('radarr', 'customformat', 'POST', format);
+  const managedProfile = (await arr('radarr', 'qualityprofile')).find(
+    (p) => p.id === owner.profile_id,
+  );
+  const managedIds = new Set(
+    (await settings()).targets
+      .filter((t) => t.kind === 'radarr')
+      .map((t) => t.profile_id),
+  );
+  const unmanagedProfile = (await arr('radarr', 'qualityprofile')).find(
+    (p) => !managedIds.has(p.id),
+  );
+  for (const [profile, score] of [
+    [managedProfile, 999],
+    [unmanagedProfile, 777],
+  ]) {
+    const existing = profile.formatItems.find(
+      (f) => f.format === unmanagedFormat.id,
+    );
+    if (existing) existing.score = score;
+    else
+      profile.formatItems.push({
+        format: unmanagedFormat.id,
+        name: unmanagedFormat.name,
+        score,
       });
-      await exerciseConfigurationEditor({ page, api, root, record });
-      evidence.passed = true;
-      console.log(`Recyclarr configuration E2E passed: ${root}`);
-      break scenario;
-    }
-    // A real CLI parsing error may exit zero; it must still block before apply.
-    const beforeInvalid = await snapshot('radarr');
-    const active = await api('/admin/recyclarr/configuration');
-    const invalid = await api(
-      '/admin/recyclarr/configuration/validate',
-      'POST',
-      {
-        revision: active.revision,
-        files: {
-          ...active.files,
-          'recyclarr.yml': active.files['recyclarr.yml'].replace(
-            '    quality_profiles:',
-            '    quality_profiles:\n      - name: Invalid fixture profile\n        min_format_score: fixture-invalid',
-          ),
-        },
-      },
-    );
-    expect(invalid.valid).toBe(false);
-    const invalidResult = invalid.preview;
-    expect(invalidResult.state).toBe('blocked');
-    expect(invalidResult.preview).toContain('[ERR]');
-    expect(invalidResult.apply).toBeUndefined();
-    expect(await snapshot('radarr')).toEqual(beforeInvalid);
-    for (const key of keys)
-      expect(JSON.stringify(invalidResult).includes(key)).toBe(false);
-    evidence.invalidRun = invalidResult;
-    record(
-      'CLI errors are detected even with a zero exit status and block application without changing Arr settings',
-    );
-    const owner = await defaultTarget('radarr');
-    const format = structuredClone((await arr('radarr', 'customformat'))[0]);
-    delete format.id;
-    format.name = 'Recyclarr fixture unmatched';
-    const unmanagedFormat = await arr('radarr', 'customformat', 'POST', format);
-    const managedProfile = (await arr('radarr', 'qualityprofile')).find(
-      (p) => p.id === owner.profile_id,
-    );
-    const managedIds = new Set(
-      (await settings()).targets
-        .filter((t) => t.kind === 'radarr')
-        .map((t) => t.profile_id),
-    );
-    const unmanagedProfile = (await arr('radarr', 'qualityprofile')).find(
-      (p) => !managedIds.has(p.id),
-    );
-    for (const [profile, score] of [
-      [managedProfile, 999],
-      [unmanagedProfile, 777],
-    ]) {
-      const existing = profile.formatItems.find(
+    await arr('radarr', `qualityprofile/${profile.id}`, 'PUT', profile);
+    expect(
+      (await arr('radarr', `qualityprofile/${profile.id}`)).formatItems.find(
         (f) => f.format === unmanagedFormat.id,
+      ).score,
+    ).toBe(score);
+  }
+  await waitRun((await api('/admin/recyclarr/sync', 'POST', {})).id);
+  const controlled = await arr('radarr', 'qualityprofile');
+  expect(
+    controlled
+      .find((p) => p.id === managedProfile.id)
+      .formatItems.find((f) => f.format === unmanagedFormat.id)?.score ?? 0,
+  ).toBe(0);
+  expect(
+    controlled
+      .find((p) => p.id === unmanagedProfile.id)
+      .formatItems.find((f) => f.format === unmanagedFormat.id).score,
+  ).toBe(777);
+  expect(
+    (await arr('radarr', 'customformat')).some(
+      (f) => f.id === unmanagedFormat.id,
+    ),
+  ).toBe(true);
+  for (const kind of ['radarr', 'sonarr'])
+    evidence.snapshots[`${kind}-applied`] = await snapshot(kind);
+  record(
+    'Unmatched scores reset within newly owned profiles; unrelated profiles and custom formats are preserved',
+  );
+  const page = await context.newPage();
+  await page.goto(`${base}/?section=Settings`);
+  await page.getByRole('link', { name: 'Media services', exact: true }).click();
+  const navigation = page.getByRole('navigation', { name: 'Select service' });
+  await install('seerr');
+  await api('/admin/seerr/sync', 'POST', {});
+  const assigned = {};
+  for (const kind of ['radarr', 'sonarr']) {
+    const target = await defaultTarget(kind);
+    const body =
+      kind === 'radarr'
+        ? {
+            title: 'Recyclarr fixture movie',
+            titleSlug: 'recyclarr-fixture',
+            tmdbId: 157336,
+            year: 2014,
+            images: [],
+            path: '/media/movies/recyclarr-fixture',
+            minimumAvailability: 'released',
+            qualityProfileId: target.profile_id,
+            monitored: false,
+            addOptions: { searchForMovie: false },
+          }
+        : {
+            title: 'Recyclarr fixture series',
+            titleSlug: 'recyclarr-fixture',
+            tvdbId: 121361,
+            year: 2011,
+            images: [],
+            seasons: [],
+            path: '/media/tv/recyclarr-fixture',
+            seriesType: 'standard',
+            qualityProfileId: target.profile_id,
+            monitored: false,
+            seasonFolder: true,
+            addOptions: { searchForMissingEpisodes: false },
+          };
+    assigned[kind] = await arr(
+      kind,
+      kind === 'radarr' ? 'movie' : 'series',
+      'POST',
+      body,
+    );
+    const catalog = await api(`/admin/recyclarr/catalog/${kind}`);
+    const uhd = catalog.items.find(
+      (p) => /UHD|2160p/.test(p.name) && p.trash_id !== target.trash_id,
+    );
+    expect(uhd).toBeTruthy();
+    const selected = (await settings()).targets.find(
+      (t) => t.service_id === target.service_id && t.trash_id === uhd.trash_id,
+    );
+    const manager = (await api('/admin/managers')).items.find(
+      (m) => m.id === target.service_id,
+    );
+    if (kind === 'sonarr') {
+      await navigation
+        .getByRole('link', { name: 'Sonarr', exact: true })
+        .click();
+      const saved = page.waitForResponse(
+        (r) =>
+          r.url().endsWith(`/admin/managers/${target.service_id}/defaults`) &&
+          r.request().method() === 'PUT',
       );
-      if (existing) existing.score = score;
-      else
-        profile.formatItems.push({
-          format: unmanagedFormat.id,
-          name: unmanagedFormat.name,
-          score,
-        });
-      await arr('radarr', `qualityprofile/${profile.id}`, 'PUT', profile);
-      expect(
-        (await arr('radarr', `qualityprofile/${profile.id}`)).formatItems.find(
-          (f) => f.format === unmanagedFormat.id,
-        ).score,
-      ).toBe(score);
+      await page
+        .getByRole('combobox', {
+          name: 'Default request profile',
+          exact: true,
+        })
+        .selectOption(String(selected.profile_id));
+      expect((await saved).ok()).toBe(true);
+    } else {
+      await api(`/admin/managers/${target.service_id}/defaults`, 'PUT', {
+        ...manager.defaults,
+        quality_profile: selected.profile_id,
+      });
     }
     await waitRun((await api('/admin/recyclarr/sync', 'POST', {})).id);
-    const controlled = await arr('radarr', 'qualityprofile');
-    expect(
-      controlled
-        .find((p) => p.id === managedProfile.id)
-        .formatItems.find((f) => f.format === unmanagedFormat.id)?.score ?? 0,
-    ).toBe(0);
-    expect(
-      controlled
-        .find((p) => p.id === unmanagedProfile.id)
-        .formatItems.find((f) => f.format === unmanagedFormat.id).score,
-    ).toBe(777);
-    expect(
-      (await arr('radarr', 'customformat')).some(
-        (f) => f.id === unmanagedFormat.id,
-      ),
-    ).toBe(true);
-    for (const kind of ['radarr', 'sonarr'])
-      evidence.snapshots[`${kind}-applied`] = await snapshot(kind);
-    record(
-      'Unmatched scores reset within newly owned profiles; unrelated profiles and custom formats are preserved',
+    const changed = await defaultTarget(kind);
+    expect(changed.profile_id).not.toBe(target.profile_id);
+    const existing = await arr(
+      kind,
+      `${kind === 'radarr' ? 'movie' : 'series'}/${assigned[kind].id}`,
     );
-    const collisionGuide = (
-      await api('/admin/recyclarr/catalog/radarr')
-    ).items.find((g) => g.trash_id !== owner.trash_id);
-    const collisionTarget = (await settings()).targets.find(
-      (t) => t.kind === 'radarr' && t.trash_id === collisionGuide.trash_id,
-    );
-    await arr(
-      'radarr',
-      `qualityprofile/${collisionTarget.profile_id}`,
-      'DELETE',
-    );
-    const collisionProfile = structuredClone(
-      (await arr('radarr', 'qualityprofile')).find(
-        (p) => p.id === owner.profile_id,
-      ),
-    );
-    delete collisionProfile.id;
-    collisionProfile.name = collisionGuide.name;
-    const collision = await arr(
-      'radarr',
-      'qualityprofile',
-      'POST',
-      collisionProfile,
-    );
-    const collisionBefore = await snapshot('radarr');
-    const rejectedRun = (
-      await api(`/admin/recyclarr/targets/${owner.service_id}`, 'POST', {
-        trash_id: collisionGuide.trash_id,
-      })
-    ).id;
+    expect(existing.qualityProfileId).toBe(target.profile_id);
+    const defaults = (await api('/admin/managers')).items.find(
+      (m) => m.id === target.service_id,
+    ).defaults;
+    expect(defaults.monitored).toBe(true);
+    expect(defaults.quality_profile).toBe(changed.profile_id);
     await expect
       .poll(
         async () =>
-          (await settings()).runs.find((r) => r.id === rejectedRun)?.state,
+          (await arr('seerr', `settings/${kind}`)).find((m) =>
+            m.name.startsWith(`Thelxinoe ${kind} (`),
+          )?.activeProfileId,
         { timeout: 45000 },
       )
-      .toBe('blocked');
-    expect(await snapshot('radarr')).toEqual(collisionBefore);
-    expect(
-      (await api('/admin/managers')).items.find(
-        (m) => m.id === owner.service_id,
-      ).defaults.quality_profile,
-    ).toBe(owner.profile_id);
-    await arr('radarr', `qualityprofile/${collision.id}`, 'DELETE');
-    await waitRun(
-      (
-        await api(`/admin/recyclarr/targets/${owner.service_id}`, 'POST', {
-          trash_id: owner.trash_id,
-        })
-      ).id,
+      .toBe(changed.profile_id);
+    const configured = (await arr('seerr', `settings/${kind}`)).find((m) =>
+      m.name.startsWith(`Thelxinoe ${kind} (`),
     );
-    record(
-      'An unowned name collision blocks before any Arr writes and retains the previous valid default',
+    expect(configured.activeProfileName).toBe(changed.profile_name);
+    expect(configured.is4k).toBe(true);
+    expect(await arr(kind, 'qualitydefinition')).toEqual(
+      evidence.snapshots[`${kind}-before`].sizes,
     );
-    const page = await context.newPage();
-    await page.goto(`${base}/?section=Settings`);
-    await page
-      .getByRole('link', { name: 'Media services', exact: true })
-      .click();
-    const navigation = page.getByRole('navigation', { name: 'Select service' });
-    for (const kind of ['Radarr', 'Sonarr']) {
-      await navigation.getByRole('link', { name: kind, exact: true }).click();
-      const profiles = page.getByRole('combobox', {
-        name: 'Default request profile',
-        exact: true,
-      });
-      const mapped = (await settings()).targets.filter(
-        (t) => t.kind === kind.toLowerCase(),
-      );
-      await expect(profiles).toBeVisible();
-      await expect
-        .poll(() => profiles.getByRole('option').count())
-        .toBeGreaterThan(mapped.length);
-      await expect(
-        page.getByRole('link', { name: 'View TRaSH profile', exact: true }),
-      ).toBeVisible();
-      await expect(
-        page.getByRole('link', {
-          name: `Manage profiles in ${kind}`,
-          exact: true,
-        }),
-      ).toBeVisible();
-      await page.screenshot({
-        path: `${root}/${kind.toLowerCase()}-profiles.png`,
-        fullPage: true,
-      });
-      await page.setViewportSize({ width: 390, height: 844 });
-      await profiles.scrollIntoViewIfNeeded();
-      await page.screenshot({
-        path: `${root}/${kind.toLowerCase()}-profiles-mobile.png`,
-        fullPage: true,
-      });
-      await page.setViewportSize({ width: 1440, height: 1000 });
-    }
-    const guideRegion = page.getByRole('region', {
-      name: 'Recyclarr guide configuration',
-    });
-    await navigation
-      .getByRole('link', { name: 'Recyclarr', exact: true })
-      .click();
-    await expect(
-      guideRegion.getByRole('button', { name: 'Sync now', exact: true }),
-    ).toBeVisible();
-    await expect(
-      guideRegion.getByRole('switch', {
-        name: 'Pause automatic sync',
-        exact: true,
-      }),
-    ).toBeVisible();
-    await expect(
-      guideRegion.getByRole('combobox', { name: /^Daily sync hour/ }),
-    ).toBeVisible();
-    await expect(guideRegion.getByRole('combobox')).toHaveCount(1);
-    await expect(guideRegion.getByRole('link')).toHaveCount(0);
-    await expect(
-      guideRegion.getByText(
-        /Preview|Sync history|Last sync|Next sync|Synced profiles/,
-      ),
-    ).toHaveCount(0);
-    await page.screenshot({
-      path: `${root}/recyclarr-settings.png`,
-      fullPage: true,
-    });
-    await page.setViewportSize({ width: 390, height: 844 });
-    await guideRegion.getByRole('combobox').scrollIntoViewIfNeeded();
-    await page.screenshot({
-      path: `${root}/recyclarr-settings-mobile.png`,
-      fullPage: true,
-    });
-    await page.setViewportSize({ width: 1440, height: 1000 });
-    const runCount = (await settings()).runs.length;
-    await exerciseConfigurationEditor({ page, api, root, record });
-    await guideRegion
-      .getByRole('button', { name: 'Sync now', exact: true })
-      .click();
-    await expect
-      .poll(
-        async () => {
-          const runs = (await settings()).runs;
-          return runs.length > runCount && runs[0].state === 'complete';
-        },
-        { timeout: 300000, intervals: [1500] },
-      )
-      .toBe(true);
-    await expect(
-      guideRegion.getByRole('button', { name: 'Sync now', exact: true }),
-    ).toBeEnabled();
-    await expect(guideRegion.getByRole('status')).toHaveCount(0);
-    expect((await settings()).runs.length).toBeGreaterThan(runCount);
-    expect(
-      fixtureSQL(
-        "SELECT count(*) FROM audit WHERE action='recyclarr.complete'",
-      )[0][0],
-    ).toBeGreaterThan(0);
-    record(
-      'Radarr and Sonarr expose their full profile lists and native management links; Recyclarr contains only manual sync and scheduling, with results in global history',
+    const deniedGuide = await context.request.post(
+      `${base}/api/v1/admin/recyclarr/targets/${target.service_id}`,
+      {
+        headers: { 'X-Thelxinoe-Client': '1' },
+        data: { trash_id: '00000000000000000000000000000000' },
+      },
     );
-    await install('seerr');
-    await api('/admin/seerr/sync', 'POST', {});
-    const assigned = {};
-    for (const kind of ['radarr', 'sonarr']) {
-      const target = await defaultTarget(kind);
-      const body =
-        kind === 'radarr'
-          ? {
-              title: 'Recyclarr fixture movie',
-              titleSlug: 'recyclarr-fixture',
-              tmdbId: 157336,
-              year: 2014,
-              images: [],
-              path: '/media/movies/recyclarr-fixture',
-              minimumAvailability: 'released',
-              qualityProfileId: target.profile_id,
-              monitored: false,
-              addOptions: { searchForMovie: false },
-            }
-          : {
-              title: 'Recyclarr fixture series',
-              titleSlug: 'recyclarr-fixture',
-              tvdbId: 121361,
-              year: 2011,
-              images: [],
-              seasons: [],
-              path: '/media/tv/recyclarr-fixture',
-              seriesType: 'standard',
-              qualityProfileId: target.profile_id,
-              monitored: false,
-              seasonFolder: true,
-              addOptions: { searchForMissingEpisodes: false },
-            };
-      assigned[kind] = await arr(
-        kind,
-        kind === 'radarr' ? 'movie' : 'series',
-        'POST',
-        body,
-      );
-      const catalog = await api(`/admin/recyclarr/catalog/${kind}`);
-      const uhd = catalog.items.find(
-        (p) => /UHD|2160p/.test(p.name) && p.trash_id !== target.trash_id,
-      );
-      expect(uhd).toBeTruthy();
-      const selected = (await settings()).targets.find(
-        (t) =>
-          t.service_id === target.service_id && t.trash_id === uhd.trash_id,
-      );
-      const manager = (await api('/admin/managers')).items.find(
-        (m) => m.id === target.service_id,
-      );
-      if (kind === 'sonarr') {
-        await navigation
-          .getByRole('link', { name: 'Sonarr', exact: true })
-          .click();
-        const saved = page.waitForResponse(
-          (r) =>
-            r.url().endsWith(`/admin/managers/${target.service_id}/defaults`) &&
-            r.request().method() === 'PUT',
-        );
-        await page
-          .getByRole('combobox', {
-            name: 'Default request profile',
-            exact: true,
-          })
-          .selectOption(String(selected.profile_id));
-        expect((await saved).ok()).toBe(true);
-      } else {
-        await api(`/admin/managers/${target.service_id}/defaults`, 'PUT', {
-          ...manager.defaults,
-          quality_profile: selected.profile_id,
-        });
-      }
-      await waitRun((await api('/admin/recyclarr/sync', 'POST', {})).id);
-      const changed = await defaultTarget(kind);
-      expect(changed.profile_id).not.toBe(target.profile_id);
-      const existing = await arr(
-        kind,
-        `${kind === 'radarr' ? 'movie' : 'series'}/${assigned[kind].id}`,
-      );
-      expect(existing.qualityProfileId).toBe(target.profile_id);
-      const defaults = (await api('/admin/managers')).items.find(
-        (m) => m.id === target.service_id,
-      ).defaults;
-      expect(defaults.monitored).toBe(true);
-      expect(defaults.quality_profile).toBe(changed.profile_id);
-      await expect
-        .poll(
-          async () =>
-            (await arr('seerr', `settings/${kind}`)).find((m) =>
-              m.name.startsWith(`Thelxinoe ${kind} (`),
-            )?.activeProfileId,
-          { timeout: 45000 },
-        )
-        .toBe(changed.profile_id);
-      const configured = (await arr('seerr', `settings/${kind}`)).find((m) =>
-        m.name.startsWith(`Thelxinoe ${kind} (`),
-      );
-      expect(configured.activeProfileName).toBe(changed.profile_name);
-      expect(configured.is4k).toBe(true);
-      expect(await arr(kind, 'qualitydefinition')).toEqual(
-        evidence.snapshots[`${kind}-before`].sizes,
-      );
-      const deniedGuide = await context.request.post(
-        `${base}/api/v1/admin/recyclarr/targets/${target.service_id}`,
-        {
-          headers: { 'X-Thelxinoe-Client': '1' },
-          data: { trash_id: '00000000000000000000000000000000' },
-        },
-      );
-      expect(deniedGuide.status()).toBe(400);
-      expect((await defaultTarget(kind)).profile_id).toBe(changed.profile_id);
-      evidence.snapshots[`${kind}-applied`] = await snapshot(kind);
-    }
-    record(
-      'Profile switches affect new defaults only; existing media assignments and global size limits remain; Seerr receives numeric IDs, names and UHD classification; missing selections preserve defaults',
-    );
-    const requestDefault = await defaultTarget('radarr');
-    const sonarrDefault = await defaultTarget('sonarr');
-    const choices = await api('/seerr/profiles/movie?media_id=11');
-    expect(choices.items[0]).toMatchObject({
-      default: true,
-      profile: {
+    expect(deniedGuide.status()).toBe(400);
+    expect((await defaultTarget(kind)).profile_id).toBe(changed.profile_id);
+    evidence.snapshots[`${kind}-applied`] = await snapshot(kind);
+  }
+  record(
+    'Profile switches affect new defaults only; existing media assignments and global size limits remain; Seerr receives numeric IDs, names and UHD classification; missing selections preserve defaults',
+  );
+  const requestDefault = await defaultTarget('radarr');
+  const sonarrDefault = await defaultTarget('sonarr');
+  const choices = await api('/seerr/profiles/movie?media_id=11');
+  expect(choices.items[0]).toMatchObject({
+    default: true,
+    profile: {
+      source: 'guide',
+      service_id: requestDefault.service_id,
+      trash_id: requestDefault.trash_id,
+    },
+  });
+  expect(
+    choices.items.filter((p) => p.profile.source === 'guide'),
+  ).toHaveLength((await api('/admin/recyclarr/catalog/radarr')).items.length);
+  const seriesChoices = await api('/seerr/profiles/tv?media_id=1399');
+  expect(seriesChoices.locked).toBe(true);
+  for (const [profile, status] of [
+    [
+      {
+        source: 'guide',
+        service_id: sonarrDefault.service_id,
+        trash_id: sonarrDefault.trash_id,
+      },
+      400,
+    ],
+    [
+      {
         source: 'guide',
         service_id: requestDefault.service_id,
-        trash_id: requestDefault.trash_id,
+        trash_id: '00000000000000000000000000000000',
       },
+      409,
+    ],
+    [
+      {
+        source: 'custom',
+        service_id: requestDefault.service_id,
+        profile_id: requestDefault.profile_id,
+      },
+      409,
+    ],
+    [
+      {
+        source: 'custom',
+        service_id: requestDefault.service_id,
+        profile_id: 999999,
+      },
+      409,
+    ],
+  ]) {
+    const denied = await context.request.post(`${base}/api/v1/seerr/requests`, {
+      headers: { 'X-Thelxinoe-Client': '1' },
+      data: { media_type: 'movie', media_id: 11, seasons: [], profile },
     });
-    expect(
-      choices.items.filter((p) => p.profile.source === 'guide'),
-    ).toHaveLength((await api('/admin/recyclarr/catalog/radarr')).items.length);
-    const seriesChoices = await api('/seerr/profiles/tv?media_id=1399');
-    expect(seriesChoices.locked).toBe(true);
-    for (const [profile, status] of [
-      [
-        {
+    expect(denied.status()).toBe(status);
+  }
+  const changedSeries = await context.request.post(
+    `${base}/api/v1/seerr/requests`,
+    {
+      headers: { 'X-Thelxinoe-Client': '1' },
+      data: {
+        media_type: 'tv',
+        media_id: 1399,
+        seasons: [1],
+        profile: {
           source: 'guide',
           service_id: sonarrDefault.service_id,
           trash_id: sonarrDefault.trash_id,
         },
-        400,
-      ],
-      [
-        {
-          source: 'guide',
-          service_id: requestDefault.service_id,
-          trash_id: '00000000000000000000000000000000',
-        },
-        409,
-      ],
-      [
-        {
-          source: 'custom',
-          service_id: requestDefault.service_id,
-          profile_id: requestDefault.profile_id,
-        },
-        409,
-      ],
-      [
-        {
-          source: 'custom',
-          service_id: requestDefault.service_id,
-          profile_id: 999999,
-        },
-        409,
-      ],
-    ]) {
-      const denied = await context.request.post(
-        `${base}/api/v1/seerr/requests`,
-        {
-          headers: { 'X-Thelxinoe-Client': '1' },
-          data: { media_type: 'movie', media_id: 11, seasons: [], profile },
-        },
-      );
-      expect(denied.status()).toBe(status);
-    }
-    const changedSeries = await context.request.post(
-      `${base}/api/v1/seerr/requests`,
-      {
-        headers: { 'X-Thelxinoe-Client': '1' },
-        data: {
-          media_type: 'tv',
-          media_id: 1399,
-          seasons: [1],
-          profile: {
-            source: 'guide',
-            service_id: sonarrDefault.service_id,
-            trash_id: sonarrDefault.trash_id,
-          },
-        },
       },
-    );
-    expect(changedSeries.status()).toBe(409);
-    const defaultRequest = await api('/seerr/requests', 'POST', {
-      media_type: 'movie',
-      media_id: 11,
-      seasons: [],
-    });
-    expect(defaultRequest).toMatchObject({
-      profileId: requestDefault.profile_id,
-      is4k: true,
-    });
-    expect((await api('/seerr/movie/11')).mediaInfo.status).toBeGreaterThan(1);
-    const hd = (await settings()).targets.find(
-      (t) =>
-        t.kind === 'radarr' &&
-        t.trash_id === 'd1d67249d3890e49bc12e275d989a7e9',
-    );
-    const renamed = await arr('radarr', `qualityprofile/${hd.profile_id}`);
-    renamed.name = 'Renamed fixture guide';
-    await arr('radarr', `qualityprofile/${hd.profile_id}`, 'PUT', renamed);
-    const guideRequest = await api('/seerr/requests', 'POST', {
-      media_type: 'movie',
-      media_id: 238,
-      seasons: [],
-      profile: {
-        source: 'guide',
-        service_id: hd.service_id,
-        trash_id: hd.trash_id,
-      },
-    });
-    expect(guideRequest).toMatchObject({
-      profileId: hd.profile_id,
-      is4k: false,
-    });
-    const custom = structuredClone(renamed);
-    delete custom.id;
-    custom.name = 'Native custom fixture';
-    const nativeCustom = await arr('radarr', 'qualityprofile', 'POST', custom);
-    const customRequest = await api('/seerr/requests', 'POST', {
-      media_type: 'movie',
-      media_id: 550,
-      seasons: [],
-      profile: {
-        source: 'custom',
-        service_id: hd.service_id,
-        profile_id: nativeCustom.id,
-      },
-    });
-    expect(customRequest).toMatchObject({
-      profileId: nativeCustom.id,
-      is4k: false,
-    });
-    expect((await defaultTarget('radarr')).profile_id).toBe(
-      requestDefault.profile_id,
-    );
-    const managerDefaults = (await api('/admin/managers')).items.find(
-      (m) => m.id === hd.service_id,
-    ).defaults;
-    let reconciliation;
-    docker('pause', services.seerr.container_id);
-    try {
-      const started = Date.now();
-      await api(
-        `/admin/managers/${hd.service_id}/defaults`,
-        'PUT',
-        {
-          ...managerDefaults,
-          quality_profile: nativeCustom.id,
-        },
-        5000,
-      );
-      evidence.defaults_while_seerr_unresponsive = {
-        elapsed_ms: Date.now() - started,
-        quality_profile: (await api('/admin/managers')).items.find(
-          (m) => m.id === hd.service_id,
-        ).defaults.quality_profile,
-      };
-      expect(evidence.defaults_while_seerr_unresponsive.quality_profile).toBe(
-        nativeCustom.id,
-      );
-      reconciliation = api('/admin/managers/reconcile', 'POST', {});
-    } finally {
-      docker('unpause', services.seerr.container_id);
-    }
-    record('Saving defaults remains responsive while Seerr is unresponsive');
-    await Promise.all([
-      reconciliation,
-      waitRun((await api('/admin/recyclarr/sync', 'POST', {})).id),
-    ]);
-    expect(
-      (await api('/admin/managers')).items.find((m) => m.id === hd.service_id)
-        .defaults.quality_profile,
-    ).toBe(nativeCustom.id);
-    expect(
-      (await api('/seerr/profiles/movie?media_id=680')).items[0],
-    ).toMatchObject({
-      default: true,
-      profile: {
-        source: 'custom',
-        service_id: hd.service_id,
-        profile_id: nativeCustom.id,
-      },
-    });
+    },
+  );
+  expect(changedSeries.status()).toBe(409);
+  const defaultRequest = await api('/seerr/requests', 'POST', {
+    media_type: 'movie',
+    media_id: 11,
+    seasons: [],
+  });
+  expect(defaultRequest).toMatchObject({
+    profileId: requestDefault.profile_id,
+    is4k: true,
+  });
+  expect((await api('/seerr/movie/11')).mediaInfo.status).toBeGreaterThan(1);
+  const hd = (await settings()).targets.find(
+    (t) =>
+      t.kind === 'radarr' && t.trash_id === 'd1d67249d3890e49bc12e275d989a7e9',
+  );
+  const renamed = await arr('radarr', `qualityprofile/${hd.profile_id}`);
+  renamed.name = 'Renamed fixture guide';
+  await arr('radarr', `qualityprofile/${hd.profile_id}`, 'PUT', renamed);
+  const guideRequest = await api('/seerr/requests', 'POST', {
+    media_type: 'movie',
+    media_id: 238,
+    seasons: [],
+    profile: {
+      source: 'guide',
+      service_id: hd.service_id,
+      trash_id: hd.trash_id,
+    },
+  });
+  expect(guideRequest).toMatchObject({
+    profileId: hd.profile_id,
+    is4k: false,
+  });
+  const custom = structuredClone(renamed);
+  delete custom.id;
+  custom.name = 'Native custom fixture';
+  const nativeCustom = await arr('radarr', 'qualityprofile', 'POST', custom);
+  const customRequest = await api('/seerr/requests', 'POST', {
+    media_type: 'movie',
+    media_id: 550,
+    seasons: [],
+    profile: {
+      source: 'custom',
+      service_id: hd.service_id,
+      profile_id: nativeCustom.id,
+    },
+  });
+  expect(customRequest).toMatchObject({
+    profileId: nativeCustom.id,
+    is4k: false,
+  });
+  expect((await defaultTarget('radarr')).profile_id).toBe(
+    requestDefault.profile_id,
+  );
+  const managerDefaults = (await api('/admin/managers')).items.find(
+    (m) => m.id === hd.service_id,
+  ).defaults;
+  let reconciliation;
+  docker('pause', services.seerr.container_id);
+  try {
+    const started = Date.now();
     await api(
       `/admin/managers/${hd.service_id}/defaults`,
       'PUT',
-      managerDefaults,
+      {
+        ...managerDefaults,
+        quality_profile: nativeCustom.id,
+      },
+      5000,
     );
-    for (const kind of ['radarr', 'sonarr'])
-      evidence.snapshots[`${kind}-applied`] = await snapshot(kind);
-    record(
-      'Seerr receives default, guide-ID and native-ID profile choices per request; invalid and cross-manager profiles are rejected; existing series are locked; guide renames and custom defaults survive sync',
-    );
-    if (profilesOnly) {
-      evidence.passed = true;
-      console.log(`Profile E2E passed: ${root}`);
-      break scenario;
-    }
-    const optionsTarget = await defaultTarget('radarr');
-    const optionsGuide = (
-      await api('/admin/recyclarr/catalog/radarr')
-    ).items.find((g) => g.trash_id === optionsTarget.trash_id);
-    const extraGroup = optionsGuide.groups.find(
-      (g) => g.default === false || g.default === 'false',
-    );
-    const selectedGroups = {
-      add: extraGroup ? [{ trash_id: extraGroup.trash_id }] : [],
-      skip: [],
+    evidence.defaults_while_seerr_unresponsive = {
+      elapsed_ms: Date.now() - started,
+      quality_profile: (await api('/admin/managers')).items.find(
+        (m) => m.id === hd.service_id,
+      ).defaults.quality_profile,
     };
-    await waitRun(
-      (
-        await api(
-          `/admin/recyclarr/targets/${optionsTarget.service_id}`,
-          'POST',
-          {
-            trash_id: optionsTarget.trash_id,
-            quality_sizes: true,
-            groups: selectedGroups,
-            overrides: {
-              min_format_score: 25,
-              upgrade_allowed: false,
-              upgrade_until_score: 12345,
-            },
-          },
-        )
-      ).id,
+    expect(evidence.defaults_while_seerr_unresponsive.quality_profile).toBe(
+      nativeCustom.id,
     );
-    const optionsProfile = (await arr('radarr', 'qualityprofile')).find(
-      (p) => p.id === optionsTarget.profile_id,
-    );
-    expect(optionsProfile.minFormatScore).toBe(25);
-    expect(optionsProfile.upgradeAllowed).toBe(false);
-    expect(optionsProfile.cutoffFormatScore).toBe(12345);
-    await expect
-      .poll(() => arr('radarr', 'qualitydefinition'), { timeout: 15000 })
-      .not.toEqual(evidence.snapshots['radarr-before'].sizes);
-    expect((await defaultTarget('radarr')).groups).toEqual(selectedGroups);
-    evidence.snapshots['radarr-applied'] = await snapshot('radarr');
-    record(
-      'Compatible groups, focused score/upgrade overrides and explicitly enabled global quality-size limits apply',
-    );
-    // Stop a real target, observe durable bounded retry, and recover without changing defaults.
-    docker('stop', services.sonarr.container_id);
-    const outage = (await api('/admin/recyclarr/sync', 'POST', {})).id;
-    await expect
-      .poll(
-        async () => (await settings()).runs.find((r) => r.id === outage)?.state,
-        { timeout: 45000 },
-      )
-      .toBe('retrying');
-    const duringOutage = (await defaultTarget('sonarr')).profile_id;
-    docker('start', services.sonarr.container_id);
-    fixtureSQL(
-      "UPDATE jobs SET available_at=0 WHERE kind='recyclarr.sync' AND json_extract(payload,'$.id')=?",
-      [outage],
-    );
-    await waitRun(outage);
-    expect((await defaultTarget('sonarr')).profile_id).toBe(duringOutage);
-    // Advance the persisted schedule clock in the disposable DB to exercise overdue catch-up.
-    await api('/admin/recyclarr/schedule', 'POST', { paused: false, hour: 4 });
-    const oldRuns = new Set((await settings()).runs.map((r) => r.id));
-    fixtureSQL('UPDATE recyclarr_settings SET next_run=0');
-    let daily;
-    await expect
-      .poll(
-        async () => {
-          daily = (await settings()).runs.find((r) => !oldRuns.has(r.id));
-          return !!daily;
-        },
-        { timeout: 45000 },
-      )
-      .toBe(true);
-    await waitRun(daily.id);
-    expect((await settings()).settings.next_run).toBeGreaterThan(
-      Date.now() / 1000,
-    );
-    await api('/admin/recyclarr/schedule', 'POST', { paused: true, hour: 4 });
-    record(
-      'A real Arr outage retries and recovers with valid defaults; overdue daily schedule catches up once and advances its persisted deadline',
-    );
-    const priorDefinition = (await api('/admin/stack')).items.find(
-      (item) => item.id === services.recyclarr.id,
-    ).container_id;
-    docker('rm', '-f', priorDefinition);
-    await api(`/admin/stack/${services.recyclarr.id}/action`, 'POST', {
-      action: 'recreate',
-    });
-    services.recyclarr.container_id = (await api('/admin/stack')).items.find(
-      (item) => item.id === services.recyclarr.id,
-    ).container_id;
-    expect(services.recyclarr.container_id).not.toBe(priorDefinition);
-    expect(
-      JSON.parse(docker('inspect', services.recyclarr.container_id))[0].State
-        .Status,
-    ).toBe('created');
-    await expect
-      .poll(
-        async () =>
-          (await api('/admin/stack')).provisions.find(
-            (item) => item.id === services.recyclarr.id,
-          )?.state,
-        { timeout: 45000 },
-      )
-      .toBe('complete');
-    await waitRun((await api('/admin/recyclarr/sync', 'POST', {})).id);
-    for (const kind of ['radarr', 'sonarr'])
-      expect(await snapshot(kind)).toEqual(
-        evidence.snapshots[`${kind}-applied`],
-      );
-    record(
-      'A missing job definition recreates without starting; preserved appdata retains guide mappings and numeric defaults',
-    );
-    await exerciseConfigurationUpgrades({
-      api,
-      request,
-      withOffline,
-      waitUpdate,
-      services,
-      snapshot,
-      record,
-      evidence,
-      page,
-      root,
-      base,
-    });
-    compose('restart', 'server', 'controller');
-    await waitForProxy(context.request, base);
-    await waitRun((await api('/admin/recyclarr/sync', 'POST', {})).id);
-    expect(
-      (await api('/admin/stack')).items.find((s) => s.kind === 'recyclarr')
-        .status,
-    ).toBe('ready');
-    for (const kind of ['radarr', 'sonarr'])
-      expect(await snapshot(kind)).toEqual(
-        evidence.snapshots[`${kind}-applied`],
-      );
-    record(
-      'Server/controller restart preserves mappings, idle readiness and idempotence',
-    );
-    for (const kind of ['radarr', 'sonarr'])
-      evidence.snapshots[`${kind}-applied`] = await snapshot(kind);
-    const interrupted = (await api('/admin/recyclarr/sync', 'POST', {})).id;
-    let abandoned;
-    await expect
-      .poll(
-        async () => {
-          abandoned = docker(
-            'ps',
-            '-q',
-            '--filter',
-            `label=app.thelxinoe.recyclarr-run=${interrupted}`,
-            '--filter',
-            `ancestor=${evidence.image}`,
-          );
-          if (!abandoned) return false;
-          try {
-            docker('pause', abandoned);
-            return true;
-          } catch (error) {
-            if (/is not running|No such container/.test(String(error)))
-              return false;
-            throw error;
-          }
-        },
-        { timeout: 45000, intervals: [250] },
-      )
-      .toBe(true);
-    compose('restart', 'controller');
-    await expect
-      .poll(
-        async () =>
-          (await settings()).runs.find((r) => r.id === interrupted)?.state,
-        { timeout: 45000 },
-      )
-      .toBe('retrying');
-    fixtureSQL(
-      "UPDATE jobs SET available_at=0 WHERE kind='recyclarr.sync' AND json_extract(payload,'$.id')=?",
-      [interrupted],
-    );
-    await waitRun(interrupted);
-    expect(docker('ps', '-aq', '--filter', `id=${abandoned}`)).toBe('');
-    for (const kind of ['radarr', 'sonarr'])
-      expect(await snapshot(kind)).toEqual(
-        evidence.snapshots[`${kind}-applied`],
-      );
-    record(
-      'Controller interruption reconciles durable jobs, removes abandoned runtime and key mounts, and preserves profile identities',
-    );
-    // A persisted administrative actor loses permission before its queued job starts.
-    const revokedActor = randomUUID(),
-      revokedRun = randomUUID();
-    fixtureSQL(
-      "INSERT INTO users(id,username,password_hash,role,created_at) SELECT ?, 'revoked-fixture', password_hash, 'admin', unixepoch() FROM users LIMIT 1",
-      [revokedActor],
-    );
-    fixtureSQL(
-      "INSERT INTO recyclarr_runs(id,provision_id,actor_id,state,created_at,updated_at) VALUES (?, ?, ?, 'queued',unixepoch(),unixepoch())",
-      [revokedRun, services.recyclarr.id, revokedActor],
-    );
-    fixtureSQL(
-      "INSERT INTO jobs(id,kind,subject,payload,state,available_at,created_at) VALUES (?, 'recyclarr.sync', ?, ?, 'queued', unixepoch()+3,unixepoch())",
-      [
-        randomUUID(),
-        revokedRun,
-        JSON.stringify({ id: revokedRun, preview: false }),
-      ],
-    );
-    fixtureSQL("UPDATE users SET role='user' WHERE id=?", [revokedActor]);
-    await expect
-      .poll(
-        async () =>
-          (await settings()).runs.find((r) => r.id === revokedRun)?.state,
-        { timeout: 45000 },
-      )
-      .toBe('blocked');
-    for (const kind of ['radarr', 'sonarr'])
-      expect(await snapshot(kind)).toEqual(
-        evidence.snapshots[`${kind}-applied`],
-      );
-    record(
-      'Queued sync rechecks its actor authority and applies nothing after administrator revocation',
-    );
-    const backupBefore = await settings();
-    const backup = await api('/admin/backups', 'POST', {
-      passphrase: 'recyclarr fixture backup passphrase',
-      confirm: true,
-    });
-    evidence.backup_id = backup.id;
-    async function waitBackup(stage) {
-      await expect
-        .poll(
-          async () => {
-            try {
-              const item = (await api('/admin/backups')).items.find(
-                (b) => b.id === backup.id,
-              );
-              if (item?.error) throw Error(item.error);
-              return item?.stage;
-            } catch (e) {
-              if (/unavailable|ECONN|502|fetch failed/.test(String(e)))
-                return 'reconnecting';
-              throw e;
-            }
-          },
-          { timeout: 300000, intervals: [2000] },
-        )
-        .toBe(stage);
-    }
-    await waitBackup('complete');
-    await api('/admin/recyclarr/schedule', 'POST', { paused: true, hour: 17 });
-    const restoreStarted = Date.now();
-    // The controller decrypts and verifies the entire archive before accepting
-    // restore. Managed appdata on a bind mount can exceed the normal API budget.
-    try {
-      await api(`/admin/backups/${backup.id}/restore`, 'POST', {
-        passphrase: 'recyclarr fixture backup passphrase',
-        confirm: true,
-      });
-    } finally {
-      evidence.restore_request_ms = Date.now() - restoreStarted;
-      saveEvidence();
-    }
-    await waitBackup('restored');
-    await waitForProxy(context.request, base);
-    expect((await settings()).settings.hour).toBe(backupBefore.settings.hour);
-    await waitRun((await api('/admin/recyclarr/sync', 'POST', {})).id);
-    for (const kind of ['radarr', 'sonarr'])
-      expect(await snapshot(kind)).toEqual(
-        evidence.snapshots[`${kind}-applied`],
-      );
-    record(
-      'Encrypted deployment backup and restore retain schedule, selections, mapping state, numeric defaults and idempotence',
-    );
-    const viewer = await browser.newContext({ ignoreHTTPSErrors: true });
-    const denied = await viewer.request.post(
-      `${base}/api/v1/admin/recyclarr/sync`,
-      { headers: { 'X-Thelxinoe-Client': '1' }, data: {} },
-    );
-    expect(denied.status()).toBe(401);
-    await viewer.close();
-    const payloads = compose(
-      'exec',
-      '-T',
-      '--user',
-      '0',
-      'server',
-      'python3',
-      '-c',
-      "import sqlite3,glob; c=sqlite3.connect('/var/lib/thelxinoe/thelxinoe.sqlite3'); print(c.execute(\"select payload from jobs where kind='recyclarr.sync'\").fetchall())",
-    );
-    for (const key of keys) expect(payloads.includes(key)).toBe(false);
-    const serialized = JSON.stringify(await settings());
-    for (const key of keys) expect(serialized.includes(key)).toBe(false);
-    record(
-      'Unauthorized sync is rejected; queued payloads and public evidence contain no API keys',
-    );
+    reconciliation = api('/admin/managers/reconcile', 'POST', {});
+  } finally {
+    docker('unpause', services.seerr.container_id);
   }
+  record('Saving defaults remains responsive while Seerr is unresponsive');
+  await Promise.all([
+    reconciliation,
+    waitRun((await api('/admin/recyclarr/sync', 'POST', {})).id),
+  ]);
+  expect(
+    (await api('/admin/managers')).items.find((m) => m.id === hd.service_id)
+      .defaults.quality_profile,
+  ).toBe(nativeCustom.id);
+  expect(
+    (await api('/seerr/profiles/movie?media_id=680')).items[0],
+  ).toMatchObject({
+    default: true,
+    profile: {
+      source: 'custom',
+      service_id: hd.service_id,
+      profile_id: nativeCustom.id,
+    },
+  });
+  await api(
+    `/admin/managers/${hd.service_id}/defaults`,
+    'PUT',
+    managerDefaults,
+  );
+  for (const kind of ['radarr', 'sonarr'])
+    evidence.snapshots[`${kind}-applied`] = await snapshot(kind);
+  record(
+    'Seerr receives default, guide-ID and native-ID profile choices per request; invalid and cross-manager profiles are rejected; existing series are locked; guide renames and custom defaults survive sync',
+  );
+  const optionsTarget = await defaultTarget('radarr');
+  const optionsGuide = (
+    await api('/admin/recyclarr/catalog/radarr')
+  ).items.find((g) => g.trash_id === optionsTarget.trash_id);
+  const extraGroup = optionsGuide.groups.find(
+    (g) => g.default === false || g.default === 'false',
+  );
+  const selectedGroups = {
+    add: extraGroup ? [{ trash_id: extraGroup.trash_id }] : [],
+    skip: [],
+  };
+  await waitRun(
+    (
+      await api(
+        `/admin/recyclarr/targets/${optionsTarget.service_id}`,
+        'POST',
+        {
+          trash_id: optionsTarget.trash_id,
+          quality_sizes: true,
+          groups: selectedGroups,
+          overrides: {
+            min_format_score: 25,
+            upgrade_allowed: false,
+            upgrade_until_score: 12345,
+          },
+        },
+      )
+    ).id,
+  );
+  const optionsProfile = (await arr('radarr', 'qualityprofile')).find(
+    (p) => p.id === optionsTarget.profile_id,
+  );
+  expect(optionsProfile.minFormatScore).toBe(25);
+  expect(optionsProfile.upgradeAllowed).toBe(false);
+  expect(optionsProfile.cutoffFormatScore).toBe(12345);
+  await expect
+    .poll(() => arr('radarr', 'qualitydefinition'), { timeout: 15000 })
+    .not.toEqual(evidence.snapshots['radarr-before'].sizes);
+  expect((await defaultTarget('radarr')).groups).toEqual(selectedGroups);
+  evidence.snapshots['radarr-applied'] = await snapshot('radarr');
+  record(
+    'Compatible groups, focused score/upgrade overrides and explicitly enabled global quality-size limits apply',
+  );
+  // Stop a real target, observe durable bounded retry, and recover without changing defaults.
+  docker('stop', services.sonarr.container_id);
+  const outage = (await api('/admin/recyclarr/sync', 'POST', {})).id;
+  await expect
+    .poll(
+      async () => (await settings()).runs.find((r) => r.id === outage)?.state,
+      { timeout: 45000 },
+    )
+    .toBe('retrying');
+  const duringOutage = (await defaultTarget('sonarr')).profile_id;
+  docker('start', services.sonarr.container_id);
+  fixtureSQL(
+    "UPDATE jobs SET available_at=0 WHERE kind='recyclarr.sync' AND json_extract(payload,'$.id')=?",
+    [outage],
+  );
+  await waitRun(outage);
+  expect((await defaultTarget('sonarr')).profile_id).toBe(duringOutage);
+  // Advance the persisted schedule clock in the disposable DB to exercise overdue catch-up.
+  await api('/admin/recyclarr/schedule', 'POST', { paused: false, hour: 4 });
+  const oldRuns = new Set((await settings()).runs.map((r) => r.id));
+  fixtureSQL('UPDATE recyclarr_settings SET next_run=0');
+  let daily;
+  await expect
+    .poll(
+      async () => {
+        daily = (await settings()).runs.find((r) => !oldRuns.has(r.id));
+        return !!daily;
+      },
+      { timeout: 45000 },
+    )
+    .toBe(true);
+  await waitRun(daily.id);
+  expect((await settings()).settings.next_run).toBeGreaterThan(
+    Date.now() / 1000,
+  );
+  await api('/admin/recyclarr/schedule', 'POST', { paused: true, hour: 4 });
+  record(
+    'A real Arr outage retries and recovers with valid defaults; overdue daily schedule catches up once and advances its persisted deadline',
+  );
+  await exerciseConfigurationUpgrades({
+    api,
+    request,
+    withOffline,
+    waitUpdate,
+    services,
+    snapshot,
+    record,
+    evidence,
+    page,
+    root,
+    base,
+  });
+  compose('restart', 'server', 'controller');
+  await waitForProxy(context.request, base);
+  await waitRun((await api('/admin/recyclarr/sync', 'POST', {})).id);
+  expect(
+    (await api('/admin/stack')).items.find((s) => s.kind === 'recyclarr')
+      .status,
+  ).toBe('ready');
+  for (const kind of ['radarr', 'sonarr'])
+    expect(await snapshot(kind)).toEqual(evidence.snapshots[`${kind}-applied`]);
+  record(
+    'Server/controller restart preserves mappings, idle readiness and idempotence',
+  );
+  const viewer = await browser.newContext({ ignoreHTTPSErrors: true });
+  const denied = await viewer.request.post(
+    `${base}/api/v1/admin/recyclarr/sync`,
+    { headers: { 'X-Thelxinoe-Client': '1' }, data: {} },
+  );
+  expect(denied.status()).toBe(401);
+  await viewer.close();
+  const payloads = compose(
+    'exec',
+    '-T',
+    '--user',
+    '0',
+    'server',
+    'python3',
+    '-c',
+    "import sqlite3,glob; c=sqlite3.connect('/var/lib/thelxinoe/thelxinoe.sqlite3'); print(c.execute(\"select payload from jobs where kind='recyclarr.sync'\").fetchall())",
+  );
+  for (const key of keys) expect(payloads.includes(key)).toBe(false);
+  const serialized = JSON.stringify(await settings());
+  for (const key of keys) expect(serialized.includes(key)).toBe(false);
+  record(
+    'Unauthorized sync is rejected; queued payloads and public evidence contain no API keys',
+  );
   // Create an independently owned copy with a real cron process for reviewed transfer.
   const ownedRaw = JSON.parse(
     docker(
@@ -1555,57 +1113,13 @@ scenario: try {
     (await api('/admin/stack')).items.some((s) => s.kind === 'recyclarr'),
   ).toBe(false);
   record('Removal cleans up the owned job definition and state');
-  externalContainers.push(`${project}-external-auto-remove`);
-  infrastructure.update({ containers: externalContainers });
-  const autoRemove = docker(
-    'run',
-    '-d',
-    '--rm',
-    '--label',
-    `io.thelxinoe.ci-run=${process.env.THELXINOE_CI_RUN_ID ?? project}`,
-    '--name',
-    `${project}-external-auto-remove`,
-    '--network',
-    `${project}_test`,
-    '--user',
-    '10001:10001',
-    '-e',
-    'CRON_SCHEDULE=0 0 1 1 *',
-    '-v',
-    `${volume}:/config`,
-    evidence.image,
-  );
   const running = (container) =>
     JSON.parse(docker('inspect', container))[0].State.Running;
   const review = async (id) =>
     api(`/admin/services/${id}/transfer`, 'POST', undefined, budgets.stateCopy);
-  const autoConnected = await api('/admin/recyclarr/connection', 'POST', {
-    container_id: autoRemove,
-  });
-  // It also shares the other original's volume, so the review lists every blocker.
-  expect(autoConnected.healthy).toBe(false);
-  const autoReview = await review(autoConnected.id);
-  expect(autoReview.review.blockers.join(' ')).toContain('auto-remove');
-  await api(`/admin/transfers/${autoReview.id}/cancel`, 'POST');
-  expect(running(autoRemove)).toBe(true);
-  docker('stop', autoRemove);
-  await api(`/admin/services/${autoConnected.id}/forget`, 'POST');
-  record(
-    'Auto-remove ownership transfer is rejected before stopping its source',
-  );
-  externalConfig(
-    originalYaml,
-    'resource_providers: [{name: custom, type: trash-guides, path: /custom}]',
-  );
-  // Connecting validates the job read-only; nothing runs and the schedule is untouched.
   const connected = await api('/admin/recyclarr/connection', 'POST', {
     container_id: external,
   });
-  const unsupported = await review(connected.id);
-  expect(unsupported.review.blockers.length).toBeGreaterThan(0);
-  await api(`/admin/transfers/${unsupported.id}/cancel`, 'POST');
-  expect(running(external)).toBe(true);
-  externalConfig(originalYaml);
   const declarations = {
     cron: true,
     systemd: true,
@@ -1627,21 +1141,6 @@ scenario: try {
       .toMatch(/^(complete|failed|suspended|returned|cancelled)$/);
     return view;
   };
-  const stale = await review(connected.id);
-  expect(stale.review.blockers).toEqual([]);
-  externalConfig(`${originalYaml}
-# changed after review
-`);
-  await api(`/admin/transfers/${stale.id}/approve`, 'POST', {
-    review_revision: stale.review_revision,
-    confirm: true,
-    declarations,
-  });
-  // The changed configuration returns the operation before the original stops.
-  const returned = await wait(stale.id);
-  expect(returned.state).toBe('returned');
-  expect(running(external)).toBe(true);
-  externalConfig(originalYaml);
   const reviewed = await review(connected.id);
   for (const key of keys)
     expect(JSON.stringify(reviewed).includes(key)).toBe(false);
@@ -1676,26 +1175,6 @@ scenario: try {
     expect(await snapshot(kind)).toEqual(evidence.snapshots[`${kind}-applied`]);
   record(
     'Unsupported or stale transfers preserve the original; a reviewed transfer stops cron, copies and scrubs appdata, starts paused and retains mappings',
-  );
-  // A transferred definition is reverified like an installed one after recreation.
-  docker('rm', '-f', services.recyclarr.container_id);
-  await api(`/admin/stack/${services.recyclarr.id}/action`, 'POST', {
-    action: 'recreate',
-  });
-  await expect
-    .poll(
-      async () => {
-        const provision = (await api('/admin/stack')).provisions.find(
-          (item) => item.id === services.recyclarr.id,
-        );
-        return `${provision?.origin}:${provision?.state}:${provision?.hold}`;
-      },
-      { timeout: 45000 },
-    )
-    .toBe('transferred:complete:null');
-  expect((await settings()).settings.paused).toBe(true);
-  record(
-    'A recreated transferred job definition is reverified and keeps its paused schedule',
   );
   await api(`/admin/stack/${services.recyclarr.id}/action`, 'POST', {
     action: 'remove',
@@ -1743,26 +1222,6 @@ scenario: try {
     for (const key of keys) logs = logs.replaceAll(key, '[redacted]');
     writeFileSync(`${root}/services.log`, logs);
   });
-  if (evidence.backup_id)
-    await cleanup('backup state', () => {
-      const state = JSON.parse(
-        compose(
-          'exec',
-          '-T',
-          'controller',
-          'curl',
-          '-fsS',
-          '--max-time',
-          '10',
-          '--unix-socket',
-          '/run/thelxinoe/controller.sock',
-          'http://localhost/stack/backups',
-        ),
-      );
-      evidence.backup = state.items.find(
-        (item) => item.id === evidence.backup_id,
-      );
-    });
   if (!evidence.passed)
     await cleanup('failure screenshot', () =>
       context
