@@ -126,8 +126,9 @@ export async function stageBuildImages(
 ) {
   for (const image of images) await pullFixtureImage(image);
 }
+/** The pinned images container fixtures start besides this revision's own. */
 export async function stageServiceImages() {
-  await stageBuildImages();
+  await stageBuildImages(['debian:bookworm-slim', 'node:24-bookworm-slim']);
   for (const image of Object.values(imageManifest.services))
     await pullFixtureImage(image);
   await pullFixtureImage('caddy:2');

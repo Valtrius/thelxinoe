@@ -21,30 +21,35 @@ env:
   CARGO_PROFILE_TEST_DEBUG: '0'
   THELXINOE_CI_RUN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
   THELXINOE_CI_RESOURCE_DIRECTORY: ${{ github.workspace }}/.local/ci-resources
+  # Built once by the images job and loaded by every container job.
+  THELXINOE_SERVER_IMAGE: thelxinoe-ci-server:gha-${{ github.run_id }}
+  THELXINOE_CONTROLLER_IMAGE: thelxinoe-ci-controller:gha-${{ github.run_id }}
 
 jobs:
   server:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: pnpm run ci:server
-      - uses: actions/upload-artifact@v4
-        if: always()
+      - uses: ./.github/actions/setup-rust
+      # The FFmpeg build the server image ships; a miss downloads it again.
+      - uses: actions/cache@v4
         with:
-          name: server-test-evidence
-          path: |
-            .local/ci-*.json
-            .local/ci-command.log
-            .local/server-verification/
-          include-hidden-files: true
+          path: .local/ci-tools
+          key: ffmpeg-${{ hashFiles('scripts/server-tools.lock.json') }}
+      - name: Ensure FFmpeg is available
+        timeout-minutes: 8
+        run: bash scripts/ci-install-media.sh
+      # Package operations run the Python the server image provides there.
+      - run: sudo ln -sf "$(command -v python3)" /usr/local/bin/python3
+      - run: pnpm run ci:server
   web:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -53,7 +58,6 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # The FFmpeg build the server image ships; a miss downloads it again.
       - uses: actions/cache@v4
         with:
           path: .local/ci-tools
@@ -64,22 +68,15 @@ jobs:
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm run ci:web
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: failure()
         with:
           name: web-test-evidence
           path: |
-            .local/ci-*.json
-            .local/ci-command.log
-            .local/ci-browser*.log
             playwright-report/
             test-results/
-          include-hidden-files: true
-  containers:
+  mock:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    permissions:
-      contents: read
-      packages: read
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -88,15 +85,6 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Fixture images are pinned by digest, so signing in changes only whose
-      # GHCR quota a pull spends: this job's token instead of the runner's
-      # shared address.
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      # The FFmpeg build the server image ships; a miss downloads it again.
       - uses: actions/cache@v4
         with:
           path: .local/ci-tools
@@ -104,35 +92,18 @@ jobs:
       - name: Ensure FFmpeg is available
         timeout-minutes: 8
         run: bash scripts/ci-install-media.sh
-      - run: pnpm run ci:containers
-      - name: Clean owned test resources
-        if: always()
-        run: node scripts/ci-clean-resources.mjs
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm run ci:mock
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: failure()
         with:
-          name: container-test-evidence
+          name: mock-test-evidence
           path: |
-            .local/ci-*.json
-            .local/ci-command.log
-            .local/ci-browser*.log
             playwright-report/
             test-results/
-            .local/*-result.json
-            .local/thelxinoe-connections-*/result.json
-            .local/thelxinoe-connections-*/services.log
-            .local/thelxinoe-access-*/services.log
-            .local/thelxinoe-recyclarr-*/result.json
-            .local/thelxinoe-recyclarr-*/trace.zip
-            .local/thelxinoe-recyclarr-*/services.log
-            .local/thelxinoe-recyclarr-*/*.png
-            .local/*.png
-            .local/selected-audio.ts
-            .local/ci-resources/
-          include-hidden-files: true
-  transfers:
+  images:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: read
@@ -142,8 +113,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
       # Fixture images are pinned by digest, so signing in changes only whose
       # GHCR quota a pull spends: this job's token instead of the runner's
       # shared address.
@@ -152,25 +121,70 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - run: pnpm run ci:transfers
-      - name: Clean owned test resources
-        if: always()
-        run: node scripts/ci-clean-resources.mjs
+      - run: pnpm run ci:images
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: transfer-test-evidence
+          name: images
+          path: .local/ci-images.tar.gz
+          compression-level: 0
+          retention-days: 1
+          overwrite: true
+  containers:
+    needs: images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: [services, recyclarr, media, transfers]
+    name: containers (${{ matrix.phase }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: images
+          path: .local
+      - run: docker load --input .local/ci-images.tar.gz && rm .local/ci-images.tar.gz
+      - uses: actions/cache@v4
+        with:
+          path: .local/ci-tools
+          key: ffmpeg-${{ hashFiles('scripts/server-tools.lock.json') }}
+      - name: Ensure FFmpeg is available
+        timeout-minutes: 8
+        run: bash scripts/ci-install-media.sh
+      - run: node scripts/ci.mjs ${{ matrix.phase }}
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ${{ matrix.phase }}-test-evidence
           path: |
-            .local/ci-*.json
-            .local/ci-command.log
+            playwright-report/
+            test-results/
             .local/ci-browser*.log
+            .local/*-result.json
+            .local/*.png
+            .local/thelxinoe-*/result.json
+            .local/thelxinoe-*/services.log
+            .local/thelxinoe-*/trace.zip
+            .local/thelxinoe-*/*.png
             .local/transfer-qualification.json
-            test-results/transfers/
-            .local/ci-resources/
-          include-hidden-files: true
   desktop:
     runs-on: windows-2025
-    timeout-minutes: 90
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -187,17 +201,18 @@ jobs:
           key: native-tools-${{ hashFiles('scripts/ci-native-tools.json') }}
       - run: pnpm run ci:desktop
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: failure()
         with:
           name: desktop-test-evidence
-          path: |
-            .local/ci-*.json
-            .local/ci-command.log
-            test-results/
-          include-hidden-files: true
+          path: test-results/
   updates-server:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: [updates-server, updates-published]
+    name: ${{ matrix.phase }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -206,27 +221,20 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm run ci:updates:server
+      - run: node scripts/ci.mjs ${{ matrix.phase }}
         env:
           # A published version whose controller cannot update, while its fix ships.
           THELXINOE_SKIP_PUBLISHED_UPDATE: ${{ vars.THELXINOE_SKIP_PUBLISHED_UPDATE }}
-      - name: Clean owned test resources
-        if: always()
-        run: node scripts/ci-clean-resources.mjs
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: failure()
         with:
-          name: server-update-evidence
+          name: ${{ matrix.phase }}-evidence
           path: |
-            .local/ci-*.json
-            .local/ci-command.log
             .local/ci-browser*.log
             test-results/updates/
-            .local/ci-resources/
-          include-hidden-files: true
   updates-desktop:
     runs-on: windows-2025
-    timeout-minutes: 90
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -238,17 +246,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install chromium
       - run: pnpm run ci:updates:desktop
-      - name: Clean owned test resources
-        if: always()
-        run: node scripts/ci-clean-resources.mjs
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: failure()
         with:
           name: desktop-update-evidence
           path: |
-            .local/ci-*.json
-            .local/ci-command.log
             .local/ci-browser*.log
             test-results/updates/
-            .local/ci-resources/
-          include-hidden-files: true

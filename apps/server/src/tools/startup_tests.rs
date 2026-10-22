@@ -27,7 +27,7 @@ async fn prepared_first_install_reports_running_while_verification_is_blocked() 
 
     assert!(
         std::path::Path::new(super::PYTHON).is_file(),
-        "Package operations run {}; scripts/Dockerfile.verify links it to the system Python",
+        "Package operations run {}; CI links it to the system Python",
         super::PYTHON
     );
     let (_temp, state, cookie) = crate::test_support::fixture().await;
