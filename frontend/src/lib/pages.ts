@@ -126,6 +126,10 @@ export async function prefetchVideoPlayer() {
   await pageSettled();
   await inBackground(() => players.video()).catch(() => {});
 }
+// The first page's code downloads while the session's data loads.
+export function preloadFirstPage(route: AppRoute) {
+  void inBackground(() => preloadPage(route)).catch(() => {});
+}
 export async function preloadPage(route: AppRoute) {
   if (route.section === 'Settings') {
     await Promise.all([

@@ -6,6 +6,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 class Socket {
+  static CONNECTING = 0;
   static OPEN = 1;
   static all: Socket[] = [];
   readyState = 0;
@@ -103,6 +104,33 @@ describe('server transport', () => {
     expect(receive).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'server.reconnected' }),
     );
+    events.close();
+  });
+  it('keeps the prepared ticket when the page is shown while connecting', async () => {
+    const fetch = vi.fn();
+    page(fetch);
+    let answer!: () => void;
+    const answered = new Promise<void>((resolve) => (answer = resolve));
+    const respond = fetch.getMockImplementation()!;
+    fetch.mockImplementationOnce(async () => {
+      await answered;
+      return respond();
+    });
+    const receive = vi.fn();
+    const events = new Events(receive);
+    const prepared = events.prepare();
+    void events.connect();
+    // The first page load's pageshow can land while startup still waits.
+    window.dispatchEvent(new Event('pageshow'));
+    answer();
+    await prepared;
+    await vi.advanceTimersByTimeAsync(0);
+    window.dispatchEvent(new Event('pageshow'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(Socket.all).toHaveLength(1);
+    Socket.all[0].open();
+    expect(receive).not.toHaveBeenCalled();
     events.close();
   });
   it('reloads pages when the prepared ticket failed', async () => {

@@ -7,11 +7,11 @@ RUN corepack enable && pnpm install --frozen-lockfile
 COPY frontend frontend
 # The web client sends the API version declared in crates/core.
 COPY crates/core/src/lib.rs crates/core/src/lib.rs
-COPY scripts/version.mjs scripts/generate-segment-fixtures.mjs scripts/
+COPY scripts/version.mjs scripts/generate-segment-fixtures.mjs scripts/precompress-web.mjs scripts/
 COPY Cargo.toml Cargo.toml
 COPY compose*.yaml Cargo.lock Dockerfile ./
 COPY apps/desktop/tauri.conf.json apps/desktop/tauri.conf.json
-RUN pnpm run build:web
+RUN pnpm run build:web && node scripts/precompress-web.mjs frontend/dist
 
 FROM rust:1.98-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e AS rust
 WORKDIR /src

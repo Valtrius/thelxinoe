@@ -139,6 +139,8 @@ export class Events {
   private closed = false;
   // Each connection attempt; a stalled or replaced one no longer reports.
   private attempt = 0;
+  // The attempt waiting for its ticket.
+  private issuing?: number;
   private cursor = 0;
   private initialized = false;
   // The ticket `prepare` requested, until a connection uses it.
@@ -156,7 +158,11 @@ export class Events {
     if (
       this.closed ||
       document.visibilityState !== 'visible' ||
-      this.socket?.readyState === WebSocket.OPEN
+      this.socket?.readyState === WebSocket.OPEN ||
+      // An attempt under way keeps its ticket, which may be the prepared one.
+      // Its stall timer replaces it if it hangs.
+      this.socket?.readyState === WebSocket.CONNECTING ||
+      this.issuing === this.attempt
     )
       return;
     this.retry = 500;
@@ -204,10 +210,12 @@ export class Events {
     let ticket: string;
     const prepared = this.prepared;
     this.prepared = undefined;
+    this.issuing = attempt;
     try {
       const issued = await (prepared ??
         api<EventTicket>('/auth/event-ticket', 'POST'));
       if (!current()) return;
+      this.issuing = undefined;
       ticket = issued.ticket;
       if (
         !this.initialized ||
