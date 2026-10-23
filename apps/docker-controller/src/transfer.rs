@@ -57,6 +57,9 @@ pub(super) struct Review {
     aliases: Vec<String>,
     published: Option<u16>,
     automation: Vec<plan::Automation>,
+    /// Other containers mounting the configuration, which the administrator declares don't write it.
+    #[serde(default)]
+    shared: Vec<String>,
     compose: Option<Value>,
     /// Read-only inspection of the live configuration at review time.
     inspection: Value,
@@ -222,7 +225,7 @@ fn public_review(r: &Review) -> Value {
             "identity":{"uid":r.target_identity.0,"gid":r.target_identity.1},"aliases":r.aliases,"published_port":r.published,
             "mounts":layout.retained,"supplementary":layout.supplementary},
         "inspection":r.inspection,"access":r.access,"changes":r.changes,"settings":r.settings,"recyclarr":r.recyclarr,
-        "automation":r.automation,"compose":r.compose,"blockers":r.blockers,"created_at":r.created_at,
+        "automation":r.automation,"shared_appdata":r.shared,"compose":r.compose,"blockers":r.blockers,"created_at":r.created_at,
     })
 }
 
@@ -384,7 +387,6 @@ async fn inspect(d: &Deployment, input: &ReviewInput, key: String) -> Result<Rev
             media_source: &d.media_source,
             server_media: &server_media,
             appdata_source: &d.appdata_source,
-            others: &others,
         },
     );
     let mut layout = match layout {
@@ -415,6 +417,11 @@ async fn inspect(d: &Deployment, input: &ReviewInput, key: String) -> Result<Rev
     let target = Identity::from_user(&d.server["Config"])?;
     let controller = std::env::var("HOSTNAME").unwrap_or_default();
     let automation = plan::automation(&raw, &others, &controller);
+    let shared = if layout.appdata.source.is_empty() {
+        vec![]
+    } else {
+        plan::sharers(&raw, &layout.appdata, &others)
+    };
     let compose = plan::compose(&raw, &others);
     let aliases = plan::aliases(kind, &raw, &d.network, &others);
     let (published, port_changes) = plan::ports(&raw, t.port);
@@ -585,7 +592,7 @@ async fn inspect(d: &Deployment, input: &ReviewInput, key: String) -> Result<Rev
             "image",
             digest(&json!([source_image, decision, target_version])),
         ),
-        ("storage", digest(&json!(layout))),
+        ("storage", digest(&json!([layout, shared]))),
         (
             "identity",
             digest(&json!([source_identity, (target.uid, target.gid)])),
@@ -617,6 +624,7 @@ async fn inspect(d: &Deployment, input: &ReviewInput, key: String) -> Result<Rev
         aliases,
         published,
         automation,
+        shared,
         compose,
         inspection,
         access,
@@ -2647,7 +2655,13 @@ async fn returnable(d: &Deployment, t: &Transfer) -> Result<()> {
     }
     let controller = std::env::var("HOSTNAME").unwrap_or_default();
     let others = others(d, &original_id(t)?).await?;
-    match plan::restart_threat(&raw, &t.review.layout.appdata, &others, &controller) {
+    match plan::restart_threat(
+        &raw,
+        &t.review.layout.appdata,
+        &others,
+        &controller,
+        &t.review.shared,
+    ) {
         Some(threat) => Err(conflict(threat)),
         None => Ok(()),
     }

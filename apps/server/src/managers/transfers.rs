@@ -633,6 +633,7 @@ struct Declarations {
     configuration_management: bool,
     manual_compose: bool,
     unobservable_automation: bool,
+    shared_appdata: bool,
     scoped_removed_from_files: bool,
     scoped_no_orphan_removal: bool,
     scoped_no_restart: bool,
@@ -693,6 +694,15 @@ async fn approve(
             "Declare that the containers with Docker access don't automate the original; Thelxinoe can't inspect them",
         ));
     }
+    if plan["shared_appdata"]
+        .as_array()
+        .is_some_and(|shared| !shared.is_empty())
+        && !d.shared_appdata
+    {
+        return Err(ApiError::bad(
+            "Declare that the containers mounting the original's configuration don't write it; Thelxinoe can't observe their writes",
+        ));
+    }
     if plan["compose"].is_object() {
         match t.choices["compose_mode"].as_str() {
             Some("scoped")
@@ -725,7 +735,7 @@ async fn approve(
     }
     // Observed Docker evidence and administrator declarations are recorded separately.
     let declarations = json!({"declared":serde_json::to_value(d).map_err(|_| unavailable())?,
-        "compose_mode":t.choices["compose_mode"],"observed":{"automation":plan["automation"],"compose":plan["compose"]},
+        "compose_mode":t.choices["compose_mode"],"observed":{"automation":plan["automation"],"shared_appdata":plan["shared_appdata"],"compose":plan["compose"]},
         "verified_by_thelxinoe":false,"at":now()});
     match storage::approve(&state.db, id.clone(), actor.user.id, declarations).await? {
         storage::Approval::Queued => {}
