@@ -1,6 +1,6 @@
 //! Translate the tested Jellyfin device profile into supported delivery paths.
 use crate::error::ApiError;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use thelxinoe_playback::{
     Capabilities, Conversion, Options, Source, conversion_rate, level_rate, picture_rate,
@@ -318,7 +318,7 @@ pub fn negotiate_online(
     remux: bool,
     video_bitrate: Option<u32>,
 ) -> Capabilities {
-    let candidates = ["mp4", "ts"].map(|container| {
+    let negotiate = |profile: &Value, container| {
         negotiate_for_container(
             source,
             audio_index,
@@ -328,7 +328,7 @@ pub fn negotiate_online(
             video_bitrate,
             container,
         )
-    });
+    };
     let score = |caps: &Capabilities| {
         thelxinoe_playback::decision(
             source,
@@ -342,7 +342,30 @@ pub fn negotiate_online(
         .map(|d| u8::from(d.encoding.video) * 2 + u8::from(d.encoding.audio))
         .unwrap_or(u8::MAX)
     };
-    candidates.into_iter().min_by_key(score).unwrap()
+    let declared = ["mp4", "ts"]
+        .map(|container| negotiate(profile, container))
+        .into_iter()
+        .min_by_key(score)
+        .unwrap();
+    if score(&declared) < 2 {
+        return declared;
+    }
+    // A client that plays a codec from MP4 files also plays it as fragmented MP4 HLS, which
+    // keeps an original its streaming profiles omit, such as AV1 for MPEG-TS-only clients.
+    let mut files = profile.clone();
+    files["TranscodingProfiles"] = profile["DirectPlayProfiles"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| matches(&p["Container"], "mp4"))
+        .map(|p| json!({"Type":p["Type"],"Protocol":"hls","Container":"mp4","VideoCodec":p["VideoCodec"],"AudioCodec":p["AudioCodec"]}))
+        .collect();
+    let fragmented = negotiate(&files, "mp4");
+    if score(&fragmented) < 2 {
+        fragmented
+    } else {
+        declared
+    }
 }
 fn negotiate_for_container(
     source: &Source,

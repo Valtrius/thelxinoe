@@ -55,6 +55,12 @@ impl Prepared {
     fn media(&self) -> Source {
         media(&self.probe, self.duration, self.source.live)
     }
+    fn rendition(&self) -> &formats::Format {
+        self.formats
+            .iter()
+            .find(|f| f.source.video == self.source.video && f.source.audio == self.source.audio)
+            .expect("a prepared source is one of its renditions")
+    }
 }
 fn media(probe: &Value, duration: f64, live: bool) -> Source {
     let mut probe = probe.clone();
@@ -125,6 +131,9 @@ enum Kind {
     Pipeline,
 }
 
+/// The rendition a client plays: the largest picture, up to the selected one, that it takes
+/// without converting video, preferring the selected rendition at that picture. A client
+/// that takes none converts the selected or best rendition.
 pub(crate) async fn negotiate_source(
     state: &AppState,
     video: &str,
@@ -135,33 +144,48 @@ pub(crate) async fn negotiate_source(
 ) -> Result<(Source, thelxinoe_playback::Capabilities, Option<String>)> {
     let prepared = prepare(state, video).await?;
     let mut base = prepared.clone();
-    let matches = |format: &&formats::Format| {
-        (format.source.live || format.indexed)
-            && selected.is_none_or(|selected| {
-                format.quality() == selected["quality"]
-                    && format.video == selected["video"]
-                    && format.audio == selected["audio"]
-            })
-    };
-    if selected.is_some() {
-        let format = prepared
-            .formats
-            .iter()
-            .rev()
-            .find(matches)
-            .ok_or_else(ApiError::not_found)?;
+    let playable = |format: &&formats::Format| format.source.live || format.indexed;
+    let selected = selected
+        .map(|selected| {
+            prepared
+                .formats
+                .iter()
+                .rev()
+                .filter(playable)
+                .find(|format| {
+                    format.quality() == selected["quality"]
+                        && format.video == selected["video"]
+                        && format.audio == selected["audio"]
+                })
+                .ok_or_else(ApiError::not_found)
+        })
+        .transpose()?;
+    if let Some(format) = selected {
         base.probe = describe(state, &prepared, format).await?;
         base.source = format.source.clone();
         base.quality = Some(format.quality());
     }
-    let mut partial = None;
-    for format in prepared
+    let picture = |format: &formats::Format| (format.height, format.fps);
+    let largest = selected.map(picture);
+    let others = prepared
         .formats
         .iter()
         .rev()
-        .filter(matches)
-        .filter(|format| codecs.iter().any(|codec| codec == &format.video))
-    {
+        .filter(playable)
+        .filter(|format| {
+            largest.is_none_or(|largest| picture(format) <= largest)
+                && selected.is_none_or(|selected| !std::ptr::eq(*format, selected))
+        });
+    let candidates = selected.into_iter().chain(others);
+    let mut partial: Option<(Source, thelxinoe_playback::Capabilities, &formats::Format)> = None;
+    for format in candidates.filter(|format| codecs.iter().any(|codec| codec == &format.video)) {
+        // Converting only audio keeps the picture, which a smaller rendition would not.
+        if partial
+            .as_ref()
+            .is_some_and(|(.., found)| picture(found) != picture(format))
+        {
+            break;
+        }
         let mut candidate = base.clone();
         candidate.probe = describe(state, &prepared, format).await?;
         candidate.source = format.source.clone();
@@ -186,12 +210,12 @@ pub(crate) async fn negotiate_source(
                 return Ok((source, capabilities, Some(format.quality())));
             }
             if !decision.encoding.video && partial.is_none() {
-                partial = Some((source, capabilities, Some(format.quality())));
+                partial = Some((source, capabilities, format));
             }
         }
     }
-    if let Some(partial) = partial {
-        return Ok(partial);
+    if let Some((source, capabilities, format)) = partial {
+        return Ok((source, capabilities, Some(format.quality())));
     }
     let source = base.media();
     let capabilities = negotiate(&source);
@@ -211,7 +235,7 @@ async fn describe(
     {
         Ok(prepared.probe.clone())
     } else {
-        inspect_codecs(state, &format.source).await
+        inspect_codecs(state, format).await
     }
 }
 pub(crate) async fn variants(state: &AppState, p: &Principal, video: &str) -> Result<Vec<Value>> {
@@ -273,13 +297,13 @@ async fn prepare(state: &AppState, video: &str) -> Result<Prepared> {
         }
         let prepared = if live::domain(video) {
             let mut selected = select(&live::extract(state, video).await?, None)?;
-            selected.probe = inspect_codecs(state, &selected.source).await?;
+            selected.probe = inspect_codecs(state, selected.rendition()).await?;
             selected
         } else {
             extract::with_metadata(state, video, |metadata, family| async move {
                 let mut selected = select(&metadata, Some(proxy(state, family).await?))?;
                 if selected.source.live {
-                    selected.probe = inspect_codecs(state, &selected.source).await?;
+                    selected.probe = inspect_codecs(state, selected.rendition()).await?;
                 }
                 Ok(selected)
             })
@@ -314,7 +338,8 @@ fn denied() -> ApiError {
 }
 /// A rendition's codecs, probed once while its address lasts: choosing a live rendition
 /// compares several, and playback start considers them again.
-async fn inspect_codecs(state: &AppState, source: &RemoteSource) -> Result<Value> {
+async fn inspect_codecs(state: &AppState, format: &formats::Format) -> Result<Value> {
+    let source = &format.source;
     let key = (source.video.clone(), source.audio.clone());
     {
         let mut probes = state.online.streams.probes.lock().await;
@@ -324,7 +349,7 @@ async fn inspect_codecs(state: &AppState, source: &RemoteSource) -> Result<Value
         }
     }
     crate::tools::require(state, &["ffmpeg"]).await?;
-    let probe = source
+    let mut probe = source
         .probe(&state.tools.runtime.media()?)
         .await
         .map_err(|error| {
@@ -334,6 +359,13 @@ async fn inspect_codecs(state: &AppState, source: &RemoteSource) -> Result<Value
                 ApiError::conflict("Could not inspect public media codecs")
             }
         })?;
+    // FFprobe cannot measure a live playlist's bitrate; without the provider's declared
+    // bandwidth, every client bitrate limit would convert the stream.
+    if probe["format"]["bit_rate"].is_null()
+        && let Some(rate) = format.bitrate
+    {
+        probe["format"]["bit_rate"] = json!(rate.to_string());
+    }
     let mut probes = state.online.streams.probes.lock().await;
     if probes.len() >= 128 {
         probes.clear();
@@ -419,7 +451,7 @@ async fn select_for_player(
             {
                 prepared.probe.clone()
             } else {
-                inspect_codecs(state, &format.source).await?
+                inspect_codecs(state, format).await?
             };
             if probe["format"]["bit_rate"]
                 .as_str()
@@ -449,7 +481,7 @@ async fn select_for_player(
         if prepared.source.video != format.source.video
             || prepared.source.audio != format.source.audio
         {
-            prepared.probe = inspect_codecs(state, &format.source).await?;
+            prepared.probe = inspect_codecs(state, format).await?;
         }
         prepared.source = format.source.clone();
         prepared.quality = Some(format.quality());
