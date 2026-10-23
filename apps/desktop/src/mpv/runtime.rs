@@ -784,7 +784,11 @@ mod capability_tests {
                     {"index":0,"codec_type":"video","codec_name":video,"height":1920},
                     {"index":1,"codec_type":"audio","codec_name":"aac"}]}),
             };
-            assert_eq!(decision(&source, &options).unwrap().mode, "remux", "{video}");
+            assert_eq!(
+                decision(&source, &options).unwrap().mode,
+                "remux",
+                "{video}"
+            );
         }
     }
 }
