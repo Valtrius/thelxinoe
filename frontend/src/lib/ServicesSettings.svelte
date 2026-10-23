@@ -15,6 +15,7 @@
   } from './attention';
   import { activity as runningActivity, startActivity } from './activity';
   import { api, ApiError, desktop } from './api';
+  import { RefreshTask } from './refresh-task';
   import { followLink, routeHref, sectionRoute } from './navigation';
   import Button from './ui/Button.svelte';
   import ContentSkeleton from './ui/ContentSkeleton.svelte';
@@ -506,22 +507,8 @@
       }));
     }
   }
-  let pendingRefresh: Promise<void> | undefined;
-  async function refresh() {
-    // Serialize background reads with action refreshes so an older response
-    // cannot restore a service that has just been removed.
-    const previous = pendingRefresh;
-    const current = (async () => {
-      await previous;
-      await refreshData();
-    })();
-    pendingRefresh = current;
-    try {
-      await current;
-    } finally {
-      if (pendingRefresh === current) pendingRefresh = undefined;
-    }
-  }
+  const reads = new RefreshTask(refreshData, 4000);
+  const refresh = reads.refresh;
   async function refreshData() {
     await Promise.all([
       loadManagers(),
@@ -789,25 +776,7 @@
     await loadUpdateData();
   }
 
-  onMount(() => {
-    void refresh();
-    let polling = false;
-    const poll = async () => {
-      if (polling || document.hidden) return;
-      polling = true;
-      try {
-        await refresh();
-      } finally {
-        polling = false;
-      }
-    };
-    const timer = setInterval(() => void poll(), 4000);
-    document.addEventListener('visibilitychange', poll);
-    return () => {
-      clearInterval(timer);
-      document.removeEventListener('visibilitychange', poll);
-    };
-  });
+  onMount(() => reads.start());
 </script>
 
 <section

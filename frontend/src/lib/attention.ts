@@ -1,6 +1,7 @@
 import { get, writable } from 'svelte/store';
 import { api } from './api';
 import { inBackground } from './page-readiness';
+import { RefreshTask } from './refresh-task';
 import {
   activityDescription,
   hasServerActivity,
@@ -37,8 +38,7 @@ const pending = new Map<string, Promise<boolean>>();
 let owner = '';
 let epoch = 0;
 let request = 0;
-let refreshing: Promise<void> | null = null;
-let queued = false;
+let reads: RefreshTask | undefined;
 
 export function attentionDescription(
   items: AttentionItem[],
@@ -58,75 +58,62 @@ export function attentionDescription(
 }
 
 export function refreshAttention(): Promise<void> {
-  if (!owner) return Promise.resolve();
-  if (refreshing) {
-    queued = true;
-    return refreshing;
-  }
+  return reads?.refresh() ?? Promise.resolve();
+}
+
+async function loadAttention() {
   const session = epoch;
-  refreshing = (async () => {
-    do {
-      queued = false;
-      const current = ++request;
-      try {
-        // The navigation's dots are not part of any page.
-        const result = await inBackground(() =>
-          api<{
-            items: AttentionItem[];
-            activity?: ActivityItem[];
-          }>('/me/attention'),
-        );
-        if (session === epoch && current === request) {
-          if (JSON.stringify(get(attention)) !== JSON.stringify(result.items))
-            attention.set(result.items);
-          const next = result.activity ?? [];
-          if (JSON.stringify(get(serverActivity)) !== JSON.stringify(next))
-            serverActivity.set(next);
-          setActivityConnected(true);
-        }
-      } catch {
-        // Retain conditions, but stop claiming unverified activity is running.
-        if (session === epoch) setActivityConnected(false);
-      }
-    } while (session === epoch && queued);
-  })().finally(() => {
-    if (session === epoch) refreshing = null;
-  });
-  return refreshing;
+  const current = ++request;
+  try {
+    // The navigation's dots are not part of any page.
+    const result = await inBackground(() =>
+      api<{
+        items: AttentionItem[];
+        activity?: ActivityItem[];
+      }>('/me/attention'),
+    );
+    if (session === epoch && current === request) {
+      if (JSON.stringify(get(attention)) !== JSON.stringify(result.items))
+        attention.set(result.items);
+      const next = result.activity ?? [];
+      if (JSON.stringify(get(serverActivity)) !== JSON.stringify(next))
+        serverActivity.set(next);
+      setActivityConnected(true);
+    }
+  } catch {
+    // Retain conditions, but stop claiming unverified activity is running.
+    if (session === epoch) setActivityConnected(false);
+  }
 }
 
 export function connectAttention(userId: string) {
   owner = userId;
   epoch++;
   request++;
-  refreshing = null;
-  queued = false;
+  reads?.stop();
+  const task = new RefreshTask(loadAttention, 5000, hasServerActivity);
+  reads = task;
   attention.set([]);
   attentionErrors.set({});
   resetActivity();
   pending.clear();
   const refresh = () => {
-    if (!document.hidden) void refreshAttention();
+    void task.refresh();
   };
-  window.addEventListener('focus', refresh);
   window.addEventListener('thelxinoe-attention-refresh', refresh);
-  document.addEventListener('visibilitychange', refresh);
-  const timer = setInterval(() => {
-    if (hasServerActivity()) refresh();
-  }, 5000);
-  void refreshAttention();
+  task.start();
   return () => {
+    task.stop();
+    window.removeEventListener('thelxinoe-attention-refresh', refresh);
+    if (reads !== task) return;
+    reads = undefined;
     owner = '';
     epoch++;
     request++;
     attention.set([]);
     attentionErrors.set({});
     resetActivity();
-    clearInterval(timer);
     pending.clear();
-    window.removeEventListener('focus', refresh);
-    window.removeEventListener('thelxinoe-attention-refresh', refresh);
-    document.removeEventListener('visibilitychange', refresh);
   };
 }
 

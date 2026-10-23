@@ -20,6 +20,7 @@
   import type { YoutubeVideo, TwitchLiveStream } from './providers/types';
   import { twitchPreview, twitchPreviewSet } from './providers/utils';
   import { LatestRequest } from './latest-request';
+  import { RefreshTask } from './refresh-task';
   import Button from './ui/Button.svelte';
   import Notice from './ui/Notice.svelte';
   import LibraryCard from './ui/LibraryCard.svelte';
@@ -94,7 +95,6 @@
     twitch: true,
     kick: true,
   });
-  let progressRefresh = $state(0);
   let loaded = $state({
     library: false,
     youtube: false,
@@ -108,14 +108,18 @@
     kick: loading.kick && !loaded.kick,
   });
   let progressReady = false;
-  let libraryAgain = false;
-  let youtubeAgain = false;
   let owner = '';
   const requests = {
     library: new LatestRequest(),
     youtube: new LatestRequest(),
     twitch: new LatestRequest(),
     kick: new LatestRequest(),
+  };
+  const reads = {
+    library: new RefreshTask(loadLibrary, 60_000),
+    youtube: new RefreshTask(() => loadYoutube($providers.youtube), 60_000),
+    twitch: new RefreshTask(() => loadTwitch($providers.twitch), 60_000),
+    kick: new RefreshTask(() => loadKick($providers.kick), 60_000),
   };
   const pending = new SvelteSet<string>();
   const busy = $derived(Object.values(loading).some(Boolean));
@@ -194,10 +198,6 @@
       if (current()) {
         loading.library = false;
         loaded.library = true;
-        if (libraryAgain) {
-          libraryAgain = false;
-          void loadLibrary();
-        }
       }
     }
   }
@@ -240,10 +240,6 @@
       if (current()) {
         loading.youtube = false;
         loaded.youtube = true;
-        if (youtubeAgain) {
-          youtubeAgain = false;
-          void loadYoutube(enabled);
-        }
       }
     }
   }
@@ -340,7 +336,7 @@
   }
   $effect(() => {
     const id = user.id;
-    const enabled = $providers;
+    void $providers;
     void accountRevision;
     untrack(() => {
       if (id !== owner) {
@@ -351,59 +347,37 @@
         twitch = [];
         kick = [];
       }
-      libraryAgain = false;
-      youtubeAgain = false;
-      void loadLibrary();
+      void reads.library.refresh();
       // The page appears with the library; online sources show their
       // skeletons until they arrive.
       inBackground(() => {
-        void loadYoutube(enabled.youtube);
-        void loadTwitch(enabled.twitch);
-        void loadKick(enabled.kick);
+        void reads.youtube.refresh();
+        void reads.twitch.refresh();
+        void reads.kick.refresh();
       });
     });
   });
   $effect(() => {
     void revision;
-    void progressRefresh;
     untrack(() => {
       if (!progressReady) {
         progressReady = true;
         return;
       }
-      if (loading.library) libraryAgain = true;
-      else void loadLibrary();
-      if (loading.youtube) youtubeAgain = true;
-      else void loadYoutube($providers.youtube);
+      void reads.library.refresh();
+      void reads.youtube.refresh();
     });
   });
   function refreshSources() {
-    if (loading.library) libraryAgain = true;
-    else void loadLibrary();
-    if (loading.youtube) youtubeAgain = true;
-    else void loadYoutube($providers.youtube);
-    if (!loading.twitch) void loadTwitch($providers.twitch);
-    if (!loading.kick) void loadKick($providers.kick);
+    Object.values(reads).forEach((read) => void read.refresh());
   }
   onMount(() => {
-    const changed = () => progressRefresh++;
-    // A hidden page skips its refreshes and catches up once it shows again.
-    let missed = false;
-    const timer = setInterval(() => {
-      if (document.hidden) missed = true;
-      else refreshSources();
-    }, 60_000);
-    const shown = () => {
-      if (document.hidden || !missed) return;
-      missed = false;
-      refreshSources();
-    };
+    const changed = () => void reads.youtube.refresh();
+    const stops = Object.values(reads).map((read) => read.start(false));
     window.addEventListener('thelxinoe-youtube-progress', changed);
-    document.addEventListener('visibilitychange', shown);
     return () => {
-      clearInterval(timer);
+      stops.forEach((stop) => stop());
       window.removeEventListener('thelxinoe-youtube-progress', changed);
-      document.removeEventListener('visibilitychange', shown);
       Object.values(requests).forEach((request) => request.invalidate());
     };
   });

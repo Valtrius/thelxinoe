@@ -203,6 +203,70 @@ async function homeFixture(page: Page) {
   return { fixture, data };
 }
 
+test('Home defers hidden refreshes and only reloads YouTube for progress events', async ({
+  page,
+}) => {
+  const { fixture } = await homeFixture(page);
+  const paths = [
+    '/me/home',
+    '/online/youtube/home',
+    '/online/twitch/feed',
+    '/online/kick',
+  ];
+  const counts = Object.fromEntries(paths.map((path) => [path, 0]));
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname.replace('/api/v1', '');
+    if (path in counts) counts[path]++;
+  });
+  await page.goto('/');
+  await expect(
+    page.getByRole('button', { name: 'Watch Kick channel', exact: true }),
+  ).toBeVisible();
+  await expect.poll(() => Object.values(counts)).toEqual([1, 1, 1, 1]);
+  await page.clock.install();
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', {
+      configurable: true,
+      value: true,
+    });
+    document.dispatchEvent(new Event('visibilitychange'));
+    for (let i = 0; i < 10; i++)
+      window.dispatchEvent(
+        new CustomEvent('thelxinoe-youtube-progress', {
+          detail: { videoId: 'abcdefghijk' },
+        }),
+      );
+  });
+  await page.clock.runFor(180_000);
+  expect(Object.values(counts)).toEqual([1, 1, 1, 1]);
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', {
+      configurable: true,
+      value: false,
+    });
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new Event('focus'));
+  });
+  await expect.poll(() => Object.values(counts)).toEqual([2, 2, 2, 2]);
+  // Finish the requests before sending a new progress notification.
+  await expect(
+    page.getByRole('button', { name: 'Refresh Home', exact: true }),
+  ).toBeEnabled();
+  await page.evaluate(() =>
+    window.dispatchEvent(
+      new CustomEvent('thelxinoe-youtube-progress', {
+        detail: { videoId: 'abcdefghijk' },
+      }),
+    ),
+  );
+  await expect.poll(() => Object.values(counts)).toEqual([2, 3, 2, 2]);
+  await expect(
+    page.getByRole('button', { name: 'Refresh Home', exact: true }),
+  ).toBeEnabled();
+  expect(fixture.errors).toEqual([]);
+  expect(fixture.unexpected).toEqual([]);
+});
+
 test('Home combines progress, subscription uploads and live channels on desktop and mobile', async ({
   page,
 }, testInfo) => {

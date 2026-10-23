@@ -8,6 +8,7 @@
   import Switch from './ui/Switch.svelte';
   import { onMount } from 'svelte';
   import { api } from './api';
+  import { RefreshTask } from './refresh-task';
   import { activity, startActivity } from './activity';
   import { refreshAttention } from './attention';
   import AttentionDot from './ui/AttentionDot.svelte';
@@ -107,7 +108,9 @@
     restoreConfirmation = '';
     selected = (item.components ?? []).map((c) => c.key);
   }
-  async function load() {
+  const reads = new RefreshTask(read, 10_000);
+  const load = reads.refresh;
+  async function read() {
     try {
       const data = await api<{
         items: Backup[];
@@ -132,11 +135,7 @@
       message = String(e);
     }
   }
-  onMount(() => {
-    void load();
-    const timer = setInterval(() => void load(), 10000);
-    return () => clearInterval(timer);
-  });
+  onMount(() => reads.start());
   async function savePassphrase() {
     const owns = captureSession();
     savingPassphrase = true;
