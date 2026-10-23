@@ -506,6 +506,11 @@ async fn handle(state: AppState, request: Request) -> Result<Response> {
             let total = items.len();
             return Ok(axum::Json(catalog::result(items, total, 0)).into_response());
         }
+        if lower == "/genres"
+            && let Some(genres) = online::genres(&state, &query).await?
+        {
+            return Ok(axum::Json(genres).into_response());
+        }
         // The catalog does not yet contain independent person/genre entities.
         // Clients query these alongside media search even for empty libraries.
         if ["/persons", "/genres", "/musicgenres"].contains(&lower.as_str()) {

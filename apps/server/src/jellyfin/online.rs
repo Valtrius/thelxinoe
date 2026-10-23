@@ -23,6 +23,30 @@ pub const ROOTS: [(&str, &str, &str); 3] = [
     ("d7df0f21-caa6-45a0-9798-267150600003", "kick", "Kick"),
 ];
 pub const WATCHLIST_VIEW: &str = "d7df0f21-caa6-45a0-9798-267150600004";
+// Clients save genre filters by ID, so these IDs must never change.
+pub const YOUTUBE_GENRES: [(&str, &str, &str); 4] = [
+    ("d7df0f21-caa6-45a0-9798-267150600011", "video", "Videos"),
+    ("d7df0f21-caa6-45a0-9798-267150600012", "short", "Shorts"),
+    ("d7df0f21-caa6-45a0-9798-267150600013", "live", "Live"),
+    (
+        "d7df0f21-caa6-45a0-9798-267150600014",
+        "replay",
+        "Live replays",
+    ),
+];
+
+pub async fn genres(state: &AppState, query: &Query) -> Result<Option<Value>> {
+    if query.get("parentid").map(|id| canonical(id)).as_deref() != Some(ROOTS[0].0) {
+        return Ok(None);
+    }
+    crate::online::availability::require_enabled(state, "youtube").await?;
+    let items = YOUTUBE_GENRES
+        .iter()
+        .map(|(id, _, name)| json!({"Id":id,"Name":name,"Type":"Genre","ServerId":state.server_id.as_str(),"ImageTags":{}}))
+        .collect::<Vec<_>>();
+    let total = items.len();
+    Ok(Some(catalog::result(items, total, 0)))
+}
 
 fn format_viewers(viewers: i64) -> String {
     if viewers < 1_000 {
