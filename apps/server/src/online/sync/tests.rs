@@ -144,6 +144,7 @@ pub(crate) async fn stub(
         api: format!("http://{address}"),
         slots: tokio::sync::Semaphore::new(4),
         artwork: tokio::sync::Semaphore::new(16),
+        thumbnails: crate::online::thumbnails::Cache::default(),
         refresh: tokio::sync::Mutex::new(()),
         extraction: tokio::sync::Semaphore::new(2),
         streamlink: super::super::streamlink_worker::Pool::default(),

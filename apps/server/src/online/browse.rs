@@ -30,7 +30,7 @@ pub struct HomeFeed {
 
 pub async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<HomeFeed>> {
     let principal = security::principal(&state, &headers).await?;
-    let grant = grants::issue(&state, &principal, "youtube-artwork", 300).await?;
+    let grant = grants::youtube_artwork(&state, &principal).await?;
     Ok(Json(
         storage::home_feed(&state.db, principal.user.id, grant).await?,
     ))
@@ -86,7 +86,7 @@ pub async fn list(
     {
         return Err(ApiError::bad("Invalid YouTube feed filters"));
     }
-    let grant = grants::issue(&state, &p, "youtube-artwork", 300).await?;
+    let grant = grants::youtube_artwork(&state, &p).await?;
     let output = storage::list(&state.db, input, p, grant).await?;
     Ok(Json(output))
 }

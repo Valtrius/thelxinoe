@@ -12,6 +12,7 @@
   import { statusChip, type TitleStatus } from '../title/status';
   import { launchingMedia } from '../native-playback';
   import LaunchingOverlay from './LaunchingOverlay.svelte';
+  import { youtubeThumbnailSet } from '../providers/utils';
   let {
     item,
     open,
@@ -86,6 +87,9 @@
   const source = $derived(
     !art ? '' : /^https?:\/\//.test(art) ? art : `${serverUrl()}${art}`,
   );
+  const sourceSet = $derived(
+    item.kind === 'youtube' ? youtubeThumbnailSet(source) : undefined,
+  );
   $effect(() => {
     void source;
     narrow = false;
@@ -144,12 +148,17 @@
       {#if source && !imageFailed}{#if narrow}<img
             class="absolute size-full scale-125 object-cover opacity-60 blur-xl"
             src={source}
+            srcset={sourceSet}
+            sizes="auto, 350px"
+            loading="lazy"
             alt=""
             aria-hidden="true"
             data-art-backdrop
           />{/if}<img
           class={`absolute size-full ${narrow ? 'object-contain' : 'object-cover'} ${mediaCardThumbnailClass} ${item.virtual ? 'opacity-45 grayscale' : ''}`}
           src={source}
+          srcset={sourceSet}
+          sizes="auto, 350px"
           alt=""
           loading="lazy"
           data-art={backdrop ? 'backdrop' : narrow ? 'contained' : 'cover'}

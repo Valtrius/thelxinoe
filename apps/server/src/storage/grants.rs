@@ -2,6 +2,60 @@
 use super::*;
 use thelxinoe_database::Database;
 
+pub(super) async fn youtube_artwork(
+    db: &Database,
+    secrets: thelxinoe_auth::SecretStore,
+    p: Principal,
+) -> anyhow::Result<String> {
+    const DAY: i64 = 86400;
+    let scope = format!("youtube-artwork-grant:{}", p.session_id);
+    fn cached(
+        db: &rusqlite::Connection,
+        secrets: &thelxinoe_auth::SecretStore,
+        scope: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let encrypted: Option<Vec<u8>> = db
+            .query_row(
+                "SELECT ciphertext FROM secrets WHERE scope=?1",
+                [scope],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(encrypted) = encrypted {
+            let (token, issued): (String, i64) =
+                serde_json::from_slice(&secrets.decrypt(scope, &encrypted)?)?;
+            if now() < issued + DAY {
+                return Ok(Some(token));
+            }
+        }
+        Ok(None)
+    }
+    let reader_secrets = secrets.clone();
+    let reader_scope = scope.clone();
+    if let Some(token) = db
+        .read("grants.youtube_artwork", move |db| {
+            cached(db, &reader_secrets, &reader_scope)
+        })
+        .await?
+    {
+        return Ok(token);
+    }
+    db.write("grants.youtube_artwork.issue", move |db| {
+        let tx = db.transaction()?;
+        if let Some(token) = cached(&tx, &secrets, &scope)? { return Ok(token); }
+        let token = thelxinoe_auth::token();
+        let issued = now();
+        let encrypted = secrets.encrypt(&scope, &serde_json::to_vec(&(&token, issued))?)?;
+        tx.execute("DELETE FROM secrets WHERE scope LIKE 'youtube-artwork-grant:%' AND substr(scope,23) NOT IN (SELECT id FROM sessions WHERE expires_at>?1)", [issued])?;
+        tx.execute("DELETE FROM playback_grants WHERE expires_at<=?1", [issued])?;
+        // A URL issued just before rotation still has a full day to load lazy images.
+        tx.execute("INSERT INTO playback_grants VALUES (?1,?2,?3,'youtube-artwork',?4)", params![thelxinoe_auth::digest(&token), p.user.id, p.session_id, issued + 2 * DAY])?;
+        tx.execute("INSERT INTO secrets VALUES (?1,?2) ON CONFLICT(scope) DO UPDATE SET ciphertext=excluded.ciphertext", params![scope, encrypted])?;
+        tx.commit()?;
+        Ok(token)
+    }).await
+}
+
 pub(super) async fn issue(
     hash: String,
     p: Principal,

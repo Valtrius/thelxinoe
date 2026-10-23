@@ -1,7 +1,30 @@
 import { describe, expect, it } from 'vitest';
-import { twitchPreview, twitchPreviewSet, youtubeAvatarSet } from './utils';
+import {
+  twitchPreview,
+  twitchPreviewSet,
+  youtubeAvatarSet,
+  youtubeThumbnailSet,
+} from './utils';
 
 describe('image sizes', () => {
+  it('keeps the grant and server origin across YouTube thumbnail sizes', () => {
+    const path =
+      '/api/v1/online/youtube/videos/abcdefghijk/artwork?grant=secret';
+    for (const prefix of ['', 'https://media.example']) {
+      expect(youtubeThumbnailSet(`${prefix}${path}&width=640`)).toBe(
+        [320, 640, 1280]
+          .map((width) => `${prefix}${path}&width=${width} ${width}w`)
+          .join(', '),
+      );
+    }
+    expect(
+      youtubeThumbnailSet('https://i.ytimg.com/vi/abcdefghijk/mqdefault.jpg'),
+    ).toBeUndefined();
+    expect(
+      youtubeThumbnailSet('/api/v1/catalog/movie/artwork?grant=secret'),
+    ).toBeUndefined();
+    expect(youtubeThumbnailSet(null)).toBeUndefined();
+  });
   it('sizes Twitch previews from the API template or a stored size', () => {
     const stored =
       'https://static-cdn.jtvnw.net/previews-ttv/live_user_someone-640x360.jpg';

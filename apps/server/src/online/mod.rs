@@ -19,6 +19,7 @@ mod streamlink_worker;
 pub(crate) mod streams;
 mod sync;
 use crate::tools;
+mod thumbnails;
 mod twitch;
 pub(crate) mod watchlists;
 mod youtube;
@@ -128,23 +129,9 @@ pub(crate) async fn youtube_artwork_bytes(
     state: &AppState,
     video: &str,
 ) -> Result<(&'static str, Vec<u8>)> {
-    if !sync::identifier(video, 11) {
-        return Err(ApiError::not_found());
-    }
-    // Prefer wide images without letterboxing. Older uploads may not have a
-    // maxres thumbnail; medium is the wide fallback without baked-in bars.
-    for variant in ["maxresdefault", "mqdefault"] {
-        if let Ok(image) = artwork_bytes(
-            state,
-            &format!("https://i.ytimg.com/vi/{video}/{variant}.jpg"),
-        )
-        .await
-        {
-            return Ok(image);
-        }
-    }
-    Err(ApiError::not_found())
+    thumbnails::load(state, video, 1280).await
 }
+
 pub(super) fn channel_avatar(channel: &Value) -> Option<String> {
     ["medium", "high", "default"]
         .into_iter()
@@ -160,6 +147,7 @@ pub struct Runtime {
     // Images have their own slots: a page of thumbnails neither waits behind
     // API calls nor holds them back.
     artwork: tokio::sync::Semaphore,
+    thumbnails: thumbnails::Cache,
     refresh: tokio::sync::Mutex<()>,
     pub(crate) extraction: tokio::sync::Semaphore,
     streamlink: streamlink_worker::Pool,
@@ -182,6 +170,7 @@ impl Runtime {
             api: "https://www.googleapis.com/youtube/v3".into(),
             slots: tokio::sync::Semaphore::new(4),
             artwork: tokio::sync::Semaphore::new(16),
+            thumbnails: thumbnails::Cache::default(),
             refresh: tokio::sync::Mutex::new(()),
             extraction: tokio::sync::Semaphore::new(2),
             streamlink: streamlink_worker::Pool::default(),

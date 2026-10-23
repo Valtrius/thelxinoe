@@ -49,7 +49,7 @@ pub async fn list(
     }
     let owner = p.user.id.clone();
     let (mut items, total, sync) = storage::list(&state.db, filter, owner).await?;
-    let grant = grants::issue(&state, &p, "youtube-artwork", 300).await?;
+    let grant = grants::youtube_artwork(&state, &p).await?;
     for item in &mut items {
         if item["privacy"] == "public" {
             item["artwork_url"] = json!(format!(
@@ -171,6 +171,7 @@ pub async fn delete_data(State(state): State<AppState>, headers: HeaderMap) -> R
 #[derive(Deserialize)]
 pub struct Artwork {
     grant: String,
+    width: Option<u32>,
 }
 pub async fn artwork(
     State(state): State<AppState>,
@@ -188,11 +189,12 @@ pub async fn artwork(
     if !allowed {
         return Err(ApiError::not_found());
     }
-    let (mime, bytes) = super::youtube_artwork_bytes(&state, &video).await?;
+    let (mime, bytes) =
+        super::thumbnails::load(&state, &video, query.width.unwrap_or(1280)).await?;
     Ok((
         [
             (header::CONTENT_TYPE, mime),
-            (header::CACHE_CONTROL, "private, max-age=300"),
+            (header::CACHE_CONTROL, "private, max-age=86400"),
         ],
         bytes,
     )
