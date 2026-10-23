@@ -598,7 +598,7 @@ pub async fn playback_info(
                 .ok_or_else(ApiError::not_found)
         })
         .transpose()?;
-    let codecs: Vec<String> = profile["TranscodingProfiles"]
+    let streamed = profile["TranscodingProfiles"]
         .as_array()
         .into_iter()
         .flatten()
@@ -607,7 +607,15 @@ pub async fn playback_info(
                 && p["Protocol"]
                     .as_str()
                     .is_some_and(|p| p.eq_ignore_ascii_case("hls"))
-        })
+        });
+    // MP4 files a client plays also reach it as fragmented MP4 HLS.
+    let files = profile["DirectPlayProfiles"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| p["Type"] == "Video" && super::profile::matches(&p["Container"], "mp4"));
+    let codecs: Vec<String> = streamed
+        .chain(files)
         .flat_map(|p| {
             p["VideoCodec"]
                 .as_str()
@@ -690,13 +698,13 @@ pub async fn playback_info(
     }
     let mut options = options_for(quality)?;
     options.quality = quality.into();
-    let delivered = selected
-        .or_else(|| {
-            variants.iter().find(|variant| {
-                Some(variant["quality"].as_str().unwrap_or_default()) == rendition.as_deref()
-                    && variant["video"] == source.video_codec().unwrap_or_default()
-            })
+    let delivered = variants
+        .iter()
+        .find(|variant| {
+            Some(variant["quality"].as_str().unwrap_or_default()) == rendition.as_deref()
+                && variant["video"] == source.video_codec().unwrap_or_default()
         })
+        .or(selected)
         .unwrap_or(&variants[0]);
     let item_dto = browse(state, p, &Query::new(), Some(&item.id))
         .await?

@@ -365,6 +365,9 @@ async fn jellyfin_live_playback_describes_tracks_and_delivers_playable_hls() {
         "2",
         "-hls_list_size",
         "0",
+        // A provider's live playlist has no end, so FFprobe reports no bitrate for it.
+        "-hls_flags",
+        "omit_endlist",
         playlist.to_str().unwrap(),
     ]);
     let files = std::fs::read_dir(temp.path())
@@ -383,16 +386,12 @@ async fn jellyfin_live_playback_describes_tracks_and_delivers_playable_hls() {
     let mut prepared = select(
         &json!({"is_live":true,"formats":[
             {"url":"https://r1.googlevideo.com/live.m3u8","height":90,"width":160,"fps":24,
-             "vcodec":"h264","acodec":"aac","protocol":"m3u8_native","ext":"mp4"}
+             "vcodec":"h264","acodec":"aac","protocol":"m3u8_native","ext":"mp4","tbr":400}
         ]}),
         Some(proxy),
     )
     .unwrap();
-    prepared.probe = prepared
-        .source
-        .probe(&state.tools.runtime.media().unwrap())
-        .await
-        .unwrap();
+    prepared.probe = inspect_codecs(&state, prepared.rendition()).await.unwrap();
     state
         .online
         .streams
@@ -418,10 +417,22 @@ async fn jellyfin_live_playback_describes_tracks_and_delivers_playable_hls() {
     let items: Value = serde_json::from_slice(&bytes).unwrap();
     let item = items["Items"][0]["Id"].as_str().unwrap();
     let path = format!("/Items/{item}/PlaybackInfo");
-    for (container, convert) in [("ts", false), ("mp4", false), ("ts", true)] {
+    // Wholphin requests the largest rendition with its bitrate limit, 100 Mbps by default.
+    let (_, bytes) = get(&format!("/Items/{item}"), None).await;
+    let rendition = serde_json::from_slice::<Value>(&bytes).unwrap()["MediaSources"][0]["Id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for (container, convert, selected, limit) in [
+        ("ts", false, item, None),
+        ("mp4", false, item, None),
+        ("ts", true, item, None),
+        ("ts", false, rendition.as_str(), Some(104_857_600)),
+    ] {
+        let profile = json!({"MaxStreamingBitrate":limit,"TranscodingProfiles":[{"Type":"Video","Protocol":"hls","Container":container,"VideoCodec":"h264","AudioCodec":"aac"}]});
         let (status, bytes) = api(&state, &token, &path, Some(json!({
-            "MediaSourceId":item,"EnableDirectPlay":true,"EnableDirectStream":!convert,"EnableTranscoding":true,
-            "DeviceProfile":{"TranscodingProfiles":[{"Type":"Video","Protocol":"hls","Container":container,"VideoCodec":"h264","AudioCodec":"aac"}]}
+            "MediaSourceId":selected,"MaxStreamingBitrate":limit,"EnableDirectPlay":true,"EnableDirectStream":!convert,"EnableTranscoding":true,
+            "DeviceProfile":profile
         })), None).await;
         assert_eq!(
             status,
@@ -435,6 +446,15 @@ async fn jellyfin_live_playback_describes_tracks_and_delivers_playable_hls() {
         assert_eq!(source["IsInfiniteStream"], true);
         assert_eq!(source["TranscodingContainer"], container);
         assert_eq!(source["SupportsDirectPlay"], false);
+        let run = state
+            .playback
+            .runs()
+            .await
+            .into_iter()
+            .find(|run| run.session == response["PlaySessionId"])
+            .unwrap();
+        let encoding = state.playback.encoding(&run).await.unwrap();
+        assert_eq!((encoding.video, encoding.audio), (convert, convert));
         let url = source["TranscodingUrl"].as_str().unwrap();
         let (status, bytes) = get(url, None).await;
         assert_eq!(status, StatusCode::OK);
@@ -658,4 +678,139 @@ async fn jellyfin_provider_qualities_preserve_8k_and_60fps_packets_and_enforce_c
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/provider-quality");
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::write(directory.join("result.json"),serde_json::to_vec_pretty(&json!({"status":"passed","playbacks":evidence,"client_limit":constrained["MediaSources"][0]["MediaStreams"]})).unwrap()).unwrap();
+}
+
+#[cfg_attr(windows, ignore = "needs the Linux server container environment")]
+#[tokio::test]
+async fn jellyfin_clients_keep_the_largest_picture_they_take_without_conversion() {
+    let (temp, state, _) = crate::test_support::fixture().await;
+    tool_runtime::install(&state.tools.runtime, &state.config.state.join("tools"));
+    let mut files = std::collections::HashMap::new();
+    for (name, size, codec) in [
+        ("av1-360.mp4", "640x360", "libsvtav1"),
+        ("av1-180.mp4", "320x180", "libsvtav1"),
+        ("h264-180.mp4", "320x180", "libx264"),
+    ] {
+        let path = fixture_media(temp.path(), name, size, "30", codec);
+        files.insert(name.to_owned(), std::fs::read(path).unwrap());
+    }
+    let audio = fixture_audio(temp.path(), "3");
+    files.insert("audio.m4a".into(), std::fs::read(audio).unwrap());
+    let (proxy, task) = proxy(files);
+    let video = "pictures001";
+    state.db.write("test.fixture",move|db|{db.execute("INSERT INTO youtube_subscriptions(user_id,channel_id,title,snapshot,active) VALUES ('alice','picture-channel','Picture channel','s',1)",[])?;db.execute("INSERT INTO youtube_videos(user_id,video_id,channel_id,title,privacy,duration) VALUES ('alice',?1,'picture-channel','Picture fixture','public',3)",[video])?;Ok(())}).await.unwrap();
+    let metadata = json!({"duration":3,"is_live":false,"formats":[
+        {"format_id":"140","url":"https://r1.googlevideo.com/audio.m4a","vcodec":"none","acodec":"mp4a.40.2","protocol":"https","ext":"m4a","abr":128,"asr":48000,"audio_channels":1},
+        {"url":"https://r1.googlevideo.com/av1-360.mp4","height":360,"width":640,"fps":30,"vcodec":"av01.0.04M.08","acodec":"none","protocol":"https","ext":"mp4","tbr":300},
+        {"url":"https://r1.googlevideo.com/av1-180.mp4","height":180,"width":320,"fps":30,"vcodec":"av01.0.00M.08","acodec":"none","protocol":"https","ext":"mp4","tbr":150},
+        {"url":"https://r1.googlevideo.com/h264-180.mp4","height":180,"width":320,"fps":30,"vcodec":"avc1.64000D","acodec":"none","protocol":"https","ext":"mp4","tbr":200}
+    ]});
+    state
+        .online
+        .streams
+        .prepared
+        .lock()
+        .await
+        .insert(video.into(), select(&metadata, Some(proxy)).unwrap());
+    let token = crate::test_support::issue_session(
+        &state.db,
+        "alice".into(),
+        "jellyfin".into(),
+        "Picture TV".into(),
+    )
+    .await
+    .unwrap();
+    let get = async |path: &str, range: Option<&str>| api(&state, &token, path, None, range).await;
+    let (_, bytes) = get("/Items?ParentId=d7df0f21-caa6-45a0-9798-267150600001", None).await;
+    let items: Value = serde_json::from_slice(&bytes).unwrap();
+    let item = items["Items"][0]["Id"].as_str().unwrap();
+    let (_, bytes) = get(&format!("/Items/{item}"), None).await;
+    let sources = serde_json::from_slice::<Value>(&bytes).unwrap()["MediaSources"].clone();
+    let rendition = |codec: &str, height: i64| {
+        sources
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| {
+                s["MediaStreams"][0]["Codec"] == codec && s["MediaStreams"][0]["Height"] == height
+            })
+            .unwrap()["Id"]
+            .clone()
+    };
+    // Wholphin streams MPEG-TS HLS of H.264 and HEVC, and plays more codecs from files.
+    let streaming = json!({
+        "TranscodingProfiles":[{"Type":"Video","Protocol":"hls","Container":"ts","VideoCodec":"hevc,h264","AudioCodec":"aac,ac3,mp3"}],
+        "DirectPlayProfiles":[{"Type":"Video","Container":"mkv,mp4,ts,webm","VideoCodec":"av1,h264,hevc,vp9","AudioCodec":"aac,ac3,mp3"}],
+        "CodecProfiles":[{"Type":"Video","Codec":"av1","Conditions":[{"Condition":"Equals","Property":"VideoProfile","Value":"none","IsRequired":false}]}]
+    });
+    let mut decodes_av1 = streaming.clone();
+    decodes_av1["CodecProfiles"] = json!([]);
+    let path = format!("/Items/{item}/PlaybackInfo");
+    for (profile, selected, delivered, mode, container) in [
+        // The selected picture, in a codec the client streams.
+        (
+            &streaming,
+            rendition("av1", 180),
+            rendition("h264", 180),
+            "remux",
+            "ts",
+        ),
+        // The largest picture the client takes without converting video.
+        (
+            &streaming,
+            rendition("av1", 360),
+            rendition("h264", 180),
+            "remux",
+            "ts",
+        ),
+        // The original, for a client that plays it from MP4 files.
+        (
+            &decodes_av1,
+            rendition("av1", 360),
+            rendition("av1", 360),
+            "direct",
+            "mp4",
+        ),
+    ] {
+        let (status, bytes) = api(&state, &token, &path, Some(json!({
+            "MediaSourceId":selected,"MaxStreamingBitrate":104_857_600,"EnableDirectPlay":true,"EnableDirectStream":true,"EnableTranscoding":true,
+            "DeviceProfile":profile
+        })), None).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
+        let response: Value = serde_json::from_slice(&bytes).unwrap();
+        let source = &response["MediaSources"][0];
+        assert_eq!(source["Id"], delivered);
+        assert_eq!(source["TranscodingContainer"], container);
+        let sid = response["PlaySessionId"].as_str().unwrap().to_owned();
+        let session: String = state
+            .db
+            .read("test.proof", move |db| {
+                Ok(db.query_row(
+                    "SELECT mode FROM playback_sessions WHERE id=?1",
+                    [sid],
+                    |r| r.get(0),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(session, mode);
+        let (status, _) = get(source["TranscodingUrl"].as_str().unwrap(), None).await;
+        assert_eq!(status, StatusCode::OK);
+        let stopped =
+            json!({"ItemId":item,"PlaySessionId":response["PlaySessionId"],"PositionTicks":0});
+        let _ = api(
+            &state,
+            &token,
+            "/Sessions/Playing/Stopped",
+            Some(stopped),
+            None,
+        )
+        .await;
+    }
+    task.abort();
 }
