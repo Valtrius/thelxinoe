@@ -298,6 +298,9 @@ struct Prepared {
     finished: bool,
     activity: thelxinoe_core::activity::ActivityClock,
 }
+fn capabilities() -> Value {
+    json!({"containers":["mp4","m4v","m4a","mkv","avi","mov","webm","ts","m2ts","mpg","mpeg","flac","mp3","ogg","opus","wav","wma","aac","aiff","alac"],"video":["h264","hevc","vp8","vp9","av1","mpeg4","mpeg2video","mpeg1video","wmv3","vc1","prores","mjpeg"],"audio":["aac","mp3","flac","vorbis","opus","ac3","eac3","dts","truehd","alac","pcm_s16le","pcm_s24le","pcm_s32le","pcm_f32le","wmav2"],"hls":true,"hls_video":["h264","hevc","av1"],"native_tracks":true,"native_remote":true})
+}
 async fn prepare(backend: &Backend, choice: &Choice, first: bool) -> Result<Prepared> {
     prepare_quality(backend, choice, first, None).await
 }
@@ -309,7 +312,7 @@ async fn prepare_quality(
 ) -> Result<Prepared> {
     let preferences = backend.call("/playback/preferences", "GET", None).await?;
     let quality = quality.unwrap_or(preferences["quality"].as_str().unwrap_or("auto"));
-    let data=backend.call("/playback","POST",Some(json!({"media_id":choice.id,"file_id":choice.file_id,"position":if first {json!(choice.position)}else{json!(0)},"options":{"quality":quality,"audio":null,"subtitle":null,"capabilities":{"containers":["mp4","m4v","m4a","mkv","avi","mov","webm","ts","m2ts","mpg","mpeg","flac","mp3","ogg","opus","wav","wma","aac","aiff","alac"],"video":["h264","hevc","vp8","vp9","av1","mpeg4","mpeg2video","mpeg1video","wmv3","vc1","prores","mjpeg"],"audio":["aac","mp3","flac","vorbis","opus","ac3","eac3","dts","truehd","alac","pcm_s16le","pcm_s24le","pcm_s32le","pcm_f32le","wmav2"],"hls":true,"native_tracks":true,"native_remote":true}}}))).await?;
+    let data=backend.call("/playback","POST",Some(json!({"media_id":choice.id,"file_id":choice.file_id,"position":if first {json!(choice.position)}else{json!(0)},"options":{"quality":quality,"audio":null,"subtitle":null,"capabilities":capabilities()}}))).await?;
     Ok(Prepared {
         playlist_id: -1,
         id: data["id"]
@@ -751,6 +754,40 @@ fn reload_event(message: &Value) -> bool {
 #[cfg(test)]
 #[path = "quality_smoke.rs"]
 mod quality_smoke;
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+    use thelxinoe_playback::{Capabilities, Options, Source, decision};
+    #[test]
+    fn original_quality_copies_live_hevc_and_av1() {
+        let mut capabilities: Capabilities = serde_json::from_value(capabilities()).unwrap();
+        // The server always delivers live streams as HLS.
+        capabilities.containers.clear();
+        let options = Options {
+            quality: "original".into(),
+            audio: None,
+            subtitle: None,
+            capabilities,
+        };
+        for video in ["h264", "hevc", "av1"] {
+            let source = Source {
+                id: String::new(),
+                media_id: String::new(),
+                generation: String::new(),
+                edition: "public".into(),
+                path: "public.ts".into(),
+                root: Default::default(),
+                size: 0,
+                modified: String::new(),
+                probe: json!({"format":{},"streams":[
+                    {"index":0,"codec_type":"video","codec_name":video,"height":1920},
+                    {"index":1,"codec_type":"audio","codec_name":"aac"}]}),
+            };
+            assert_eq!(decision(&source, &options).unwrap().mode, "remux", "{video}");
+        }
+    }
+}
 
 #[cfg(test)]
 mod restart_tests {
